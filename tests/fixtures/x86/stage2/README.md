@@ -1369,13 +1369,13 @@ different exponents, payload sentinels and atomic rejection of inexact/range
 inputs. DC C0..C7 remain FADD, E0..E7 remain FSUBR, and E8..EF remain FSUB.
 The forms are local-only; native x87 admission stays closed.
 
-### S2-30p x87 schema coverage
+### S2-30p initial x87 schema coverage
 
 The schema validator admits all eight bare `DE C8+i` FMULP encodings. Runner
 cases check every TOP×i pair, including the valid i=0 square written into old
 physical TOP before that tag is emptied, TOP wrap, C1 clearing and preservation
-of other raw state. An inexact `DE C8` fixture is Unsupported with
-`stop_rip: null` and budget one. `DE C9` is the supported no-operand
+of other raw state. This original exact-only slice was extended to bounded FCW
+precision by S2-30da below. `DE C9` is the supported no-operand
 `FMULP ST(1), ST(0)` form. FADDP DE C0..C7, FSUBRP E0..E7 and FSUBP E8..EF
 remain distinct; native x87 admission stays closed.
 
@@ -1389,6 +1389,16 @@ checks inexact PE with no increment; the ISA matrix covers every FCW and sign
 pair, while gap 65 and i=0 overflow refuse without state commit. JIT/native
 admission remains closed; these are interpreter fixtures, not physical x86
 acceptance.
+
+### S2-30da x87 schema and fixture coverage
+
+The existing schema admits every bare `DE C8..CF` FMULP encoding. Runner
+coverage checks inexact FCW rounding and the `i=0` square before popping the
+old TOP. The static
+[`PC64 inexact FMULP fixture`](s2_30da_fmulp_pc64_inexact_pop.case.json)
+checks PE, rounded payload placement, old TOP emptying and TOP advancement.
+The eight encodings remain interpreter-only; native/JIT admission stays
+closed.
 
 ### S2-30q x87 schema coverage
 

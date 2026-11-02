@@ -11421,9 +11421,11 @@ tags, source bytes, FCW/FDP/FOP and unrelated state; set FIP to old RIP, advance
 RIP by two, retire once and make no data-memory access. Reject unsupported
 operands, exact-product exponent failures, zero/subnormal/overflow results,
 unsupported environment and all execution-boundary failures atomically. Keep
-S2-30co's `D8 C8..CF` precision path, exact-only `DE C8..CF` FMULP, and other
-reverse forms unchanged. No general x87 exception delivery, native/JIT/schema
-admission or physical x86 acceptance is implied.
+S2-30co's `D8 C8..CF` precision path, the then-current exact-only `DE C8..CF`
+FMULP contract, and other reverse forms are unchanged by this slice. The DE
+FMULP precision extension is specified separately by S2-30da. No general x87
+exception delivery, native/JIT/schema admission or physical x86 acceptance is
+implied.
 
 Cover all 64 TOP/index pairs and twelve FCWs, all sign combinations for
 distinct operands, alias squaring, PE/C1 histories, halfway/adjacent results,
@@ -11438,6 +11440,40 @@ Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cu-bounded-fmul-sti-st0-dc-c8cf),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cu--bounded-reverse-fmul-sti-st0), and
 [standalone report](../reports/S2_30CU_X87_FMUL_REVERSE_PRECISION.md). S2-30 and
+ISSUE-019 remain open.
+
+#### S2-30da. Bare `FMULP ST(i), ST(0)` with bounded FCW precision
+
+Extend only exact bare Long64 `DE C8..CF`. Reuse the S2-30cu precision
+multiplication contract and helper with old logical destination `ST(i)` and
+source `ST(0)`. Require present x87 state, absent FCS/FDS, one of twelve
+all-exception-masked PC24/53/64 FCWs, and `FSW & 0x80df == 0`. Both used
+physical operands must be Valid-tagged canonical nonzero Normal binary80
+values of either sign. For `i=0`, validate one Valid TOP register and square
+that value. Accept only finite Normal results; unsupported environment,
+operand, result range, or execution-boundary cases refuse before mutation.
+
+On success, write the rounded product to old physical `(TOP+i)&7` before
+marking old physical TOP Empty, including the `i=0` alias case. Set PE to old
+PE OR `inexact`, replace C1 with the helper's pre-carry magnitude
+`incremented` diagnostic, and preserve C0/C2/C3 under the deterministic local
+policy. Advance TOP, preserve all payloads (including the popped TOP), tags
+other than the popped tag, FCW/FDP/FOP and unrelated state; set FIP to old RIP,
+advance RIP by two, retire once and make no data-memory access. Retain the
+existing decoder/schema admission for the eight DE encodings and keep native
+x87, JIT and general exception delivery closed.
+
+Cover all TOP/index pairs and twelve FCWs, inexact rounding and sign-directed
+rounding, i=0 squaring, PE/C1 replacement, result placement before pop,
+preserved state, invalid environment/tags/raw classes/range, atomic fetch/STOP/
+budget behavior, no data access and neighboring DE forms. Sources: Intel SDM
+Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL`, pp. 3-360–3-362; Vol. 1 §8.1.5.1–.3,
+Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30
+([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478),
+[Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30da-bounded-fmulp-sti-st0-de-c8cf),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30da--bounded-fmulp-sti-st0), and
+[standalone report](../reports/S2_30DA_X87_FMULP_PRECISION.md). S2-30 and
 ISSUE-019 remain open.
 
 #### S2-30cv. Bare reverse `FSUB ST(i), ST(0)` with bounded FCW precision

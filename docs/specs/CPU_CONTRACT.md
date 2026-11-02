@@ -2824,7 +2824,7 @@ pp.3-360–3-362 ([official PDF, Vol.2A p.3-360](https://cdrdv2-public.intel.com
 and C0/C2/C3 are undefined. General rounding, special values, exception
 delivery, CR0/#NM and native x87 behavior are not implemented.
 
-## Local S2-30p: exact-only `FMULP ST(i), ST(0)` (`DE C8+i`)
+## Local S2-30p: initial exact-only `FMULP ST(i), ST(0)` (`DE C8+i`)
 
 The interpreter accepts exactly bare `DE C8` through `DE CF` with an existing
 `Some(X87State)`. It reuses the S2-30n exact FMUL gate: FCW `0x037f`,
@@ -2852,6 +2852,40 @@ pp.3-360–3-362 ([official PDF, Vol.2A p.3-360](https://cdrdv2-public.intel.com
 `DE C8+i` computes old `ST(i) * ST(0)` before popping old `ST(0)`; exact
 results clear C1, and C0/C2/C3 are undefined. General rounding, special values,
 exception delivery, CR0/#NM and native x87 behavior are not implemented.
+
+The original exact-only admission described here was extended by
+[S2-30da](#local-s2-30da-bounded-fcw-precision-fmulp-sti-st0-de-c8cf): the
+current interpreter profile also admits bounded FCW-precision products.
+
+## Local S2-30da: bounded FCW-precision `FMULP ST(i), ST(0)` (`DE C8+i`)
+
+The interpreter accepts only exact bare Long64 `DE C8..CF`. Require present
+x87 state, absent FCS/FDS, one of twelve all-exception-masked PC24/53/64 FCWs,
+and `FSW & 0x80df == 0`. Used physical operands must be Valid-tagged canonical
+nonzero Normal binary80 values of either sign. The `i=0` alias validates only
+the Valid-tagged physical TOP and squares that value. Use the S2-29ad finite
+multiplication precision helper with FCW PC/RC; accept only finite Normal
+results. Unsupported environment, operand, range or execution boundary rejects
+before mutation.
+
+Success writes the rounded result to old physical `(TOP+i)&7` before marking
+old physical TOP Empty, including when `i=0` writes the square into the popped
+register. PE becomes old PE OR `inexact`; C1 is replaced by the helper's
+pre-carry magnitude `incremented` diagnostic. Preserve C0/C2/C3 under the
+local deterministic policy, all other tags and payloads, FCW/FDP/FOP and
+unrelated state. Advance TOP, set FIP to old RIP, advance RIP by two and retire
+once without data-memory access. `DE C9` remains the no-operand
+`FMULP ST(1), ST(0)` encoding. The existing schema admits all eight encodings;
+native x87, JIT and general exception delivery remain closed.
+
+Normative source: Intel SDM revision 093, Vol.2A, “FMUL/FMULP/FIMUL—Multiply,”
+pp.3-360–3-362
+([official PDF, Vol.2A p.3-360](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478));
+Vol.1 §8.1.5.1–.3, Table 8-2 and §8.5.6, pp.8-7–8-8 and 8-30
+([official PDF, Vol.1 p.8-30](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+`DE C8+i` computes old `ST(i)*ST(0)` before popping old TOP. Exact results
+clear C1; C0/C2/C3 are undefined. This bounded profile does not implement
+general rounding exceptions, special values, CR0/#NM or native x87 behavior.
 
 ## Local S2-30q: exact-only `FDIV ST(0), ST(i)` (`D8 F0+i`)
 

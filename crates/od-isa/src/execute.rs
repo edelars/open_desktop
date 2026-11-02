@@ -18,10 +18,10 @@ use crate::swapgs::SwapgsProfile;
 use crate::x87::{
     RationalRoundingMode, X87Binary80, X87Binary80Class, add_finite_same_exponent,
     add_finite_to_normal_binary80_precision_with_diagnostics, divide_finite_significands,
-    divide_finite_to_normal_binary80_precision_with_diagnostics, multiply_finite_significands,
-    multiply_finite_to_normal_binary80_precision_with_diagnostics, normalize_exact_magnitude,
-    pack_normal_rounded_significand, remainder_finite_nearest_even_with_quotient,
-    remainder_finite_trunc_with_quotient, round_pack_exact_coefficient, round_quotient_magnitude,
+    divide_finite_to_normal_binary80_precision_with_diagnostics,
+    multiply_finite_to_normal_binary80_precision_with_diagnostics, pack_normal_rounded_significand,
+    remainder_finite_nearest_even_with_quotient, remainder_finite_trunc_with_quotient,
+    round_pack_exact_coefficient, round_quotient_magnitude,
     sqrt_finite_to_binary80_precision_with_diagnostics,
 };
 use crate::{FsDescriptorCache, LongModeState, OperandSize, Register, RegisterView};
@@ -23012,7 +23012,7 @@ fn step_configured(
         });
     }
     if let Operation::FmulpStSt0 { destination } = instruction.operation
-        && exact_fmul_result(state, destination).is_none()
+        && bounded_x87_fmul_sti_st0_result(state, destination).is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -34403,18 +34403,23 @@ fn step_configured(
             x87.instruction_pointer = state.rip;
         }
         Operation::FmulpStSt0 { destination } => {
-            // The product is fully validated before mutation. In the i=0
-            // alias case this captures the square before the old TOP tag is emptied.
-            let result =
-                exact_fmul_result(state, destination).expect("FMULP result was prevalidated");
+            // The rounded product is fully validated before mutation. In the
+            // i=0 alias case this captures the square before the old TOP tag
+            // is emptied.
+            let (result, inexact, incremented) =
+                bounded_x87_fmul_sti_st0_result(state, destination)
+                    .expect("FMULP result was prevalidated");
             let x87 = state.x87.as_mut().expect("FMULP state was prevalidated");
             let old_top = x87.top();
             let physical_destination = (old_top + destination) & 7;
-            x87.registers[usize::from(physical_destination)] = result.to_bytes();
+            x87.registers[usize::from(physical_destination)] = result;
             x87.set_tag(old_top, X87Tag::Empty);
             let new_top = old_top.wrapping_add(1) & 7;
-            x87.status_word =
-                (x87.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
+            let old_pe = x87.status_word & (1 << 5) != 0;
+            x87.status_word = (x87.status_word & !((7 << 11) | (1 << 5) | (1 << 9)))
+                | (u16::from(new_top) << 11)
+                | (u16::from(old_pe || inexact) << 5)
+                | (u16::from(incremented) << 9);
             x87.instruction_pointer = state.rip;
         }
         Operation::FmulStSt0 { destination } => {
@@ -37803,51 +37808,8 @@ fn bounded_x87_fsubr_st0_sti_result(
     ))
 }
 
-/// Return only exact canonical-Normal results for the bounded FMUL profile.
-/// Unlike FADD/FSUB, the operands may have different normalized exponents.
-fn exact_fmul_result(state: &LongModeState, source_index: u8) -> Option<X87Binary80> {
-    if source_index > 7 {
-        return None;
-    }
-    let x87 = state.x87.as_ref()?;
-    if x87.control_word != 0x037f || x87.status_word & 0x80ff != 0 {
-        return None;
-    }
-    let destination = x87.physical_register_for_st(0)?;
-    let source = x87.physical_register_for_st(source_index)?;
-    if x87.tag(destination)? != X87Tag::Valid
-        || (source != destination && x87.tag(source)? != X87Tag::Valid)
-    {
-        return None;
-    }
-    let destination_raw = X87Binary80::from_bytes(x87.registers[usize::from(destination)]);
-    let source_raw = if source == destination {
-        destination_raw
-    } else {
-        X87Binary80::from_bytes(x87.registers[usize::from(source)])
-    };
-    if destination_raw.classify() != X87Binary80Class::Normal
-        || source_raw.classify() != X87Binary80Class::Normal
-    {
-        return None;
-    }
-    let destination_finite = destination_raw.normalize_finite()?;
-    let source_finite = source_raw.normalize_finite()?;
-    let (sign, exponent, magnitude) =
-        multiply_finite_significands(destination_finite, source_finite)?;
-    let (sign, exponent, normalized) = normalize_exact_magnitude(sign, exponent, magnitude)?;
-    // Exact binary80 precision requires all product bits below the retained
-    // 64-bit significand to be zero. No rounding or host floating point is used.
-    if normalized as u64 != 0 {
-        return None;
-    }
-    let result = pack_normal_rounded_significand(sign, exponent, normalized >> 64, 64)?;
-    (result.classify() == X87Binary80Class::Normal).then_some(result)
-}
-
 /// Preflight the bounded register-only `FMUL ST(0), ST(i)` precision profile.
-/// Other FMUL directions retain their exact-only contract through
-/// `exact_fmul_result`.
+/// Other FMUL directions have their own bounded precision contracts.
 fn bounded_x87_fmul_st0_sti_result(
     state: &LongModeState,
     source_index: u8,
@@ -69843,6 +69805,90 @@ mod tests {
     }
 
     #[test]
+    fn fmulp_sti_st0_rounds_all_fcws_and_pops_after_writing_the_result() {
+        const CONTROL_WORDS: [u16; 12] = [
+            0x007f, 0x047f, 0x087f, 0x0c7f, 0x027f, 0x067f, 0x0a7f, 0x0e7f, 0x037f, 0x077f, 0x0b7f,
+            0x0f7f,
+        ];
+
+        for top in 0u8..8 {
+            for index in 0u8..8 {
+                for control_word in CONTROL_WORDS {
+                    let precision = match control_word & 0x0300 {
+                        0x0000 => 24,
+                        0x0200 => 53,
+                        0x0300 => 64,
+                        _ => unreachable!(),
+                    };
+                    let rounding = (control_word >> 10) & 3;
+                    for negative in [false, true] {
+                        if index == 0 && negative {
+                            continue;
+                        }
+                        let mut state = LongModeState::default();
+                        state.rip = 0x7b80;
+                        let mut x87 = crate::state::X87State::fixture_seed();
+                        x87.control_word = control_word;
+                        x87.status_word = (u16::from(top) << 11) | 0x4500 | (1 << 5) | (1 << 9);
+                        x87.tag_word = u16::MAX;
+                        x87.registers = std::array::from_fn(|slot| [0x40 + slot as u8; 10]);
+                        x87.registers[usize::from(top)] =
+                            binary80_normal(0x8000_0000_0000_0001, 0x3fff, negative);
+                        x87.set_tag(top, X87Tag::Valid);
+                        let destination = (top + index) & 7;
+                        if index != 0 {
+                            x87.registers[usize::from(destination)] =
+                                binary80_normal(0x8000_0000_0000_0001, 0x3fff, false);
+                            x87.set_tag(destination, X87Tag::Valid);
+                        }
+                        state.x87 = Some(x87);
+
+                        let base = match precision {
+                            24 => (0x8000_0000_0000_0000u64, 1u64 << 40),
+                            53 => (0x8000_0000_0000_0000u64, 1u64 << 11),
+                            64 => (0x8000_0000_0000_0002u64, 1),
+                            _ => unreachable!(),
+                        };
+                        // (1 + 2^-63)^2 lies just above the retained PC=64
+                        // value; at lower PCs it lies above one by less than
+                        // half an ulp. Every case is inexact.
+                        let incremented = if negative {
+                            rounding == 1
+                        } else {
+                            rounding == 2
+                        };
+                        let expected_result = binary80_normal(
+                            base.0 + u64::from(incremented) * base.1,
+                            0x3fff,
+                            negative,
+                        );
+                        let mut memory = Memory::at(&[0xde, 0xc8 | index], state.rip);
+                        assert_eq!(
+                            step(&mut state, &mut memory, AccessContext::default()),
+                            Ok(StepOutcome::Advanced),
+                            "TOP={top}, i={index}, FCW={control_word:#06x}, negative={negative}"
+                        );
+                        let x87 = state.x87.as_ref().unwrap();
+                        assert_eq!(x87.registers[usize::from(destination)], expected_result);
+                        assert_eq!(x87.tag(top), Some(X87Tag::Empty));
+                        assert_eq!(x87.top(), top.wrapping_add(1) & 7);
+                        assert_ne!(x87.status_word & (1 << 5), 0);
+                        assert_eq!(x87.status_word & (1 << 9), u16::from(incremented) << 9);
+                        assert_eq!(x87.status_word & 0x4500, 0x4500);
+                        assert_eq!(x87.instruction_pointer, 0x7b80);
+                        assert!(
+                            memory
+                                .accesses
+                                .iter()
+                                .all(|(kind, _, _)| *kind == AccessKind::Fetch)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn fmulp_sti_st0_rejects_bad_inputs_and_execution_boundaries_atomically() {
         let make_pair = || {
             let mut x87 = crate::state::X87State::fixture_seed();
@@ -69853,17 +69899,14 @@ mod tests {
             x87.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
             x87
         };
-        let mut inexact = make_pair();
-        inexact.registers[0] = binary80_normal(0x8000_0000_0000_0001, 0x3fff, false);
-        inexact.registers[1] = inexact.registers[0];
         let mut overflow = make_pair();
         overflow.registers[0] = binary80_normal(u64::MAX, 0x7ffe, false);
         overflow.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x4000, false);
         let mut subnormal = make_pair();
         subnormal.registers[0] = binary80_normal(0x8000_0000_0000_0000, 1, false);
         subnormal.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x3ffe, false);
-        let mut rejected = vec![inexact, overflow, subnormal];
-        for control_word in [0x027f, 0x037e, 0x077f] {
+        let mut rejected = vec![overflow, subnormal];
+        for control_word in [0x017f, 0x037e, 0x107f] {
             let mut bad = make_pair();
             bad.control_word = control_word;
             rejected.push(bad);
@@ -69912,6 +69955,8 @@ mod tests {
             assert_eq!(state, before);
         }
 
+        // The former exact-only rejection now rounds at FCW precision and
+        // commits the square before popping the old TOP.
         let mut i0_inexact = LongModeState::default();
         i0_inexact.rip = 0x7c20;
         let mut x87 = crate::state::X87State::fixture_seed();
@@ -69921,13 +69966,18 @@ mod tests {
         x87.registers[0] = binary80_normal(0x8000_0000_0000_0001, 0x3fff, false);
         x87.set_tag(0, X87Tag::Valid);
         i0_inexact.x87 = Some(x87);
-        let before_i0 = i0_inexact.clone();
         let mut i0_memory = Memory::at(&[0xde, 0xc8], i0_inexact.rip);
         assert_eq!(
             step(&mut i0_inexact, &mut i0_memory, AccessContext::default()),
-            Ok(StepOutcome::Unsupported { opcode: 0xde })
+            Ok(StepOutcome::Advanced)
         );
-        assert_eq!(i0_inexact, before_i0);
+        assert_eq!(
+            i0_inexact.x87.as_ref().unwrap().registers[0],
+            binary80_normal(0x8000_0000_0000_0002, 0x3fff, false)
+        );
+        assert_eq!(i0_inexact.x87.as_ref().unwrap().tag(0), Some(X87Tag::Empty));
+        assert_eq!(i0_inexact.x87.as_ref().unwrap().top(), 1);
+        assert_ne!(i0_inexact.x87.as_ref().unwrap().status_word & (1 << 5), 0);
 
         let mut i0_overflow = LongModeState::default();
         i0_overflow.rip = 0x7c30;

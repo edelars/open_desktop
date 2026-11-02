@@ -21444,8 +21444,9 @@ by local policy. TOP, tags, source payloads, selectors, unrelated state and
 data memory are preserved; FIP receives old RIP, RIP advances by two and the
 instruction retires once. Invalid domains, environment and execution
 boundaries reject atomically. The S2-30co `D8` path and exact-only `DE` FMULP
-remain unchanged. No guest exception delivery, JIT/native admission or
-physical x86 acceptance is claimed.
+remain unchanged by this reverse-FMUL slice. The original exact-only FMULP
+domain is extended separately by S2-30da. No guest exception delivery,
+JIT/native admission or physical x86 acceptance is claimed.
 
 The focused reverse-FMUL coverage passes 13 tests and includes an 11,520-case
 matrix across all TOP/index pairs, twelve FCWs, signs and prior PE/C1 states;
@@ -21466,6 +21467,32 @@ pp. 3-360–3-362; Vol. 1 §§8.1.5.1–.3, Table 8-2, and §8.5.6, pp. 8-7–8-
 [plan](../plans/STAGE_2.md#s2-30cu-bare-reverse-fmul-sti-st0-with-bounded-fcw-precision),
 and [standalone report](S2_30CU_X87_FMUL_REVERSE_PRECISION.md). ISSUE-019
 remains open.
+
+## S2-30da — bounded `FMULP ST(i), ST(0)`
+
+The interpreter now rounds exact bare Long64 `DE C8..CF` products using the
+S2-30cu precision helper and FCW PC24/53/64 plus RC. It requires the same
+bounded x87 state, selectors, tags, canonical nonzero Normal operands and
+finite Normal output; `i=0` validates one TOP operand and squares it. The
+rounded result is written to old physical `(TOP+i)&7` before old TOP is marked
+Empty. Success accumulates PE, replaces C1 with the pre-carry magnitude
+diagnostic, preserves the local undefined condition-code policy, advances TOP,
+records FIP and retires once. Rejections remain atomic; no data-memory access
+occurs. Native/JIT and general x87 exception delivery remain closed.
+
+Coverage includes all 64 TOP/index pairs, all twelve FCWs and both result
+signs; `i=0` alias squaring; PE/C1 behavior; invalid input and range refusals;
+fetch/STOP/budget atomicity; and a static schema-v2 PC64 inexact fixture.
+Focused `od-isa` tests passed 3/3, the focused runner test passed, all 497
+`fixture_v2` tests passed, and `od-testkit` passed. Full validation, layout,
+Graphify refresh and independent review results are recorded in the
+[standalone report](S2_30DA_X87_FMULP_PRECISION.md). This extends the original
+exact-only S2-30p local slice. No physical x86 acceptance is claimed. Sources:
+Intel SDM Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL`, pp. 3-360–3-362; Vol. 1
+§§8.1.5.1–.3, Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30da-bounded-fcw-precision-fmulp-sti-st0-de-c8cf),
+[plan](../plans/STAGE_2.md#s2-30da-bare-fmulp-sti-st0-with-bounded-fcw-precision),
+and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
 ### S2-37dg — SQRTSS XMM0,m32 [RAX]
 

@@ -5633,20 +5633,19 @@ mod tests {
             }
         }
 
-        // The fixture schema accepts DE C8 with an explicit unsupported exit
-        // and no stop address. This instance rejects atomically because the
-        // finite product is inexact; the i=0 exact square succeeds above.
+        // The fixture schema admits FCW-rounded products. This former
+        // exact-only rejection now commits the rounded square before pop.
         let mut input = v2::Fixture::from_json(include_bytes!(
             "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
         ))
         .unwrap()
         .fixture;
-        input.case_id = "local_fmulp_i0_inexact_rejection".into();
+        input.case_id = "local_fmulp_i0_inexact_rounded_square".into();
         input.profile = v2::Profile::LongX87StateV1;
         input.instruction_budget = 1;
         input.initial_state.rip = HexU64(0x5400);
-        input.stop_rip = None;
-        input.expected_exit = v2::ExpectedExit::Unsupported;
+        input.stop_rip = Some(HexU64(0x5402));
+        input.expected_exit = v2::ExpectedExit::StopAddress;
         let code = input
             .memory
             .iter_mut()
@@ -5667,15 +5666,20 @@ mod tests {
         let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
         let result = execute_fixture_v2(&loaded, &mut memory);
         result.validate_for(&loaded).unwrap();
-        assert!(matches!(result.outcome, v2::Outcome::Unsupported { .. }));
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
         assert_eq!(
             result.instructions_executed,
-            Observation::Available { value: HexU64(0) }
+            Observation::Available { value: HexU64(1) }
         );
         let Observation::Available { value } = result.snapshot else {
-            panic!("unsupported x87 square rejection must be observable");
+            panic!("x87 FMULP square result must be observable");
         };
-        assert_eq!(value.state, loaded.fixture.initial_state);
+        let mut expected = x87;
+        expected.registers[0] = normal(0x8000_0000_0000_0002, 0x3fff);
+        expected.set_tag(0, od_isa::state::X87Tag::Empty);
+        expected.status_word = (1 << 11) | (1 << 5);
+        expected.instruction_pointer = 0x5400;
+        assert_eq!(value.state.x87.unwrap(), v2::X87Snapshot::from(&expected));
     }
 
     #[test]
