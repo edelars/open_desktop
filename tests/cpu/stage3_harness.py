@@ -94,6 +94,7 @@ SELF_TEST_NAMES = (
     "test_s3_34ap_rbx_rcx_sib_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34aq_rbx_rcx_sib_scaled_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34ar_rbx_rcx_sib_scaled_dword_store_gates_are_pinned_and_fail_closed",
+    "test_s3_34as_rbx_rcx_scaled_disp8_sib_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -723,6 +724,14 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34ar_host_rbx_rcx_scaled_sib_dword_store_full_width_base_index", "local_acceptance", "od-host",
         "tests::s3_20dg_rbx_rcx_scaled_sib_dword_store_uses_full_width_base_and_index",
+    ),
+    (
+        "s3_34as_ir_dword_rbx_rcx_sib_disp8_scaled_load_source_binding", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_rbx_rcx_sib_disp8_load_binds_all_scales_and_signed_bytes",
+    ),
+    (
+        "s3_34as_host_rbx_rcx_scaled_disp8_sib_dword_load_signed_displacement", "local_acceptance", "od-host",
+        "tests::s3_20dh_rbx_rcx_scaled_disp8_sib_dword_load_uses_signed_displacement",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
