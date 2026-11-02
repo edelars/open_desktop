@@ -22028,6 +22028,10 @@ preserves unrelated state. A separate strict schema/result validator uses the
 independent raw-u32 rational DIVPS oracle with the memory RHS. The fixture and
 focused runner tests cover RC/sticky combinations, NaN, zero/infinity,
 subnormal, overflow, gates, alignment, canonical spans, tampering and backend
-denial. Focused ISA and runner results plus remaining full-suite checks are
-recorded in [the standalone report](S2_37DT_DIVPS_MEMORY.md). No physical x86
-acceptance is claimed. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax), [plan](../plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax).
+denial. Full validation passed: `od-isa` 1,847, `od-testkit` 455, runner unit
+tests 119 and serialized fixture tests 502. Formatting, workspace all-target
+offline check, diff check and Graphify refresh passed. The isolated layout check
+reports the worktree `.git` pointer and two absent historical oracle manifests
+already tracked by ISSUE-023. Independent Sol/high review is pending in [the
+standalone report](S2_37DT_DIVPS_MEMORY.md). No physical x86 acceptance is
+claimed. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax), [plan](../plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--divps-xmm0m128-rax).

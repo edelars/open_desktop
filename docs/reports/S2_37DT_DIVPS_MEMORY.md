@@ -53,4 +53,4 @@ prefixes, REX, other ModR/M, truncated input, VEX and EVEX forms.
 No physical x86 acceptance is claimed. The profile does not cover complete
 unmasked overflow/underflow exception delivery.
 
-See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax), [Stage 2 plan](../plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), [shared report](STAGE_2_REPORT.md#s2-37dt--divps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax).
+See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax), [Stage 2 plan](../plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), [shared report](STAGE_2_REPORT.md#s2-37dt--divps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--divps-xmm0m128-rax).
