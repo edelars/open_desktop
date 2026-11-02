@@ -18,6 +18,21 @@ remain recorded in each affected report.
 
 ## Зафиксированное локальное evidence
 
+S3-20ec adds the exact address64 RSP+signed-disp8 dword store `89 44 24 ib`
+through shared typed IR. Its JIT source/site gate covers all 256 displacement
+bytes; the host gate covers signed edges, address wrap, state/RAM parity,
+faults, atomicity, STOP, and no-replay. On runtime author commit `7ae5578`,
+the `od-jit` library passed 341/341, `od-host` passed 170/170 using a fresh
+writable corpus directory seeded from immutable baseline inputs, and adjacent
+S3-20ea/S3-20eb regressions passed 1/1. After integration as runtime commit
+`c9195cd` and harness commit `2edeb07`, the new S3-20ec JIT/host gates passed
+1/1 and the full Python harness passed 87/87. The
+fresh directory was needed because a stale ignored reducer output in the
+isolated worktree made one full-suite run refuse an overwrite; the issue was
+resolved as test-artifact setup and did not require a product-code change. No
+broad performance, PC-map, owner/MMU, or physical-hardware claim follows. See
+the [S3-20ec report](STAGE_3_S3-20ec_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20

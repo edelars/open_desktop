@@ -601,6 +601,26 @@ and host checked-state identities and requires the no-replay host evidence in
 the final local-acceptance summary; see the
 [S3-20eb report](../reports/STAGE_3_S3-20eb_2026-11-02.md).
 
+#### S3-20ec: exact RSP-base Dword store with signed disp8 through SIB
+
+The typed-IR Dword-store path admits only the exact four-byte singleton
+`89 44 24 ib` (`MOV [RSP+disp8],EAX`): address64 SIB, full-width RSP base,
+no index, scale 1, and signed disp8. The decoder-owned effective address is
+full-width RSP plus signed displacement with wrapping u64 arithmetic. The
+checked helper writes one contiguous width-four value from low32 RAX and
+commits guest RIP to `A+4`. The JIT test binds all 256 displacement bytes to
+their decoded signed values, source/site identities, and `A+4` boundary;
+forged metadata and neighboring unsupported forms remain rejected. This does
+not make a separate PC-map phase claim.
+
+The host regression checks signed edges, wrap to effective address zero,
+interpreter parity, and exactly one width-four callback. It also verifies
+RSP `#SS` against an RBX `#GP` control, overflow/backend-error atomicity,
+preserved RAX/RSP/flags, entry STOP/budget, callback STOP commit, and retry at
+committed `A+4` without a second write. The fixture does not establish MMIO,
+SMC, owner/MMU integration, general address forms, hardware behavior, or
+performance. See the [S3-20ec report](../reports/STAGE_3_S3-20ec_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
