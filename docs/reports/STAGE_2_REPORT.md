@@ -22280,13 +22280,38 @@ and includes an adjacent memory canary. Direct ISA tests cover special values,
 all MXCSR RC × sticky histories, one unaligned m32 read, AC callback
 suppression, gate/address/read rollback, and exact decode. Schema/runner checks
 reject malformed encodings, unsupported MXCSR bits, DAZ/FTZ, unmasked
-exceptions, control/result tampering and non-interpreter backends. Checks on
-2026-11-02: `od-isa` 1,880; `od-testkit` 455; runner fixture suite 514;
+exceptions, control/result tampering and non-interpreter backends. A regression
+uses the same noncanonical RAX with AC=1 and AC=0: the former is Unsupported,
+the latter #GP(0), and neither retires or changes state. Checks on 2026-11-02:
+`od-isa` 1,880; `od-testkit` 455; runner fixture suite 514;
 workspace all-target offline check passed. Formatting was applied and rechecked.
 Graphify: 11,758 nodes / 25,337 edges / 341 communities. Layout check reports
 only the isolated worktree `.git` marker and two missing historical manifests
 already tracked by ISSUE-023. No physical x86 result is claimed. ISSUE-025
 remains open for the overlapping published reciprocal thresholds. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37ea-memory-rcpss-at-rax), [plan](../plans/STAGE_2.md#s2-37ea--local-long64-memory-legacy-rcpss-at-rax), [fixture](../../tests/fixtures/x86/stage2/s2_37ea_rcpss_m32_memory_rhs.case.json), and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
-This isolated commit is ready for independent Sol/high review; review has not
-yet been performed.
+Independent Sol/high review found and confirmed a P2 AC/canonical-span priority
+mismatch in both schema validators. Fix commit `357302b` aligned them with the
+interpreter and added the regression above; re-review was clean.
+
+<a id="s2-30dk--large-gap-fsub-sti-st0"></a>
+
+## S2-30dk — large-gap `FSUB ST(i), ST(0)`
+
+Extended only bare `DC E8..EF` to normalized Normal operand exponent gaps
+65..32765 using the existing S2-29af direct-addition precision helper. Both
+original physical operands are validated before the local ST(0) sign flip.
+Gap≤64 behavior, the old physical ST(i) destination, no-pop semantics, FCW
+precision/rounding, sticky PE and local C1 handling are preserved. `DC E0..E7`
+FSUBR and `DE E8..EF` FSUBP remain capped at gap 64; alias cancellation and
+unsupported outcomes remain atomic. JIT/native and physical x86 acceptance
+remain closed.
+
+The independent integer oracle covers gaps 64/65/66/32765, all twelve FCWs,
+signs, operand orders, TOP/index positions and PE/C1 histories. A literal
+schema-v2 runner fixture stores actual ST(0)=2^-65, checks full x87 state and
+confirms JIT denial. Verification and review results are recorded in the
+[standalone report](S2_30DK_X87_FSUB_LARGE_GAPS.md). See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dk-large-gap-fsub-sti-st0-dc-e8ef),
+[plan](../plans/STAGE_2.md#s2-30dk-large-gap-fsub-sti-st0-admission), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dk-large-gap-reverse-destination-fsub-fixture).

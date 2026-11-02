@@ -5695,6 +5695,32 @@ mod tests {
     }
 
     #[test]
+    fn x87_reverse_destination_fsub_large_gap_literal_fixture_rounds_and_stays_jit_denied() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_30dk_fsub_sti_st0_gap65_up.case.json"
+        );
+        let loaded = v2::Fixture::from_json(bytes).unwrap();
+        assert_eq!(
+            loaded.fixture.initial_state.x87.as_ref().unwrap().registers[7],
+            "0000000000000080be3f",
+            "fixture carries the literal 2^-65 ST(0) operand"
+        );
+        assert!(od_jit::compile(&[0xdc, 0xe9]).is_err());
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let result = execute_fixture_v2(&loaded, &mut memory);
+        result.validate_for(&loaded).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        let Observation::Available { value } = result.snapshot else {
+            panic!("large-gap reverse-destination FSUB result must be observable");
+        };
+        let mut expected = loaded.fixture.initial_state.x87.unwrap();
+        expected.registers[0] = "0000000000000080ff3f".into();
+        expected.status_word = HexU64(0x3a20);
+        expected.instruction_pointer = HexU64(0x100000);
+        assert_eq!(value.state.x87.unwrap(), expected);
+    }
+
+    #[test]
     fn x87_fsubr_large_gap_literal_fixture_rounds_and_stays_jit_denied() {
         let bytes = include_bytes!(
             "../../../tests/fixtures/x86/stage2/s2_30dj_fsubr_st0_st1_gap65_up.case.json"
