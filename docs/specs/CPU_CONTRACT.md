@@ -17611,3 +17611,56 @@ x86 acceptance claim. Integrated verification passed: od-isa 1,912, od-testkit
 tests; workspace check, formatting, layout, diff check, and Graphify passed.
 Sol/high review is clean. See the [implementation report](../reports/S2_38Q_MINPD_MEMORY_UNMASKED.md)
 and [plan](../plans/STAGE_2.md#s2-38q--exact-long64-minpd-xmm0m128-rax-with-unmasked-imdm-exits).
+
+## S2-31dy — historical ZE admission for raw FSTP m80fp
+
+Only exact bare `DB 38` (`FSTP m80fp [RAX]`) admits historical ZE. Relax only
+the status gate from `FSW & 0x80c4 == 0` to `FSW & 0x80c0 == 0`, retaining SF,
+ES and B rejection. Preserve the existing FCW whitelist, accepted tag/class
+pairs, and checked ten-byte canonical48 span. The operation copies all ten
+source bytes unchanged, generates no conversion flags, and applies its current
+C1-clear rule. The all-or-error write completes before status, pop/TOP, tag,
+pointers, RIP, or retirement commit. Other x87 store paths are unchanged.
+
+Schema-v2 Unsupported validation for exact DB38 must use the updated predicate;
+ZE alone is no longer a valid rejection reason. Cover ZE plus all 32 histories
+of IE/DE/OE/UE/PE, ZE-only SNaN raw-payload preservation without new IE,
+source/tag/control refusals, write/range rollback, repeated store, and
+FNSTSW/FNCLEX. JIT/native execution remains denied; no ZE producer or SF
+admission is added. Native runtime and physical x86 acceptance remain deferred
+under ISSUE-019. Sticky status follows Intel SDM Rev. 093 Vol. 1 §8.1.3.3
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211)).
+See the [plan](../plans/STAGE_2.md#s2-31dy-admit-historical-ze-on-exact-raw-db38-fstp-m80fp).
+
+## S2-38r — exact MAXPD memory unmasked IM/DM
+
+The interpreter-only schema-v2 profile admits only exact Long64
+`66 0F 5F 00` (`MAXPD XMM0,m128 [RAX]`), budget one, and stop RIP `entry+4`.
+Full fetch and exact-form rejection precede SSE2/EM/OSFXSR #UD checks and the
+TS #NM check. Keep masked S2-37cz memory MAXPD and unmasked S2-38j register
+MAXPD separate. Require supported MXCSR mask `0xffbf`, reserved bits clear,
+DAZ=FTZ=0, ZM/OM/UM/PM masked; IM/DM/RC/prior sticky history may vary.
+
+RAX alignment is mandatory at 16 bytes regardless of RFLAGS.AC. Invalid
+alignment or checked canonical48 `[RAX,RAX+15]` span raises #GP(0) before a
+memory callback. A valid span receives one all-or-error `read16`; memory
+failure precedes lane classification and commits no architectural state.
+Both binary64 lanes use MAXPD semantics: ties and either NaN select raw memory
+source 2, preserving an SNaN payload. Collect raw IE/DE across lanes before
+the unmasked decision. An unmasked event commits every raw sticky event,
+selects #XM or arithmetic #UD from OSXMMEXCPT, and suppresses all XMM0/RIP
+updates and retirement. On masked completion, suppress DE only in a lane that
+also raised IE, then commit the full XMM0 and status atomically.
+
+The independent oracle must use raw integer classification/ordering and the
+actual memory RHS. Coverage includes the lane event product, MAX-vs-MIN
+discriminators, NaN payload and signed-zero ties, RC×64 sticky histories,
+aligned AC=0/1 accesses, fault precedence/callbacks, exact-form/fetch/gate
+ordering, schema/control tampering and backend rejection. JIT/native/C
+ABI/generic/fragment paths remain closed; no physical x86 acceptance is
+claimed. Sources: Intel SDM Rev. 093 Vol. 2B MAXPD pp. 4-5–4-7
+([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=13));
+Vol. 1 §§4.9.2, 11.5.3.1–3 and Appendix D
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211));
+Vol. 3A §16.1.3/Table 16-1. See the
+[plan](../plans/STAGE_2.md#s2-38r--exact-long64-maxpd-xmm0m128-rax-with-unmasked-imdm-exits).
