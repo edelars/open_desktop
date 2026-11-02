@@ -83,6 +83,7 @@ SELF_TEST_NAMES = (
     "test_s3_34ae_disp32_dword_store_boundary_gate_is_pinned_and_fail_closed",
     "test_s3_34af_dword_store_publication_gate_is_pinned_and_fail_closed",
     "test_s3_34ag_rip_relative_dword_load_gates_are_pinned_and_fail_closed",
+    "test_s3_34ah_rip_relative_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -616,6 +617,18 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34ag_host_rip_relative_disp32_dword_load_guest_next_rip", "local_acceptance", "od-host",
         "tests::s3_20cv_rip_relative_disp32_dword_load_uses_guest_next_rip",
+    ),
+    (
+        "s3_34ah_ir_dword_rip_relative_disp32_store_source_binding", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_rip_relative_disp32_store_binds_all_source_bytes_to_next_rip",
+    ),
+    (
+        "s3_34ah_ir_dword_rip_relative_disp32_store_pc_map_six_byte_boundary", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_rip_relative_disp32_store_pc_map_uses_six_byte_guest_boundary",
+    ),
+    (
+        "s3_34ah_host_rip_relative_disp32_dword_store_guest_next_rip", "local_acceptance", "od-host",
+        "tests::s3_20cw_rip_relative_disp32_dword_store_uses_guest_next_rip",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
