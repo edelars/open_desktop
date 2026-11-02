@@ -358,6 +358,23 @@ No separate canonical-end/range-overflow fixture was added for these forms;
 the shared preflight is unchanged and no runtime defect is claimed. See the
 [S3-20dh report](../reports/STAGE_3_S3-20dh_2026-11-02.md).
 
+#### S3-20di: exact address64 SIB Dword stores with signed disp8
+
+The shared typed-IR Dword-store path additionally admits exactly
+`89 44 0B ib`, `89 44 4B ib`, `89 44 8B ib`, and `89 44 CB ib`
+(`MOV [RBX+RCX*1/2/4/8+disp8],EAX`). Each is a four-byte singleton with
+full-width RBX base, full-width RCX index, the encoded scale, and signed
+disp8. Effective address calculation follows decoder-owned
+`access_address_48`. One contiguous checked four-byte write commits low32
+RAX; source registers and flags are preserved. All four scales × all 256 disp8 values bind the source bytes to their
+exact site; the PC map has the `A+4` boundary. The host fixture distinguishes
+a four-byte noncanonical-end crossing (`#GP`) from u64 range overflow
+(`AddressOverflow { address, length: 4 }`); neither invokes the writer or
+commits guest state. A valid adjacent write ending at the canonical boundary
+is also covered. Recorded fixtures cover STOP and budget behavior. This
+profile does not add other SIB/store forms. See the
+[S3-20di report](../reports/STAGE_3_S3-20di_2026-11-02.md).
+
 #### S3-20de: exact address64 SIB Dword store
 
 The shared typed-IR Dword-store path additionally admits only the exact
