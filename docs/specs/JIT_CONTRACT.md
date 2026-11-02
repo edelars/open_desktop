@@ -965,6 +965,23 @@ not replay it on re-entry at `A+7`. Other prefixes, scales, indexes, base
 forms, transfer widths, and neighboring encodings remain outside this exact
 admission. See the [S3-20ey report](../reports/STAGE_3_S3-20ey_2026-11-02.md).
 
+#### S3-20ez: exact address64 scaled RAX-indexed no-base SIB Dword loads
+
+The shared typed-IR Dword-load path admits only the exact seven-byte,
+unprefixed forms `8B 04 45/85/C5 disp32` (`MOV EAX,[RAX*scale+signed
+disp32]`), with no base, RAX index, and scale 2, 4, or 8. Address size is
+Qword and transfer width is Dword. The effective address is
+`(original_full64_RAX * scale + sign_extend(disp32)) mod 2^64`; both
+multiplication and addition wrap, and the calculation uses the original RAX
+before EAX writeback. One contiguous checked four-byte read writes EAX and
+zero-extends RAX; other GPRs and RFLAGS are preserved, and successful
+retirement commits `A+7`. Entry guards, architectural faults, and backend
+errors before commit preserve CPU state and RIP; a retry uses the original
+RAX. Noncanonical addresses produce guest `#GP`, while checked range overflow
+remains a memory-operation error. Other scales, indexes, base forms, prefixes,
+transfer widths, and neighboring encodings remain outside this exact
+admission. See the [S3-20ez report](../reports/STAGE_3_S3-20ez_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
