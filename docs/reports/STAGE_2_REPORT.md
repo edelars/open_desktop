@@ -21751,3 +21751,12 @@ pointer and two absent historical oracle manifests already tracked as ISSUE-023;
 the main checkout layout check passes. Independent Sol/high review is clean; it found no remaining concrete correctness
 or schema issues. No physical x86 acceptance is claimed. Source: Intel SDM Rev. 093 Vol. 2A DIVSD pp. 3-273–3-274; Type 3 is
 VEX-only. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dp--masked-only-long64-divsd-xmm0m64-rax), [plan](../plans/STAGE_2.md#s2-37dp--masked-only-legacy-long64-divsd-xmm0m64-rax), and [standalone report](S2_37DP_DIVSD_MEMORY.md).
+
+## Main integration: S2-30cy + S2-37dp
+
+После переноса обоих срезов и clean Sol/high reviews в main прошли `od-isa`
+1,831, `od-testkit` 455, runner 118 unit + 496 fixture, `od-x86-runner` 8
+library + 4 binary tests. Workspace all-target offline check, formatting,
+layout и `git diff --check` прошли. Graphify AST refresh завершился с 11,397
+nodes, 24,698 edges и 326 communities. В runner DIVSD проверены 6,144 raw-oracle
+комбинации; физическая x86-проверка не выполнялась.
