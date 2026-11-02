@@ -435,6 +435,7 @@ impl PublishedCode {
                 && source[..2] == [0x89, 0x84]
                 && matches!(source[2], 0x0b | 0x4b | 0x8b | 0xcb))
             && !(source.len() == 7 && source[..3] == [0x89, 0x04, 0x25])
+            && !(source.len() == 7 && source[..3] == [0x89, 0x04, 0x05])
             && !(source.len() == 7
                 && source[..2] == [0x89, 0x04]
                 && matches!(source[2], 0x0d | 0x4d | 0x8d | 0xcd))
@@ -99729,7 +99730,6 @@ mod tests {
             ENTRY,
         )
         .unwrap();
-        let published = PublishedCode::publish_ir_memory_dword_store_v2(&base_block).unwrap();
 
         for (rax, displacement, effective_address) in [
             (0x0000_0001_0000_1005_u64, -4, 0x0000_0001_0000_1001_u64),
@@ -99782,7 +99782,10 @@ mod tests {
             assert_eq!(native_ram.bytes, interpreter_ram.bytes);
             assert_eq!(native_ram.writes, interpreter_ram.writes);
             assert_eq!(native_ram.writes[0].1.len(), 4);
+            drop(published_case);
         }
+
+        let published = PublishedCode::publish_ir_memory_dword_store_v2(&base_block).unwrap();
 
         let before = state_at(0x0000_0001_0000_1005);
         for (budget, stop_rip, stop_requested, expected_exit) in [
@@ -99923,10 +99926,11 @@ mod tests {
             Err(MemoryOperationExecutionErrorV2::MemoryError(
                 MemoryOperationMemoryErrorV2 {
                     kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
-                    address: u64::MAX - 2,
+                    address: overflow_address,
                     length: 4,
                 }
             ))
+                if overflow_address == u64::MAX - 2
         ));
         assert_eq!(overflow_state, overflow_before);
         assert!(overflow_ram.writes.is_empty());
