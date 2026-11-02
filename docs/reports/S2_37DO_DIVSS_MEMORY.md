@@ -19,4 +19,4 @@ No physical x86 acceptance is claimed. See the [Stage 2 plan](../plans/STAGE_2.m
 - `cargo fmt --all -- --check` and `git diff --check`: passed.
 - `graphify update .`: 11,405 nodes, 24,567 edges, 362 communities.
 - `python3 tools/check_layout.py` reports the isolated-worktree `.git` pointer and two absent historical `work/stage*-oracle` manifest links. These are isolated-worktree environment findings outside the slice.
-- Independent Sol/high review: pending.
+- Independent Sol/high review: clean after closing the backend relabeling gap (`3428066`) and correcting the DIVSS source citations (`ea1e143`).
