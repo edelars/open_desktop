@@ -277,6 +277,20 @@ instruction site. This does not admit other addr32 bases, displacement widths,
 or prefix combinations. See the
 [S3-20da report](../reports/STAGE_3_S3-20da_2026-11-02.md).
 
+#### S3-20dl: exact address-size-32 SIB Dword loads
+
+The shared typed-IR Dword-load path additionally admits exactly the four
+four-byte singleton forms `67 8B 04 0B`, `67 8B 04 4B`, `67 8B 04 8B`, and
+`67 8B 04 CB` (`MOV EAX,[EBX+ECX*1/2/4/8]`). The decoder-owned address-size-32
+effective address adds low32 EBX to low32 ECX multiplied by the SIB scale,
+wraps the result to 32 bits, and zero-extends it before canonical-address
+checking. Each operation performs one checked contiguous four-byte read; the
+recorded boundary fixture covers the 4-GiB address boundary. Writing EAX
+zero-extends into RAX. Source/site binding distinguishes the prefix and scale;
+the PC map has the `A+4` guest boundary. Recorded fixtures cover fault, STOP,
+and budget behavior. Other addr32 SIB and displacement forms remain outside
+this profile. See the [S3-20dl report](../reports/STAGE_3_S3-20dl_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
