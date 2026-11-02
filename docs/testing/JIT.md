@@ -921,6 +921,32 @@ fixes; that review is not execution evidence. ISSUE-028 remains unchanged;
 Stage 2 was excluded, Mini/M1 are deferred, and Stage 3 remains partial. See
 the [S3-34cu report](../reports/STAGE_3_S3-34cu_2026-11-02.md).
 
+## S3-20fj: exact address32 RAX-alias Dword load
+
+Run the exact gates:
+
+```sh
+cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_addr32_alias_load_binds_all_source_bytes_to_its_site -- --exact --test-threads=1
+cargo test --offline -p od-host --lib tests::s3_20fj_addr32_alias_dword_load_uses_original_eax -- --exact --test-threads=1
+```
+
+Admit only the three-byte singleton `67 8B 00` (`MOV EAX,[EAX]`). The
+effective address is zero-extended low32 of pre-instruction RAX; because EAX
+is also the destination, its old value supplies the address before the
+four-byte checked read commits and zero-extends the loaded value to RAX.
+Successful retirement advances RIP to `A+3`; other GPRs and RFLAGS are
+preserved. S3-34cu pins these exact JIT source/site and host identities.
+
+Runtime source `b1aa25d` passed independent Sol/high static review after host
+fixture/retry fixes. Reviewed coverage includes interpreter parity, high-half
+truncation, unaligned reads, end-of-32-bit-space addresses, a single width-4
+read, fault/backend no-commit and retry, entry/budget/stop guards, and
+committed callback STOP without replay. No behavior tests, builds, formatting,
+Cargo checks, or Python harness ran; exact gates remain pending. ISSUE-028 is
+unchanged; Stage 2 was excluded; Mini/M1 are deferred; Stage 3 remains partial.
+See the [S3-20fj report](../reports/STAGE_3_S3-20fj_2026-11-02.md) and
+[S3-34cu harness report](../reports/STAGE_3_S3-34cu_2026-11-02.md).
+
 ## S3-20fi: exact address64 RAX-base Dword store with signed disp32
 
 Run the exact gates:

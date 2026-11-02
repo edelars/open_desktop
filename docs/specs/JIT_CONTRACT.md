@@ -1162,6 +1162,26 @@ memory error. Callback STOP follows the committed store, and re-entry at
 not production owner/MMU integration. See the
 [S3-20fi report](../reports/STAGE_3_S3-20fi_2026-11-02.md).
 
+#### S3-20fj: exact address32 RAX-alias Dword load
+
+The shared typed-IR Dword-load path admits only the exact three-byte
+singleton `67 8B 00` (`MOV EAX,[EAX]`): address size Dword, transfer width
+Dword, RAX selected as both the address base and load destination. The
+effective address is the zero-extended low32 of pre-instruction RAX. The
+load uses that original low32 value before EAX is replaced; one contiguous
+checked four-byte read zero-extends the loaded value into RAX. Other GPRs and
+RFLAGS remain unchanged, and successful retirement commits `A+3`.
+
+The exact three source bytes and decoded site metadata remain bound. Prefixes,
+other opcodes, ModRM forms, address sizes, transfer widths, partial/trailing
+instructions, and non-alias data/base forms are outside admission. Entry
+STOP, stop-address, and exhausted-budget guards perform no read. Architectural
+faults and backend errors leave CPU state unchanged; retry begins at the same
+RIP/address. A callback STOP follows the committed load, and re-entry at
+`A+3` does not read again. This is borrowed-memory fixture evidence, not
+production owner/MMU integration. See the
+[S3-20fj report](../reports/STAGE_3_S3-20fj_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
