@@ -33,6 +33,18 @@ resolved as test-artifact setup and did not require a product-code change. No
 broad performance, PC-map, owner/MMU, or physical-hardware claim follows. See
 the [S3-20ec report](STAGE_3_S3-20ec_2026-11-02.md).
 
+S3-20ed adds the exact address64 RSP+signed-disp32 dword load `8B 84 24 id`.
+The JIT source/site fixture covers nine representative signed values and
+mutations to all four displacement bytes; the host fixture checks interpreter
+parity, width-four reads, faults, overflow/backend atomicity, STOP, and
+no-replay. On author revision `c9530b1`, `od-jit` passed 342/342 and adjacent
+S3-20dz/S3-20eb host gates passed 1/1. After integration as `238799d`, the
+new exact JIT/host gates passed 1/1 and the full Python harness passed 88/88.
+Full `od-host` was not run. This bounded fixture does not establish a broad
+PC-map or performance result. See the
+[S3-20ed report](STAGE_3_S3-20ed_2026-11-02.md).
+
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20

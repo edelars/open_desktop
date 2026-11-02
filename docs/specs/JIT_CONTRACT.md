@@ -621,6 +621,26 @@ committed `A+4` without a second write. The fixture does not establish MMIO,
 SMC, owner/MMU integration, general address forms, hardware behavior, or
 performance. See the [S3-20ec report](../reports/STAGE_3_S3-20ec_2026-11-02.md).
 
+#### S3-20ed: exact RSP-base Dword load with signed disp32 through SIB
+
+The typed-IR Dword-load path admits only the exact seven-byte singleton
+`8B 84 24 id` (`MOV EAX,[RSP+disp32]`): address64 SIB, full-width RSP base,
+no index, scale 1, and signed disp32. The decoder-owned effective address
+adds sign-extended disp32 to RSP with wrapping u64 arithmetic. A successful
+checked load performs one contiguous four-byte read, zero-extends EAX into
+RAX, and commits guest RIP to `A+7`.
+
+The JIT fixture covers nine representative signed disp32 values, mutates each
+of the four displacement bytes, and verifies source/site identity and the
+single-instruction PC-map boundary; it does not enumerate all 2^32 encodings
+or claim a separate published-map integration gate. The host fixture checks
+native/interpreter parity, one width-four read, negative displacement and
+wrap-to-zero cases, RSP `#SS` versus an RBX `#GP` control, width-four overflow
+and backend-read-error atomicity, STOP/budget behavior, and retry at committed
+`A+7` without a second read. This does not establish production owner/MMU,
+MMIO/SMC, physical-hardware, or performance behavior. See the
+[S3-20ed report](../reports/STAGE_3_S3-20ed_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
