@@ -11,7 +11,8 @@ The existing twelve all-exception-masked PC24/53/64 FCWs, selectors, FSW mask,
 Valid tags, Normal result requirement, sticky PE, local pre-carry C1 diagnostic,
 TOP/tags/source bytes and unrelated state behavior remain in force. Alias
 cancellation, overflow and unsupported outcomes reject atomically. `DC E0..E7`
-FSUBR and `DE E8..EF` FSUBP retain their gap-64 limit. The register instruction
+FSUBR retains its gap-64 limit. At the time of this slice `DE E8..EF` FSUBP
+also retained that limit; S2-30dm later extends that distinct pop form. The register instruction
 performs no data access. JIT/native admission and physical x86 acceptance
 remain closed.
 

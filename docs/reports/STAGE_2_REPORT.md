@@ -5423,14 +5423,16 @@ uses the same twelve all-masked FCWs, absent selectors, clean required FSW
 bits, Valid canonical nonzero Normal operands/results and snapshot-before-
 commit behavior. It writes old physical `(TOP+i)&7`, empties old TOP and then
 increments TOP; PE remains sticky and C1 is replaced from the helper diagnostic.
-Overflow is refused atomically. Other DC and FSUBP paths, arithmetic helpers,
+Overflow is refused atomically. Other DC and FSUBP paths were unchanged in this
+slice; S2-30dm later extends only `DE E8..EF` FSUBP. Arithmetic helpers,
 JIT/native admission and exception delivery remain unchanged.
 
 The independent raw-integer oracle covers gaps 65/66/32765, both signs and
 operand placements, all twelve FCWs, and TOP/index wrap cases (1,152 matrix
 executions). Additional cases cover retained gap-64 behavior, the i=0 alias,
 old physical result/pop ordering, maximum-exponent overflow rollback, DC
-large-gap acceptance and FSUBP large-gap refusal. The literal
+large-gap acceptance and the then-current FSUBP gap-65 refusal control. The
+later S2-30dm slice extends only `DE E8..EF` FSUBP. The literal
 [`DE C1` gap-65 fixture](../../tests/fixtures/x86/stage2/s2_30dh_faddp_sti_st0_gap65_up.case.json)
 checks the complete interpreter snapshot and JIT denial.
 
@@ -21828,7 +21830,8 @@ remain atomic. Native/JIT and general x87 exception delivery remain closed.
 
 Direct ISA coverage checks 10,752 combinations across FCW, TOP/index, signs
 and incoming PE/C1; alias refusal spans all 12 FCWs and TOP values, gap 64
-succeeds and gap 65 refuses. A second 2,688-case matrix uses explicit expected
+succeeds and gap 65 was refused in this initial bounded slice; S2-30dm later
+extends the same form through gap 32765. A second 2,688-case matrix uses explicit expected
 bytes to check odd 65-bit coefficient rounding across FCWs and TOP/index
 pairs. The handwritten PC24 midpoint fixture checks the full post-state,
 exception observation and unchanged memory; its runner test also checks JIT
@@ -22303,8 +22306,8 @@ Extended only bare `DC E8..EF` to normalized Normal operand exponent gaps
 original physical operands are validated before the local ST(0) sign flip.
 Gap≤64 behavior, the old physical ST(i) destination, no-pop semantics, FCW
 precision/rounding, sticky PE and local C1 handling are preserved. `DC E0..E7`
-FSUBR and `DE E8..EF` FSUBP remain capped at gap 64; alias cancellation and
-unsupported outcomes remain atomic. JIT/native and physical x86 acceptance
+FSUBR remains capped at gap 64; S2-30dm separately extends `DE E8..EF` FSUBP.
+Alias cancellation and unsupported outcomes remain atomic. JIT/native and physical x86 acceptance
 remain closed.
 
 The independent integer oracle covers gaps 64/65/66/32765, all twelve FCWs,
@@ -22430,3 +22433,36 @@ S2-30dl enables large-gap admission only for `DC E0..E7`, leaving its `DE`
 FSUBRP neighbor bounded. No physical x86 acceptance was run. ISSUE-025 remains
 open for RCPSS/RCPPS threshold ambiguity; RSQRTSS has a separate local `3/8192`
 error envelope and no hardware bit-equality claim. Stage 2 remains open.
+
+<a id="s2-30dm--large-gap-fsubp-sti-st0"></a>
+
+## S2-30dm — large-gap `FSUBP ST(i), ST(0)`
+
+Extended only bare Long64 `DE E8..EF` from S2-30db to normalized
+Normal-to-Normal exponent gaps 65..32765 through the existing S2-29af
+direct-addition precision helper. Gap≤64 behavior is retained. The old S2-30j
+exact p64 fallback is constrained to its prior gap≤64 domain, so a failed
+large-gap helper preflight cannot reach the exact path. The implementation
+keeps all FCW/FSW/selector/tag/Normal-result gates, validates both source
+operands, computes old `ST(i)-ST(0)`, and writes the old physical destination
+before emptying old TOP and advancing TOP. PE is sticky, C1 follows the helper's
+pre-carry diagnostic, and all unsupported states refuse atomically. `DE E0..E7`
+FSUBRP and the DC/D8 neighbors remain unchanged. No physical x86 acceptance is
+claimed.
+
+An independent signed-integer oracle covers 86,016 full-state executions
+across gaps 64/65/66/32765, all twelve FCWs, operand placements, four sign
+pairs, every TOP/index pair and both prior PE/C1 values. Alias, helper refusal,
+fetch/STOP/budget boundaries, destination-before-pop and no-data-access
+behavior are covered. The literal `DE E9` gap-65 fixture compares the full
+post-state, exception observation and unchanged code memory; runner verifies
+JIT denial. Focused FSUBP tests passed 9/9. The full affected suites passed:
+`od-isa` 1,889, `od-testkit` 455, runner 125 unit + 517 fixtures. Workspace
+all-target offline check, rustfmt, diff check and Graphify update passed;
+Graphify is 11,827 nodes / 25,484 edges / 382 communities (community labels
+were not refreshed because no Graphify LLM API key is configured). Layout reports only
+the isolated `.git` marker and two unavailable historical oracle manifests
+already tracked in ISSUE-023. Independent Sol/high review is pending. See the
+[standalone report](S2_30DM_X87_FSUBP_LARGE_GAPS.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8-ef),
+[plan](../plans/STAGE_2.md#s2-30dm-large-gap-fsubp-sti-st0-admission), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture).

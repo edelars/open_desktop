@@ -46,6 +46,8 @@ const FADD_STI_ST0_GAP65: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30dg_fadd_sti_st0_gap65_up.case.json");
 const FADDP_STI_ST0_GAP65: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30dh_faddp_sti_st0_gap65_up.case.json");
+const FSUBP_STI_ST0_GAP65: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30dm_fsubp_sti_st0_gap65_down.case.json");
 const FSUBR_STI_ST0_GAP65: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30dl_fsubr_sti_st0_gap65_up.case.json");
 const CMPSS_REGISTER_PAIRS: &[u8] =
@@ -3944,6 +3946,43 @@ fn s2_30db_fsubp_fixture_checks_rounded_pop_state_and_jit_denial() {
     }
 
     let (_, jit) = run(FSUBP_PC24_INEXACT, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(jit.backend, Backend::Jit);
+    assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));
+}
+
+#[test]
+fn s2_30dm_fsubp_large_gap_fixture_checks_full_state_and_jit_denial() {
+    let (input, result) = run(FSUBP_STI_ST0_GAP65, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[0] = "0000000000000080ffbf".into();
+    expected_x87.status_word = HexU64(0x0220);
+    expected_x87.tag_word = HexU64(0xfffc);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+
+    let observed = snapshot(&result);
+    assert_eq!(observed.state, expected);
+    assert_eq!(observed.exception, Observation::Available { value: None });
+    for region in &observed.memory {
+        let before = input
+            .fixture
+            .memory
+            .iter()
+            .find(|entry| entry.region_id == region.region_id)
+            .unwrap();
+        assert_eq!(
+            region.bytes_hex, before.initial_bytes_hex,
+            "{}",
+            region.region_id
+        );
+    }
+
+    let (_, jit) = run(FSUBP_STI_ST0_GAP65, "jit", 4);
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
     assert_eq!(jit.backend, Backend::Jit);
     assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));

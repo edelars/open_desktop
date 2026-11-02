@@ -21,7 +21,8 @@ It covers 1,152 combinations across gaps 65/66/32765, twelve FCWs, signs,
 operand placement, representative TOP/index wrap cases, and the lowest
 possible Normal result exponent for the large-gap domain. Additional cases cover
 gap 64 and gap 65 boundaries, i=0 alias/pop ordering, overflow rollback, DC
-large-gap FADD acceptance, and FSUBP large-gap refusal. The literal
+large-gap FADD acceptance, and the then-current FSUBP gap-65 refusal control.
+S2-30dm later extends only `DE E8..EF` FSUBP. The literal
 [`DE C1` fixture](../../tests/fixtures/x86/stage2/s2_30dh_faddp_sti_st0_gap65_up.case.json)
 uses actual `2^-65` input bytes and checks complete state plus JIT denial.
 

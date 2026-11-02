@@ -21,7 +21,8 @@ x86 acceptance remain unsupported.
   10,752 combinations across all twelve FCWs, eight TOP values, destination
   indices 1–7, four operand sign pairs, and incoming PE/C1 histories. Alias
   cancellation is atomic for every TOP/FCW pair; normalized gap 64 succeeds
-  and gap 65 refuses atomically. An independent expected-byte matrix covers
+  and gap 65 refused atomically in this initial bounded slice. S2-30dm later
+  extends the form through gap 32765. An independent expected-byte matrix covers
   the formerly exact-only odd 65-bit coefficient rounding across all FCWs,
   TOP/index pairs and incoming PE/C1 histories (2,688 combinations).
 - Neighbor ISA filters passed: `fsub` 41, `fsubr` 17, `faddp` 7 and `fmulp` 3.

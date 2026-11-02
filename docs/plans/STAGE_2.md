@@ -230,6 +230,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cz | Bare `DE C0..C7` FADDP ST(i),ST(0), bounded FCW precision for normalized gap≤64; physical destination then TOP pop; Normal result, sticky PE and local C1; JIT/native closed | Focused ISA 7; 3,072-case matrix; combined main: od-isa 1,837 / od-testkit 455 / runner 119+497 / x86-runner 8+4, workspace check, fmt/diff/layout and Graphify; independent Sol/high review clean; no physical x86 check |
 | [x] | S2-30da | Bare `DE C8..CF` FMULP ST(i),ST(0), bounded FCW precision for Normal operands/results, write old physical destination before TOP pop, sticky PE and C1; exact p64 domain retained; JIT/native closed | Integrated main: od-isa 1,841; od-testkit 455; runner 119+499; x86-runner 8+4; workspace check, fmt/diff/layout, Graphify; static fixture runner verifies complete state/exception/memory; Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-30db | Bare `DE E8..EF` FSUBP ST(i),ST(0), bounded FCW precision with normalized gap≤64; old exact p64 domain retained; old physical destination before TOP pop; sticky PE/C1; JIT/native closed | Integrated main: od-isa 1,845; testkit 455; runner 119+501; x86-runner 8+4; workspace check/fmt/diff/layout; focused FSUBP 7 and 2,688-case odd coefficient matrix; independent Sol/high review clean; no physical x86 acceptance |
+| [ ] | S2-30dm | Bare `DE E8..EF` FSUBP extends normalized Normal gaps 65..32765 through S2-29af; retain gap≤64/exact fallback, physical destination then pop, sticky PE/C1 and atomic refusal; JIT/native closed | 86,016-case independent oracle; focused FSUBP 9; od-isa 1,889, testkit 455, runner 125+517; workspace check/fmt/diff and Graphify 11,827/25,484/382 passed; labels not refreshed without Graphify API key; layout only existing `.git`/ISSUE-023 caveats; independent Sol/high review pending; no physical x86 acceptance |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11744,8 +11745,8 @@ local copy. Retain twelve all-exception-masked FCWs, selectors/FSW gates,
 Valid tags, canonical nonzero Normal operands, Normal results, sticky PE and
 the existing C1 diagnostic. Write old physical ST(i), do not pop, and preserve
 all unrelated state. Alias cancellation, overflow and unsupported results
-remain atomic. `DC E0..E7` FSUBR and `DE E8..EF` FSUBP remain gap≤64; JIT,
-native and physical-x86 acceptance stay closed.
+remain atomic. `DC E0..E7` FSUBR remains gap≤64; S2-30dm separately extends
+`DE E8..EF` FSUBP. JIT, native and physical-x86 acceptance stay closed.
 
 Cover gaps 64/65/66/32765 with an independent integer oracle across FCWs,
 rounding modes, operand signs/orders and TOP/index; test atomic alias and
@@ -11756,6 +11757,35 @@ Normative opcode semantics: Intel SDM Rev. 093 Vol. 2A `FSUB/FSUBP/FISUB`,
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dk-large-gap-fsub-sti-st0-dc-e8ef),
 [standalone report](../reports/S2_30DK_X87_FSUB_LARGE_GAPS.md), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dk-large-gap-reverse-destination-fsub-fixture).
+
+#### S2-30dm. Large-gap `FSUBP ST(i), ST(0)` admission
+
+Extend only exact bare Long64 `DE E8..EF` from S2-30db to normalized
+Normal-to-Normal exponent gaps 65 through 32765, using the explicit
+large-gap option on the existing S2-30cv subtraction path and S2-29af
+direct-addition precision helper. Preserve gap≤64 results and S2-30j's exact
+p64 fallback. The fallback is available only when the validated normalized
+gap is at most 64, so a refused large-gap candidate cannot fall through to the
+old exact path. `DE E0..E7` FSUBRP, `DC E8..EF` FSUB, and `D8` neighbors remain
+unchanged.
+
+Keep present x87 state, absent FCS/FDS selectors, twelve all-masked PC24/53/64
+FCWs, `FSW & 0x80df == 0`, Valid tags, canonical nonzero Normal operands and
+Normal results. Validate both original operands and compute old `ST(i)-ST(0)`;
+do not mutate the source sign. On success, write old physical `(TOP+i)&7`
+before marking old TOP Empty and incrementing TOP. PE remains sticky and C1 is
+replaced by the helper's pre-carry `incremented` diagnostic. Alias cancellation,
+malformed operands and unsupported helper/range outcomes remain atomic.
+No data-memory access occurs. JIT/native, general x87 exception delivery and
+physical x86 acceptance remain closed.
+
+Cover gaps 64/65/66/32765 with an independent signed-integer oracle across all
+twelve FCWs, both operand orders, all sign pairs, every TOP/index placement
+and prior PE/C1 histories. Include alias, refusal/no-commit and old-destination
+before-pop checks, plus a literal actual-operand runner fixture comparing full
+state and denying JIT. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8-ef),
+[standalone report](../reports/S2_30DM_X87_FSUBP_LARGE_GAPS.md), and [fixture
+notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture).
 
 #### S2-30dc. Bare `FSUBRP ST(i), ST(0)` with bounded FCW precision
 

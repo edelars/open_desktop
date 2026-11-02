@@ -1464,8 +1464,9 @@ is Linux-only and did not execute on the macOS validation host. ISA raw-integer
 coverage spans gaps 65, 66 and 32765, both operand
 placements/signs, all twelve masked FCWs, alias behavior and overflow rollback.
 Gap≤64 behavior is retained; the `DC` reverse FADD neighbor and unsupported
-overflow cases remain unchanged. This is interpreter evidence only, not
-physical x86 acceptance.
+overflow cases remain unchanged. At that stage `DE E8..EF` FSUBP still had its
+gap-64 limit; S2-30dm extends that form separately. This is interpreter
+evidence only, not physical x86 acceptance.
 
 ### S2-30df large-gap FADD fixture coverage
 
@@ -1554,6 +1555,19 @@ unchanged memory and JIT denial. Direct ISA coverage spans all twelve FCWs,
 every TOP/index pair, operand signs and prior PE/C1 histories. Native x87 and
 general exception delivery remain unsupported; no physical x86 acceptance is
 claimed.
+
+### S2-30dm large-gap FSUBP fixture coverage
+
+`s2_30dm_fsubp_sti_st0_gap65_down.case.json` is a literal `DE E9` schema-v2
+case with ST(0)=+1 and actual Normal ST(1)=`0000000000000080be3f` (`2^-65`).
+With PC24 and round-toward-negative, it checks the rounded negative result,
+sticky PE/C1, old physical destination write, old TOP emptying, TOP advance
+and FIP. The runner compares complete CPU state, exception observation and
+unchanged code memory, then confirms JIT denial. Direct ISA coverage spans
+gaps 64/65/66/32765, all twelve FCWs, both operand orders, all sign pairs,
+every TOP/index placement and both prior PE/C1 histories. Alias cancellation
+and a large-gap helper refusal are atomic. `DE E0..E7` FSUBRP and the `DC` and
+`D8` neighbors remain unchanged; no physical x86 acceptance is claimed.
 
 ### S2-30q x87 schema coverage
 

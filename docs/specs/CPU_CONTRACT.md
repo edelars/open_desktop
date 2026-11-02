@@ -2939,8 +2939,9 @@ The runner's static PC24 inexact fixture checks the complete resulting CPU
 state, exception observation and unchanged memory. The direct ISA matrix
 covers all twelve FCWs, every TOP/index placement, four sign pairs and old
 PE/C1 histories. Alias cancellation is atomic for all TOP/FCW pairs; gap 64
-is admitted and gap 65 is rejected. Existing DE decoder/schema coverage
-remains in force.
+is admitted and gap 65 was rejected in the original S2-30db scope; S2-30dm
+extends the same bare form through gap 32765. Existing DE decoder/schema
+coverage remains in force.
 Normative source: Intel SDM revision 093, Vol.2A, “FSUB/FSUBP/FISUB—Subtract,”
 pp.3-394–3-396
 ([official PDF, Vol.2A p.3-394](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512));
@@ -2950,6 +2951,34 @@ Vol.1 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp.8-7–8-8 and 8-30
 [plan](../plans/STAGE_2.md#s2-30db-bare-fsubp-sti-st0-with-bounded-fcw-precision),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30db--bounded-fsubp-sti-st0), and
 [standalone report](../reports/S2_30DB_X87_FSUBP_PRECISION.md).
+
+## Local S2-30dm: large-gap `FSUBP ST(i), ST(0)` (`DE E8+i`)
+
+Extend only exact bare Long64 `DE E8..EF` from S2-30db to normalized
+Normal-to-Normal exponent gaps 65 through 32765 through the existing S2-29af
+direct-addition precision helper. Keep all S2-30db FCW, FSW, selector, tag,
+operand and Normal-result gates. Validate both original operands and compute
+old `ST(i)-ST(0)` without changing guest source bytes. The old S2-30j exact p64
+fallback remains available only for normalized gaps at most 64; a large-gap
+helper refusal cannot fall through to that exact path. The old gap≤64 results
+and state changes are preserved.
+
+On success, write old physical `(TOP+i)&7` before emptying old TOP and advancing
+TOP modulo eight. PE is old PE OR `inexact`; C1 is replaced from the helper's
+pre-carry magnitude `incremented` diagnostic. Preserve C0/C2/C3 under the
+existing local policy and retain all other state; set FIP to old RIP, advance
+RIP by two, retire once and perform no data-memory access. `i=0` cancellation,
+malformed operands and unsupported arithmetic results refuse atomically. The
+`DE E0..E7` FSUBRP and `DC`/`D8` neighbors are unchanged. JIT/native execution,
+general x87 exception delivery and physical x86 acceptance remain closed.
+
+The independent integer oracle covers gaps 64/65/66/32765, all twelve FCWs,
+both operand placements, four sign pairs, all TOP/index combinations and old
+PE/C1 histories. Literal runner coverage checks the entire post-state,
+exception observation, unchanged code memory and JIT denial. See the [plan](../plans/STAGE_2.md#s2-30dm-large-gap-fsubp-sti-st0-admission),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30dm--large-gap-fsubp-sti-st0),
+[standalone report](../reports/S2_30DM_X87_FSUBP_LARGE_GAPS.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture).
 
 ## Local S2-30q: exact-only `FDIV ST(0), ST(i)` (`D8 F0+i`)
 
@@ -9856,8 +9885,8 @@ Success writes only old physical `(TOP+i)&7`; PE remains sticky and is set for
 inexact results, C1 is replaced from the helper's pre-carry magnitude
 diagnostic, and C0/C2/C3 follow the existing local policy. TOP, tags, source
 bytes and unrelated state remain unchanged; FIP receives old RIP, RIP advances
-by two, and no data access occurs. The `DC E0..E7` reverse FSUBR and `DE E8..EF`
-FSUBP forms remain capped at their existing gap≤64 domain. JIT/native,
+by two, and no data access occurs. The `DC E0..E7` reverse FSUBR remains capped
+at its existing gap≤64 domain; `DE E8..EF` FSUBP is extended in S2-30dm. JIT/native,
 general x87 exception delivery and physical x86 acceptance remain closed.
 
 Coverage checks gaps 64/65/66/32765 against an independent integer rounding
