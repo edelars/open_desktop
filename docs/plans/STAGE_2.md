@@ -11563,7 +11563,7 @@ slice.
 Check TOP/index, all twelve FCWs, signs and sticky PE/C1 histories, literal
 PC24/53/64 1/3 in all rounding modes, alias, exact quotients, exponent gap
 above 64, range and rounding boundaries, and fetch/retirement/full-state
-refusal behavior. Intel SDM Rev. 093 Vol. 2A `FDIV/FIDIV` pp. 3-333–3-335;
+refusal behavior. Intel SDM Rev. 093 Vol. 2A `FDIVR/FIDIVR` pp. 3-336–3-338;
 Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cy-bounded-fdivr-sti-st0-dc-f0-f7),
 [report](../reports/STAGE_2_REPORT.md#s2-30cy--bounded-fdivr-sti-st0), and
 [standalone report](../reports/S2_30CY_X87_FDIVR_REVERSE_PRECISION.md).
