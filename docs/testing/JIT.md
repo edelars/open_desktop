@@ -421,6 +421,12 @@ The required Python self-test is `test_s3_34bw_absolute_sib_disp32_dword_load_ga
 
 This slice records harness validation only. It does not claim runtime behavior, an executed exact Cargo gate, a root full-suite result, or a full `od-host` suite. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-34bw report](../reports/STAGE_3_S3-34bw_2026-11-02.md).
 
+## S3-34bx: exact harness gates for S3-20em absolute SIB disp32 Dword store
+
+Harness source commit `b165126c83378cbc69168f5201dc3ddabd340d48`, integrated as `a70a022`, pins exactly `memory_load_v2::tests::ir_dword_absolute_sib_disp32_store_binds_all_source_bytes_to_its_site` and `tests::s3_20em_absolute_sib_disp32_dword_store_uses_signed_absolute_address` as exact `od-jit --lib` and `od-host --lib` acceptance gates. Their reproduction commands are `cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_absolute_sib_disp32_store_binds_all_source_bytes_to_its_site -- --exact --test-threads=1` and `cargo test --offline -p od-host --lib tests::s3_20em_absolute_sib_disp32_dword_store_uses_signed_absolute_address -- --exact --test-threads=1`; neither gate was run for this harness slice.
+
+The static manifest reports 222 Rust gates (212 acceptance, 10 lifecycle) and 240 local steps. Independent Sol/high harness review passed. No Python harness validation, Cargo test, or runtime gate was run for this slice under the Mini deferral. Runtime source commit `c6149ae34f9b74516f301ab6016f8f87d9def24a` was integrated later as `5d8e9ac`; this does not change the harness evidence, and no runtime gate pass is claimed. ISSUE-028 remains open. Stage 3 remains partial. See the [S3-34bx report](../reports/STAGE_3_S3-34bx_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
