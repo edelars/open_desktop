@@ -1098,7 +1098,7 @@ fn is_checked_dword_load_address(
         && operand.address_size == od_isa::OperandSize::Qword
         && matches!(operand.base, AddressBase::None)
         && operand.index == Some(od_isa::Register::Rcx)
-        && operand.scale == 1
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
         && i32::try_from(operand.displacement).is_ok();
     let address32_profile = operand.address_size == od_isa::OperandSize::Dword
         && ((matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
