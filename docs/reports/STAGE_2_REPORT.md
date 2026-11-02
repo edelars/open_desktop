@@ -22316,15 +22316,13 @@ confirms JIT denial. Verification and review results are recorded in the
 [plan](../plans/STAGE_2.md#s2-30dk-large-gap-fsub-sti-st0-admission), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dk-large-gap-reverse-destination-fsub-fixture).
 
-<a id="main-integration-s2-30dj-s2-37ea-s2-30dk"></a>
-
 ## S2-37eb — RSQRTSS XMM0,m32 [RAX]
 
 Added exact legacy `F3 0F 52 00` as a separate interpreter-only schema-v2
 profile. Final isolated suites passed: od-isa 1,885; od-testkit 455; runner 125
 unit + 515 fixture tests; workspace all-target offline check, formatting and diff
 check passed. Layout reported only the pre-existing `.git` worktree marker and
-two ISSUE-023 historical manifest links. Independent review remains pending. It uses one unaligned m32 read when AC=0, but AC=1 is a local
+two ISSUE-023 historical manifest links. AC=1 is a local
 Unsupported refusal before address checks or data callbacks. SSE/CR0/CR4/TS and
 strict masked MXCSR admission follow the adjacent scalar approximation profiles.
 Success applies `Binary32::reciprocal_sqrt_sse_raw()` to memory only, replaces
@@ -22337,6 +22335,15 @@ vectors and no-commit results. AC=1 plus noncanonical RAX versus AC=0 at the
 same address also remains covered. JIT, native, generic, fragment, C ABI and
 physical acceptance remain closed. Validation details are in the [standalone
 report](S2_37EB_RSQRTSS_MEMORY.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37eb-memory-rsqrtss-at-rax), [plan](../plans/STAGE_2.md#s2-37eb--local-long64-memory-legacy-rsqrtss-at-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37eb-local-legacy-rsqrtss-memory-profile).
+
+Independent Sol/high review first found that gate ordering was asserted in prose
+without a direct data-callback test. Commit `adc7b22` added direct ISA and
+schema/runner tests for SSE/CR0/CR4 #UD, CR0.TS #NM, simultaneous-gate priority,
+complete fetch, zero data callbacks, zero retirement and unchanged state. The
+reviewer confirmed the fix clean; the packed RSQRTPS production contract is
+unchanged.
+
+<a id="main-integration-s2-30dj-s2-37ea-s2-30dk"></a>
 
 ## Main integration: S2-30dj + S2-37ea + S2-30dk
 
@@ -22397,3 +22404,29 @@ destination selection, full state and JIT denial. Verification results:
 See the [standalone report](S2_30DL_X87_FSUBR_LARGE_GAPS.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dl-large-gap-fsubr-sti-st0-dc-e0-e7),
 [plan](../plans/STAGE_2.md#s2-30dl-large-gap-fsubr-sti-st0-admission), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dl-large-gap-reverse-destination-fsubr-fixture).
+
+<a id="main-integration-s2-37eb-s2-30dl"></a>
+
+## Main integration: S2-37eb + S2-30dl
+
+Transferred as `f41c1eb`/`200c1a2` (S2-37eb profile and gate callback-order
+tests) and `21e2aa4` (S2-30dl). The independent fixes were reviewed before
+integration; each source worktree was clean, and removed after its commits were
+verified in main.
+
+Combined main verification on 2026-11-02 passed:
+
+- `cargo test -p od-isa -p od-testkit -p od-runner --offline -- --test-threads=1`:
+  od-isa 1,887; runner 125 unit + 516 fixture; od-testkit 455.
+- `cargo test -p od-x86-runner --offline -- --test-threads=1`:
+  8 library + 4 binary tests.
+- `cargo check --workspace --all-targets --offline`.
+- `cargo fmt --all -- --check`, `git diff --check`, and `python3 tools/check_layout.py`.
+- `graphify update .`: 11,766 nodes / 25,497 edges / 361 communities.
+
+Both S2-37eb and S2-30dl have clean independent Sol/high reviews. S2-37eb's
+review-driven gate-test addition preserves the packed RSQRTPS implementation;
+S2-30dl enables large-gap admission only for `DC E0..E7`, leaving its `DE`
+FSUBRP neighbor bounded. No physical x86 acceptance was run. ISSUE-025 remains
+open for RCPSS/RCPPS threshold ambiguity; RSQRTSS has a separate local `3/8192`
+error envelope and no hardware bit-equality claim. Stage 2 remains open.

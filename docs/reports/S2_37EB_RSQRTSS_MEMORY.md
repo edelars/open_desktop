@@ -32,12 +32,16 @@ runner tests passed. A direct ISA callback-count test covers SSE unavailable,
 CR0.EM and CR4.OSFXSR both alone and with CR0.TS set, plus CR0.TS alone. It
 asserts #UD/#NM priority, complete fetch, zero data callbacks, zero retirement,
 and unchanged state. The schema/runner test exercises the same gate outcomes and
-checks the output vector, no retirement and unchanged mapped memory. The existing AC/noncanonical priority,
-success/high96/MXCSR, profile-tampering and JIT/native denial checks remain. Workspace
+checks the output vector, no retirement and unchanged mapped memory. The
+existing AC/noncanonical priority, success/high96/MXCSR, profile-tampering and
+JIT/native denial checks remain. Workspace
 `cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
 and `git diff --check` passed. Graphify AST update completed: 11,753 nodes,
 25,474 edges, 322 communities. `tools/check_layout.py` reported only the
 isolated worktree `.git` marker and two unavailable historical manifests
 already recorded under ISSUE-023; it found no new path/link errors. Independent
-Sol/high review is pending in the parent integration. No physical x86 acceptance
-is claimed.
+Sol/high review found a missing direct callback-order assertion for prerequisite
+gates. Commit `adc7b22` added direct ISA and schema/runner tests; the reviewer
+rechecked those tests and closed the finding with no remaining concerns. The
+packed RSQRTPS production validator and admission are unchanged. No physical x86
+acceptance is claimed.
