@@ -2980,6 +2980,39 @@ exception observation, unchanged code memory and JIT denial. See the [plan](../p
 [standalone report](../reports/S2_30DM_X87_FSUBP_LARGE_GAPS.md), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture-coverage).
 
+## Local S2-30dn: large-gap `FSUBRP ST(i), ST(0)` (`DE E0..E7`)
+
+Extend only exact bare Long64 `DE E0..E7` from S2-30dc to normalized
+Normal-to-Normal exponent gaps 65 through 32765 through the existing
+S2-29af-backed large-gap helper. Preserve all S2-30dc environment, selector,
+FCW, FSW, tag, operand and Normal-result gates and all gap≤64 behavior. FSUBRP
+has no exact fallback; a large-gap helper refusal remains Unsupported and
+cannot commit. No neighboring `DE E8..EF`, DC or D8 forms change.
+
+The operation is old `ST(0)-ST(i)`. On success, write old physical
+`(TOP+i)&7`, then mark old TOP Empty and increment TOP; preserve popped payload
+bytes. PE is sticky OR `inexact`; C1 is replaced from `incremented`; retain
+S2-30dc's other state policy, set FIP to old RIP, advance RIP by two and retire
+once. Alias cancellation, malformed input, unsupported arithmetic result and
+fetch/STOP/budget boundaries remain atomic. There is no data-memory access.
+Native/JIT, general x87 exception delivery and physical x86 acceptance are
+outside this profile.
+
+Coverage requires an independent signed-integer oracle for gaps
+64/65/66/32765 across twelve FCWs, signs and operand magnitude orders, all
+TOP/index placements and old PE/C1. Include PC24/53 direction and midpoint
+vectors, large-helper refusal/no-commit, alias and malformed-domain rollback,
+write-before-pop snapshots, fetch/STOP/budget and zero data callbacks. A literal
+fixture must use actual operands, compare complete state and deny JIT.
+Normative opcode semantics: Intel SDM Rev. 093 Vol. 2A
+`FSUBR/FSUBRP/FISUBR`, pp. 3-397–3-399
+([official Vol. 2A PDF](https://cdrdv2.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
+precision/exception context: Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6
+([official Vol. 1 PDF](https://cdrdv2.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+See the [plan](../plans/STAGE_2.md#s2-30dn-large-gap-fsubrp-sti-st0-admission),
+[S2-30dc contract](#local-s2-30dc-bounded-fsubrp-sti-st0-de-e0e7), and
+[S2-30dm pattern](#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8i).
+
 ## Local S2-30q: exact-only `FDIV ST(0), ST(i)` (`D8 F0+i`)
 
 The interpreter accepts exactly bare `D8 F0` through `D8 F7` with an existing
@@ -13130,6 +13163,56 @@ state. This contract describes only this local schema profile, not complete
 SSE/MMX semantics, generic execution, or physical x86 behavior. JIT, native,
 C ABI and fragment paths remain closed. Keep ISSUE-025 open and separate from
 the RSQRT threshold. See the [S2-38m plan](../plans/STAGE_2.md#s2-38m-exact-long64-minss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit).
+
+## S2-38n — exact MAXSS unmasked memory exit for m32 [RAX]
+
+The local schema-v2 interpreter profile
+`s2-long-maxss-memory-unmasked-rax-v1` admits only Long64
+`F3 0F 5F 00` (`MAXSS XMM0,m32 [RAX]`), length four, budget one and stop RIP
+`entry+4`. It requires SSE (`CPUID.01H:EDX[25]`), CR0.EM=0, fixed CR0.MP=1,
+CR4.OSFXSR=1, explicit immutable CR0.TS and CR4.OSXMMEXCPT controls and present
+XMM/MXCSR state. The S2-37cy masked MAXSS memory profile, S2-38f register
+unmasked profile and S2-38m MINSS memory profile remain unchanged. REX,
+alternate addressing, register-form bytes, VEX/EVEX, other prefixes and all
+non-interpreter paths are denied.
+
+Execution order is stop/budget, complete fetch, exact-form and feature gates,
+MXCSR/state gates, AC=1 local Unsupported, checked `RAX+3` and canonical48
+inclusive span, exactly one read4, then operand classification and FP result.
+Missing SSE, CR0.EM=1 or CR4.OSFXSR=0 produces #UD before CR0.TS=1 produces
+#NM. AC=0 permits unaligned m32. Overflow, noncanonical span or read failure
+precedes FP classification, raises no new IE/DE and preserves state/retirement.
+
+MXCSR requires reserved bits clear, supported mask `0xffbf`, DAZ=FTZ=0 and
+ZM/OM/UM/PM=1; IM/DM independently accept either value, all RCs and old sticky
+histories are admitted. MAXSS-specific semantics from S2-38f apply: QNaN and
+SNaN in either operand raise IE; a subnormal operand raises DE. When masked,
+MAXSS selects raw source 2 for NaN, equal values and signed-zero ties; a
+source-2 SNaN payload remains unquieted. For NaN plus subnormal with IM=DM=1,
+invalid priority reports IE only and completes. If either relevant mask is
+clear, IE|DE are committed on one arithmetic exit. Any newly unmasked event
+commits required sticky bits, suppresses the entire XMM0 write, leaves RIP
+unchanged and does not retire, and selects #XM for OSXMMEXCPT=1 or arithmetic
+#UD for OSXMMEXCPT=0. Prior IE/DE alone does not trap. Success changes only
+XMM0.low32 and newly raised stickies, advances RIP by four and retires once,
+preserving high96, XMM1, other MXCSR fields and unrelated state.
+
+Coverage requires an independent raw-bit oracle; IM×DM×OSXMMEXCPT and RC×64
+prior-sticky matrices; QNaN/SNaN/subnormal in both operand orders, mixed
+NaN+subnormal, signed zero, finite/infinity/equal inputs, poisoned XMM1 and
+XMM0.high96. Combined tests cover truncated fetch and gate priority, AC plus
+noncanonical span, address/read failure plus unmasked NaN, and successful read
+followed by arithmetic exit. Callback count must prove 0/1 reads and rollback.
+Strict schema/result tampering and JIT/native backend relabel denial are
+required. The profile does not claim complete SSE/MMX semantics or physical x86
+acceptance. ISSUE-025 stays open and unrelated to this slice. Normative sources:
+Intel SDM Rev. 093 Vol. 2B `MAXSS`, pp. 4-13–4-14; Vol. 1 §§4.9.2,
+11.5.2.1–.2, 11.5.3.2–.3 and Table D-9
+([Vol. 2B](https://cdrdv2.intel.com/v1/dl/getContent/671241),
+[Vol. 1](https://cdrdv2.intel.com/v1/dl/getContent/671436)). See the
+[plan](../plans/STAGE_2.md#s2-38n-exact-long64-maxss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit),
+[MAXSS register contract](#s2-38f--exact-maxss-unmasked-invalid-and-denormal-exit),
+and [S2-38m memory-order pattern](#s2-38m--exact-minss-unmasked-memory-exit-for-m32-rax).
 
 ## S2-38e — exact FP-init, FXRSTOR64, MINSS composition
 

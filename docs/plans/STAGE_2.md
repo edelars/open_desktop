@@ -231,6 +231,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30da | Bare `DE C8..CF` FMULP ST(i),ST(0), bounded FCW precision for Normal operands/results, write old physical destination before TOP pop, sticky PE and C1; exact p64 domain retained; JIT/native closed | Integrated main: od-isa 1,841; od-testkit 455; runner 119+499; x86-runner 8+4; workspace check, fmt/diff/layout, Graphify; static fixture runner verifies complete state/exception/memory; Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-30db | Bare `DE E8..EF` FSUBP ST(i),ST(0), bounded FCW precision with normalized gap≤64; old exact p64 domain retained; old physical destination before TOP pop; sticky PE/C1; JIT/native closed | Integrated main: od-isa 1,845; testkit 455; runner 119+501; x86-runner 8+4; workspace check/fmt/diff/layout; focused FSUBP 7 and 2,688-case odd coefficient matrix; independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-30dm | Bare `DE E8..EF` FSUBP extends normalized Normal gaps 65..32765 through S2-29af; retain gap≤64/exact fallback, physical destination then pop, sticky PE/C1 and atomic refusal; JIT/native closed | 86,016-case independent oracle; focused FSUBP 9; integrated main: od-isa 1,891, testkit 455, runner 125+518, x86-runner 8+4; workspace check/fmt/diff/layout and Graphify 11,799/25,583/372 passed; separate Sol/high review clean after anchor/provenance corrections; no physical x86 acceptance |
+| [ ] | S2-30dn | Bare `DE E0..E7` FSUBRP extends normalized Normal gaps 65..32765; preserve S2-30dc gates, old `ST(0)-ST(i)` direction, physical destination-before-pop, sticky PE/C1, atomic refusal and no exact fallback | S2-30dc helper + S2-29af large-gap arithmetic; independent signed-integer oracle, all FCW/TOP/index/sign/history combinations, literal full-state/JIT-denied fixture; no physical x86 acceptance |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -645,6 +646,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38k | Exact Long64 `MINPS XMM0,XMM1` unmasked IM/DM exit; strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37g, S2-38j control policy after MINPS-specific SDM review; independent Sol medium review clean |
 | [x] | S2-38l | Exact Long64 `MAXPS XMM0,XMM1` unmasked IM/DM exit; distinct strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37h, S2-38k control policy after MAXPS-specific Rev. 093 review; independent Sol medium review clean |
 | [x] | S2-38m | Exact Long64 `MINSS XMM0,m32 [RAX]` memory profile with mixed IM/DM unmasked arithmetic exit; actual memory RHS; strict schema-v2 and interpreter-only | Parent S2-38 memory/alignment/unmasked-FP-priority gap; S2-37dh address/read model and S2-38d policy; integrated main: od-isa 1,891, testkit 455, runner 125+518, x86-runner 8+4, workspace/fmt/diff/layout/Graphify; Sol/high review clean after exact-form/backend/anchor fixes; no physical x86 claim |
+| [ ] | S2-38n | Exact Long64 `MAXSS XMM0,m32 [RAX]` memory profile with MAXSS-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cy masked memory, S2-38f MAXSS unmasked policy and S2-38m memory/fault ordering; MAXSS-specific QNaN invalid, operand-2 SNaN preservation; no physical x86 claim |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -7601,13 +7603,55 @@ ISSUE-025 open and explicitly unrelated to the RSQRT threshold. See the
 [standalone report](../reports/S2_38M_MINSS_MEMORY_UNMASKED.md), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38m--minss-xmm0m32-rax-with-unmasked-imdm).
 
-Implementation and verification are complete; independent Sol/high review is
-pending after the author commit. Focused ISA/runner tests passed 2/1; full
-`od-isa`, `od-testkit`, and runner `fixture_v2` suites passed 1,889/455/517.
-Workspace check, formatting, and diff check passed. Graphify refreshed to
-11,829 nodes, 25,501 edges and 384 communities. Layout check has only the
-known isolated-worktree `.git` marker and two unavailable historical manifests
-tracked by ISSUE-023. Physical x86 remains unclaimed.
+Implementation and verification are complete. Sol/high review is clean after
+the exact-form gate, interpreter-only backend validator and anchor corrections.
+The integrated main suites passed `od-isa` 1,891, `od-testkit` 455, runner
+125 unit + 518 fixtures and `od-x86-runner` 8+4. Workspace check, formatting,
+diff check and main layout passed; Graphify refreshed to 11,799 nodes, 25,583
+edges and 372 communities. No physical x86 acceptance is claimed.
+
+#### S2-38n. Exact Long64 MAXSS XMM0,m32 [RAX] memory profile with mixed IM/DM exit
+
+Add a distinct immutable schema-v2 profile, e.g.
+`s2-long-maxss-memory-unmasked-rax-v1`, for only exact Long64
+`F3 0F 5F 00` (`MAXSS XMM0,m32 [RAX]`), length four, budget one and stop RIP
+`entry+4`. Preserve S2-37cy's masked memory profile, S2-38f's register
+unmasked profile and S2-38m's MINSS memory profile unchanged. Require SSE bit
+25 (not SSE2), CR0.EM=0, fixed CR0.MP=1, CR4.OSFXSR=1, explicit CR0.TS and
+CR4.OSXMMEXCPT controls, and present XMM/MXCSR state. Other encodings, REX,
+alternate addressing, VEX/EVEX, register forms, generic/fragment, C ABI,
+native and JIT paths remain closed.
+
+Execution order: stop/budget; complete fetch; exact-form and feature gates;
+MXCSR/state admission; AC=1 local Unsupported; checked `RAX+3` and canonical48
+inclusive-span validation; exactly one read4; then operand classification and
+FP result. Missing SSE, CR0.EM=1 or CR4.OSFXSR=0 gives #UD before CR0.TS=1 gives
+#NM. AC=0 permits unaligned m32. Address/read failures precede all new IE/DE
+and preserve CPU state and retirement.
+
+MXCSR requires reserved bits zero and supported mask `0xffbf`; DAZ/FTZ=0 and
+ZM/OM/UM/PM=1. IM/DM independently allow either value; RC and all prior sticky
+histories are admitted. Use MAXSS-specific behavior from S2-38f: either QNaN
+or SNaN in either operand raises IE; either subnormal raises DE; the masked
+result selector returns raw source 2 for NaN, equal values and signed-zero
+ties, preserving a source-2 SNaN payload. With NaN+subnormal and both masks
+set, invalid priority commits IE only and completes; if either mask is clear,
+IE|DE are committed on one arithmetic exit. Any newly unmasked event suppresses
+the entire XMM0 write, leaves RIP unchanged and does not retire while committing
+required sticky bits; OSXMMEXCPT chooses #XM or arithmetic #UD. Prior IE/DE
+alone does not trap. Success changes only XMM0.low32 and newly raised stickies,
+advances RIP by four and retires once; preserve high96, XMM1, remaining MXCSR
+fields and unrelated state. ISSUE-025 remains open and
+unrelated to this profile; no physical x86 acceptance is claimed.
+
+Require a separate raw-bit oracle; IM×DM×OSXMMEXCPT and RC×64 prior-sticky
+matrices; QNaN/SNaN and positive/negative subnormals in both operand orders;
+mixed NaN+subnormal; signed-zero/finite/infinity ties; poisoned XMM1 and
+XMM0.high96; prior-only stickies; combined fetch/gate/AC/span/read/arithmetic
+faults with callback count 0/1 and full rollback; strict schema/result tampering,
+backend relabel rejection, and explicit native/JIT denial. See the [CPU
+contract](../specs/CPU_CONTRACT.md#s2-38n--exact-maxss-unmasked-memory-exit-for-m32-rax)
+and [S2-38f MAXSS policy](#s2-38f-exact-long64-maxss-xmm0xmm1-unmasked-invalid-and-denormal-exit).
 
 #### S2-38e. Exact FP-init, FXRSTOR64, and image-controlled MINSS composition
 
@@ -11842,6 +11886,34 @@ before-pop checks, plus a literal actual-operand runner fixture comparing full
 state and denying JIT. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8i),
 [standalone report](../reports/S2_30DM_X87_FSUBP_LARGE_GAPS.md), and [fixture
 notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture-coverage).
+
+#### S2-30dn. Large-gap `FSUBRP ST(i), ST(0)` admission
+
+Extend only exact bare Long64 `DE E0..E7` from S2-30dc to normalized
+Normal-to-Normal exponent gaps 65 through 32765 by enabling the existing
+S2-29af-backed large-gap path for this operation. Preserve every S2-30dc
+environment, selector, FCW, FSW, tag, operand and Normal-result gate, as well as
+all gap≤64 behavior. There is no exact fallback for FSUBRP; a rejected
+large-gap candidate remains atomically Unsupported. `DE E8..EF` FSUBP,
+`DC E0..EF` FSUB/FSUBR and `D8` neighbors retain their current behavior.
+
+The arithmetic direction remains old `ST(0)-ST(i)`. On success write old
+physical `(TOP+i)&7`, then empty old TOP and increment TOP; retain the popped
+payload bytes. PE is old PE OR `inexact`; C1 is replaced from the helper's
+`incremented` diagnostic; preserve other status/state under S2-30dc policy,
+set FIP to old RIP, advance RIP by two and retire once. Alias cancellation,
+malformed states, unsupported helper results, fetch/STOP/budget boundaries
+remain atomic; no data access is performed. JIT/native, general x87 exception
+delivery and physical x86 acceptance remain closed.
+
+Acceptance requires an independent signed-integer oracle for gaps
+64/65/66/32765 across all twelve FCWs, four sign pairs, both operand magnitude
+orders, every TOP/index and prior PE/C1 history. Include PC24/53 distinguishing
+rounding vectors, explicit large-helper refusal/no-commit, alias and malformed
+domain rollback, destination-before-pop snapshots, fetch/STOP/budget and no-data
+callback checks. A literal fixture must use actual operands, compare full state
+and deny JIT. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dn-large-gap-fsubrp-sti-st0-de-e0e7)
+and this [S2-30dn admission contract](#s2-30dn-large-gap-fsubrp-sti-st0-admission).
 
 #### S2-30dc. Bare `FSUBRP ST(i), ST(0)` with bounded FCW precision
 
