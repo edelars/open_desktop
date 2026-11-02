@@ -62,6 +62,9 @@ const SQRTPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json"
 );
+const SUBPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37dr_subps_m128_memory_source_and_destination_lanes.case.json"
+);
 const SQRTPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37de_sqrtpd_m128_memory_source_lanes_rounding.case.json"
 );
@@ -38352,6 +38355,85 @@ fn addps_m128_memory_uses_xmm0_and_memory_lanes_and_denies_backends() {
         .sse_available = false;
     gate.expected_exit = ExpectedExit::Exception;
     let (input, result) = run(&gate.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+}
+
+#[test]
+fn subps_m128_memory_uses_independent_memory_lanes_and_denies_backends() {
+    use od_testkit::result::Backend;
+    use od_testkit::v2::Profile;
+    let base = Fixture::from_json(SUBPS_M128_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(base.profile, Profile::LongSubpsMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "0f5c00");
+    let (input, good) = run(SUBPS_M128_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &good, &good).unwrap();
+    let snapshot = match &good.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("missing SUBPS memory snapshot"),
+    };
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "000040c000000000000040bf00003040"
+    );
+    assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f80));
+    assert_eq!(
+        snapshot.memory[1].bytes_hex,
+        base.memory[1].initial_bytes_hex
+    );
+    let mut wrong_xmm = good.clone();
+    if let Observation::Available { value } = &mut wrong_xmm.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    }
+    assert!(wrong_xmm.validate_for(&input).is_err());
+    let mut wrong_memory = good.clone();
+    if let Observation::Available { value } = &mut wrong_memory.snapshot {
+        value.memory[1].bytes_hex = "00000000000000000000000000000000".into();
+    }
+    assert!(wrong_memory.validate_for(&input).is_err());
+    let mut wrong_control_echo = good.clone();
+    if let Observation::Available { value } = &mut wrong_control_echo.snapshot {
+        value.subps_controls.as_mut().unwrap().cr0_ts = true;
+    }
+    assert!(wrong_control_echo.validate_for(&input).is_err());
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut relabeled = good.clone();
+        relabeled.backend = backend;
+        assert!(relabeled.validate_for(&input).is_err());
+    }
+    for rc in 0..4u64 {
+        for sticky in 0..64u64 {
+            let mut case = base.clone();
+            case.case_id = format!("s2_37dr_rc{rc}_sticky{sticky}");
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13) | sticky);
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+    let mut gate = base.clone();
+    gate.case_id = "s2_37dr_no_sse_gate".into();
+    gate.subps_controls.as_mut().unwrap().sse_available = false;
+    gate.expected_exit = ExpectedExit::Exception;
+    let (input, result) = run(&gate.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let mut bad_opcode = base.clone();
+    bad_opcode.memory[0].initial_bytes_hex = "0f5c01".into();
+    assert!(bad_opcode.validate().is_err());
+    let mut invalid_mxcsr = base.clone();
+    invalid_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 6));
+    assert!(invalid_mxcsr.validate().is_err());
+    let mut missing_controls = base.clone();
+    missing_controls.subps_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut bad_provenance = base.clone();
+    bad_provenance.provenance.specification.clear();
+    assert!(bad_provenance.validate().is_err());
+    let mut misaligned = base.clone();
+    misaligned.case_id = "s2_37dr_misaligned_m128".into();
+    misaligned.initial_state.gpr[0] = HexU64(0x2001);
+    misaligned.memory[1].guest_address = HexU64(0x2001);
+    misaligned.expected_exit = ExpectedExit::Exception;
+    let (input, result) = run(&misaligned.to_json().unwrap(), "interpreter", 0);
     od_testkit::v2::compare(&input, &result, &result).unwrap();
     assert!(matches!(result.outcome, Outcome::Exception {}));
 }

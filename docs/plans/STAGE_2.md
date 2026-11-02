@@ -16962,6 +16962,43 @@ Use the literal poisoned-XMM0 fixture and cover all RC modes, ±0/∞, normal/su
 
 Implement only exact `0F 58 00` in Long64, with SSE bit 25 (not SSE2), complete fetch before #UD/#NM, XMM/MXCSR state, and interpreter-only routing. Admission requires supported MXCSR mask `0xffbf`, reserved bits clear, all six exception masks set, DAZ=FTZ=0; all RC modes and prior sticky flags are accepted. Execute four binary32 additions from the old XMM0 lanes and one aligned m128 `[RAX]` read. Require 16-byte alignment independent of AC; validate checked canonical48 `[RAX,RAX+15]` before exactly one `read16`, and leave state/retirement unchanged on read failure. Aggregate IE/DE/OE/UE/PE while preserving ZE, old sticky bits, and unrelated state. Cover NaN/invalid priority, mixed IE/DE, signed zeros/infinities, subnormal/tiny/ties/overflow, SSE-without-SSE2, gates, exact schema, callbacks, rollback, and JIT/NativeX86 result relabel denial. Unmasked/#XM and all non-interpreter paths remain out of scope.
 
+#### S2-37dr — masked-only legacy Long64 SUBPS XMM0,m128 [RAX]
+
+Implement strict schema-v2 interpreter profile `s2-long-subps-memory-rax-v1`
+for exact `0F 5C 00`, three-byte complete fetch, budget one and stop RIP
+entry+3. Require SSE bit 25 (not SSE2), CR0.EM=0, CR4.OSFXSR=1 and CR0.TS=0;
+complete fetch precedes #UD/#NM gates. Require XMM/MXCSR state. Other prefixes,
+REX, ModR/M/addressing forms, VEX/EVEX, destination/source registers and
+trailing bytes are refused.
+
+Admit supported MXCSR bits `0xffbf`, reserved bits clear, all six exception
+masks set, DAZ=FTZ=0. Accept all RC settings and prior sticky histories;
+unmasked exceptions and #XM delivery are closed. Require 16-byte alignment
+regardless of AC, validate checked canonical48 `[RAX,RAX+15]` before exactly
+one `read16`, and preserve CPU/SSE/RIP/retirement on alignment, span or read
+failure.
+
+Subtract each memory binary32 lane from the corresponding old XMM0 lane with
+`Binary32::subtract_raw_result(MXCSR.RC)`. Aggregate IE/DE/OE/UE/PE while
+preserving old status and unrelated state. NaNs are classified before the RHS
+sign transform; signaling NaNs and same-sign infinity subtraction raise IE;
+denormal status is accumulated per non-NaN lane. Success replaces XMM0 and
+advances RIP by three. JIT/native/C ABI/generic/fragment and physical x86
+support remain closed.
+
+The literal fixture and independent integer-only raw-u32 oracle cover the
+four-lane memory source, all RC settings and old sticky patterns. Full suites
+passed: `od-isa` 1,840; `od-testkit` 455; runner 119 unit + 498 fixture; x86-runner
+8 library + 4 binary. Workspace all-target offline check, formatting, diff
+check and Graphify refresh passed (11,483 nodes / 24,734 edges / 359
+communities). `tools/check_layout.py` reports the isolated worktree `.git`
+marker and two existing absent oracle manifests linked from `STAGE_2_REPORT.md`;
+the slice adds no paths. Independent Sol/high review follows the commit. Physical
+x86 acceptance is not claimed. See
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37dr--masked-only-long64-subps-xmm0m128-rax),
+[shared report](../reports/STAGE_2_REPORT.md#s2-37dr--subps-xmm0m128-rax), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dr--subps-xmm0m128-rax).
+
 #### S2-37de — exact legacy Long64 SQRTPD XMM0,m128 [RAX]
 
 Implement the strict schema-v2 interpreter profile `s2-long-sqrtpd-memory-rax-v1` for exact `66 0F 51 00`, length four, budget one and stop RIP entry+4. The profile accepts only SQRTPD XMM0,m128 `[RAX]`; reject extra prefixes/REX, other ModRM/addressing forms, truncation/trailing bytes, VEX/EVEX and register forms. Fetch all four bytes before gates. Require SSE2 (`CPUID.01H:EDX[26]`), CR0.EM=0 and CR4.OSFXSR=1; missing SSE2, EM=1 or OSFXSR=0 gives #UD before CR0.TS=1 gives #NM. Require XMM/MXCSR state.

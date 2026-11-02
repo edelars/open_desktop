@@ -16605,7 +16605,7 @@ pub fn run_with_mulsd_memory_rax_controls(
     )
 }
 
-/// Execute one canonical Long64 register SUBPS form with explicit gates.
+/// Execute canonical Long64 register SUBPS or exact m128-at-RAX form with gates.
 pub fn run_with_subps_register_controls(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -19283,6 +19283,17 @@ fn step_configured(
                         == if destination >= 8 || source >= 8 {
                             Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
                         } else { None }
+        ) || matches!(
+            instruction.operation,
+            Operation::SubpsMemoryRax
+                if instruction.length == 3
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x5c
+                    && instruction.prefixes.group1.is_none()
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.is_none()
         );
         if !is_canonical_register_form {
             return Ok(StepOutcome::Unsupported {
@@ -22173,6 +22184,7 @@ fn step_configured(
             | Operation::AddssRegister { .. }
             | Operation::AddpsRegister { .. }
             | Operation::AddpsMemoryRax
+            | Operation::SubpsMemoryRax
             | Operation::DivpdRegister { .. }
             | Operation::DivsdRegister { .. }
             | Operation::DivpsRegister { .. }
@@ -22246,6 +22258,7 @@ fn step_configured(
             | Operation::AddssRegister { .. }
             | Operation::AddpsRegister { .. }
             | Operation::AddpsMemoryRax
+            | Operation::SubpsMemoryRax
             | Operation::DivpdRegister { .. }
             | Operation::DivsdRegister { .. }
             | Operation::DivpsRegister { .. }
@@ -22595,11 +22608,20 @@ fn step_configured(
                 && sse.mxcsr & (1 << 6) == 0
                 && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
         } else if configured_subps_register_controls.is_some()
-            && matches!(instruction.operation, Operation::SubpsRegister { .. })
+            && matches!(
+                instruction.operation,
+                Operation::SubpsRegister { .. } | Operation::SubpsMemoryRax
+            )
         {
-            sse.mxcsr & !0x0000_ffbf == 0
-                && sse.mxcsr & (1 << 6) == 0
-                && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+            if instruction.operation == Operation::SubpsMemoryRax {
+                sse.mxcsr & !0x0000_ffbf == 0
+                    && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
+                    && sse.mxcsr & 0x1f80 == 0x1f80
+            } else {
+                sse.mxcsr & !0x0000_ffbf == 0
+                    && sse.mxcsr & (1 << 6) == 0
+                    && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+            }
         } else if configured_cvtss2sd_register_controls.is_some()
             && matches!(instruction.operation, Operation::Cvtss2sdRegister { .. })
         {
@@ -23660,6 +23682,10 @@ fn step_configured(
         Operation::SubpsRegister { .. } if configured_subps_register_controls.is_some() => {
             state.sse.is_some()
         }
+        Operation::SubpsMemoryRax if configured_subps_register_controls.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::SubpsMemoryRax => false,
         Operation::SubsdRegister { .. } if configured_subsd_register_controls.is_some() => {
             state.sse.is_some()
         }
@@ -30371,6 +30397,87 @@ fn step_configured(
                 | (u32::from(new_pe) << 5);
         }
         Operation::SubsdMemoryRax => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        Operation::SubpsMemoryRax if configured_subps_register_controls.is_some() => {
+            let address = state.gpr[Register::Rax as usize];
+            if address & 0xf != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let Some(last) = address.checked_add(15) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 16];
+            memory.read(address, context, &mut source)?;
+            let (lhs_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("SUBPS memory state prevalidated");
+                (sse.xmm[0], sse.mxcsr)
+            };
+            let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            let mut result = [0u8; 16];
+            let mut new_ie = false;
+            let mut new_de = false;
+            let mut new_oe = false;
+            let mut new_ue = false;
+            let mut new_pe = false;
+            for lane in 0..4 {
+                let offset = lane * 4;
+                let lhs_raw = u32::from_le_bytes(lhs_xmm[offset..offset + 4].try_into().unwrap());
+                let rhs_raw = u32::from_le_bytes(source[offset..offset + 4].try_into().unwrap());
+                let lhs = Binary32::from_bits(lhs_raw);
+                let rhs = Binary32::from_bits(rhs_raw);
+                let lhs_class = lhs.class();
+                let rhs_class = rhs.class();
+                let lhs_nan =
+                    matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                let rhs_nan =
+                    matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                if lhs_nan || rhs_nan {
+                    new_ie |= lhs_class == BinaryClass::SignalingNaN
+                        || rhs_class == BinaryClass::SignalingNaN;
+                } else if lhs_class == BinaryClass::Infinity
+                    && rhs_class == BinaryClass::Infinity
+                    && ((lhs_raw ^ (rhs_raw ^ (1 << 31))) >> 31) != 0
+                {
+                    new_ie = true;
+                } else {
+                    new_de |=
+                        lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal;
+                }
+                let computed = Binary32::subtract_raw_result(lhs, rhs, rounding);
+                let raw = computed.value().to_bits();
+                new_oe |= computed.overflow();
+                new_ue |= computed.tiny_after_precision_rounding() && computed.inexact();
+                new_pe |= computed.inexact() || computed.overflow();
+                result[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
+            }
+            let sse = state.sse.as_mut().expect("SUBPS memory state prevalidated");
+            sse.xmm[0] = result;
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+        }
+        Operation::SubpsMemoryRax => {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -157137,6 +157244,249 @@ mod cvtsi2ss_r64_memory_profile_tests {
             assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 0x20);
             assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
         }
+    }
+
+    #[test]
+    fn subps_memory_rax_subtracts_four_memory_lanes_with_exact_read() {
+        let code = [0x0f, 0x5c, 0x00];
+        let controls = SubpsControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let mut memory = Memory::at(&code, 0x2700);
+        let rhs = [0x3f00_0000u32, 0x7f80_0000, 0x8000_0000, 1];
+        for (lane, value) in rhs.into_iter().enumerate() {
+            memory.bytes[lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut xmm = [[0xa5; 16]; 16];
+        let lhs = [0x3f80_0000u32, 0x7f80_0000, 0, 0];
+        for (lane, value) in lhs.into_iter().enumerate() {
+            xmm[0][lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let mut state = LongModeState::default();
+        state.rip = 0x2700;
+        state.gpr[Register::Rax as usize] = memory.data_base;
+        state.sse = Some(SseState { xmm, mxcsr: 0x1f80 });
+        let result = run_with_subps_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2703),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        let output = &state.sse.as_ref().unwrap().xmm[0];
+        assert_eq!(
+            u32::from_le_bytes(output[0..4].try_into().unwrap()),
+            0x3f00_0000
+        );
+        assert_eq!(
+            u32::from_le_bytes(output[4..8].try_into().unwrap()),
+            0xffc0_0000
+        );
+        assert_eq!(
+            u32::from_le_bytes(output[8..12].try_into().unwrap()),
+            0x0000_0000
+        );
+        assert_eq!(
+            u32::from_le_bytes(output[12..16].try_into().unwrap()),
+            0x8000_0001
+        );
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 0x03);
+        assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
+    }
+
+    #[test]
+    fn subps_memory_rax_rejects_invalid_mxcsr_and_addresses_before_data_access() {
+        let code = [0x0f, 0x5c, 0x00];
+        let controls = SubpsControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let mut gate_memory = Memory::at(&code, 0x2708);
+        let mut gate_state = LongModeState::default();
+        gate_state.rip = 0x2708;
+        gate_state.gpr[Register::Rax as usize] = gate_memory.data_base;
+        gate_state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let gate_result = run_with_subps_register_controls(
+            &mut gate_state,
+            &mut gate_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x270b),
+                context: AccessContext::default(),
+            },
+            SubpsControls {
+                sse_available: false,
+                ..controls
+            },
+            || false,
+        );
+        assert!(matches!(
+            gate_result.exit,
+            RunExit::Fault(ArchitecturalFault { vector: 6, .. })
+        ));
+        assert_eq!(gate_memory.fetches, [0x2708, 0x2709, 0x270a]);
+        assert!(gate_memory.accesses.is_empty());
+
+        let mut truncated_memory = Memory::at(&code[..2], 0x270c);
+        let mut truncated_state = LongModeState::default();
+        truncated_state.rip = 0x270c;
+        truncated_state.gpr[Register::Rax as usize] = truncated_memory.data_base;
+        truncated_state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let truncated_result = run_with_subps_register_controls(
+            &mut truncated_state,
+            &mut truncated_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x270f),
+                context: AccessContext::default(),
+            },
+            SubpsControls {
+                sse_available: false,
+                ..controls
+            },
+            || false,
+        );
+        assert!(matches!(truncated_result.exit, RunExit::MemoryError(_)));
+        assert_eq!(truncated_memory.fetches, [0x270c, 0x270d, 0x270e]);
+        assert!(truncated_memory.accesses.is_empty());
+        for mxcsr in (7..=12).map(|bit| 0x1f80 & !(1 << bit)).chain([
+            0x1f80 | (1 << 6),
+            0x1f80 | (1 << 15),
+            0x1f80 | (1 << 16),
+        ]) {
+            let mut memory = Memory::at(&code, 0x2710);
+            let mut state = LongModeState::default();
+            state.rip = 0x2710;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            let result = run_with_subps_register_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2713),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x5c },
+                "MXCSR={mxcsr:#x}"
+            );
+            assert_eq!(state, before);
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.accesses.is_empty());
+        }
+        for address in [0x1001, 0x0000_8000_0000_0000] {
+            let mut memory = Memory::at(&code, 0x2720);
+            let mut state = LongModeState::default();
+            state.rip = 0x2720;
+            state.gpr[Register::Rax as usize] = address;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run_with_subps_register_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2723),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert!(matches!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    ..
+                })
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut upper_memory = Memory::at(&code, 0x2728);
+        let upper_address = u64::MAX - 15;
+        let mut upper_state = LongModeState::default();
+        upper_state.rip = 0x2728;
+        upper_state.gpr[Register::Rax as usize] = upper_address;
+        upper_state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let upper_before = upper_state.clone();
+        let upper_result = run_with_subps_register_controls(
+            &mut upper_state,
+            &mut upper_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x272b),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(upper_result.exit, RunExit::MemoryError(_)));
+        assert_eq!(upper_state, upper_before);
+        assert_eq!(
+            upper_memory.accesses,
+            [(AccessKind::Read, upper_address, 16)]
+        );
+        let mut memory = Memory::at(&code, 0x2730);
+        memory.error_kind = Some(AccessKind::Read);
+        memory.error = Some(MemoryError::Backend("injected read failure".into()));
+        let mut state = LongModeState::default();
+        state.rip = 0x2730;
+        state.gpr[Register::Rax as usize] = memory.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run_with_subps_register_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2733),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
     }
 
     #[test]

@@ -7915,6 +7915,24 @@ remain closed; no physical x86 acceptance is claimed. Source: Intel SDM Rev. 093
 Vol. 2A DIVSD pp. 3-273–3-274; Type 3 is VEX-only. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37dp--masked-only-legacy-long64-divsd-xmm0m64-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dp--masked-only-long64-divsd-xmm0m64-rax), and [shared report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37dp--divsd-xmm0m64-rax).
 
 
+### S2-37dr — SUBPS XMM0,m128 [RAX]
+
+The handwritten fixture `s2_37dr_subps_m128_memory_source_and_destination_lanes.case.json`
+encodes exact legacy `0F 5C 00`; old XMM0 and the aligned m128 memory lanes
+provide independent operands. The schema-v2 profile requires SSE bit 25,
+complete fetch before #UD/#NM, and masked-only MXCSR (`0xffbf`, six exception
+masks set, DAZ/FTZ/reserved clear), while accepting all RC and sticky histories.
+It checks 16-byte alignment and canonical48 span regardless of AC before one
+`read16`; failed checks and reads leave architectural state unchanged.
+
+The independent integer-only SUBPS oracle receives the actual memory RHS and
+validates all four output lanes and sticky status. Runner coverage crosses RC
+settings and prior sticky histories, verifies backend denial and result
+tampering, and checks the SSE gate. No physical x86 acceptance is claimed. See
+the [plan](../../../../docs/plans/STAGE_2.md#s2-37dr--masked-only-legacy-long64-subps-xmm0m128-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dr--masked-only-long64-subps-xmm0m128-rax),
+and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37dr--subps-xmm0m128-rax).
+
 ### S2-37dq — ADDPS XMM0,m128 [RAX]
 
 The handwritten fixture `s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json` encodes exact `0F 58 00`; it uses old XMM0 and memory as separate lane sources and sets AC=1 while the aligned m128 is accepted. The profile requires SSE bit 25 (not SSE2), complete fetch before #UD/#NM, and masked-only MXCSR (`0xffbf`, six masks set, DAZ/FTZ/reserved clear), with all RC and prior sticky histories admitted. It validates mandatory 16-byte alignment and canonical48 span regardless of AC before one `read16`; faults and read errors roll back.

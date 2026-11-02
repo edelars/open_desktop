@@ -20,6 +20,36 @@ ADDPS добавлен во внешний MXCSR admission gate, чтобы от
 Worktree завершённого FADDP среза удалён после переноса; ADDPS worktree также
 удалён после переноса всех трёх проверенных commit.
 
+## S2-37dr — local-only Long64 legacy SUBPS m128 memory
+
+Добавлен строгий schema-v2 профиль `s2-long-subps-memory-rax-v1` для точного
+`0F 5C 00`: три байта полного fetch, один retire, stop RIP entry+3 и только
+interpreter execution. Профиль требует SSE bit 25, CR0.EM=0, CR4.OSFXSR=1,
+CR0.TS=0 и SSE state; полный fetch выполняется до #UD/#NM gates. MXCSR
+ограничен поддержанным `0xffbf`, все шесть exception masks включены,
+DAZ/FTZ/reserved bits выключены; все RC и прежние sticky values допускаются.
+
+RAX обязан быть выровнен на 16 байт независимо от AC. Проверяются checked
+canonical48 endpoints `[RAX,RAX+15]`, затем выполняется один `read16`.
+Несовпадение gate/alignment/span и read fault не коммитят состояние.
+Содержимое памяти вычитается из старого XMM0 по четырём binary32 lanes через
+`Binary32::subtract_raw_result`; IE/DE/OE/UE/PE объединяются со sticky MXCSR,
+а остальные регистры/flags сохраняются. Unmasked/#XM и JIT/native/C ABI/
+generic/fragment остаются закрыты.
+
+Fixture использует отдельные XMM0 и m128 lanes; schema validator сверяет
+результат с независимым integer-only `independent_subps` oracle. Runner покрывает
+четыре RC и 64 прежних sticky mask состояния, проверяет SSE gate и отказывает
+в relabeling результата как JIT/NativeX86. Decoder и direct ISA проверки
+подтверждают exact encoding, subtraction, отказ до data access для invalid
+MXCSR/alignment/span и read16 rollback. Полные suites прошли: od-isa 1,840;
+od-testkit 455; runner 119 unit + 498 fixture; x86-runner 8 library + 4 binary.
+Workspace all-target offline check, fmt, diff check и Graphify refresh прошли
+(11,483 nodes / 24,734 edges / 359 communities). Layout tool сообщает о
+worktree `.git` marker и двух отсутствующих исторических oracle manifests,
+ссылаемых из этого отчёта; новые пути не добавлялись. Independent Sol/high
+review ожидается после commit. No physical x86 acceptance is claimed.
+
 ## S2-37dq — local-only Long64 legacy ADDPS m128 memory
 
 Добавлен строгий schema-v2 профиль `s2-long-addps-memory-rax-v1` для точной

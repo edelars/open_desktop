@@ -16454,6 +16454,33 @@ Each lane adds old XMM0 to the corresponding memory binary32 lane with `Binary32
 
 The independent testkit oracle uses raw integer binary32 operations, not production arithmetic or host floating point. See the [plan](../plans/STAGE_2.md#s2-37dq--exact-legacy-long64-addps-xmm0m128-rax), [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-37dq--addps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dq--addps-xmm0m128-rax).
 
+## S2-37dr — masked-only Long64 SUBPS XMM0,m128 [RAX]
+
+The strict schema-v2 interpreter profile `s2-long-subps-memory-rax-v1` admits
+only exact legacy `0F 5C 00`, a three-byte fetch, budget one and stop RIP
+entry+3. It requires SSE (`CPUID.01H:EDX[25]`), not SSE2; full fetch precedes
+#UD for missing SSE/CR0.EM/CR4.OSFXSR and then #NM for CR0.TS. XMM/MXCSR state
+must be present. Other prefix, REX, ModR/M/addressing, VEX/EVEX and register
+forms are refused.
+
+MXCSR is masked-only: reserved bits clear, no bits outside `0xffbf`, all six
+exception masks set, DAZ=FTZ=0. All RC values and previous sticky histories are
+accepted; unmasked/#XM behavior is closed. RAX must be 16-byte aligned
+independent of AC. Validate checked canonical48 `[RAX,RAX+15]` before exactly
+one `read16`; alignment/span/read failures preserve state and retirement.
+
+Each lane computes old XMM0 minus the corresponding memory lane through
+`Binary32::subtract_raw_result(MXCSR.RC)`. IE/DE/OE/UE/PE are accumulated and
+ORed into old sticky status; ZE and unrelated state are preserved. NaNs are
+classified before RHS sign treatment; SNaN and same-sign infinity subtraction
+raise IE. Denormal status remains lane-local. Success replaces all XMM0 and
+advances RIP by three. JIT/native/C ABI/generic/fragment and physical x86
+support are not claimed.
+
+The schema result validator uses independent integer-only `independent_subps`
+arithmetic with the actual memory RHS. See the [plan](../plans/STAGE_2.md#s2-37dr--masked-only-legacy-long64-subps-xmm0m128-rax),
+[report](../reports/STAGE_2_REPORT.md#s2-37dr--subps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dr--subps-xmm0m128-rax).
+
 ## S2-37de — masked-only Long64 SQRTPD XMM0,m128 [RAX]
 
 The interpreter-only schema-v2 profile `s2-long-sqrtpd-memory-rax-v1` accepts only exact legacy `66 0F 51 00`, length four, budget one and stop RIP entry+4. It accepts the precise memory profile `SQRTPD XMM0,m128 [RAX]`; other prefixes/REX, ModRM/addressing forms, truncation/trailing bytes, VEX/EVEX and register forms are refused by this profile. Complete instruction fetch precedes SSE2 (`CPUID.01H:EDX[26]`), CR0.EM and CR4.OSFXSR #UD checks, then CR0.TS #NM. XMM/MXCSR state must be present.

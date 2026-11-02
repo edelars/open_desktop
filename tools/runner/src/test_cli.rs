@@ -2366,6 +2366,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongSubpsMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .subps_controls
+            .expect("validated SUBPS m128 controls");
+        run_with_subps_register_controls(
+            &mut state,
+            memory,
+            config,
+            SubpsControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtps2pdMemoryRaxV1 {
         let controls = loaded
             .fixture
