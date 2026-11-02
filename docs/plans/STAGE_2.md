@@ -205,6 +205,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cl | Bare `D9 F8` FPREM; bounded positive Normal ST(0)/ST(1), complete-only exponent gap <64, interpreter-only with exact quotient CCs and explicit underflow-safe input cutoff; independent Sol/high review clean | S2-29x/y, S2-30ck |
 | [x] | S2-30cm | Bare `D9 F5` FPREM1; bounded positive Normal ST(0)/ST(1), complete-only gap <64, exact signed nearest-even remainder and quotient CCs, stricter underflow-safe input cutoff; independent Sol/high review clean | S2-29y, S2-30cl |
 | [x] | S2-30cn | Bare `D8 F0..F7` FDIV ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; other directions remain exact-only | S2-29ac; independent Sol/high review clean |
+| [x] | S2-30co | Bare `D8 C8..CF` FMUL ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ad; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11194,6 +11195,33 @@ denials. Intel SDM Rev. 093 Vol. 2A `FDIV` pp. 3-333–3-335, especially
 Operation/FPU Flags Affected p. 3-334, defines the instruction and status
 fields; Vol. 1 §8.1.5.2/Table 8-2 and §8.1.5.3 define PC/RC, with §8.5.6 p. 8-30
 covering masked precision/C1 ([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451), [Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cn-bounded-fdiv-st0-sti-d8-f0-f7), [shared report](../reports/STAGE_2_REPORT.md#s2-30cn--bounded-fdiv-st0-sti), and [standalone report](../reports/S2_30CN_X87_FDIV_PRECISION.md). S2-30 and ISSUE-019 remain open.
+
+#### S2-30co. Bare `FMUL ST(0), ST(i)` with bounded FCW precision
+
+Extend only exact bare Long64 `D8 C8..CF`. Require present x87 state, absent
+FCS/FDS, one of twelve all-masked PC24/53/64 FCWs and `FSW & 0x80df == 0`.
+Participating physical operands must be Valid-tagged canonical nonzero Normal
+binary80 of either sign. For `i=0`, validate TOP only and square ST(0); do not
+assume an exact self-operation. Call the S2-29ad multiplication precision
+helper and admit only its finite Normal result domain.
+
+On success, commit result to ST(0), set PE to old PE OR `inexact`, replace C1
+from the pre-carry magnitude `incremented` diagnostic, and preserve C0/C2/C3
+under local policy for architecturally undefined fields. Preserve TOP, tags,
+all source cells, FCW/FDP/FOP and unrelated state; FIP=old RIP, RIP+=2, retire
+once. No data access occurs. Reject unsupported operands/results atomically.
+Only `Operation::FmulSt0St` expands. `DC C8..CF`/`DE C8..CF` and FMULP remain
+on the existing exact-only path; do not change their shared exact helper.
+
+Migrate the prior `0x027f`, `0x077f`, and `(1+2^-63)^2` rejects into literal
+success cases. Also cover all TOP/index, signs, FCWs, historical PE/C1,
+exact/inexact/tie/adjacent/carry vectors, negative directed rounding,
+exponent endpoints/carry, the S2-29ad double-rounding case, malformed/overflow/
+subnormal rejects, STOP/fetch/budget/canaries and exact-only neighbors. Keep
+JIT/native deny behavior. Intel SDM Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL` pp.
+3-360–3-362 (encoding p. 3-360, Operation/FPU Flags p. 3-361) defines the
+instruction; Vol. 1 §8.1.5.2/Table 8-2 and §8.1.5.3 define PC/RC, and §8.5.6
+p. 8-30 covers masked precision/C1 ([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478), [Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30co-bounded-fmul-st0-sti-d8-c8-cf), [shared report](../reports/STAGE_2_REPORT.md#s2-30co--bounded-fmul-st0-sti), and [standalone report](../reports/S2_30CO_X87_FMUL_PRECISION.md). S2-30 and ISSUE-019 remain open.
 
 #### S2-18j — bare CLD/STD (локальный профиль)
 

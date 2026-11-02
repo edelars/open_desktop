@@ -21210,3 +21210,20 @@ focused ISA/testkit checks 16/16. JIT/native admission remains closed; no
 native or physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol.
 2A `FDIV` pp. 3-333–3-335, Operation/FPU Flags Affected p. 3-334; Vol. 1
 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6 p. 8-30 ([Vol. 2A](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451), [Vol. 1](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See the [plan](../plans/STAGE_2.md#s2-30cn-bare-fdiv-st0-sti-with-bounded-fcw-precision), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cn-bounded-fdiv-st0-sti-d8-f0-f7), and [standalone report](S2_30CN_X87_FDIV_PRECISION.md). S2-30 and ISSUE-019 remain open.
+
+### S2-30co — bounded `FMUL ST(0), ST(i)`
+
+The interpreter now admits only exact bare Long64 `D8 C8..CF` in the
+precision-aware FMUL path. It uses the S2-29ad full-product helper at p24/53/64
+and FCW rounding mode, with Valid canonical nonzero Normal operands of either
+sign. The self-alias squares the operand and may be inexact. Success updates
+ST(0), accumulates PE, replaces C1 from pre-carry magnitude `incremented`,
+preserves C0/C2/C3 locally, and retires atomically. Other FMUL directions and
+FMULP remain exact-only; JIT/native admission remains denied.
+
+Focused FMUL tests passed 10; full `od-isa` passed 1,769/1,769; `od-testkit`
+and runner regression tests passed 1,053; formatting, workspace all-target
+check and Graphify update passed. Independent Sol/high review is clean and
+reran the ten focused tests. No native or physical x86 acceptance is claimed.
+Sources: Intel SDM Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL` pp. 3-360–3-362
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478)); Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6 p. 8-30 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See [plan](../plans/STAGE_2.md#s2-30co-bare-fmul-st0-sti-with-bounded-fcw-precision), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30co-bounded-fmul-st0-sti-d8-c8-cf), and [standalone report](S2_30CO_X87_FMUL_PRECISION.md). S2-30 and ISSUE-019 remain open.

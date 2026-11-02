@@ -9504,6 +9504,35 @@ See the [S2-30cn plan](../plans/STAGE_2.md#s2-30cn-bare-fdiv-st0-sti-with-bounde
 [standalone report](../reports/S2_30CN_X87_FDIV_PRECISION.md), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-30co: bounded `FMUL ST(0), ST(i)` (`D8 C8..CF`)
+
+Only exact bare Long64 `D8 C8..CF` is admitted. Require present x87 state,
+absent FCS/FDS, one of twelve all-exception-masked PC24/53/64 FCWs, and
+`FSW & 0x80df == 0`. Used physical registers must be Valid-tagged canonical
+nonzero Normal binary80 values of either sign. The `i=0` alias validates TOP
+only and computes a square, which may round inexactly.
+
+Use `multiply_finite_to_normal_binary80_precision_with_diagnostics` with PC/RC
+from FCW. Accept only finite Normal results. On success, write ST(0), set PE to
+old PE OR `inexact`, replace C1 with pre-carry magnitude `incremented`, and
+preserve C0/C2/C3 under a deterministic local policy for architecture-undefined
+fields. Preserve TOP, tags, source cells, FCW/FDP/FOP and unrelated state; set
+FIP to old RIP, advance RIP by two, retire once, and perform no data access.
+All refusals and execution boundaries are atomic.
+
+Only `Operation::FmulSt0St` has the precision-aware profile. Reverse `DC`
+forms and `DE` FMULP continue using the existing exact-only helper and domain.
+The increment diagnostic is a change in rounded magnitude before carry; for
+negative results it is not a signed-result comparison. No general exception
+delivery, native/JIT/schema admission or physical x86 acceptance is implied.
+Focused and full `od-isa` tests, `od-testkit`/runner regressions, workspace
+checks and clean independent Sol/high review are recorded in the
+[S2-30co report](../reports/S2_30CO_X87_FMUL_PRECISION.md). Sources: Intel SDM
+Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL` pp. 3-360–3-362; Vol. 1
+§8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6 p. 8-30. See the [S2-30co plan](../plans/STAGE_2.md#s2-30co-bare-fmul-st0-sti-with-bounded-fcw-precision),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30co--bounded-fmul-st0-sti), and
+[ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ### Local S2-19b bounded REP STOSW/D/Q contract
 
 The interpreter extends `F3 AA` REP STOSB with `F3 66 AB` word, `F3 AB`

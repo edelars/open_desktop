@@ -1416,6 +1416,16 @@ ISSUE-019 remains open. See [contract](specs/CPU_CONTRACT.md#local-s2-30cn-bound
 [plan](plans/STAGE_2.md#s2-30cn-bare-fdiv-st0-sti-with-bounded-fcw-precision), and
 [shared report](reports/STAGE_2_REPORT.md#s2-30cn--bounded-fdiv-st0-sti).
 
+**S2-30co local FMUL slice:** exact bare `D8 C8..CF` now uses target-precision
+binary80 multiplication only for Valid canonical nonzero Normal operands and
+the twelve all-masked FCW settings. The self-alias squares and can be inexact;
+PE accumulates `inexact` and C1 uses pre-carry magnitude `incremented`. Other
+FMUL directions and FMULP remain exact-only. Focused/full interpreter tests,
+runner regressions, workspace checks, and independent Sol/high review pass.
+No native/JIT or physical x86 support is claimed. See [contract](specs/CPU_CONTRACT.md#local-s2-30co-bounded-fmul-st0-sti-d8-c8-cf),
+[plan](plans/STAGE_2.md#s2-30co-bare-fmul-st0-sti-with-bounded-fcw-precision),
+and [report](reports/STAGE_2_REPORT.md#s2-30co--bounded-fmul-st0-sti).
+
 ### ISSUE-020 — Не подтверждён победитель dual-fault для CMPS RSI/RDI
 
 - **Дата обнаружения:** 2026-10-26.
