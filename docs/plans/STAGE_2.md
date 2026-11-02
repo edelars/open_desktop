@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последние завершённые срезы: S2-30cr bounded `FSUBR ST(0),ST(i)` и S2-37di masked-only `ADDSS XMM0,m32 [RAX]`. В объединённом main прошли od-isa 1,791, od-testkit 455, runner 113 unit + 490 fixture, od-x86-runner 8 library + 4 binary tests, workspace all-target check, fmt/layout и Graphify AST refresh. Независимые Sol/high review завершены чисто. Подробности: [S2-30cr report](../reports/S2_30CR_X87_FSUBR_PRECISION.md) и [S2-37di report](../reports/S2_37DI_ADDSS_MEMORY.md). Физическая x86-проверка не заявляется; Этап 2 остаётся открытым.
+Последние завершённые срезы: S2-30cs bounded `FDIVR ST(0),ST(i)` и S2-37dj masked-only `ADDSD XMM0,m64 [RAX]`. После объединения обоих срезов в main прошли od-isa 1,796, od-testkit 455, runner 113 unit + 491 fixture, od-x86-runner 8 library + 4 binary tests, workspace all-target offline check, fmt/layout и Graphify AST refresh (11,215 nodes / 24,238 edges / 338 communities). Независимые Sol/high review завершены без оставшихся замечаний. Подробности: [S2-30cs report](../reports/S2_30CS_X87_FDIVR_PRECISION.md) и [S2-37dj report](../reports/S2_37DJ_ADDSD_MEMORY.md). Native Linux denial для ADDSD заблокирован известным ISSUE-029; физическая x86-проверка не заявляется; Этап 2 остаётся открытым.
 
 Предыдущий завершённый срез S2-37dd — exact legacy SQRTPS XMM0,m128 `[RAX]` (`0F 51 00`): SSE bit 25, полный fetch, обязательное 16-byte alignment при AC=0/1, canonical48 span и ровно один read16. Результат строится только по четырём memory lanes; masked-only admission допускает все RC и прежние sticky flags, а binary32 integer sqrt агрегирует IE|DE|PE. Focused ISA 3/3; od-isa 1736, od-testkit 454, runner 112 unit + 485 fixture; workspace all-target check, fmt/layout/Graphify и независимый Sol/high review прошли. Первый полный workspace test исчерпал место (`No space left on device`); после очистки только disposable target relevant component suites прошли. Физическая x86-проверка не заявляется. Interpreter-only; native/JIT/C ABI/generic/fragment и unmasked/#XM path закрыты.
 
@@ -11271,6 +11271,12 @@ historical oracle manifests tracked by ISSUE-023. JIT/native execution, guest
 exception delivery, physical x86 validation and overall Stage 2 acceptance
 remain open.
 
+After transfer to main together with S2-37dj, combined verification passed:
+`od-isa` 1,796, `od-testkit` 455, runner 113 unit + 491 fixture, and
+`od-x86-runner` 8 library + 4 binary tests; workspace all-target offline check,
+formatting and layout passed. Graphify refreshed to 11,215 nodes, 24,238 edges
+and 338 communities. No physical x86 acceptance is claimed.
+
 #### S2-30co. Bare `FMUL ST(0), ST(i)` with bounded FCW precision
 
 Extend only exact bare Long64 `D8 C8..CF`. Require present x87 state, absent
@@ -16734,6 +16740,6 @@ Compute old `XMM0.low64` + loaded m64 with `Binary64::add_raw_result(MXCSR.RC)`,
 
 The independent integer `independent_addsd` oracle receives the memory RHS. A halfway fixture poisons `XMM1` and `XMM0.high64`. Direct tests cross four RC modes × 64 sticky histories across midpoint, adjacent, tiny/subnormal, overflow, NaN, infinity and zero cases. Runner matrix asserts `StopAddress`, an available snapshot and retirement count one before oracle validation. Also verify gate/fetch precedence, AC refusal, unaligned read, canonical endpoints, overflow, read rollback, strict schema/provenance, backend denial and S2-37bb register regression.
 
-Validation: focused decoder/direct ISA checks passed 4/4, including a generic-runner `Unsupported`/no-data-access regression; full od-isa passed 1,795, od-testkit 455, runner 113 unit + 491 fixture tests, and od-x86-runner 8 library + 4 binary tests. Workspace all-target offline check, formatting, diff check, Graphify refresh (11,207 nodes / 24,220 edges / 335 communities), and independent Sol/high review passed. The Linux-only native denial could not run because of the existing ISSUE-029 cross-target blockers; no physical x86 acceptance is claimed. Fragment/C ABI closure follows their separate API/decoder boundaries and has no dedicated S2-37dj negative test. Full details: [standalone report](../reports/S2_37DJ_ADDSD_MEMORY.md).
+Validation on the isolated slice passed focused decoder/direct ISA checks 4/4, od-isa 1,795, od-testkit 455, runner 113 unit + 491 fixture tests, and od-x86-runner 8 library + 4 binary tests; its Graphify snapshot had 11,207 nodes / 24,220 edges / 335 communities. After integration with S2-30cs, the combined main suites passed: od-isa 1,796, od-testkit 455, runner 113 unit + 491 fixture tests, and od-x86-runner 8 library + 4 binary tests. Workspace all-target offline check, formatting, layout and Graphify refresh (11,215 nodes / 24,238 edges / 338 communities) also passed. Independent Sol/high review passed. The Linux-only native denial could not run because of the existing ISSUE-029 cross-target blockers; no physical x86 acceptance is claimed. Fragment/C ABI closure follows their separate API/decoder boundaries and has no dedicated S2-37dj negative test. Full details: [standalone report](../reports/S2_37DJ_ADDSD_MEMORY.md).
 
 No physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2A `ADDSD` pp. 3-22–3-23 and legacy `SSE2` rows in Table 2-27; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3; Vol. 3A Event 19/Table 7-8. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-37dj--masked-only-long64-addsd-xmm0m64-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dj--addsd-xmm0m64-rax), [standalone report](../reports/S2_37DJ_ADDSD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dj--addsd-xmm0m64-rax).

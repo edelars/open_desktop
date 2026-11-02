@@ -21448,3 +21448,10 @@ Implemented interpreter-only schema-v2 profile `s2-long-addsd-memory-rax-v1` for
 The literal s2_37dj_addsd_m64_halfway.case.json checks `1 + 2^-53`, a poisoned `XMM1`, `XMM0.high64` canaries and unchanged memory. The independent `independent_addsd` oracle validates memory-fed results. Direct ISA tests cross four RC modes × all 64 prior sticky histories over representative scalar edge classes. The end-to-end runner matrix executes the seven representative pairs across that 256-state matrix (1,792 runs), and checks `StopAddress`, available snapshot and retirement=1 before validation. It also covers schema/provenance tampering, gates, AC, unaligned reads, address boundaries, rollback, register `ADDSD` regression and JIT/native denial.
 
 Validation and independent review results are recorded in the [standalone report](S2_37DJ_ADDSD_MEMORY.md). No physical x86 acceptance is claimed. See [plan](../plans/STAGE_2.md#s2-37dj--masked-only-legacy-long64-addsd-xmm0m64-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37dj--masked-only-legacy-long64-addsd-xmm0m64-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dj--addsd-xmm0m64-rax).
+
+After S2-30cs and S2-37dj were transferred to main, combined validation passed:
+`od-isa` 1,796, `od-testkit` 455, runner 113 unit + 491 fixture tests, and
+`od-x86-runner` 8 library + 4 binary tests. Workspace all-target offline check,
+formatting, layout validation and Graphify AST refresh passed (11,215 nodes,
+24,238 edges, 338 communities). The Linux native-denial check remains blocked
+by ISSUE-029; no physical x86 acceptance is claimed.
