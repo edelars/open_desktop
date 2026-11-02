@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последние завершённые срезы: S2-30cu bounded reverse `FMUL ST(i),ST(0)` и S2-37dl masked-only `SUBSD XMM0,m64 [RAX]`. После объединения обоих срезов в main прошли od-isa 1,809, od-testkit 455, runner 115 unit + 493 fixture, od-x86-runner 8 library + 4 binary tests, workspace all-target offline check, fmt/layout и Graphify AST refresh (11,280 nodes / 24,407 edges / 336 communities). Независимые Sol/high review завершены без оставшихся замечаний. Подробности: [S2-30cu report](../reports/S2_30CU_X87_FMUL_REVERSE_PRECISION.md) и [S2-37dl report](../reports/S2_37DL_SUBSD_MEMORY.md). Физическая x86-проверка не заявляется; Этап 2 остаётся открытым.
+Последние завершённые срезы: S2-30cv bounded reverse `FSUB ST(i),ST(0)` и S2-37dm masked-only `MULSS XMM0,m32 [RAX]`. После объединения обоих срезов в main прошли od-isa 1,815, od-testkit 455, runner 116 unit + 494 fixture, od-x86-runner 8 library + 4 binary tests, workspace all-target offline check, fmt/layout и Graphify AST refresh. Независимые Sol/high review завершены без оставшихся замечаний. Подробности: [S2-30cv report](../reports/S2_30CV_X87_FSUB_REVERSE_PRECISION.md) и [S2-37dm report](../reports/S2_37DM_MULSS_MEMORY.md). Физическая x86-проверка не заявляется; Этап 2 остаётся открытым.
 
 Предыдущий завершённый срез S2-37dd — exact legacy SQRTPS XMM0,m128 `[RAX]` (`0F 51 00`): SSE bit 25, полный fetch, обязательное 16-byte alignment при AC=0/1, canonical48 span и ровно один read16. Результат строится только по четырём memory lanes; masked-only admission допускает все RC и прежние sticky flags, а binary32 integer sqrt агрегирует IE|DE|PE. Focused ISA 3/3; od-isa 1736, od-testkit 454, runner 112 unit + 485 fixture; workspace all-target check, fmt/layout/Graphify и независимый Sol/high review прошли. Первый полный workspace test исчерпал место (`No space left on device`); после очистки только disposable target relevant component suites прошли. Физическая x86-проверка не заявляется. Interpreter-only; native/JIT/C ABI/generic/fragment и unmasked/#XM path закрыты.
 
@@ -11450,6 +11450,11 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cv-bounded-fsub-sti-s
 [standalone report](../reports/S2_30CV_X87_FSUB_REVERSE_PRECISION.md). S2-30
 and ISSUE-019 remain open.
 
+После интеграции в main: od-isa 1,815, od-testkit 455, runner 116 unit +
+494 fixture и od-x86-runner 8 library + 4 binary tests прошли; workspace
+all-target offline check, fmt, layout, diff check и Graphify AST refresh
+успешны. Независимый Sol/high review чистый.
+
 #### S2-30cq. Bare `FSUB ST(0), ST(i)` with bounded FCW precision
 
 Admit only exact bare Long64 `D8 E0..E7` and the same x87 state, selector,
@@ -16888,4 +16893,4 @@ Admit only MXCSR supported bits `0xffbf`, reserved bits clear, all six masks set
 
 The independent `independent_mulss` raw-u32 oracle receives memory RHS. Matrix: 25 operand pairs × four RC modes × 64 sticky histories (6,400 runs), with stop/snapshot/retirement assertions before oracle evaluation. Direct/schema coverage: MXCSR admission/runtime denial with no state commit/read/retirement, truncated-fetch precedence over #UD/#NM, gates/fetch, AC ordering, unaligned/canonical/overflow/read rollback, exact read, provenance/result tampering, backend denial and register/neighbor regressions. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dm--masked-only-long64-mulss-xmm0m32-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dm--mulss-xmm0m32-rax), [standalone report](../reports/S2_37DM_MULSS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dm--mulss-xmm0m32-rax). Intel SDM Rev. 093 Vol. 2B MULSS pp. 4-154–4-155; Vol. 2A §2.5.3/Table 2-20 p. 2-28; Vol. 1 §§11.5.2–11.5.3 and 11.6.6.
 
-Isolated S2-37dm validation: `od-isa` 1,811; `od-testkit` 455; runner 116 unit + 494 fixture; x86-runner 8 library + 4 binary; workspace all-target offline check, formatting, diff check and Graphify passed (11,344/24,413/362). Layout validation passes in main; isolated worktree reports its `.git` pointer and absent pre-existing disposable `work/stage*-oracle` link targets. Independent Sol/high review is clean; no physical x86 acceptance is claimed.
+Isolated S2-37dm validation: `od-isa` 1,811; `od-testkit` 455; runner 116 unit + 494 fixture; x86-runner 8 library + 4 binary; workspace all-target offline check, formatting, diff check and Graphify passed (11,344/24,413/362). After integration in main, full suites passed: `od-isa` 1,815, `od-testkit` 455, runner 116 unit + 494 fixture, and x86-runner 8 library + 4 binary; workspace all-target offline check, formatting, layout, diff check and Graphify AST refresh passed. Layout validation passes in main; isolated worktree reports its `.git` pointer and absent pre-existing disposable `work/stage*-oracle` link targets. Independent Sol/high review is clean; no physical x86 acceptance is claimed.

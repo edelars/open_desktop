@@ -21607,3 +21607,11 @@ See the [standalone report](S2_30CV_X87_FSUB_REVERSE_PRECISION.md),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cv-bounded-fsub-sti-st0-dc-e8-ef),
 [plan](../plans/STAGE_2.md#s2-30cv-bare-reverse-fsub-sti-st0-with-bounded-fcw-precision),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
+## Main integration: S2-30cv + S2-37dm
+
+После интеграции обоих срезов в main повторно прошли `od-isa` 1,815,
+`od-testkit` 455, runner 116 unit + 494 fixture и `od-x86-runner` 8 library +
+4 binary tests. Workspace all-target offline check, `cargo fmt --all -- --check`,
+`git diff --check`, layout validation и Graphify AST refresh завершились успешно.
+Независимые Sol/high review обоих срезов чистые; физическая x86-проверка не заявляется.
