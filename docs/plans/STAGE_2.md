@@ -325,6 +325,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31du | Admit historical sticky OE only in exact bare D9 00/DD 00 FLD m32/m64 gates; keep other x87 gates and native/JIT closed | S2-31dt |
 | [x] | S2-31dv | Admit historical sticky ZE only in exact bare D9 00/DD 00 FLD m32/m64 gates; preserve other flags and x87 gates; native/JIT closed | 65,536-case full-state matrix, FNSTSW/FNCLEX composition, SF/ES/B rejection; combined main suites: od-isa 1,901, testkit 455, runner 125+522, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,858/25,727/334; implementation and test-fix Sol/high reviews clean; no physical x86 acceptance |
 | [x] | S2-31dw | Admit historical SF only when IE is also set, in exact bare D9 00/DD 00 FLD m32/m64 gates; preserve other flags; native/JIT closed | 57,344-case full-state SF+IE matrix across the existing source classes and both signs; SF-only/ES/B pre-read rejection including SNaN; FNSTSW/FNCLEX and schema budget-one/no-stop coverage; integrated main suites: od-isa 1,907, testkit 455, runner 125+523, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,884/25,794/363; clean Sol/high reviews after test coverage and count fixes; no physical x86 acceptance |
+| [ ] | S2-31dx | Admit historical ZE only in exact bare D9 10/D9 18/DD 10/DD 18 FST/FSTP m32/m64 stores; preserve conversion behavior and atomic commit; native/JIT closed | S2-31br; local schema and store gates |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -651,6 +652,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38n | Exact Long64 `MAXSS XMM0,m32 [RAX]` memory profile with MAXSS-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cy masked memory, S2-38f MAXSS unmasked policy and S2-38m memory/fault ordering; MAXSS-specific QNaN invalid, operand-2 SNaN preservation; combined main suites: od-isa 1,895, testkit 455, runner 125+520, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,828 nodes/25,656 edges/376 communities; independent Sol/high review clean; no physical x86 claim |
 | [x] | S2-38o | Exact Long64 `MINSD XMM0,m64 [RAX]` memory profile with MINSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cw masked memory, S2-38g MINSD unmasked policy, S2-38m/n memory ordering; combined main suites: od-isa 1,901, testkit 455, runner 125+522, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,858/25,727/334; Sol/high review clean after backend relabel and coverage fixes; no physical x86 claim |
 | [x] | S2-38p | Exact Long64 `MAXSD XMM0,m64 [RAX]` memory profile with MAXSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cx masked memory, S2-38h MAXSD unmasked policy, S2-38o memory ordering; 16,384 source-level event/history executions, raw operand class/sign positions and ties, fetch/gate/form/span/AC/read rollback, 256 RC×sticky runner cases; integrated main suites: od-isa 1,907, testkit 455, runner 125+523, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,884/25,794/363; clean Sol/high review after backend guard and oracle expansion; no physical x86 claim |
+| [ ] | S2-38q | Exact Long64 `MINPD XMM0,m128 [RAX]` memory profile with packed unmasked IM/DM lane events; strict schema-v2 and interpreter-only | S2-37db masked memory, S2-38i packed register policy, S2-38m…p memory/backend patterns |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -9465,6 +9467,24 @@ representative result classes, signs, RC, TOP, both widths/opcodes, overflow
 re-entry without FNCLEX, FNSTSW/FNCLEX, write/range faults, CLI fixtures, and
 JIT/native denial.
 
+#### S2-31dx. Admit historical ZE on bounded m32/m64 FST/FSTP stores
+
+Relax only the prior-status gate in exact bare `D9 10`, `D9 18`, `DD 10`, and
+`DD 18` stores from `FSW & 0x80c4 == 0` to `FSW & 0x80c0 == 0`. This admits
+historical ZE while continuing to reject SF, ES, and B. Preserve the FCW,
+source/tag/class, address, conversion, and FST/FSTP gates. Incoming ZE remains
+sticky; current conversion flags and C1 are committed only after the existing
+atomic write succeeds. Do not add a ZE producer or alter the separate m80 path.
+
+Cover all 32 combinations of historical IE/DE/OE/UE/PE with ZE set, both
+widths and opcodes, four admitted FCWs, all TOP values, and both prior C1
+values across representative exact, inexact, overflow, subnormal, and special
+sources. Verify ZE-only store behavior, new status composition, repeated
+stores, FNSTSW/FNCLEX, source/tag/FCW and SF/ES/B rejection, write/range
+rollback, literal interpreter fixtures, schema-v2 Unsupported admission, and
+JIT/native denial. Native runtime and physical x86 acceptance remain deferred
+under ISSUE-019.
+
 <a id="s2-31ba-admit-sticky-ie-de-to-raw-binary80-fstp"></a>
 
 #### S2-31ba. Admit sticky IE/DE on exact raw DB38 FSTP m80fp
@@ -18010,3 +18030,36 @@ infinity indefinite QNaN, positive infinity +0, preserved QNaN payload, and
 quieted SNaN. Normal outputs are checked against the independent `3/8192`
 relative-error envelope; this does not claim correctly rounded or bit-identical
 physical hardware results. Native/JIT/generic/fragment/C ABI paths remain denied. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37dz-memory-rsqrtps-at-rax), [standalone report](../reports/S2_37DZ_RSQRTPS_MEMORY.md), [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dz-local-legacy-rsqrtps-memory-profile), and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
+#### S2-38q — exact Long64 MINPD XMM0,m128 [RAX] with unmasked IM/DM exits
+
+Add a distinct strict schema-v2 interpreter profile for exact legacy
+`66 0F 5D 00`, one executable code mapping, budget one, and stop RIP `entry+4`.
+Require SSE2; after complete fetch, missing SSE2, CR0.EM=1, or CR4.OSFXSR=0
+raises #UD before CR0.TS=1 raises #NM. Require XMM/MXCSR state. Allow only
+supported MXCSR bits (`0xffbf`), reserved bits clear, DAZ=FTZ=0, ZE/OE/UE/PE
+masks set, and variable IM/DM/RC/prior sticky bits. Preserve the existing
+masked MINPD memory and register profiles as separate profiles.
+
+Require 16-byte alignment regardless of RFLAGS.AC: aligned operands succeed
+with AC either clear or set. Validate checked canonical48 `[RAX,RAX+15]`
+before one atomic `read16`; address and read faults precede lane classification
+and leave state and retirement unchanged. Snapshot memory and old XMM0, then
+classify both binary64 lanes using MINPD raw source-2 semantics. Collect raw
+IE/DE across both lanes before commit. If any newly found event is unmasked,
+OR all raw IE/DE into sticky status, report one #XM or arithmetic #UD per
+OSXMMEXCPT, preserve full XMM0 and RIP, and retire zero instructions. For
+masked completion, suppress DE only within an IE lane; commit the full XMM0,
+status, RIP and retirement atomically. Keep JIT/native/C ABI/generic/fragment
+paths closed.
+
+Cover the lane-event product `{none,I,D,I+D}² × IM × DM × OSXMMEXCPT`, lane
+and operand permutations, NaN payload and signed-zero/raw-RHS cases, RC × all
+64 prior sticky histories, AC=0/1 aligned accesses, alignment/canonical-span/
+read-fault ordering and callbacks, exact-form/fetch/gate ordering, independent
+raw-bit oracle checks, backend/result tampering, and a literal #XM fixture.
+No physical x86 acceptance is claimed. Normative sources: Intel SDM Rev. 093
+Vol. 2B MINPD pp. 4-16–4-18; Vol. 1 §§4.9.2, 11.5.3.1–3 and Appendix D;
+Vol. 3A §16.1.3/Table 16-1. See [CPU contract](../specs/CPU_CONTRACT.md#s2-38q--exact-minpd-memory-unmasked-imdm),
+[masked MINPD memory profile](#s2-37db--exact-legacy-long64-minpd-xmm0m128-rax),
+and [register unmasked profile](#s2-38i--exact-long64-minpd-xmm0xmm1-unmasked-invalid-and-denormal-exit).

@@ -7746,6 +7746,26 @@ the [plan](../plans/STAGE_2.md#s2-31br-admit-sticky-status-on-bounded-m32m64-sto
 [report](../reports/STAGE_2_REPORT.md#s2-31br--sticky-status-admission-for-bounded-m32m64-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
 
+## S2-31dx — historical ZE admission for bounded m32/m64 FST/FSTP
+
+Only exact bare `D9 10`, `D9 18`, `DD 10`, and `DD 18` store forms admit an
+already-set ZE status bit. The local status predicate changes from
+`FSW & 0x80c4 == 0` to `FSW & 0x80c0 == 0`, leaving SF, ES, and B rejected.
+All other FCW, source/tag/class, address, and conversion gates are unchanged;
+the raw m80 store path is outside this contract.
+
+An admitted ZE remains sticky across a successful store. Current conversion
+status and C1 follow the existing conversion rules and become visible only
+after the atomic memory write succeeds. Faults leave x87 state, memory,
+retirement, and instruction pointer unchanged. This admission does not create a
+ZE producer or introduce general x87 exception delivery.
+
+Schema-v2 Unsupported results for the exact bounded forms must use the updated
+status predicate, so ZE alone is no longer a valid reason to refuse execution.
+Interpreter execution is the only admitted backend; JIT/native paths remain
+closed. Native runtime and physical x86 acceptance remain deferred under
+ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31dx-admit-historical-ze-on-bounded-m32m64-fstfstp-stores).
+
 
 <a id="local-s2-31cc-masked-canonical-qnan-fist-m32int"></a>
 
@@ -17546,3 +17566,39 @@ p. 3-269 describes VEX forms and is not applied to this legacy encoding.
 See [Stage 2 plan](../plans/STAGE_2.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
 [shared report](../reports/STAGE_2_REPORT.md#s2-37dx--divpd-xmm0m128-rax),
 [standalone report](../reports/S2_37DX_DIVPD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dx-divpd-xmm0m128-rax).
+
+## S2-38q — exact MINPD memory unmasked IM/DM
+
+The interpreter-only schema-v2 profile admits only exact Long64
+`66 0F 5D 00` (`MINPD XMM0,m128 [RAX]`), one executable code mapping, budget
+one, and stop RIP `entry+4`. It has its own immutable controls and remains
+distinct from masked S2-37db memory MINPD, unmasked S2-38i register MINPD, and
+S2-38p MAXSD memory. Fetch all four bytes before rejecting any non-exact form;
+then missing SSE2, CR0.EM=1, or CR4.OSFXSR=0 raises #UD before CR0.TS=1 raises
+#NM. XMM/MXCSR state must be present.
+
+MXCSR must use supported bits `0xffbf`, have reserved bits clear, DAZ=FTZ=0,
+and all exception masks except IM and DM set. IM, DM, RC, and prior sticky
+history are variable. RAX must be 16-byte aligned regardless of RFLAGS.AC;
+AC=0 and AC=1 both admit an aligned address. Misalignment or an invalid
+canonical48 inclusive span `[RAX,RAX+15]` raises #GP(0) without a memory
+callback. A valid span is followed by exactly one all-or-error `read16`;
+alignment, span, and read faults precede floating-point classification and
+preserve CPU, XMM, MXCSR, RIP, memory and retirement.
+
+Both old XMM0 lanes and the loaded 128-bit operand are snapshotted. Each lane
+uses binary64 MINPD raw source-2 selection: numerical minimum, with either NaN,
+equal values, and signed-zero ties selecting raw RHS bits. Raw IE and DE are
+classified across both lanes before commit. If a newly raised event is
+unmasked, all raw IE/DE events are ORed into MXCSR sticky state, one #XM or
+arithmetic #UD is reported according to OSXMMEXCPT, the complete XMM0 and RIP
+are preserved, and retirement is zero. When no event is unmasked, IE suppresses
+DE only in its own lane; then the complete XMM0, sticky status and RIP commit
+atomically. JIT/native/C ABI/generic/fragment execution remains closed.
+
+The schema oracle must use independent raw-bit integer classification and
+ordering. Verification covers the lane event product, source/lane permutations,
+payload/tie cases, all RC and prior-sticky histories, AC=0/1 aligned access,
+fault precedence and callback counts, backend/result tampering, and literal
+interpreter fixtures. This is local interpreter evidence; it makes no physical
+x86 acceptance claim. See the [plan](../plans/STAGE_2.md#s2-38q--exact-long64-minpd-xmm0m128-rax-with-unmasked-imdm-exits).
