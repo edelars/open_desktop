@@ -1203,6 +1203,12 @@ fn is_checked_dword_store_address(
     operand: &od_isa::long_decode::MemoryOperand,
     instruction_length: u64,
 ) -> bool {
+    let rax_disp8_profile = instruction_length == 3
+        && operand.address_size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rax))
+        && operand.index.is_none()
+        && operand.scale == 1
+        && i8::try_from(operand.displacement).is_ok();
     let address32_rsp_sib_profile = instruction_length == 4
         && operand.address_size == od_isa::OperandSize::Dword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
@@ -1289,6 +1295,7 @@ fn is_checked_dword_store_address(
         && (rsp_no_index_sib_profile
             || rsp_disp8_sib_profile
             || rsp_disp32_sib_profile
+            || rax_disp8_profile
             || address32_rsp_sib_profile
             || address32_rsp_disp8_sib_profile
             || address32_rsp_disp32_sib_profile
