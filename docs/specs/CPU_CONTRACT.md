@@ -3717,6 +3717,26 @@ domain unchanged. No FCW/FSW, PE/C1, guest exceptions, ISA admission,
 decode/execute, native/JIT/C ABI behavior, physical x86 acceptance or shared
 floating-point diagnostics framework is implied. See the [S2-29ac plan](../plans/STAGE_2.md#s2-29ac-finite-binary80-division-precision-diagnostics-bounded-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29ac--finite-binary80-division-precision-diagnostics), and [standalone report](../reports/S2_29AC_X87_DIVISION_PRECISION.md). ISSUE-019 remains open.
 
+## Local S2-29ad: finite binary80 multiplication precision diagnostics
+
+`multiply_finite_to_normal_binary80_precision_with_diagnostics(lhs, rhs,
+mode, precision)` accepts p=24/53/64 and nonzero normalized finite binary80
+operands with explicit integer bit and Normal, Subnormal or PseudoDenormal
+provenance. Both signs are supported. It computes the full 128-bit product
+and rounds it directly at target precision, returning `{ value, inexact,
+incremented }`. The unrounded product exponent and rounded result must both
+remain finite Normal binary80; other inputs/results return `None`. The existing
+`multiply_finite_to_binary80` helper and its subnormal-output domain are
+unchanged.
+
+For normalized product significand M with bit 127 set, target shift is
+`s=128-p`, truncated significand is `T=M>>s`, and exact discarded tail is
+`R=M mod 2^s`. `inexact` is `R != 0`; rounding mode and T parity choose a
+possible magnitude increment. `incremented` reports that increment before
+carry normalization and is not architectural C1. The result is packed once at
+the requested precision; p64-then-narrow is not used. No FCW/FSW, PE/C1,
+instruction or physical x86 behavior is implied. See the [S2-29ad plan](../plans/STAGE_2.md#s2-29ad-finite-binary80-multiplication-precision-diagnostics-bounded-helper), [implementation report](../reports/STAGE_2_REPORT.md#s2-29ad--finite-binary80-multiplication-precision-diagnostics), and [standalone report](../reports/S2_29AD_X87_MULTIPLICATION_PRECISION.md). ISSUE-019 remains open.
+
 ## Источники архитектурной семантики
 
 - Intel, [Intel 64 and IA-32 Architectures Software Developer Manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), версия 093 на дату документа: базовая архитектура и instruction reference. GPR/subregister правила сверены с [Volume 1](https://cdrdv2.intel.com/v1/dl/getContent/671436), §3.4.1.1. Для реализации сверять конкретную инструкцию и выбранный режим по manual.

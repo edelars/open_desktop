@@ -5629,6 +5629,27 @@ update passed. Independent Sol/high review is clean and reran the focused tests
 Normative precision-control context: Intel SDM Rev. 093 Vol. 1 §8.1.5.2/Table
 8-2 pp. 8-7–8-8 and §8.1.5.3 p. 8-8 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=213)). See the [plan](../plans/STAGE_2.md#s2-29ac-finite-binary80-division-precision-diagnostics-bounded-helper), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29ac-finite-binary80-division-precision-diagnostics), and [standalone report](S2_29AC_X87_DIVISION_PRECISION.md).
 
+## S2-29ad — finite binary80 multiplication precision diagnostics
+
+Added `multiply_finite_to_normal_binary80_precision_with_diagnostics` for
+nonzero normalized finite operands at p=24/53/64 and both signs. It computes
+the full 128-bit product and rounds directly to target precision, returning
+the normal binary80 result plus mathematical `inexact` and pre-carry magnitude
+`incremented`. Only Normal finite unrounded exponent/results are accepted; the
+existing `multiply_finite_to_binary80` implementation and subnormal result
+domain remain unchanged. No architectural FCW/FSW or PE/C1 behavior is added.
+
+Independent literals cover product low bits, exact/inexact products, signs,
+all modes and precisions, ties/adjacent tails, carry, provenance equivalence,
+exponent boundaries, invalid/malformed inputs, old-helper p64 agreement only
+in the common normal domain, immutability, and a direct-versus-double-rounding
+case. Focused tests passed 3/3; full `od-isa` passed 1,764/1,764; formatting,
+workspace all-target offline check, diff check and Graphify update passed.
+Independent Sol/high review is clean and reran the focused tests 3/3. No
+performance claim, ISA execution or physical x86 acceptance is made. Precision
+control context: Intel SDM Rev. 093 Vol. 1 §8.1.5.2/Table 8-2 pp. 8-7–8-8 and
+§8.1.5.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=213)). See the [plan](../plans/STAGE_2.md#s2-29ad-finite-binary80-multiplication-precision-diagnostics-bounded-helper), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29ad-finite-binary80-multiplication-precision-diagnostics), and [standalone report](S2_29AD_X87_MULTIPLICATION_PRECISION.md).
+
 ## S2-30i — exact-only FSUB ST(i), ST(0) (bounded local slice)
 
 Added bare `DC E8+i`, `i=0..7`, as `FSUB ST(i), ST(0)`. The operation shares
