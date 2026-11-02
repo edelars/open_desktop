@@ -8360,6 +8360,355 @@ mod tests {
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
+    fn s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+        use std::collections::BTreeMap;
+
+        const ENTRY: u64 = 0xa180;
+        const DISP32: i32 = 0x0102_0304;
+        const SOURCE: [u8; 6] = [0x89, 0x83, 0x04, 0x03, 0x02, 0x01];
+
+        #[derive(Clone, Debug)]
+        struct Ram {
+            code: Vec<u8>,
+            bytes: BTreeMap<u64, u8>,
+            reads: usize,
+            writes: Vec<(u64, Vec<u8>)>,
+        }
+
+        impl Ram {
+            fn around(target: u64) -> Self {
+                let mut bytes = BTreeMap::new();
+                for offset in -1_i64..=4 {
+                    if let Some(address) = target.checked_add_signed(offset) {
+                        bytes.insert(address, 0xa0 + (offset + 1) as u8);
+                    }
+                }
+                Self {
+                    code: SOURCE.to_vec(),
+                    bytes,
+                    reads: 0,
+                    writes: Vec::new(),
+                }
+            }
+        }
+
+        impl GuestMemory for Ram {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                if let Some(offset) = address
+                    .checked_sub(ENTRY)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .filter(|offset| *offset < self.code.len())
+                {
+                    return Ok(self.code[offset]);
+                }
+                self.bytes
+                    .get(&address)
+                    .copied()
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                output: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.reads += 1;
+                let length = output.len();
+                for (offset, byte) in output.iter_mut().enumerate() {
+                    let current = address
+                        .checked_add(offset as u64)
+                        .ok_or(MemoryError::AddressOverflow { address, length })?;
+                    *byte = *self.bytes.get(&current).ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Read,
+                    })?;
+                }
+                Ok(())
+            }
+
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                input: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.writes.push((address, input.to_vec()));
+                let mut staged = Vec::with_capacity(input.len());
+                for (offset, byte) in input.iter().copied().enumerate() {
+                    let current =
+                        address
+                            .checked_add(offset as u64)
+                            .ok_or(MemoryError::AddressOverflow {
+                                address,
+                                length: input.len(),
+                            })?;
+                    staged.push((current, byte));
+                }
+                for (current, byte) in staged {
+                    self.bytes.insert(current, byte);
+                }
+                Ok(())
+            }
+
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        fn state_for_target(target: u64) -> od_isa::LongModeState {
+            let mut state = od_isa::LongModeState {
+                rip: ENTRY,
+                rflags: 0x8d7,
+                ..Default::default()
+            };
+            state.gpr[0] = 0xfedc_ba98_89ab_cdef;
+            state.gpr[1] = 0x1122_3344_5566_7788;
+            state.gpr[2] = 0x8877_6655_4433_2211;
+            state.gpr[3] = target.wrapping_sub(DISP32 as i64 as u64);
+            state
+        }
+
+        let _guard = jit_test_lock();
+        let code = CodeView::new(ENTRY, &SOURCE).unwrap();
+        let compiled =
+            od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(code, ENTRY).unwrap();
+        let site = *compiled.site();
+        assert_eq!(site.operand().displacement, i64::from(DISP32));
+        assert_eq!(site.next_rip(), ENTRY + 6);
+        let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
+        drop(compiled);
+
+        // The start is canonical, while the final byte crosses from the low
+        // canonical half into the noncanonical hole.
+        let noncanonical_target = 0x0000_7fff_ffff_fffe;
+        let noncanonical_state = state_for_target(noncanonical_target);
+        assert_eq!(
+            site.operand()
+                .effective_address(&noncanonical_state, ENTRY + 6),
+            noncanonical_target
+        );
+        assert!(matches!(
+            site.operand()
+                .access_address_48(&noncanonical_state, ENTRY + 6),
+            Err(MemoryError::Architectural(
+                od_isa::memory::ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }
+            ))
+        ));
+        let mut noncanonical_native_state = noncanonical_state.clone();
+        let mut noncanonical_native_ram = Ram::around(noncanonical_target);
+        let noncanonical_native_before = noncanonical_native_ram.bytes.clone();
+        let noncanonical_result = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut noncanonical_native_state,
+                &mut noncanonical_native_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+            )
+        }
+        .unwrap();
+        let expected_gp = od_isa::memory::ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        };
+        assert_eq!(
+            noncanonical_result.exit,
+            MemoryOperationExecutionExitV2::GuestFault(expected_gp.clone())
+        );
+        assert_eq!(noncanonical_result.retired_instructions, 0);
+        assert_eq!(noncanonical_native_state, noncanonical_state);
+        assert_eq!(noncanonical_native_ram.bytes, noncanonical_native_before);
+        assert_eq!(noncanonical_native_ram.reads, 0);
+        assert!(noncanonical_native_ram.writes.is_empty());
+
+        let mut noncanonical_interpreter_state = noncanonical_state.clone();
+        let mut noncanonical_interpreter_ram = Ram::around(noncanonical_target);
+        let noncanonical_interpreter_before = noncanonical_interpreter_ram.bytes.clone();
+        assert_eq!(
+            od_isa::execute::step(
+                &mut noncanonical_interpreter_state,
+                &mut noncanonical_interpreter_ram,
+                AccessContext::default(),
+            ),
+            Ok(od_isa::execute::StepOutcome::Fault(expected_gp))
+        );
+        assert_eq!(noncanonical_interpreter_state, noncanonical_state);
+        assert_eq!(
+            noncanonical_interpreter_ram.bytes,
+            noncanonical_interpreter_before
+        );
+        assert_eq!(noncanonical_interpreter_ram.reads, 0);
+        assert!(noncanonical_interpreter_ram.writes.is_empty());
+
+        // A canonical high-half start may overflow while calculating the last
+        // byte. access_address_48 reports AddressOverflow before any callback.
+        let overflow_target = u64::MAX - 1;
+        let overflow_state = state_for_target(overflow_target);
+        assert_eq!(
+            site.operand().effective_address(&overflow_state, ENTRY + 6),
+            overflow_target
+        );
+        assert!(matches!(
+            site.operand().access_address_48(&overflow_state, ENTRY + 6),
+            Err(MemoryError::AddressOverflow {
+                address,
+                length: 4,
+            }) if address == overflow_target
+        ));
+        let mut overflow_native_state = overflow_state.clone();
+        let mut overflow_native_ram = Ram::around(overflow_target);
+        let overflow_native_before = overflow_native_ram.bytes.clone();
+        let overflow_result = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut overflow_native_state,
+                &mut overflow_native_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+            )
+        };
+        assert_eq!(
+            overflow_result,
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
+                    address: overflow_target,
+                    length: 4,
+                }
+            ))
+        );
+        assert_eq!(overflow_native_state, overflow_state);
+        assert_eq!(overflow_native_ram.bytes, overflow_native_before);
+        assert_eq!(overflow_native_ram.reads, 0);
+        assert!(overflow_native_ram.writes.is_empty());
+
+        let mut overflow_interpreter_state = overflow_state.clone();
+        let mut overflow_interpreter_ram = Ram::around(overflow_target);
+        let overflow_interpreter_before = overflow_interpreter_ram.bytes.clone();
+        assert!(matches!(
+            od_isa::execute::step(
+                &mut overflow_interpreter_state,
+                &mut overflow_interpreter_ram,
+                AccessContext::default(),
+            ),
+            Err(MemoryError::AddressOverflow {
+                address,
+                length: 4,
+            }) if address == overflow_target
+        ));
+        assert_eq!(overflow_interpreter_state, overflow_state);
+        assert_eq!(overflow_interpreter_ram.bytes, overflow_interpreter_before);
+        assert_eq!(overflow_interpreter_ram.reads, 0);
+        assert!(overflow_interpreter_ram.writes.is_empty());
+
+        // The adjacent low-canonical range ends at the final canonical byte.
+        let valid_target = 0x0000_7fff_ffff_fffc;
+        let valid_state = state_for_target(valid_target);
+        assert_eq!(
+            site.operand().effective_address(&valid_state, ENTRY + 6),
+            valid_target
+        );
+        assert_eq!(
+            site.operand()
+                .access_address_48(&valid_state, ENTRY + 6)
+                .unwrap(),
+            valid_target
+        );
+        let mut valid_native_state = valid_state.clone();
+        let mut valid_native_ram = Ram::around(valid_target);
+        let valid_native = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut valid_native_state,
+                &mut valid_native_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+            )
+        }
+        .unwrap();
+        let mut valid_interpreter_state = valid_state.clone();
+        let mut valid_interpreter_ram = Ram::around(valid_target);
+        assert_eq!(
+            od_isa::execute::step(
+                &mut valid_interpreter_state,
+                &mut valid_interpreter_ram,
+                AccessContext::default(),
+            ),
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        );
+        assert_eq!(valid_native.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(valid_native.retired_instructions, 1);
+        assert_eq!(valid_native.remaining_budget, 0);
+        assert_eq!(valid_native_state, valid_interpreter_state);
+        assert_eq!(valid_native_state.rip, ENTRY + 6);
+        assert_eq!(valid_native_state.gpr[0], valid_state.gpr[0]);
+        assert_eq!(valid_native_state.gpr[3], valid_state.gpr[3]);
+        assert_eq!(valid_native_state.rflags, valid_state.rflags);
+        assert_eq!(valid_native_ram.reads, 0);
+        assert_eq!(valid_interpreter_ram.reads, 0);
+        let payload = 0x89ab_cdef_u32.to_le_bytes().to_vec();
+        assert_eq!(valid_native_ram.writes, [(valid_target, payload.clone())]);
+        assert_eq!(valid_interpreter_ram.writes, [(valid_target, payload)]);
+        assert_eq!(valid_native_ram.bytes, valid_interpreter_ram.bytes);
+        assert_eq!(valid_native_ram.bytes[&(valid_target - 1)], 0xa0);
+        assert_eq!(valid_native_ram.bytes[&(valid_target + 4)], 0xa5);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
     fn s3_20cq_ir_dword_alias_store_uses_old_rax_for_address_and_payload() {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
         use std::collections::BTreeMap;
