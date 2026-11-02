@@ -99749,11 +99749,27 @@ mod tests {
     #[test]
     fn fld_m32_m64_preserve_historical_sf_only_with_ie() {
         let controls = [0x037f, 0x077f, 0x0b7f, 0x0f7f];
-        // Expected binary80 significand/exponent for zero, 1.0, minimum
-        // subnormal and signaling NaN at each source width.
+        // Expected binary80 significand/exponent for zero, minimum normal,
+        // interior Normal, infinity, QNaN, SNaN and minimum subnormal at each
+        // source width. The sign loop below covers each source both ways.
         let vectors32 = [
             (0_u64, 0_u64, 0_u16, 0_u16, X87Tag::Zero),
-            (0x3f80_0000, 0x8000_0000_0000_0000, 0x3fff, 0, X87Tag::Valid),
+            (0x0080_0000, 0x8000_0000_0000_0000, 0x3f81, 0, X87Tag::Valid),
+            (0x3f12_3456, 0x9234_5600_0000_0000, 0x3ffe, 0, X87Tag::Valid),
+            (
+                0x7f80_0000,
+                0x8000_0000_0000_0000,
+                0x7fff,
+                0,
+                X87Tag::Special,
+            ),
+            (
+                0x7fc1_2345,
+                0xc123_4500_0000_0000,
+                0x7fff,
+                0,
+                X87Tag::Special,
+            ),
             (1, 0x8000_0000_0000_0000, 0x3f6a, 0x0002, X87Tag::Valid),
             (
                 0x7f81_2345,
@@ -99766,11 +99782,32 @@ mod tests {
         let vectors64 = [
             (0_u64, 0_u64, 0_u16, 0_u16, X87Tag::Zero),
             (
-                0x3ff0_0000_0000_0000,
+                0x0010_0000_0000_0000,
                 0x8000_0000_0000_0000,
-                0x3fff,
+                0x3c01,
                 0,
                 X87Tag::Valid,
+            ),
+            (
+                0x3fe2_468a_c135_79bd,
+                0x9234_5609_abcde800,
+                0x3ffe,
+                0,
+                X87Tag::Valid,
+            ),
+            (
+                0x7ff0_0000_0000_0000,
+                0x8000_0000_0000_0000,
+                0x7fff,
+                0,
+                X87Tag::Special,
+            ),
+            (
+                0x7ff8_1234_5678_9abc,
+                0xc091_a2b3_c4d5_e000,
+                0x7fff,
+                0,
+                X87Tag::Special,
             ),
             (1, 0x8000_0000_0000_0000, 0x3bcd, 0x0002, X87Tag::Valid),
             (
@@ -99892,7 +99929,7 @@ mod tests {
             for status in [0x0040, 0x0080, 0x8000] {
                 let mut state = LongModeState::default();
                 state.rip = 0x86e0;
-                state.gpr[Register::Rax as usize] = 0x1000;
+                state.gpr[Register::Rax as usize] = 0x1003;
                 let mut x87 = crate::state::X87State::fixture_seed();
                 x87.status_word = status;
                 x87.set_tag(7, X87Tag::Empty);
@@ -99947,13 +99984,21 @@ mod tests {
             assert_eq!(state.gpr[Register::Rax as usize] as u16, after_fld);
             assert_eq!(state.x87.as_ref().unwrap().status_word, after_fld);
 
+            let before_fnclex = state.clone();
             assert_eq!(
                 step(&mut state, &mut memory, AccessContext::default()),
                 Ok(StepOutcome::Advanced)
             );
-            assert_eq!(state.x87.as_ref().unwrap().status_word & 0x003f, 0);
-            assert_eq!(state.gpr[Register::Rax as usize] as u16, after_fld);
+            let mut expected_after_fnclex = before_fnclex;
+            expected_after_fnclex.rip += 2;
+            expected_after_fnclex.x87.as_mut().unwrap().status_word &= !0x80ff;
+            assert_eq!(state, expected_after_fnclex, "full FNCLEX state");
             assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x1000, width)]);
+            assert_eq!(
+                state.x87.as_ref().unwrap().status_word & 0x80ff,
+                0,
+                "FNCLEX clears all sticky flags, SF, ES and B"
+            );
         }
     }
 

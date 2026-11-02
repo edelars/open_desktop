@@ -9,12 +9,13 @@ current IE. The schema-v2 no-stop, budget-one Unsupported predicate uses the
 same gate.
 
 All current conversion and status behavior remains unchanged. The test matrix
-covers 65,536 accepted executions: both source widths; positive and negative
-zero, Normal, minimum-subnormal and SNaN inputs; all 32 historical DE/ZE/OE/UE/
-PE combinations with SF+IE; the four admitted FCWs; all TOP values; and both
-prior C1 values. It compares the complete resulting machine state and verifies
-payloads, tags, metadata, exactly one source read, and unchanged memory
-canaries. Separate negative cases prove SF-only, ES and B reject atomically.
+covers 114,688 accepted executions: both source widths; positive and negative
+zero, minimum-normal, interior-Normal, infinity, QNaN, SNaN and minimum-subnormal
+inputs; all 32 historical DE/ZE/OE/UE/PE combinations with SF+IE; the four
+admitted FCWs; all TOP values; and both prior C1 values. It compares the
+complete resulting machine state and verifies payloads, tags, metadata, exactly
+one source read, and unchanged memory canaries. Separate negative cases prove
+SF-only, ES and B reject atomically.
 The FLD→FNSTSW→FNCLEX composition observes SF+IE, then verifies clearing.
 Schema-v2 coverage prevents an exact bare budget-one/no-stop Unsupported case
 from being justified by the now-admitted SF+IE history.

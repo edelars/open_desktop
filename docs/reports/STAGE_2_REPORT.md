@@ -22650,10 +22650,11 @@ are preserved. Schema-v2's exact bare budget-one/no-stop Unsupported predicate
 now accepts SF-only as a valid rejection reason but does not treat SF+IE as
 one.
 
-The 65,536-case full-state matrix spans both widths, both signs for zero,
-Normal, subnormal and SNaN vectors, all 32 other sticky-flag combinations,
-four FCWs, all TOP values and both prior C1 values. It verifies complete state,
-payloads/tags/metadata, one source read and memory canaries. SF-only/ES/B atomic
+The 114,688-case full-state matrix spans both widths and both signs across
+zero, minimum-normal, interior-Normal, infinity, QNaN, SNaN and minimum-
+subnormal vectors; all 32 other sticky-flag combinations; four FCWs; all TOP
+values; and both prior C1 values. It verifies complete state, payloads/tags/
+metadata, one source read and memory canaries. SF-only/ES/B atomic
 rejections, including SF-only with SNaN, and FLD→FNSTSW→FNCLEX observation and
 clearing are covered. The eight focused ISA tests, focused schema test, and all
 522 runner `fixture_v2` tests passed; workspace check, formatting, diff and
