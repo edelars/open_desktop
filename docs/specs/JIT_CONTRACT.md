@@ -190,6 +190,25 @@ dword store family. Production owner/MMU, SMC, cache, dispatcher, Mini, M1,
 Stage 2, physical-x86 and performance remain outside this fixture scope. See
 the [S3-20ct report](../reports/STAGE_3_S3-20ct_2026-11-01.md).
 
+#### S3-20cu: exact Dword store with RBX-base disp32
+
+The shared typed-IR Dword-store path additionally admits the six-byte
+singleton `89 83 id` (`MOV [RBX+disp32],EAX`) alongside the existing exact
+`89 03`, `89 00`, and `89 43 ib` forms. The decoded memory operand supplies
+the signed disp32 effective address from full-width RBX. The helper performs
+one checked four-byte write from the low 32 bits of EAX; RIP and retirement
+commit after a successful write, then STOP is observed. Exact source/site
+binding and one committed guest boundary at `A+6` preserve the singleton's
+instruction boundary.
+
+This does not admit other dword bases/addressing modes, prefixes, SIB, or
+additional displacement forms beyond the enumerated exact encodings. The host
+fixture has no distinct noncanonical-end or 64-bit range-overflow case; that is
+a test coverage limitation, not a reported runtime defect. No production
+owner/MMU, SMC, cache, dispatcher, Mini, M1, Stage 2, physical-x86 or
+performance conclusion follows. See the
+[S3-20cu report](../reports/STAGE_3_S3-20cu_2026-11-01.md).
+
 #### S3-20c: one-byte SIB extension
 
 S3-20c extends both existing qword operations to exactly one SIB byte:
