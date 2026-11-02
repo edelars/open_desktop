@@ -4,6 +4,10 @@
 из [BENCHMARKS](BENCHMARKS.md). Она описывает проверки, которые будут включаться
 по мере готовности задач S3; не все пути реализованы сейчас.
 
+## S3-20cp: exact aliased dword checked-memory load
+
+Run `cargo test -p od-jit --lib ir_dword_load_admits_only_exact_8b03_and_preserves_its_provenance --offline` to preserve the original singleton, plus `cargo test -p od-jit --lib ir_dword_alias_load_admits_only_exact_8b00_and_preserves_its_provenance --offline`, `cargo test -p od-jit --lib ir_dword_alias_load_pc_map_has_exact_8b00_single_site_contract --offline`, and `cargo test -p od-host s3_dword_alias_load_reads_old_full_rax_and_commits_eax_atomically --offline`. The shared-IR artifact admits only exact unprefixed `8B 00` (`MOV EAX,[RAX]`) alongside existing `8B 03`; the decoded descriptor must agree with source bytes. The host differential case checks full-width old RAX addressing above 4 GiB, unaligned access across a page boundary, zero-extension for 0/`0x80000000`/`0xffffffff`, `A+2`/one retirement, exact architectural and backend error payloads without commit, noncanonical and overflow boundaries, and no read for budget/stop guards. The PC map retains its one committed boundary at `A+2` and helper/exit phase classification. Prefixes, SIB, displacement, other register forms, truncation, and trailing bytes stay rejected. This remains fixture evidence without owner/MMU, Mini, M1, Stage 2, physical-x86, or performance claims; see the [S3-20cp report](../reports/STAGE_3_S3-20cp_2026-11-01.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases

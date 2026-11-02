@@ -333,7 +333,7 @@ pub fn verify(program: &Program) -> Result<(), VerifyError> {
                 let length = instruction_length(program, active_instruction);
                 let qword_profile = operand.size == od_isa::OperandSize::Qword
                     && is_checked_memory_address(operand, length);
-                let dword_rbx_profile = is_checked_dword_rbx_load_address(operand, length)
+                let dword_rbx_profile = is_checked_dword_load_address(operand, length)
                     && matches!(
                         program.operations.get(operation_index + 1),
                         Some(Operation::WriteGpr { register: GuestGpr(0), src, width: IntWidth::W64 }) if *src == *dst
@@ -1064,14 +1064,17 @@ fn is_checked_memory_address(
             || indexed_no_base_rsi_rdi_sib_disp32)
 }
 
-fn is_checked_dword_rbx_load_address(
+fn is_checked_dword_load_address(
     operand: &od_isa::long_decode::MemoryOperand,
     instruction_length: u64,
 ) -> bool {
     instruction_length == 2
         && operand.size == od_isa::OperandSize::Dword
         && operand.address_size == od_isa::OperandSize::Qword
-        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+        && matches!(
+            operand.base,
+            AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
+        )
         && operand.index.is_none()
         && operand.scale == 1
         && operand.displacement == 0

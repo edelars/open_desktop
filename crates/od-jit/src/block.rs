@@ -31,7 +31,7 @@ enum BlockBuildProfile {
     S0_09NativeMovRaxImm32,
     S0_09NativeRegisterV1,
     CheckedQwordLoad,
-    CheckedDwordRbxLoad,
+    CheckedDwordLoad,
     CheckedDwordRbxStore,
     CheckedQwordStore,
     CheckedQwordMemoryPair,
@@ -2604,8 +2604,8 @@ pub(crate) fn build_checked_qword_load_block(
     )
 }
 
-/// Build only the exact unprefixed `8B 03` `MOV EAX,[RBX]` checked-load form.
-pub(crate) fn build_checked_dword_rbx_load_block(
+/// Build the exact unprefixed `8B 03` and `8B 00` checked dword loads.
+pub(crate) fn build_checked_dword_load_block(
     code: CodeView<'_>,
     entry_rip: u64,
     context: AccessContext,
@@ -2616,7 +2616,7 @@ pub(crate) fn build_checked_dword_rbx_load_block(
         entry_rip,
         context,
         limits,
-        BlockBuildProfile::CheckedDwordRbxLoad,
+        BlockBuildProfile::CheckedDwordLoad,
     )
 }
 
@@ -3034,11 +3034,13 @@ fn build_block_with_profile(
                         decoded.length,
                         0x89,
                     ))
-        } else if profile == BlockBuildProfile::CheckedDwordRbxLoad {
+        } else if profile == BlockBuildProfile::CheckedDwordLoad {
             instructions.is_empty()
-                && is_checked_dword_rbx_load_form(decoded)
-                && code.bytes.get(guest_offset..guest_offset.saturating_add(2))
+                && is_checked_dword_load_form(decoded)
+                && (code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                     == Some(&[0x8b, 0x03][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(2))
+                        == Some(&[0x8b, 0x00][..]))
         } else if profile == BlockBuildProfile::CheckedDwordRbxStore {
             instructions.is_empty()
                 && is_checked_dword_rbx_store_form(decoded)
@@ -3350,7 +3352,7 @@ fn build_block_with_profile(
         let complete_bounded_profile = match profile {
             BlockBuildProfile::CheckedQwordMemoryPair => instructions.len() == 2,
             BlockBuildProfile::CheckedQwordLoad
-            | BlockBuildProfile::CheckedDwordRbxLoad
+            | BlockBuildProfile::CheckedDwordLoad
             | BlockBuildProfile::CheckedDwordRbxStore
             | BlockBuildProfile::CheckedQwordStore => true,
             BlockBuildProfile::S0_09
@@ -4740,7 +4742,7 @@ pub(crate) fn is_checked_qword_load_form(instruction: Instruction) -> bool {
         && is_checked_qword_memory_address(instruction, operand)
 }
 
-pub(crate) fn is_checked_dword_rbx_load_form(instruction: Instruction) -> bool {
+pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override
@@ -4762,7 +4764,10 @@ pub(crate) fn is_checked_dword_rbx_load_form(instruction: Instruction) -> bool {
         && destination.size() == OperandSize::Dword
         && operand.size == OperandSize::Dword
         && operand.address_size == OperandSize::Qword
-        && operand.base == AddressBase::Register(od_isa::Register::Rbx)
+        && matches!(
+            operand.base,
+            AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
+        )
         && operand.index.is_none()
         && operand.scale == 1
         && operand.displacement == 0

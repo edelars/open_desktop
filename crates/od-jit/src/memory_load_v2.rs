@@ -61,9 +61,9 @@ pub struct IrMemoryLoadBlockV2 {
     pc_map: crate::statepoints::PcMap,
 }
 
-/// Compiler-issued shared-IR artifact for only `8B 03` (`MOV EAX,[RBX]`).
-/// Its distinct type and compile flavor keep dword admission separate from
-/// the qword load profiles.
+/// Compiler-issued shared-IR artifact for exact unprefixed `8B 03` and `8B 00`
+/// dword loads. Its distinct type and compile flavor keep dword admission
+/// separate from the qword load profiles.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IrMemoryDwordLoadBlockV2 {
     artifact: MemoryArtifactV2,
@@ -912,14 +912,15 @@ pub fn compile_ir_memory_load_block_v2(
     })
 }
 
-/// Compile only exact unprefixed `8B 03` (`MOV EAX,[RBX]`) through the common
-/// block builder, typed IR, allocator, and runtime helper emitter.
+/// Compile exact unprefixed `8B 03` (`MOV EAX,[RBX]`) or `8B 00`
+/// (`MOV EAX,[RAX]`) through the common block builder, typed IR, allocator,
+/// and runtime helper emitter.
 pub fn compile_ir_memory_dword_load_block_v2(
     code: CodeView<'_>,
     entry_rip: u64,
 ) -> Result<IrMemoryDwordLoadBlockV2, MemoryLoadCompileErrorV2> {
-    let (site, bytes) = checked_dword_rbx_load_metadata_v2(code, entry_rip)?;
-    let emitted = crate::block_compile::compile_checked_dword_rbx_load_block_v2(code, entry_rip)
+    let (site, bytes) = checked_dword_load_metadata_v2(code, entry_rip)?;
+    let emitted = crate::block_compile::compile_checked_dword_load_block_v2(code, entry_rip)
         .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
     let mut source_bytes = [0; MEMORY_SITE_SOURCE_BYTES_MAX];
     source_bytes[..bytes.len()].copy_from_slice(bytes);
@@ -936,7 +937,7 @@ pub fn compile_ir_memory_dword_load_block_v2(
     })
 }
 
-fn checked_dword_rbx_load_metadata_v2(
+fn checked_dword_load_metadata_v2(
     code: CodeView<'_>,
     entry_rip: u64,
 ) -> Result<(MemorySiteV2, &[u8]), MemoryLoadCompileErrorV2> {
@@ -949,13 +950,13 @@ fn checked_dword_rbx_load_metadata_v2(
         .bytes()
         .get(offset..)
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
-    if bytes != [0x8b, 0x03] {
+    if bytes != [0x8b, 0x03] && bytes != [0x8b, 0x00] {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let mut memory = CodeMemory::full_code(code);
     let decoded = long_decode::decode(&mut memory, entry_rip, AccessContext::default())
         .map_err(|_| MemoryLoadCompileErrorV2::Decode)?;
-    if !crate::block::is_checked_dword_rbx_load_form(decoded) {
+    if !crate::block::is_checked_dword_load_form(decoded) {
         return Err(MemoryLoadCompileErrorV2::UnsupportedForm);
     }
     let next_rip = entry_rip
@@ -2718,6 +2719,75 @@ mod tests {
     }
 
     #[test]
+    fn ir_dword_alias_load_admits_only_exact_8b00_and_preserves_its_provenance() {
+        let entry = 0x8150;
+        let alias = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &[0x8b, 0x00]).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert_eq!(alias.source_bytes(), &[0x8b, 0x00]);
+        assert_eq!(alias.site().destination(), Some(0));
+        assert_eq!(
+            alias.site().operand().base,
+            AddressBase::Register(Register::Rax)
+        );
+        assert_eq!(alias.site().next_rip(), entry + 2);
+        assert_eq!(
+            alias.compile_flavor(),
+            crate::translation::CompileFlavor::S3_26cIrDwordMemoryLoadV2
+        );
+        assert_eq!(alias.pc_map().instruction_count(), 1);
+        assert!(
+            alias
+                .site()
+                .matches_source_bytes(&[0x8b, 0x00], MemorySiteOperationV2::Load)
+        );
+        for neighbor in [
+            &[0x8b, 0x01][..],
+            &[0x8b, 0x08][..],
+            &[0x8b, 0x40, 0x00][..],
+            &[0x8b, 0x04, 0x00][..],
+            &[0x66, 0x8b, 0x00][..],
+            &[0x48, 0x8b, 0x00][..],
+            &[0x8b, 0x00, 0x90][..],
+            &[0x8b][..],
+        ] {
+            assert!(
+                compile_ir_memory_dword_load_block_v2(
+                    CodeView::new(entry, neighbor).unwrap(),
+                    entry
+                )
+                .is_err(),
+                "admitted neighboring encoding {neighbor:02x?}"
+            );
+            assert!(
+                !alias
+                    .site()
+                    .matches_source_bytes(neighbor, MemorySiteOperationV2::Load),
+                "descriptor accepted neighboring encoding {neighbor:02x?}"
+            );
+        }
+        let mut forged = *alias.site();
+        forged.operand.base = AddressBase::Register(Register::Rbx);
+        assert!(!forged.matches_source_bytes(&[0x8b, 0x00], MemorySiteOperationV2::Load));
+        let mut forged = *alias.site();
+        forged.destination = Some(1);
+        assert!(!forged.matches_source_bytes(&[0x8b, 0x00], MemorySiteOperationV2::Load));
+        let mut forged = *alias.site();
+        forged.operand.address_size = od_isa::OperandSize::Dword;
+        assert!(!forged.matches_source_bytes(&[0x8b, 0x00], MemorySiteOperationV2::Load));
+        let mut forged = *alias.site();
+        forged.operand.size = od_isa::OperandSize::Qword;
+        assert!(!forged.matches_source_bytes(&[0x8b, 0x00], MemorySiteOperationV2::Load));
+        assert!(
+            !alias
+                .site()
+                .matches_source_bytes(&[0x8b, 0x03], MemorySiteOperationV2::Load)
+        );
+    }
+
+    #[test]
     fn ir_dword_store_admits_only_exact_8903_and_preserves_its_provenance() {
         let entry = 0x8200;
         let code = CodeView::new(entry, &[0x89, 0x03]).unwrap();
@@ -2829,6 +2899,25 @@ mod tests {
                 "accepted mutated load PC-map expectation: site={site_rip:#x}, next={next_rip:#x}, index={site_index}, count={instruction_count}, phase={helper_phase:?}"
             );
         }
+    }
+
+    #[test]
+    fn ir_dword_alias_load_pc_map_has_exact_8b00_single_site_contract() {
+        let entry = 0x8350;
+        let alias = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &[0x8b, 0x00]).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert!(matches_dword_pc_map_contract(
+            alias.pc_map(),
+            entry,
+            entry + 2,
+            0,
+            1,
+            StatePhase::HelperCall,
+            MemorySiteOperationV2::Load,
+        ));
     }
 
     #[test]
