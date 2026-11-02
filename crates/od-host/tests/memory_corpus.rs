@@ -3974,3 +3974,78 @@ fn published_dword_pc_maps_match_artifacts_survive_drop_and_republish_at_new_rip
         drop(published);
     }
 }
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn published_dword_disp8_and_disp32_load_pc_maps_match_artifacts_survive_drop_and_republish() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    use od_jit::statepoints::{GuestRipBoundary, SnapshotAdmissibility, StatePhase};
+
+    let cases = [
+        (ENTRY_RIP + 0x500, &[0x8b, 0x43, 0x80][..]),
+        (ENTRY_RIP + 0x540, &[0x8b, 0x83, 0x78, 0x56, 0x34, 0x12][..]),
+    ];
+    let mut previous_entry_rip = None;
+    let mut previous_source_len = None;
+    let mut previous_map = None;
+
+    for (entry_rip, source) in cases {
+        let next_rip = entry_rip + source.len() as u64;
+        if let Some(previous_entry_rip) = previous_entry_rip {
+            assert_ne!(previous_entry_rip, entry_rip);
+        }
+        if let Some(previous_source_len) = previous_source_len {
+            assert_ne!(previous_source_len, source.len());
+        }
+
+        let artifact = od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(
+            od_jit::block::CodeView::new(entry_rip, source).unwrap(),
+            entry_rip,
+        )
+        .unwrap();
+        assert_eq!(artifact.source_bytes(), source);
+        assert_eq!(artifact.entry_rip(), entry_rip);
+        assert_eq!(artifact.site().guest_rip(), entry_rip);
+        assert_eq!(artifact.site().next_rip(), next_rip);
+
+        let expected_map = artifact.pc_map().clone();
+        assert_eq!(expected_map.instruction_count(), 1);
+        assert_eq!(expected_map.boundaries().len(), 1);
+        let artifact_boundary = &expected_map.boundaries()[0];
+        assert_eq!(artifact_boundary.rip, GuestRipBoundary::Fixed(next_rip));
+        assert_eq!(artifact_boundary.instruction_index, 0);
+        assert_eq!(artifact_boundary.committed_instructions, 1);
+        assert_eq!(artifact_boundary.phase, StatePhase::Committed);
+        assert_eq!(
+            artifact_boundary.snapshot,
+            SnapshotAdmissibility::CanonicalBoundary
+        );
+
+        let published = PublishedCode::publish_ir_memory_dword_load_v2(&artifact).unwrap();
+        assert_eq!(published.pc_map(), Some(&expected_map));
+        drop(artifact);
+
+        let published_map = published
+            .pc_map()
+            .expect("published dword load retains its PC map");
+        assert_eq!(published_map, &expected_map);
+        assert_eq!(published_map.boundaries().len(), 1);
+        let published_boundary = &published_map.boundaries()[0];
+        assert_eq!(published_boundary.rip, GuestRipBoundary::Fixed(next_rip));
+        assert_eq!(published_boundary.instruction_index, 0);
+        assert_eq!(published_boundary.committed_instructions, 1);
+        assert_eq!(published_boundary.phase, StatePhase::Committed);
+        assert_eq!(
+            published_boundary.snapshot,
+            SnapshotAdmissibility::CanonicalBoundary
+        );
+        if let Some(previous_map) = previous_map.as_ref() {
+            assert_ne!(previous_map, &expected_map);
+        }
+
+        previous_entry_rip = Some(entry_rip);
+        previous_source_len = Some(source.len());
+        previous_map = Some(expected_map);
+        drop(published);
+    }
+}
