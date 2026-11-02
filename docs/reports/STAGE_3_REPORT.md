@@ -359,6 +359,20 @@ were ignored per user instruction. Mini/M1 remain deferred; Stage 3 remains
 partial. See the [S3-20ev report](STAGE_3_S3-20ev_2026-11-02.md) and
 [S3-34cg report](STAGE_3_S3-34cg_2026-11-02.md).
 
+S3-34ch pins the exact S3-20ew JIT source/site and host identities for the
+address-size-32 RCX-indexed no-base SIB Dword stores at scales 2, 4, and 8.
+Harness source `5c916db` was integrated as `29afd24`; its historical static
+manifest records 242 Rust gates (232 acceptance, 10 lifecycle), 260 local
+steps, and 105 self-test names. Independent Sol/high static review passed; no
+Python/harness execution occurred. Runtime source `75346b6` is now integrated
+as `af05d53` and passed Sol/high static review after the matcher whitelist,
+`EA=0` retry, and signed-boundary fixture fixes. No tests, builds,
+formatting, Cargo checks, or Python tests ran; runtime gates remain pending
+and this harness report is not runtime evidence. ISSUE-028 remains open.
+Stage 2 remained outside this slice's evidence; concurrent runs were ignored
+per user instruction. Mini/M1 remain deferred; Stage 3 remains partial. See
+the [S3-34ch report](STAGE_3_S3-34ch_2026-11-02.md).
+
 S3-20er adds only the unprefixed seven-byte address64 RCX-indexed no-base
 SIB Dword-load singletons `8B 04 4D/8D/CD disp32` (scales 2/4/8). Effective
 address calculation uses full-width RCX times the encoded scale plus
