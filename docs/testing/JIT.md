@@ -658,6 +658,26 @@ the pins do not establish runtime behavior. ISSUE-028 remains open; Stage 2 is
 excluded/ignored; Mini/M1 are deferred; Stage 3 remains partial. See the
 [S3-34cm report](../reports/STAGE_3_S3-34cm_2026-11-02.md).
 
+## S3-34cn: harness gates for S3-20fc addr32 RAX-indexed Dword store
+
+Harness source `66ad423` plus count-assertion fix `f5c353e` pins two exact
+acceptance gates for the eight-byte addr32 no-base SIB Dword-store form
+`67 89 04 05 disp32` (`MOV [low32(RAX)+sign-extended disp32],EAX`):
+
+- `s3_34cn_ir_addr32_rax_index_no_base_sib_disp32_dword_store_source_binding` →
+  `memory_load_v2::tests::ir_dword_addr32_rax_index_no_base_sib_disp32_store_binds_all_source_bytes_to_its_site`
+- `s3_34cn_host_addr32_rax_index_no_base_sib_disp32_dword_store_eax_address_and_data` →
+  `tests::s3_20fc_addr32_rax_index_no_base_sib_disp32_dword_store_uses_wrapped_eax_address_and_low_dword_data`
+
+The corrected static manifest records 254 Rust gates (244 acceptance, 10
+lifecycle), 272 local steps, and 111 self-test names. Independent Sol/high
+harness review passed after correcting a count assertion. No Python harness
+or Cargo gate was run. Runtime S3-20fc separately passed Sol/high static
+review, but exact behavior gates remain pending; these pins do not establish
+runtime behavior. ISSUE-028 remains open; Stage 2 is ignored/excluded; Mini/M1
+are deferred; Stage 3 remains partial. See the
+[S3-34cn report](../reports/STAGE_3_S3-34cn_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
