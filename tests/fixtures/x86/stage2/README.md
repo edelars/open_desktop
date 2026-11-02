@@ -1458,6 +1458,17 @@ direct ISA tests cover all FCW×TOP×index×sign×PE/C1 combinations and a gap-6
 case. Invalid controls, status, tags and operands refuse without committing
 state. `DE F0..F7` remains the distinct reverse quotient FDIVRP encoding.
 
+### S2-30de bounded FDIVRP fixture coverage
+
+The schema-v2 runner executes a handwritten `DE F2` PC24, round-toward-negative
+fixture for old `ST(0)=-1` divided by old `ST(2)=3`, checks the full state
+after rounding to `-1/3` and popping old TOP, confirms unchanged memory, and
+denies JIT execution. Direct ISA coverage spans all FCW×TOP×index×sign×PE/C1
+combinations and gap-65 operands. Exact and alias cases verify the ordered
+quotient and destination-before-pop rules. DE F1 stop-null Unsupported cases
+remain reserved for actual preflight refusals such as unsupported selectors or
+out-of-domain/overflow results; valid inexact quotients are admitted.
+
 ### S2-30s x87 schema coverage
 
 The schema validator admits all eight bare `DE F0+i` FDIVRP encodings,

@@ -9908,6 +9908,35 @@ Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6. See the [plan](../plans/STAGE_2.
 [standalone report](../reports/S2_30DD_X87_FDIVP_PRECISION.md), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dd-bounded-fdivp-fixture-coverage).
 
+## Local S2-30de: bounded `FDIVRP ST(i), ST(0)` (`DE F0..F7`)
+
+Extend exactly bare Long64 `DE F0..F7`. Reuse
+`bounded_x87_fdiv_st0_sti_result` for old `ST(0)/ST(i)` at the twelve
+all-exception-masked PC24/53/64 FCWs and all four RC modes. Require present
+x87 state, absent FCS/FDS, `FSW & 0x80df == 0`, Valid tags for used operands,
+canonical nonzero Normal binary80 inputs and a finite Normal result. Do not
+impose an exponent-gap cutoff; unequal exponents including gap 65 are valid.
+Retain the existing p64 result domain and add no arithmetic helper or exact
+fallback. The `i=0` alias validates one old ST(0) and returns exact `+1`.
+
+On success, write old physical `(TOP+i)&7`, then mark old TOP Empty and
+increment TOP modulo eight. For `i=0`, write `+1` to old TOP before emptying
+that same register. PE is sticky from old PE OR `inexact`; C1 is replaced from
+the helper's `incremented`. Preserve C0/C2/C3, selectors, payload and unrelated
+state by local policy; set FIP to old RIP, advance RIP by two and retire once.
+Unsupported controls/status/selectors, invalid tags/operands or non-Normal
+results refuse before mutation. Fetch, STOP and zero-budget boundaries are
+atomic. Native/JIT, general x87 exception delivery and physical x86 acceptance
+remain unsupported.
+
+Coverage includes 12,288 complete-state FCW/TOP/index/sign/PE/C1 cases and
+all-TOP/index exponent-gap-65 cases, plus a PC24 negative-directed `-1/3`
+fixture with full state and JIT denial. Normative source: Intel SDM Rev. 093
+Vol. 2A `FDIV/FIDIV—Divide`, pp. 3-333–3-335; Vol. 1 §§8.1.5.1–.3,
+Table 8-2 and §8.5.6. See the [plan](../plans/STAGE_2.md#s2-30de-bare-fdivrp-sti-st0-with-bounded-fcw-precision),
+[standalone report](../reports/S2_30DE_X87_FDIVRP_PRECISION.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30de-bounded-fdivrp-fixture-coverage).
+
 ## Local S2-30cq: bounded `FSUB ST(0), ST(i)` (`D8 E0..E7`)
 
 Only exact bare Long64 `D8 E0..E7` is admitted. Apply the same present-x87,

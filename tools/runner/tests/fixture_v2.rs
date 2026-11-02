@@ -20,6 +20,9 @@ const FSUBRP_PC24_MIDPOINT: &[u8] =
 const FDIVP_PC24_NEGATIVE_ONE_THIRD: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_30dd_fdivp_pc24_negative_one_third_pop.case.json"
 );
+const FDIVRP_PC24_NEGATIVE_ONE_THIRD: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_30de_fdivrp_pc24_negative_one_third_pop.case.json"
+);
 const WIDTHS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/mov_width_aliasing.case.json");
 const REX_RIP: &[u8] =
@@ -4013,6 +4016,44 @@ fn s2_30dd_fdivp_fixture_checks_negative_directed_rounding_full_state_and_jit_de
     }
 
     let (_, jit) = run(FDIVP_PC24_NEGATIVE_ONE_THIRD, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(jit.backend, Backend::Jit);
+    assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));
+}
+
+#[test]
+fn s2_30de_fdivrp_fixture_checks_reverse_negative_rounding_full_state_and_jit_denial() {
+    let (input, result) = run(FDIVRP_PC24_NEGATIVE_ONE_THIRD, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    // Old ST(0)=-1 and old ST(2)=3 produce -1/3; RC=down rounds away from zero.
+    expected_x87.registers[0] = "0000000000abaaaafdbf".into();
+    expected_x87.tag_word = HexU64(0xfffc);
+    expected_x87.status_word = HexU64(0x3a20);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+
+    let observed = snapshot(&result);
+    assert_eq!(observed.state, expected);
+    assert_eq!(observed.exception, Observation::Available { value: None });
+    for region in &observed.memory {
+        let before = input
+            .fixture
+            .memory
+            .iter()
+            .find(|entry| entry.region_id == region.region_id)
+            .unwrap();
+        assert_eq!(
+            region.bytes_hex, before.initial_bytes_hex,
+            "{}",
+            region.region_id
+        );
+    }
+
+    let (_, jit) = run(FDIVRP_PC24_NEGATIVE_ONE_THIRD, "jit", 4);
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
     assert_eq!(jit.backend, Backend::Jit);
     assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));

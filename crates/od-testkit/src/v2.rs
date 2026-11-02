@@ -16664,7 +16664,11 @@ impl Fixture {
             // after valid inputs (for example result overflow), and selector
             // presence is not a representable runtime path in every fixture.
             let is_fdivp_preflight_refusal = code_bytes == "def9" && self.stop_rip.is_none();
-            let is_fdivrp_inexact_unsupported = code_bytes == "def1" && self.stop_rip.is_none();
+            // A null stop address marks a DE F1 preflight refusal. The
+            // bounded FDIVRP profile can still refuse malformed inputs or a
+            // result outside its normal finite domain (including overflow),
+            // so keep this alias-specific schema allowance for such cases.
+            let is_fdivrp_preflight_refusal = code_bytes == "def1" && self.stop_rip.is_none();
             let is_fstp_source_rejected = code_bytes == "ddd9" && self.stop_rip.is_none();
             let is_fst_source_rejected = code_bytes == "ddd1" && self.stop_rip.is_none();
             let is_fxch_source_rejected = code_bytes.len() == 4
@@ -17383,7 +17387,7 @@ impl Fixture {
                     || is_fdivr_sti_st0_inexact_unsupported
                     || is_fdiv_sti_st0_inexact_unsupported
                     || is_fdivp_preflight_refusal
-                    || is_fdivrp_inexact_unsupported
+                    || is_fdivrp_preflight_refusal
                     || is_fstp_source_rejected
                     || is_fst_source_rejected
                     || is_fxch_source_rejected

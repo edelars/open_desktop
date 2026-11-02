@@ -217,7 +217,7 @@ fn fdiv_st0_sti_runner_checks_every_top_and_source_and_inexact_rounding() {
 }
 
 #[test]
-fn fdivrp_runner_checks_every_top_and_index_and_atomic_inexact_rejection() {
+fn fdivrp_runner_checks_every_top_and_index_and_atomic_overflow_rejection() {
     fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
         let mut bytes = [0; 10];
         bytes[..8].copy_from_slice(&significand.to_le_bytes());
@@ -268,8 +268,10 @@ fn fdivrp_runner_checks_every_top_and_index_and_atomic_inexact_rejection() {
     x87.control_word = 0x037f;
     x87.status_word = 0;
     x87.tag_word = 0;
-    x87.registers[0] = one;
-    x87.registers[1] = three;
+    // ST(0)/ST(i) overflows the bounded normal-result domain. Inexact finite
+    // quotients are now admitted by the precision profile.
+    x87.registers[0] = normal(u64::MAX, 0x7ffe, false);
+    x87.registers[1] = normal(0x8000_0000_0000_0000, 0x3ffe, false);
     state.x87 = Some(x87);
     let before = state.clone();
     let mut code = memory(&[0xde, 0xf1], state.rip);

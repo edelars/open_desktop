@@ -217,6 +217,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cw | Bare `DC E0..E7` FSUBR ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30l; independent Sol/high review clean; integrated main od-isa 1,821, testkit 455, runner 116+495, x86-runner 8+4; workspace/fmt/layout/diff and Graphify 11,339/24,564/343 passed; no physical x86 acceptance |
 | [x] | S2-30dc | Bare `DE E0..E7` FSUBRP ST(i),ST(0), reuse bounded FSUB ST(0)-ST(i) precision helper for normalized gap≤64; preserve p64 helper domain; write old physical ST(i), then pop TOP; sticky PE/local C1; alias and invalid-domain rollback | Focused fsub 43; od-isa 1,847, testkit 455, runner 119+502, x86-runner 8+4; workspace/fmt/diff and Graphify 11,535/24,827/369 passed; independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-30dd | Bare `DE F8..FF` FDIVP ST(i),ST(0), reuse bounded FDIV helper for `ST(i)/ST(0)` at PC24/53/64 and every RC; preserve p64 result domain with no exponent-gap cutoff; write old physical ST(i), then pop; sticky PE/C1 and +1 alias | 12,288 complete-state ISA cases; gap-65 all-FCW/TOP/index; od-isa 1,851, testkit 455, runner 119+504; workspace check/fmt/diff passed; isolated layout has only ISSUE-023 historical caveats; Graphify 11,516/24,928/347; Sol/high review clean; no physical x86 acceptance; see [standalone report](../reports/S2_30DD_X87_FDIVP_PRECISION.md) |
+| [x] | S2-30de | Bare `DE F0..F7` FDIVRP ST(i),ST(0), reuse bounded FDIV helper in old `ST(0)/ST(i)` order at PC24/53/64 and every RC; preserve p64 Normal result domain with no exponent-gap cutoff; write old physical ST(i), then pop; sticky PE/C1 and +1 alias | 12,288 complete-state ISA cases; gap-65 matrix; literal PC24 negative-directed `-1/3` runner fixture with full state/JIT denial; od-isa 1,856, testkit 455, runner 119+506 passed; workspace check/fmt/diff passed; Graphify 11,591/24,949/361; isolated layout has `.git`/historical ISSUE-023 caveats; Sol/high review pending; no physical x86 acceptance; see [standalone report](../reports/S2_30DE_X87_FDIVRP_PRECISION.md) |
 | [x] | S2-30cx | Bare `DC F8..FF` FDIV ST(i),ST(0), FCW precision division `ST(i)/ST(0)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | S2-30v, S2-30cs; integrated main od-isa 1,826, testkit 455, runner 118+495; independent Sol/high review clean (neighbor fdiv filter 19/19); workspace/fmt/diff and Graphify 11,368/24,630/336 passed |
 | [x] | S2-30cy | Bare `DC F0..F7` FDIVR ST(i),ST(0), bounded FCW precision division `ST(0)/ST(i)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | Integrated main: od-isa 1,831, testkit 455, runner 118+496, x86-runner 8+4; independent Sol/high review clean; workspace/fmt/layout/diff and Graphify 11,397/24,698/326 passed |
 | [x] | S2-30cz | Bare `DE C0..C7` FADDP ST(i),ST(0), bounded FCW precision for normalized gap≤64; physical destination then TOP pop; Normal result, sticky PE and local C1; JIT/native closed | Focused ISA 7; 3,072-case matrix; combined main: od-isa 1,837 / od-testkit 455 / runner 119+497 / x86-runner 8+4, workspace check, fmt/diff/layout and Graphify; independent Sol/high review clean; no physical x86 check |
@@ -11666,6 +11667,41 @@ Intel SDM Rev. 093 Vol. 2A `FDIV/FIDIV—Divide`, pp. 3-333–3-335
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451));
 Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dd-bounded-fdivp-sti-st0-de-f8ff)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dd-bounded-fdivp-fixture-coverage).
+
+#### S2-30de. Bare `FDIVRP ST(i), ST(0)` with bounded FCW precision
+
+Extend exactly bare Long64 `DE F0..F7`. Reuse
+`bounded_x87_fdiv_st0_sti_result(state, destination)` to compute old
+`ST(0)/ST(i)` at all twelve all-exception-masked PC24/53/64 FCWs and four RC
+modes. Require present x87 state, absent FCS/FDS, `FSW & 0x80df == 0`, Valid
+tags for used physical operands, canonical nonzero Normal binary80 inputs and
+a finite Normal result. Do not impose an exponent-gap cutoff; division admits
+unequal exponents including a gap of 65. Preserve the existing p64 result
+domain; add no arithmetic helper or exact fallback. The `i=0` alias validates
+its single old ST(0) and yields exact `+1`.
+
+On success, write the result to old physical `(TOP+i)&7`, then mark old TOP
+Empty and increment TOP modulo eight. For `i=0`, write `+1` to old TOP before
+emptying that same physical register. PE remains sticky from old PE OR
+`inexact`; C1 is replaced from the helper's `incremented`; C0/C2/C3 and
+unrelated state follow existing local preservation policy. Preserve the popped
+payload, selectors and unrelated state, set FIP to old RIP, advance RIP by two
+and retire once. Invalid controls/status/selectors, tags, non-Normal operands
+or quotient results refuse before mutation. Fetch, STOP and zero-budget
+boundaries remain atomic. Other DE groups retain existing behavior; native/JIT,
+general x87 exception delivery and physical x86 acceptance remain closed.
+
+Coverage includes 12,288 complete-state FCW/TOP/index/sign/PE/C1 executions,
+plus all-TOP/index gap-65 division cases. Runner coverage checks every
+admitted FCW with exact and reverse-rounded quotients, full-state
+destination-before-pop behavior, a handwritten PC24 negative-directed
+`-1/3` literal and JIT denial. Rollback covers invalid controls/status,
+selectors, tags, operands/results and fetch/STOP/zero-budget boundaries.
+Normative source: Intel SDM Rev. 093 Vol. 2A `FDIV/FIDIV—Divide`, pp.
+3-333–3-335; Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6. See the [CPU
+contract](../specs/CPU_CONTRACT.md#local-s2-30de-bounded-fdivrp-sti-st0-de-f0f7),
+[standalone report](../reports/S2_30DE_X87_FDIVRP_PRECISION.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30de-bounded-fdivrp-fixture-coverage).
 
 #### S2-30cx. Bare `FDIV ST(i), ST(0)` with bounded FCW precision
 
