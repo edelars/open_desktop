@@ -56,6 +56,18 @@ Python Stage 3 harness passed 89/89. Full `od-host` was not run. This bounded
 fixture does not establish a broad PC-map, performance, owner/MMU, or hardware
 result. See the [S3-20ee report](STAGE_3_S3-20ee_2026-11-02.md).
 
+S3-20ef adds only the address-size-32 ESP-base dword load `67 8B 04 24`.
+Its effective address is `u64(RSP as u32)`, ignoring high RSP bits; a dword
+starting at `0xffff_fffe` reads contiguously through `0x1_0000_0001` without
+per-byte 32-bit wrap. The bounded host case checks interpreter parity,
+injected read-error atomicity, STOP/budget, and callback retry without a
+second read; no RSP `#SS` claim is made. On author runtime commit `392886b`,
+`od-jit` passed 344/344 and the exact JIT/host, legacy negative JIT, and
+adjacent S3-20cx/S3-20cz host gates passed 1/1. After root integration
+(`a0ce871` runtime, `1ba352a` harness), exact gates passed 1/1 and the full
+Python Stage 3 harness passed 91/91. Full `od-host` was not run. See the
+[S3-20ef report](STAGE_3_S3-20ef_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20

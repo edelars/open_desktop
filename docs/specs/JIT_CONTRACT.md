@@ -661,6 +661,29 @@ write. This does not establish production owner/MMU, MMIO/SMC,
 physical-hardware, or performance behavior. See the
 [S3-20ee report](../reports/STAGE_3_S3-20ee_2026-11-02.md).
 
+#### S3-20ef: exact address-size-32 ESP-base Dword load through SIB
+
+The typed-IR Dword-load path admits only the exact four-byte singleton
+`67 8B 04 24` (`MOV EAX,[ESP]`): address-size override, SIB, ESP base, no
+index, scale 1, and zero displacement. Effective-address calculation uses
+`u64(RSP as u32)`, so high RSP bits are ignored and ESP is zero-extended to
+the guest address. A successful checked load performs one contiguous
+four-byte read, zero-extends EAX into RAX, and commits RIP to `A+4`. If ESP is
+`0xffff_fffe`, the span continues through `0x1_0000_0001`; the four bytes do
+not individually wrap at 4 GiB.
+
+The fixture checks source/site identity and rejects neighboring encodings,
+including indexed SIB; the existing address64 RSP-base negative JIT coverage
+remains in place. Host cases compare native/interpreter state and memory,
+exercise nonzero/poisoned high RSP bits, a contiguous span across 4 GiB,
+injected read-error atomicity, STOP/budget, and callback STOP followed by
+retry rejection without a second read. An independent runtime review required
+restoring the existing indexed-base guard; the final admission remains limited
+to this no-index ESP form. This slice makes no RSP `#SS` or other
+address-derived fault claim, and establishes no production owner/MMU,
+MMIO/SMC, physical-hardware, or performance behavior. See the
+[S3-20ef report](../reports/STAGE_3_S3-20ef_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
