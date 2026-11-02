@@ -3135,6 +3135,13 @@ fn build_block_with_profile(
                         .is_some_and(|bytes| bytes[..3] == [0x67, 0x89, 0x43])
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(4))
+                        .is_some_and(|bytes| {
+                            bytes[..3] == [0x67, 0x89, 0x04]
+                                && matches!(bytes[3], 0x0b | 0x4b | 0x8b | 0xcb)
+                        })
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(7))
                         .is_some_and(|bytes| bytes[..3] == [0x67, 0x89, 0x83])
                     || code
@@ -4908,6 +4915,16 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
 }
 
 pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
+    let address32_rbx_rcx_sib_profile = instruction.prefixes.address_override
+        && instruction.length == 4
+        && instruction.address_size == OperandSize::Dword
+        && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
+            if operand.address_size == OperandSize::Dword
+                && operand.size == OperandSize::Dword
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                && operand.index == Some(od_isa::Register::Rcx)
+                && matches!(operand.scale, 1 | 2 | 4 | 8)
+                && operand.displacement == 0);
     let address32_profile = instruction.prefixes.address_override
         && instruction.address_size == OperandSize::Dword
         && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
@@ -4923,7 +4940,9 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override
         && instruction.prefixes.rex.is_none()
-        && (!instruction.prefixes.address_override || address32_profile);
+        && (!instruction.prefixes.address_override
+            || address32_profile
+            || address32_rbx_rcx_sib_profile);
     let rbx_rcx_sib_profile = matches!(instruction.length, 3 | 4 | 7)
         && instruction.address_size == OperandSize::Qword
         && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
@@ -4948,12 +4967,15 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x89
         && instruction.operand_size == OperandSize::Dword
-        && (instruction.address_size == OperandSize::Qword || address32_profile)
+        && (instruction.address_size == OperandSize::Qword
+            || address32_profile
+            || address32_rbx_rcx_sib_profile)
         && source.register() == od_isa::Register::Rax
         && source.size() == OperandSize::Dword
         && operand.size == OperandSize::Dword
         && operand.address_size == instruction.address_size
         && (rbx_rcx_sib_profile
+            || address32_rbx_rcx_sib_profile
             || (operand.index.is_none()
                 && operand.scale == 1
                 && ((instruction.length == 2
