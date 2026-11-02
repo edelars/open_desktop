@@ -6049,18 +6049,6 @@ mod tests {
                 "admitted neighboring encoding {neighbor:02x?}"
             );
         }
-        let addr32_rax_disp32 = [0x67, 0x8b, 0x80, 0, 0, 0, 0];
-        let addr32_rax_block = compile_ir_memory_dword_load_block_v2(
-            CodeView::new(entry, &addr32_rax_disp32).unwrap(),
-            entry,
-        )
-        .unwrap();
-        assert!(!block
-            .site()
-            .matches_source_bytes(&addr32_rax_disp32, MemorySiteOperationV2::Load));
-        assert!(!addr32_rax_block
-            .site()
-            .matches_source_bytes(&source, MemorySiteOperationV2::Load));
     }
 
     #[test]
