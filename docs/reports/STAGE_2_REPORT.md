@@ -21120,3 +21120,26 @@ Verification: focused SQRTPD decoder/executor 2/2 and runner profile 1/1; od-isa
 Implemented schema-v2 interpreter profile `s2-long-sqrtsd-memory-rax-v1` for exact Long64 `F2 0F 51 00`. The masked-only profile requires SSE2, EM=0, OSFXSR=1, TS=0, XMM/MXCSR state, supported MXCSR bits `0xffbf`, all six exception masks, DAZ=FTZ=0, and clear reserved bits. It accepts all RC modes and old sticky history. The scalar m64 Type 3 form has no 16-byte alignment requirement; the local AC=1 rule returns Unsupported before address validation or access. AC=0 admits unaligned RAX after checking the full canonical48 `[RAX,RAX+7]` span and overflow. Success performs one read8 and computes only from memory. A failed read preserves state and retirement. XMM0.low64 changes, high64 and unrelated state are preserved, generated IE/DE/PE are merged, RIP advances by four, and the instruction retires once. Strict fixture validation uses an independent integer-only raw-bit oracle. JIT/native and other backend paths remain denied.
 
 Focused validation passed: `od-isa` 1740, `od-testkit` 454, runner 112 unit and 487 fixture tests; workspace all-target offline check, formatter and diff check passed. Independent Sol/high review passed after rejecting fabricated fault addresses and faulting RIPs for #UD/#NM/#GP. The isolated-worktree layout check reports ISSUE-023's `.git` marker and two absent historical oracle manifests. Physical x86 acceptance is not claimed. Sources: Intel SDM Rev. 093 Vol. 2A §2.5.3/Table 2-20; Vol. 2B SQRTSD pp. 4-667–4-668; Vol. 1 §§11.5.2.1–.2 and 11.5.3.1–.3; Vol. 3A Event 19/Table 7-8. See the [plan](../plans/STAGE_2.md#s2-37df--exact-legacy-long64-sqrtsd-xmm0m64-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37df--bounded-long64-sqrtsd-xmm0m64-rax-memory-profile), and [standalone report](S2_37DF_SQRTSD_MEMORY.md).
+
+### S2-30cm — bounded bare `FPREM1 ST(0), ST(1)`
+
+The interpreter admits only exact unprefixed Long64 `D9 F5`. It requires
+present x87 state, absent selectors, one of twelve all-masked PC24/53/64 FCWs,
+`FSW & 0x80df == 0`, and Valid-tagged canonical positive Normal operands at
+physical TOP/TOP+1. The input-only range is `e1 >= -16318` and `D=e0-e1 < 64`;
+the exponent cutoff accounts for the signed `D=-1` nearest-even remainder
+coefficient grid `2^(e1-64)`, so every admitted nonzero result is Normal. D>=64
+is denied before the helper. The existing nearest-even quotient helper is used
+across all admitted gaps; the remainder can be signed. Exact zero becomes +0
+with Zero tag. CCs receive Q2/Q1/Q0 in C0/C3/C1 and C2 is cleared. Exception
+bits, PE, TOP, ST(1), all other state, and memory are preserved; FIP/RIP and
+retirement update atomically.
+
+Focused FPREM1 tests passed 3/3, including the 3,072-state matrix and signed
+remainder, quotient-wrap, cutoff and D=64/65 cases. Full `od-isa` passed
+1,758/1,758 and full `od-jit` passed 9/9; formatting, workspace all-target
+offline check, diff check and Graphify update passed. Independent Sol/high
+review is clean and reran focused ISA/JIT tests 4/4. The Linux-only native
+denial test was not run on this macOS host; no native execution or physical x86
+acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2A FPREM1 pp. 3-368–3-369,
+Table 3-34 and Operation ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=486)). See the [plan](../plans/STAGE_2.md#s2-30cm-bare-register-only-fprem1-st0-st1-d9-f5), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cm-bounded-register-only-fprem1-st0-st1-d9-f5), and [standalone report](S2_30CM_X87_FPREM1.md). S2-30 and ISSUE-019 remain open.

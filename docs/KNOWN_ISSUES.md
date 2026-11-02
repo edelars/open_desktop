@@ -21,6 +21,7 @@
 - **Воспроизведение:** указанная cross-target `cargo check`; в выводе перечислены указанные initializers и неразрешённый `serde_json`.
 - **Следующий шаг:** привести Linux-only snapshot/test fixtures к текущему `od-testkit::v2` контракту и восстановить нужную test dependency, затем собрать и выполнить x86_64 Linux native runner tests. Не считать текущую macOS workspace check доказательством Linux native backend.
 - **S2-30cl:** `D9 F8` добавлен в существующий native x87-deny regression matrix, но эта Linux-only проверка не запускалась из-за описанного compile failure. См. [S2-30cl report](reports/S2_30CL_X87_FPREM.md).
+- **S2-30cm:** `D9 F5` добавлен в тот же Linux-only native x87-deny matrix. Этот тест не запускался на macOS host; Linux native backend остаётся непроверенным до исправления/запуска соответствующего target. См. [S2-30cm report](reports/S2_30CM_X87_FPREM1.md).
 
 ### ISSUE-028 — Неподтверждённый внешний report о CVTPI2PS memory x87 transition
 
@@ -1358,6 +1359,19 @@ quotient/remainder vectors, atomic denials and JIT denial pass. Native denial
 was added but could not be executed under ISSUE-029. See [S2-30cl contract](specs/CPU_CONTRACT.md#local-s2-30cl-bounded-register-only-fprem-st0-st1-d9-f8),
 [plan](plans/STAGE_2.md#s2-30cl-bare-register-only-fprem-st0-st1-d9-f8), and
 [report](reports/STAGE_2_REPORT.md#s2-30cl--bounded-bare-fprem-st0-st1).
+
+**S2-30cm local FPREM1 slice:** exact unprefixed Long64 `D9 F5` executes only
+for Valid canonical positive Normal operands, all-masked FCW, clean required
+FSW fields, complete-reduction gap `D<64`, and the proven local divisor cutoff
+`e1>=-16318`. The signed nearest-even remainder helper is used for all admitted
+gaps including `D=-1`; partial reduction and subnormal results are excluded.
+Full-state matrices, literal quotient/remainder cases, atomic denials and JIT
+denial pass. Linux-only native denial coverage is present but was not run on
+this macOS host; ISSUE-029 tracks that unverified backend route. Physical x86
+acceptance and general x87 exception delivery remain open. See [S2-30cm
+contract](specs/CPU_CONTRACT.md#local-s2-30cm-bounded-register-only-fprem1-st0-st1-d9-f5),
+[plan](plans/STAGE_2.md#s2-30cm-bare-register-only-fprem1-st0-st1-d9-f5), and
+[report](reports/STAGE_2_REPORT.md#s2-30cm--bounded-bare-fprem1-st0-st1).
 
 ### ISSUE-020 — Не подтверждён победитель dual-fault для CMPS RSI/RDI
 

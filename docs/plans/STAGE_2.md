@@ -201,6 +201,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29x | Exact truncated finite binary80 remainder coefficient decomposition for normalized nonzero operands; exact modulo for exponent gaps 0..64, lhs passthrough below, bounded rejection above; no FPREM/FPREM1 semantics | S2-29w; independent Sol/high review clean |
 | [x] | S2-29y | Exact finite nearest-even binary80 remainder coefficient for normalized nonzero operands; d=-1 half-way handling and u128 quotient/remainder for gaps 0..64; helper-only, no FPREM1/ISA or architectural effects | S2-29x; independent Sol/high review clean |
 | [x] | S2-30cl | Bare `D9 F8` FPREM; bounded positive Normal ST(0)/ST(1), complete-only exponent gap <64, interpreter-only with exact quotient CCs and explicit underflow-safe input cutoff; independent Sol/high review clean | S2-29x/y, S2-30ck |
+| [x] | S2-30cm | Bare `D9 F5` FPREM1; bounded positive Normal ST(0)/ST(1), complete-only gap <64, exact signed nearest-even remainder and quotient CCs, stricter underflow-safe input cutoff; independent Sol/high review clean | S2-29y, S2-30cl |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11076,6 +11077,37 @@ Intel SDM Rev. 093 Vol. 2A pp. 3-366–3-367 defines FPREM reduction, quotient
 condition bits and partial reduction; Vol. 1 §§4.9.1.5 and 8.1.5.2–8.1.5.3 inform
 the local underflow and PC/RC boundary. JIT and native deny routes are explicit; the Linux
 native regression test remains unexecuted under ISSUE-029 on this host.
+
+#### S2-30cm. Bare register-only `FPREM1 ST(0), ST(1)` (`D9 F5`)
+
+Admit only exact unprefixed Long64 `D9 F5`. Require an x87 snapshot with absent
+FCS/FDS selectors, one of the twelve all-exception-masked PC24/53/64 FCWs,
+`FSW & 0x80df == 0`, and Valid-tagged canonical positive nonzero Normal
+binary80 at physical TOP and TOP+1. Require divisor exponent `e1 >= -16318`
+and `D=e0-e1 < 64` before the helper. The cutoff is stricter than FPREM's:
+at D=-1 the nearest-even remainder can be a signed coefficient of one on the
+`2^(e1-64)` grid, so the earlier `e1=-16319` boundary would permit a subnormal.
+Reject D>=64 before calling the helper; partial reduction is not implemented.
+
+Use `remainder_finite_nearest_even_with_quotient` for every admitted gap,
+including D=-1. A nonzero exact coefficient may be positive or negative and
+is packed without rounding; an exact zero becomes canonical +0 with Zero tag.
+Set C0=Q2, C3=Q1, C1=Q0, C2=0 from the nearest-even quotient. Preserve all
+exception bits including PE, ST(1), TOP, other tags/payloads, FCW/FDP/FOP and
+unrelated state; set FIP to old RIP, advance RIP by two and retire once. No
+data-memory access occurs. FCW PC/RC, general x87 exception delivery,
+availability/CR0 gates, schema/CLI, native/JIT and physical acceptance remain
+outside scope. FPREM, S2-30, and ISSUE-019 remain open.
+
+Test the full 3,072-state FCW/TOP/PE/CC matrix, signed nearest-even literal
+cases (`5/2`, `7/2`, `5.5/2`, exact zero), quotient low bits/wrap, D=-2/-1/0/63,
+D=64/65 rejection, and the e1=-16318 minimum-Normal witness plus e1=-16319
+atomic rejection. Also cover participant tags/classes, selectors/status/FCW,
+prefix/WAIT/truncation/neighbors, STOP, stop-RIP, budgets, canaries and
+fetch-only traces. Add explicit JIT/native denial. Intel SDM Rev. 093 Vol. 2A
+FPREM1 pp. 3-368–3-369, Table 3-34 and Operation define the opcode, exact
+nearest quotient, complete-reduction boundary and condition-code mapping; the
+underflow cutoff is a proven local profile restriction. See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cm-bounded-register-only-fprem1-st0-st1-d9-f5), [shared report](../reports/STAGE_2_REPORT.md#s2-30cm--bounded-bare-fprem1-st0-st1), and [standalone report](../reports/S2_30CM_X87_FPREM1.md).
 
 #### S2-18j — bare CLD/STD (локальный профиль)
 

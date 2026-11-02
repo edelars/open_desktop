@@ -9391,6 +9391,42 @@ budget boundaries. Successful traces contain only instruction fetches. See the
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-30cl--bounded-bare-fprem-st0-st1),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-30cm: bounded register-only `FPREM1 ST(0), ST(1)` (`D9 F5`)
+
+Only exact unprefixed Long64 `D9 F5` is admitted. Require an x87 snapshot,
+absent FCS/FDS selectors, one of the twelve all-exception-masked PC24/53/64
+FCWs, and `FSW & 0x80df == 0`. Physical TOP and `(TOP+1)&7` both require
+Valid-tagged canonical positive nonzero Normal binary80. Require divisor
+exponent `e1 >= -16318` and `D=e0-e1 < 64` before calling
+`remainder_finite_nearest_even_with_quotient`; D>=64 is refused before the
+helper and partial reduction is outside the profile.
+
+The helper is used for every admitted gap, including D=-1, because nearest
+even can choose a nonzero nearest quotient there. A nonzero exact remainder may
+be negative; pack its signed coefficient exactly and retain Valid tag. A zero
+coefficient becomes canonical +0 with Zero tag. Replace condition codes with
+C0=Q2, C3=Q1, C1=Q0 and C2=0. Preserve old exception bits including PE,
+ST(1), TOP, other cells/tags, FCW/FDP/FOP and unrelated state. Set FIP to old
+RIP, advance RIP by two and retire once; no data-memory callback occurs. The
+`e1 >= -16318` cutoff proves the smallest possible nonzero result is at least
+the minimum Normal: for D=-1 the coefficient grid is `2^(e1-64)`, while for
+D>=0 it is `2^(e1-63)`. This is a local input restriction, not an architectural
+FPREM1 rule. PC/RC, general x87 exceptions, availability/CR0 gates, schema/CLI,
+native/JIT and physical x86 acceptance are outside scope; ISSUE-019 remains
+open.
+
+The full 3,072-state FCW/TOP/PE/old-CC matrix and independent signed nearest-
+even literals pass, including `5/2`, `7/2`, `5.5/2`, exact +0, quotient low
+bits/wrap, D=-2/-1/0/63, D=64/65 denial, the e1=-16318 minimum-Normal witness,
+and atomic e1=-16319 refusal. Prefix/WAIT/truncation/neighbor, selector,
+tag/class, environment, STOP/stop-RIP/budget, state canary and fetch-only trace
+checks pass. JIT denial is explicit. Native denial is present in the Linux-only
+source matrix but was not run on this macOS host; see ISSUE-029. See the
+[S2-30cm plan](../plans/STAGE_2.md#s2-30cm-bare-register-only-fprem1-st0-st1-d9-f5),
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-30cm--bounded-bare-fprem1-st0-st1),
+[standalone report](../reports/S2_30CM_X87_FPREM1.md), and
+[ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ### Local S2-19b bounded REP STOSW/D/Q contract
 
 The interpreter extends `F3 AA` REP STOSB with `F3 66 AB` word, `F3 AB`
