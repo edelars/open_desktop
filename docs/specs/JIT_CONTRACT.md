@@ -1048,6 +1048,30 @@ not replay it. This is bounded borrowed-memory evidence, not production
 owner/MMU integration. See the
 [S3-20fc report](../reports/STAGE_3_S3-20fc_2026-11-02.md).
 
+#### S3-20fd: exact address32 scaled RAX-indexed no-base SIB Dword load
+
+The shared typed-IR Dword-load path admits only the eight-byte forms
+`67 8B 04 45/85/C5 disp32` (`MOV EAX,[low32(RAX)*scale+sign-extended
+disp32]`) for scales 2, 4, and 8. Address size and transfer width are both
+Dword; SIB has no base and RAX index. Effective address calculation uses
+pre-instruction RAX:
+`zero_extend_64((low32(original_RAX) * scale + sign_extend(disp32)) mod
+2^32)`, with both multiplication and addition wrapping in 32 bits. One
+contiguous checked four-byte read writes EAX and zero-extends it to RAX;
+other GPRs and RFLAGS remain unchanged, and successful retirement commits
+`A+8`. Effective-address wrap does not wrap the bytes of a transfer that
+crosses the 4-GiB boundary.
+
+Source bytes and decoded site fields remain exactly bound, including scale
+and each displacement byte; partial/trailing instructions, changed scale,
+other indexes/base forms, extra prefixes, and other transfer widths are not
+admitted. Entry STOP, stop-address, and exhausted-budget guards perform no
+read. A backend error before commit preserves state and RIP; retry succeeds
+from the same architectural input. Callback STOP follows a committed load,
+and re-entry at `A+8` does not repeat the read. This remains bounded
+borrowed-memory fixture coverage, not production owner/MMU integration. See
+the [S3-20fd report](../reports/STAGE_3_S3-20fd_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact

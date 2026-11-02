@@ -699,6 +699,29 @@ runtime behavior. ISSUE-028 remains open; Stage 2 is ignored/excluded; Mini/M1
 are deferred; Stage 3 remains partial. See the
 [S3-34cn report](../reports/STAGE_3_S3-34cn_2026-11-02.md).
 
+## S3-20fd: exact address32 scaled RAX-indexed no-base SIB Dword load
+
+The bounded runtime admits only the eight-byte forms
+`67 8B 04 45/85/C5 disp32` for scales 2, 4, and 8. Its Dword effective
+address is `zero_extend_64((low32(original RAX) * scale +
+sign_extend(disp32)) mod 2^32)`; scale multiplication and displacement
+addition wrap in 32 bits. A contiguous checked four-byte read writes EAX and
+zero-extends RAX; other GPRs/RFLAGS are preserved, and successful retirement
+advances RIP by eight. A transfer starting near `0xffff_ffff` continues into
+the following linear addresses without per-byte addr32 wrap. Exact JIT
+source/site and host identities are pinned by S3-34co.
+
+Runtime source `faaac0f` and lifetime follow-up `7bc7995` passed independent
+Sol/high static review. The source contains representative signed disp32 and
+low32 wrap cases across all scales, interpreter parity, source/site binding,
+entry STOP/stop-address/budget guards and retries, backend-error no-commit and
+retry, and callback STOP commit/no-replay. The follow-up keeps the compiled
+block alive while its borrowed site is inspected. No behavior tests or builds
+were run, so the exact gates remain pending. ISSUE-028 remains open; Stage 2
+was ignored/excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
+[S3-20fd report](../reports/STAGE_3_S3-20fd_2026-11-02.md) and
+[S3-34co harness report](../reports/STAGE_3_S3-34co_2026-11-02.md).
+
 ## S3-34co: harness gates for S3-20fd addr32 scaled RAX-indexed Dword load
 
 Harness source `4e7619d` plus fail-closed tail restoration `9b1fa57` pins the
