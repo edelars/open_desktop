@@ -17842,6 +17842,395 @@ mod tests {
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
+    fn s3_20fj_addr32_alias_dword_load_uses_original_eax() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        const ENTRY: u64 = 0x9d90;
+        #[derive(Clone, Debug)]
+        struct AliasRam {
+            bytes: BTreeMap<u64, u8>,
+            reads: Vec<(u64, usize)>,
+            read_error: Option<MemoryError>,
+            stop_on_read: Option<Arc<AtomicU8>>,
+        }
+        impl PartialEq for AliasRam {
+            fn eq(&self, other: &Self) -> bool {
+                self.bytes == other.bytes
+                    && self.reads == other.reads
+                    && self.read_error == other.read_error
+            }
+        }
+        impl Eq for AliasRam {}
+        impl GuestMemory for AliasRam {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                match address.checked_sub(ENTRY) {
+                    Some(0) => Ok(0x67),
+                    Some(1) => Ok(0x8b),
+                    Some(2) => Ok(0x00),
+                    _ => self.bytes.get(&address).copied().ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    }),
+                }
+            }
+
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                output: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.reads.push((address, output.len()));
+                if let Some(error) = self.read_error.clone() {
+                    return Err(error);
+                }
+                for (offset, byte) in output.iter_mut().enumerate() {
+                    let current = address.checked_add(offset as u64).ok_or(
+                        MemoryError::Unmapped {
+                            address,
+                            access: AccessKind::Read,
+                        },
+                    )?;
+                    *byte = *self.bytes.get(&current).ok_or(MemoryError::Unmapped {
+                        address: current,
+                        access: AccessKind::Read,
+                    })?;
+                }
+                if let Some(stop) = &self.stop_on_read {
+                    stop.store(1, Ordering::Release);
+                }
+                Ok(())
+            }
+
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        fn ram_for(address: u32, value: u32) -> AliasRam {
+            let mut bytes = BTreeMap::new();
+            for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
+                bytes.insert(u64::from(address) + offset as u64, byte);
+            }
+            AliasRam {
+                bytes,
+                reads: Vec::new(),
+                read_error: None,
+                stop_on_read: None,
+            }
+        }
+
+        let _guard = jit_test_lock();
+        let source = [0x67, 0x8b, 0x00];
+        let compiled = od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(
+            CodeView::new(ENTRY, &source).unwrap(),
+            ENTRY,
+        )
+        .unwrap();
+        let site = compiled.site();
+        let expected_map = compiled.pc_map().clone();
+        assert_eq!(site.next_rip(), ENTRY + 3);
+        assert_eq!(
+            site.operand().base,
+            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rax)
+        );
+        let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
+        assert_eq!(published.pc_map(), Some(&expected_map));
+        let stop = AtomicU8::new(0);
+
+        for (index, address) in [0_u32, 0x101, 0xffff_fffd, 0xffff_fffe, 0xffff_ffff]
+            .into_iter()
+            .enumerate()
+        {
+            let value = 0x1234_5678_u32.wrapping_add(index as u32 * 0x1111_1111);
+            let mut ram = ram_for(address, value);
+            let mut interpreter_ram = ram.clone();
+            let mut state = od_isa::LongModeState {
+                rip: ENTRY,
+                rflags: 0x8d7,
+                ..Default::default()
+            };
+            state.gpr[0] = 0xffff_ffff_0000_0000 | u64::from(address);
+            state.gpr[1] = 0x7654_3210_fedc_ba98;
+            state.gpr[3] = 0x0bad_f00d_cafe_1234;
+            let mut interpreter_state = state.clone();
+            let native = published
+                .execute_ir_memory_dword_load_v2(
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+                .unwrap();
+            assert_eq!(
+                od_isa::execute::step(
+                    &mut interpreter_state,
+                    &mut interpreter_ram,
+                    AccessContext::default(),
+                )
+                .unwrap(),
+                od_isa::execute::StepOutcome::Advanced
+            );
+            assert_eq!(native.exit, MemoryOperationExecutionExitV2::Complete);
+            assert_eq!(native.retired_instructions, 1);
+            assert_eq!(state, interpreter_state);
+            assert_eq!(state.gpr[0], u64::from(value));
+            assert_ne!(state.gpr[0], u64::from(address));
+            assert_eq!(state.gpr[1], 0x7654_3210_fedc_ba98);
+            assert_eq!(state.gpr[3], 0x0bad_f00d_cafe_1234);
+            assert_eq!(state.rflags, 0x8d7);
+            assert_eq!(state.rip, ENTRY + 3);
+            assert_eq!(ram.reads, [(u64::from(address), 4)]);
+            assert_eq!(ram, interpreter_ram);
+        }
+
+        let address = 0xffff_fffe;
+        let fault = MemoryError::Architectural(od_isa::memory::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0x5),
+            linear_address: Some(u64::from(address)),
+        });
+        let mut state = od_isa::LongModeState {
+            rip: ENTRY,
+            rflags: 0x8d7,
+            ..Default::default()
+        };
+        state.gpr[0] = 0xffff_ffff_0000_0000 | u64::from(address);
+        state.gpr[1] = 0x1122_3344_5566_7788;
+        state.gpr[3] = 0x8877_6655_4433_2211;
+        let before = state.clone();
+        let mut ram = ram_for(address, 0xa1b2_c3d4);
+        ram.read_error = Some(fault.clone());
+        let failed = published
+            .execute_ir_memory_dword_load_v2(
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+            .unwrap();
+        assert!(matches!(failed.exit, MemoryOperationExecutionExitV2::GuestFault(_)));
+        assert_eq!(state, before);
+        assert_eq!(ram.reads, [(u64::from(address), 4)]);
+        ram.read_error = None;
+        let retried = published
+            .execute_ir_memory_dword_load_v2(
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+            .unwrap();
+        assert_eq!(retried.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(state.gpr[0], 0xa1b2_c3d4);
+        assert_eq!(state.rip, ENTRY + 3);
+        assert_eq!(ram.reads, [(u64::from(address), 4), (u64::from(address), 4)]);
+
+        let backend_error = MemoryError::Unmapped {
+            address: u64::from(address),
+            access: AccessKind::Read,
+        };
+        let mut state = before.clone();
+        let mut ram = ram_for(address, 0x5a6b_7c8d);
+        ram.read_error = Some(backend_error);
+        assert!(matches!(
+            published.execute_ir_memory_dword_load_v2(
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            ),
+            Err(MemoryOperationExecutionErrorV2::MemoryError(_))
+        ));
+        assert_eq!(state, before);
+        assert_eq!(ram.reads, [(u64::from(address), 4)]);
+        ram.read_error = None;
+        let retry = published
+            .execute_ir_memory_dword_load_v2(
+                &mut state,
+                &mut ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+            .unwrap();
+        assert_eq!(retry.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(state.gpr[0], 0x5a6b_7c8d);
+        assert_eq!(ram.reads, [(u64::from(address), 4), (u64::from(address), 4)]);
+
+        for (budget, stop_rip, stop_requested, expected) in [
+            (0, None, 0, MemoryOperationExecutionExitV2::BudgetExhausted),
+            (1, Some(ENTRY), 0, MemoryOperationExecutionExitV2::StopAddress),
+            (1, None, 1, MemoryOperationExecutionExitV2::StopRequested),
+        ] {
+            let mut guarded_state = before.clone();
+            let mut guarded_ram = ram_for(address, 0x0102_0304);
+            let guarded_before = guarded_state.clone();
+            let guard_stop = AtomicU8::new(stop_requested);
+            let guarded = published
+                .execute_ir_memory_dword_load_v2(
+                    &mut guarded_state,
+                    &mut guarded_ram,
+                    AccessContext::default(),
+                    budget,
+                    stop_rip,
+                    &guard_stop,
+                )
+                .unwrap();
+            assert_eq!(guarded.exit, expected);
+            assert_eq!(guarded.retired_instructions, 0);
+            assert_eq!(guarded_state, guarded_before);
+            assert!(guarded_ram.reads.is_empty());
+            guard_stop.store(0, Ordering::Release);
+            let retried_guard = published
+                .execute_ir_memory_dword_load_v2(
+                    &mut guarded_state,
+                    &mut guarded_ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &guard_stop,
+                )
+                .unwrap();
+            assert_eq!(retried_guard.exit, MemoryOperationExecutionExitV2::Complete);
+            assert_eq!(guarded_state.gpr[0], 0x0102_0304);
+            assert_eq!(guarded_state.rip, ENTRY + 3);
+            assert_eq!(guarded_ram.reads, [(u64::from(address), 4)]);
+        }
+        let mut wrong_entry = before.clone();
+        wrong_entry.rip += 1;
+        let wrong_before = wrong_entry.clone();
+        let mut guarded_ram = ram_for(address, 0x0102_0304);
+        assert!(matches!(
+            published.execute_ir_memory_dword_load_v2(
+                &mut wrong_entry,
+                &mut guarded_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            ),
+            Err(MemoryOperationExecutionErrorV2::EntryRipMismatch { .. })
+        ));
+        assert_eq!(wrong_entry, wrong_before);
+        assert!(guarded_ram.reads.is_empty());
+        wrong_entry.rip = ENTRY;
+        let retried_guard = published
+            .execute_ir_memory_dword_load_v2(
+                &mut wrong_entry,
+                &mut guarded_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+            .unwrap();
+        assert_eq!(retried_guard.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(wrong_entry.gpr[0], 0x0102_0304);
+        assert_eq!(wrong_entry.rip, ENTRY + 3);
+        assert_eq!(guarded_ram.reads, [(u64::from(address), 4)]);
+
+        let callback_stop = Arc::new(AtomicU8::new(0));
+        let mut callback_ram = ram_for(address, 0xcafe_babe);
+        callback_ram.stop_on_read = Some(callback_stop.clone());
+        let mut callback_state = before.clone();
+        let stopped = published
+            .execute_ir_memory_dword_load_v2(
+                &mut callback_state,
+                &mut callback_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &callback_stop,
+            )
+            .unwrap();
+        assert_eq!(stopped.exit, MemoryOperationExecutionExitV2::StopRequested);
+        assert_eq!(stopped.retired_instructions, 1);
+        assert_eq!(callback_state.gpr[0], 0xcafe_babe);
+        assert_eq!(callback_state.rip, ENTRY + 3);
+        assert_eq!(callback_ram.reads, [(u64::from(address), 4)]);
+        let mut callback_stop = AtomicU8::new(0);
+        let repeated = published
+            .execute_ir_memory_dword_load_v2(
+                &mut callback_state,
+                &mut callback_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &callback_stop,
+            );
+        assert!(matches!(
+            repeated,
+            Err(MemoryOperationExecutionErrorV2::EntryRipMismatch { .. })
+        ));
+        assert_eq!(callback_ram.reads, [(u64::from(address), 4)]);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
     fn s3_26e_ir_dword_store_matches_interpreter_and_commits_one_four_byte_write() {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
         use std::collections::BTreeMap;

@@ -1138,7 +1138,12 @@ fn is_checked_dword_load_address(
                 && matches!(operand.base, AddressBase::None)
                 && operand.index.is_none()
                 && operand.scale == 1
-                && i32::try_from(operand.displacement).is_ok()));
+                && i32::try_from(operand.displacement).is_ok())
+            || (instruction_length == 3
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rax))
+                && operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0));
     let addr32_rcx_no_base_sib_profile = instruction_length == 8
         && operand.address_size == od_isa::OperandSize::Dword
         && matches!(operand.base, AddressBase::None)
