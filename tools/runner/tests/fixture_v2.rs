@@ -1194,6 +1194,9 @@ const FSTP_M80_NEGATIVE_SNAN_STICKY_UE_FNSTSW: &[u8] = include_bytes!(
 const FSTP_M80_NEGATIVE_SNAN_STICKY_OE_FNSTSW: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31bs_fstp_m80fp_negative_snan_sticky_oe_fnstsw.case.json"
 );
+const FSTP_M80_HISTORICAL_ZE_OE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31dy_fstp_m80fp_historical_ze_oe_fnstsw.case.json"
+);
 const FST_M64_QNAN: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31au_fst_m64fp_positive_quiet_nan.case.json"
 );
@@ -5910,6 +5913,71 @@ fn x87_store_schema_does_not_accept_ze_only_as_an_unsupported_reason() {
             "{}",
             unsupported.validate().unwrap_err()
         );
+    }
+
+    let mut raw_store = Fixture::from_json(FSTP_M80_HISTORICAL_ZE_OE_FNSTSW)
+        .unwrap()
+        .fixture;
+    let code = raw_store
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    code.initial_bytes_hex = "db38".into();
+    code.comparison_mask_hex = "ffff".into();
+    code.length = 2;
+    raw_store.instruction_budget = 1;
+    raw_store.expected_exit = ExpectedExit::Unsupported;
+    raw_store.stop_rip = None;
+    let x87 = raw_store.initial_state.x87.as_mut().unwrap();
+    x87.status_word = HexU64(0x0004);
+    assert!(raw_store.validate().is_err(), "ZE alone must admit DB38");
+
+    for rejected_status in [0x0044_u64, 0x0084, 0x8004] {
+        let mut rejected = raw_store.clone();
+        rejected.initial_state.x87.as_mut().unwrap().status_word = HexU64(rejected_status);
+        assert!(rejected.validate().is_ok(), "FSW={rejected_status:04x}");
+    }
+}
+
+#[test]
+fn fstp_m80fp_historical_ze_fixture_preserves_bytes_and_stays_off_backends() {
+    let (input, interpreter) = run(FSTP_M80_HISTORICAL_ZE_OE_FNSTSW, "interpreter", 0);
+    assert!(matches!(interpreter.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&interpreter), 2);
+    let output = snapshot(&interpreter);
+    assert_eq!(output.state.rip, HexU64(0x0010_0004));
+    assert_eq!(output.state.gpr[0], HexU64(0x0000_0000_0030_080c));
+    let x87 = output.state.x87.as_ref().unwrap();
+    assert_eq!(x87.status_word, HexU64(0x080c));
+    assert_eq!(x87.tag_word, HexU64(0xffff));
+    assert_eq!(x87.data_pointer, HexU64(0x0030_0008));
+    assert_eq!(x87.instruction_pointer, HexU64(0x0010_0000));
+    assert_eq!(
+        x87.registers,
+        input.fixture.initial_state.x87.as_ref().unwrap().registers
+    );
+    let stack = output
+        .memory
+        .iter()
+        .find(|region| region.region_id == "stack")
+        .unwrap();
+    assert_eq!(&stack.bytes_hex[16..36], "efcdab8967452381ffff");
+    assert_ne!(x87.status_word.get() & 0x0004, 0, "ZE must remain sticky");
+    assert_eq!(
+        x87.status_word.get() & 0x0001,
+        0,
+        "raw SNaN storage adds no IE"
+    );
+
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(FSTP_M80_HISTORICAL_ZE_OE_FNSTSW, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            denied.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
     }
 }
 
