@@ -55465,8 +55465,9 @@ mod tests {
             0x0f7f,
         ];
         // Independent integer oracle: for these power-of-two operands the
-        // tail is strictly below half a target ULP. Round the signed exact
-        // magnitude to the next p-bit integer directly, without using the
+        // tail is below half a target ULP except for the opposite-sign,
+        // gap-65 PC64 case, which is exactly halfway below the binade boundary.
+        // Round the signed exact magnitude directly, without using the
         // production binary80 addition helper.
         for (gap, high_exponent) in [(65u16, 0x3fff), (66, 0x4000), (32765, 0x7ffe)] {
             for negative in [false, true] {

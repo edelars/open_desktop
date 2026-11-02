@@ -5,7 +5,7 @@
   "provenance": {
     "kind": "project_fixture",
     "source": "Literal large-gap FADD DC C1 with ST(0)=+1 and the actual Normal ST(1)=2^-65 RHS; local S2-30dg runner fixture.",
-    "specification": "Intel SDM revision 093, FADD; local S2-30df CPU contract.",
+    "specification": "Intel SDM revision 093, FADD; local S2-30dg CPU contract.",
     "specification_version": "Intel SDM revision 093; project S2-30dg"
   },
   "seed": null,
