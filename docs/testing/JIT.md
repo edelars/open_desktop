@@ -902,6 +902,25 @@ gates remain pending. ISSUE-028 remains open; Stage 2 is ignored/excluded;
 Mini/M1 are deferred; Stage 3 remains partial. See the
 [S3-34ct report](../reports/STAGE_3_S3-34ct_2026-11-02.md).
 
+## S3-34cu: harness gates for S3-20fj address32 alias Dword load
+
+Harness source `75505df` pins the exact JIT source/site and host acceptance
+identities for the three-byte singleton `67 8B 00` (`MOV EAX,[EAX]`):
+
+- `s3_34cu_ir_addr32_alias_dword_load_source_binding` →
+  `memory_load_v2::tests::ir_dword_addr32_alias_load_binds_all_source_bytes_to_its_site`
+- `s3_34cu_host_addr32_alias_dword_load_original_eax` →
+  `tests::s3_20fj_addr32_alias_dword_load_uses_original_eax`
+
+The required harness self-test is
+`test_s3_34cu_addr32_alias_dword_load_gates_are_pinned_and_fail_closed`.
+Independent Sol review passed. No Python harness, Cargo gate, build,
+formatting, or behavior test was run; the exact runtime gates remain pending.
+S3-20fj separately passed Sol/high static review after host fixture/retry
+fixes; that review is not execution evidence. ISSUE-028 remains unchanged;
+Stage 2 was excluded, Mini/M1 are deferred, and Stage 3 remains partial. See
+the [S3-34cu report](../reports/STAGE_3_S3-34cu_2026-11-02.md).
+
 ## S3-20fi: exact address64 RAX-base Dword store with signed disp32
 
 Run the exact gates:
