@@ -21164,3 +21164,27 @@ review is clean and reran focused ISA/JIT tests 4/4. The Linux-only native
 denial test was not run on this macOS host; no native execution or physical x86
 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2A FPREM1 pp. 3-368–3-369,
 Table 3-34 and Operation ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=486)). See the [plan](../plans/STAGE_2.md#s2-30cm-bare-register-only-fprem1-st0-st1-d9-f5), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cm-bounded-register-only-fprem1-st0-st1-d9-f5), and [standalone report](S2_30CM_X87_FPREM1.md). S2-30 and ISSUE-019 remain open.
+
+### S2-30cn — bounded `FDIV ST(0), ST(i)`
+
+The interpreter now admits exact bare Long64 `D8 F0..F7` for the bounded
+precision-aware FDIV path. Twelve all-masked FCWs select p24/53/64 and RC;
+participants must be Valid canonical nonzero Normal values and the quotient
+must round to a finite Normal binary80 result. Success writes ST(0), ORs
+mathematical inexactness into sticky PE, replaces C1 from the pre-carry
+magnitude increment diagnostic, preserves C0/C2/C3 under the local undefined-
+field policy, and retires once. Other FDIV directions/pop forms retain their
+previous exact-only gates. No data access or general x87 exception delivery is
+added.
+
+Independent literals cover exact and inexact quotients, both signs, all RC/PC
+combinations, midpoint boundaries, discarded quotient bits, exponent/carry
+limits, all TOP/index combinations and atomic refusals. The formerly rejected
+1/3 runner case now verifies rounded success. Focused ISA passed 4/4; full
+`od-isa` passed 1,762/1,762, `od-testkit` 454/454, and `od-runner` 112 unit plus
+487 fixture tests. Formatting, workspace all-target offline check, diff check
+and Graphify refresh passed. Independent Sol/high review is clean and reran
+focused ISA/testkit checks 16/16. JIT/native admission remains closed; no
+native or physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol.
+2A `FDIV` pp. 3-333–3-335, Operation/FPU Flags Affected p. 3-334; Vol. 1
+§8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6 p. 8-30 ([Vol. 2A](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451), [Vol. 1](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See the [plan](../plans/STAGE_2.md#s2-30cn-bare-fdiv-st0-sti-with-bounded-fcw-precision), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cn-bounded-fdiv-st0-sti-d8-f0-f7), and [standalone report](S2_30CN_X87_FDIV_PRECISION.md). S2-30 and ISSUE-019 remain open.

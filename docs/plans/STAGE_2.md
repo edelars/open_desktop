@@ -203,6 +203,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29y | Exact finite nearest-even binary80 remainder coefficient for normalized nonzero operands; d=-1 half-way handling and u128 quotient/remainder for gaps 0..64; helper-only, no FPREM1/ISA or architectural effects | S2-29x; independent Sol/high review clean |
 | [x] | S2-30cl | Bare `D9 F8` FPREM; bounded positive Normal ST(0)/ST(1), complete-only exponent gap <64, interpreter-only with exact quotient CCs and explicit underflow-safe input cutoff; independent Sol/high review clean | S2-29x/y, S2-30ck |
 | [x] | S2-30cm | Bare `D9 F5` FPREM1; bounded positive Normal ST(0)/ST(1), complete-only gap <64, exact signed nearest-even remainder and quotient CCs, stricter underflow-safe input cutoff; independent Sol/high review clean | S2-29y, S2-30cl |
+| [x] | S2-30cn | Bare `D8 F0..F7` FDIV ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; other directions remain exact-only | S2-29ac; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11135,6 +11136,35 @@ fetch-only traces. Add explicit JIT/native denial. Intel SDM Rev. 093 Vol. 2A
 FPREM1 pp. 3-368–3-369, Table 3-34 and Operation define the opcode, exact
 nearest quotient, complete-reduction boundary and condition-code mapping; the
 underflow cutoff is a proven local profile restriction. See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cm-bounded-register-only-fprem1-st0-st1-d9-f5), [shared report](../reports/STAGE_2_REPORT.md#s2-30cm--bounded-bare-fprem1-st0-st1), and [standalone report](../reports/S2_30CM_X87_FPREM1.md).
+
+#### S2-30cn. Bare `FDIV ST(0), ST(i)` with bounded FCW precision
+
+Expand only exact bare Long64 `D8 F0..F7` to the S2-29ac direct finite
+division helper. Require present x87 state, absent FCS/FDS, the twelve
+all-masked FCW encodings, and `FSW & 0x80df == 0`. Used physical operands must
+be Valid-tagged canonical nonzero Normal binary80 of either sign. The self
+case `i=0` validates only TOP and is exact +1. Accept only a finite Normal
+quotient exponent and a Normal finite rounded result; reject zero divisor,
+zero/subnormal/special operands, subnormal/zero/overflow results, malformed
+state and out-of-range exponents atomically.
+
+Commit the rounded result to ST(0), set PE to old PE OR helper `inexact`, and
+replace C1 with helper `incremented`. Preserve C0/C2/C3 as a local deterministic
+policy for architecturally undefined fields, along with TOP, tags, sources,
+FCW and unrelated state. Set FIP to old RIP, advance RIP by two, and retire
+once; no data access occurs. Do not widen FDIVR, reverse-direction DC/DE forms,
+or pop forms: they remain in their existing exact-only domain. No guest
+exception delivery or native/JIT/schema admission is added.
+
+Test all TOP/index pairs, signs, twelve FCWs, previous PE and initial C1,
+independent exact/±1/3 and midpoint literals, directed negative rounding,
+quotient discarded bits, carry and exponent boundaries, and atomic rejects.
+Migrate the prior 1/3 rejection row into literal success coverage. Include
+decode, prefix/fetch, STOP/budget/canary/fetch-only trace and existing backend
+denials. Intel SDM Rev. 093 Vol. 2A `FDIV` pp. 3-333–3-335, especially
+Operation/FPU Flags Affected p. 3-334, defines the instruction and status
+fields; Vol. 1 §8.1.5.2/Table 8-2 and §8.1.5.3 define PC/RC, with §8.5.6 p. 8-30
+covering masked precision/C1 ([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451), [Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cn-bounded-fdiv-st0-sti-d8-f0-f7), [shared report](../reports/STAGE_2_REPORT.md#s2-30cn--bounded-fdiv-st0-sti), and [standalone report](../reports/S2_30CN_X87_FDIV_PRECISION.md). S2-30 and ISSUE-019 remain open.
 
 #### S2-18j — bare CLD/STD (локальный профиль)
 

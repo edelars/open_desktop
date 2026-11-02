@@ -9447,6 +9447,40 @@ source matrix but was not run on this macOS host; see ISSUE-029. See the
 [standalone report](../reports/S2_30CM_X87_FPREM1.md), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-30cn: bounded `FDIV ST(0), ST(i)` (`D8 F0..F7`)
+
+Only exact bare Long64 `D8 F0..F7` is admitted. Require present x87 state,
+absent FCS/FDS, one of twelve all-exception-masked PC24/53/64 FCWs, and
+`FSW & 0x80df == 0`. Participating physical registers require Valid tags and
+canonical nonzero Normal binary80 values of either sign. For `i=0`, validate
+only TOP; the result is exact +1.
+
+Map FCW PC and RC directly to the S2-29ac finite division helper. Both the
+unrounded quotient exponent and rounded result must be finite Normal binary80.
+Zero divisor, zero/special/subnormal operands, subnormal/zero/overflow results,
+malformed values, or out-of-domain exponents return atomic Unsupported. On
+success, replace ST(0) with helper value, set PE to old PE OR `inexact`, and
+replace C1 with `incremented`. C0/C2/C3 are preserved under a deterministic
+local policy for architecture-undefined fields. Preserve TOP, tags, source
+cells, FCW and unrelated state; write FIP=old RIP, advance RIP by two, retire
+once, and perform no data access. `incremented` describes magnitude rounding,
+not signed-result comparison. Reverse FDIVR, DC/DE directions and pop forms
+retain their existing exact-only domain. No general x87 exception delivery,
+native/JIT/schema admission or physical acceptance is claimed.
+
+Focused literal coverage includes exact and inexact values, both signs, all
+rounding modes/precisions, midpoint parity and neighbors, C1 behavior for
+negative directed rounding, previous PE/C1 states, all TOP/index pairs,
+exponent/carry boundaries and atomic admission failures. The former 1/3 reject
+case now checks rounded success. STOP, budget, canary and fetch-only checks
+pass. Intel SDM Rev. 093 Vol. 2A `FDIV` pp. 3-333–3-335 (Operation/FPU Flags
+Affected p. 3-334) defines the instruction/status fields; Vol. 1 §8.1.5.2/Table
+8-2, §8.1.5.3, and §8.5.6 p. 8-30 define PC/RC and masked precision behavior.
+See the [S2-30cn plan](../plans/STAGE_2.md#s2-30cn-bare-fdiv-st0-sti-with-bounded-fcw-precision),
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-30cn--bounded-fdiv-st0-sti),
+[standalone report](../reports/S2_30CN_X87_FDIV_PRECISION.md), and
+[ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ### Local S2-19b bounded REP STOSW/D/Q contract
 
 The interpreter extends `F3 AA` REP STOSB with `F3 66 AB` word, `F3 AB`
