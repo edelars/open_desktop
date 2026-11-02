@@ -2604,7 +2604,7 @@ pub(crate) fn build_checked_qword_load_block(
     )
 }
 
-/// Build the exact unprefixed `8B 03` and `8B 00` checked dword loads.
+/// Build exact unprefixed `8B 03`, `8B 00`, and `8B 43 ib` checked dword loads.
 pub(crate) fn build_checked_dword_load_block(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -3041,7 +3041,11 @@ fn build_block_with_profile(
                 && (code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                     == Some(&[0x8b, 0x03][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(2))
-                        == Some(&[0x8b, 0x00][..]))
+                        == Some(&[0x8b, 0x00][..])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(3))
+                        .is_some_and(|bytes| bytes[0..2] == [0x8b, 0x43]))
         } else if profile == BlockBuildProfile::CheckedDwordStore {
             instructions.is_empty()
                 && is_checked_dword_store_form(decoded)
@@ -4757,23 +4761,27 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
     else {
         return false;
     };
+    let exact_address = operand.address_size == OperandSize::Qword
+        && operand.index.is_none()
+        && operand.scale == 1
+        && ((instruction.length == 2
+            && matches!(
+                operand.base,
+                AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
+            )
+            && operand.displacement == 0)
+            || (instruction.length == 3
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                && i8::try_from(operand.displacement).is_ok()));
     exact_prefix
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x8b
         && instruction.operand_size == OperandSize::Dword
         && instruction.address_size == OperandSize::Qword
-        && instruction.length == 2
         && destination.register() == od_isa::Register::Rax
         && destination.size() == OperandSize::Dword
         && operand.size == OperandSize::Dword
-        && operand.address_size == OperandSize::Qword
-        && matches!(
-            operand.base,
-            AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
-        )
-        && operand.index.is_none()
-        && operand.scale == 1
-        && operand.displacement == 0
+        && exact_address
 }
 
 pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {

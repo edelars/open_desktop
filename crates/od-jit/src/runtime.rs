@@ -535,6 +535,23 @@ impl MemorySiteV2 {
         {
             return true;
         }
+        if self.operation == MemorySiteOperationV2::Load
+            && self.instruction_index == expected_index
+            && length == 3
+            && self.destination == Some(0)
+            && self.source.is_none()
+            && self.operand.address_size == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Dword
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && i8::try_from(self.operand.displacement).is_ok()
+        {
+            return true;
+        }
         if self.operation == MemorySiteOperationV2::Store
             && self.instruction_index == expected_index
             && length == 2
@@ -1545,6 +1562,22 @@ impl MemorySiteV2 {
                 && self.operand.index.is_none()
                 && self.operand.scale == 1
                 && self.operand.displacement == 0;
+        }
+        if source.len() == 3 && source[..2] == [0x8b, 0x43] {
+            return expected_operation == MemorySiteOperationV2::Load
+                && self.instruction_index == expected_index
+                && self.next_rip.checked_sub(self.guest_rip) == Some(3)
+                && self.destination == Some(0)
+                && self.source.is_none()
+                && self.operand.size == od_isa::OperandSize::Dword
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+                )
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == i64::from(source[2] as i8);
         }
         if source == [0x89, 0x03] || source == [0x89, 0x00] {
             let expected_base = if source == [0x89, 0x03] {
