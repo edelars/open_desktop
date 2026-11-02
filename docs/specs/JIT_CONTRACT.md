@@ -472,6 +472,28 @@ address form, prefix, SIB, or displacement width. No MMIO, SMC, owner/MMU,
 hardware, Mini, M1, or Stage 2 behavior is established. See the
 [S3-20dv report](../reports/STAGE_3_S3-20dv_2026-11-02.md).
 
+#### S3-20dw: exact address-size-32 RBP-base Dword store with signed disp8
+
+The shared typed-IR Dword-store path admits only the exact four-byte singleton
+`67 89 45 ib` (`MOV [EBP+disp8],EAX`). The decoder-owned address-size-32
+operand adds signed disp8 to low32 EBP modulo 2^32, then zero-extends the
+starting effective address. A successful operation performs one contiguous
+checked four-byte write of low32 EAX and advances to `A+4`; address-size
+wrapping applies to the starting address, so bytes of a write beginning at
+`0xffffffff` continue contiguously beyond the 4-GiB boundary.
+
+The JIT source/site test covers all 256 encoded disp8 values, each bound to a
+distinct site. The bounded host fixture exercises six displacement/base pairs
+with both low and high full-width RBP values. It compares native and
+interpreter state and RAM, including the four-byte boundary-crossing write.
+Budget and stop guards leave the operation uncommitted; callback STOP follows
+the committed write. On injected architectural or unmapped write errors, the
+host callback is attempted once and CPU state and RAM bytes remain unchanged.
+This address-size-32 profile makes no address-size-64 RBP `#SS` claim and does
+not establish other bases/forms, SIB, MMIO, SMC, owner/MMU integration,
+hardware behavior, Mini, M1, or Stage 2. See the
+[S3-20dw report](../reports/STAGE_3_S3-20dw_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
