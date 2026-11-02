@@ -1444,8 +1444,9 @@ ordered `15/3 = 5`, exact `+1` alias payload before the old TOP tag is emptied,
 TOP wrap, C1 clearing and full x87 snapshot preservation. The bounded S2-30dd
 extension below adds the twelve FCWs, all RC modes, PE/C1 rounding diagnostics,
 and valid inexact quotients; the old exact-only inexact-rejection expectation no
-longer applies. Invalid profile inputs remain atomically Unsupported. `DE F0..F7`
-FDIVRP remains unsupported; native x87 admission stays closed.
+longer applies. Invalid profile inputs remain atomically Unsupported. The
+distinct `DE F0..F7` FDIVRP encoding retains its exact-only profile; native x87
+admission stays closed.
 
 ### S2-30dd bounded FDIVP fixture coverage
 

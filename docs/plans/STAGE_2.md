@@ -11664,7 +11664,7 @@ literal and JIT denial. Rollback covers invalid controls/status/selectors,
 tags, operands/results and fetch/STOP/zero-budget boundaries. Normative source:
 Intel SDM Rev. 093 Vol. 2A `FDIV/FIDIV—Divide`, pp. 3-333–3-335
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451));
-Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dd-bounded-fdivp-sti-st0-de-f8-ff)
+Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dd-bounded-fdivp-sti-st0-de-f8ff)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dd-bounded-fdivp-fixture-coverage).
 
 #### S2-30cx. Bare `FDIV ST(i), ST(0)` with bounded FCW precision
