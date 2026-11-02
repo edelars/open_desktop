@@ -5044,6 +5044,11 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
                 && matches!(operand.base, AddressBase::None)
                 && operand.index == Some(od_isa::Register::Rcx)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
+                && i32::try_from(operand.displacement).is_ok())
+            || (instruction.length == 8
+                && matches!(operand.base, AddressBase::None)
+                && operand.index == Some(od_isa::Register::Rax)
+                && operand.scale == 1
                 && i32::try_from(operand.displacement).is_ok()));
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
