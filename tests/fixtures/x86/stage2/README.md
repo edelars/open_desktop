@@ -8306,3 +8306,13 @@ fetch/gate ordering, AC-before-span refusal, canonical span/read rollback,
 control echo, tamper rejection, and explicit JIT/native denial. These fixtures
 document the local interpreter profile only; no physical x86 acceptance is
 claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38o--exact-minsd-unmasked-memory-exit-for-m64-rax), [plan](../../../../docs/plans/STAGE_2.md#s2-38o-exact-long64-minsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [report](../../../../docs/reports/S2_38O_MINSD_MEMORY_UNMASKED.md).
+
+### S2-38p MAXSD m64 unmasked invalid and denormal
+
+`s2_38p_maxsd_qnan_im_unmasked_xm.case.json` is a handwritten literal for the
+separate `s2-long-maxsd-memory-unmasked-rax-v1` schema profile and exact
+`F2 0F 5F 00`. It combines a QNaN destination with a normal memory RHS, opens
+IM, and checks IE sticky commit, #XM selection, preserved XMM0, and no
+retirement. The profile has its own strict MAXSD memory selector and
+`maxsd_unmasked_controls` echo; JIT and native execution are denied. No
+physical x86 acceptance is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-38p-exact-long64-maxsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38p--exact-maxsd-unmasked-memory-exit-for-m64-rax), and [standalone report](../../../../docs/reports/S2_38P_MAXSD_MEMORY_UNMASKED.md).

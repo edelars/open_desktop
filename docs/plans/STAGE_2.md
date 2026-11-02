@@ -650,7 +650,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38m | Exact Long64 `MINSS XMM0,m32 [RAX]` memory profile with mixed IM/DM unmasked arithmetic exit; actual memory RHS; strict schema-v2 and interpreter-only | Parent S2-38 memory/alignment/unmasked-FP-priority gap; S2-37dh address/read model and S2-38d policy; integrated main: od-isa 1,891, testkit 455, runner 125+518, x86-runner 8+4, workspace/fmt/diff/layout/Graphify; Sol/high review clean after exact-form/backend/anchor fixes; no physical x86 claim |
 | [x] | S2-38n | Exact Long64 `MAXSS XMM0,m32 [RAX]` memory profile with MAXSS-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cy masked memory, S2-38f MAXSS unmasked policy and S2-38m memory/fault ordering; MAXSS-specific QNaN invalid, operand-2 SNaN preservation; combined main suites: od-isa 1,895, testkit 455, runner 125+520, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,828 nodes/25,656 edges/376 communities; independent Sol/high review clean; no physical x86 claim |
 | [x] | S2-38o | Exact Long64 `MINSD XMM0,m64 [RAX]` memory profile with MINSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cw masked memory, S2-38g MINSD unmasked policy, S2-38m/n memory ordering; combined main suites: od-isa 1,901, testkit 455, runner 125+522, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,858/25,727/334; Sol/high review clean after backend relabel and coverage fixes; no physical x86 claim |
-| [ ] | S2-38p | Exact Long64 `MAXSD XMM0,m64 [RAX]` memory profile with MAXSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cx masked memory, S2-38h MAXSD unmasked policy, S2-38o memory ordering; no physical x86 claim |
+| [ ] | S2-38p | Exact Long64 `MAXSD XMM0,m64 [RAX]` memory profile with MAXSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cx masked memory, S2-38h MAXSD unmasked policy, S2-38o memory ordering; focused fixture only so far; RC/sticky and memory fault matrices pending; no physical x86 claim |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -7746,6 +7746,16 @@ selector. No physical x86 acceptance is claimed. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38p--exact-maxsd-unmasked-memory-exit-for-m64-rax),
 [S2-38h register MAXSD policy](#s2-38h-exact-long64-maxsd-xmm0xmm1-unmasked-invalid-and-denormal-exit),
 and [S2-37cx masked memory profile](#s2-37cx--exact-legacy-long64-maxsd-xmm0m64-rax).
+
+Implementation includes the separate strict schema-v2 profile, interpreter
+route, raw-u64 MAX result oracle, JIT/native denial, and a literal
+unmasked-QNaN/#XM fixture. Runner coverage crosses IM×DM×OSXMMEXCPT for the
+QNaN case and all four RC values with 64 prior sticky histories. The broader
+NaN/subnormal/tie matrix and injected fetch/memory rollback checks remain
+pending; the task is not marked complete. Affected suites passed: od-isa 1,901,
+od-testkit 455, runner 125+523; workspace check, formatting, diff check, and
+Graphify refresh passed. Layout check found an unmapped root `.git` entry and
+two unrelated broken manifest links in the shared stage report.
 
 #### S2-38e. Exact FP-init, FXRSTOR64, and image-controlled MINSS composition
 

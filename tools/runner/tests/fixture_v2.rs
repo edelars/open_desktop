@@ -74,6 +74,8 @@ const MINSD_M64_MEMORY_UNMASKED_QNAN_XM: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_38o_minsd_qnan_im_unmasked_xm.case.json");
 const MINSD_M64_MEMORY_UNMASKED_SNAN_SOURCE2: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_38o_minsd_snan_rhs_masked.case.json");
+const MAXSD_M64_MEMORY_UNMASKED_QNAN_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38p_maxsd_qnan_im_unmasked_xm.case.json");
 const MAXSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cx_maxsd_m64_qnan_selects_rhs.case.json"
 );
@@ -37494,6 +37496,112 @@ fn minsd_m64_memory_unmasked_profile_checks_mixed_priority_echo_and_backend_deni
             loaded.fixture.profile,
             od_testkit::v2::Profile::LongMinsdMemoryUnmaskedRaxV1
         );
+    }
+}
+
+#[test]
+fn maxsd_m64_memory_unmasked_profile_uses_its_own_schema_and_denies_backends() {
+    let (input, result) = run(MAXSD_M64_MEMORY_UNMASKED_QNAN_XM, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMaxsdMemoryUnmaskedRaxV1
+    );
+    assert!(
+        od_testkit::v2::compare(&input, &result, &result)
+            .unwrap()
+            .is_empty()
+    );
+    let Observation::Available { value } = &result.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    assert_eq!(
+        value.maxsd_unmasked_controls,
+        input.fixture.maxsd_unmasked_controls
+    );
+    assert_eq!(value.state.sse.as_ref().unwrap().mxcsr.get(), 0x1f01);
+    assert_eq!(
+        value.state.sse.as_ref().unwrap().xmm[0],
+        input.fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+    );
+    assert!(matches!(
+        run(MAXSD_M64_MEMORY_UNMASKED_QNAN_XM, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(MAXSD_M64_MEMORY_UNMASKED_QNAN_XM, "native", 4)
+            .1
+            .outcome,
+        Outcome::Unsupported { .. }
+    ));
+
+    for im in [false, true] {
+        for dm in [false, true] {
+            for osxmmexcpt in [false, true] {
+                let mut fixture = Fixture::from_json(MAXSD_M64_MEMORY_UNMASKED_QNAN_XM)
+                    .unwrap()
+                    .fixture;
+                let sse = fixture.initial_state.sse.as_mut().unwrap();
+                sse.mxcsr = HexU64(
+                    (sse.mxcsr.get() & !0x180) | (u64::from(im) << 7) | (u64::from(dm) << 8),
+                );
+                fixture
+                    .maxsd_unmasked_controls
+                    .as_mut()
+                    .unwrap()
+                    .cr4_osxmmexcpt = osxmmexcpt;
+                fixture.expected_exit = if im {
+                    ExpectedExit::StopAddress
+                } else {
+                    ExpectedExit::Exception
+                };
+                let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+                assert!(
+                    od_testkit::v2::compare(&input, &result, &result)
+                        .unwrap()
+                        .is_empty()
+                );
+                let exception = matches!(result.outcome, Outcome::Exception {});
+                assert_eq!(exception, !im);
+                if exception {
+                    let result_snapshot = snapshot(&result);
+                    let Observation::Available {
+                        value: Some(exception),
+                    } = &result_snapshot.exception
+                    else {
+                        panic!("expected an architectural exception")
+                    };
+                    assert_eq!(exception.vector, if osxmmexcpt { 19 } else { 6 });
+                    assert_eq!(count(&result), 0);
+                } else {
+                    assert_eq!(count(&result), 1);
+                }
+            }
+        }
+    }
+
+    for rc in 0..4u64 {
+        for sticky in 0..64u64 {
+            let mut fixture = Fixture::from_json(MAXSD_M64_MEMORY_UNMASKED_QNAN_XM)
+                .unwrap()
+                .fixture;
+            let sse = fixture.initial_state.sse.as_mut().unwrap();
+            sse.mxcsr = HexU64((sse.mxcsr.get() & !0x3f | sticky) & !0x6000 | (rc << 13));
+            fixture.expected_exit = if sse.mxcsr.get() & (1 << 7) != 0 {
+                ExpectedExit::StopAddress
+            } else {
+                ExpectedExit::Exception
+            };
+            let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+            assert!(
+                od_testkit::v2::compare(&input, &result, &result)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                count(&result),
+                u64::from(fixture.expected_exit == ExpectedExit::StopAddress)
+            );
+        }
     }
 }
 

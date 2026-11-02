@@ -22663,3 +22663,15 @@ two broken oracle-manifest links recorded in the
 [standalone report](S2_31DW_FLD_HISTORICAL_SF.md). No SF producer, general
 exception delivery, JIT/native admission or physical x86 acceptance is claimed;
 ISSUE-019 remains open. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dw-historical-sf-with-ie-for-exact-binary32binary64-fld), [plan](../plans/STAGE_2.md#s2-31dw-admit-historical-sfie-through-exact-binary32binary64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dw-historical-sf-with-ie-in-bounded-m32m64-fld).
+## S2-38p — exact Long64 MAXSD with unmasked memory IM/DM exits
+
+Added a distinct strict schema-v2 interpreter profile for exact `F2 0F 5F 00`
+`MAXSD XMM0,m64 [RAX]`, separate from S2-37cx masked memory MAXSD and S2-38h
+register MAXSD. The profile fixes CR0.MP=1, applies MAXSD-specific raw source-2
+selection and unmasked IM/DM sticky handling after the S2-38o memory ordering,
+and denies JIT/native execution. A raw-u64 fixture oracle checks selection and
+architectural exit state. One literal unmasked-QNaN fixture verifies IE commit,
+#XM delivery, XMM0 suppression, retirement suppression, and the dedicated
+control echo. Focused runner fixture test passed. The full RC/sticky and
+IM×DM×OSXMMEXCPT matrices and injected memory/fetch rollback cases remain
+unverified; no physical x86 acceptance is claimed. See the [standalone report](S2_38P_MAXSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38p--exact-maxsd-unmasked-memory-exit-for-m64-rax), [plan](../plans/STAGE_2.md#s2-38p-exact-long64-maxsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38p-maxsd-m64-unmasked-invalid-and-denormal).
