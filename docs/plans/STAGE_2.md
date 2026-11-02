@@ -215,6 +215,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cu | Bare `DC C8..CF` FMUL ST(i),ST(0), direct FCW precision/rounding; Valid canonical nonzero Normal operands/results, sticky PE and local C1 diagnostic; `D8` and `DE` neighbors unchanged | S2-29ad, S2-30co, S2-30ct; clean Sol/high review; isolated od-isa 1,805, testkit 455, runner 114+492; integrated main od-isa 1,809, testkit 455, runner 115+493, x86-runner 8+4; Graphify 11,280/24,407/336 |
 | [x] | S2-30cv | Bare `DC E8..EF` FSUB ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30i; Sol/high review clean; od-isa 1,813, testkit 455, runner 115+493; workspace check/fmt passed; Graphify 11,335/24,389/351 |
 | [x] | S2-30cw | Bare `DC E0..E7` FSUBR ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30l; independent Sol/high review clean; integrated main od-isa 1,821, testkit 455, runner 116+495, x86-runner 8+4; workspace/fmt/layout/diff and Graphify 11,339/24,564/343 passed; no physical x86 acceptance |
+| [x] | S2-30dc | Bare `DE E0..E7` FSUBRP ST(i),ST(0), reuse bounded FSUB ST(0)-ST(i) precision helper for normalized gap≤64; preserve p64 helper domain; write old physical ST(i), then pop TOP; sticky PE/local C1; alias and invalid-domain rollback | Focused fsub 43; od-isa 1,847, testkit 455, runner 119+502, x86-runner 8+4; workspace/fmt/diff and Graphify 11,535/24,827/369 passed; independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-30cx | Bare `DC F8..FF` FDIV ST(i),ST(0), FCW precision division `ST(i)/ST(0)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | S2-30v, S2-30cs; integrated main od-isa 1,826, testkit 455, runner 118+495; independent Sol/high review clean (neighbor fdiv filter 19/19); workspace/fmt/diff and Graphify 11,368/24,630/336 passed |
 | [x] | S2-30cy | Bare `DC F0..F7` FDIVR ST(i),ST(0), bounded FCW precision division `ST(0)/ST(i)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | Integrated main: od-isa 1,831, testkit 455, runner 118+496, x86-runner 8+4; independent Sol/high review clean; workspace/fmt/layout/diff and Graphify 11,397/24,698/326 passed |
 | [x] | S2-30cz | Bare `DE C0..C7` FADDP ST(i),ST(0), bounded FCW precision for normalized gap≤64; physical destination then TOP pop; Normal result, sticky PE and local C1; JIT/native closed | Focused ISA 7; 3,072-case matrix; combined main: od-isa 1,837 / od-testkit 455 / runner 119+497 / x86-runner 8+4, workspace check, fmt/diff/layout and Graphify; independent Sol/high review clean; no physical x86 check |
@@ -11592,6 +11593,42 @@ Workspace all-target offline check, formatting, diff check and Graphify passed.
 The isolated layout checker reported the known `.git` marker and two missing
 historical oracle manifests tracked by ISSUE-023; main layout has no new broken
 links. Independent Sol/high review is clean (39 `fsub` tests passed); no physical x86 acceptance is claimed.
+
+#### S2-30dc. Bare `FSUBRP ST(i), ST(0)` with bounded FCW precision
+
+Admit only exact bare Long64 `DE E0..E7`. Reuse
+`bounded_x87_fsub_st0_sti_result(state, destination)` directly for old
+`ST(0) − ST(i)` at FCW-selected PC24/53/64 and RC. Do not add an arithmetic
+helper or exact fallback. Require present x87 state, absent FCS/FDS, one of
+twelve all-exception-masked FCWs, `FSW & 0x80df == 0`, Valid tags, canonical
+nonzero Normal operands and normalized exponent gap≤64. Alias `i=0` cancels
+and remains Unsupported atomically. Accept only finite Normal exact or rounded
+results; preserve the existing helper's p64 result domain.
+
+On success, write the result to old physical `(TOP+i)&7`, then mark old TOP
+Empty and increment TOP modulo eight. PE is sticky and ORed with `inexact`; C1
+is replaced from `incremented`; C0/C2/C3 follow existing local preservation
+policy. Preserve popped payload bytes, all other tags, FCW/selectors/FDP/FOP
+and unrelated state. Set FIP to old RIP, advance RIP by two, retire once and
+perform no data access. Invalid environment, operand, gap or result, the alias,
+and fetch/STOP/budget boundaries do not partially commit. Native/JIT, general
+x87 exception delivery and physical x86 acceptance remain closed.
+
+Coverage includes 10,752 complete-state success snapshots across the twelve
+FCWs, all TOP/index placements except the alias, four sign pairs and prior
+PE/C1 histories. A handwritten PC24 midpoint/double-rounding fixture checks
+operand order, rounded payload, pop/tag/TOP, FIP/RIP, exception observation and
+unchanged memory; runner coverage also checks negative directed rounding and
+JIT denial. Rollback cases cover alias, malformed controls/status/selectors,
+tags, operands, zero/subnormal/overflow results and gap 65. The existing
+exhaustive DE ModR/M and prefix tests remain in force. Normative source: Intel
+SDM Rev. 093 Vol. 2A `FSUBR/FSUBRP/FISUBR`, pp. 3-397–3-399
+([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
+Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30
+([Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dc-bounded-fsubrp-sti-st0-de-e0e7),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30dc--bounded-fsubrp-sti-st0), and
+[standalone report](../reports/S2_30DC_X87_FSUBRP_PRECISION.md).
 
 #### S2-30cx. Bare `FDIV ST(i), ST(0)` with bounded FCW precision
 

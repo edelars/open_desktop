@@ -1353,6 +1353,18 @@ budget one. Local execution and fixture-runner tests check old ST(i)
 destination placement, retention of the popped payload under its Empty tag,
 TOP increment and alias atomicity. Native x87 admission stays closed.
 
+### S2-30dc bounded FSUBRP fixture coverage
+
+The schema continues to admit all eight bare `DE E0+i` FSUBRP encodings, with
+`DE E0` represented as Unsupported. The handwritten
+`s2_30dc_fsubrp_pc24_midpoint_pop.case.json` is a full-state PC24 midpoint and
+double-rounding oracle for `DE E2`: it distinguishes `ST(0)-ST(2)` order and
+checks the old physical destination, retained payload under Empty tag, TOP
+increment, PE/C1, FIP/RIP, exception observation and unchanged code memory.
+Runner coverage adds negative directed rounding and JIT denial. The bounded
+profile is local-only; native x87 admission and general exception delivery stay
+closed.
+
 ### S2-30n x87 schema coverage
 
 The schema validator admits all eight bare `D8 C8+i` FMUL encodings. Literal

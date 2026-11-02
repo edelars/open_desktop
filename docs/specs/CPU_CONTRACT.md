@@ -9844,6 +9844,39 @@ See the [plan](../plans/STAGE_2.md#s2-30cw-bare-reverse-fsubr-sti-st0-with-bound
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cw--bounded-reverse-fsubr-sti-st0), and
 [standalone report](../reports/S2_30CW_X87_FSUBR_REVERSE_PRECISION.md).
 
+## Local S2-30dc: bounded `FSUBRP ST(i), ST(0)` (`DE E0..E7`)
+
+The local long-mode interpreter admits exactly bare `DE E0` through `DE E7`.
+It reuses `bounded_x87_fsub_st0_sti_result` for old `ST(0) − ST(i)` at the
+FCW-selected PC24/53/64 precision and rounding mode. No new arithmetic helper
+or exact fallback is used. Admission requires present x87 state, absent FCS/FDS,
+one of the twelve all-exception-masked FCWs, `FSW & 0x80df == 0`, Valid tags,
+canonical nonzero Normal binary80 operands and normalized exponent gap≤64. The
+`i=0` alias cancels and remains atomically Unsupported. Only finite Normal exact
+or rounded outputs are accepted; the helper's existing p64 domain is retained.
+
+Success writes old physical `(TOP+i)&7`, then marks old TOP Empty and increments
+TOP modulo eight. PE is old PE OR `inexact`; C1 is replaced by `incremented`;
+C0/C2/C3 follow the local preservation policy. The popped payload remains
+byte-for-byte present under its Empty tag. Other tags, FCW, selectors, FDP, FOP
+and unrelated state are preserved. FIP receives old RIP, RIP advances by two,
+and the instruction retires once without data access. Invalid environment,
+selector, tag, operand, gap and result domains refuse before mutation. Fetch,
+STOP and zero-budget boundaries remain atomic. Native/JIT, general x87
+exception delivery and physical x86 acceptance are outside this profile.
+
+Coverage includes 10,752 complete-state FCW/TOP/index/sign/PE/C1 combinations,
+PC24 midpoint/double-rounding and negative directed-rounding literals, alias
+and malformed/range rollback, full-state fixture execution and JIT denial.
+Normative source: Intel SDM Rev. 093 Vol. 2A `FSUBR/FSUBRP/FISUBR`,
+pp. 3-397–3-399
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
+Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+See the [plan](../plans/STAGE_2.md#s2-30dc-bare-fsubrp-sti-st0-with-bounded-fcw-precision),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30dc--bounded-fsubrp-sti-st0), and
+[standalone report](../reports/S2_30DC_X87_FSUBRP_PRECISION.md).
+
 ## Local S2-30cq: bounded `FSUB ST(0), ST(i)` (`D8 E0..E7`)
 
 Only exact bare Long64 `D8 E0..E7` is admitted. Apply the same present-x87,

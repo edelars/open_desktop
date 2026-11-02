@@ -15,6 +15,8 @@ const FMULP_PC64_INEXACT: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30da_fmulp_pc64_inexact_pop.case.json");
 const FSUBP_PC24_INEXACT: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30db_fsubp_pc24_inexact_pop.case.json");
+const FSUBRP_PC24_MIDPOINT: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_30dc_fsubrp_pc24_midpoint_pop.case.json");
 const WIDTHS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/mov_width_aliasing.case.json");
 const REX_RIP: &[u8] =
@@ -3910,6 +3912,63 @@ fn s2_30db_fsubp_fixture_checks_rounded_pop_state_and_jit_denial() {
     assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
     assert_eq!(jit.backend, Backend::Jit);
     assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));
+}
+
+#[test]
+fn s2_30dc_fsubrp_fixture_checks_midpoint_order_full_state_and_jit_denial() {
+    let (input, result) = run(FSUBRP_PC24_MIDPOINT, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    // ST(0) - ST(2) is positive here; the reverse order would be negative.
+    expected_x87.registers[5] = "00000000000100803f40".into();
+    expected_x87.tag_word = HexU64(0xf3ff);
+    expected_x87.status_word = HexU64(0x2220);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+
+    let observed = snapshot(&result);
+    assert_eq!(observed.state, expected);
+    assert_eq!(observed.exception, Observation::Available { value: None });
+    for region in &observed.memory {
+        let before = input
+            .fixture
+            .memory
+            .iter()
+            .find(|entry| entry.region_id == region.region_id)
+            .unwrap();
+        assert_eq!(
+            region.bytes_hex, before.initial_bytes_hex,
+            "{}",
+            region.region_id
+        );
+    }
+
+    let (_, jit) = run(FSUBRP_PC24_MIDPOINT, "jit", 4);
+    assert!(matches!(jit.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(jit.backend, Backend::Jit);
+    assert!(matches!(jit.snapshot, Observation::Unavailable { .. }));
+
+    // A negative result just beyond the PC24 value rounds away from zero in
+    // RC=down; the PE and incremented C1 diagnostics are both visible.
+    let mut fixture = Fixture::from_json(FSUBRP_PC24_MIDPOINT).unwrap().fixture;
+    let x87 = fixture.initial_state.x87.as_mut().unwrap();
+    x87.control_word = HexU64(0x047f);
+    x87.registers[3] = "0000000000000080ff3f".into();
+    x87.registers[5] = "0100000080000080ff3f".into();
+    let bytes = fixture.to_json().unwrap();
+    let (input, directed) = run(&bytes, "interpreter", 0);
+    assert!(matches!(directed.outcome, Outcome::StopAddress {}));
+    let mut expected = input.fixture.initial_state.clone();
+    expected.rip = input.fixture.stop_rip.unwrap();
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[5] = "0000000000010080e7bf".into();
+    expected_x87.tag_word = HexU64(0xf3ff);
+    expected_x87.status_word = HexU64(0x2220);
+    expected_x87.instruction_pointer = input.fixture.initial_state.rip;
+    assert_eq!(snapshot(&directed).state, expected);
 }
 
 #[test]

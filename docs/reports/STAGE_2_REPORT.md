@@ -21983,3 +21983,37 @@ library + 4 binary tests. Workspace all-target offline check, formatting,
 layout и `git diff --check` прошли. Graphify AST refresh завершился с 11,397
 nodes, 24,698 edges и 326 communities. В runner DIVSD проверены 6,144 raw-oracle
 комбинации; физическая x86-проверка не выполнялась.
+
+## S2-30dc — bounded `FSUBRP ST(i), ST(0)`
+
+Implemented the direct FCW precision profile for bare Long64 `DE E0..E7` by
+reusing `bounded_x87_fsub_st0_sti_result` for old `ST(0)-ST(i)`. On success,
+the rounded result is written to old physical `(TOP+i)&7` before old TOP is
+emptied and TOP increments. PE is sticky, C1 follows `incremented`, and the
+popped payload remains intact. The alias `i=0` remains an atomic Unsupported
+cancellation. The profile is limited to twelve all-masked PC24/53/64 FCWs,
+clear `FSW & 0x80df`, Valid canonical nonzero Normal operands, normalized gap
+≤64 and Normal results. No arithmetic helper or exact fallback was added.
+JIT/native, general x87 exception delivery and physical x86 acceptance remain
+closed.
+
+Coverage includes 10,752 complete-state ISA success combinations, invalid
+control/status/selector/tag/operand/range and gap-65 rollback, fetch/STOP/budget
+boundaries, no data access, and existing DE neighbor/decode checks. The
+handwritten PC24 `DE E2` fixture checks the full state and is a midpoint /
+double-rounding and operand-order discriminator; runner checks also cover
+negative directed rounding and JIT denial.
+
+Validation passed: focused `od-isa` `fsub` 43/43, full od-isa 1,847, od-testkit
+455, runner 119 unit + 502 fixture, and x86-runner 8 + 4. Workspace all-target
+offline check, formatting and diff check passed; Graphify refreshed 11,535 nodes,
+24,827 edges and 369 communities. Isolated layout reports only the `.git`
+marker and two missing historical oracle manifests tracked by ISSUE-023.
+Independent Sol/high review is clean (reviewer reran the 43-test `fsub` filter).
+A dedicated FSUBRP odd-65 vector was not added; the shared helper’s odd-65
+rounding is covered by adjacent S2-30db. No physical x86 acceptance is claimed.
+
+See [standalone report](S2_30DC_X87_FSUBRP_PRECISION.md),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dc-bounded-fsubrp-sti-st0-de-e0e7),
+[plan](../plans/STAGE_2.md#s2-30dc-bare-fsubrp-sti-st0-with-bounded-fcw-precision),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dc-bounded-fsubrp-fixture-coverage).
