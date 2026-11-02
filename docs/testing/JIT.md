@@ -561,6 +561,12 @@ Harness source `2ebb96c` plus self-test filter fix `83f8c72`, integrated as `004
 
 The static manifest records 246 Rust gates (236 acceptance, 10 lifecycle), 264 local steps, and 107 self-test names. Independent Sol/high harness review passed; no Python/harness execution occurred. S3-20ey runtime is not yet implemented or reviewed, so these pins do not prove runtime support. ISSUE-028 remains open; Stage 2 is excluded; Mini/M1 remain deferred; Stage 3 remains partial. See the [S3-34cj report](../reports/STAGE_3_S3-34cj_2026-11-02.md).
 
+## S3-34ck: harness gates for planned S3-20ez scaled RAX-indexed Dword load
+
+Harness source `2dc2bc4`, integrated as `1b8ebba`, pins the exact JIT and host identities for the seven-byte unprefixed scales 2/4/8 forms `8B 04 45/85/C5 disp32`: `memory_load_v2::tests::ir_dword_rax_index_no_base_sib_scaled_disp32_load_binds_all_source_bytes_to_its_site` and `tests::s3_20ez_rax_index_no_base_sib_scaled_disp32_dword_load_uses_original_scaled_rax`. Gate IDs are `s3_34ck_ir_rax_index_no_base_sib_scaled_disp32_dword_load_source_binding` and `s3_34ck_host_rax_index_no_base_sib_scaled_disp32_dword_load_original_rax`. The self-test is `test_s3_34ck_rax_index_no_base_sib_scaled_disp32_dword_load_gates_are_pinned_and_fail_closed`.
+
+The static manifest records 248 Rust gates (238 acceptance, 10 lifecycle), 266 local steps, and 108 self-test names. Independent Sol/high harness review passed; no Python/harness execution occurred. Runtime S3-20ez remains pending, so these pins do not establish runtime support. ISSUE-028 remains open; Stage 2 is excluded; Mini/M1 remain deferred; Stage 3 remains partial. See the [S3-34ck report](../reports/STAGE_3_S3-34ck_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
