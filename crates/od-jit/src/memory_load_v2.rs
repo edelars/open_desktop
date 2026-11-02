@@ -1043,7 +1043,8 @@ fn checked_dword_load_metadata_v2(
 /// (`MOV [EBX+ECX*scale+disp32],EAX`), `67 89 83 id`
 /// (`MOV [EBX+disp32],EAX`), `89 04 24` (`MOV [RSP],EAX`),
 /// `89 44 24 ib` (`MOV [RSP+disp8],EAX`), or `89 84 24 id`
-/// (`MOV [RSP+disp32],EAX`), `67 89 04 24` (`MOV [ESP],EAX`), or
+/// (`MOV [RSP+disp32],EAX`), `89 04 25 id` (`MOV [sign-extended disp32],EAX`),
+/// `67 89 04 24` (`MOV [ESP],EAX`), or
 /// `67 89 44 24 ib` (`MOV [ESP+disp8],EAX`)
 /// through the common block builder, typed IR, allocator, and runtime helper emitter.
 pub fn compile_ir_memory_dword_store_block_v2(
@@ -1071,6 +1072,7 @@ pub fn compile_ir_memory_dword_store_block_v2(
         && !(bytes.len() == 7
             && bytes[..2] == [0x89, 0x84]
             && matches!(bytes[2], 0x0b | 0x4b | 0x8b | 0xcb))
+        && !(bytes.len() == 7 && bytes[..3] == [0x89, 0x04, 0x25])
         && bytes != [0x67, 0x89, 0x03]
         && !(bytes.len() == 4
             && bytes[..3] == [0x67, 0x89, 0x04]
@@ -8672,7 +8674,6 @@ mod tests {
 
         let entry = 0x82f0;
         for neighbor in [
-            &[0x89, 0x04, 0x25, 0, 0, 0, 0][..], // SIB absolute disp32
             &[0x89, 0x0d, 0, 0, 0, 0][..],       // ECX source
             &[0x89, 0x05, 0, 0, 0][..],          // truncated
             &[0x89, 0x05, 0, 0, 0, 0, 0x90][..], // trailing byte
@@ -8688,6 +8689,119 @@ mod tests {
                 )
                 .is_err(),
                 "admitted neighboring encoding {neighbor:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ir_dword_absolute_sib_disp32_store_binds_all_source_bytes_to_its_site() {
+        let entry = 0x82f8;
+        for displacement in [i32::MIN, -4, -3, -2, -1, 0, 1, i32::MAX, 0x0102_0304] {
+            let mut source = [0x89, 0x04, 0x25, 0, 0, 0, 0];
+            source[3..].copy_from_slice(&displacement.to_le_bytes());
+            let block = compile_ir_memory_dword_store_block_v2(
+                CodeView::new(entry, &source).unwrap(),
+                entry,
+            )
+            .unwrap();
+            assert_eq!(block.source_bytes(), source);
+            assert_eq!(block.site().instruction_index(), 0);
+            assert_eq!(block.site().guest_rip(), entry);
+            assert_eq!(block.site().next_rip(), entry + 7);
+            assert_eq!(block.site().source(), Some(0));
+            assert_eq!(block.site().destination(), None);
+            assert_eq!(block.site().operand().base, AddressBase::None);
+            assert_eq!(block.site().operand().index, None);
+            assert_eq!(block.site().operand().scale, 1);
+            assert_eq!(block.site().operand().displacement, i64::from(displacement));
+            assert_eq!(block.site().operand().size, od_isa::OperandSize::Dword);
+            assert_eq!(block.site().operand().address_size, od_isa::OperandSize::Qword);
+            assert!(block
+                .site()
+                .matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut trailing = [0; 8];
+            trailing[..7].copy_from_slice(&source);
+            trailing[7] = 0x90;
+            assert!(!block
+                .site()
+                .matches_source_bytes(&trailing, MemorySiteOperationV2::Store));
+            assert_eq!(block.pc_map().instruction_count(), 1);
+            assert_eq!(
+                block.pc_map().boundaries()[0].rip,
+                crate::statepoints::GuestRipBoundary::Fixed(entry + 7)
+            );
+
+            for byte_index in 3..7 {
+                let mut changed = source;
+                changed[byte_index] ^= 1;
+                assert!(!block
+                    .site()
+                    .matches_source_bytes(&changed, MemorySiteOperationV2::Store));
+                let changed_block = compile_ir_memory_dword_store_block_v2(
+                    CodeView::new(entry, &changed).unwrap(),
+                    entry,
+                )
+                .unwrap();
+                assert_ne!(block.site(), changed_block.site());
+            }
+
+            let mut forged = *block.site();
+            forged.operand.base = AddressBase::NextRip;
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *block.site();
+            forged.operand.index = Some(Register::Rax);
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            for byte_index in 0..4 {
+                let mut forged = *block.site();
+                forged.operand.displacement =
+                    i64::from(displacement ^ (1_i32 << (byte_index * 8)));
+                assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            }
+            let mut forged = *block.site();
+            forged.source = Some(1);
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *block.site();
+            forged.instruction_index = 1;
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *block.site();
+            forged.guest_rip += 1;
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *block.site();
+            forged.next_rip -= 1;
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        }
+
+        for neighbor in [
+            &[0x89, 0x04, 0x25, 0, 0, 0][..],
+            &[0x89, 0x04, 0x25, 0, 0, 0, 0, 0x90][..],
+            &[0x89, 0x0c, 0x25, 0, 0, 0, 0][..],
+            &[0x89, 0x04, 0x05, 0, 0, 0, 0][..],
+            &[0x89, 0x04, 0x24, 0, 0, 0, 0][..],
+            &[0x89, 0x04, 0x65, 0, 0, 0, 0][..],
+            &[0x67, 0x89, 0x04, 0x25, 0, 0, 0, 0][..],
+            &[0x48, 0x89, 0x04, 0x25, 0, 0, 0, 0][..],
+            &[0x66, 0x89, 0x04, 0x25, 0, 0, 0, 0][..],
+            &[0xf3, 0x89, 0x04, 0x25, 0, 0, 0, 0][..],
+            &[0x8b, 0x04, 0x25, 0, 0, 0, 0][..],
+        ] {
+            assert!(
+                compile_ir_memory_dword_store_block_v2(
+                    CodeView::new(entry, neighbor).unwrap(),
+                    entry
+                )
+                .is_err(),
+                "admitted neighboring encoding {neighbor:02x?}"
+            );
+        }
+        let complete = [0x89, 0x04, 0x25, 0, 0, 0, 0];
+        for length in 1..complete.len() {
+            assert!(
+                compile_ir_memory_dword_store_block_v2(
+                    CodeView::new(entry, &complete[..length]).unwrap(),
+                    entry
+                )
+                .is_err(),
+                "partial absolute SIB store admitted {length} bytes"
             );
         }
     }

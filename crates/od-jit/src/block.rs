@@ -3189,6 +3189,10 @@ fn build_block_with_profile(
                         })
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(7))
+                        .is_some_and(|bytes| bytes[..3] == [0x89, 0x04, 0x25])
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(5))
                         .is_some_and(|bytes| {
                             bytes[..3] == [0x67, 0x89, 0x44]
@@ -5225,6 +5229,9 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                         && i32::try_from(operand.displacement).is_ok())
                     || (instruction.length == 6
                         && matches!(operand.base, AddressBase::NextRip)
+                        && i32::try_from(operand.displacement).is_ok())
+                    || (instruction.length == 7
+                        && matches!(operand.base, AddressBase::None)
                         && i32::try_from(operand.displacement).is_ok())
                     || address32_profile)))
 }

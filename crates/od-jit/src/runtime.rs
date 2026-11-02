@@ -1310,6 +1310,20 @@ impl MemorySiteV2 {
         {
             return true;
         }
+        if self.operation == MemorySiteOperationV2::Store
+            && self.instruction_index == expected_index
+            && length == 7
+            && self.destination.is_none()
+            && self.source == Some(0)
+            && self.operand.address_size == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Dword
+            && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && i32::try_from(self.operand.displacement).is_ok()
+        {
+            return true;
+        }
         let data_register = match self.operation {
             MemorySiteOperationV2::Load => self.destination,
             MemorySiteOperationV2::Store => self.source,
@@ -3192,6 +3206,20 @@ impl MemorySiteV2 {
                 && self.operand.index.is_none()
                 && self.operand.scale == 1
                 && self.operand.displacement == displacement;
+        }
+        if source.len() == 7 && source[..3] == [0x89, 0x04, 0x25] {
+            let displacement = i32::from_le_bytes([source[3], source[4], source[5], source[6]]);
+            return expected_operation == MemorySiteOperationV2::Store
+                && self.instruction_index == expected_index
+                && self.next_rip.checked_sub(self.guest_rip) == Some(7)
+                && self.destination.is_none()
+                && self.source == Some(0)
+                && self.operand.size == od_isa::OperandSize::Dword
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && matches!(self.operand.base, od_isa::long_decode::AddressBase::None)
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == i64::from(displacement);
         }
         let opcode = match expected_operation {
             MemorySiteOperationV2::Load => 0x8b,
