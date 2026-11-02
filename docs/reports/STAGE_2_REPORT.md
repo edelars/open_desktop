@@ -22678,7 +22678,10 @@ truncated/failed fetch, checked span/overflow, AC-before-span, unaligned m64,
 and read-fault rollback with callback counts. Runner tests cross
 IM×DM×OSXMMEXCPT and RC×64 prior sticky histories. A literal unmasked-QNaN
 fixture verifies IE commit, #XM delivery, XMM0 suppression and retirement
-suppression. Affected suites passed: od-isa 1,906; od-testkit 455; runner 125
+suppression. Additional literal raw-bit oracle vectors check source-2 SNaN
+payload preservation, both finite numeric orderings and both signed-zero tie
+orders. The comparator rejects forged `jit` and `native_x86` labels for S2-38p.
+Affected suites passed: od-isa 1,906; od-testkit 455; runner 125
 unit + 523 fixture tests. Workspace check, formatting, diff check and Graphify
 refresh passed. Layout validation still reports the unmapped `.git` entry and
 two unrelated broken manifest links. No physical x86 acceptance is claimed.

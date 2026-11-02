@@ -37534,6 +37534,89 @@ fn maxsd_m64_memory_unmasked_profile_uses_its_own_schema_and_denies_backends() {
         Outcome::Unsupported { .. }
     ));
 
+    // These raw-bit vectors pass through the schema's integer-only MAXSD oracle.
+    // Keep the expected results literal so this does not validate the production
+    // Binary64 helper against itself.
+    for (case_id, lhs, rhs, expected) in [
+        (
+            "s2_38p_maxsd_memory_numeric_rhs_wins",
+            0x3ff0_0000_0000_0000u64,
+            0x4000_0000_0000_0000u64,
+            0x4000_0000_0000_0000u64,
+        ),
+        (
+            "s2_38p_maxsd_memory_numeric_lhs_wins",
+            0x4000_0000_0000_0000,
+            0x3ff0_0000_0000_0000,
+            0x4000_0000_0000_0000,
+        ),
+        (
+            "s2_38p_maxsd_memory_snan_rhs_raw_source2",
+            0x3ff0_0000_0000_0000,
+            0xfff0_1234_5678_9abc,
+            0xfff0_1234_5678_9abc,
+        ),
+        (
+            "s2_38p_maxsd_memory_signed_zero_positive_negative",
+            0x0000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+        ),
+        (
+            "s2_38p_maxsd_memory_signed_zero_negative_positive",
+            0x8000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+        ),
+    ] {
+        let mut vector = input.fixture.clone();
+        vector.case_id = case_id.into();
+        let sse = vector.initial_state.sse.as_mut().unwrap();
+        sse.mxcsr = HexU64(0x1f80);
+        let mut xmm0 = decode_xmm_literal(&sse.xmm[0]);
+        xmm0[..8].copy_from_slice(&lhs.to_le_bytes());
+        sse.xmm[0] = encode_xmm_literal(&xmm0);
+        vector.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(&rhs.to_le_bytes());
+        vector.expected_exit = ExpectedExit::StopAddress;
+        let (vector_input, vector_result) = run(&vector.to_json().unwrap(), "interpreter", 0);
+        assert!(
+            od_testkit::v2::compare(&vector_input, &vector_result, &vector_result)
+                .unwrap()
+                .is_empty()
+        );
+        let vector_snapshot = snapshot(&vector_result);
+        let final_sse = vector_snapshot.state.sse.as_ref().unwrap();
+        let final_xmm0 = decode_xmm_literal(&final_sse.xmm[0]);
+        assert_eq!(&final_xmm0[..8], &expected.to_le_bytes());
+        assert_eq!(&final_xmm0[8..], &xmm0[8..]);
+        assert_eq!(
+            final_sse.xmm[1..],
+            vector_input.fixture.initial_state.sse.as_ref().unwrap().xmm[1..]
+        );
+        assert_eq!(
+            vector_snapshot.state.rip.get(),
+            vector_input.fixture.initial_state.rip.get() + 4
+        );
+        assert_eq!(count(&vector_result), 1);
+    }
+
+    let original = serde_json::to_value(result.clone()).unwrap();
+    for forged_backend in ["jit", "native_x86"] {
+        let mut forged = original.clone();
+        forged["backend"] = serde_json::Value::String(forged_backend.into());
+        let output = compare_cli(
+            MAXSD_M64_MEMORY_UNMASKED_QNAN_XM,
+            &serde_json::to_vec(&forged).unwrap(),
+        );
+        assert!(
+            !output.status.success(),
+            "{forged_backend} label was accepted"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("interpreter-only memory results")
+        );
+    }
+
     for im in [false, true] {
         for dm in [false, true] {
             for osxmmexcpt in [false, true] {

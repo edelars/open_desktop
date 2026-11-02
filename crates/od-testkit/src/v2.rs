@@ -20819,6 +20819,7 @@ impl RunResult {
                 | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryUnmaskedRaxV1
                 | Profile::LongMinsdMemoryUnmaskedRaxV1
+                | Profile::LongMaxsdMemoryUnmaskedRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1

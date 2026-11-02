@@ -17,6 +17,10 @@ exception status, expected state, retirement, and the selected architectural
 exception. The handwritten fixture
 `s2_38p_maxsd_qnan_im_unmasked_xm.case.json` exercises an unmasked QNaN/IE #XM
 exit and verifies XMM0 suppression plus the dedicated MAXSD control echo.
+Additional literal raw-bit vectors pass through the same schema oracle for
+source-2 SNaN payload preservation, both finite numeric orderings, and both
+signed-zero tie orders. Forged `jit` and `native_x86` labels are rejected by
+the result comparator for this profile.
 
 ## Verification
 
