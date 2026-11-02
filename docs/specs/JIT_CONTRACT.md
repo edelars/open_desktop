@@ -513,6 +513,26 @@ profile makes no address-size-64 RBP `#SS` claim and does not admit other
 bases/forms, prefixes, SIB, or displacement widths. See the
 [S3-20dx report](../reports/STAGE_3_S3-20dx_2026-11-02.md).
 
+#### S3-20dy: exact address-size-32 RBP-base Dword store with signed disp32
+
+The shared typed-IR Dword-store path admits only the exact seven-byte singleton
+`67 89 85 id` (`MOV [EBP+disp32],EAX`). The decoder-owned address-size-32
+effective address adds signed disp32 to low32 EBP modulo 2^32, then zero-
+extends the starting address. A successful checked write transfers exactly
+four contiguous bytes from low32 EAX and advances to `A+7`; a write beginning
+at `0xffffffff` continues contiguously across the 4-GiB boundary.
+
+The JIT source/site test covers eleven representative signed disp32 values
+and mutates all four encoded displacement bytes at each tested site; it does
+not exhaust all 2^32 encodings. The host parity fixture covers ten
+displacement/base tuples, each with low and high full-width RBP values, and
+compares native/interpreter state and RAM. On an injected callback error the
+callback is attempted once and CPU/RAM state remains uncommitted. This slice
+makes no separate PC-map phase claim and does not admit other bases/forms,
+prefixes, SIB, or displacement widths. No address-size-64 RBP `#SS`, MMIO,
+SMC, owner/MMU, hardware, Mini, M1, or Stage 2 behavior is established. See
+the [S3-20dy report](../reports/STAGE_3_S3-20dy_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
