@@ -985,6 +985,23 @@ impl MemorySiteV2 {
             && self.operand.size == od_isa::OperandSize::Dword
             && matches!(
                 self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && self.operand.displacement == 0
+        {
+            return true;
+        }
+        if self.operation == MemorySiteOperationV2::Store
+            && self.instruction_index == expected_index
+            && length == 4
+            && self.destination.is_none()
+            && self.source == Some(0)
+            && self.operand.address_size == od_isa::OperandSize::Dword
+            && self.operand.size == od_isa::OperandSize::Dword
+            && matches!(
+                self.operand.base,
                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
             )
             && self.operand.index == Some(od_isa::Register::Rcx)
@@ -2489,6 +2506,22 @@ impl MemorySiteV2 {
                 && matches!(
                     self.operand.base,
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+                )
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == 0;
+        }
+        if source == [0x67, 0x89, 0x04, 0x24] {
+            return expected_operation == MemorySiteOperationV2::Store
+                && self.instruction_index == expected_index
+                && self.next_rip.checked_sub(self.guest_rip) == Some(4)
+                && self.destination.is_none()
+                && self.source == Some(0)
+                && self.operand.size == od_isa::OperandSize::Dword
+                && self.operand.address_size == od_isa::OperandSize::Dword
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rsp)
                 )
                 && self.operand.index.is_none()
                 && self.operand.scale == 1
