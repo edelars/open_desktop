@@ -138,6 +138,23 @@ error exit. This remains private synchronous ordinary RAM and adds no owner,
 MMU, cache, SMC or dispatcher integration. See the
 [S3-20cq report](../reports/STAGE_3_S3-20cq_2026-11-01.md).
 
+#### S3-20cr: exact dword load with RBX-base disp8
+
+The shared typed-IR Dword-load artifact additionally admits exactly the
+three-byte singleton `8B 43 ib` (`MOV EAX,[RBX+disp8]`). The decoded
+`MemoryOperand` is authoritative for the signed displacement and effective
+address; runtime code does not reconstruct the address from raw instruction
+bytes. A successful checked read transfers four bytes and zero-extends EAX into
+RAX. The descriptor binds the exact three source bytes and the one committed
+guest boundary is `A+3`; all 256 disp8 values retain distinct source/site
+identity. Read failures leave the architectural state uncommitted.
+
+This is one additional exact encoding alongside the existing `8B 03` and
+`8B 00` fixtures. It does not admit other dword widths, bases, address forms,
+prefixes, SIB, displacement widths, multi-instruction blocks, or a general
+dword memory family. It adds no owner/MMU, cache, dispatcher, SMC, or
+performance conclusion. See the [S3-20cr report](../reports/STAGE_3_S3-20cr_2026-11-01.md).
+
 #### S3-20c: one-byte SIB extension
 
 S3-20c extends both existing qword operations to exactly one SIB byte:
