@@ -3044,6 +3044,8 @@ fn build_block_with_profile(
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                         == Some(&[0x8b, 0x00][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                        == Some(&[0x8b, 0x04, 0x0b][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                         == Some(&[0x67, 0x8b, 0x03][..])
                     || code
                         .bytes
@@ -4831,7 +4833,14 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
             || (instruction.length == 6
                 && matches!(operand.base, AddressBase::NextRip)
                 && i32::try_from(operand.displacement).is_ok()));
-    let exact_address = address64_profile || address32_profile;
+    let rbx_rcx_sib_profile = instruction.length == 3
+        && instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+        && operand.index == Some(od_isa::Register::Rcx)
+        && operand.scale == 1
+        && operand.displacement == 0;
+    let exact_address = address64_profile || address32_profile || rbx_rcx_sib_profile;
     exact_prefix
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x8b
