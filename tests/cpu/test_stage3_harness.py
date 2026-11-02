@@ -396,7 +396,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
 
     def test_self_test_output_validator_rejects_zero_match_and_all_skipped(self):
         count = len(harness.SELF_TEST_NAMES)
-        self.assertEqual(count, 121)
+        self.assertEqual(count, 122)
         def output(status):
             rows = [
                 f"{name} (__main__.Stage3HarnessValidationTests.{name}) ... {status}"
