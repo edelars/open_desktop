@@ -11783,9 +11783,9 @@ Cover gaps 64/65/66/32765 with an independent signed-integer oracle across all
 twelve FCWs, both operand orders, all sign pairs, every TOP/index placement
 and prior PE/C1 histories. Include alias, refusal/no-commit and old-destination
 before-pop checks, plus a literal actual-operand runner fixture comparing full
-state and denying JIT. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8-ef),
+state and denying JIT. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8i),
 [standalone report](../reports/S2_30DM_X87_FSUBP_LARGE_GAPS.md), and [fixture
-notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture).
+notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture-coverage).
 
 #### S2-30dc. Bare `FSUBRP ST(i), ST(0)` with bounded FCW precision
 

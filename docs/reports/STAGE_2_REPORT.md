@@ -22463,6 +22463,6 @@ Graphify is 11,827 nodes / 25,484 edges / 382 communities (community labels
 were not refreshed because no Graphify LLM API key is configured). Layout reports only
 the isolated `.git` marker and two unavailable historical oracle manifests
 already tracked in ISSUE-023. Independent Sol/high review is pending. See the
-[standalone report](S2_30DM_X87_FSUBP_LARGE_GAPS.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8-ef),
+[standalone report](S2_30DM_X87_FSUBP_LARGE_GAPS.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8i),
 [plan](../plans/STAGE_2.md#s2-30dm-large-gap-fsubp-sti-st0-admission), and
-[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture).
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture-coverage).

@@ -4,7 +4,7 @@
   "profile": "s2-long-x87-state-v1",
   "provenance": {
     "kind": "project_fixture",
-    "source": "Literal large-gap FSUBP DE E9 with ST(0)=+1 and the actual Normal ST(1)=2^-65 RHS; local S2-30dm runner fixture.",
+    "source": "Literal large-gap FSUBP DE E9 with actual Normal ST(1)=2^-65 LHS and ST(0)=+1 RHS; local S2-30dm runner fixture.",
     "specification": "Intel SDM revision 093, FSUBP; local S2-30dm CPU contract.",
     "specification_version": "Intel SDM revision 093; project S2-30dm"
   },

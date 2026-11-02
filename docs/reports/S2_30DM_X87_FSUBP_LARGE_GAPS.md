@@ -57,8 +57,8 @@ pending.
 
 Sources: Intel SDM Rev. 093 Vol. 2A `FSUB/FSUBP/FISUB`, pp. 3-394–3-396;
 Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30. See the
-[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8-ef),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8i),
 [plan](../plans/STAGE_2.md#s2-30dm-large-gap-fsubp-sti-st0-admission),
 [shared report](STAGE_2_REPORT.md#s2-30dm--large-gap-fsubp-sti-st0),
-[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture-coverage),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).

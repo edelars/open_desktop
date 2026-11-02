@@ -2978,7 +2978,7 @@ PE/C1 histories. Literal runner coverage checks the entire post-state,
 exception observation, unchanged code memory and JIT denial. See the [plan](../plans/STAGE_2.md#s2-30dm-large-gap-fsubp-sti-st0-admission),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30dm--large-gap-fsubp-sti-st0),
 [standalone report](../reports/S2_30DM_X87_FSUBP_LARGE_GAPS.md), and
-[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture).
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture-coverage).
 
 ## Local S2-30q: exact-only `FDIV ST(0), ST(i)` (`D8 F0+i`)
 
