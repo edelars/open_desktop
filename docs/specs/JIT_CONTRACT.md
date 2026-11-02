@@ -314,6 +314,20 @@ boundary at `A+3` are retained. Recorded fixtures cover faults, no replay,
 STOP, and budget handling; other SIB shapes are not admitted. See the
 [S3-20dd report](../reports/STAGE_3_S3-20dd_2026-11-02.md).
 
+#### S3-20df: exact address64 SIB Dword loads with RCX scales 2, 4, and 8
+
+Alongside scale-1 `8B 04 0B` from S3-20dd, the shared typed-IR Dword-load
+path additionally admits exactly `8B 04 4B`, `8B 04 8B`, and `8B 04 CB`
+(`MOV EAX,[RBX+RCX*2|4|8]`). Each is a three-byte singleton with full-width
+RBX base, full-width RCX index, and the SIB-selected scale. The effective
+address follows decoder-owned `access_address_48`; the checked read is four
+bytes and writes EAX, zero-extending into RAX and clearing `RAX[63:32]`.
+Other registers and flags are preserved. Strict source/site binding and the
+single PC-map boundary at `A+3` are retained; recorded fixtures cover faults
+and guards. No separate scale-specific canonical-end/range-overflow fixture
+was added, and the shared preflight/helper are unchanged; no runtime defect is
+claimed. See the [S3-20df report](../reports/STAGE_3_S3-20df_2026-11-02.md).
+
 #### S3-20de: exact address64 SIB Dword store
 
 The shared typed-IR Dword-store path additionally admits only the exact
