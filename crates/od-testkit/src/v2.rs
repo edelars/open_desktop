@@ -18041,7 +18041,9 @@ impl Fixture {
                     && self.instruction_budget == 1
                     && self.initial_state.x87.as_ref().is_some_and(|x87| {
                         !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-                            || x87.status_word.get() & 0x80c0 != 0
+                            || x87.status_word.get() & 0x8080 != 0
+                            || (x87.status_word.get() & 0x0040 != 0
+                                && x87.status_word.get() & 0x0001 == 0)
                     });
             let is_fstp_m80_status_rejected = code_bytes == "db38"
                 && self.stop_rip.is_none()
