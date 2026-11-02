@@ -78,6 +78,7 @@ SELF_TEST_NAMES = (
     "test_s3_34z_rbx_disp8_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34aa_rbx_disp32_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34ab_rbx_disp8_dword_store_gates_are_pinned_and_fail_closed",
+    "test_s3_34ac_published_dword_disp8_disp32_load_maps_gate_is_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -576,6 +577,10 @@ ADDITIONAL_TEST_GATES = (
         "s3_34ab_host_dword_rbx_disp8_store_checked_semantics", "local_acceptance", "od-host",
         "tests::s3_20ct_disp8_dword_store_preserves_checked_semantics",
     ),
+    (
+        "s3_34ac_published_dword_disp_load_maps_lifetime", "local_acceptance", "od-host",
+        "published_dword_disp8_and_disp32_load_pc_maps_match_artifacts_survive_drop_and_republish",
+    ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
     (
@@ -589,6 +594,10 @@ RUST_TEST_TARGET_OVERRIDES = {
     (
         "od-host",
         "published_dword_pc_maps_match_artifacts_survive_drop_and_republish_at_new_rips",
+    ): ("--test", "memory_corpus"),
+    (
+        "od-host",
+        "published_dword_disp8_and_disp32_load_pc_maps_match_artifacts_survive_drop_and_republish",
     ): ("--test", "memory_corpus"),
 }
 RUST_TEST_GATES = (
