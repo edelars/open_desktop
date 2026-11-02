@@ -40,7 +40,17 @@ uses actual `2^-65` input bytes and checks complete state plus JIT denial.
   layout violations. All seven new S2-30dh local documentation references
   resolve to existing files and headings.
 - `graphify update .`: 11,637 nodes, 25,204 edges, 338 communities.
-- Independent Sol/high review is pending handoff to the parent task.
+- Independent Sol/high review completed clean; the final oracle includes the
+  minimum Normal-result boundary vector.
+
+## Main integration
+
+Integrated with S2-37dy. Combined main validation passed: od-isa 1,871,
+od-testkit 455, runner 121 unit + 512 fixture, and od-x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout, and diff
+check passed. Main Graphify refresh: 11,660 nodes, 25,258 edges, 368
+communities. The added native-denial regression is in a Linux-only module and
+did not execute on macOS. No physical x86 acceptance is claimed.
 
 No native x87/JIT execution, guest exception delivery or physical x86
 acceptance is claimed. Scope and links: [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dh-large-gap-faddp-sti-st0-de-c0c7),

@@ -22073,6 +22073,19 @@ Workspace all-target offline check, formatting, layout и `git diff --check`
 с уникальными неперенесёнными коммитами сохранены. Физическая x86-проверка не
 выполнялась; Этап 2 остаётся открытым.
 
+## Main integration: S2-30dh + S2-37dy
+
+После переноса large-gap `FADDP ST(i),ST(0)` и local masked `RCPPS`
+memory-профиля полные проверки main прошли: `od-isa` 1,871; `od-testkit`
+455; runner 121 unit и 512 serialized fixture tests; `od-x86-runner` 8 library
++ 4 binary tests. Workspace all-target offline check, formatting, layout и
+`git diff --check` прошли. Graphify AST refresh: 11,660 nodes, 25,258 edges,
+368 communities. Независимые Sol/high reviews обоих срезов чистые. ISSUE-025
+остаётся открытым: local reciprocal не заявляется bit-exact с аппаратным
+результатом, hardware tiny-result threshold не установлен. Linux-only native
+denial regression FADDP добавлен, но не исполнялся на macOS. Физическая
+x86-проверка не выполнялась; Этап 2 остаётся открытым.
+
 ## Main integration: S2-30dg + S2-37dx
 
 После переноса reverse large-gap `FADD ST(i),ST(0)` и masked-only memory

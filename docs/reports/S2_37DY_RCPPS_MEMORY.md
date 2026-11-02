@@ -52,3 +52,12 @@ Independent Sol/high review completed clean after correcting the public executor
 API comment and using the RCPPS memory control alias in its signature. No physical
 x86 acceptance is claimed. ISSUE-025 remains open and the hardware tiny-result
 threshold remains unresolved.
+
+## Main integration
+
+Integrated with S2-30dh. Combined main validation passed: od-isa 1,871,
+od-testkit 455, runner 121 unit + 512 fixture, and od-x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout, and diff
+check passed. Main Graphify refresh: 11,660 nodes, 25,258 edges, 368
+communities. ISSUE-025 remains open; no hardware bit-equality or physical x86
+acceptance is claimed.
