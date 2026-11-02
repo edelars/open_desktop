@@ -4049,3 +4049,104 @@ fn published_dword_disp8_and_disp32_load_pc_maps_match_artifacts_survive_drop_an
         drop(published);
     }
 }
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn published_dword_disp8_and_disp32_store_pc_maps_match_artifacts_survive_drop_and_republish() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    use od_jit::statepoints::{
+        GuestRipBoundary, GuestRipSource, PcMap, SnapshotAdmissibility, StatePhase,
+    };
+
+    let cases = [
+        (ENTRY_RIP + 0x600, &[0x89, 0x43, 0x80][..]),
+        (ENTRY_RIP + 0x640, &[0x89, 0x83, 0x00, 0x00, 0x00, 0x80][..]),
+    ];
+    let assert_store_map = |map: &PcMap, entry_rip, next_rip| {
+        assert_eq!(map.instruction_count(), 1);
+        assert_eq!(map.boundaries().len(), 1);
+        let boundary = &map.boundaries()[0];
+        assert_eq!(boundary.rip, GuestRipBoundary::Fixed(next_rip));
+        assert_eq!(boundary.instruction_index, 0);
+        assert_eq!(boundary.committed_instructions, 1);
+        assert_eq!(boundary.phase, StatePhase::Committed);
+        assert_eq!(boundary.snapshot, SnapshotAdmissibility::CanonicalBoundary);
+
+        for (phase, snapshot) in [
+            (
+                StatePhase::BeforeInstruction,
+                SnapshotAdmissibility::CanonicalBoundary,
+            ),
+            (
+                StatePhase::PendingEffects,
+                SnapshotAdmissibility::ReplayCurrentInstruction,
+            ),
+            (
+                StatePhase::HelperCall,
+                SnapshotAdmissibility::InadmissibleAfterEffect,
+            ),
+            (
+                StatePhase::AfterHelper,
+                SnapshotAdmissibility::InadmissibleAfterEffect,
+            ),
+            (
+                StatePhase::CommitInProgress,
+                SnapshotAdmissibility::InadmissibleDuringCommit,
+            ),
+        ] {
+            let matching: Vec<_> = map
+                .ranges()
+                .iter()
+                .filter(|range| range.instruction_index == Some(0) && range.phase == phase)
+                .collect();
+            assert_eq!(matching.len(), 1, "expected one {phase:?} range");
+            assert_eq!(matching[0].guest_rip, GuestRipSource::Fixed(entry_rip));
+            assert_eq!(matching[0].snapshot, snapshot, "wrong {phase:?} snapshot");
+        }
+    };
+
+    let mut previous_entry_rip = None;
+    let mut previous_source_len = None;
+    let mut previous_map = None;
+    for (entry_rip, source) in cases {
+        let next_rip = entry_rip + source.len() as u64;
+        if let Some(previous_entry_rip) = previous_entry_rip {
+            assert_ne!(previous_entry_rip, entry_rip);
+        }
+        if let Some(previous_source_len) = previous_source_len {
+            assert_ne!(previous_source_len, source.len());
+        }
+
+        let artifact = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
+            od_jit::block::CodeView::new(entry_rip, source).unwrap(),
+            entry_rip,
+        )
+        .unwrap();
+        assert_eq!(artifact.source_bytes(), source);
+        assert_eq!(artifact.entry_rip(), entry_rip);
+        assert_eq!(artifact.site().guest_rip(), entry_rip);
+        assert_eq!(artifact.site().next_rip(), next_rip);
+
+        let expected_map = artifact.pc_map().clone();
+        assert_store_map(&expected_map, entry_rip, next_rip);
+        if let Some(previous_map) = previous_map.as_ref() {
+            assert_ne!(previous_map, &expected_map);
+        }
+
+        let published = PublishedCode::publish_ir_memory_dword_store_v2(&artifact).unwrap();
+        assert_eq!(published.pc_map(), Some(&expected_map));
+        drop(artifact);
+
+        let published_map = published
+            .pc_map()
+            .expect("published dword store retains its PC map");
+        assert_eq!(published_map, &expected_map);
+        assert_store_map(published_map, entry_rip, next_rip);
+
+        previous_entry_rip = Some(entry_rip);
+        previous_source_len = Some(source.len());
+        previous_map = Some(expected_map);
+        // Drop the sole live MAP_JIT mapping before publishing the next form.
+        drop(published);
+    }
+}
