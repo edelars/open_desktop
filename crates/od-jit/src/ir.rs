@@ -1081,7 +1081,10 @@ fn is_checked_dword_load_address(
                 )
                 && i8::try_from(operand.displacement).is_ok())
             || (instruction_length == 6
-                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                && matches!(
+                    operand.base,
+                    AddressBase::Register(od_isa::Register::Rbx | od_isa::Register::Rbp)
+                )
                 && i32::try_from(operand.displacement).is_ok())
             || (instruction_length == 6
                 && matches!(operand.base, AddressBase::NextRip)
