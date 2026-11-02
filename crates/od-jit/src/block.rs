@@ -3071,6 +3071,10 @@ fn build_block_with_profile(
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(7))
                         .is_some_and(|bytes| bytes[..3] == [0x8b, 0x04, 0x25])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(7))
+                        .is_some_and(|bytes| bytes[..3] == [0x8b, 0x04, 0x0d])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                         == Some(&[0x67, 0x8b, 0x03][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(4))
@@ -5032,6 +5036,13 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
             || (instruction.length == 7
                 && matches!(operand.base, AddressBase::None)
                 && (i32::MIN as i64..=i32::MAX as i64).contains(&operand.displacement)));
+    let rcx_no_base_sib_profile = instruction.length == 7
+        && instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && matches!(operand.base, AddressBase::None)
+        && operand.index == Some(od_isa::Register::Rcx)
+        && operand.scale == 1
+        && i32::try_from(operand.displacement).is_ok();
     let rbx_rcx_sib_profile = matches!(instruction.length, 3 | 4 | 7)
         && instruction.address_size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
@@ -5064,6 +5075,7 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
         && i32::try_from(operand.displacement).is_ok();
     let exact_address = address64_profile
         || address32_profile
+        || rcx_no_base_sib_profile
         || rbx_rcx_sib_profile
         || rsp_no_index_sib_profile
         || rsp_disp8_sib_profile
