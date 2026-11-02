@@ -164,6 +164,10 @@ Harness commit `5ab8dca` pins only `memory_load_v2::tests::ir_dword_rbx_rcx_sib_
 
 Harness commit `ce18174` pins only `memory_load_v2::tests::ir_dword_rbx_rcx_sib_disp8_load_binds_all_scales_and_signed_bytes` and `tests::s3_20dh_rbx_rcx_scaled_disp8_sib_dword_load_uses_signed_displacement`. Both exact Cargo gates passed 1/1; the focused harness self-test passed 1/1. No PC-map gate is pinned. Python byte-compilation, `git diff --check`, and Graphify query/update passed; the full harness/module and CPU discovery were not run. Mini, M1 Pro, and Stage 2 were not run. The earlier scale-only S3-20dd/20df gates remain separate from this disp8 profile. See the [S3-20dh runtime report](../reports/STAGE_3_S3-20dh_2026-11-02.md) and [S3-34as report](../reports/STAGE_3_S3-34as_2026-11-02.md).
 
+## S3-34au: exact harness gates for S3-20dj address64 SIB disp32 loads
+
+Harness commit `4ef90b0` pins only `memory_load_v2::tests::ir_dword_rbx_rcx_sib_disp32_load_binds_all_scales_and_source_bytes` and `tests::s3_20dj_rbx_rcx_scaled_disp32_sib_dword_load_preserves_checked_semantics`. Both exact Cargo gates and the focused harness self-test passed 1/1. No PC-map gate is pinned. Python byte-compilation, `git diff --check`, and Graphify query/update passed. The full Stage 3 harness/module and CPU discovery were not run; Mini, M1 Pro, and Stage 2 were not run. Earlier scale-only S3-34ao/aq and disp8 S3-34as gates remain separate. See the [S3-20dj runtime report](../reports/STAGE_3_S3-20dj_2026-11-02.md) and [S3-34au report](../reports/STAGE_3_S3-34au_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
