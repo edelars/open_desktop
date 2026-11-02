@@ -2451,7 +2451,10 @@ Manual, revision 093, Vol.2A, “FADD/FADDP/FIADD—Add,” pp.3-311–3-313, an
 §§8.1.5.2–8.1.9.1, pp.8-7–8-11, for x87 state, precision control, rounding,
 tags and FIP/FDP/FOP ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
-The local profile is narrower than the architectural instruction.
+The local profile is narrower than the architectural instruction. See the
+[plan](../plans/STAGE_2.md#s2-30cz-bare-bounded-precision-faddp-sti-st0),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cz--bounded-faddp-sti-st0),
+and [standalone report](../reports/S2_30CZ_X87_FADDP_PRECISION.md).
 
 ## Local S2-30e: exact-only `FADD ST(0), ST(i)` (`D8 C0+i`)
 
@@ -2514,41 +2517,46 @@ Manual, revision 093, Vol.2A, “FADD/FADDP/FIADD—Add,” pp.3-311–3-313, an
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
 The local profile remains narrower than the architectural instruction.
 
-## Local S2-30g: exact-only `FADDP ST(i), ST(0)` (`DE C0+i`)
+## Local S2-30g: initial exact-only `FADDP ST(i), ST(0)` (`DE C0+i`)
 
-The local long-mode interpreter accepts exactly bare `DE C0` through `DE C7`,
-mapping the low ModR/M bits to destination index `i`. It retains all S2-30d
-environment, operand and result restrictions: existing x87 state, FCW
-`0x037f`, clear FSW `0x80ff` mask, Valid tags for used physical operands,
-canonical Normal inputs, equal normalized exponents, exact coefficient
-representability and canonical Normal output. The destination is physical
-`(TOP+i)&7`; source ST(0) is physical TOP. For `i=0`, the shared register is
-captured once and requires only its single Valid tag. For `i!=0`, both used tags
-must be Valid. Both raw operands and the complete result are validated before
-the first state mutation.
+The initial exact-only arithmetic profile is superseded by S2-30cz. Its
+physical pop behavior remains normative for the current bounded profile:
+write the result to old physical `(TOP+i)&7`, mark old physical TOP Empty, then
+increment TOP modulo eight without rotating the register array. At `i=0`, the
+written payload remains under an Empty tag; at `i=1`, the result becomes new
+ST(0). Native/JIT admission remains closed.
 
-On success, write result bytes to the old physical destination, mark old
-physical TOP Empty, increment TOP modulo eight, clear FSW.C1, set FIP to the
-starting RIP, advance RIP by two and retire once. Do not rotate the physical
-register array or tag word. For `i=0`, writing then emptying old TOP leaves the
-new bytes beneath an Empty tag; they are not logically accessible after pop.
-For `i=1`, the destination is new ST(0). Preserve all other raw payloads and
-tags, FCW, remaining FSW bits, FDP, FOP, GPRs and RFLAGS. C0/C2/C3 and FDP
-retention are local deterministic policies; this slice does not model general
-x87 flags or exception delivery. Unsupported inputs and encodings return
-Unsupported without state commit.
+## Local S2-30cz: bounded `FADDP ST(i), ST(0)` (`DE C0..C7`)
 
-Prefixes, other DE ModR/M bytes, memory forms, WAIT, and native admission remain
-unsupported. Literal vectors cover every destination index and TOP, physical
-payload sentinels, `i=0` behavior, new ST(0) at `i=1`, TOP wrap, exact carry and
-full-state rejects including i=0 overflow. Fixture schema accepts only the
-eight bare encodings, and native x87 execution remains closed.
+Only exact bare Long64 `DE C0..C7` is admitted. Reuse S2-30ct's direct
+binary80 addition precision helper with logical destination `i` and source
+zero. Require present x87 state, absent FCS/FDS, one of twelve all-exception-
+masked PC24/53/64 FCWs, and `FSW & 0x80df == 0`. Snapshot both operands before
+mutation. Participating physical operands must be Valid-tagged canonical
+nonzero Normal binary80 values of either sign. For `i=0`, validate physical
+TOP once and double that operand. Require normalized exponent gap≤64 and accept
+only finite Normal exact or rounded results.
+
+On success, write the rounded result to old physical `(TOP+i)&7`, mark old
+physical TOP Empty, and increment TOP modulo eight. Set PE to old PE OR
+`inexact`, replace C1 from the helper's pre-carry magnitude `incremented`, and
+preserve C0/C2/C3 by local policy. For `i=0`, retain the newly written bytes
+beneath the Empty tag; for `i=1`, the result is new ST(0). Preserve all other
+raw payloads, tags, FCW, remaining FSW bits, FDP/FOP and integer state. Set FIP
+to old RIP, advance RIP by two, retire once and perform no data-memory access.
+Unsupported operands, environment, exponent gaps, zero/subnormal/overflow
+results and execution boundaries reject atomically. Prefixes, other DE forms,
+memory forms, WAIT and JIT/native admission remain unsupported. No guest
+exception delivery or physical x86 acceptance is implied.
 
 Normative source: Intel® 64 and IA-32 Architectures Software Developer's
 Manual, revision 093, Vol.2A, “FADD/FADDP/FIADD—Add,” pp.3-311–3-313, and Vol.1
 §§8.1.7–8.1.9, pp.8-8–8-11 ([official Vol.2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf),
 [official Vol.1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf)).
-The local profile is narrower than the architectural instruction.
+The local profile is narrower than the architectural instruction. See the
+[plan](../plans/STAGE_2.md#s2-30cz-bare-bounded-precision-faddp-sti-st0),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cz--bounded-faddp-sti-st0),
+and [standalone report](../reports/S2_30CZ_X87_FADDP_PRECISION.md).
 
 ## Local S2-30h: exact-only `FSUB ST(0), ST(i)` (`D8 E0+i`)
 

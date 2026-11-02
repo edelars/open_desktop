@@ -5413,6 +5413,10 @@ mod tests {
                 code.length = 2;
                 code.initial_bytes_hex = format!("dec{destination:x}");
                 code.comparison_mask_hex = "ffff".into();
+                assert!(
+                    od_jit::compile(&[0xde, 0xc0 | destination]).is_err(),
+                    "bounded FADDP remains JIT-denied"
+                );
 
                 let mut x87 = od_isa::state::X87State::fixture_seed();
                 x87.control_word = 0x037f;
@@ -5457,6 +5461,66 @@ mod tests {
                 assert_eq!(observed.registers[usize::from(physical_destination)], two);
             }
         }
+    }
+
+    #[test]
+    fn x87_faddp_fixture_runner_records_rounded_pe_and_pop_state() {
+        fn normal(significand: u64, exponent: u16) -> [u8; 10] {
+            let mut bytes = [0; 10];
+            bytes[..8].copy_from_slice(&significand.to_le_bytes());
+            bytes[8..].copy_from_slice(&exponent.to_le_bytes());
+            bytes
+        }
+
+        let mut input = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+        ))
+        .unwrap()
+        .fixture;
+        input.case_id = "local_faddp_gap64_inexact_top_wrap".into();
+        input.profile = v2::Profile::LongX87StateV1;
+        input.instruction_budget = 1;
+        input.initial_state.rip = HexU64(0x5000);
+        input.stop_rip = Some(HexU64(0x5002));
+        input.expected_exit = v2::ExpectedExit::StopAddress;
+        let code = input
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "code")
+            .unwrap();
+        code.guest_address = HexU64(0x5000);
+        code.length = 2;
+        code.initial_bytes_hex = "dec1".into();
+        code.comparison_mask_hex = "ffff".into();
+
+        let mut x87 = od_isa::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = (7 << 11) | (1 << 9);
+        x87.tag_word = u16::MAX;
+        x87.registers[0] = normal(0x8000_0000_0000_0000, 0x3fff);
+        x87.registers[7] = normal(0x8000_0000_0000_0000, 0x3fbf);
+        x87.set_tag(0, od_isa::state::X87Tag::Valid);
+        x87.set_tag(7, od_isa::state::X87Tag::Valid);
+        input.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+
+        assert!(od_jit::compile(&[0xde, 0xc1]).is_err());
+        let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let result = execute_fixture_v2(&loaded, &mut memory);
+        result.validate_for(&loaded).unwrap();
+        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(1) }
+        );
+        let Observation::Available { value } = result.snapshot else {
+            panic!("rounded FADDP fixture snapshot must be observable");
+        };
+        let mut expected = x87;
+        expected.set_tag(7, od_isa::state::X87Tag::Empty);
+        expected.status_word = 1 << 5;
+        expected.instruction_pointer = 0x5000;
+        assert_eq!(value.state.x87.unwrap(), v2::X87Snapshot::from(&expected));
     }
 
     #[test]

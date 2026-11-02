@@ -5217,9 +5217,11 @@ for physical checks. Independent `gpt-6.1-sol` medium review found no code
 defects; it identified one contradictory phrase in the new contract, which was
 corrected to “other D8 forms.”
 
-## S2-30g — exact-only FADDP ST(i), ST(0) (bounded local slice)
+## S2-30g — initial exact-only FADDP ST(i), ST(0) (superseded by S2-30cz)
 
-Added bare `DE C0+i`, `i=0..7`, as exact-only `FADDP ST(i), ST(0)`. It reuses
+Initially added bare `DE C0+i`, `i=0..7`, as exact-only `FADDP ST(i), ST(0)`. Its
+arithmetic domain is superseded by S2-30cz; the physical pop semantics below
+remain unchanged. It reused
 the S2-30d exact result helper with destination `i` and source zero, so all
 arithmetic and environment preconditions are checked before the first mutation.
 Success writes to old physical `(TOP+i)&7`, empties old physical TOP, increments
@@ -5244,6 +5246,7 @@ Normative basis: Intel SDM revision 093, Vol.2A pp.3-311–3-313 and Vol.1
 This does not claim general FADDP, special values, stack faults, exception
 delivery, CR0 behavior or native x87 execution.
 
+
 Focused `cargo test -p od-isa faddp_sti_st0 --offline` (4 tests), the testkit
 x87 schema test, and the fixture-runner matrix covering all 64 destination/TOP
 pairs passed. `cargo test --workspace --offline`, `cargo fmt --all -- --check`,
@@ -5255,6 +5258,38 @@ acceptance substage. `python3 tools/check_layout.py` reports the existing
 unmapped root `.serena/` directory, left untouched. `graphify update .`
 completed and refreshed the code graph. Independent `gpt-6.1-sol` medium
 review found no concrete defects; no hardware or SSH check was run.
+
+## S2-30cz — bounded `FADDP ST(i), ST(0)`
+
+Extended bare Long64 `DE C0..C7` from the S2-30g exact-only arithmetic domain
+to direct FCW precision/rounding through S2-30ct's bounded addition helper.
+Admission requires one of twelve all-masked PC24/53/64 FCWs, absent FCS/FDS,
+`FSW & 0x80df == 0`, Valid canonical nonzero Normal operands, normalized
+exponent gap≤64 and finite Normal output. Both operands and the rounded result
+are validated before any mutation.
+
+Success writes to old physical `(TOP+i)&7`, empties old physical TOP, then
+advances TOP modulo eight. The physical array is not rotated: `i=0` leaves the
+new result payload under Empty, while `i=1` leaves it in new ST(0). PE is sticky
+from `inexact`; C1 comes from `incremented`. FIP/RIP, one retirement, unrelated
+state preservation and no data access remain covered. JIT/native execution,
+guest exception delivery and physical x86 acceptance remain outside the slice.
+
+The focused ISA suite passed 7 FADDP tests, including a 3,072-case matrix over
+all TOP/index pairs, twelve FCWs and four sign combinations, literal midpoint
+rounding, plus gap-64 PE, gap-65 refusal and i=0 overflow rollback. Workspace
+tests passed: od-isa 1,834; testkit 455; runner 119 unit + 496 fixture; native
+runner 8 library + 4 binary. Runner fixtures passed the all-pair full-state
+pop matrix and an additional rounded PE/pop snapshot. Testkit schema accepts
+the eight exact encodings; the native rejection test source enumerates all
+eight, but its Linux-only execution was not available on this macOS host.
+Formatting, workspace all-target check and diff check passed. Layout reports
+the existing `.git` worktree marker and two missing historical oracle manifests.
+Graphify has 11,451 nodes, 24,663 edges and 361 communities. Independent
+gpt-6.1-sol high review is clean with no findings. Details are in the standalone
+[S2-30cz report](S2_30CZ_X87_FADDP_PRECISION.md).
+
+
 
 
 ## S2-30h — exact-only FSUB ST(0), ST(i) (bounded local slice)

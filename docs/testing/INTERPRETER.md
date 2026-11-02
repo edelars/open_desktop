@@ -2375,3 +2375,17 @@ equality/subnormal cases, every RC value, refusal and closed JIT/native paths.
 Full unmasked delivery remains open. See [plan](../plans/STAGE_2.md#s2-37l--local-long64-register-only-legacy-maxpd-with-masked-status),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37l-register-only-maxpd-with-masked-status),
 and [fixture](../../tests/fixtures/x86/stage2/s2_37l_maxpd_masked_register.case.json).
+
+## Local FADDP precision profile — S2-30cz
+
+Bare Long64 `DE C0..C7` uses the bounded FCW-controlled binary80 addition
+profile from S2-30ct: twelve all-masked PC24/53/64 controls, no x87 selectors,
+`FSW & 0x80df == 0`, Valid canonical nonzero Normal operands, normalized
+exponent gap≤64 and a finite Normal result. Both operands are validated before
+commit. Success writes to old physical `(TOP+i)&7`, empties old physical TOP,
+then advances TOP; PE is sticky from `inexact` and C1 reports `incremented`.
+The full x87 snapshot, instruction retirement and no-data-access behavior are
+checked by local fixtures. JIT/native admission and guest exception delivery
+remain unsupported. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cz-bounded-faddp-sti-st0-de-c0c7),
+[plan](../plans/STAGE_2.md#s2-30cz-bare-bounded-precision-faddp-sti-st0), and
+[report](../reports/STAGE_2_REPORT.md#s2-30cz--bounded-faddp-sti-st0).

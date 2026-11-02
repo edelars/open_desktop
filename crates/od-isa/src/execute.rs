@@ -22983,7 +22983,7 @@ fn step_configured(
         });
     }
     if let Operation::FaddpStSt0 { destination } = instruction.operation
-        && exact_fadd_result(state, destination, 0).is_none()
+        && bounded_x87_fadd_sti_st0_result(state, destination).is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -34537,16 +34537,20 @@ fn step_configured(
             x87.instruction_pointer = state.rip;
         }
         Operation::FaddpStSt0 { destination } => {
-            let result =
-                exact_fadd_result(state, destination, 0).expect("FADDP result was prevalidated");
+            let (result, inexact, incremented) =
+                bounded_x87_fadd_sti_st0_result(state, destination)
+                    .expect("FADDP result was prevalidated");
             let x87 = state.x87.as_mut().expect("FADDP state was prevalidated");
             let old_top = x87.top();
             let physical_destination = (old_top + destination) & 7;
-            x87.registers[usize::from(physical_destination)] = result.to_bytes();
+            x87.registers[usize::from(physical_destination)] = result;
             x87.set_tag(old_top, X87Tag::Empty);
             let new_top = old_top.wrapping_add(1) & 7;
-            x87.status_word =
-                (x87.status_word & !((7 << 11) | (1 << 9))) | (u16::from(new_top) << 11);
+            let old_pe = x87.status_word & (1 << 5) != 0;
+            x87.status_word = (x87.status_word & !((7 << 11) | (1 << 5) | (1 << 9)))
+                | (u16::from(new_top) << 11)
+                | (u16::from(old_pe || inexact) << 5)
+                | (u16::from(incremented) << 9);
             x87.instruction_pointer = state.rip;
         }
         Operation::FstSti { destination } => {
@@ -37350,14 +37354,6 @@ fn bounded_x87_fcmovb(state: &LongModeState, source_index: u8) -> Option<(u8, [u
         }
     }
     Some((top, x87.registers[usize::from(source)], x87.tag(source)?))
-}
-
-fn exact_fadd_result(
-    state: &LongModeState,
-    destination_index: u8,
-    source_index: u8,
-) -> Option<X87Binary80> {
-    exact_same_exponent_binary_result(state, destination_index, source_index, false)
 }
 
 /// Preflight the bounded register-only `FADD ST(0), ST(i)` precision profile.
@@ -53920,6 +53916,229 @@ mod tests {
     }
 
     #[test]
+    fn faddp_sti_st0_rounds_all_fcws_for_every_top_index_and_sign() {
+        const CONTROL_WORDS: [u16; 12] = [
+            0x007f, 0x047f, 0x087f, 0x0c7f, 0x027f, 0x067f, 0x0a7f, 0x0e7f, 0x037f, 0x077f, 0x0b7f,
+            0x0f7f,
+        ];
+        let destination_significand = 0x8000_0000_0000_0001;
+        let source_significand = 0x8000_0000_0000_0000;
+        for control_word in CONTROL_WORDS {
+            let precision = match control_word & 0x0300 {
+                0x0000 => 24,
+                0x0200 => 53,
+                _ => 64,
+            };
+            let rounding = (control_word >> 10) & 3;
+            for top in 0u8..8 {
+                for destination_index in 0u8..8 {
+                    for (destination_negative, source_negative) in
+                        [(false, false), (false, true), (true, false), (true, true)]
+                    {
+                        let physical_destination = (top + destination_index) & 7;
+                        let mut state = LongModeState::default();
+                        state.rip = 0x2400;
+                        state.gpr = std::array::from_fn(|n| 0x1122_3344_5566_7788 ^ n as u64);
+                        state.rflags = 0xa55a_1234_5678_9abc;
+                        let mut x87 = crate::state::X87State::fixture_seed();
+                        x87.control_word = control_word;
+                        let old_pe = (top + destination_index) & 1 != 0;
+                        x87.status_word =
+                            (u16::from(top) << 11) | 0x4500 | (1 << 9) | (u16::from(old_pe) << 5);
+                        x87.tag_word = u16::MAX;
+                        x87.registers[usize::from(physical_destination)] =
+                            binary80_normal(destination_significand, 0x3fff, destination_negative);
+                        x87.set_tag(physical_destination, X87Tag::Valid);
+                        if destination_index != 0 {
+                            x87.registers[usize::from(top)] =
+                                binary80_normal(source_significand, 0x3fff, source_negative);
+                            x87.set_tag(top, X87Tag::Valid);
+                        }
+                        state.x87 = Some(x87);
+                        let before = state.clone();
+                        let mut memory = Memory::at(&[0xde, 0xc0 | destination_index], state.rip);
+                        assert_eq!(
+                            step(&mut state, &mut memory, AccessContext::default()),
+                            Ok(StepOutcome::Advanced),
+                            "FCW={control_word:#06x}, TOP={top}, i={destination_index}, signs={destination_negative}/{source_negative}"
+                        );
+
+                        let (expected_value, inexact, incremented) = if destination_index == 0 {
+                            if precision == 64 {
+                                (
+                                    binary80_normal(
+                                        destination_significand,
+                                        0x4000,
+                                        destination_negative,
+                                    ),
+                                    false,
+                                    false,
+                                )
+                            } else {
+                                let incremented = match (rounding, destination_negative) {
+                                    (1, true) | (2, false) => true,
+                                    _ => false,
+                                };
+                                let low_bit = if incremented {
+                                    1u64 << (64 - precision)
+                                } else {
+                                    0
+                                };
+                                (
+                                    binary80_normal(
+                                        0x8000_0000_0000_0000 | low_bit,
+                                        0x4000,
+                                        destination_negative,
+                                    ),
+                                    true,
+                                    incremented,
+                                )
+                            }
+                        } else if destination_negative != source_negative {
+                            (
+                                binary80_normal(
+                                    0x8000_0000_0000_0000,
+                                    0x3fc0,
+                                    destination_negative,
+                                ),
+                                false,
+                                false,
+                            )
+                        } else {
+                            let incremented = match (rounding, destination_negative) {
+                                (1, true) | (2, false) => true,
+                                _ => false,
+                            };
+                            let low_bit = if incremented {
+                                1u64 << (64 - precision)
+                            } else {
+                                0
+                            };
+                            (
+                                binary80_normal(
+                                    0x8000_0000_0000_0000 | low_bit,
+                                    0x4000,
+                                    destination_negative,
+                                ),
+                                true,
+                                incremented,
+                            )
+                        };
+                        let old_top = top;
+                        let new_top = top.wrapping_add(1) & 7;
+                        let mut expected = before.clone();
+                        let expected_x87 = expected.x87.as_mut().unwrap();
+                        expected_x87.registers[usize::from(physical_destination)] = expected_value;
+                        expected_x87.set_tag(old_top, X87Tag::Empty);
+                        expected_x87.status_word = (expected_x87.status_word
+                            & !((7 << 11) | (1 << 5) | (1 << 9)))
+                            | (u16::from(new_top) << 11)
+                            | (u16::from(old_pe || inexact) << 5)
+                            | (u16::from(incremented) << 9);
+                        expected_x87.instruction_pointer = before.rip;
+                        expected.rip += 2;
+                        assert_eq!(state, expected);
+                        assert!(memory.accesses.is_empty(), "FADDP performs no data access");
+                        assert_eq!(memory.fetches, [before.rip, before.rip + 1]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn faddp_sti_st0_accepts_gap_64_inexact_and_rejects_gap_65_atomically() {
+        let mut state = LongModeState::default();
+        state.rip = 0x2480;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = (7 << 11) | (1 << 9);
+        x87.registers[0] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        x87.registers[7] = binary80_normal(0x8000_0000_0000_0000, 0x3fbf, false);
+        x87.set_tag(0, X87Tag::Valid);
+        x87.set_tag(7, X87Tag::Valid);
+        state.x87 = Some(x87);
+        let mut memory = Memory::at(&[0xde, 0xc1], state.rip);
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        let result = state.x87.as_ref().unwrap();
+        assert_eq!(
+            result.registers[0],
+            binary80_normal(0x8000_0000_0000_0000, 0x3fff, false)
+        );
+        assert_eq!(result.tag(7), Some(X87Tag::Empty));
+        assert_eq!(result.top(), 0);
+        assert_ne!(
+            result.status_word & (1 << 5),
+            0,
+            "PE is sticky from inexact rounding"
+        );
+        assert_eq!(result.status_word & (1 << 9), 0, "C1 reports no increment");
+        assert_eq!(result.instruction_pointer, 0x2480);
+        assert_eq!(state.rip, 0x2482);
+        assert!(memory.accesses.is_empty());
+
+        let mut too_wide = state.clone();
+        let x87 = too_wide.x87.as_mut().unwrap();
+        x87.status_word = 0;
+        x87.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x3fff - 65, false);
+        x87.registers[0] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        x87.set_tag(0, X87Tag::Valid);
+        x87.set_tag(1, X87Tag::Valid);
+        too_wide.rip = 0x2480;
+        let rejected_before = too_wide.clone();
+        let mut memory = Memory::at(&[0xde, 0xc1], too_wide.rip);
+        assert_eq!(
+            step(&mut too_wide, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xde })
+        );
+        assert_eq!(too_wide, rejected_before);
+    }
+
+    #[test]
+    fn faddp_sti_st0_uses_literal_pc24_midpoint_rounding_and_c1() {
+        let next_positive = binary80_normal(0x8000_0100_0000_0000, 0x3fff, false);
+        let one_positive = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        let next_negative = binary80_normal(0x8000_0100_0000_0000, 0x3fff, true);
+        let one_negative = binary80_normal(0x8000_0000_0000_0000, 0x3fff, true);
+        for (rounding, negative, expected, incremented) in [
+            (0u16, false, one_positive, false),
+            (1, false, one_positive, false),
+            (2, false, next_positive, true),
+            (3, false, one_positive, false),
+            (0, true, one_negative, false),
+            (1, true, next_negative, true),
+            (2, true, one_negative, false),
+            (3, true, one_negative, false),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2490;
+            let mut x87 = crate::state::X87State::fixture_seed();
+            x87.control_word = 0x007f | (rounding << 10);
+            x87.status_word = 0;
+            x87.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, negative);
+            x87.registers[0] = binary80_normal(0x8000_0000_0000_0000, 0x3fe7, negative);
+            x87.set_tag(0, X87Tag::Valid);
+            x87.set_tag(1, X87Tag::Valid);
+            state.x87 = Some(x87);
+            let mut memory = Memory::at(&[0xde, 0xc1], state.rip);
+            assert_eq!(
+                step(&mut state, &mut memory, AccessContext::default()),
+                Ok(StepOutcome::Advanced),
+                "RC={rounding}, negative={negative}"
+            );
+            let x87 = state.x87.as_ref().unwrap();
+            assert_eq!(x87.registers[1], expected);
+            assert_ne!(x87.status_word & (1 << 5), 0);
+            assert_eq!(x87.status_word & (1 << 9) != 0, incremented);
+            assert_eq!(x87.tag(0), Some(X87Tag::Empty));
+            assert_eq!(x87.top(), 1);
+        }
+    }
+
+    #[test]
     fn fstp_sti_copies_raw_st0_then_pops_for_every_top_and_index() {
         let raw_sources = [
             binary80_normal(0x8000_0000_0000_0001, 1, false),
@@ -66237,15 +66456,6 @@ mod tests {
                 special.registers[usize::from(top)] =
                     binary80_normal(0x8000_0000_0000_0000, 0x7fff, false);
                 cases.push((destination_index, special));
-                let mut unequal_exponents = x87.clone();
-                unequal_exponents.registers[usize::from(top)] =
-                    binary80_normal(0x8000_0000_0000_0000, 0x4000, false);
-                cases.push((destination_index, unequal_exponents));
-                let mut inexact = x87.clone();
-                inexact.registers[usize::from(physical_destination)] =
-                    binary80_normal(u64::MAX, 0x3fff, false);
-                inexact.registers[usize::from(top)] = one;
-                cases.push((destination_index, inexact));
             }
             let mut bad_destination_tag = x87.clone();
             bad_destination_tag.set_tag(physical_destination, X87Tag::Empty);

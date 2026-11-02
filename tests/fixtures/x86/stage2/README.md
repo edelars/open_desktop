@@ -1379,6 +1379,17 @@ of other raw state. An inexact `DE C8` fixture is Unsupported with
 `FMULP ST(1), ST(0)` form. FADDP DE C0..C7, FSUBRP E0..E7 and FSUBP E8..EF
 remain distinct; native x87 admission stays closed.
 
+### S2-30cz x87 schema and fixture coverage
+
+The LongX87StateV1 profile continues to admit exactly the eight bare
+`DE C0..C7` FADDP encodings. The runner compares the full x87 snapshot for all
+TOP/index pairs, including result payload placement before pop, the Empty old
+TOP tag, TOP wrap, sticky PE and C1 rounding diagnostics. A gap-64 tie fixture
+checks inexact PE with no increment; the ISA matrix covers every FCW and sign
+pair, while gap 65 and i=0 overflow refuse without state commit. JIT/native
+admission remains closed; these are interpreter fixtures, not physical x86
+acceptance.
+
 ### S2-30q x87 schema coverage
 
 The schema validator admits all eight bare `D8 F0+i` FDIV encodings. The

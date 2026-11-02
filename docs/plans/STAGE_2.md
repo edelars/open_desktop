@@ -217,6 +217,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cw | Bare `DC E0..E7` FSUBR ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30l; independent Sol/high review clean; integrated main od-isa 1,821, testkit 455, runner 116+495, x86-runner 8+4; workspace/fmt/layout/diff and Graphify 11,339/24,564/343 passed; no physical x86 acceptance |
 | [x] | S2-30cx | Bare `DC F8..FF` FDIV ST(i),ST(0), FCW precision division `ST(i)/ST(0)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | S2-30v, S2-30cs; integrated main od-isa 1,826, testkit 455, runner 118+495; independent Sol/high review clean (neighbor fdiv filter 19/19); workspace/fmt/diff and Graphify 11,368/24,630/336 passed |
 | [x] | S2-30cy | Bare `DC F0..F7` FDIVR ST(i),ST(0), bounded FCW precision division `ST(0)/ST(i)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | Integrated main: od-isa 1,831, testkit 455, runner 118+496, x86-runner 8+4; independent Sol/high review clean; workspace/fmt/layout/diff and Graphify 11,397/24,698/326 passed |
+| [x] | S2-30cz | Bare `DE C0..C7` FADDP ST(i),ST(0), bounded FCW precision for normalized gap≤64; physical destination then TOP pop; Normal result, sticky PE and local C1; JIT/native closed | Focused ISA 7; workspace 1,834 ISA / 455 testkit / 119+496 runner; 3,072-case matrix; standalone report |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -224,7 +225,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30d | Bare `D8 C1` FADD ST(0), ST(1), exact same-exponent canonical normal results only; native closed | S2-29q, S2-28a |
 | [x] | S2-30e | Initial bare `D8 C0+i` FADD ST(0), ST(i), i=0..7 exact-only profile; target-precision extension is S2-30cp | S2-30d |
 | [x] | S2-30f | Initial bare `DC C0+i` FADD ST(i), ST(0), exact-only domain; precision extension is S2-30ct; native closed | S2-30e |
-| [x] | S2-30g | Bare `DE C0+i` FADDP ST(i), ST(0), same exact-only domain plus physical TOP pop, native closed | S2-30f |
+| [x] | S2-30g | Initial exact-only `DE C0+i` FADDP ST(i), ST(0), physical TOP pop; numerical domain superseded by S2-30cz, native closed | S2-30f; extended by S2-30cz |
 | [x] | S2-30h | Initial bare `D8 E0+i` FSUB ST(0), ST(i) exact-only profile; bounded FCW precision extension is S2-30cq | S2-30e |
 | [x] | S2-30i | Bare `DC E8+i` FSUB ST(i), ST(0), exact-only same-exponent normal results; i=0 alias unsupported; native closed | S2-30h |
 | [x] | S2-30j | Bare `DE E8+i` FSUBP ST(i), ST(0), same exact-only domain plus physical TOP pop; i=0 alias unsupported; native closed | S2-30i |
@@ -3682,7 +3683,7 @@ prefixes and truncation; testkit schema and native fail-closed admission cover
 all eight accepted byte encodings. This extends destination selection only;
 the exact-only numerical domain does not widen.
 
-#### S2-30g. Bare exact-only FADDP ST(i), ST(0) (bounded local slice)
+#### S2-30g. Initial exact-only FADDP ST(i), ST(0) (superseded numerical domain)
 
 Accept only bare `DE C0+i`, `i=0..7`, as `FADDP ST(i), ST(0)`. Reuse the
 S2-30d exact FADD arithmetic and environment domain with logical destination
@@ -3698,9 +3699,29 @@ policy. Native admission remains closed.
 
 Independent vectors cover every `i` and TOP, physical payload sentinels,
 `i=0`, `i=1` new-ST(0), TOP wrap, exact carry, and full-state rejection
-including i=0 overflow. Decoder and fixture schema enumerate exactly the eight
-bare encodings. This slice does not claim general FADDP, special values, stack
-faults, exception delivery or CR0 behavior.
+including i=0 overflow. S2-30cz supersedes the exact-only numerical gate with
+direct FCW precision and rounding for normalized exponent gap≤64 while
+retaining this physical pop order and alias behavior. This does not claim
+general FADDP, special values, stack faults, exception delivery or CR0 behavior.
+
+#### S2-30cz. Bare bounded-precision FADDP ST(i), ST(0)
+
+Accept only bare Long64 `DE C0..C7`. Reuse S2-30ct's direct binary80 addition
+precision profile with logical destination `i` and source zero: all twelve
+all-masked PC24/53/64 FCWs, `FSW & 0x80df == 0`, absent FCS/FDS selectors,
+Valid canonical nonzero Normal operands, normalized exponent gap≤64 and
+finite Normal result. Snapshot both raw inputs before mutation. On success,
+write the result to old physical `(TOP+i)&7`, mark old physical TOP Empty,
+then increment TOP modulo eight. Preserve payload/tag behavior for `i=0` and
+`i=1`, accumulate PE from `inexact`, replace C1 from `incremented`, set FIP to
+old RIP, advance RIP by two, retire once and perform no data-memory access.
+Unsupported inputs and boundaries reject atomically. Native/JIT admission
+remains closed.
+
+Literal coverage spans every TOP/index, all twelve FCWs and four operand-sign
+pairs, including alias/pop, TOP wrap, exponent-gap 64 with PE, gap 65 refusal
+and i=0 overflow rollback. Runner fixtures compare the full popped x87 snapshot;
+the decoder/schema and native/JIT gates remain exact-form and fail-closed.
 
 #### S2-30h. Bare exact-only FSUB ST(0), ST(i) (bounded local slice)
 
