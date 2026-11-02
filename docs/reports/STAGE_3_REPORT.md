@@ -291,6 +291,26 @@ slice's evidence; concurrent runs were ignored per user instruction. Mini/M1
 remain deferred; Stage 3 remains partial. See the
 [S3-34cc report](STAGE_3_S3-34cc_2026-11-02.md).
 
+S3-20er adds only the unprefixed seven-byte address64 RCX-indexed no-base
+SIB Dword-load singletons `8B 04 4D/8D/CD disp32` (scales 2/4/8). Effective
+address calculation uses full-width RCX times the encoded scale plus
+sign-extended disp32 with wrapping u64 arithmetic; each checked read is four
+contiguous bytes, EAX zero-extends into RAX, and RIP advances to `A+7`. Runtime
+source `0ad1f51` was integrated as `edf50fe`; independent Sol/high static
+review passed after removing the stale 4D/8D negative cases and preserving the
+source-forge scale-2 versus original-0D distinction. No tests, builds,
+formatting, Cargo checks, or Python harness tests ran, so the exact runtime
+gates remain pending.
+
+Harness S3-34cc pins these exact JIT and host identities. Its source
+`af854bf` was integrated as `0567f37`; the historical manifest records 232
+Rust gates (222 acceptance, 10 lifecycle) and 250 local steps. Static review
+passed, but no Python/harness execution occurred. These counts are specific to
+34cc and do not include later aggregate revisions. ISSUE-028 remains open.
+Stage 2 remained outside this slice's evidence; concurrent runs were ignored
+per user instruction. Mini/M1 remain deferred; Stage 3 remains partial. See
+the [S3-20er report](STAGE_3_S3-20er_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20

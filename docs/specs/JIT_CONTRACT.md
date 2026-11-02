@@ -854,6 +854,18 @@ guest instruction boundary is `A+7`. Other prefixes and neighboring SIB
 encodings remain outside this exact admission. Runtime gates remain pending;
 see the [S3-20eq report](../reports/STAGE_3_S3-20eq_2026-11-02.md).
 
+#### S3-20er: exact scaled RCX-indexed no-base SIB disp32 Dword loads
+
+The shared typed-IR Dword-load path admits only the exact seven-byte
+unprefixed singletons `8B 04 4D disp32`, `8B 04 8D disp32`, and
+`8B 04 CD disp32`: address64 SIB without a base, RCX index at scale 2, 4, or
+8, and Dword transfer. The decoder-owned effective address is full-width
+`RCX*scale + sign-extended disp32` with wrapping u64 arithmetic. Each checked
+read is one contiguous four-byte access; EAX zero-extends into RAX, and the
+guarded instruction boundary is `A+7`. Other prefixes, scales, and
+neighboring encodings remain outside this exact admission. Runtime tests remain
+pending; see the [S3-20er report](../reports/STAGE_3_S3-20er_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
