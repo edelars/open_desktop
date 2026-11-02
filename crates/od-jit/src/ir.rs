@@ -1086,7 +1086,8 @@ fn is_checked_dword_load_address(
     let address32_profile = operand.address_size == od_isa::OperandSize::Dword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
         && ((instruction_length == 3 && operand.displacement == 0)
-            || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok()));
+            || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok())
+            || (instruction_length == 7 && i32::try_from(operand.displacement).is_ok()));
     operand.size == od_isa::OperandSize::Dword
         && operand.index.is_none()
         && operand.scale == 1
