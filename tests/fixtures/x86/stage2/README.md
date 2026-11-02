@@ -1453,11 +1453,10 @@ admission stays closed.
 The schema-v2 runner executes a handwritten `DE FA` PC24, round-toward-negative
 fixture for `ST(2)=-1` and `ST(0)=3`, checking the full state after negative
 `1/3` rounding and popping old TOP. The static fixture also verifies unchanged
-memory and JIT denial. The testkit runner matrix checks exact quotients across
-TOP/index destinations; direct ISA tests cover all FCW×TOP×index×sign×PE/C1
-combinations and gap-65 operands. Invalid controls, status, tags and operands
-refuse without committing state. `DE F0..F7` remains the distinct reverse
-quotient FDIVRP encoding.
+memory and JIT denial. The runner matrix exercises every admitted FCW, while
+direct ISA tests cover all FCW×TOP×index×sign×PE/C1 combinations and a gap-65
+case. Invalid controls, status, tags and operands refuse without committing
+state. `DE F0..F7` remains the distinct reverse quotient FDIVRP encoding.
 
 ### S2-30de bounded FDIVRP fixture coverage
 
