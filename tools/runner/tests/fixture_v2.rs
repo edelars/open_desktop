@@ -82,6 +82,8 @@ const SUBSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dl_subsd_m64_halfway.case.json");
 const MULSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dm_mulss_m32_memory_rax.case.json");
+const MULSD_M64_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dn_mulsd_m64_memory_rax.case.json");
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dg_sqrtss_m32_unaligned_inexact.case.json"
 );
@@ -37375,6 +37377,147 @@ fn mulss_m32_memory_literal_preserves_scalar_canaries_and_fails_closed() {
         };
         assert_eq!(exception.vector, 13);
         assert_eq!(count(&result), 0);
+    }
+}
+
+#[test]
+fn mulsd_m64_memory_literal_and_scalar_oracle_matrix_are_interpreter_only() {
+    let loaded = Fixture::from_json(MULSD_M64_MEMORY_RAX).unwrap();
+    let base = loaded.fixture.clone();
+    assert_eq!(base.profile, od_testkit::v2::Profile::LongMulsdMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "f20f5900");
+    assert_eq!(base.memory[1].length, 8);
+    assert_eq!(base.memory[1].initial_bytes_hex, "000000000000e03f");
+    let original_xmm = &base.initial_state.sse.as_ref().unwrap().xmm;
+    assert_eq!(original_xmm[0], "0000000000000040efbeadde78563412");
+
+    let (input, result) = run(MULSD_M64_MEMORY_RAX, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let sse = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "000000000000f03fefbeadde78563412");
+    assert_eq!(sse.xmm[1], original_xmm[1]);
+    assert_eq!(sse.mxcsr, HexU64(0x1f80));
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let mut forged_backend = result.clone();
+    forged_backend.backend = Backend::Jit;
+    assert!(forged_backend.validate_for(&input).is_err());
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, "010000000000f03f");
+    }
+    assert!(tampered.validate_for(&input).is_err());
+    for engine in ["jit", "native"] {
+        let (input, denied) = run(MULSD_M64_MEMORY_RAX, engine, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        denied.validate_for(&input).unwrap();
+    }
+    let mut bad = base.clone();
+    bad.memory[0].initial_bytes_hex = "f20f5901".into();
+    assert!(bad.validate().is_err());
+    let mut bad = base.clone();
+    bad.memory[0].initial_bytes_hex = "f20f590090".into();
+    bad.memory[0].length = 5;
+    bad.memory[0].comparison_mask_hex = "ff".repeat(5);
+    bad.stop_rip = Some(HexU64(bad.initial_state.rip.get() + 5));
+    assert!(bad.validate().is_err());
+    let mut bad = base.clone();
+    bad.memory[1].length = 4;
+    assert!(bad.validate().is_err());
+    for mxcsr in [0x1f40, 0x1f00, 0x9f80, 0x11f80] {
+        let mut bad = base.clone();
+        bad.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(bad.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+    let mut bad = base.clone();
+    bad.mulsd_controls = None;
+    assert!(bad.validate().is_err());
+    let mut bad = base.clone();
+    bad.mulsd_controls.as_mut().unwrap().sse2_available = false;
+    assert!(bad.validate().is_err());
+    let mut bad = base.clone();
+    bad.provenance.specification.clear();
+    assert!(bad.validate().is_err());
+
+    let pairs: [(u64, u64); 25] = [
+        (0x3ff8_0000_0000_0000, 0x4000_0000_0000_0000),
+        (0x3ff0_0000_0000_0000, 0x3fe0_0000_0000_0000),
+        (0x7ff8_0000_0000_1234, 0x7ff0_0000_0000_0001),
+        (0x7ff0_0000_0000_0001, 0x7ff8_0000_0000_1234),
+        (0x0000_0000_0000_0001, 0x4000_0000_0000_0000),
+        (0x000f_ffff_ffff_ffff, 0x3fe0_0000_0000_0000),
+        (0x0010_0000_0000_0000, 0x3fef_ffff_ffff_ffff),
+        (0x7fef_ffff_ffff_ffff, 0x4000_0000_0000_0000),
+        (0x7ff0_0000_0000_0000, 0),
+        (0, 0x7ff0_0000_0000_0000),
+        (0x8000_0000_0000_0000, 0x4000_0000_0000_0000),
+        (0x3ff0_0000_0000_0001, 0x3ff0_0000_0000_0001),
+        (0x3fe0_0000_0000_0000, 0x3fe0_0000_0000_0000),
+        (0x4000_0000_0000_0000, 0x3fe0_0000_0000_0000),
+        (0xbff8_0000_0000_0000, 0x4000_0000_0000_0000),
+        (0x0010_0000_0000_0001, 0x3fef_ffff_ffff_fffe),
+        (0x0000_ffff_ffff_ffff, 0x3fe0_0000_0000_0001),
+        (0x7fe0_0000_0000_0000, 0x3ff0_0000_0000_0001),
+        (0xffef_ffff_ffff_ffff, 0x4000_0000_0000_0000),
+        (0x7ff8_0000_0000_0001, 0x4000_0000_0000_0000),
+        (0x3ff0_0000_0000_0000, 0x3ca0_0000_0000_0000),
+        (0x3ff0_0000_0000_0001, 0x3ca0_0000_0000_0000),
+        (0x0000_0000_0000_0000, 0x8000_0000_0000_0000),
+        (0x3fd5_5555_5555_5555, 0x4008_0000_0000_0000),
+        (0xc004_0000_0000_0000, 0x3fd0_0000_0000_0000),
+    ];
+    let encode = |raw: u64| {
+        raw.to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    for (vector, (lhs, rhs)) in pairs.into_iter().enumerate() {
+        for rc in 0..4u64 {
+            for sticky in 0..64u64 {
+                let mut case = base.clone();
+                case.case_id = format!("s2_37dn_v{vector}_rc{rc}_sticky{sticky:02x}");
+                let original = &base.initial_state.sse.as_ref().unwrap().xmm[0];
+                case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                    format!("{}{}", encode(lhs), &original[16..]);
+                case.memory[1].initial_bytes_hex = encode(rhs);
+                case.initial_state.sse.as_mut().unwrap().mxcsr =
+                    HexU64(0x1f80 | (rc << 13) | sticky);
+                let bytes = case.to_json().unwrap();
+                let loaded = Fixture::from_json(&bytes).unwrap();
+                let output = cli(&bytes, "interpreter");
+                assert_eq!(
+                    output.status.code(),
+                    Some(0),
+                    "{}: {}",
+                    case.case_id,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let result = RunResult::from_json(&output.stdout).unwrap();
+                assert!(
+                    matches!(result.outcome, Outcome::StopAddress {}),
+                    "{}: {:?}",
+                    case.case_id,
+                    result.outcome
+                );
+                assert_eq!(
+                    result.instructions_executed,
+                    Observation::Available { value: HexU64(1) },
+                    "{}",
+                    case.case_id
+                );
+                assert!(
+                    matches!(result.snapshot, Observation::Available { .. }),
+                    "{}",
+                    case.case_id
+                );
+                result
+                    .validate_for(&loaded)
+                    .unwrap_or_else(|error| panic!("{}: {error:?}", case.case_id));
+                od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+            }
+        }
     }
 }
 

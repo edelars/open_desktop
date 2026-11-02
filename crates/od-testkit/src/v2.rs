@@ -342,6 +342,8 @@ pub enum Profile {
     LongSubsdMemoryRaxV1,
     #[serde(rename = "s2-long-mulss-memory-rax-v1")]
     LongMulssMemoryRaxV1,
+    #[serde(rename = "s2-long-mulsd-memory-rax-v1")]
+    LongMulsdMemoryRaxV1,
     #[serde(rename = "s2-long-subss-registers-v1")]
     LongSubssRegistersV1,
     #[serde(rename = "s2-long-subss-memory-rax-v1")]
@@ -1473,6 +1475,7 @@ impl IntegerState {
                     | Profile::LongAddssMemoryRaxV1
                     | Profile::LongAddsdMemoryRaxV1
                     | Profile::LongMulssMemoryRaxV1
+                    | Profile::LongMulsdMemoryRaxV1
                     | Profile::LongSubsdMemoryRaxV1
                     | Profile::LongMaxsdMemoryRaxV1
                     | Profile::LongMinpdMemoryRaxV1
@@ -1555,6 +1558,7 @@ impl IntegerState {
                     | Profile::LongSubpsRegistersV1
                     | Profile::LongSubsdRegistersV1
                     | Profile::LongMulssMemoryRaxV1
+                    | Profile::LongMulsdMemoryRaxV1
                     | Profile::LongSubsdMemoryRaxV1
                     | Profile::LongSubssMemoryRaxV1
                     | Profile::LongSubssRegistersV1
@@ -1853,6 +1857,7 @@ impl IntegerState {
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
@@ -2107,6 +2112,7 @@ impl IntegerState {
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
@@ -2497,6 +2503,7 @@ impl IntegerState {
             | Profile::LongSubpsRegistersV1
             | Profile::LongSubsdRegistersV1
             | Profile::LongMulssMemoryRaxV1
+            | Profile::LongMulsdMemoryRaxV1
             | Profile::LongSubsdMemoryRaxV1
             | Profile::LongSubssMemoryRaxV1
             | Profile::LongSubssRegistersV1
@@ -2632,6 +2639,7 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongCliV1
                 | Profile::LongStiV1
@@ -2889,6 +2897,7 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongCliV1
                 | Profile::LongStiV1
@@ -3151,6 +3160,7 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongCliV1
                 | Profile::LongStiV1
@@ -3422,6 +3432,7 @@ impl IntegerState {
             (
                 Profile::LongIntegerV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongCliV1
                 | Profile::LongStiV1
@@ -3965,6 +3976,7 @@ impl IntegerState {
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
@@ -3996,6 +4008,7 @@ impl IntegerState {
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
@@ -4298,6 +4311,7 @@ impl IntegerState {
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
@@ -4573,6 +4587,7 @@ impl IntegerState {
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
@@ -4801,6 +4816,7 @@ impl IntegerState {
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
@@ -8866,7 +8882,7 @@ impl Fixture {
                     "MULSD requires supported MXCSR bits, DAZ=0, OM=1, and UM=1",
                 ));
             }
-        } else if self.mulsd_controls.is_some() {
+        } else if self.mulsd_controls.is_some() && self.profile != Profile::LongMulsdMemoryRaxV1 {
             return Err(invalid(
                 "mulsd_controls",
                 "only valid for MULSD register-space profile",
@@ -11886,6 +11902,82 @@ impl Fixture {
                 ));
             }
         }
+        if self.profile == Profile::LongMulsdMemoryRaxV1 {
+            let controls = self
+                .mulsd_controls
+                .ok_or_else(|| invalid("mulsd_controls", "required by MULSD m64 profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by MULSD m64 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by MULSD m64 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if self.mulsd_controls.is_none()
+                || self.mulss_controls.is_some()
+                || self.subsd_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || decode_bytes(&code.initial_bytes_hex)? != [0xf2, 0x0f, 0x59, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 8
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress | ExpectedExit::Unsupported
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "MULSD m64 requires exact F2 0F 59 00, code/data mappings, budget 1, and entry+4 stop",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by MULSD m64 profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & 0x1f80 != 0x1f80
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "MULSD m64 requires supported MXCSR bits, all masks set, DAZ=FTZ=0",
+                ));
+            }
+            let gate = !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let ac = !gate && !nm && self.initial_state.rflags.get() & (1 << 18) != 0;
+            let last = source.checked_add(7);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let span = last.is_none_or(|end| !canonical(source) || !canonical(end));
+            let expected = if gate || nm || (!ac && span) {
+                ExpectedExit::Exception
+            } else if ac {
+                ExpectedExit::Unsupported
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect MULSD gates, AC refusal, and canonical span",
+                ));
+            }
+        }
         if self.profile == Profile::LongAddssMemoryRaxV1 {
             let controls = self.addss_memory_rax_controls.ok_or_else(|| {
                 invalid("addss_memory_rax_controls", "required by ADDSS m32 profile")
@@ -14644,6 +14736,10 @@ impl Fixture {
                 Profile::LongMulssMemoryRaxV1 => decode_bytes(&code_bytes)
                     .ok()
                     .filter(|bytes| bytes == &[0xf3, 0x0f, 0x59, 0x00])
+                    .map(|_| 4),
+                Profile::LongMulsdMemoryRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0xf2, 0x0f, 0x59, 0x00])
                     .map(|_| 4),
                 Profile::LongMulpsRegistersV1 => {
                     mulps_register_encoding(&code_bytes).map(|(_, _, length)| length)
@@ -17647,7 +17743,10 @@ impl RunResult {
                 "only valid for the ADDPS profile",
             ));
         }
-        if self.profile == Profile::LongMulsdRegistersV1 {
+        if matches!(
+            self.profile,
+            Profile::LongMulsdRegistersV1 | Profile::LongMulsdMemoryRaxV1
+        ) {
             if snapshot.mulsd_controls.is_none() {
                 return Err(invalid(
                     "snapshot.mulsd_controls",
@@ -18739,6 +18838,7 @@ impl RunResult {
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
         ) && self.backend != Backend::Interpreter
             && (!matches!(self.outcome, Outcome::Unsupported { .. })
@@ -19260,8 +19360,12 @@ impl RunResult {
                 loaded.fixture.mulsd_controls,
                 value.mulsd_controls,
             ) {
-                (Profile::LongMulsdRegistersV1, Some(input), Some(output)) if input == output => {}
-                (Profile::LongMulsdRegistersV1, _, _) => {
+                (
+                    Profile::LongMulsdRegistersV1 | Profile::LongMulsdMemoryRaxV1,
+                    Some(input),
+                    Some(output),
+                ) if input == output => {}
+                (Profile::LongMulsdRegistersV1 | Profile::LongMulsdMemoryRaxV1, _, _) => {
                     return Err(FormatError::CaseMismatch("mulsd_controls"));
                 }
                 (_, None, None) => {}
@@ -19373,6 +19477,8 @@ impl RunResult {
                 validate_divps_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulsdRegistersV1 {
                 validate_mulsd_registers_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongMulsdMemoryRaxV1 {
+                validate_mulsd_memory_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulssMemoryRaxV1 {
                 validate_mulss_memory_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulssRegistersV1 {
@@ -26245,6 +26351,138 @@ fn validate_mulss_memory_result(
         (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
         (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("MULSS m32 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_mulsd_memory_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .mulsd_controls
+        .ok_or(FormatError::CaseMismatch("mulsd_controls"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|r| r.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0xf2, 0x0f, 0x59, 0x00] {
+        return Err(FormatError::CaseMismatch("MULSD m64 encoding"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let lhs = u64::from_le_bytes(lhs_bytes[..8].try_into().unwrap());
+    let data = fixture
+        .memory
+        .iter()
+        .find(|r| r.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let rhs = u64::from_le_bytes(
+        rhs_bytes[..8]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+    );
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (value, ie, de, oe, ue, pe) = independent_mulsd(lhs, rhs, old_mxcsr);
+    let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let source = fixture.initial_state.gpr[0].get();
+    let unsupported = gate.is_none() && fixture.initial_state.rflags.get() & (1 << 18) != 0;
+    let last = source.checked_add(7);
+    let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let fault = gate.or_else(|| (!unsupported && span_fault).then_some(13));
+    if !matches!(
+        (fault, unsupported, fixture.expected_exit),
+        (Some(_), false, ExpectedExit::Exception)
+            | (None, true, ExpectedExit::Unsupported)
+            | (None, false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("MULSD m64 expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if fault.is_none() && !unsupported {
+        let sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let mut output = lhs_bytes;
+        output[..8].copy_from_slice(&value.to_le_bytes());
+        sse.xmm[0] = crate::memory::encode_bytes(&output);
+        sse.mxcsr = HexU64(u64::from(
+            old_mxcsr
+                | u32::from(ie)
+                | (u32::from(de) << 1)
+                | (u32::from(oe) << 3)
+                | (u32::from(ue) << 4)
+                | (u32::from(pe) << 5),
+        ));
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("MULSD m64 RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|r| MemoryRegionSnapshot {
+            region_id: r.region_id.clone(),
+            guest_address: r.guest_address,
+            bytes_hex: r.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch("MULSD m64 output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none() && !unsupported)),
+        })
+    {
+        return Err(FormatError::CaseMismatch("MULSD m64 retirement"));
+    }
+    match (fault, unsupported, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            false,
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
+        (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("MULSD m64 outcome/exception")),
     }
     Ok(())
 }
