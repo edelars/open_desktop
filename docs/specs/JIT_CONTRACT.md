@@ -291,6 +291,20 @@ the PC map has the `A+4` guest boundary. Recorded fixtures cover fault, STOP,
 and budget behavior. Other addr32 SIB and displacement forms remain outside
 this profile. See the [S3-20dl report](../reports/STAGE_3_S3-20dl_2026-11-02.md).
 
+#### S3-20dm: exact address-size-32 SIB Dword stores
+
+The shared typed-IR Dword-store path additionally admits exactly the four
+four-byte singleton forms `67 89 04 0B`, `67 89 04 4B`, `67 89 04 8B`, and
+`67 89 04 CB` (`MOV [EBX+ECX*1/2/4/8],EAX`). The decoder-owned address-size-32
+effective address sums low32 EBX and low32 ECX times the selected SIB scale,
+wraps the result to 32 bits, and zero-extends it before canonical-address
+checking; the high halves of RBX and RCX do not participate. Each store
+performs one contiguous checked four-byte write of low32 RAX. The guest
+boundary is `A+4`; source binding and PC-map coverage distinguish the prefix
+and scale. Recorded fixtures cover errors, STOP, and budget behavior. Other
+addr32 SIB or displacement-store forms remain outside this profile. See the
+[S3-20dm report](../reports/STAGE_3_S3-20dm_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
