@@ -963,8 +963,9 @@ It verifies exact manifest identities and argv, plus rejection of missing
 manifest/evidence entries, zero matches, ignored or failed tests, wrong
 identities, and forged invocations. The cumulative manifest has 270 Rust
 gates (260 acceptance, 10 lifecycle), 288 local steps, and 119 self-test
-names. Independent review and exact runtime-gate execution are pending. No
-Python harness, Cargo gate, build, formatting, or behavior test was run. See
+names. Independent Sol/high review passed. Exact runtime-gate execution is
+pending; no Python harness, Cargo gate, build, formatting, or behavior test
+was run. See
 the [S3-34cv report](../reports/STAGE_3_S3-34cv_2026-11-02.md).
 
 ## S3-20fk: exact address32 RAX-alias Dword store
