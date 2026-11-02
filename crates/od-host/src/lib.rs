@@ -7941,7 +7941,6 @@ mod tests {
         for (rax, expected_fault) in [
             (0x0000_8000_0000_0000, "noncanonical start"),
             (0x0000_7fff_ffff_fffe, "canonical boundary crossing"),
-            (u64::MAX - 2, "endpoint overflow"),
         ] {
             let mut fault_state = before.clone();
             fault_state.gpr[0] = rax;
@@ -7975,6 +7974,35 @@ mod tests {
             assert_eq!(fault_memory.reads, 0);
             assert_eq!(fault_memory.last_read, None);
         }
+        let mut overflow_state = before.clone();
+        overflow_state.gpr[0] = u64::MAX - 2;
+        let before_overflow = overflow_state.clone();
+        let mut overflow_memory = Memory {
+            reads: 0,
+            last_read: None,
+            failure: None,
+            stop_on_read: None,
+        };
+        assert!(matches!(
+            zero_published.execute_ir_memory_dword_load_v2(
+                &mut overflow_state,
+                &mut overflow_memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            ),
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
+                    address: u64::MAX - 2,
+                    length: 4,
+                }
+            ))
+        ));
+        assert_eq!(overflow_state, before_overflow);
+        assert_eq!(overflow_memory.reads, 0);
+        assert_eq!(overflow_memory.last_read, None);
     }
 
     #[test]
