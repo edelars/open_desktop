@@ -232,6 +232,18 @@ BTreeMap data RAM. It supplies no SMC or backing-alias evidence. No other
 RIP-relative or dword store form is admitted by this slice. See the
 [S3-20cw report](../reports/STAGE_3_S3-20cw_2026-11-01.md).
 
+#### S3-20cx: exact address-size-32 Dword load
+
+The shared typed-IR Dword-load path additionally admits the exact three-byte
+singleton `67 8B 03` (`MOV EAX,[EBX]`). Address calculation follows the
+decoder-owned address-size-32 operand: low32 RBX is zero-extended before the
+canonical-address check. Exact source/site binding and one committed guest
+boundary at `A+3` preserve this fixture's instruction boundary; the helper
+performs a checked four-byte load with EAX zero-extension. Other addr32
+forms, prefixes beyond this exact address-size override, and broader dword
+memory lowering are not admitted by this slice. See the
+[S3-20cx report](../reports/STAGE_3_S3-20cx_2026-11-02.md).
+
 #### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 The host-side regression `s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow`
