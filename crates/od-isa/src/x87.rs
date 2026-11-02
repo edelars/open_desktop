@@ -332,6 +332,19 @@ pub struct MultiplyFiniteToNormalBinary80PrecisionResult {
     pub incremented: bool,
 }
 
+/// Result of rounding a finite binary80 sum to a requested precision.
+///
+/// `inexact` reports whether the exact mathematical sum differs from the
+/// represented target-precision value. `incremented` reports whether rounding
+/// increased the truncated target-precision significand by one, before carry
+/// normalization. Neither field is architectural x87 status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AddFiniteToNormalBinary80PrecisionResult {
+    pub value: X87Binary80,
+    pub inexact: bool,
+    pub incremented: bool,
+}
+
 /// Divide two normalized nonzero finite values and round the exact quotient
 /// directly to a bounded binary80 result at precision 24, 53, or 64.
 ///
@@ -1091,6 +1104,92 @@ pub fn multiply_finite_to_normal_binary80_precision_with_diagnostics(
     })
 }
 
+/// Add two normalized nonzero finite binary80 values and round the exact sum
+/// directly to a normal finite result at precision 24, 53, or 64.
+///
+/// Inputs may have either sign and Normal, Subnormal, or PseudoDenormal
+/// provenance when their normalized significands have bit 63 set. Exact
+/// alignment is bounded to exponent gaps through 64. The exact normalized
+/// result exponent and rounded result must both remain normal finite binary80.
+/// This helper defines no x87 control-word, status, exception, or instruction
+/// behavior and does not extend the domain of `add_finite_to_binary80`.
+pub fn add_finite_to_normal_binary80_precision_with_diagnostics(
+    lhs: X87Finite,
+    rhs: X87Finite,
+    mode: RationalRoundingMode,
+    precision: u32,
+) -> Option<AddFiniteToNormalBinary80PrecisionResult> {
+    if !matches!(precision, 24 | 53 | 64) {
+        return None;
+    }
+
+    let valid_source = |value: X87Finite| {
+        !value.is_zero()
+            && value.significand >= (1_u64 << 63)
+            && matches!(
+                value.source_class,
+                X87Binary80Class::Normal
+                    | X87Binary80Class::Subnormal
+                    | X87Binary80Class::PseudoDenormal
+            )
+    };
+    if !valid_source(lhs) || !valid_source(rhs) {
+        return None;
+    }
+
+    let gap = (i64::from(lhs.exponent) - i64::from(rhs.exponent)).unsigned_abs();
+    if gap > 64 {
+        return None;
+    }
+
+    let (sign, exponent, magnitude) = crate::finite_arithmetic::add_finite_aligned(
+        lhs.sign,
+        lhs.significand,
+        lhs.exponent,
+        rhs.sign,
+        rhs.significand,
+        rhs.exponent,
+    )?;
+    if magnitude == 0 {
+        return None;
+    }
+
+    let (sign, exponent, significand) =
+        normalize_exact_magnitude(sign, exponent.checked_add(64)?, magnitude)?;
+    if !(-16382..=16383).contains(&exponent) {
+        return None;
+    }
+
+    let shift = 128 - precision;
+    let truncated = significand >> shift;
+    let remainder = significand & ((1_u128 << shift) - 1);
+    let inexact = remainder != 0;
+    let halfway = 1_u128 << (shift - 1);
+    let increment = if !inexact {
+        false
+    } else {
+        match mode {
+            RationalRoundingMode::NearestTiesEven => {
+                remainder > halfway || (remainder == halfway && truncated & 1 != 0)
+            }
+            RationalRoundingMode::TowardZero => false,
+            RationalRoundingMode::TowardPositive => !sign,
+            RationalRoundingMode::TowardNegative => sign,
+        }
+    };
+    let rounded = truncated + u128::from(increment);
+    let value = pack_normal_rounded_significand(sign, exponent, rounded, precision)?;
+    if value.classify() != X87Binary80Class::Normal {
+        return None;
+    }
+
+    Some(AddFiniteToNormalBinary80PrecisionResult {
+        value,
+        inexact,
+        incremented: increment,
+    })
+}
+
 /// Normalize an exact unsigned magnitude representing
 /// `(-1)^sign * magnitude * 2^(exponent - 127)`.
 ///
@@ -1321,13 +1420,13 @@ mod tests {
     use super::{
         RationalRoundingMode, X87Binary80, X87Binary80Class, X87Finite, X87FiniteRemainder, X87Grs,
         add_finite_same_exponent, add_finite_same_exponent_to_binary80, add_finite_to_binary80,
-        add_finite_unequal_exponents, align_finite_pair, divide_finite_significands,
-        divide_finite_to_binary80, divide_finite_to_normal_binary80_precision_with_diagnostics,
-        multiply_finite_significands, multiply_finite_to_binary80,
-        multiply_finite_to_normal_binary80_precision_with_diagnostics, normalize_exact_coefficient,
-        normalize_exact_magnitude, pack_normal_rounded_significand, remainder_finite_nearest_even,
-        remainder_finite_nearest_even_with_quotient, remainder_finite_trunc,
-        remainder_finite_trunc_with_quotient, round_pack_exact_coefficient,
+        add_finite_to_normal_binary80_precision_with_diagnostics, add_finite_unequal_exponents,
+        align_finite_pair, divide_finite_significands, divide_finite_to_binary80,
+        divide_finite_to_normal_binary80_precision_with_diagnostics, multiply_finite_significands,
+        multiply_finite_to_binary80, multiply_finite_to_normal_binary80_precision_with_diagnostics,
+        normalize_exact_coefficient, normalize_exact_magnitude, pack_normal_rounded_significand,
+        remainder_finite_nearest_even, remainder_finite_nearest_even_with_quotient,
+        remainder_finite_trunc, remainder_finite_trunc_with_quotient, round_pack_exact_coefficient,
         round_pack_exact_magnitude, round_pack_subnormal_quotient, round_quotient_magnitude,
         round_quotient_ties_even, round_quotient_to_precision, scale_finite_to_binary80,
         shift_right_jam, shift_right_jam_u128, sqrt_finite_to_binary80,
@@ -5690,6 +5789,408 @@ mod tests {
             ),
             before,
             "inputs and source-class metadata are immutable"
+        );
+    }
+
+    #[test]
+    fn finite_addition_direct_precision_covers_gaps_rounding_and_rejections() {
+        use RationalRoundingMode::{
+            NearestTiesEven as Nearest, TowardNegative as Down, TowardPositive as Up,
+            TowardZero as Zero,
+        };
+
+        let make = |exponent, significand, sign, source_class| {
+            finite(exponent, significand, sign, source_class)
+        };
+        let high = 1_u64 << 63;
+        let max = u64::MAX;
+
+        // Exact alignment accepts each boundary gap through 64 in both orders.
+        for gap in [0, 1, 63, 64] {
+            let lhs = make(gap, high, false, X87Binary80Class::Normal);
+            let rhs = make(0, high, false, X87Binary80Class::Normal);
+            for precision in [24, 53, 64] {
+                assert!(
+                    add_finite_to_normal_binary80_precision_with_diagnostics(
+                        lhs, rhs, Nearest, precision
+                    )
+                    .is_some()
+                );
+                assert_eq!(
+                    add_finite_to_normal_binary80_precision_with_diagnostics(
+                        lhs, rhs, Nearest, precision
+                    ),
+                    add_finite_to_normal_binary80_precision_with_diagnostics(
+                        rhs, lhs, Nearest, precision
+                    )
+                );
+            }
+        }
+        assert_eq!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                make(0, high, false, X87Binary80Class::Normal),
+                make(0, high, false, X87Binary80Class::Normal),
+                Nearest,
+                64,
+            )
+            .unwrap()
+            .value,
+            raw_finite(0x4000, high, false),
+            "same-sign carry normalizes the exact sum"
+        );
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                make(65, high, false, X87Binary80Class::Normal),
+                make(0, high, false, X87Binary80Class::Normal),
+                Nearest,
+                64,
+            )
+            .is_none()
+        );
+
+        // At gap 64 the shared exact core must preserve its full-u128 maximum.
+        let max_gap_sum = add_finite_to_normal_binary80_precision_with_diagnostics(
+            make(64, max, true, X87Binary80Class::Normal),
+            make(0, max, true, X87Binary80Class::Normal),
+            Zero,
+            64,
+        )
+        .unwrap();
+        assert_eq!(max_gap_sum.value, raw_finite(0x403f, max, true));
+        assert!(max_gap_sum.inexact);
+        assert!(!max_gap_sum.incremented);
+
+        // Exact cancellation has no selected signed zero; near cancellation
+        // remains representable and preserves the sign of the larger term.
+        let unit = make(0, high, false, X87Binary80Class::Normal);
+        let negative_unit = make(0, high, true, X87Binary80Class::Normal);
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                unit,
+                negative_unit,
+                Nearest,
+                64
+            )
+            .is_none()
+        );
+        let minimum_normal = make(-16382, high + 1, false, X87Binary80Class::Normal);
+        let adjacent_negative = make(-16382, high, true, X87Binary80Class::Normal);
+        let near = add_finite_to_normal_binary80_precision_with_diagnostics(
+            minimum_normal,
+            adjacent_negative,
+            Nearest,
+            64,
+        );
+        assert!(
+            near.is_none(),
+            "exact difference is subnormal and outside this helper"
+        );
+        assert_eq!(
+            add_finite_to_binary80(minimum_normal, adjacent_negative, Nearest),
+            Some(raw_finite(0, 1, false)),
+            "the legacy helper retains its subnormal-result domain"
+        );
+        let larger = make(1, high, false, X87Binary80Class::Normal);
+        let smaller_negative = make(0, high, true, X87Binary80Class::Normal);
+        let difference = add_finite_to_normal_binary80_precision_with_diagnostics(
+            larger,
+            smaller_negative,
+            Nearest,
+            64,
+        )
+        .unwrap();
+        assert_eq!(difference.value, raw_finite(0x3fff, high, false));
+        assert_eq!(
+            difference,
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                smaller_negative,
+                larger,
+                Nearest,
+                64,
+            )
+            .unwrap()
+        );
+
+        // A p24 exact midpoint with even retained significand stays down for
+        // nearest; the neighboring odd retained case rounds up. Directed
+        // modes round away from zero only in their matching sign direction.
+        let even_midpoint = make(0, high + (1_u64 << 40), false, X87Binary80Class::Normal);
+        let even_base = make(0, high, false, X87Binary80Class::Normal);
+        let odd_midpoint = make(0, high + (3_u64 << 40), false, X87Binary80Class::Normal);
+        let even_sum = add_finite_to_normal_binary80_precision_with_diagnostics(
+            even_base,
+            even_midpoint,
+            Nearest,
+            24,
+        )
+        .unwrap();
+        let odd_sum = add_finite_to_normal_binary80_precision_with_diagnostics(
+            even_base,
+            odd_midpoint,
+            Nearest,
+            24,
+        )
+        .unwrap();
+        assert!(even_sum.inexact && !even_sum.incremented);
+        assert!(odd_sum.inexact && odd_sum.incremented);
+
+        let inexact_positive = add_finite_to_normal_binary80_precision_with_diagnostics(
+            even_base,
+            even_midpoint,
+            Up,
+            24,
+        )
+        .unwrap();
+        let inexact_negative = add_finite_to_normal_binary80_precision_with_diagnostics(
+            make(0, high, true, X87Binary80Class::Normal),
+            make(0, high + (1_u64 << 40), true, X87Binary80Class::Normal),
+            Down,
+            24,
+        )
+        .unwrap();
+        let trunc_positive = add_finite_to_normal_binary80_precision_with_diagnostics(
+            even_base,
+            even_midpoint,
+            Zero,
+            24,
+        )
+        .unwrap();
+        assert!(inexact_positive.incremented && inexact_negative.incremented);
+        assert!(inexact_positive.inexact && trunc_positive.inexact);
+        assert!(!trunc_positive.incremented);
+
+        // Construct even and odd exact halfway sums at every supported
+        // precision. Check every rounding mode for both signs, plus exact
+        // neighbors immediately below and above the midpoint.
+        for precision in [24_u32, 53, 64] {
+            let low_bit = 64 - precision;
+            let midpoint_delta = 1_u64 << low_bit;
+            for sign in [false, true] {
+                for odd in [false, true] {
+                    let delta = midpoint_delta * if odd { 3 } else { 1 };
+                    let lhs = make(0, high, sign, X87Binary80Class::Normal);
+                    let rhs = make(0, high + delta, sign, X87Binary80Class::Normal);
+                    let nearest = add_finite_to_normal_binary80_precision_with_diagnostics(
+                        lhs, rhs, Nearest, precision,
+                    )
+                    .unwrap();
+                    let nearest_increments = odd;
+                    assert!(nearest.inexact);
+                    assert_eq!(nearest.incremented, nearest_increments);
+                    for mode in [Nearest, Zero, Up, Down] {
+                        let result = add_finite_to_normal_binary80_precision_with_diagnostics(
+                            lhs, rhs, mode, precision,
+                        )
+                        .unwrap();
+                        let expected_increment = match mode {
+                            Nearest => nearest_increments,
+                            Zero => false,
+                            Up => !sign,
+                            Down => sign,
+                        };
+                        assert!(result.inexact);
+                        assert_eq!(result.incremented, expected_increment);
+                    }
+                }
+
+                if low_bit > 0 {
+                    for delta in [midpoint_delta - 1, midpoint_delta + 1] {
+                        let rhs = make(0, high + delta, sign, X87Binary80Class::Normal);
+                        let below_or_above =
+                            add_finite_to_normal_binary80_precision_with_diagnostics(
+                                make(0, high, sign, X87Binary80Class::Normal),
+                                rhs,
+                                Nearest,
+                                precision,
+                            )
+                            .unwrap();
+                        assert!(below_or_above.inexact);
+                        assert_eq!(
+                            below_or_above.incremented,
+                            delta > midpoint_delta,
+                            "precision={precision}, sign={sign}, delta={delta:#x}"
+                        );
+                    }
+                }
+            }
+        }
+
+        // A low sticky bit above a p24 midpoint rounds up directly. Rounding
+        // first to p64 lands exactly on that even p24 midpoint and then rounds
+        // down, demonstrating why this API must not double round.
+        let sticky_direct = add_finite_to_normal_binary80_precision_with_diagnostics(
+            make(64, high + (1_u64 << 39), false, X87Binary80Class::Normal),
+            make(0, high, false, X87Binary80Class::Normal),
+            Nearest,
+            24,
+        )
+        .unwrap();
+        assert_eq!(
+            sticky_direct.value,
+            raw_finite(0x403f, 0x8000_0100_0000_0000, false)
+        );
+        assert!(sticky_direct.incremented && sticky_direct.inexact);
+        let sticky_via_p64 = add_finite_to_normal_binary80_precision_with_diagnostics(
+            make(64, high + (1_u64 << 39), false, X87Binary80Class::Normal),
+            make(0, high, false, X87Binary80Class::Normal),
+            Nearest,
+            64,
+        )
+        .unwrap();
+        assert_eq!(
+            sticky_via_p64.value,
+            raw_finite(0x403f, high + (1_u64 << 39), false)
+        );
+        let p64_rounded_to_p24 = pack_normal_rounded_significand(
+            false,
+            64,
+            u128::from((high + (1_u64 << 39)) >> 40),
+            24,
+        )
+        .unwrap();
+        assert_eq!(p64_rounded_to_p24, raw_finite(0x403f, high, false));
+
+        // Rounding just below the largest finite exponent can carry out of
+        // range, while the unrounded exact exponent itself is still admitted.
+        let carry_overflow = add_finite_to_normal_binary80_precision_with_diagnostics(
+            make(16382, max, false, X87Binary80Class::Normal),
+            make(16382, max, false, X87Binary80Class::Normal),
+            Up,
+            24,
+        );
+        assert!(carry_overflow.is_none());
+
+        // Raw subnormal provenance is admitted after normalization: max
+        // subnormal plus min subnormal is exactly min normal.
+        let max_subnormal =
+            X87Binary80::from_bytes([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, 0, 0])
+                .normalize_finite()
+                .unwrap();
+        let min_subnormal = X87Binary80::from_bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+            .normalize_finite()
+            .unwrap();
+        let min_normal_sum = add_finite_to_normal_binary80_precision_with_diagnostics(
+            max_subnormal,
+            min_subnormal,
+            Nearest,
+            64,
+        )
+        .unwrap();
+        assert_eq!(min_normal_sum.value, raw_finite(1, high, false));
+        assert!(!min_normal_sum.inexact);
+
+        let pseudo = X87Binary80::from_bytes([0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0])
+            .normalize_finite()
+            .unwrap();
+        let normal_min = raw_finite(1, high, false).normalize_finite().unwrap();
+        let provenance_before = (pseudo, normal_min);
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                pseudo, normal_min, Nearest, 64
+            )
+            .is_some()
+        );
+        assert_eq!((pseudo, normal_min), provenance_before);
+
+        // Invalid precision, zero, malformed provenance/normalization,
+        // checked exponent failure, subnormal result, and carry overflow fail.
+        for precision in [0, 1, 23, 25, 52, 54, 63, 65] {
+            assert!(
+                add_finite_to_normal_binary80_precision_with_diagnostics(
+                    unit, unit, Nearest, precision
+                )
+                .is_none()
+            );
+        }
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                finite(0, 0, false, X87Binary80Class::Zero),
+                unit,
+                Nearest,
+                64
+            )
+            .is_none()
+        );
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                finite(0, high - 1, false, X87Binary80Class::Normal),
+                unit,
+                Nearest,
+                64
+            )
+            .is_none()
+        );
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                finite(0, high, false, X87Binary80Class::Unnormal),
+                unit,
+                Nearest,
+                64
+            )
+            .is_none()
+        );
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                finite(0, high, false, X87Binary80Class::Infinity),
+                unit,
+                Nearest,
+                64
+            )
+            .is_none()
+        );
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                make(16383, max, false, X87Binary80Class::Normal),
+                make(16383, max, false, X87Binary80Class::Normal),
+                Up,
+                64,
+            )
+            .is_none()
+        );
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                make(i32::MAX, high, false, X87Binary80Class::Normal),
+                make(i32::MAX - 1, high, false, X87Binary80Class::Normal),
+                Nearest,
+                64,
+            )
+            .is_none()
+        );
+        let immutable_inputs = [
+            make(7, high + 5, true, X87Binary80Class::Normal),
+            make(1, high + 9, false, X87Binary80Class::PseudoDenormal),
+        ];
+        let inputs_before = immutable_inputs;
+        let _ = add_finite_to_normal_binary80_precision_with_diagnostics(
+            immutable_inputs[0],
+            immutable_inputs[1],
+            Down,
+            53,
+        );
+        assert_eq!(immutable_inputs, inputs_before);
+
+        // Existing addition intentionally remains broader (zero-neutral and
+        // subnormal-result capable) than the new precision-only helper.
+        assert!(
+            add_finite_to_binary80(finite(0, 0, false, X87Binary80Class::Zero), unit, Nearest)
+                .is_some()
+        );
+        assert!(
+            add_finite_to_binary80(
+                make(65, high, false, X87Binary80Class::Normal),
+                make(0, high, false, X87Binary80Class::Normal),
+                Nearest
+            )
+            .is_some()
+        );
+        assert!(
+            add_finite_to_normal_binary80_precision_with_diagnostics(
+                make(0, high, false, X87Binary80Class::Normal),
+                make(0, high, false, X87Binary80Class::Normal),
+                Nearest,
+                53,
+            )
+            .is_some()
         );
     }
 
