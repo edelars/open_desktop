@@ -244,6 +244,16 @@ forms, prefixes beyond this exact address-size override, and broader dword
 memory lowering are not admitted by this slice. See the
 [S3-20cx report](../reports/STAGE_3_S3-20cx_2026-11-02.md).
 
+#### S3-20cy: exact address-size-32 Dword store
+
+The shared typed-IR Dword-store path additionally admits only the exact
+three-byte singleton `67 89 03` (`MOV [EBX],EAX`). The decoder-owned
+address-size-32 access calculation zero-extends low32 RBX before canonical
+checking; the store writes the low 32 bits of RAX as one checked four-byte
+write. This does not admit other addr32 bases, SIB/displacement forms, or a
+general Dword-store family. See the
+[S3-20cy report](../reports/STAGE_3_S3-20cy_2026-11-02.md).
+
 #### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 The host-side regression `s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow`

@@ -36,6 +36,10 @@ Run `cargo test -p od-jit --lib ir_dword_rip_relative_disp32_store --offline` an
 
 Run `cargo test -p od-jit --lib ir_dword_addr32_load --offline` and `cargo test -p od-host --lib tests::s3_20cx_addr32_dword_load_uses_zero_extended_ebx --offline`. Admit only exact `67 8B 03` (`MOV EAX,[EBX]`), a three-byte address-size-32 singleton. The decoded address calculation zero-extends low32 RBX before canonical checking through the shared decoder-owned access path. JIT tests verify exact source/site provenance and the single `A+3` PC-map boundary; the host case checks the bounded dword load behavior. No broader addr32 family, owner/MMU, Mini, M1, Stage 2, physical-x86, or performance conclusion follows. See the [S3-20cx report](../reports/STAGE_3_S3-20cx_2026-11-02.md).
 
+## S3-20cy: exact address-size-32 dword checked store
+
+Run `cargo test -p od-jit --lib ir_dword_addr32_store_admits_only_67_89_03_and_preserves_its_provenance --offline` and `cargo test -p od-host --lib tests::s3_20cy_addr32_dword_store_uses_zero_extended_ebx --offline`. Admit only exact `67 89 03` (`MOV [EBX],EAX`), a three-byte address-size-32 singleton. The decoder-owned address calculation zero-extends low32 RBX before canonical checking; the host store uses low32 RAX as the payload for one checked four-byte write. This does not admit a broader addr32 family or establish production owner/MMU, Mini, M1, Stage 2, physical-x86, or performance behavior. See the [S3-20cy report](../reports/STAGE_3_S3-20cy_2026-11-02.md).
+
 ## S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 Run `cargo test -p od-host --lib tests::s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow --offline`. This separate host regression covers canonical-end and 64-bit range-overflow checks for the exact S3-20cu disp32 dword-store fixture using the decoder-owned `access_address_48` path. It supplements the original bounded host semantics test; it does not add an instruction form, production owner/MMU integration, or full S3-27 fault recovery. See the [S3-27i report](../reports/STAGE_3_S3-27i_2026-11-01.md).
@@ -71,6 +75,10 @@ S3-34ag pins the two S3-20cv JIT identities for source/site binding and the `A+6
 ## S3-34ah: exact gates for RIP-relative dword-store NextRip
 
 S3-34ah pins the two S3-20cw JIT identities for source/site binding and the `A+6` PC-map boundary, plus `tests::s3_20cw_rip_relative_disp32_dword_store_uses_guest_next_rip` in `od-host --lib`. The gate slice is tied to S3-20cw runtime commit `7639d98`; its harness commit is `1708836`. See the [S3-34ah report](../reports/STAGE_3_S3-34ah_2026-11-02.md).
+
+## S3-34ai: exact gates for address-size-32 dword-load admission
+
+S3-34ai pins the two S3-20cx JIT identities for exact `67 8B 03` source admission and the three-byte PC-map boundary, plus `tests::s3_20cx_addr32_dword_load_uses_zero_extended_ebx` in `od-host --lib`. This gate concerns the load slice; it does not pin S3-20cy's store. See the [S3-34ai report](../reports/STAGE_3_S3-34ai_2026-11-02.md).
 
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
