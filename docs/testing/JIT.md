@@ -259,6 +259,10 @@ Harness commit `ceb418c` pins exactly `memory_load_v2::tests::ir_dword_rbp_disp8
 
 Harness commit `7e28b8e` pins exactly `memory_load_v2::tests::ir_dword_rbp_disp8_store_binds_all_signed_source_bytes_to_its_site` and `tests::s3_20ds_rbp_disp8_dword_store_preserves_ss_fault_and_checked_state`, each with its package's `--lib --exact` target. Both Rust gates passed 1/1. The Python harness validation module passed 77/77. Python byte-compilation, Graphify update, and `git diff --check` passed; the independent harness review received Sol PASS. No separate PC-map gate is pinned. The full `od-host` suite, Mini, M1, and Stage 2 were not run. This documents mandatory gate selection and validation only. See the [S3-34bd report](../reports/STAGE_3_S3-34bd_2026-11-02.md).
 
+## S3-34be: exact harness gates for S3-20dt RBP disp32 dword load
+
+Harness commit `40b4b8e` pins exactly `memory_load_v2::tests::ir_dword_rbp_disp32_load_binds_all_source_bytes_to_its_site` and `tests::s3_20dt_rbp_disp32_dword_load_preserves_ss_fault_and_checked_state`, with `od-jit` and `od-host` `--lib --exact` targets. The source/site identity gate covers binding of the four encoded displacement bytes; it does not claim an exhaustive 2^32 displacement sweep. Both exact Rust gates passed 1/1, and the full Python harness validation module passed 78/78. Python byte-compilation, Graphify update, and `git diff --check` passed; independent Sol/high review passed. No separate PC-map gate is pinned. Full `od-host`, Mini, M1, and Stage 2 were not run. This records mandatory harness pinning only; see the [S3-20dt runtime report](../reports/STAGE_3_S3-20dt_2026-11-02.md) and [S3-34be report](../reports/STAGE_3_S3-34be_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
