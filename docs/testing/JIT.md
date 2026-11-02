@@ -501,6 +501,12 @@ Harness source commit `2f3198f`, integrated as `4626a9e`, pins exactly `memory_l
 
 The historical static manifest records 236 Rust gates (226 acceptance, 10 lifecycle), 254 local steps, and 102 self-test names. Independent static review passed; no Python/harness execution was performed. Runtime `8981622` is integrated as `2b04cfd` and passed Sol/high static review after the IR nesting correction, but no tests/build/fmt/Cargo/Python checks ran; exact runtime gates remain pending. No runtime pass is claimed here. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-34ce report](../reports/STAGE_3_S3-34ce_2026-11-02.md).
 
+## S3-20et: exact addr32 RCX-indexed no-base SIB disp32 Dword load
+
+The exact gates are `memory_load_v2::tests::ir_dword_addr32_rcx_index_no_base_sib_disp32_load_binds_all_source_bytes_to_its_site` (`od-jit`) and `tests::s3_20et_addr32_rcx_index_no_base_sib_disp32_dword_load_uses_wrapped_ecx` (`od-host --lib`). The admitted eight-byte singleton is `67 8B 04 0D disp32`; its effective address is `zero_extend((low32(RCX)+signed_disp32) mod 2^32)`. The host fixture checks a contiguous four-byte read crossing 4 GiB, EAX zero-extension, and the `A+8` boundary.
+
+Runtime source commit `8981622` was integrated as `2b04cfd`; independent Sol/high static review passed after correcting IR profile nesting. No test, build, format, Cargo check, or Python harness test ran, so both exact runtime gates remain pending. Harness S3-34ce (`2f3198f`, integrated as `4626a9e`) pins these exact identities; its historical manifest records 236 Rust gates (226 acceptance, 10 lifecycle), 254 local steps, and 102 self-test names. Independent static review passed, with no Python/harness execution. These harness counts do not supply runtime evidence. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-20et report](../reports/STAGE_3_S3-20et_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases

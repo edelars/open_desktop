@@ -318,6 +318,19 @@ open. Stage 2 remained outside this slice's evidence; concurrent runs were
 ignored per user instruction. Mini/M1 remain deferred; Stage 3 remains
 partial. See the [S3-34ce report](STAGE_3_S3-34ce_2026-11-02.md).
 
+S3-20et adds only the exact eight-byte addr32 RCX-indexed no-base SIB
+Dword-load singleton `67 8B 04 0D disp32`. Its effective address is
+`zero_extend((low32(RCX) + signed_disp32) mod 2^32)`; the checked read is one
+contiguous four-byte access, including a 4-GiB crossing, EAX zero-extends
+into RAX, and the guest boundary is `A+8`. Runtime source `8981622` was
+integrated as `2b04cfd`; Sol/high static review passed after correcting IR
+profile nesting. No tests, builds, formatting, Cargo checks, or Python
+tests ran, so both exact runtime gates remain pending. ISSUE-028 remains
+open. Stage 2 remained outside this slice's evidence; concurrent runs were
+ignored per user instruction. Mini/M1 remain deferred; Stage 3 remains
+partial. See the [S3-20et report](STAGE_3_S3-20et_2026-11-02.md) and
+[S3-34ce report](STAGE_3_S3-34ce_2026-11-02.md).
+
 S3-20er adds only the unprefixed seven-byte address64 RCX-indexed no-base
 SIB Dword-load singletons `8B 04 4D/8D/CD disp32` (scales 2/4/8). Effective
 address calculation uses full-width RCX times the encoded scale plus
