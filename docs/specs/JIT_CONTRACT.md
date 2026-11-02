@@ -311,7 +311,9 @@ load reads four bytes and writes the result to EAX, zero-extending into RAX
 and clearing `RAX[63:32]`; other registers and flags are preserved. Exact
 source/site binding and one PC-map guest
 boundary at `A+3` are retained. Recorded fixtures cover faults, no replay,
-STOP, and budget handling; other SIB shapes are not admitted. See the
+STOP, and budget handling. This entry is limited to the no-displacement
+scale-1 singleton; distinct scale and displacement profiles are documented
+separately in S3-20df, S3-20dh, and S3-20dj. See the
 [S3-20dd report](../reports/STAGE_3_S3-20dd_2026-11-02.md).
 
 #### S3-20df: exact address64 SIB Dword loads with RCX scales 2, 4, and 8
@@ -375,6 +377,21 @@ is also covered. Recorded fixtures cover STOP and budget behavior. This
 profile does not add other SIB/store forms. See the
 [S3-20di report](../reports/STAGE_3_S3-20di_2026-11-02.md).
 
+#### S3-20dj: exact address64 SIB Dword loads with signed disp32
+
+The shared typed-IR Dword-load path additionally admits exactly
+`8B 84 0B id`, `8B 84 4B id`, `8B 84 8B id`, and `8B 84 CB id`
+(`MOV EAX,[RBX+RCX*1/2/4/8+disp32]`). Each is a seven-byte singleton with
+full-width RBX base, full-width RCX index, the encoded scale, and signed
+disp32. The decoder-owned `access_address_48` computes the effective address.
+Each checked read is four bytes and writes EAX, zero-extending into RAX and
+clearing `RAX[63:32]`. The PC map has the `A+7` boundary; the JIT fixture
+checks source/site identity across all four scales and all four encoded
+disp32 bytes. The host fixture covers canonical-end `#GP`, u64 range overflow,
+and a valid adjacent read ending at the canonical boundary, without guest
+state commit or a memory callback on either fault. See the
+[S3-20dj report](../reports/STAGE_3_S3-20dj_2026-11-02.md).
+
 #### S3-20de: exact address64 SIB Dword store
 
 The shared typed-IR Dword-store path additionally admits only the exact
@@ -384,8 +401,9 @@ effective address follows the decoder-owned address64 operand. The store
 writes low32 RAX through one contiguous checked four-byte access; source
 registers, other registers, and flags are preserved. Exact source/site binding
 and one PC-map guest boundary at `A+3` are retained. Recorded fixtures cover
-fault atomicity, no replay, STOP, and budget handling; other SIB shapes are
-not admitted. See the [S3-20de report](../reports/STAGE_3_S3-20de_2026-11-02.md).
+fault atomicity, no replay, STOP, and budget handling. This entry is limited
+to the scale-1/no-displacement singleton; the distinct disp8 store is covered
+by S3-20di. See the [S3-20de report](../reports/STAGE_3_S3-20de_2026-11-02.md).
 
 #### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
