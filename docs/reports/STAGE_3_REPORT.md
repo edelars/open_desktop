@@ -203,6 +203,17 @@ evidence; concurrent runs were ignored per user instruction. Mini/M1 remain
 deferred; Stage 3 remains partial. See the
 [S3-20eo report](STAGE_3_S3-20eo_2026-11-02.md).
 
+S3-34bz pins the exact S3-20eo JIT source/site and host zero-extended-address
+identities. Harness source `7ee99dc` was integrated as `5069141`; the static
+manifest records 226 Rust gates (216 acceptance, 10 lifecycle) and 244 local
+steps. Independent Sol/high harness review passed. No Python harness
+validation or Cargo gate ran for this slice. S3-20eo runtime source `c98a28d`
+is integrated as `4970c5c` and passed static review, but its runtime gates
+were not executed; this harness is not runtime evidence. ISSUE-028 remains
+open. Stage 2 remained outside this slice's evidence; concurrent runs were
+ignored per user instruction. Mini/M1 remain deferred; Stage 3 remains
+partial. See the [S3-34bz report](STAGE_3_S3-34bz_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20

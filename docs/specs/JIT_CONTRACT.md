@@ -827,6 +827,9 @@ boundary is `A+8`. Neighboring prefixes and encodings remain outside the exact
 admission. The bounded fixtures do not establish physical memory, MMU, or
 broad host behavior. See the
 [S3-20eo report](../reports/STAGE_3_S3-20eo_2026-11-02.md).
+Exact harness gate identities and their unexecuted status are recorded in the
+[S3-34bz report](../reports/STAGE_3_S3-34bz_2026-11-02.md); they do not add
+runtime evidence.
 
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 

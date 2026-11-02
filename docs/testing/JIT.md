@@ -443,6 +443,12 @@ Harness source commit `b165126c83378cbc69168f5201dc3ddabd340d48`, integrated as 
 
 The static manifest reports 222 Rust gates (212 acceptance, 10 lifecycle) and 240 local steps. Independent Sol/high harness review passed. No Python harness validation, Cargo test, or runtime gate was run for this slice under the Mini deferral. Runtime source commit `c6149ae34f9b74516f301ab6016f8f87d9def24a` was integrated later as `5d8e9ac`; this does not change the harness evidence, and no runtime gate pass is claimed. ISSUE-028 remains open. Stage 3 remains partial. See the [S3-34bx report](../reports/STAGE_3_S3-34bx_2026-11-02.md).
 
+## S3-34bz: exact harness gates for S3-20eo addr32 absolute SIB Dword store
+
+Harness source commit `7ee99dc`, integrated as `5069141`, pins exactly `memory_load_v2::tests::ir_dword_addr32_absolute_sib_disp32_store_binds_all_source_bytes_to_its_site` (`od-jit`) and `tests::s3_20eo_addr32_absolute_sib_disp32_dword_store_uses_zero_extended_absolute_address` (`od-host --lib`). Their exact reproduction commands are `cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_addr32_absolute_sib_disp32_store_binds_all_source_bytes_to_its_site -- --exact --test-threads=1` and `cargo test --offline -p od-host --lib tests::s3_20eo_addr32_absolute_sib_disp32_dword_store_uses_zero_extended_absolute_address -- --exact --test-threads=1`.
+
+The static manifest reports 226 Rust gates (216 acceptance, 10 lifecycle) and 244 local steps. Independent Sol/high harness review passed. No Python harness validation, Cargo test, or runtime gate ran for this slice under the Mini deferral. The S3-20eo runtime commit `c98a28d` is integrated as `4970c5c` and passed static review after coverage fixes, but its exact runtime gates remain pending; that review is not harness execution. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-34bz report](../reports/STAGE_3_S3-34bz_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
