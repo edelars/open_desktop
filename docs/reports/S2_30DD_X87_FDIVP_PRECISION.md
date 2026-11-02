@@ -51,3 +51,9 @@ Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6
 See the [plan](../plans/STAGE_2.md#s2-30dd-bare-fdivp-sti-st0-with-bounded-fcw-precision),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dd-bounded-fdivp-sti-st0-de-f8ff),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dd-bounded-fdivp-fixture-coverage).
+
+Integrated main validation after S2-37du passed: `od-isa` 1,854, `od-testkit`
+455, runner 119 unit + 505 serialized fixtures, and x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout and diff
+check passed. Graphify refreshed to 11,533 nodes, 24,977 edges and 341
+communities.

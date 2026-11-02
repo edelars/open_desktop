@@ -44,6 +44,12 @@ testkit 1/1 and runner 1/1); no findings remain. Implementation and review
 fix are committed as `af09bf6` and `5f5f3c9`. Physical x86 acceptance is not
 claimed.
 
+Integrated main validation after S2-30dd passed: `od-isa` 1,854, `od-testkit`
+455, runner 119 unit + 505 serialized fixtures, and x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout and diff
+check passed. Graphify refreshed to 11,533 nodes, 24,977 edges and 341
+communities.
+
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-37du--masked-only-legacy-long64-addpd-xmm0m128-rax),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37du--masked-only-long64-addpd-xmm0m128-rax),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37du-addpd-m128-memory-profile).
