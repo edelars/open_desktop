@@ -5288,6 +5288,18 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                     || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())
                     || (instruction.length == 7
                         && i32::try_from(operand.displacement).is_ok())));
+    // Keep the addr32 RAX base confined to its exact zero-displacement ModRM
+    // form; the existing no-base SIB RAX profiles are separate encodings.
+    let address32_rax_base_profile = instruction.prefixes.address_override
+        && instruction.length == 3
+        && instruction.address_size == OperandSize::Dword
+        && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
+            if operand.address_size == OperandSize::Dword
+                && operand.size == OperandSize::Dword
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rax))
+                && operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0);
     let rcx_no_base_sib_profile = instruction.length == 7
         && instruction.address_size == OperandSize::Qword
         && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
@@ -5309,6 +5321,7 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
             || address32_absolute_sib_profile
             || address32_rcx_no_base_sib_profile
             || address32_rax_no_base_sib_profile
+            || address32_rax_base_profile
             || address32_rbx_rcx_sib_profile);
     let rbx_rcx_sib_profile = matches!(instruction.length, 3 | 4 | 7)
         && instruction.address_size == OperandSize::Qword
@@ -5369,6 +5382,7 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
             || address32_absolute_sib_profile
             || address32_rcx_no_base_sib_profile
             || address32_rax_no_base_sib_profile
+            || address32_rax_base_profile
             || address32_rbx_rcx_sib_profile)
         && source.register() == od_isa::Register::Rax
         && source.size() == OperandSize::Dword
@@ -5384,6 +5398,7 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
             || address32_absolute_sib_profile
             || address32_rcx_no_base_sib_profile
             || address32_rax_no_base_sib_profile
+            || address32_rax_base_profile
             || rsp_no_index_sib_profile
             || rsp_disp8_sib_profile
             || rsp_disp32_sib_profile

@@ -1182,6 +1182,28 @@ RIP/address. A callback STOP follows the committed load, and re-entry at
 production owner/MMU integration. See the
 [S3-20fj report](../reports/STAGE_3_S3-20fj_2026-11-02.md).
 
+#### S3-20fk: exact address32 RAX-alias Dword store
+
+The shared typed-IR Dword-store path admits only the three-byte singleton
+`67 89 00` (`MOV [EAX],EAX`): address size Dword, transfer width Dword, and
+RAX selected as both the memory base and store source. Both the effective
+address and payload come from the original RAX: the address is zero-extended
+low32 RAX and the payload is low32 RAX. One contiguous checked four-byte
+write is performed; all GPRs and RFLAGS remain unchanged, and successful
+retirement commits `A+3`.
+
+The exact three source bytes and decoded site metadata remain bound. RAX-based
+addr32 displacement or SIB forms, other bases, prefixes, opcodes, partial or
+trailing encodings, address sizes, and transfer widths are not admitted by
+this slice. Entry STOP, stop-address, and exhausted-budget guards perform no
+write. Guest and backend failures before commit preserve architectural state
+and RAM and can be retried at the same instruction. A callback STOP follows
+the committed store without replay. EA `0xffff_fffd`, `0xffff_fffe`, and
+`0xffff_ffff` each use one contiguous four-byte transfer across the 4-GiB
+boundary; individual transfer bytes do not wrap. This is bounded
+borrowed-memory fixture coverage, not production owner/MMU integration. See
+the [S3-20fk report](../reports/STAGE_3_S3-20fk_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
