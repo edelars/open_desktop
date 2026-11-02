@@ -16589,7 +16589,7 @@ JIT/native admission and physical x86 acceptance are outside this profile.
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-30cy-bare-fdivr-sti-st0-with-bounded-fcw-precision),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cy--bounded-fdivr-sti-st0),
 and [standalone report](../reports/S2_30CY_X87_FDIVR_REVERSE_PRECISION.md).
-Normative sources: Intel SDM Rev. 093 Vol. 2A `FDIVR/FDIVRP/FIDIVR` pp. 3-336–3-338;
+Normative sources: Intel SDM Rev. 093 Vol. 2A `FDIVR/FIDIVR` pp. 3-336–3-338;
 Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6.
 
 ## S2-37do — masked-only Long64 DIVSS XMM0,m32 [RAX]
