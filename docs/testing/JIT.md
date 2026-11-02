@@ -790,6 +790,32 @@ behavior gates remain pending. ISSUE-028 remains open; Stage 2 is
 ignored/excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
 [S3-34cp report](../reports/STAGE_3_S3-34cp_2026-11-02.md).
 
+## S3-20ff: exact address64 RAX-base Dword load with signed disp8
+
+Run the exact gates:
+
+```sh
+cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_rax_disp8_load_binds_all_signed_source_bytes_to_its_site -- --exact --test-threads=1
+cargo test --offline -p od-host --lib tests::s3_20ff_rax_disp8_dword_load_uses_original_rax -- --exact --test-threads=1
+```
+
+Admit only the three-byte unprefixed form `8B 40 ib` (`MOV EAX,[RAX+disp8]`)
+with Qword address size and Dword transfer width. Effective address is the
+original full-width RAX plus sign-extended disp8 with wrapping u64 semantics.
+One contiguous checked four-byte read zero-extends into RAX and successful
+retirement commits `A+3`; RAX is captured before load writeback. S3-34cq pins
+the exact JIT source/site and host acceptance identities.
+
+Runtime source `45aca5c` passed independent Sol review. Static source review
+covers all 256 signed disp8 encodings, original-RAX address calculation,
+interpreter parity, entry guards and retries, backend-error retry,
+canonicality/range failures, and committed callback STOP without replay. No
+behavior tests, builds, formatting, Cargo checks, or Python harness ran, so
+the exact results remain pending. ISSUE-028 remains open; Stage 2 was
+ignored/excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
+[S3-20ff report](../reports/STAGE_3_S3-20ff_2026-11-02.md) and
+[S3-34cq harness report](../reports/STAGE_3_S3-34cq_2026-11-02.md).
+
 ## S3-34cq: harness gates for S3-20ff RAX disp8 Dword load
 
 Harness source `ee97e4f` pins the exact JIT source/site and host acceptance

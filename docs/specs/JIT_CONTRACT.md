@@ -1096,6 +1096,28 @@ This is bounded borrowed-memory fixture coverage, not production owner/MMU
 integration. See the
 [S3-20fe report](../reports/STAGE_3_S3-20fe_2026-11-02.md).
 
+#### S3-20ff: exact address64 RAX-base Dword load with signed disp8
+
+The shared typed-IR Dword-load path admits only the three-byte unprefixed
+form `8B 40 ib` (`MOV EAX,[RAX+sign-extended disp8]`). Address and transfer
+sizes are Qword and Dword respectively. Effective address calculation uses
+pre-instruction full-width RAX plus signed disp8 with wrapping u64 semantics;
+the resulting four-byte access is checked for canonicality and range. One
+contiguous checked four-byte read writes EAX and zero-extends it to RAX. The
+old RAX is used for the address before destination writeback; other GPRs and
+RFLAGS remain unchanged, and successful retirement commits `A+3`.
+
+The exact three source bytes and decoded site fields remain bound. Partial or
+trailing instructions, prefixes, other ModRM fields, other data registers,
+or other transfer widths are not admitted. Entry STOP, stop-address, and
+exhausted-budget guards perform no read. A backend error before commit leaves
+state unchanged and permits retry from the same original RAX. Canonical
+address faults occur before the helper; access-range overflow is a distinct
+memory error. Callback STOP follows the committed load, and re-entry at
+`A+3` does not repeat the read. This remains bounded borrowed-memory fixture
+coverage, not production owner/MMU integration. See the
+[S3-20ff report](../reports/STAGE_3_S3-20ff_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
