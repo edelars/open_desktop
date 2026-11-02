@@ -1548,7 +1548,7 @@ pub enum Operation {
     FsubrSt0St {
         source: u8,
     },
-    /// Bare `DC E8+i` FSUB ST(i), ST(0), exact finite local profile only.
+    /// Bare `DC E8+i` FSUB ST(i), ST(0), bounded FCW precision profile.
     FsubStSt0 {
         destination: u8,
     },

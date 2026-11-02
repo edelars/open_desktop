@@ -21555,7 +21555,6 @@ After S2-30cu and S2-37dl were transferred to main, combined validation passed:
 formatting, layout validation and Graphify AST refresh passed (11,280 nodes,
 24,407 edges, 336 communities). Both independent Sol/high reviews are clean.
 No physical x86 acceptance is claimed.
-
 ### S2-37dm — MULSS XMM0,m32 [RAX]
 
 Added interpreter-only schema-v2 profile `s2-long-mulss-memory-rax-v1` for exact legacy `F3 0F 59 00`, Long64/SSE, four-byte fetch, budget one and stop RIP entry+4. Full fetch precedes #UD/#NM gates. Strict masked MXCSR requires supported mask `0xffbf`, all six masks, reserved bits clear and DAZ/FTZ=0; all RC and prior sticky histories are admitted. AC=1 refuses before span/read; AC=0 admits unaligned m32. Checked `RAX+3` and canonical48 endpoints precede exactly one read4; failure rolls back architectural state and retirement.
@@ -21563,3 +21562,48 @@ Added interpreter-only schema-v2 profile `s2-long-mulss-memory-rax-v1` for exact
 Execution multiplies old XMM0.low32 by memory RHS via existing `Binary32::multiply_raw_result`, reusing S2-37au WPR and NaN behavior; XMM0.high96, XMM1 and unrelated state are preserved and new IE/DE/OE/UE/PE flags are merged. The independent raw-u32 oracle receives the loaded RHS. Runner matrix: 25 operand pairs × 4 RC × 64 prior sticky histories (6,400); it checks backend/outcome/snapshot/stop/retirement before oracle comparison. Schema/runtime MXCSR denial with no state commit/read/retirement, provenance/result tampering, truncated-fetch precedence over #UD/#NM, AC/span/read rollback, backend denial and register/neighbor regressions are covered. Full checks and review status: [standalone report](S2_37DM_MULSS_MEMORY.md). Intel SDM Rev. 093 Vol. 2B MULSS pp. 4-154–4-155; Vol. 2A §2.5.3/Table 2-20 p. 2-28; Vol. 1 §§11.5.2–11.5.3 and 11.6.6. No physical x86 acceptance is claimed.
 
 S2-37dm isolated validation: `od-isa` 1,811; `od-testkit` 455; runner 116 unit + 494 fixture; x86-runner 8 library + 4 binary. Workspace all-target offline check, formatting, diff check and Graphify passed (11,344 nodes, 24,413 edges, 362 communities). Layout passed in main; worktree-only `.git` pointer and absent disposable `work/stage*-oracle` targets prevent a clean isolated layout result. Independent Sol/high review is clean; no physical x86 acceptance is claimed.
+
+## S2-30cv — bounded reverse `FSUB ST(i), ST(0)`
+
+Added direct FCW precision execution for exact bare Long64 `DC E8..EF`. It
+rounds `ST(i) - ST(0)` through the existing S2-29ae addition precision helper,
+after validating the original Valid-tagged canonical nonzero Normal operands
+and the normalized exponent gap≤64. The sign is flipped only in a local copy
+of ST(0). Only finite Normal results are admitted, and `i=0` remains an
+atomic cancellation refusal. The prior S2-30i exact-result set is covered by
+the p64 equal-exponent path; tests compare literal results and diagnostics
+against the unchanged exact helper.
+
+On success, only old physical `(TOP+i)&7` changes. PE is sticky, C1 is replaced
+from `incremented`, C0/C2/C3 remain preserved by local policy, FIP receives
+old RIP, RIP advances by two and the instruction retires once. Source and
+unrelated state remain unchanged, and there is no data access. D8/DC neighbors
+and DE pop behavior remain unchanged. JIT/native, general x87 exceptions and
+physical x86 acceptance remain closed.
+
+The focused suite passed 10 tests. Its matrix covers 12,288 operation cases
+across TOP/index, FCW, signs and prior PE/C1 state. Additional literals cover
+midpoint/adjacent and negative directed rounding, direct versus double
+rounding, gaps 0/1/63/64 and 65+, alias/cancellation and malformed/range
+refusals, full-state atomicity, execution boundaries, no data access, the
+prior exact-result domain, max carry, minimum Normal, ±2^-63 and upper
+exponent boundaries. Unsupported FCW/FSW, selector and tag refusals use
+noncancelling baselines. The decoder's existing exhaustive DC ModR/M and prefix
+checks remain unchanged.
+
+Validation passed: focused 10, full `od-isa` 1,813, `od-testkit` 455 and
+`od-runner` 115 unit plus 493 fixture tests; workspace all-target offline
+check, formatting and diff check passed. Layout reports the existing worktree
+`.git` marker and two missing historical oracle manifests tracked by ISSUE-023;
+no new broken documentation links were found. Graphify update completed at
+11,335 nodes, 24,389 edges and 351 communities. Independent Sol/high re-review
+is clean; the reviewer reran the 35-test `fsub` filter. Physical x86/JIT/native
+acceptance was not performed. Sources: Intel SDM Rev. 093 Vol. 2A `FSUB/FSUBP/FISUB`,
+including `DC E8+i`, pp. 3-394–3-396
+([official Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512));
+Vol. 1 §§8.1.5.1–.3, Table 8-2, and §8.5.6, pp. 8-7–8-8 and 8-30
+([official Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+See the [standalone report](S2_30CV_X87_FSUB_REVERSE_PRECISION.md),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cv-bounded-fsub-sti-st0-dc-e8-ef),
+[plan](../plans/STAGE_2.md#s2-30cv-bare-reverse-fsub-sti-st0-with-bounded-fcw-precision),
+and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
