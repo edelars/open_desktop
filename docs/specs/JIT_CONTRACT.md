@@ -409,6 +409,26 @@ base, addressing form, prefix, SIB, or displacement width is implied. The
 bounded fixture does not establish MMIO, SMC, owner/MMU, or hardware
 integration. See the [S3-20ds report](../reports/STAGE_3_S3-20ds_2026-11-02.md).
 
+#### S3-20dt: exact RBP-base Dword load with signed disp32
+
+The shared typed-IR Dword-load path admits only the exact six-byte singleton
+`8B 85 id` (`MOV EAX,[RBP+disp32]`). The decoded memory operand supplies
+full-width RBP plus signed disp32 with wrapping. The source/site test exercises
+twelve representative signed disp32 values and binds every encoded
+displacement byte to its site; this is not an exhaustive sweep of all 2^32
+byte patterns. A successful checked read transfers exactly four bytes and
+zero-extends EAX into RAX. The checked guest boundary is `A+6`.
+
+The host fixture checks interpreter parity, one width-four read, RBP
+noncanonical-start/end `#SS` versus the retained RBX disp32 `#GP` control,
+effective-address wrap from `u64::MAX+1` to zero, and width-four
+`AddressOverflow` before callback or architectural commit. Read faults leave
+state uncommitted; budget and STOP guards and successful callback STOP are
+covered. These checks make no claim about other bases, address forms, prefixes,
+SIB, or displacement widths, and no MMIO, SMC, owner/MMU, hardware, Mini, M1,
+or Stage 2 behavior is established. See the
+[S3-20dt report](../reports/STAGE_3_S3-20dt_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
