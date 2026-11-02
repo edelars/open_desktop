@@ -861,6 +861,28 @@ open; Stage 2 is ignored/excluded; Mini/M1 are deferred; Stage 3 remains
 partial. See the
 [S3-34cq report](../reports/STAGE_3_S3-34cq_2026-11-02.md).
 
+## S3-34cs: harness gates for S3-20fh RAX disp32 Dword load
+
+Harness source `265099e`, forged-argv validation follow-up `3f85ffd`, and
+identity correction `60b7086` (integrated as `41f9235`) pin the exact JIT
+source/site and host acceptance identities for the
+six-byte unprefixed form `8B 80 id` (`MOV EAX,[RAX+sign-extended disp32]`):
+
+- `s3_34cs_ir_rax_disp32_dword_load_source_binding` →
+  `memory_load_v2::tests::ir_dword_rax_disp32_load_binds_signed_source_bytes_to_its_site`
+- `s3_34cs_host_rax_disp32_dword_load_original_rax` →
+  `tests::s3_20fh_rax_disp32_dword_load_uses_original_full_rax`
+
+The static manifest records 264 Rust gates (254 acceptance, 10 lifecycle),
+282 local steps, and 116 self-test names. Independent Sol/high review passed
+after the harness rejected forged gate argv and corrected both exact Rust
+test identities. No Python harness or Cargo gate was run. Runtime S3-20fh
+separately passed Sol/high static review after JIT and host coverage fixes,
+but the exact behavior gates remain pending.
+ISSUE-028 remains open; Stage 2 is excluded; Mini/M1 are deferred; Stage 3
+remains partial. See the
+[S3-34cs report](../reports/STAGE_3_S3-34cs_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
