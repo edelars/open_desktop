@@ -17594,7 +17594,7 @@ mod tests {
                         .ok_or(MemoryError::Unmapped {
                             address,
                             access: AccessKind::Fetch,
-                        })?,
+                        }),
                     _ => self
                         .bytes
                         .get(&address)
