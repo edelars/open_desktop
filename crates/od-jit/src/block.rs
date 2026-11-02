@@ -3074,6 +3074,8 @@ fn build_block_with_profile(
                     == Some(&[0x89, 0x03][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                         == Some(&[0x89, 0x00][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                        == Some(&[0x89, 0x04, 0x0b][..])
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(3))
@@ -4869,6 +4871,15 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
         && !instruction.prefixes.operand_override
         && instruction.prefixes.rex.is_none()
         && (!instruction.prefixes.address_override || address32_profile);
+    let rbx_rcx_sib_profile = instruction.length == 3
+        && instruction.address_size == OperandSize::Qword
+        && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
+            if operand.address_size == OperandSize::Qword
+                && operand.size == OperandSize::Dword
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                && operand.index == Some(od_isa::Register::Rcx)
+                && operand.scale == 1
+                && operand.displacement == 0);
     let Operation::Mov {
         dst: Operand::Memory(operand),
         src: Operand::Register(source),
@@ -4885,24 +4896,25 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
         && source.size() == OperandSize::Dword
         && operand.size == OperandSize::Dword
         && operand.address_size == instruction.address_size
-        && operand.index.is_none()
-        && operand.scale == 1
-        && ((instruction.length == 2
-            && matches!(
-                operand.base,
-                AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
-            )
-            && operand.displacement == 0)
-            || (instruction.length == 3
-                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-                && i8::try_from(operand.displacement).is_ok())
-            || (instruction.length == 6
-                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-                && i32::try_from(operand.displacement).is_ok())
-            || (instruction.length == 6
-                && matches!(operand.base, AddressBase::NextRip)
-                && i32::try_from(operand.displacement).is_ok())
-            || address32_profile)
+        && (rbx_rcx_sib_profile
+            || (operand.index.is_none()
+                && operand.scale == 1
+                && ((instruction.length == 2
+                    && matches!(
+                        operand.base,
+                        AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
+                    )
+                    && operand.displacement == 0)
+                    || (instruction.length == 3
+                        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                        && i8::try_from(operand.displacement).is_ok())
+                    || (instruction.length == 6
+                        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                        && i32::try_from(operand.displacement).is_ok())
+                    || (instruction.length == 6
+                        && matches!(operand.base, AddressBase::NextRip)
+                        && i32::try_from(operand.displacement).is_ok())
+                    || address32_profile)))
 }
 
 pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {

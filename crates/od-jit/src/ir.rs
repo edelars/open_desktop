@@ -1105,30 +1105,45 @@ fn is_checked_dword_store_address(
     operand: &od_isa::long_decode::MemoryOperand,
     instruction_length: u64,
 ) -> bool {
-    operand.size == od_isa::OperandSize::Dword
-        && operand.index.is_none()
+    let rbx_rcx_sib_profile = instruction_length == 3
+        && operand.address_size == od_isa::OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+        && operand.index == Some(od_isa::Register::Rcx)
         && operand.scale == 1
-        && ((operand.address_size == od_isa::OperandSize::Qword
-            && ((instruction_length == 2
-                && matches!(
-                    operand.base,
-                    AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
-                )
-                && operand.displacement == 0)
-                || (instruction_length == 3
-                    && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-                    && i8::try_from(operand.displacement).is_ok())
-                || (instruction_length == 6
-                    && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-                    && i32::try_from(operand.displacement).is_ok())
-                || (instruction_length == 6
-                    && matches!(operand.base, AddressBase::NextRip)
-                    && i32::try_from(operand.displacement).is_ok())))
-            || (operand.address_size == od_isa::OperandSize::Dword
-                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-                && ((instruction_length == 3 && operand.displacement == 0)
-                    || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok())
-                    || (instruction_length == 7 && i32::try_from(operand.displacement).is_ok()))))
+        && operand.displacement == 0;
+    operand.size == od_isa::OperandSize::Dword
+        && (rbx_rcx_sib_profile
+            || (operand.index.is_none()
+                && operand.scale == 1
+                && ((operand.address_size == od_isa::OperandSize::Qword
+                    && ((instruction_length == 2
+                        && matches!(
+                            operand.base,
+                            AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
+                        )
+                        && operand.displacement == 0)
+                        || (instruction_length == 3
+                            && matches!(
+                                operand.base,
+                                AddressBase::Register(od_isa::Register::Rbx)
+                            )
+                            && i8::try_from(operand.displacement).is_ok())
+                        || (instruction_length == 6
+                            && matches!(
+                                operand.base,
+                                AddressBase::Register(od_isa::Register::Rbx)
+                            )
+                            && i32::try_from(operand.displacement).is_ok())
+                        || (instruction_length == 6
+                            && matches!(operand.base, AddressBase::NextRip)
+                            && i32::try_from(operand.displacement).is_ok())))
+                    || (operand.address_size == od_isa::OperandSize::Dword
+                        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                        && ((instruction_length == 3 && operand.displacement == 0)
+                            || (instruction_length == 4
+                                && i8::try_from(operand.displacement).is_ok())
+                            || (instruction_length == 7
+                                && i32::try_from(operand.displacement).is_ok()))))))
 }
 
 fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError> {
