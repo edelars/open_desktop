@@ -1098,24 +1098,28 @@ fn is_checked_dword_store_address(
     instruction_length: u64,
 ) -> bool {
     operand.size == od_isa::OperandSize::Dword
-        && operand.address_size == od_isa::OperandSize::Qword
         && operand.index.is_none()
         && operand.scale == 1
-        && ((instruction_length == 2
-            && matches!(
-                operand.base,
-                AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
-            )
-            && operand.displacement == 0)
-            || (instruction_length == 3
+        && ((operand.address_size == od_isa::OperandSize::Qword
+            && ((instruction_length == 2
+                && matches!(
+                    operand.base,
+                    AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
+                )
+                && operand.displacement == 0)
+                || (instruction_length == 3
+                    && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                    && i8::try_from(operand.displacement).is_ok())
+                || (instruction_length == 6
+                    && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                    && i32::try_from(operand.displacement).is_ok())
+                || (instruction_length == 6
+                    && matches!(operand.base, AddressBase::NextRip)
+                    && i32::try_from(operand.displacement).is_ok())))
+            || (operand.address_size == od_isa::OperandSize::Dword
+                && instruction_length == 3
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-                && i8::try_from(operand.displacement).is_ok())
-            || (instruction_length == 6
-                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-                && i32::try_from(operand.displacement).is_ok())
-            || (instruction_length == 6
-                && matches!(operand.base, AddressBase::NextRip)
-                && i32::try_from(operand.displacement).is_ok()))
+                && operand.displacement == 0))
 }
 
 fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError> {

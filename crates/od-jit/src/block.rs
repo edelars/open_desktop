@@ -3068,6 +3068,8 @@ fn build_block_with_profile(
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(3))
                         .is_some_and(|bytes| bytes[..2] == [0x89, 0x43])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                        == Some(&[0x67, 0x89, 0x03][..])
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(6))
@@ -4825,10 +4827,20 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
 }
 
 pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
+    let address32_profile = instruction.prefixes.address_override
+        && instruction.length == 3
+        && instruction.address_size == OperandSize::Dword
+        && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
+            if operand.address_size == OperandSize::Dword
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                && operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0);
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override
-        && instruction.prefixes.rex.is_none();
+        && instruction.prefixes.rex.is_none()
+        && (!instruction.prefixes.address_override || address32_profile);
     let Operation::Mov {
         dst: Operand::Memory(operand),
         src: Operand::Register(source),
@@ -4840,11 +4852,11 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x89
         && instruction.operand_size == OperandSize::Dword
-        && instruction.address_size == OperandSize::Qword
+        && (instruction.address_size == OperandSize::Qword || address32_profile)
         && source.register() == od_isa::Register::Rax
         && source.size() == OperandSize::Dword
         && operand.size == OperandSize::Dword
-        && operand.address_size == OperandSize::Qword
+        && operand.address_size == instruction.address_size
         && operand.index.is_none()
         && operand.scale == 1
         && ((instruction.length == 2
@@ -4861,7 +4873,8 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && i32::try_from(operand.displacement).is_ok())
             || (instruction.length == 6
                 && matches!(operand.base, AddressBase::NextRip)
-                && i32::try_from(operand.displacement).is_ok()))
+                && i32::try_from(operand.displacement).is_ok())
+            || address32_profile)
 }
 
 pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
