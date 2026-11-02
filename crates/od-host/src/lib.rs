@@ -5539,7 +5539,7 @@ mod tests {
     }
 
     #[test]
-    fn s3_20en_addr32_absolute_sib_disp32_dword_load_uses_zero_extended_address() {
+    fn s3_20en_addr32_absolute_sib_disp32_dword_load_uses_zero_extended_absolute_address() {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 
         struct Memory<'a> {
