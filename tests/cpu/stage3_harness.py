@@ -148,6 +148,7 @@ SELF_TEST_NAMES = (
     "test_s3_34ct_rax_disp32_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34cu_addr32_alias_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34cv_addr32_alias_dword_store_gates_are_pinned_and_fail_closed",
+    "test_s3_34cw_addr32_alias_disp8_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -1226,6 +1227,14 @@ ADDITIONAL_TEST_GATES = (
         "s3_34cv_host_addr32_alias_dword_store_original_eax_address_and_payload",
         "local_acceptance", "od-host",
         "tests::s3_20fk_addr32_alias_dword_store_uses_original_eax_address_and_payload",
+    ),
+    (
+        "s3_34cw_ir_addr32_alias_disp8_dword_load_source_binding", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_addr32_alias_disp8_load_binds_all_signed_source_bytes_to_its_site",
+    ),
+    (
+        "s3_34cw_host_addr32_alias_disp8_dword_load_wrapped_original_eax", "local_acceptance", "od-host",
+        "tests::s3_20fl_addr32_alias_disp8_dword_load_uses_wrapped_original_eax",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
