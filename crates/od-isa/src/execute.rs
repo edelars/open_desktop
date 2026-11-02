@@ -10421,12 +10421,12 @@ pub fn run_with_minps_memory_rax_controls(
     )
 }
 
-/// Execute the exact legacy `F3 0F 51 00` SQRTSS m32-at-RAX profile.
+/// Execute exact legacy `0F 53 00` RCPPS m128-at-RAX under its local profile.
 pub fn run_with_rcpps_memory_rax_controls(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
     config: RunConfig,
-    controls: SqrtpsMemoryRaxControls,
+    controls: RcppsMemoryRaxControls,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
     run_configured(
