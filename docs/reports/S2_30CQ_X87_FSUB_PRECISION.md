@@ -41,6 +41,11 @@ Independent Sol/high review completed clean after correcting the refusal-test
 baseline and removing a duplicate admission check. This report does not claim
 physical x86, native or JIT validation.
 
+After integration with SQRTSS in main, the combined suites passed: full
+`od-isa` 1,782, `od-testkit` 454, runner 112 unit + 488 fixture tests, and
+workspace all-target offline check. Formatting, layout and Graphify refresh
+also passed on the integrated tree.
+
 Semantic reference: Intel SDM Rev. 093 Vol. 2A `FSUB/FSUBP/FISUB`,
 pp. 3-394–3-396 ([official Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512)); Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6 p. 8-30.
 The bounded local contract is recorded in the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cq-bounded-fsub-st0-sti-d8-e0-e7)

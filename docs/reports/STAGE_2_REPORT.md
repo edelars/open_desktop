@@ -21323,3 +21323,8 @@ admission check. No physical x86/native/JIT acceptance is claimed. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cq-bounded-fsub-st0-sti-d8-e0-e7),
 [plan](../plans/STAGE_2.md#s2-30cq-bare-fsub-st0-sti-with-bounded-fcw-precision),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
+After integration with SQRTSS in main, the combined suites passed: full
+`od-isa` 1,782, `od-testkit` 454, runner 112 unit + 488 fixture tests, and
+workspace all-target offline check. Formatting, layout, diff check and
+Graphify refresh passed on the integrated tree.
