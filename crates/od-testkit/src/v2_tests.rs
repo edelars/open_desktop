@@ -5095,11 +5095,11 @@ fn x87_fxam_schema_admits_only_the_seven_requested_streams() {
 }
 
 #[test]
-fn fld_m32_m64_budget_one_normal_unsupported_rejects_oe_only_status() {
+fn fld_m32_m64_budget_one_normal_unsupported_rejects_admitted_sticky_status() {
     for (width, opcode, normal_bytes) in [(4, "d900", "0000803f"), (8, "dd00", "000000000000f03f")]
     {
         let mut fixture = x87_fixture().fixture;
-        fixture.case_id = format!("local_fld_m{width}_normal_ze_rejection");
+        fixture.case_id = format!("local_fld_m{width}_normal_sf_rejection");
         fixture.instruction_budget = 1;
         fixture.stop_rip = None;
         fixture.expected_exit = ExpectedExit::Unsupported;
@@ -5127,19 +5127,21 @@ fn fld_m32_m64_budget_one_normal_unsupported_rejects_oe_only_status() {
             comparison_mask_hex: "ff".repeat(width as usize),
         });
 
-        fixture.initial_state.x87.as_mut().unwrap().status_word = HexU64(0x0004);
+        fixture.initial_state.x87.as_mut().unwrap().status_word = HexU64(0x0040);
         fixture.initial_state.x87.as_mut().unwrap().control_word = HexU64(0x037f);
         fixture.initial_state.x87.as_mut().unwrap().tag_word = HexU64(u16::MAX.into());
         assert!(
             fixture.validate().is_ok(),
-            "{opcode} ZE Unsupported fixture"
+            "{opcode} SF Unsupported fixture"
         );
 
-        fixture.initial_state.x87.as_mut().unwrap().status_word = HexU64(0x0008);
-        assert!(
-            fixture.validate().is_err(),
-            "{opcode} OE-only must not reject"
-        );
+        for admitted_status in [0x0004, 0x0008] {
+            fixture.initial_state.x87.as_mut().unwrap().status_word = HexU64(admitted_status);
+            assert!(
+                fixture.validate().is_err(),
+                "{opcode} admitted FSW={admitted_status:04x} must not justify Unsupported"
+            );
+        }
     }
 }
 
@@ -5623,7 +5625,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         .x87
         .as_mut()
         .unwrap()
-        .status_word = HexU64(0x0004);
+        .status_word = HexU64(0x0040);
     invalid_fld_m32.stop_rip = None;
     invalid_fld_m32.expected_exit = ExpectedExit::Unsupported;
     assert!(Fixture::from_json(&invalid_fld_m32.to_json().unwrap()).is_ok());
@@ -5647,8 +5649,18 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "D900 invalid-environment predicate must not depend on source class {raw}"
         );
     }
-    for combination in 0..8_u16 {
-        let sticky = (combination & 3) | if combination & 4 != 0 { 0x20 } else { 0 };
+    for combination in 0..64_u16 {
+        let sticky = [0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020]
+            .into_iter()
+            .enumerate()
+            .fold(0_u16, |flags, (bit, status)| {
+                flags
+                    | if combination & (1 << bit) != 0 {
+                        status
+                    } else {
+                        0
+                    }
+            });
         let mut sticky_environment_snan = invalid_fld_m32.clone();
         sticky_environment_snan
             .initial_state
@@ -5661,7 +5673,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "admitted sticky status {sticky:04x} must not admit Unsupported"
         );
     }
-    for forbidden_status in [0x0004, 0x0040, 0x0080, 0x8000] {
+    for forbidden_status in [0x0040, 0x0080, 0x8000] {
         let mut forbidden_status_fixture = invalid_fld_m32.clone();
         forbidden_status_fixture
             .initial_state
@@ -5674,6 +5686,14 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "forbidden status {forbidden_status:04x} must admit pre-read Unsupported"
         );
     }
+    let mut ze_only_fld_m32 = invalid_fld_m32.clone();
+    ze_only_fld_m32
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .status_word = HexU64(0x0004);
+    assert!(ze_only_fld_m32.validate().is_err());
     let mut wrong_fld_m32_control = invalid_fld_m32.clone();
     wrong_fld_m32_control
         .initial_state
@@ -5741,7 +5761,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         .x87
         .as_mut()
         .unwrap()
-        .status_word = HexU64(0x04);
+        .status_word = HexU64(0x40);
     invalid_fld_m64
         .memory
         .iter_mut()
@@ -5771,8 +5791,18 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "DD00 invalid-environment predicate must not inspect source value {raw}"
         );
     }
-    for combination in 0..8_u16 {
-        let sticky = (combination & 3) | if combination & 4 != 0 { 0x20 } else { 0 };
+    for combination in 0..64_u16 {
+        let sticky = [0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0020]
+            .into_iter()
+            .enumerate()
+            .fold(0_u16, |flags, (bit, status)| {
+                flags
+                    | if combination & (1 << bit) != 0 {
+                        status
+                    } else {
+                        0
+                    }
+            });
         let mut sticky_environment = invalid_fld_m64.clone();
         sticky_environment
             .initial_state
@@ -5785,7 +5815,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "admitted sticky status {sticky:04x} must not admit Unsupported"
         );
     }
-    for forbidden_status in [0x0004, 0x0040, 0x0080, 0x8000] {
+    for forbidden_status in [0x0040, 0x0080, 0x8000] {
         let mut forbidden_status_fixture = invalid_fld_m64.clone();
         forbidden_status_fixture
             .initial_state
@@ -5798,6 +5828,14 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "forbidden status {forbidden_status:04x} must admit pre-read Unsupported"
         );
     }
+    let mut ze_only_fld_m64 = invalid_fld_m64.clone();
+    ze_only_fld_m64
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .status_word = HexU64(0x0004);
+    assert!(ze_only_fld_m64.validate().is_err());
 
     let mut invalid_fld_m80 = fixture.clone();
     let code = invalid_fld_m80
