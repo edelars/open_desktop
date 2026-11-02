@@ -42,9 +42,10 @@ use od_isa::execute::{
     run_with_sqrtps_memory_rax_controls, run_with_sqrtps_register_controls,
     run_with_sqrtsd_memory_rax_controls, run_with_sqrtsd_register_controls,
     run_with_sqrtss_memory_rax_controls, run_with_sqrtss_register_controls,
-    run_with_subpd_register_controls, run_with_subps_register_controls,
-    run_with_subsd_memory_rax_controls, run_with_subsd_register_controls,
-    run_with_subss_memory_rax_controls, run_with_subss_register_controls,
+    run_with_subpd_memory_rax_controls, run_with_subpd_register_controls,
+    run_with_subps_register_controls, run_with_subsd_memory_rax_controls,
+    run_with_subsd_register_controls, run_with_subss_memory_rax_controls,
+    run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -1958,6 +1959,24 @@ fn execute_fixture_v2(
             .subpd_controls
             .expect("validated SUBPD controls");
         run_with_subpd_register_controls(
+            &mut state,
+            memory,
+            config,
+            SubpdControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongSubpdMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .subpd_controls
+            .expect("validated SUBPD m128 controls");
+        run_with_subpd_memory_rax_controls(
             &mut state,
             memory,
             config,

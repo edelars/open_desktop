@@ -16923,3 +16923,30 @@ Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. The
 Type 2 note on p. 3-272 applies to VEX forms, not this legacy SSE encoding.
 
 See [Stage 2 plan](../plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dt--divps-xmm0m128-rax), [standalone report](../reports/S2_37DT_DIVPS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dt--divps-xmm0m128-rax).
+
+## S2-37dv — masked-only Long64 SUBPD XMM0,m128 [RAX]
+
+The local schema-v2 interpreter profile `s2-long-subpd-memory-rax-v1` admits
+only exact legacy `66 0F 5C 00`, a complete four-byte fetch, budget one and stop
+RIP entry+4. It requires SSE2 (`CPUID.01H:EDX[26]`); full fetch precedes #UD
+for missing SSE2/CR0.EM/CR4.OSFXSR and then #NM for CR0.TS. XMM/MXCSR state
+is required. The memory profile has a dedicated operation and CLI dispatch;
+register SUBPD remains independent.
+
+MXCSR admission is masked-only: supported mask `0xffbf`, reserved bits clear,
+all six exception masks set, DAZ=FTZ=0. All four RC modes and old sticky flags
+are accepted; unmasked/#XM behavior is not implemented. RAX must be 16-byte
+aligned regardless of AC. Checked canonical48 `[RAX,RAX+15]` validation
+precedes exactly one atomic `read16`; gate, alignment, span and read failures
+preserve state and retirement.
+
+Each output lane subtracts the actual memory RHS binary64 value from old XMM0
+using the existing raw Binary64 operation and MXCSR.RC. IE/DE/OE/UE/PE are
+aggregated and ORed into old sticky status; ZE and unrelated state are
+preserved. The independent validator reads RHS from fixture memory, compares
+full state, memory and control echoes, and does not call production arithmetic.
+The handwritten fixture contains exact `1.0-2.0` and `2.0-5.0` lanes. Runner
+checks cover all RC × 64 sticky histories, rounding and lane event vectors,
+#UD/#GP, tampering and JIT/native denial. No physical x86 support is claimed.
+See the [plan](../plans/STAGE_2.md#s2-37dv--masked-only-legacy-long64-subpd-xmm0m128-rax),
+[report](../reports/S2_37DV_SUBPD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dv-subpd-m128-memory-profile).

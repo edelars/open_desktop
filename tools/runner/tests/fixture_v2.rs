@@ -75,6 +75,9 @@ const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const ADDPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37du_addpd_m128_memory_source_two_binary64_lanes.case.json"
 );
+const SUBPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37dv_subpd_m128_memory_source_two_binary64_lanes.case.json"
+);
 const SUBPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dr_subps_m128_memory_source_and_destination_lanes.case.json"
 );
@@ -31761,7 +31764,7 @@ fn addpd_memory_rax_uses_memory_rhs_and_rejects_tampering_and_other_backends() {
         panic!("snapshot available")
     };
     let Observation::Available {
-        value: Some(gate_exception),
+        value: Some(ref gate_exception),
     } = gate_snapshot.exception
     else {
         panic!("expected #UD")
@@ -31785,7 +31788,7 @@ fn addpd_memory_rax_uses_memory_rhs_and_rejects_tampering_and_other_backends() {
         panic!("snapshot available")
     };
     let Observation::Available {
-        value: Some(align_exception),
+        value: Some(ref align_exception),
     } = align_snapshot.exception
     else {
         panic!("expected #GP")
@@ -31798,6 +31801,229 @@ fn addpd_memory_rax_uses_memory_rhs_and_rejects_tampering_and_other_backends() {
 
     for backend in ["jit", "native"] {
         let (_, denied) = run(ADDPD_M128_MEMORY_RAX, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+}
+
+#[test]
+fn subpd_memory_rax_uses_memory_rhs_and_rejects_tampering_and_other_backends() {
+    use od_testkit::v2::ExpectedExit;
+    let (loaded, result) = run(SUBPD_M128_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+    let Observation::Available {
+        value: baseline_snapshot,
+    } = &result.snapshot
+    else {
+        panic!("snapshot available")
+    };
+    assert_eq!(
+        baseline_snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "000000000000f0bf00000000000008c0"
+    );
+    assert_eq!(baseline_snapshot.state.rip.get(), 0x100004);
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, "0000000000000000");
+    }
+    assert!(od_testkit::v2::compare(&loaded, &result, &tampered).is_err());
+    let mut tampered_controls = result.clone();
+    if let Observation::Available { value } = &mut tampered_controls.snapshot {
+        value.subpd_controls.as_mut().unwrap().cr0_ts = true;
+    }
+    assert!(od_testkit::v2::compare(&loaded, &result, &tampered_controls).is_err());
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut relabeled = result.clone();
+        relabeled.backend = backend;
+        assert!(relabeled.validate_for(&loaded).is_err());
+    }
+    let mut bad_encoding = loaded.fixture.clone();
+    bad_encoding.memory[0].initial_bytes_hex = "660f5c01".into();
+    assert!(bad_encoding.to_json().is_err());
+    let mut unsupported_mxcsr = loaded.fixture.clone();
+    unsupported_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1e80);
+    assert!(
+        unsupported_mxcsr.to_json().is_err(),
+        "all six exception masks are required"
+    );
+    let mut daz = loaded.fixture.clone();
+    daz.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1fc0);
+    assert!(daz.to_json().is_err(), "DAZ is outside this profile");
+
+    let set_operands = |case: &mut Fixture, lhs: u64, rhs: u64, mxcsr: u32| {
+        let encode = |value: u64| {
+            value
+                .to_le_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        case.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, &encode(lhs));
+        case.memory[1]
+            .initial_bytes_hex
+            .replace_range(0..16, &encode(rhs));
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(mxcsr));
+    };
+    let read_low_lane = |xmm: &str| {
+        u64::from_le_bytes(
+            (0..8)
+                .map(|index| u8::from_str_radix(&xmm[index * 2..index * 2 + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        )
+    };
+    let nearest_sticky = 0x1f80;
+    for rc in 0..4u32 {
+        for sticky in 0..64u32 {
+            let mut halfway = loaded.fixture.clone();
+            set_operands(
+                &mut halfway,
+                0x3ff0_0000_0000_0000,
+                0x3c90_0000_0000_0000,
+                nearest_sticky | (rc << 13) | sticky,
+            );
+            let (input, output) = run(&halfway.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &output, &output).unwrap();
+            let actual = snapshot(&output);
+            let expected = if rc == 1 || rc == 3 {
+                0x3fef_ffff_ffff_ffff
+            } else {
+                0x3ff0_0000_0000_0000
+            };
+            assert_eq!(
+                read_low_lane(&actual.state.sse.as_ref().unwrap().xmm[0]),
+                expected,
+                "RC={rc} sticky={sticky:#x}"
+            );
+            assert_eq!(
+                actual.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                u64::from(sticky | 0x20)
+            );
+        }
+    }
+
+    for rc in 0..4u32 {
+        let vectors = [
+            (
+                0x3ff0_0000_0000_0000,
+                0x7ff0_0000_0000_0042,
+                0x7ff8_0000_0000_0042,
+                1,
+            ),
+            (0x7ff8_0000_0000_0042, 1, 0x7ff8_0000_0000_0042, 0),
+            (0x0000_0000_0000_0000, 0x8000_0000_0000_0000, 0, 0),
+            (
+                0x3ff0_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+                if rc == 1 { 0x8000_0000_0000_0000 } else { 0 },
+                0,
+            ),
+            (
+                0x7ff0_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+                0xfff8_0000_0000_0000,
+                1,
+            ),
+            (1, 0, 1, 2),
+            (
+                0x7fef_ffff_ffff_ffff,
+                0xffef_ffff_ffff_ffff,
+                if rc == 0 || rc == 2 {
+                    0x7ff0_0000_0000_0000
+                } else {
+                    0x7fef_ffff_ffff_ffff
+                },
+                0x28,
+            ),
+            (
+                0x7fef_ffff_ffff_ffff,
+                0xfc90_0000_0000_0000,
+                if rc == 0 || rc == 2 {
+                    0x7ff0_0000_0000_0000
+                } else {
+                    0x7fef_ffff_ffff_ffff
+                },
+                if rc == 0 || rc == 2 { 0x28 } else { 0x20 },
+            ),
+            (0x0010_0000_0000_0000, 0x000f_ffff_ffff_ffff, 1, 2),
+            (0x0010_0000_0000_0001, 0x0010_0000_0000_0000, 1, 0),
+        ];
+        for (lhs, rhs, expected, flags) in vectors {
+            let mut case = loaded.fixture.clone();
+            set_operands(&mut case, lhs, rhs, nearest_sticky | (rc << 13));
+            let (input, output) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &output, &output).unwrap();
+            let actual = snapshot(&output);
+            assert_eq!(
+                read_low_lane(&actual.state.sse.as_ref().unwrap().xmm[0]),
+                expected,
+                "RC={rc} lhs={lhs:#018x} rhs={rhs:#018x}"
+            );
+            assert_eq!(actual.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f, flags);
+        }
+    }
+
+    for (low_lhs, low_rhs, high_lhs, high_rhs, expected_flags) in [
+        (
+            0x7ff0_0000_0000_0001,
+            0x3ff0_0000_0000_0000,
+            0x7fef_ffff_ffff_ffff,
+            0xffef_ffff_ffff_ffff,
+            0x29,
+        ),
+        (1, 0, 0x7fef_ffff_ffff_ffff, 0xffef_ffff_ffff_ffff, 0x2a),
+    ] {
+        let mut mixed = loaded.fixture.clone();
+        let encode = |raw: u64| {
+            raw.to_le_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        mixed.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, &encode(low_lhs));
+        mixed.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(16..32, &encode(high_lhs));
+        mixed.memory[1]
+            .initial_bytes_hex
+            .replace_range(0..16, &encode(low_rhs));
+        mixed.memory[1]
+            .initial_bytes_hex
+            .replace_range(16..32, &encode(high_rhs));
+        let (input, output) = run(&mixed.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &output, &output).unwrap();
+        assert_eq!(
+            snapshot(&output).state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            expected_flags
+        );
+    }
+
+    let mut missing_sse2 = loaded.fixture.clone();
+    missing_sse2.expected_exit = ExpectedExit::Exception;
+    missing_sse2.subpd_controls.as_mut().unwrap().sse2_available = false;
+    let (gate_input, gate_output) = run(&missing_sse2.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&gate_input, &gate_output, &gate_output).unwrap();
+    let Observation::Available {
+        value: Some(ref gate_exception),
+    } = snapshot(&gate_output).exception
+    else {
+        panic!("expected #UD")
+    };
+    assert_eq!(gate_exception.vector, 6);
+
+    let mut unaligned = loaded.fixture.clone();
+    unaligned.expected_exit = ExpectedExit::Exception;
+    unaligned.initial_state.gpr[0] = HexU64(0x2001);
+    unaligned.memory[1].guest_address = HexU64(0x2001);
+    let (align_input, align_output) = run(&unaligned.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&align_input, &align_output, &align_output).unwrap();
+    let Observation::Available {
+        value: Some(ref align_exception),
+    } = snapshot(&align_output).exception
+    else {
+        panic!("expected #GP")
+    };
+    assert_eq!(align_exception.vector, 13);
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(SUBPD_M128_MEMORY_RAX, backend, 4);
         assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
     }
 }

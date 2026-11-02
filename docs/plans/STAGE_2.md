@@ -579,6 +579,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37dd | Local-only legacy Long64 SQRTPS XMM0,m128 `[RAX]`, exact `0F 51 00`; SSE bit 25 (not SSE2); strict masked-only MXCSR; memory-source-only binary32 sqrt with RC and IE/DE/PE; aligned canonical span, exactly one read16; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3; od-isa 1736; od-testkit 454; runner 112+485; workspace all-target check, fmt/layout/Graphify and independent Sol/high review passed; initial workspace test stopped at disk exhaustion, component suites succeeded after disposable target cleanup; no physical x86 acceptance |
 | [x] | S2-37dq | Local-only legacy Long64 ADDPS XMM0,m128 `[RAX]`, exact `0F 58 00`; SSE bit 25 (not SSE2), strict masked-only MXCSR; four `Binary32::add_raw_result` lanes from old XMM0 and one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3 and fixture-v2 1/1; invalid MXCSR no-read/rollback and result/provenance tampering covered; combined main suites: od-isa 1,837 / od-testkit 455 / runner 119+497 / x86-runner 8+4; workspace check, fmt/diff/layout, Graphify and independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-37du | Local-only legacy Long64 ADDPD XMM0,m128 `[RAX]`, exact `66 0F 58 00`; SSE2 bit 26; masked-only MXCSR; two raw Binary64 lanes from old XMM0 and one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3 (independent review 5/5); od-isa 1,852; od-testkit 455; od-runner 119+504; workspace check, fmt/diff and Graphify passed; independent Sol/high review clean; layout reports linked-worktree `.git` marker and two pre-existing absent oracle manifests; no physical x86 acceptance |
+| [ ] | S2-37dv | Local-only legacy Long64 SUBPD XMM0,m128 `[RAX]`, exact `66 0F 5C 00`; SSE2 bit 26; masked-only MXCSR; two raw Binary64 subtraction lanes using actual memory RHS, one aligned canonical m128 read; aggregate IE/DE/OE/PE; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA/decoder and SUBPD/ADDPD fixture tests pass; od-isa 1,856; od-testkit 455; runner 119+506; workspace check, fmt/diff, Graphify pass; layout reports linked-worktree `.git` marker and two pre-existing absent oracle manifests; independent review pending; no physical x86 acceptance |
 | [x] | S2-37dr | Local-only legacy Long64 SUBPS XMM0,m128 `[RAX]`, exact `0F 5C 00`; SSE bit 25, strict masked-only MXCSR; one aligned canonical m128 read and four memory-source binary32 subtractions; aggregate IE/DE/OE/PE, retain old sticky flags; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3 and runner 1/1; memory vectors × 4 RC × 64 sticky cover NaN priority/payload, same-lane NaN+subnormal, cancellation zero, infinities, ties, tiny boundary and overflow; integrated main: od-isa 1,841 / testkit 455 / runner 119+499 / x86-runner 8+4; workspace/layout/fmt/diff, Graphify, clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-37ds | Local-only legacy Long64 MULPS XMM0,m128 `[RAX]`, exact `0F 59 00`; SSE bit 25; masked-only MXCSR, raw Binary32 multiplication, one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE and retain old sticky flags; JIT/native/C ABI/generic/fragment and unmasked/#XM closed | Focused decoder/ISA/runner tests; memory matrix 1,792 oracle cases; integrated main od-isa 1,845, testkit 455, runner 119+501, x86-runner 8+4; workspace check/fmt/diff/layout, Graphify and independent Sol/high review clean; isolated layout caveats in standalone report; no physical x86 acceptance |
 | [x] | S2-37dt | Local-only legacy Long64 DIVPS XMM0,m128 `[RAX]`, exact `0F 5E 00`; SSE bit 25; masked-only MXCSR; four raw Binary32 division lanes from old XMM0 and one aligned canonical m128 read; aggregate IE/DE/ZE/OE/UE/PE; JIT/native/C ABI/generic/fragment and unmasked/#XM closed | Integrated main od-isa 1,849, od-testkit 455, runner 119+503, x86-runner 8+4; workspace check/fmt/layout/diff, Graphify 11,506/24,909/346; independent Sol/high review clean; no physical x86 acceptance |
@@ -17130,6 +17131,31 @@ raw-u64 oracle. Cover ties under every RC, sticky histories, NaN/zero/infinity,
 subnormal, tie, overflow/WPR vectors, lane flag aggregation, fetch/gate order,
 invalid MXCSR with no read, span/alignment/read rollback, result/control echo
 tampering and backend denial. Fixture and evidence: [standalone report](../reports/S2_37DU_ADDPD_MEMORY.md).
+
+#### S2-37dv — masked-only legacy Long64 SUBPD XMM0,m128 [RAX]
+
+Implement strict schema-v2 interpreter profile `s2-long-subpd-memory-rax-v1`
+for exact `66 0F 5C 00`, four-byte complete fetch, budget one and stop RIP
+entry+4. Require SSE2 bit 26, CR0.EM=0, CR4.OSFXSR=1 and CR0.TS=0; full fetch
+precedes #UD/#NM gates. Keep register SUBPD independent. Require XMM/MXCSR
+state and reject alternate prefixes, REX, ModR/M/address forms, VEX/EVEX and
+trailing bytes.
+
+Admit only supported MXCSR bits `0xffbf`, reserved bits clear, all six
+exception masks set, DAZ=FTZ=0; accept all RC settings and prior sticky flags.
+Unmasked exceptions/#XM and JIT/native/C ABI/generic/fragment routes stay
+closed. Require RAX 16-byte alignment regardless of AC, check the canonical48
+`[RAX,RAX+15]` span before one atomic `read16`, and roll back state and
+retirement on failed checks or memory read.
+
+Subtract the actual two binary64 memory RHS lanes from old XMM0 with the
+existing `Binary64::subtract_raw_result(MXCSR.RC)`. Aggregate IE/DE/OE/UE/PE
+into prior sticky status and preserve ZE and unrelated state. The strict
+independent validator reads memory RHS bytes and uses `independent_subpd`.
+Cover all RC × 64 sticky histories, NaN priority, signed zero/cancellation,
+infinity, subnormal, ties, overflow/WPR/tiny boundaries, mixed flags, schema
+and result/control tampering, one-read/rollback behavior, and backend denial.
+Fixture and evidence: [standalone report](../reports/S2_37DV_SUBPD_MEMORY.md).
 
 #### S2-37dr — masked-only legacy Long64 SUBPS XMM0,m128 [RAX]
 

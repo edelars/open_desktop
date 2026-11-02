@@ -8038,3 +8038,16 @@ The independent raw-bit ADDPS oracle covers all four RC modes and all 64 prior s
 The handwritten fixture `s2_37dt_divps_m128_memory_source_and_destination_lanes.case.json` encodes exact `0F 5E 00` and uses old XMM0 lanes over four independent memory denominators. The strict `s2-long-divps-memory-rax-v1` schema requires SSE bit 25 (not SSE2), full fetch before #UD/#NM, masked-only MXCSR (`0xffbf`, all six masks set, DAZ/FTZ/reserved clear), and admits all RC/prior sticky values. The executor checks mandatory 16-byte alignment regardless of AC, then canonical48 span and one read16; any access failure is atomic.
 
 Result validation uses the independent raw-u32 rational `independent_divps` oracle with memory as the RHS. Runner coverage crosses 1/3 with four RC modes and all 64 sticky histories, plus NaN/zero/infinity/subnormal, overflow and mixed lane cases. Focused ISA coverage checks exact decode, one read16, state preservation and read rollback. Schema/result tampering, malformed encodings, alignment/canonical/gate failures and JIT/NativeX86 relabeling are rejected. No physical x86 acceptance is claimed. See [plan](../../../../docs/plans/STAGE_2.md#s2-37dt--masked-only-legacy-long64-divps-xmm0m128-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dt--masked-only-long64-divps-xmm0m128-rax), and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37dt--divps-xmm0m128-rax).
+
+### S2-37dv SUBPD m128 memory profile
+
+`s2_37dv_subpd_m128_memory_source_two_binary64_lanes.case.json` is a
+handwritten exact legacy `66 0F 5C 00` fixture. Old XMM0 lanes 1.0 and 2.0,
+with memory RHS lanes 2.0 and 5.0, produce -1.0 and -3.0. The strict masked-only
+profile requires SSE2, aligned canonical m128 `[RAX]`, and exactly one read16;
+its independent validator reads the RHS from these memory bytes. Runner checks
+cover RC × 64 sticky histories, lane events, #UD/#GP atomicity,
+control/result tampering and JIT/native denial. No physical x86 acceptance is
+claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37dv--masked-only-legacy-long64-subpd-xmm0m128-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dv--masked-only-long64-subpd-xmm0m128-rax),
+and [standalone report](../../../../docs/reports/S2_37DV_SUBPD_MEMORY.md).
