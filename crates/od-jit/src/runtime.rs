@@ -1208,7 +1208,7 @@ impl MemorySiteV2 {
             && matches!(
                 self.operand.base,
                 od_isa::long_decode::AddressBase::Register(
-                    od_isa::Register::Rax | od_isa::Register::Rbx
+                    od_isa::Register::Rax | od_isa::Register::Rbx | od_isa::Register::Rcx
                 )
             )
             && self.operand.index.is_none()
@@ -3670,11 +3670,12 @@ impl MemorySiteV2 {
                 && self.operand.scale == 1
                 && self.operand.displacement == displacement;
         }
-        if source == [0x89, 0x03] || source == [0x89, 0x00] {
-            let expected_base = if source == [0x89, 0x03] {
-                od_isa::Register::Rbx
-            } else {
-                od_isa::Register::Rax
+        if source == [0x89, 0x03] || source == [0x89, 0x00] || source == [0x89, 0x01] {
+            let expected_base = match source {
+                [0x89, 0x03] => od_isa::Register::Rbx,
+                [0x89, 0x00] => od_isa::Register::Rax,
+                [0x89, 0x01] => od_isa::Register::Rcx,
+                _ => return false,
             };
             return expected_operation == MemorySiteOperationV2::Store
                 && self.instruction_index == expected_index

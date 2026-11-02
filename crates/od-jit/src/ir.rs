@@ -1341,7 +1341,11 @@ fn is_checked_dword_store_address(
                     && ((instruction_length == 2
                         && matches!(
                             operand.base,
-                            AddressBase::Register(od_isa::Register::Rax | od_isa::Register::Rbx)
+                            AddressBase::Register(
+                                od_isa::Register::Rax
+                                    | od_isa::Register::Rbx
+                                    | od_isa::Register::Rcx
+                            )
                         )
                         && operand.displacement == 0)
                         || (instruction_length == 3
