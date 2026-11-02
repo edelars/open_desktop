@@ -827,6 +827,14 @@ ADDITIONAL_TEST_GATES = (
         "tests::s3_20dr_rbp_disp8_dword_load_preserves_ss_fault_and_checked_state",
     ),
     (
+        "s3_34bg_ir_dword_addr32_rbp_disp8_load_source_binding", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_addr32_rbp_disp8_load_binds_all_signed_source_bytes_to_its_site",
+    ),
+    (
+        "s3_34bg_host_addr32_rbp_disp8_dword_load_checked_state", "local_acceptance", "od-host",
+        "tests::s3_20dv_addr32_rbp_disp8_dword_load_preserves_checked_state",
+    ),
+    (
         "s3_34bd_ir_dword_rbp_disp8_store_source_binding", "local_acceptance", "od-jit",
         "memory_load_v2::tests::ir_dword_rbp_disp8_store_binds_all_signed_source_bytes_to_its_site",
     ),
