@@ -17715,6 +17715,7 @@ mod tests {
         }
 
         for (address, value) in [
+            (0, 0x1020_3040_u32),
             (0xffff_8000_0000_1000, 0x2468_ace0_u32),
             (u64::MAX - 3, 0xdead_beef_u32),
         ] {
@@ -17842,8 +17843,9 @@ mod tests {
             ),
             Err(MemoryOperationExecutionErrorV2::EntryRipMismatch {
                 expected: ENTRY,
-                actual: ENTRY + 1,
+                actual,
             })
+                if actual == ENTRY + 1
         ));
         assert_eq!(wrong_rip_state, wrong_rip_before);
         assert!(wrong_rip_ram.reads.is_empty());
@@ -18097,8 +18099,9 @@ mod tests {
             ),
             Err(MemoryOperationExecutionErrorV2::EntryRipMismatch {
                 expected: ENTRY,
-                actual: ENTRY + 2,
+                actual,
             })
+                if actual == ENTRY + 2
         ));
         assert_eq!(stopped_state.rip, ENTRY + 2);
         assert_eq!(stopped_ram.reads, [(ADDRESS, 4)]);

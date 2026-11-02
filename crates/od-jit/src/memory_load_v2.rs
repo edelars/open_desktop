@@ -5970,9 +5970,30 @@ mod tests {
         forged.next_rip += 1;
         assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
 
+        for (neighbor, expected_base) in [
+            (&[0x8b, 0x00][..], Register::Rax),
+            (&[0x8b, 0x03][..], Register::Rbx),
+        ] {
+            let neighbor_block = compile_ir_memory_dword_load_block_v2(
+                CodeView::new(entry, neighbor).unwrap(),
+                entry,
+            )
+            .unwrap();
+            assert_eq!(neighbor_block.source_bytes(), neighbor);
+            assert_eq!(
+                neighbor_block.site().operand().base,
+                AddressBase::Register(expected_base)
+            );
+            assert_ne!(neighbor_block.site(), block.site());
+            assert!(!block
+                .site()
+                .matches_source_bytes(neighbor, MemorySiteOperationV2::Load));
+            assert!(!neighbor_block
+                .site()
+                .matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        }
+
         for neighbor in [
-            &[0x8b, 0x00][..],
-            &[0x8b, 0x03][..],
             &[0x8b, 0x41, 0x00][..],
             &[0x8b, 0x81, 0x00, 0, 0, 0][..],
             &[0x67, 0x8b, 0x01][..],
