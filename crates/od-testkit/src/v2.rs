@@ -595,6 +595,8 @@ pub enum Profile {
     LongMinpsMemoryRaxV1,
     #[serde(rename = "s2-long-sqrtps-memory-rax-v1")]
     LongSqrtpsMemoryRaxV1,
+    #[serde(rename = "s2-long-sqrtss-memory-rax-v1")]
+    LongSqrtssMemoryRaxV1,
     #[serde(rename = "s2-long-sqrtsd-memory-rax-v1")]
     LongSqrtsdMemoryRaxV1,
     #[serde(rename = "s2-long-sqrtpd-memory-rax-v1")]
@@ -1458,6 +1460,7 @@ impl IntegerState {
                     | Profile::LongMinpdMemoryRaxV1
                     | Profile::LongMinpsMemoryRaxV1
                     | Profile::LongSqrtpsMemoryRaxV1
+                    | Profile::LongSqrtssMemoryRaxV1
                     | Profile::LongSqrtsdMemoryRaxV1
                     | Profile::LongSqrtpdMemoryRaxV1
                     | Profile::LongMaxpdMemoryRaxV1
@@ -1565,6 +1568,7 @@ impl IntegerState {
                     | Profile::LongMinpdMemoryRaxV1
                     | Profile::LongMinpsMemoryRaxV1
                     | Profile::LongSqrtpsMemoryRaxV1
+                    | Profile::LongSqrtssMemoryRaxV1
                     | Profile::LongSqrtsdMemoryRaxV1
                     | Profile::LongSqrtpdMemoryRaxV1
                     | Profile::LongMaxpdMemoryRaxV1
@@ -1856,6 +1860,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -2074,6 +2079,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -2704,6 +2710,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -2952,6 +2959,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -3209,6 +3217,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -3473,6 +3482,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -3894,6 +3904,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -3918,6 +3929,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -4213,6 +4225,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -4481,6 +4494,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -4702,6 +4716,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryRaxV1
                 | Profile::LongMinpsMemoryRaxV1
                 | Profile::LongSqrtpsMemoryRaxV1
+                | Profile::LongSqrtssMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
@@ -5123,6 +5138,8 @@ pub struct Fixture {
     pub minps_memory_rax_controls: Option<MinpsMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtps_memory_rax_controls: Option<SqrtpsMemoryRaxControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtss_memory_rax_controls: Option<SqrtssMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtpd_memory_rax_controls: Option<SqrtpdMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5554,6 +5571,7 @@ pub struct MinpsMemoryRaxControlSnapshot {
     pub cr4_osfxsr: bool,
 }
 pub type SqrtpsMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
+pub type SqrtssMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SqrtpdMemoryRaxControlSnapshot {
@@ -11519,6 +11537,96 @@ impl Fixture {
                 "only valid for MAXSS m32 profile",
             ));
         }
+        if self.profile == Profile::LongSqrtssMemoryRaxV1 {
+            let controls = self.sqrtss_memory_rax_controls.ok_or_else(|| {
+                invalid(
+                    "sqrtss_memory_rax_controls",
+                    "required by SQRTSS m32 profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by SQRTSS m32 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by SQRTSS m32 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            let bytes = decode_bytes(&code.initial_bytes_hex)?;
+            if self.cmpss_memory_rax_controls.is_some()
+                || self.cmpsd_memory_rax_controls.is_some()
+                || self.cmppd_memory_rax_controls.is_some()
+                || self.cmpps_memory_rax_controls.is_some()
+                || self.minsd_memory_rax_controls.is_some()
+                || self.minsd_unmasked_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || bytes != [0xf3, 0x0f, 0x51, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 4
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress | ExpectedExit::Unsupported
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "SQRTSS m32 requires exact F3 0F 51 00, one code/data mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by SQRTSS m32 profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & 0x1f80 != 0x1f80
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "SQRTSS m32 requires supported MXCSR bits, all six exception masks set, DAZ=0, and FTZ=0",
+                ));
+            }
+            let gate = !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let ac = !gate && !nm && self.initial_state.rflags.get() & (1 << 18) != 0;
+            let last = source.checked_add(3);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let span = last.is_none_or(|last| !canonical(source) || !canonical(last));
+            let expected = if gate || nm {
+                ExpectedExit::Exception
+            } else if ac {
+                ExpectedExit::Unsupported
+            } else if span {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect SQRTSS m32 gates, local AC refusal, and canonical span",
+                ));
+            }
+        } else if self.sqrtss_memory_rax_controls.is_some() {
+            return Err(invalid(
+                "sqrtss_memory_rax_controls",
+                "only valid for SQRTSS m32 profile",
+            ));
+        }
         if self.profile == Profile::LongCmppsMemoryRaxV1 {
             let controls = self.cmpps_memory_rax_controls.ok_or_else(|| {
                 invalid(
@@ -14026,6 +14134,10 @@ impl Fixture {
                     .ok()
                     .filter(|bytes| bytes == &[0x0f, 0x5d, 0x00])
                     .map(|_| 3),
+                Profile::LongSqrtssMemoryRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0xf3, 0x0f, 0x51, 0x00])
+                    .map(|_| 4),
                 Profile::LongSqrtpsMemoryRaxV1 => decode_bytes(&code_bytes)
                     .ok()
                     .filter(|bytes| bytes == &[0x0f, 0x51, 0x00])
@@ -16077,6 +16189,7 @@ impl Fixture {
             minpd_memory_rax_controls: None,
             minps_memory_rax_controls: None,
             sqrtps_memory_rax_controls: None,
+            sqrtss_memory_rax_controls: None,
             sqrtpd_memory_rax_controls: None,
             sqrtsd_memory_rax_controls: None,
             maxpd_memory_rax_controls: None,
@@ -16334,6 +16447,8 @@ pub struct Snapshot {
     pub minps_memory_rax_controls: Option<MinpsMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtps_memory_rax_controls: Option<SqrtpsMemoryRaxControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtss_memory_rax_controls: Option<SqrtssMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtpd_memory_rax_controls: Option<SqrtpdMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -17820,6 +17935,19 @@ impl RunResult {
                         "only valid for MAXSS m32 profile",
                     ));
                 }
+                if self.profile == Profile::LongSqrtssMemoryRaxV1 {
+                    if snapshot.sqrtss_memory_rax_controls.is_none() {
+                        return Err(invalid(
+                            "snapshot.sqrtss_memory_rax_controls",
+                            "required by SQRTSS m32 profile",
+                        ));
+                    }
+                } else if snapshot.sqrtss_memory_rax_controls.is_some() {
+                    return Err(invalid(
+                        "snapshot.sqrtss_memory_rax_controls",
+                        "only valid for SQRTSS m32 profile",
+                    ));
+                }
                 if self.profile == Profile::LongMaxsdMemoryRaxV1 {
                     if snapshot.maxsd_memory_rax_controls.is_none() {
                         return Err(invalid(
@@ -17949,6 +18077,15 @@ impl RunResult {
         }
         if self.profile != loaded.fixture.profile {
             return Err(FormatError::CaseMismatch("profile"));
+        }
+        if loaded.fixture.profile == Profile::LongSqrtssMemoryRaxV1
+            && self.backend != Backend::Interpreter
+            && (!matches!(self.outcome, Outcome::Unsupported { .. })
+                || !matches!(self.snapshot, Observation::Unavailable { .. }))
+        {
+            return Err(FormatError::CaseMismatch(
+                "SQRTSS m32 non-interpreter results require an unsupported outcome without snapshot",
+            ));
         }
         if let Observation::Available { value } = &self.snapshot {
             match (
@@ -19060,6 +19197,21 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongMaxssMemoryRaxV1 {
                 validate_maxss_memory_rax_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.sqrtss_memory_rax_controls,
+                value.sqrtss_memory_rax_controls,
+            ) {
+                (Profile::LongSqrtssMemoryRaxV1, Some(input), Some(output)) if input == output => {}
+                (Profile::LongSqrtssMemoryRaxV1, _, _) => {
+                    return Err(FormatError::CaseMismatch("sqrtss_memory_rax_controls"));
+                }
+                (_, None, None) => {}
+                _ => return Err(FormatError::CaseMismatch("sqrtss_memory_rax_controls")),
+            }
+            if loaded.fixture.profile == Profile::LongSqrtssMemoryRaxV1 {
+                validate_sqrtss_memory_rax_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -38065,6 +38217,136 @@ fn validate_maxss_memory_rax_result(
         (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
         (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("MAXSS m32 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_sqrtss_memory_rax_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .sqrtss_memory_rax_controls
+        .ok_or(FormatError::CaseMismatch("sqrtss_memory_rax_controls"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let code_bytes = decode_bytes(&code.initial_bytes_hex)?;
+    if code_bytes != [0xf3, 0x0f, 0x51, 0x00] {
+        return Err(FormatError::CaseMismatch("SQRTSS m32 encoding"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let source_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let raw = u32::from_le_bytes(
+        source_bytes[..4]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+    );
+    let (result_bits, invalid, denormal, precision) = independent_sqrtss(raw, old_mxcsr);
+    let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let source = fixture.initial_state.gpr[0].get();
+    let ac_refusal = gate.is_none() && fixture.initial_state.rflags.get() & (1 << 18) != 0;
+    let last = source.checked_add(3);
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let fault = gate.or_else(|| (!ac_refusal && span_fault).then_some(13));
+    let unsupported = gate.is_none() && ac_refusal;
+    if !matches!(
+        (fault, unsupported, fixture.expected_exit),
+        (Some(_), false, ExpectedExit::Exception)
+            | (None, true, ExpectedExit::Unsupported)
+            | (None, false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("SQRTSS m32 expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if fault.is_none() && !unsupported {
+        let state_sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let mut output_xmm = decode_bytes(&initial_sse.xmm[0])?;
+        output_xmm[..4].copy_from_slice(&result_bits.to_le_bytes());
+        state_sse.xmm[0] = crate::memory::encode_bytes(&output_xmm);
+        state_sse.mxcsr = HexU64(
+            u64::from(old_mxcsr)
+                | u64::from(invalid)
+                | (u64::from(denormal) << 1)
+                | (u64::from(precision) << 5),
+        );
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("SQRTSS m32 RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch("SQRTSS m32 output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none() && !unsupported)),
+        })
+    {
+        return Err(FormatError::CaseMismatch("SQRTSS m32 retirement"));
+    }
+    match (fault, unsupported, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            false,
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
+        (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("SQRTSS m32 outcome/exception")),
     }
     Ok(())
 }

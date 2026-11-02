@@ -977,6 +977,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `F3 0F 51 00` SQRTSS m32-at-RAX form.
+    SqrtssMemoryRax,
     /// Local-only legacy `F2 0F 51 /r` scalar binary64 square root.
     SqrtsdRegister {
         destination: u8,
@@ -3700,6 +3702,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let sqrtss_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x51
+            && prefixes.group1 == Some(0xf3)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 1
+            && prefix_bytes[0] == 0xf3;
         let sqrtps_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x51
             && prefixes.group1.is_none()
@@ -4290,6 +4301,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         if opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x51
             && !sqrtss_register
+            && !sqrtss_memory_rax
             && !sqrtps_register
             && !sqrtps_memory_rax
             && !sqrtpd_register
@@ -4504,6 +4516,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !cvtpd2dq_register
                 && !cvttpd2dq_register
                 && !sqrtss_register
+                && !sqrtss_memory_rax
                 && !sqrtsd_register
                 && !subpd_register
                 && !subps_register
@@ -4821,15 +4834,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     return Err(self.unsupported(opcode));
                 }
             }
-            (OpcodeMap::Escape0f, 0x51) if sqrtss_register => {
+            (OpcodeMap::Escape0f, 0x51) if sqrtss_register || sqrtss_memory_rax => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && sqrtss_memory_rax {
+                    Operation::SqrtssMemoryRax
+                } else if modrm >> 6 == 3 && sqrtss_register {
+                    let rex = prefixes.rex.unwrap_or(0x40);
+                    Operation::SqrtssRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else {
                     return Err(self.unsupported(opcode));
-                }
-                let rex = prefixes.rex.unwrap_or(0x40);
-                Operation::SqrtssRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0x51) if sqrtps_register => {
@@ -11458,6 +11474,31 @@ mod tests {
             &[0xc5, 0xf8, 0x51, 0xc1][..],             // VEX
             &[0xc4, 0xe1, 0x7a, 0x51, 0xc1][..],       // VEX
             &[0x62, 0xf1, 0x7e, 0x08, 0x51, 0xc1][..], // EVEX
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn sqrtss_memory_rax_decodes_only_exact_f3_0f_51_00() {
+        let mut exact = Memory::new(&[0xf3, 0x0f, 0x51, 0x00]);
+        let decoded = exact.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::SqrtssMemoryRax);
+        assert_eq!(decoded.length, 4);
+
+        for bytes in [
+            &[0xf3, 0x0f, 0x51, 0x01][..],             // non-RAX base
+            &[0xf3, 0x0f, 0x51, 0x04][..],             // SIB
+            &[0xf3, 0x48, 0x0f, 0x51, 0x00][..],       // REX.W
+            &[0xf3, 0x41, 0x0f, 0x51, 0x00][..],       // REX.B
+            &[0xf3, 0x44, 0x0f, 0x51, 0x00][..],       // REX.R
+            &[0xf3, 0x40, 0x0f, 0x51, 0x00][..],       // redundant REX
+            &[0x40, 0xf3, 0x0f, 0x51, 0x00][..],       // reordered prefix
+            &[0x66, 0xf3, 0x0f, 0x51, 0x00][..],       // extra prefix
+            &[0xf3, 0x0f, 0x51][..],                   // truncated
+            &[0xc5, 0xf8, 0x51, 0x00][..],             // VEX
+            &[0x62, 0xf1, 0x7e, 0x08, 0x51, 0x00][..], // EVEX
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");

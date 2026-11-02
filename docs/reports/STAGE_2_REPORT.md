@@ -21262,7 +21262,8 @@ helper's pre-carry `incremented` diagnostic, preserves C0/C2/C3 locally,
 records old RIP in FIP, advances by two and retires once. Refusals remain
 atomic, and the register form performs no data access. Focused FADD passed 15;
 after integration with S2-29af, full `od-isa` passed 1,776, `od-testkit` 454
-and runner 112 unit + 487 fixture tests passed. Formatting, workspace all-target offline check, diff check and
+and runner 112 unit + 487 fixture tests passed. Formatting, workspace all-target
+offline check, diff check and
 Graphify refresh passed. Independent Sol/high review is clean. JIT/native and
 physical x86 acceptance remain unverified. Intel SDM Rev. 093 Vol. 2A
 `FADD/FADDP/FIADD` pp. 3-311–3-313; Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and
@@ -21270,3 +21271,23 @@ physical x86 acceptance remain unverified. Intel SDM Rev. 093 Vol. 2A
 [plan](../plans/STAGE_2.md#s2-30cp-bare-fadd-st0-sti-with-bounded-fcw-precision),
 [standalone report](S2_30CP_X87_FADD_PRECISION.md), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
+### S2-37dg — SQRTSS XMM0,m32 [RAX]
+
+The interpreter-only schema-v2 profile admits exact `F3 0F 51 00`, reads one
+m32 from `[RAX]`, computes SQRTSS using MXCSR.RC, updates XMM0.low32 and merges
+masked IE/DE/PE into existing sticky status. It requires SSE and masked-only
+MXCSR. Full instruction fetch precedes #UD/#NM gates; AC=1 refuses locally
+before address validation/read, while AC=0 admits unaligned access after
+canonical48 span validation. JIT/native/C ABI/generic/fragment paths remain
+closed.
+
+Focused ISA passed 2/2; full `od-isa` passed 1,773, `od-testkit` 454, and
+`od-runner` passed 112 unit plus 488 fixture tests. Formatting, workspace
+all-target offline check, diff check and Graphify refresh passed. The isolated
+worktree layout check reports its `.git` marker and two pre-existing unavailable
+`work/` manifest links. Independent Sol/high review is clean; physical x86
+acceptance is not claimed. See the [plan](../plans/STAGE_2.md#s2-37dg--exact-legacy-long64-sqrtss-xmm0m32-rax),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-37dg--masked-only-long64-sqrtss-xmm0m32-rax),
+[standalone report](S2_37DG_SQRTSS_MEMORY.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dg--sqrtss-xmm0m32-rax).

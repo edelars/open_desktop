@@ -69,6 +69,9 @@ const MINPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const MAXSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cy_maxss_m32_qnan_selects_rhs.case.json"
 );
+const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37dg_sqrtss_m32_unaligned_inexact.case.json"
+);
 const CMPPS_REGISTER_PAIRS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37aa_cmpps_registers.case.json");
 const ADDSD_REGISTER_PAIR: &[u8] =
@@ -37048,6 +37051,88 @@ fn maxss_m32_memory_literal_selects_raw_rhs_and_remains_backend_denied() {
     ));
     let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
     foreign.maxss_memory_rax_controls = fixture.maxss_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+}
+
+#[test]
+fn sqrtss_m32_memory_literal_rounds_unaligned_input_and_remains_backend_denied() {
+    let fixture = Fixture::from_json(SQRTSS_M32_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongSqrtssMemoryRaxV1
+    );
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "f30f5100");
+    assert_eq!(fixture.memory[1].guest_address.get(), 0x2001);
+    let (input, result) = run(SQRTSS_M32_MEMORY_RAX, "interpreter", 0);
+    assert_eq!(result.backend, Backend::Interpreter);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let snapshot = match &result.snapshot {
+        Observation::Available { value } => value,
+        other => panic!("unexpected SQRTSS snapshot: {other:?}"),
+    };
+    let sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "f304b53fcafef00d123456789abcdef0");
+    assert_eq!(sse.mxcsr.get(), 0x1fa0);
+    assert_eq!(snapshot.memory[1].bytes_hex, "00000040");
+    let (_, jit_denial) = run(SQRTSS_M32_MEMORY_RAX, "jit", 4);
+    let (_, native_denial) = run(SQRTSS_M32_MEMORY_RAX, "native", 4);
+    assert!(matches!(&jit_denial.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(
+        &native_denial.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        &jit_denial.snapshot,
+        Observation::Unavailable { .. }
+    ));
+    assert!(matches!(
+        &native_denial.snapshot,
+        Observation::Unavailable { .. }
+    ));
+    jit_denial.validate_for(&input).unwrap();
+    native_denial.validate_for(&input).unwrap();
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut forged_success = result.clone();
+        forged_success.backend = backend;
+        assert!(od_testkit::v2::compare(&input, &forged_success, &forged_success).is_err());
+    }
+
+    let mut gate_case = fixture.clone();
+    gate_case.case_id = "s2_37dg_noninterpreter_gate_snapshot_tamper".into();
+    gate_case
+        .sqrtss_memory_rax_controls
+        .as_mut()
+        .unwrap()
+        .sse_available = false;
+    gate_case.expected_exit = ExpectedExit::Exception;
+    let (gate_input, gate_result) = run(&gate_case.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&gate_input, &gate_result, &gate_result).unwrap();
+    assert!(matches!(&gate_result.outcome, Outcome::Exception {}));
+    assert!(matches!(
+        &gate_result.snapshot,
+        Observation::Available { .. }
+    ));
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut forged_gate = gate_result.clone();
+        forged_gate.backend = backend;
+        assert!(od_testkit::v2::compare(&gate_input, &forged_gate, &forged_gate).is_err());
+    }
+
+    let mut ac_case = fixture.clone();
+    ac_case.case_id = "s2_37dg_noninterpreter_ac_snapshot_tamper".into();
+    ac_case.initial_state.rflags = HexU64(ac_case.initial_state.rflags.get() | (1 << 18));
+    ac_case.expected_exit = ExpectedExit::Unsupported;
+    let (ac_input, ac_result) = run(&ac_case.to_json().unwrap(), "interpreter", 4);
+    ac_result.validate_for(&ac_input).unwrap();
+    assert!(matches!(&ac_result.outcome, Outcome::Unsupported { .. }));
+    assert!(matches!(&ac_result.snapshot, Observation::Available { .. }));
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut forged_ac = ac_result.clone();
+        forged_ac.backend = backend;
+        assert!(forged_ac.validate_for(&ac_input).is_err());
+    }
+    let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
+    foreign.sqrtss_memory_rax_controls = fixture.sqrtss_memory_rax_controls;
     assert!(foreign.validate().is_err());
 }
 
