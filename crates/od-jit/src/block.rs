@@ -3061,7 +3061,11 @@ fn build_block_with_profile(
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(3))
-                        .is_some_and(|bytes| bytes[..2] == [0x89, 0x43]))
+                        .is_some_and(|bytes| bytes[..2] == [0x89, 0x43])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(6))
+                        .is_some_and(|bytes| bytes[..2] == [0x89, 0x83]))
         } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
                 && is_checked_qword_load_form(decoded)
@@ -4827,7 +4831,10 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
             && operand.displacement == 0)
             || (instruction.length == 3
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-                && i8::try_from(operand.displacement).is_ok()))
+                && i8::try_from(operand.displacement).is_ok())
+            || (instruction.length == 6
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                && i32::try_from(operand.displacement).is_ok()))
 }
 
 pub(crate) fn is_checked_qword_store_form(instruction: Instruction) -> bool {
