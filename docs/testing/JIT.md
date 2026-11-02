@@ -507,6 +507,12 @@ The exact gates are `memory_load_v2::tests::ir_dword_addr32_rcx_index_no_base_si
 
 Runtime source commit `8981622` was integrated as `2b04cfd`; independent Sol/high static review passed after correcting IR profile nesting. No test, build, format, Cargo check, or Python harness test ran, so both exact runtime gates remain pending. Harness S3-34ce (`2f3198f`, integrated as `4626a9e`) pins these exact identities; its historical manifest records 236 Rust gates (226 acceptance, 10 lifecycle), 254 local steps, and 102 self-test names. Independent static review passed, with no Python/harness execution. These harness counts do not supply runtime evidence. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-20et report](../reports/STAGE_3_S3-20et_2026-11-02.md).
 
+## S3-34cf: exact harness gates for S3-20eu addr32 RCX-indexed no-base SIB Dword store
+
+Harness source commit `2d12a6b`, integrated as `11520e9`, pins exactly `memory_load_v2::tests::ir_dword_addr32_rcx_index_no_base_sib_disp32_store_binds_all_source_bytes_to_its_site` (`od-jit`) and `tests::s3_20eu_addr32_rcx_index_no_base_sib_disp32_dword_store_uses_wrapped_ecx` (`od-host --lib`). The exact Cargo commands are `cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_addr32_rcx_index_no_base_sib_disp32_store_binds_all_source_bytes_to_its_site -- --exact --test-threads=1` and `cargo test --offline -p od-host --lib tests::s3_20eu_addr32_rcx_index_no_base_sib_disp32_dword_store_uses_wrapped_ecx -- --exact --test-threads=1`.
+
+The historical static manifest records 238 Rust gates (228 acceptance, 10 lifecycle), 256 local steps, and 103 self-test names. Independent Sol/high static review passed; no Python/harness execution was performed. S3-20eu runtime work remains in progress; this harness report claims only the exact gate identities and no runtime behavior or passing runtime gates. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-34cf report](../reports/STAGE_3_S3-34cf_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
