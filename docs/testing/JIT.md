@@ -722,6 +722,34 @@ was ignored/excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
 [S3-20fd report](../reports/STAGE_3_S3-20fd_2026-11-02.md) and
 [S3-34co harness report](../reports/STAGE_3_S3-34co_2026-11-02.md).
 
+## S3-20fe: exact address32 scaled RAX-indexed no-base SIB Dword store
+
+Run the exact gates:
+
+```sh
+cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_addr32_rax_index_no_base_sib_scaled_disp32_store_binds_all_source_bytes_to_its_site -- --exact --test-threads=1
+cargo test --offline -p od-host --lib tests::s3_20fe_addr32_rax_index_no_base_sib_scaled_disp32_dword_store_uses_wrapped_scaled_eax_address_and_low_dword_data -- --exact --test-threads=1
+```
+
+Admit only `67 89 04 45/85/C5 disp32`, the eight-byte addr32 no-base SIB
+Dword-store form at scales 2, 4, and 8. Its effective address is
+`zero_extend_64((low32(original RAX) * scale + sign_extend(disp32)) mod
+2^32)`; scale multiplication and displacement addition wrap in 32 bits.
+One contiguous checked four-byte write stores low32 of the original RAX and
+successful retirement commits `A+8`. Transfer bytes remain contiguous when
+the starting address is near 4 GiB. Exact JIT source/site and host
+acceptance identities are pinned by S3-34cp.
+
+Runtime source `871a350` passed independent Sol/high static review after two
+host-fixture fixes. Source review covers all three scales, representative
+signed displacements, address wrap and transfer continuity, original-RAX
+payload, and interpreter comparison. These gates were not executed: no
+behavior tests, build, formatting, Cargo check, or Python harness ran. The
+exact results remain pending. ISSUE-028 remains open; Stage 2 was
+ignored/excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
+[S3-20fe report](../reports/STAGE_3_S3-20fe_2026-11-02.md) and
+[S3-34cp harness report](../reports/STAGE_3_S3-34cp_2026-11-02.md).
+
 ## S3-34co: harness gates for S3-20fd addr32 scaled RAX-indexed Dword load
 
 Harness source `4e7619d` plus fail-closed tail restoration `9b1fa57` pins the
