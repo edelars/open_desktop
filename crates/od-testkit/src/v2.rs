@@ -16281,10 +16281,15 @@ impl Fixture {
                 return Err(invalid("memory.code", "required by this profile"));
             };
             let code_bytes = code.initial_bytes_hex.to_ascii_lowercase();
+            let fdivp_selector_refusal = self.profile == Profile::LongX87SelectorsStateV1
+                && code_bytes == "def9"
+                && self.stop_rip.is_none()
+                && self.expected_exit == ExpectedExit::Unsupported;
             if matches!(
                 self.profile,
                 Profile::LongX87SseStateV1 | Profile::LongX87SelectorsStateV1
             ) && code_bytes != "90"
+                && !fdivp_selector_refusal
             {
                 return Err(invalid(
                     "memory.code",
@@ -16654,38 +16659,11 @@ impl Fixture {
                 code_bytes == "dcf1" && self.stop_rip.is_none();
             let is_fdiv_sti_st0_inexact_unsupported =
                 code_bytes == "dcf9" && self.stop_rip.is_none();
-            let is_fdivp_profile_rejected = code_bytes == "def9"
-                && self.stop_rip.is_none()
-                && self.instruction_budget == 1
-                && self.initial_state.x87.as_ref().is_some_and(|x87| {
-                    const CONTROL_WORDS: [u64; 12] = [
-                        0x007f, 0x047f, 0x087f, 0x0c7f, 0x027f, 0x067f, 0x0a7f, 0x0e7f, 0x037f,
-                        0x077f, 0x0b7f, 0x0f7f,
-                    ];
-                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
-                    let destination = top.wrapping_add(1) & 7;
-                    let tag = |index: u8| (x87.tag_word.get() >> (u32::from(index) * 2)) & 3;
-                    let normal = |index: u8| {
-                        let Some(encoded) = x87.registers.get(usize::from(index)) else {
-                            return false;
-                        };
-                        let Ok(bytes) = decode_bytes(encoded) else {
-                            return false;
-                        };
-                        if bytes.len() != 10 {
-                            return false;
-                        }
-                        let significand = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-                        let exponent = (u16::from(bytes[9] & 0x7f) << 8) | u16::from(bytes[8]);
-                        (1..0x7fff).contains(&exponent) && significand & (1 << 63) != 0
-                    };
-                    !CONTROL_WORDS.contains(&x87.control_word.get())
-                        || x87.status_word.get() & 0x80df != 0
-                        || tag(top) != 0
-                        || tag(destination) != 0
-                        || !normal(top)
-                        || !normal(destination)
-                });
+            // A null stop address marks an expected preflight refusal. Keep
+            // the historical schema allowance broad: FDIVP can also refuse
+            // after valid inputs (for example result overflow), and selector
+            // presence is not a representable runtime path in every fixture.
+            let is_fdivp_preflight_refusal = code_bytes == "def9" && self.stop_rip.is_none();
             let is_fdivrp_inexact_unsupported = code_bytes == "def1" && self.stop_rip.is_none();
             let is_fstp_source_rejected = code_bytes == "ddd9" && self.stop_rip.is_none();
             let is_fst_source_rejected = code_bytes == "ddd1" && self.stop_rip.is_none();
@@ -17404,7 +17382,7 @@ impl Fixture {
                     || is_fdivr_inexact_unsupported
                     || is_fdivr_sti_st0_inexact_unsupported
                     || is_fdiv_sti_st0_inexact_unsupported
-                    || is_fdivp_profile_rejected
+                    || is_fdivp_preflight_refusal
                     || is_fdivrp_inexact_unsupported
                     || is_fstp_source_rejected
                     || is_fst_source_rejected

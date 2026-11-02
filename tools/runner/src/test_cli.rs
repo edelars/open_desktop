@@ -6058,6 +6058,67 @@ mod tests {
             panic!("inexact FDIVP state must remain observable");
         };
         assert_eq!(value.state, loaded.fixture.initial_state);
+
+        for (case_id, overflow, selector_only_refusal) in
+            [("overflow", true, false), ("selector", false, true)]
+        {
+            let mut input = v2::Fixture::from_json(include_bytes!(
+                "../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json"
+            ))
+            .unwrap()
+            .fixture;
+            input.case_id = format!("local_fdivp_{case_id}_preflight_refusal");
+            input.profile = v2::Profile::LongX87StateV1;
+            input.instruction_budget = 1;
+            input.initial_state.rip = HexU64(0x5600);
+            input.stop_rip = None;
+            input.expected_exit = v2::ExpectedExit::Unsupported;
+            let code = input
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap();
+            code.guest_address = HexU64(0x5600);
+            code.length = 2;
+            code.initial_bytes_hex = "def9".into();
+            code.comparison_mask_hex = "ffff".into();
+
+            let mut x87 = od_isa::state::X87State::fixture_seed();
+            x87.control_word = 0x037f;
+            x87.status_word = 0;
+            x87.tag_word = 0xfff0;
+            if overflow {
+                x87.registers[0] = normal(0x8000_0000_0000_0000, 0x3ffe, false);
+                x87.registers[1] = normal(0x8000_0000_0000_0000, 0x7ffe, false);
+            } else {
+                x87.registers[0] = three;
+                x87.registers[1] = fifteen;
+            }
+            if selector_only_refusal {
+                input.profile = v2::Profile::LongX87SelectorsStateV1;
+                x87.instruction_selector = Some(0x33);
+                x87.data_selector = Some(0x2b);
+                input.initial_state.sse = Some(v2::SseSnapshot::from(&od_isa::state::SseState {
+                    xmm: [[0; 16]; 16],
+                    mxcsr: 0x1f80,
+                }));
+            }
+            input.initial_state.x87 = Some(v2::X87Snapshot::from(&x87));
+
+            let loaded = v2::Fixture::from_json(&input.to_json().unwrap()).unwrap();
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            let result = execute_fixture_v2(&loaded, &mut memory);
+            result.validate_for(&loaded).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::Unsupported { .. }));
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(0) }
+            );
+            let Observation::Available { value } = result.snapshot else {
+                panic!("FDIVP refusal state must remain observable");
+            };
+            assert_eq!(value.state, loaded.fixture.initial_state, "{case_id}");
+        }
     }
 
     #[test]
