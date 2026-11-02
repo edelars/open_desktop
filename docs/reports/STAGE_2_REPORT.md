@@ -21496,3 +21496,10 @@ Added the interpreter-only schema-v2 profile `s2-long-subss-memory-rax-v1` for e
 The interpreter subtracts actual memory RHS from XMM0.low32, preserving XMM0.high96/XMM1 and ORing generated flags into prior stickies. It classifies/selects original NaNs before arithmetic treatment of the RHS sign. JIT/native/C ABI/generic/fragment and unmasked/#XM remain closed. Independent raw-u32 `independent_subss` receives the memory RHS. The runner matrix covers 12 input pairs × 4 RC modes × 64 old sticky histories (3,072 executions); direct tests cover decoder/gates, AC/address ordering, unaligned read, endpoint/fault rollback and the register SUBSS regression.
 
 No physical x86 acceptance is claimed. Full test counts, layout/Graphify and independent review results are in the [standalone report](S2_37DK_SUBSS_MEMORY.md). Normative sources: Intel SDM Rev. 093 Vol. 2B SUBSS pp. 4-695–4-696; Vol. 2A Table 2-20; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. [Official Intel SDM downloads](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
+After S2-30ct and S2-37dk were transferred to main, combined validation passed:
+`od-isa` 1,802, `od-testkit` 455, runner 114 unit + 492 fixture tests, and
+`od-x86-runner` 8 library + 4 binary tests. Workspace all-target offline check,
+formatting, layout validation and Graphify AST refresh passed (11,245 nodes,
+24,313 edges, 337 communities). Both independent Sol/high reviews are clean.
+No physical x86 acceptance is claimed.
