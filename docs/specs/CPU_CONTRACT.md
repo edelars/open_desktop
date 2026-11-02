@@ -14744,6 +14744,32 @@ forms, physical acceptance, other modes, complete unmasked OE/UE behavior and
 parent S2-37/S2-38 remain open.
 
 
+## S2-37du — masked-only Long64 ADDPD XMM0,m128 [RAX]
+
+The local schema-v2 interpreter profile `s2-long-addpd-memory-rax-v1` admits
+only exact legacy `66 0F 58 00`, a complete four-byte fetch, budget one and
+stop RIP entry+4. It requires SSE2 (`CPUID.01H:EDX[26]`); full fetch precedes
+#UD for missing SSE2/CR0.EM/CR4.OSFXSR and then #NM for CR0.TS. XMM/MXCSR state
+is required. This memory profile has its own operation, controls and runner
+dispatch; it does not widen register ADDPD or ADDPS profiles.
+
+MXCSR admission is masked-only: reserved bits clear, no bits outside supported
+mask `0xffbf`, DAZ=FTZ=0 and all six exception masks set. RC and old sticky
+flags are accepted; unmasked/#XM behavior is not implemented. RAX must be
+16-byte aligned regardless of AC. Checked canonical48 `[RAX,RAX+15]` validation
+precedes exactly one `read16`; gate, alignment, span and read failures preserve
+state and retirement.
+
+Two binary64 results add old XMM0 to the actual memory RHS lanes through the
+existing raw Binary64 operation using MXCSR.RC. IE/DE/OE/UE/PE aggregate across
+lanes and OR into old sticky status; old ZE and unrelated state are preserved.
+Success replaces XMM0 and advances RIP by four. The independent validator
+uses fixture data bytes as RHS, compares the full state/memory/control echo and
+does not call production arithmetic. The handwritten fixture contains exact
+`1.0+2.0` and `2.0+5.0` lanes; runner checks include #UD, #GP, tampering and
+JIT/native denial. See the [plan](../plans/STAGE_2.md#s2-37du--masked-only-legacy-long64-addpd-xmm0m128-rax),
+[report](../reports/S2_37DU_ADDPD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37du-addpd-m128-memory-profile).
+
 ## S2-37ba — canonical Long64 ADDPS XMM register pairs
 
 The local schema-v2 profile `s2-long-addps-registers-v1` admits canonical

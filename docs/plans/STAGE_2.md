@@ -576,6 +576,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37dc | Local-only legacy Long64 MINPS XMM0,m128 `[RAX]`, exact `0F 5D 00`; SSE bit 25 (SSE2 not required), aligned canonical span, exactly one read16; AC=0/1 allowed when aligned; raw RHS ties/NaNs, four-lane IE and lane-local DE; native/JIT/C ABI/generic/fragment closed | Focused decoder/direct ISA 3/3; runner 1/1 with 6,144 integer-oracle comparisons (16 lane-class pairs + 8 standalone vectors, each × 4 RC × 64 sticky histories); MINPD/MAXPS cross-profile fixtures 1 each; od-isa 1733; od-testkit 454; runner 112+484; od-x86-runner 8+4; workspace check, fmt/diff; implementation Graphify 10,886/23,430/316, post-docs AST-only refresh 10,890/23,438/322; semantic docs refresh unavailable (no configured LLM API key); independent Sol/high review clean; Linux-only native denial not run on macOS; no physical x86 acceptance |
 | [x] | S2-37dd | Local-only legacy Long64 SQRTPS XMM0,m128 `[RAX]`, exact `0F 51 00`; SSE bit 25 (not SSE2); strict masked-only MXCSR; memory-source-only binary32 sqrt with RC and IE/DE/PE; aligned canonical span, exactly one read16; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3; od-isa 1736; od-testkit 454; runner 112+485; workspace all-target check, fmt/layout/Graphify and independent Sol/high review passed; initial workspace test stopped at disk exhaustion, component suites succeeded after disposable target cleanup; no physical x86 acceptance |
 | [x] | S2-37dq | Local-only legacy Long64 ADDPS XMM0,m128 `[RAX]`, exact `0F 58 00`; SSE bit 25 (not SSE2), strict masked-only MXCSR; four `Binary32::add_raw_result` lanes from old XMM0 and one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3 and fixture-v2 1/1; invalid MXCSR no-read/rollback and result/provenance tampering covered; combined main suites: od-isa 1,837 / od-testkit 455 / runner 119+497 / x86-runner 8+4; workspace check, fmt/diff/layout, Graphify and independent Sol/high review clean; no physical x86 acceptance |
+| [ ] | S2-37du | Local-only legacy Long64 ADDPD XMM0,m128 `[RAX]`, exact `66 0F 58 00`; SSE2 bit 26; masked-only MXCSR; two raw Binary64 lanes from old XMM0 and one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Implementation in isolated worktree; review and integrated checks pending |
 | [x] | S2-37dr | Local-only legacy Long64 SUBPS XMM0,m128 `[RAX]`, exact `0F 5C 00`; SSE bit 25, strict masked-only MXCSR; one aligned canonical m128 read and four memory-source binary32 subtractions; aggregate IE/DE/OE/PE, retain old sticky flags; native/JIT/C ABI/generic/fragment and unmasked/#XM closed | Focused ISA 3/3 and runner 1/1; memory vectors × 4 RC × 64 sticky cover NaN priority/payload, same-lane NaN+subnormal, cancellation zero, infinities, ties, tiny boundary and overflow; integrated main: od-isa 1,841 / testkit 455 / runner 119+499 / x86-runner 8+4; workspace/layout/fmt/diff, Graphify, clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-37ds | Local-only legacy Long64 MULPS XMM0,m128 `[RAX]`, exact `0F 59 00`; SSE bit 25; masked-only MXCSR, raw Binary32 multiplication, one aligned canonical m128 read; aggregate IE/DE/OE/UE/PE and retain old sticky flags; JIT/native/C ABI/generic/fragment and unmasked/#XM closed | Focused decoder/ISA/runner tests; memory matrix 1,792 oracle cases; integrated main od-isa 1,845, testkit 455, runner 119+501, x86-runner 8+4; workspace check/fmt/diff/layout, Graphify and independent Sol/high review clean; isolated layout caveats in standalone report; no physical x86 acceptance |
 | [x] | S2-37dt | Local-only legacy Long64 DIVPS XMM0,m128 `[RAX]`, exact `0F 5E 00`; SSE bit 25; masked-only MXCSR; four raw Binary32 division lanes from old XMM0 and one aligned canonical m128 read; aggregate IE/DE/ZE/OE/UE/PE; JIT/native/C ABI/generic/fragment and unmasked/#XM closed | Integrated main od-isa 1,849, od-testkit 455, runner 119+503, x86-runner 8+4; workspace check/fmt/layout/diff, Graphify 11,506/24,909/346; independent Sol/high review clean; no physical x86 acceptance |
@@ -17032,6 +17033,32 @@ Use the literal poisoned-XMM0 fixture and cover all RC modes, ±0/∞, normal/su
 #### S2-37dq — exact legacy Long64 ADDPS XMM0,m128 [RAX]
 
 Implement only exact `0F 58 00` in Long64, with SSE bit 25 (not SSE2), complete fetch before #UD/#NM, XMM/MXCSR state, and interpreter-only routing. Admission requires supported MXCSR mask `0xffbf`, reserved bits clear, all six exception masks set, DAZ=FTZ=0; all RC modes and prior sticky flags are accepted. Execute four binary32 additions from the old XMM0 lanes and one aligned m128 `[RAX]` read. Require 16-byte alignment independent of AC; validate checked canonical48 `[RAX,RAX+15]` before exactly one `read16`, and leave state/retirement unchanged on read failure. Aggregate IE/DE/OE/UE/PE while preserving ZE, old sticky bits, and unrelated state. Cover NaN/invalid priority, mixed IE/DE, signed zeros/infinities, subnormal/tiny/ties/overflow, SSE-without-SSE2, gates, exact schema, callbacks, rollback, and JIT/NativeX86 result relabel denial. Unmasked/#XM and all non-interpreter paths remain out of scope.
+
+#### S2-37du — masked-only legacy Long64 ADDPD XMM0,m128 [RAX]
+
+Implement strict schema-v2 interpreter profile `s2-long-addpd-memory-rax-v1`
+for exact `66 0F 58 00`, four-byte complete fetch, budget one and stop RIP
+entry+4. Require SSE2 bit 26, CR0.EM=0, CR4.OSFXSR=1 and CR0.TS=0; fetch
+precedes #UD/#NM gates. Keep the register ADDPD profile and its dispatch
+separate. Require XMM/MXCSR state; reject other prefixes, REX, ModR/M/address
+forms, VEX/EVEX and trailing bytes.
+
+Admit masked MXCSR only: supported mask `0xffbf`, reserved bits clear,
+DAZ=FTZ=0, and all six masks set. Accept all RC modes and old sticky history.
+Unmasked/#XM, JIT/native/C ABI/generic/fragment execution remain closed.
+Require RAX 16-byte alignment independent of AC; validate checked canonical48
+`[RAX,RAX+15]` before exactly one `read16`. Gate, alignment, span and read
+failures preserve architectural state, MXCSR, RIP and retirement.
+
+Add old XMM0 to each corresponding actual memory binary64 lane with the
+existing `Binary64::add_raw_result(MXCSR.RC)`. Aggregate IE/DE/OE/UE/PE into
+old sticky status and preserve ZE and unrelated state. The independent
+testkit validator must read RHS lanes from the fixture data bytes and use its
+raw-u64 oracle. Cover ties under every RC, sticky histories, NaN/zero/infinity,
+subnormal, tie, overflow/WPR vectors, lane flag aggregation, fetch/gate order,
+invalid MXCSR with no read, span/alignment/read rollback, result/control echo
+tampering and backend denial. Fixture and evidence: [standalone report]
+(../reports/S2_37DU_ADDPD_MEMORY.md).
 
 #### S2-37dr — masked-only legacy Long64 SUBPS XMM0,m128 [RAX]
 

@@ -66,6 +66,9 @@ const SQRTPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json"
 );
+const ADDPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37du_addpd_m128_memory_source_two_binary64_lanes.case.json"
+);
 const SUBPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dr_subps_m128_memory_source_and_destination_lanes.case.json"
 );
@@ -31491,6 +31494,82 @@ fn addpd_register_pairs_special_values_atomicity_and_backend_denial() {
     malformed_case.memory[0].comparison_mask_hex = "ff".repeat(5);
     malformed_case.stop_rip = Some(HexU64(base_rip + 5));
     assert!(malformed_case.to_json().is_err());
+}
+
+#[test]
+fn addpd_memory_rax_uses_memory_rhs_and_rejects_tampering_and_other_backends() {
+    let (loaded, result) = run(ADDPD_M128_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+    let Observation::Available { value: snapshot } = &result.snapshot else {
+        panic!("snapshot available")
+    };
+    let sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "00000000000008400000000000001c40");
+    assert_eq!(sse.mxcsr.get(), 0x1f80);
+    assert_eq!(snapshot.state.rip.get(), 0x100004);
+    assert_eq!(
+        result.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, "0000000000000000");
+    }
+    assert!(od_testkit::v2::compare(&loaded, &result, &tampered).is_err());
+
+    let fixture = &loaded.fixture;
+    let mut missing_sse2 = fixture.clone();
+    missing_sse2.expected_exit = ExpectedExit::Exception;
+    missing_sse2.addpd_controls.as_mut().unwrap().sse2_available = false;
+    let (gate_input, gate_result) = run(&missing_sse2.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&gate_input, &gate_result, &gate_result).unwrap();
+    let Observation::Available {
+        value: gate_snapshot,
+    } = gate_result.snapshot
+    else {
+        panic!("snapshot available")
+    };
+    let Observation::Available {
+        value: Some(gate_exception),
+    } = gate_snapshot.exception
+    else {
+        panic!("expected #UD")
+    };
+    assert_eq!(gate_exception.vector, 6);
+    assert_eq!(
+        gate_result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+
+    let mut unaligned = fixture.clone();
+    unaligned.expected_exit = ExpectedExit::Exception;
+    unaligned.initial_state.gpr[0] = HexU64(0x2001);
+    unaligned.memory[1].guest_address = HexU64(0x2001);
+    let (align_input, align_result) = run(&unaligned.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&align_input, &align_result, &align_result).unwrap();
+    let Observation::Available {
+        value: align_snapshot,
+    } = align_result.snapshot
+    else {
+        panic!("snapshot available")
+    };
+    let Observation::Available {
+        value: Some(align_exception),
+    } = align_snapshot.exception
+    else {
+        panic!("expected #GP")
+    };
+    assert_eq!(align_exception.vector, 13);
+    assert_eq!(
+        align_snapshot.state.sse.unwrap().xmm[0],
+        fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+    );
+
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(ADDPD_M128_MEMORY_RAX, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
 }
 
 #[test]

@@ -6958,6 +6958,18 @@ legacy ADDPD. No memory alignment or physical-acceptance claim is made. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37az--canonical-long64-addpd-xmm-register-pairs),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37az--addpd-register-pair-interpreter-profile).
 
+### S2-37du ADDPD m128 memory profile
+
+`s2_37du_addpd_m128_memory_source_two_binary64_lanes.case.json` is a
+handwritten exact legacy `66 0F 58 00` fixture. With old XMM0 lanes 1.0 and
+2.0, its memory lanes 2.0 and 5.0 produce 3.0 and 7.0. The strict masked-only
+profile requires SSE2, aligned canonical m128 `[RAX]`, and exactly one read16;
+its independent validator reads the RHS from these memory bytes. The runner
+also verifies #UD/#GP atomicity, control/result tampering and JIT/native denial.
+See the [plan](../../../../docs/plans/STAGE_2.md#s2-37du--masked-only-legacy-long64-addpd-xmm0m128-rax),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37du--masked-only-long64-addpd-xmm0m128-rax),
+and [standalone report](../../../../docs/reports/S2_37DU_ADDPD_MEMORY.md).
+
 
 ### S2-37ba ADDPS register-pair profile
 

@@ -1011,6 +1011,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `66 0F 58 00` ADDPD m128-at-RAX form.
+    AddpdMemoryRax,
     AddsdRegister {
         destination: u8,
         source: u8,
@@ -3781,6 +3783,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
                         .rex
                         .is_some_and(|rex| matches!(rex, 0x41 | 0x44 | 0x45))
                     && prefix_bytes[1] == prefixes.rex.unwrap());
+        let addpd_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x58
+            && prefixes.group1.is_none()
+            && prefixes.segment.is_none()
+            && prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 1
+            && prefix_bytes[0] == 0x66;
         let addsd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x58
             && prefixes.group1 == Some(0xf2)
@@ -4450,6 +4461,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
         if opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x58
             && !addpd_register
+            && !addpd_memory_rax
             && !addsd_register
             && !addss_register
             && !addps_register
@@ -5076,15 +5088,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                     source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
-            (OpcodeMap::Escape0f, 0x58) if addpd_register => {
+            (OpcodeMap::Escape0f, 0x58) if addpd_register || addpd_memory_rax => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0 && addpd_memory_rax {
+                    Operation::AddpdMemoryRax
+                } else if modrm >> 6 != 3 || !addpd_register {
                     return Err(self.unsupported(opcode));
-                }
-                let rex = prefixes.rex.unwrap_or(0x40);
-                Operation::AddpdRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    let rex = prefixes.rex.unwrap_or(0x40);
+                    Operation::AddpdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x58) if addsd_register || addsd_memory_rax => {
@@ -11947,6 +11962,36 @@ mod tests {
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn addpd_memory_rax_decodes_only_exact_66_0f_58_00() {
+        let mut exact = Memory::new(&[0x66, 0x0f, 0x58, 0x00]);
+        let decoded = exact.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::AddpdMemoryRax);
+        assert_eq!(decoded.length, 4);
+
+        for bytes in [
+            &[0x66, 0x0f, 0x58, 0x01][..],
+            &[0x66, 0x0f, 0x58, 0x40, 0x00][..],
+            &[0x66, 0x0f, 0x58, 0x04, 0x00][..],
+            &[0x66, 0x48, 0x0f, 0x58, 0x00][..],
+            &[0x48, 0x66, 0x0f, 0x58, 0x00][..],
+            &[0x0f, 0x58, 0x00][..],
+            &[0x66, 0x0f, 0x58][..],
+            &[0x66, 0xf2, 0x0f, 0x58, 0x00][..],
+            &[0xf3, 0x66, 0x0f, 0x58, 0x00][..],
+            &[0x67, 0x66, 0x0f, 0x58, 0x00][..],
+            &[0xc5, 0xfd, 0x58, 0x00][..],
+            &[0x62, 0xf1, 0xfd, 0x08, 0x58, 0x00][..],
+        ] {
+            assert!(
+                !Memory::new(bytes)
+                    .decode()
+                    .is_ok_and(|decoded| decoded.operation == Operation::AddpdMemoryRax),
+                "accepted {bytes:02x?}"
+            );
         }
     }
 

@@ -312,6 +312,8 @@ pub enum Profile {
     LongMulpdRegistersV1,
     #[serde(rename = "s2-long-addpd-registers-v1")]
     LongAddpdRegistersV1,
+    #[serde(rename = "s2-long-addpd-memory-rax-v1")]
+    LongAddpdMemoryRaxV1,
     #[serde(rename = "s2-long-cvtpd2ps-registers-v1")]
     LongCvtpd2psRegistersV1,
     #[serde(rename = "s2-long-addsd-registers-v1")]
@@ -1559,6 +1561,7 @@ impl IntegerState {
                     | Profile::LongSubpdRegistersV1
                     | Profile::LongMulpdRegistersV1
                     | Profile::LongAddpdRegistersV1
+                    | Profile::LongAddpdMemoryRaxV1
                     | Profile::LongCvtpd2psRegistersV1
                     | Profile::LongAddsdRegistersV1
                     | Profile::LongAddssRegistersV1
@@ -1864,6 +1867,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -2093,6 +2097,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -2519,6 +2524,7 @@ impl IntegerState {
             | Profile::LongSubpdRegistersV1
             | Profile::LongMulpdRegistersV1
             | Profile::LongAddpdRegistersV1
+            | Profile::LongAddpdMemoryRaxV1
             | Profile::LongCvtpd2psRegistersV1
             | Profile::LongAddsdRegistersV1
             | Profile::LongAddssRegistersV1
@@ -2749,6 +2755,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -3011,6 +3018,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -3282,6 +3290,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -3558,6 +3567,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -4616,6 +4626,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -4851,6 +4862,7 @@ impl IntegerState {
                 | Profile::LongSubpdRegistersV1
                 | Profile::LongMulpdRegistersV1
                 | Profile::LongAddpdRegistersV1
+                | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -8501,11 +8513,80 @@ impl Fixture {
                     "ADDPD requires supported MXCSR bits, DAZ=0, OM=1, and UM=1",
                 ));
             }
-        } else if self.addpd_controls.is_some() {
-            return Err(invalid(
-                "addpd_controls",
-                "only valid for ADDPD register-space profile",
-            ));
+        } else if self.addpd_controls.is_some() && self.profile != Profile::LongAddpdMemoryRaxV1 {
+            return Err(invalid("addpd_controls", "only valid for ADDPD profile"));
+        }
+        if self.profile == Profile::LongAddpdMemoryRaxV1 {
+            let _ = self
+                .addpd_controls
+                .ok_or_else(|| invalid("addpd_controls", "required by ADDPD m128 profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by ADDPD m128 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by ADDPD m128 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if decode_bytes(&code.initial_bytes_hex)? != [0x66, 0x0f, 0x58, 0x00]
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 16
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "ADDPD m128 requires exact 66 0F 58 00, one code/data mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by ADDPD m128 profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & 0x1f80 != 0x1f80
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "ADDPD m128 requires supported MXCSR bits, all six exception masks set, DAZ=0, and FTZ=0",
+                ));
+            }
+            let controls = self.addpd_controls.expect("validated ADDPD controls");
+            let gate = !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let aligned = source & 0xf == 0;
+            let last = source.checked_add(15);
+            let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+            let span = last.is_none_or(|last| !canonical(source) || !canonical(last));
+            let expected = if gate || nm || !aligned || span {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect ADDPD m128 gates, mandatory alignment, and canonical span",
+                ));
+            }
         }
         if self.profile == Profile::LongCvtpd2psRegistersV1 {
             let _ = self
@@ -15264,6 +15345,10 @@ impl Fixture {
                 Profile::LongAddpdRegistersV1 => {
                     addpd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
+                Profile::LongAddpdMemoryRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0x66, 0x0f, 0x58, 0x00])
+                    .map(|_| 4),
                 Profile::LongAddsdRegistersV1 => {
                     addsd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
@@ -18253,7 +18338,10 @@ impl RunResult {
                 "only valid for the MULPD profile",
             ));
         }
-        if self.profile == Profile::LongAddpdRegistersV1 {
+        if matches!(
+            self.profile,
+            Profile::LongAddpdRegistersV1 | Profile::LongAddpdMemoryRaxV1
+        ) {
             if snapshot.addpd_controls.is_none() {
                 return Err(invalid(
                     "snapshot.addpd_controls",
@@ -19851,8 +19939,12 @@ impl RunResult {
                 loaded.fixture.addpd_controls,
                 value.addpd_controls,
             ) {
-                (Profile::LongAddpdRegistersV1, Some(input), Some(output)) if input == output => {}
-                (Profile::LongAddpdRegistersV1, _, _) => {
+                (
+                    Profile::LongAddpdRegistersV1 | Profile::LongAddpdMemoryRaxV1,
+                    Some(input),
+                    Some(output),
+                ) if input == output => {}
+                (Profile::LongAddpdRegistersV1 | Profile::LongAddpdMemoryRaxV1, _, _) => {
                     return Err(FormatError::CaseMismatch("addpd_controls"));
                 }
                 (_, None, None) => {}
@@ -20081,6 +20173,8 @@ impl RunResult {
                 validate_cvtpd2ps_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongAddpdRegistersV1 {
                 validate_addpd_registers_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongAddpdMemoryRaxV1 {
+                validate_addpd_memory_rax_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongAddsdRegistersV1 {
                 validate_addsd_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongAddssRegistersV1 {
@@ -40217,6 +40311,146 @@ fn validate_sqrtps_memory_rax_result(
     }
     Ok(())
 }
+
+fn validate_addpd_memory_rax_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .addpd_controls
+        .ok_or(FormatError::CaseMismatch("addpd_controls"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0x66, 0x0f, 0x58, 0x00] {
+        return Err(FormatError::CaseMismatch("ADDPD m128 encoding"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let data_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let mut lhs = [0u64; 2];
+    let mut rhs = [0u64; 2];
+    for lane in 0..2 {
+        lhs[lane] = u64::from_le_bytes(
+            lhs_bytes[lane * 8..lane * 8 + 8]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("state.sse.xmm[0]"))?,
+        );
+        rhs[lane] = u64::from_le_bytes(
+            data_bytes[lane * 8..lane * 8 + 8]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+        );
+    }
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (values, invalid, denormal, overflow, underflow, precision) =
+        independent_addpd(lhs, rhs, old_mxcsr);
+    let source = fixture.initial_state.gpr[0].get();
+    let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let aligned = source & 0xf == 0;
+    let last = source.checked_add(15);
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let fault = gate.or_else(|| (!aligned || span_fault).then_some(13));
+    if !matches!(
+        (fault, fixture.expected_exit),
+        (Some(_), ExpectedExit::Exception) | (None, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("ADDPD m128 expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if fault.is_none() {
+        let sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let mut xmm = [0u8; 16];
+        for (lane, value) in values.into_iter().enumerate() {
+            xmm[lane * 8..lane * 8 + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        sse.xmm[0] = crate::memory::encode_bytes(&xmm);
+        sse.mxcsr = HexU64(
+            u64::from(old_mxcsr)
+                | u64::from(invalid)
+                | (u64::from(denormal) << 1)
+                | (u64::from(overflow) << 3)
+                | (u64::from(underflow) << 4)
+                | (u64::from(precision) << 5),
+        );
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("ADDPD m128 RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch("ADDPD m128 output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none())),
+        })
+    {
+        return Err(FormatError::CaseMismatch("ADDPD m128 retirement"));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("ADDPD m128 outcome/exception")),
+    }
+    Ok(())
+}
+
 fn validate_addps_memory_rax_result(
     loaded: &LoadedFixture,
     result: &RunResult,
