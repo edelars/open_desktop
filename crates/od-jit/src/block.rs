@@ -5206,6 +5206,15 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && operand.index == Some(od_isa::Register::Rcx)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && i32::try_from(operand.displacement).is_ok());
+    let rax_index_no_base_sib_profile = instruction.length == 7
+        && instruction.address_size == OperandSize::Qword
+        && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
+            if operand.address_size == OperandSize::Qword
+                && operand.size == OperandSize::Dword
+                && matches!(operand.base, AddressBase::None)
+                && operand.index == Some(od_isa::Register::Rax)
+                && operand.scale == 1
+                && i32::try_from(operand.displacement).is_ok());
     let address32_profile = instruction.prefixes.address_override
         && instruction.address_size == OperandSize::Dword
         && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
@@ -5305,6 +5314,7 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
         && operand.address_size == instruction.address_size
         && (rbx_rcx_sib_profile
             || rcx_no_base_sib_profile
+            || rax_index_no_base_sib_profile
             || address32_rbx_rcx_sib_profile
             || address32_rsp_sib_profile
             || address32_rsp_disp8_sib_profile
