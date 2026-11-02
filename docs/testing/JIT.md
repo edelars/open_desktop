@@ -947,6 +947,45 @@ unchanged; Stage 2 was excluded; Mini/M1 are deferred; Stage 3 remains partial.
 See the [S3-20fj report](../reports/STAGE_3_S3-20fj_2026-11-02.md) and
 [S3-34cu harness report](../reports/STAGE_3_S3-34cu_2026-11-02.md).
 
+## S3-34cv: harness gates for S3-20fk address32 alias Dword store
+
+The harness pins the exact JIT source/site and host acceptance identities for
+the three-byte singleton `67 89 00` (`MOV [EAX],EAX`):
+
+- `s3_34cv_ir_addr32_alias_dword_store_source_binding` →
+  `memory_load_v2::tests::ir_dword_addr32_alias_store_binds_all_source_bytes_to_its_site`
+- `s3_34cv_host_addr32_alias_dword_store_original_eax_address_and_payload` →
+  `tests::s3_20fk_addr32_alias_dword_store_uses_original_eax_address_and_payload`
+
+The required fail-closed self-test is
+`test_s3_34cv_addr32_alias_dword_store_gates_are_pinned_and_fail_closed`.
+It verifies exact manifest identities and argv, plus rejection of missing
+manifest/evidence entries, zero matches, ignored or failed tests, wrong
+identities, and forged invocations. The cumulative manifest has 270 Rust
+gates (260 acceptance, 10 lifecycle), 288 local steps, and 119 self-test
+names. Independent review and exact runtime-gate execution are pending. No
+Python harness, Cargo gate, build, formatting, or behavior test was run. See
+the [S3-34cv report](../reports/STAGE_3_S3-34cv_2026-11-02.md).
+
+## S3-20fk: exact address32 RAX-alias Dword store
+
+Run the exact gates:
+
+```sh
+cargo test --offline -p od-jit --lib memory_load_v2::tests::ir_dword_addr32_alias_store_binds_all_source_bytes_to_its_site -- --exact --test-threads=1
+cargo test --offline -p od-host --lib tests::s3_20fk_addr32_alias_dword_store_uses_original_eax_address_and_payload -- --exact --test-threads=1
+```
+
+Admit only the three-byte singleton `67 89 00` (`MOV [EAX],EAX`): the sole
+address-size override selects 32-bit address calculation; the base is RAX,
+with no index, scale one, and zero displacement. The effective address and
+stored value both come from low32 of pre-instruction RAX; the address is
+zero-extended. Perform one contiguous checked width-four write, including
+across the 4 GiB boundary. Successful retirement advances RIP to `A+3` and
+preserves full RAX, other GPRs, and RFLAGS. Fault, backend, or entry failure
+must preserve architectural state; a committed callback/STOP retry must not
+replay the write. S3-34cv pins these exact JIT source/site and host identities.
+
 ## S3-20fi: exact address64 RAX-base Dword store with signed disp32
 
 Run the exact gates:
