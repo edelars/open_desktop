@@ -9907,6 +9907,41 @@ See the [plan](../plans/STAGE_2.md#s2-30cw-bare-reverse-fsubr-sti-st0-with-bound
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cw--bounded-reverse-fsubr-sti-st0), and
 [standalone report](../reports/S2_30CW_X87_FSUBR_REVERSE_PRECISION.md).
 
+<a id="local-s2-30dl-large-gap-fsubr-sti-st0-dc-e0-e7"></a>
+
+## Local S2-30dl: large-gap `FSUBR ST(i), ST(0)` (`DC E0..E7`)
+
+The local long-mode interpreter admits exact bare `DC E0` through `DC E7` with
+the S2-30cw profile and extends only its normalized Normal-to-Normal exponent
+gap admission from 64 to 32765. It reuses `bounded_x87_fsub_st0_sti_result`
+with large-gap admission enabled: both original physical operands are checked
+before the helper forms the reverse subtraction, and no exact fallback or new
+arithmetic routine is introduced. PC24/53/64 and all four FCW rounding modes
+remain direct. Only Normal results are committed; the alias cancellation and
+unsupported environment, operand and result domains remain atomically
+Unsupported.
+
+Success computes old `ST(0)-ST(i)`, writes only old physical `(TOP+i)&7`, and
+does not pop. PE is sticky and ORed with `inexact`; C1 is replaced by the
+helper's `incremented` diagnostic; C0/C2/C3 follow the S2-30cw local
+preservation policy. TOP, tags, source bytes and other x87 state are preserved;
+FIP receives old RIP and RIP advances by two. `DC E8..EF` FSUB keeps its
+existing S2-30dk large-gap behavior; `DE E0..E7` FSUBRP remains capped at
+gap 64. JIT/native, general x87 exception delivery and physical x86 acceptance
+remain outside the profile.
+
+Coverage uses an independent raw-integer rounding oracle for gaps 64/65/66/32765
+across all FCWs, signs, operand orders, TOP/index placements and prior PE/C1
+histories; atomic alias and neighbor controls; and a literal `DC E1` runner
+fixture with JIT denial. Normative source: Intel SDM Rev. 093 Vol. 2A
+`FSUBR/FSUBRP/FISUBR`, pp. 3-397–3-399
+([official Vol. 2A PDF](https://cdrdv2.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
+Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30
+([official Vol. 1 PDF](https://cdrdv2.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+See the [plan](../plans/STAGE_2.md#s2-30dl-large-gap-fsubr-sti-st0-admission),
+[standalone report](../reports/S2_30DL_X87_FSUBR_LARGE_GAPS.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dl-large-gap-reverse-destination-fsubr-fixture).
+
 ## Local S2-30dc: bounded `FSUBRP ST(i), ST(0)` (`DE E0..E7`)
 
 The local long-mode interpreter admits exactly bare `DE E0` through `DE E7`.

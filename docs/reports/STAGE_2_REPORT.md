@@ -22362,3 +22362,38 @@ and verifies AC=1 refusal versus AC=0 #GP without retirement or state changes.
 No physical x86 acceptance was run. ISSUE-025 remains open, and these local
 reciprocal results do not claim hardware bit equality or a universal tiny-result
 cutoff. Stage 2 remains open.
+
+<a id="s2-30dl--large-gap-fsubr-sti-st0"></a>
+
+## S2-30dl — large-gap `FSUBR ST(i), ST(0)`
+
+Extended only bare `DC E0..E7` to normalized Normal operand exponent gaps
+65..32765 by enabling the large-gap option in the caller's existing bounded
+FCW-precision helper. The helper still validates both original operands,
+computes old `ST(0)-ST(i)`, stores to old physical `ST(i)`, and preserves
+no-pop semantics, sticky PE, local C1 handling and the existing gap≤64 results.
+Existing `DC E8..EF` FSUB large-gap behavior is unchanged; `DE E0..E7` FSUBRP
+still refuses gap 65 atomically. No physical x86 acceptance is claimed.
+
+The independent integer oracle covers 86,016 combinations across gaps
+64/65/66/32765, all twelve FCWs, sign combinations, operand order, TOP/index
+placements and both prior PE/C1 values.
+Atomic alias and neighbor controls and a literal `DC E1` fixture check
+destination selection, full state and JIT denial. Verification results:
+
+- `cargo test -p od-isa --offline -- --test-threads=1`: 1,886 passed.
+- `cargo test -p od-runner --offline -- --test-threads=1`: 125 unit + 515
+  fixture tests passed (fixture suite 376.74s).
+- `cargo test -p od-testkit --offline -- --test-threads=1`: 455 passed.
+- `cargo check --workspace --all-targets --offline` passed. Formatting and
+  `git diff --check` passed after applying rustfmt. Layout reports the isolated
+  worktree `.git` marker and the two absent historical oracle manifests already
+  tracked in ISSUE-023; no new paths were added.
+- `graphify update .` passed its AST refresh: 11,794 nodes, 25,407 edges and
+  375 communities. Independent Sol/high review is clean after corrections to
+  the prior PE/C1 oracle histories and the CPU-contract link anchor; no findings
+  remain.
+
+See the [standalone report](S2_30DL_X87_FSUBR_LARGE_GAPS.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dl-large-gap-fsubr-sti-st0-dc-e0-e7),
+[plan](../plans/STAGE_2.md#s2-30dl-large-gap-fsubr-sti-st0-admission), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dl-large-gap-reverse-destination-fsubr-fixture).

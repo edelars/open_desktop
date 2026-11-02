@@ -221,6 +221,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cv | Bare `DC E8..EF` FSUB ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30i; Sol/high review clean; od-isa 1,813, testkit 455, runner 115+493; workspace check/fmt passed; Graphify 11,335/24,389/351 |
 | [x] | S2-30dk | Bare `DC E8..EF` FSUB ST(i),ST(0) reuses S2-29af for normalized gaps 65..32765 after validating both original operands and flipping only a local ST(0) copy; gap≤64 behavior and DC reverse/DE pop forms unchanged | od-isa 1,881; testkit 455; runner 125 unit + 513 fixtures; workspace all-target offline check/fmt/diff passed; Graphify 11,765/25,339/376; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-30cw | Bare `DC E0..E7` FSUBR ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30l; independent Sol/high review clean; integrated main od-isa 1,821, testkit 455, runner 116+495, x86-runner 8+4; workspace/fmt/layout/diff and Graphify 11,339/24,564/343 passed; no physical x86 acceptance |
+| [x] | S2-30dl | Bare `DC E0..E7` FSUBR ST(i),ST(0) extends only its normalized Normal exponent-gap admission to 65..32765 through the existing bounded FCW precision helper; gap≤64, `DC E8..EF` FSUB, and `DE E0..E7` FSUBRP behavior unchanged | Isolated validation and Sol/high review recorded in [standalone report](../reports/S2_30DL_X87_FSUBR_LARGE_GAPS.md); interpreter-only, no physical x86 acceptance |
 | [x] | S2-30dc | Bare `DE E0..E7` FSUBRP ST(i),ST(0), reuse bounded FSUB ST(0)-ST(i) precision helper for normalized gap≤64; preserve p64 helper domain; write old physical ST(i), then pop TOP; sticky PE/local C1; alias and invalid-domain rollback | Focused fsub 43; od-isa 1,847, testkit 455, runner 119+502, x86-runner 8+4; workspace/fmt/diff and Graphify 11,535/24,827/369 passed; independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-30dd | Bare `DE F8..FF` FDIVP ST(i),ST(0), reuse bounded FDIV helper for `ST(i)/ST(0)` at PC24/53/64 and every RC; preserve p64 result domain with no exponent-gap cutoff; write old physical ST(i), then pop; sticky PE/C1 and +1 alias | 12,288 complete-state ISA cases; gap-65 all-FCW/TOP/index; od-isa 1,851, testkit 455, runner 119+504; workspace check/fmt/diff passed; isolated layout has only ISSUE-023 historical caveats; Graphify 11,516/24,928/347; Sol/high review clean; no physical x86 acceptance; see [standalone report](../reports/S2_30DD_X87_FDIVP_PRECISION.md) |
 | [x] | S2-30de | Bare `DE F0..F7` FDIVRP ST(i),ST(0), reuse bounded FDIV helper in old `ST(0)/ST(i)` order at PC24/53/64 and every RC; preserve p64 Normal result domain with no exponent-gap cutoff; write old physical ST(i), then pop; sticky PE/C1 and +1 alias | 12,288 complete-state ISA cases; gap-65 matrix; literal PC24 negative-directed `-1/3` runner fixture with full state/JIT denial; od-isa 1,856, testkit 455, runner 119+506 passed; workspace check/fmt/diff passed; Graphify 11,591/24,949/361; isolated layout has `.git`/historical ISSUE-023 caveats; Sol/high review clean; no physical x86 acceptance; see [standalone report](../reports/S2_30DE_X87_FDIVRP_PRECISION.md) |
@@ -11710,6 +11711,28 @@ Workspace all-target offline check, formatting, diff check and Graphify passed.
 The isolated layout checker reported the known `.git` marker and two missing
 historical oracle manifests tracked by ISSUE-023; main layout has no new broken
 links. Independent Sol/high review is clean (39 `fsub` tests passed); no physical x86 acceptance is claimed.
+
+#### S2-30dl. Large-gap `FSUBR ST(i), ST(0)` admission
+
+Extend only exact bare Long64 `DC E0..E7` from S2-30cw to normalized
+Normal-to-Normal exponent gaps 65..32765, reusing the existing direct
+FCW-precision helper and its integer rounding diagnostics. Validate both
+original operands and all existing FCW/FSW/selector/tag gates; do not use an
+exact fallback. Gaps≤64 retain the prior result, PE, C1 and FCW behavior.
+Accept only Normal results; alias cancellation, unsupported states and result
+domains refuse atomically. Store the old `ST(0)-ST(i)` result to old physical
+`ST(i)` without popping, preserving TOP, tags and unrelated state.
+
+The existing `DC E8..EF` FSUB large-gap profile retains its prior behavior;
+`DE E0..E7` FSUBRP remains capped at gap 64. Cover gaps 64/65/66/32765 with an
+independent raw-integer oracle across all FCWs, signs, operand orders, TOP/index
+placements and PE/C1 histories, plus alias and neighboring-form refusal
+controls and a literal `DC E1` runner fixture with JIT denial. Normative source:
+Intel SDM Rev. 093 Vol. 2A `FSUBR/FSUBRP/FISUBR`, pp. 3-397–3-399
+([official Vol. 2A PDF](https://cdrdv2.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
+Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30
+([official Vol. 1 PDF](https://cdrdv2.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+No physical x86 acceptance is claimed.
 
 #### S2-30dk. Large-gap `FSUB ST(i), ST(0)` admission
 
