@@ -11317,6 +11317,13 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                     ):
                         harness.validate_required_rust_test_evidence(changed, run_root)
 
+                forged_argv = passing_rust_gate_steps(log_dir)
+                forged_argv[step]["argv"] = ["cargo", "test"]
+                with self.subTest(step=step, evidence="forged argv"), self.assertRaisesRegex(
+                    harness.HarnessError, "invocation is not exact"
+                ):
+                    harness.validate_required_rust_test_evidence(forged_argv, run_root)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
