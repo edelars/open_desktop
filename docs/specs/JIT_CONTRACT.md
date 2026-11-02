@@ -301,6 +301,19 @@ Recorded fixtures cover STOP, budget, fault, and no-replay behavior; other
 addr32 dword-store forms remain outside this admission. See the
 [S3-20dc report](../reports/STAGE_3_S3-20dc_2026-11-02.md).
 
+#### S3-20dd: exact address64 SIB Dword load
+
+The shared typed-IR Dword-load path additionally admits only the exact
+three-byte singleton `8B 04 0B` (`MOV EAX,[RBX+RCX]`): ModRM selects EAX and
+SIB selects scale 1, full-width RBX base, and full-width RCX index. Effective
+address calculation follows the decoder-owned address64 operand. The checked
+load reads four bytes and writes the result to EAX, zero-extending into RAX
+and clearing `RAX[63:32]`; other registers and flags are preserved. Exact
+source/site binding and one PC-map guest
+boundary at `A+3` are retained. Recorded fixtures cover faults, no replay,
+STOP, and budget handling; other SIB shapes are not admitted. See the
+[S3-20dd report](../reports/STAGE_3_S3-20dd_2026-11-02.md).
+
 #### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 The host-side regression `s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow`
