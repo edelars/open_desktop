@@ -17527,12 +17527,13 @@ mod tests {
             bytes: BTreeMap<u64, u8>,
             reads: Vec<(u64, usize)>,
             read_error: Option<MemoryError>,
+            instruction_base: u8,
         }
         impl GuestMemory for AliasRam {
             fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
                 match address {
                     ENTRY => Ok(0x8b),
-                    address if address == ENTRY + 1 => Ok(instruction_base),
+                    address if address == ENTRY + 1 => Ok(self.instruction_base),
                     _ => self
                         .bytes
                         .get(&address)
@@ -17645,6 +17646,7 @@ mod tests {
                 bytes: BTreeMap::new(),
                 reads: Vec::new(),
                 read_error: None,
+                instruction_base,
             };
             let low32_decoy = u64::from(ADDRESS as u32);
             for (offset, byte) in 0x1357_9bdf_u32.to_le_bytes().into_iter().enumerate() {
@@ -17700,6 +17702,7 @@ mod tests {
                 bytes: BTreeMap::new(),
                 reads: Vec::new(),
                 read_error: None,
+                instruction_base,
             };
             for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
                 ram.bytes.insert(address + offset as u64, byte);
@@ -17748,6 +17751,7 @@ mod tests {
                 bytes: BTreeMap::new(),
                 reads: Vec::new(),
                 read_error: None,
+                instruction_base,
             };
             let stop_flag = AtomicU8::new(stop_requested);
             let result = published
@@ -17776,6 +17780,7 @@ mod tests {
             bytes: BTreeMap::new(),
             reads: Vec::new(),
             read_error: Some(fault.clone()),
+            instruction_base,
         };
         let mut state = od_isa::LongModeState {
             rip: ENTRY,
@@ -17814,6 +17819,7 @@ mod tests {
             bytes: BTreeMap::new(),
             reads: Vec::new(),
             read_error: Some(backend_error),
+            instruction_base,
         };
         let backend = published.execute_ir_memory_dword_load_v2(
             &mut state,
@@ -17848,6 +17854,7 @@ mod tests {
                 bytes: BTreeMap::new(),
                 reads: Vec::new(),
                 read_error: None,
+                instruction_base,
             };
             let result = published
                 .execute_ir_memory_dword_load_v2(
@@ -17878,6 +17885,7 @@ mod tests {
             bytes: BTreeMap::new(),
             reads: Vec::new(),
             read_error: None,
+            instruction_base,
         };
         let overflow = published.execute_ir_memory_dword_load_v2(
             &mut state,
