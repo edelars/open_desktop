@@ -153,6 +153,7 @@ SELF_TEST_NAMES = (
     "test_s3_34cy_addr32_alias_disp32_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34cz_addr32_alias_disp32_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34da_rcx_base_dword_load_gates_are_pinned_and_fail_closed",
+    "test_s3_34db_rcx_base_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -1274,6 +1275,15 @@ ADDITIONAL_TEST_GATES = (
         "s3_34da_host_rcx_base_dword_load_full_rcx_and_zero_extended_eax",
         "local_acceptance", "od-host",
         "tests::s3_20fp_rcx_base_dword_load_uses_full_rcx_and_zero_extends_eax",
+    ),
+    (
+        "s3_34db_ir_rcx_base_dword_store_source_binding", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_rcx_base_store_binds_exact_source_and_site",
+    ),
+    (
+        "s3_34db_host_rcx_base_dword_store_full_rcx_and_low_eax_payload",
+        "local_acceptance", "od-host",
+        "tests::s3_20fq_rcx_base_dword_store_uses_full_rcx_and_low_eax_payload",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
