@@ -328,6 +328,21 @@ and guards. No separate scale-specific canonical-end/range-overflow fixture
 was added, and the shared preflight/helper are unchanged; no runtime defect is
 claimed. See the [S3-20df report](../reports/STAGE_3_S3-20df_2026-11-02.md).
 
+#### S3-20dg: exact address64 SIB Dword stores with RCX scales 2, 4, and 8
+
+The shared typed-IR Dword-store path additionally admits exactly `89 04 4B`,
+`89 04 8B`, and `89 04 CB` (`MOV [RBX+RCX*2|4|8],EAX`). Each is a three-byte
+singleton with full-width RBX base, full-width RCX index, and its encoded SIB
+scale. Effective address calculation follows decoder-owned address48
+`access_address_48`. The store writes low32 EAX through one contiguous checked
+four-byte access; source registers and flags are preserved. Exact source/site
+scale binding and the single PC-map guest boundary at `A+3` are retained;
+recorded fixtures cover no replay, fault atomicity, STOP, and budget behavior.
+A noncanonical crossing fixture asserts the decoded EA ends in `...fffe` and
+the access raises `#GP`. The scale-1 `89 04 0B` form remains separately
+covered by S3-20de; this does not claim separate 64-bit range-overflow tests or
+a runtime defect. See the [S3-20dg report](../reports/STAGE_3_S3-20dg_2026-11-02.md).
+
 #### S3-20de: exact address64 SIB Dword store
 
 The shared typed-IR Dword-store path additionally admits only the exact
