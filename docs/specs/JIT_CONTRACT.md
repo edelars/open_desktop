@@ -831,6 +831,18 @@ Exact harness gate identities and their unexecuted status are recorded in the
 [S3-34bz report](../reports/STAGE_3_S3-34bz_2026-11-02.md); they do not add
 runtime evidence.
 
+#### S3-20ep: exact RCX-indexed no-base SIB Dword load with disp32
+
+The shared typed-IR Dword-load path admits only the exact unprefixed seven-byte
+singleton `8B 04 0D disp32` (`MOV EAX,[RCX+disp32]`): address64, SIB without a
+base, RCX index at scale 1, and Dword transfer. The decoder-owned effective
+address is full RCX plus sign-extended disp32 with wrapping u64 arithmetic.
+One checked four-byte read is performed, EAX zero-extends into RAX, and the
+instruction boundary is `A+7`. Other prefixes and neighboring SIB forms
+remain outside the exact admission. Runtime tests remain pending; the
+[S3-20ep report](../reports/STAGE_3_S3-20ep_2026-11-02.md) records the current
+evidence and limit.
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
