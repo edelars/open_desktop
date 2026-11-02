@@ -1115,12 +1115,13 @@ fn is_checked_dword_store_address(
     operand: &od_isa::long_decode::MemoryOperand,
     instruction_length: u64,
 ) -> bool {
-    let address32_sib_profile = instruction_length == 4
+    let address32_sib_profile = matches!(instruction_length, 4 | 5)
         && operand.address_size == od_isa::OperandSize::Dword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
         && operand.index == Some(od_isa::Register::Rcx)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
-        && operand.displacement == 0;
+        && ((instruction_length == 4 && operand.displacement == 0)
+            || (instruction_length == 5 && i8::try_from(operand.displacement).is_ok()));
     let rbx_rcx_sib_profile = matches!(instruction_length, 3 | 4 | 7)
         && operand.address_size == od_isa::OperandSize::Qword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))

@@ -3132,6 +3132,13 @@ fn build_block_with_profile(
                         })
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(5))
+                        .is_some_and(|bytes| {
+                            bytes[..3] == [0x67, 0x89, 0x44]
+                                && matches!(bytes[3], 0x0b | 0x4b | 0x8b | 0xcb)
+                        })
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(3))
                         .is_some_and(|bytes| bytes[..2] == [0x89, 0x43])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
@@ -4924,7 +4931,7 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
 
 pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
     let address32_rbx_rcx_sib_profile = instruction.prefixes.address_override
-        && instruction.length == 4
+        && matches!(instruction.length, 4 | 5)
         && instruction.address_size == OperandSize::Dword
         && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
             if operand.address_size == OperandSize::Dword
@@ -4932,7 +4939,9 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
                 && operand.index == Some(od_isa::Register::Rcx)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
-                && operand.displacement == 0);
+                && ((instruction.length == 4 && operand.displacement == 0)
+                    || (instruction.length == 5
+                        && i8::try_from(operand.displacement).is_ok())));
     let address32_profile = instruction.prefixes.address_override
         && instruction.address_size == OperandSize::Dword
         && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
