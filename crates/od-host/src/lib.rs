@@ -449,7 +449,9 @@ impl PublishedCode {
                 && source[..3] == [0x67, 0x89, 0x84]
                 && matches!(source[3], 0x24 | 0x0b | 0x4b | 0x8b | 0xcb))
             && !(source.len() == 8 && source[..4] == [0x67, 0x89, 0x04, 0x25])
-            && !(source.len() == 8 && source[..4] == [0x67, 0x89, 0x04, 0x0d])
+            && !(source.len() == 8
+                && source[..3] == [0x67, 0x89, 0x04]
+                && matches!(source[3], 0x0d | 0x4d | 0x8d | 0xcd))
             && !(source.len() == 4 && source[..3] == [0x67, 0x89, 0x43])
             && !(source.len() == 4 && source[..3] == [0x67, 0x89, 0x45])
             && !(source.len() == 7 && source[..3] == [0x67, 0x89, 0x83])
@@ -6706,6 +6708,19 @@ mod tests {
 
     #[test]
     fn s3_20eu_addr32_rcx_index_no_base_sib_disp32_dword_store_uses_wrapped_ecx() {
+        s3_addr32_rcx_index_no_base_sib_dword_store_uses_wrapped_ecx(&[(0x0d, 1)]);
+    }
+
+    #[test]
+    fn s3_20ew_addr32_rcx_index_no_base_sib_scaled_disp32_dword_store_uses_wrapped_scaled_ecx() {
+        s3_addr32_rcx_index_no_base_sib_dword_store_uses_wrapped_ecx(&[
+            (0x4d, 2),
+            (0x8d, 4),
+            (0xcd, 8),
+        ]);
+    }
+
+    fn s3_addr32_rcx_index_no_base_sib_dword_store_uses_wrapped_ecx(profiles: &[(u8, u8)]) {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 
         struct Memory<'a> {
@@ -6813,7 +6828,7 @@ mod tests {
         let entry = 0x9c40;
         let stop = AtomicU8::new(0);
         let payload = 0xfeed_face_89ab_cdef_u64;
-        let cases: [(i32, u64); 12] = [
+        let cases: [(i32, u64); 18] = [
             (i32::MIN, 0xa5a5_5a5a_1234_5678),
             (-129, 0xdead_beef_1234_5678),
             (-1, 0xcafe_babe_1234_5678),
@@ -6823,13 +6838,20 @@ mod tests {
             (128, 0x99aa_bbcc_1234_5678),
             (i32::MAX, 0x0bad_f00d_1234_5678),
             (-4, 0xfeed_face_0000_0004),
+            (-1, 0xdead_beef_0000_0003), // 3*scale-1 => 5/11/23
+            (0, 0xdead_beef_8000_0001), // scaled multiply wraps in addr32
+            (8, 0xdead_beef_ffff_ffff), // signed-add wrap after every scale
             (1, 0xa5a5_5a5a_ffff_fffe),
             (1, 0xdead_beef_ffff_ffff),
             (-1, 0x1111_2222_0000_0000),
+            (-3, 0), // width-four writes from fffffffd/fe/ff stay contiguous
+            (-2, 0),
+            (-1, 0),
         ];
 
+        for &(sib, scale) in profiles {
         for (displacement, rcx) in cases {
-            let mut source = [0x67, 0x89, 0x04, 0x0d, 0, 0, 0, 0];
+            let mut source = [0x67, 0x89, 0x04, sib, 0, 0, 0, 0];
             source[4..].copy_from_slice(&displacement.to_le_bytes());
             let compiled = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
                 CodeView::new(entry, &source).unwrap(),
@@ -6837,7 +6859,11 @@ mod tests {
             )
             .unwrap();
             let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
-            let effective_address = u64::from((rcx as u32).wrapping_add(displacement as u32));
+            let effective_address = u64::from(
+                (rcx as u32)
+                    .wrapping_mul(u32::from(scale))
+                    .wrapping_add(displacement as u32),
+            );
             let expected = (effective_address, vec![0xef, 0xcd, 0xab, 0x89]);
             let mut initial = od_isa::LongModeState {
                 rip: entry,
@@ -6885,7 +6911,9 @@ mod tests {
             drop(published);
         }
 
-        let source = [0x67, 0x89, 0x04, 0x0d, 0xfc, 0xff, 0xff, 0xff];
+        let displacement = -i32::from(scale);
+        let mut source = [0x67, 0x89, 0x04, sib, 0, 0, 0, 0];
+        source[4..].copy_from_slice(&displacement.to_le_bytes());
         let compiled = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
             CodeView::new(entry, &source).unwrap(),
             entry,
@@ -6899,7 +6927,7 @@ mod tests {
             ..Default::default()
         };
         before.gpr[0] = payload;
-        before.gpr[1] = 4;
+        before.gpr[1] = 1;
 
         let mut guarded_state = before.clone();
         let mut guarded_memory = Memory::new(entry, &source);
@@ -7031,6 +7059,7 @@ mod tests {
         }
         .is_err());
         assert_eq!(stopped_memory.writes, vec![expected]);
+        }
     }
 
     #[test]
