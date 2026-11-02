@@ -802,6 +802,19 @@ admission. Fixtures are bounded and do not establish physical memory, MMU,
 or broad host behavior. See the
 [S3-20em report](../reports/STAGE_3_S3-20em_2026-11-02.md).
 
+#### S3-20en: exact address-size-32 absolute SIB Dword load
+
+The shared typed-IR Dword-load path admits only the exact eight-byte
+singleton `67 8B 04 25 id` (`MOV EAX,[disp32]`): address-size override,
+SIB with no base or index, scale 1, Dword address size, and Dword transfer.
+The decoder-owned disp32 is reduced modulo 2^32 and zero-extended to form the
+absolute effective address. One checked four-byte read remains contiguous
+even across 4 GiB; `EAX` zero-extends into `RAX`, and the instruction boundary
+is `A+8`. Neighboring prefixes and encodings remain outside the exact
+admission. The bounded fixtures do not establish physical memory, MMU, or
+broad host behavior. See the
+[S3-20en report](../reports/STAGE_3_S3-20en_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact

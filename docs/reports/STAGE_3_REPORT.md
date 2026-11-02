@@ -161,6 +161,28 @@ remains open. Stage 2 remained outside this slice's evidence; concurrent runs
 were ignored per user instruction. Mini/M1 remain deferred; Stage 3 remains
 partial. See the [S3-20em report](STAGE_3_S3-20em_2026-11-02.md).
 
+S3-20en adds only the exact address-size-32 absolute SIB disp32 Dword load
+`67 8B 04 25 id`. The addr32 disp32 is reduced modulo 2^32 and zero-extended;
+one checked four-byte read can cross 4 GiB without per-byte wrap, EAX
+zero-extends into RAX, and the guest boundary is `A+8`. Its JIT fixture covers
+nine signed displacement representatives and source/site identity for all
+eight bytes. The host fixture checks one read at `0xffff_ffff`, state/flag
+preservation, entry guards, backend-read failure without commit followed by
+retry, and callback STOP commit with no replay.
+
+Runtime source `4234628a6f06f6656f234c2c124504fc2f80b750` was integrated as
+`6588d50`; independent Sol/high static review passed. Host identity follow-up
+`a202412` was integrated as `ba6d8e1` to match the exact identity pinned by
+harness 34by. No tests, builds, formatting, Cargo checks, or Python harness
+tests were run for this slice under the user's Mini deferral, so both exact
+runtime Cargo gates remain pending. Harness source `082d05d12e4a3334a638fd319d2efa24fbcc533e`
+was integrated as `9353bfa`; its manifest records 224 Rust gates (214
+acceptance, 10 lifecycle) and 242 local steps. Static harness review passed;
+no Python tests were run. ISSUE-028 remains open. Stage 2 remained outside
+this slice's evidence; concurrent runs were ignored per user instruction.
+Mini/M1 remain deferred; Stage 3 remains partial. See the
+[S3-20en report](STAGE_3_S3-20en_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20
