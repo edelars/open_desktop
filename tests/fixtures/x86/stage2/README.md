@@ -111,6 +111,17 @@ check complete replacement and the read width. The deterministic S2-36ab
 reference defines these values. ISSUE-025 remains open, so the fixture makes no
 hardware-bit or universal tiny-result-boundary claim. See the [S2-37dy plan](../../../../docs/plans/STAGE_2.md#s2-37dy--local-long64-memory-legacy-rcpps-at-rax) and [ISSUE-025](../../../../docs/KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 
+### S2-37ea local legacy RCPSS memory profile
+
+`s2_37ea_rcpss_m32_memory_rhs.case.json` is a handwritten schema-v2 fixture
+for exact `F3 0F 53 00`. The four-byte source starts at unaligned `[RAX]` and
+contains `2.0`, producing the local deterministic `0.5` result. Poisoned XMM0
+checks that only the low dword changes; the high 96 bits and adjacent memory
+canary remain intact. AC=1 is refused before the data callback; strict MXCSR
+checks require all six exception masks with DAZ/FTZ clear while allowing RC and
+prior sticky histories. ISSUE-025 remains open, so no exact hardware bits or
+universal tiny-result cutoff are claimed. See the [S2-37ea plan](../../../../docs/plans/STAGE_2.md#s2-37ea--local-long64-memory-legacy-rcpss-at-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-37ea-memory-rcpss-at-rax), [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37ea--rcpss-xmm0m32-rax), and [ISSUE-025](../../../../docs/KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
 Байты написаны вручную по Intel SDM revision 093: Vol.2B `MOV—Move`,
 Vol.2A `ADD—Add`, Vol.2A §§2.1.5 и 2.2.1.2 (ModR/M/SIB и REX),
 Vol.1 §3.4.1.1 (GPR/subregister aliases). Нормативная ссылка:

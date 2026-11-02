@@ -75,6 +75,8 @@ const SQRTPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 );
 const RCPPS_M128_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dy_rcpps_m128_memory_rhs.case.json");
+const RCPSS_M32_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37ea_rcpss_m32_memory_rhs.case.json");
 const RSQRTPS_M128_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dz_rsqrtps_m128_memory_rhs.case.json");
 const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
@@ -38952,6 +38954,91 @@ fn sqrtss_m32_memory_literal_rounds_unaligned_input_and_remains_backend_denied()
     let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
     foreign.sqrtss_memory_rax_controls = fixture.sqrtss_memory_rax_controls;
     assert!(foreign.validate().is_err());
+}
+
+#[test]
+fn rcpss_m32_memory_rhs_is_strict_and_interpreter_only() {
+    let base = Fixture::from_json(RCPSS_M32_MEMORY_RAX).unwrap().fixture;
+    assert_eq!(base.profile, od_testkit::v2::Profile::LongRcpssMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "f30f5300");
+    assert_eq!(base.memory[1].length, 8);
+    let (input, result) = run(RCPSS_M32_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let result_snapshot = snapshot(&result);
+    assert_eq!(
+        result_snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "0000003fcafef00d123456789abcdef0"
+    );
+    assert_eq!(
+        result_snapshot.state.sse.as_ref().unwrap().mxcsr,
+        base.initial_state.sse.as_ref().unwrap().mxcsr
+    );
+    assert_eq!(
+        result_snapshot.memory[1].bytes_hex,
+        base.memory[1].initial_bytes_hex
+    );
+
+    let mut wrong_result = result.clone();
+    snapshot_mut(&mut wrong_result)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .xmm[0]
+        .replace_range(0..8, "00000000");
+    assert!(wrong_result.validate_for(&input).is_err());
+    let mut wrong_controls = result.clone();
+    snapshot_mut(&mut wrong_controls)
+        .rcpss_memory_rax_controls
+        .as_mut()
+        .unwrap()
+        .cr0_ts = true;
+    assert!(wrong_controls.validate_for(&input).is_err());
+    let mut missing_controls = base.clone();
+    missing_controls.rcpss_memory_rax_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut ftz_enabled = base.clone();
+    ftz_enabled.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 15));
+    assert!(ftz_enabled.validate().is_err());
+    let mut daz_enabled = base.clone();
+    daz_enabled.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 6));
+    assert!(daz_enabled.validate().is_err());
+    let mut reserved_mxcsr_bit = base.clone();
+    reserved_mxcsr_bit.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 16));
+    assert!(reserved_mxcsr_bit.validate().is_err());
+    let mut unmasked_exception = base.clone();
+    unmasked_exception.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 & !(1 << 7));
+    assert!(unmasked_exception.validate().is_err());
+    let mut bad_encoding = base.clone();
+    bad_encoding.memory[0].initial_bytes_hex = "f30f5301".into();
+    assert!(bad_encoding.validate().is_err());
+
+    let mut ac = base.clone();
+    ac.case_id = "s2_37ea_ac_refusal".into();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    let (ac_input, ac_result) = run(&ac.to_json().unwrap(), "interpreter", 4);
+    ac_result.validate_for(&ac_input).unwrap();
+    assert!(matches!(ac_result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(
+        ac_result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert_eq!(
+        snapshot(&ac_result).memory[1].bytes_hex,
+        base.memory[1].initial_bytes_hex
+    );
+
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut relabeled = result.clone();
+        relabeled.backend = backend;
+        assert!(relabeled.validate_for(&input).is_err());
+    }
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(RCPSS_M32_MEMORY_RAX, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+    }
 }
 
 #[test]

@@ -22261,3 +22261,32 @@ by ISSUE-023; no new broken links were reported. Independent Sol/high review is
 clean; no actionable findings. No physical x86 acceptance or hardware bit
 equality is claimed; ISSUE-025 remains open. See the
 [standalone report](S2_37DZ_RSQRTPS_MEMORY.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-37dz-memory-rsqrtps-at-rax), [plan](../plans/STAGE_2.md#s2-37dz--local-long64-memory-legacy-rsqrtps-xmm0m128-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dz-local-legacy-rsqrtps-memory-profile).
+
+## S2-37ea — RCPSS XMM0,m32 [RAX]
+
+Added the bounded schema-v2 interpreter profile `s2-long-rcpss-memory-rax-v1`
+for exact legacy `F3 0F 53 00`. It checks the SSE feature and CR0/CR4 gates
+after complete fetch and before CR0.TS, enforces supported MXCSR bits with all
+six exception masks set and DAZ/FTZ clear, and preserves accepted RC/sticky
+history. It performs one four-byte read from unaligned `[RAX]` when AC=0; AC=1
+is refused before the data callback. Both address endpoints are checked for
+canonical48. Successful execution uses the deterministic S2-36ab reference to
+replace only XMM0's low dword, preserving its high 96 bits and all other CPU
+state including MXCSR. Gate, address and read failures do not commit state.
+JIT, native, generic, fragment and C ABI routes remain closed.
+
+The handwritten fixture maps its source at `0x2001`, poisons XMM0's high 96 bits,
+and includes an adjacent memory canary. Direct ISA tests cover special values,
+all MXCSR RC × sticky histories, one unaligned m32 read, AC callback
+suppression, gate/address/read rollback, and exact decode. Schema/runner checks
+reject malformed encodings, unsupported MXCSR bits, DAZ/FTZ, unmasked
+exceptions, control/result tampering and non-interpreter backends. Checks on
+2026-11-02: `od-isa` 1,880; `od-testkit` 455; runner fixture suite 514;
+workspace all-target offline check passed. Formatting was applied and rechecked.
+Graphify: 11,758 nodes / 25,337 edges / 341 communities. Layout check reports
+only the isolated worktree `.git` marker and two missing historical manifests
+already tracked by ISSUE-023. No physical x86 result is claimed. ISSUE-025
+remains open for the overlapping published reciprocal thresholds. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-37ea-memory-rcpss-at-rax), [plan](../plans/STAGE_2.md#s2-37ea--local-long64-memory-legacy-rcpss-at-rax), [fixture](../../tests/fixtures/x86/stage2/s2_37ea_rcpss_m32_memory_rhs.case.json), and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+This isolated commit is ready for independent Sol/high review; review has not
+yet been performed.

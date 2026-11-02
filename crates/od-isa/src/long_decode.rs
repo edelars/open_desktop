@@ -907,6 +907,8 @@ pub enum Operation {
     },
     /// Local-only legacy `0F 53 00` packed binary32 reciprocal from m128 at RAX.
     RcppsMemoryRax,
+    /// Локальная legacy-форма `F3 0F 53 00`: скалярный обратный элемент binary32 из m32 по RAX.
+    RcpssMemoryRax,
     /// Local-only legacy `0F 52 00` packed binary32 reciprocal square root from m128 at RAX.
     RsqrtpsMemoryRax,
     /// Local-only legacy `F3 0F 5D /r` XMM-register form with masked IE/DE status.
@@ -4828,12 +4830,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x53) if rcpss_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm == 0x00 && prefix_count == 1 {
+                    Operation::RcpssMemoryRax
+                } else if modrm >> 6 != 3 {
                     return Err(self.unsupported(opcode));
-                }
-                Operation::RcpssRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
+                } else {
+                    Operation::RcpssRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
                 }
             }
             (OpcodeMap::Escape0f, 0x53) if rcpps_register => {
@@ -13087,7 +13092,6 @@ mod tests {
             &[0x48, 0x0f, 0x53, 0x00][..],
             &[0x40, 0x0f, 0x53, 0x00][..],
             &[0x66, 0x0f, 0x53, 0x00][..],
-            &[0xf3, 0x0f, 0x53, 0x00][..],
             &[0x67, 0x0f, 0x53, 0x00][..],
             &[0x2e, 0x0f, 0x53, 0x00][..],
             &[0xf0, 0x0f, 0x53, 0x00][..],
@@ -13099,6 +13103,40 @@ mod tests {
             let mut instruction = Memory::new(bytes);
             assert!(instruction.decode().is_err(), "{bytes:02x?}");
         }
+        let mut scalar = Memory::new(&[0xf3, 0x0f, 0x53, 0x00]);
+        assert_eq!(
+            scalar.decode().unwrap().operation,
+            Operation::RcpssMemoryRax
+        );
+    }
+
+    #[test]
+    fn rcpss_memory_rax_accepts_only_exact_legacy_f30f5300() {
+        let mut instruction = Memory::new(&[0xf3, 0x0f, 0x53, 0x00]);
+        let decoded = instruction.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::RcpssMemoryRax);
+        assert_eq!(decoded.length, 4);
+        for bytes in [
+            &[0xf3, 0x0f, 0x53, 0x01][..],
+            &[0xf3, 0x48, 0x0f, 0x53, 0x00][..],
+            &[0xf3, 0x40, 0x0f, 0x53, 0x00][..],
+            &[0x66, 0xf3, 0x0f, 0x53, 0x00][..],
+            &[0x67, 0xf3, 0x0f, 0x53, 0x00][..],
+            &[0x2e, 0xf3, 0x0f, 0x53, 0x00][..],
+            &[0xf0, 0xf3, 0x0f, 0x53, 0x00][..],
+            &[0xf3, 0x0f, 0x53][..],
+            &[0xc5, 0xf8, 0x53, 0x00][..],
+            &[0xc4, 0xe1, 0x78, 0x53, 0x00][..],
+            &[0x62, 0xf1, 0x7c, 0x08, 0x53, 0x00][..],
+        ] {
+            let mut instruction = Memory::new(bytes);
+            assert!(instruction.decode().is_err(), "{bytes:02x?}");
+        }
+        let mut packed = Memory::new(&[0x0f, 0x53, 0x00]);
+        assert_eq!(
+            packed.decode().unwrap().operation,
+            Operation::RcppsMemoryRax
+        );
     }
 
     #[test]

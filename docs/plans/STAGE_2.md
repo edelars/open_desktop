@@ -530,6 +530,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37c | Local-only Long64 legacy register RSQRTPS profile `s2-long-rsqrtps-reg-v1`, using S2-36ac per lane; JIT/native closed | S2-34.1, S2-36ac; independent review |
 | [x] | S2-37d | Local-only Long64 legacy register RCPPS profile `s2-long-rcpps-reg-v1`, using S2-36ab per lane; JIT/native closed | S2-34.1, S2-36ab; ISSUE-025; independent review |
 | [x] | S2-37dy | Local-only Long64 legacy memory RCPPS `0F 53 00` at `[RAX]`; one aligned m128 read; strict MXCSR admission, unchanged MXCSR; JIT/native closed | S2-37d, S2-36ab; ISSUE-025; independent Sol/high review clean |
+| [x] | S2-37ea | Local-only Long64 legacy memory RCPSS `F3 0F 53 00` at `[RAX]`; unaligned m32 read, AC refusal before callback, strict MXCSR, low32 result/high96 preserve; JIT/native closed | S2-37b, S2-36ab; ISSUE-025; independent review pending |
 | [x] | S2-37dz | Local-only Long64 legacy memory RSQRTPS `0F 52 00` at `[RAX]`; one aligned m128 read; strict MXCSR admission, unchanged MXCSR; JIT/native closed | S2-37c, S2-36ac; independent Sol/high review clean |
 | [x] | S2-37e | Local-only Long64 legacy register MINSS profile `s2-long-minss-reg-masked-v1`; bounded masked IE/DE status only; JIT/native closed | S2-36z; independent review |
 | [x] | S2-37f | Local-only Long64 legacy register MAXSS profile `s2-long-maxss-reg-masked-v1`; reuses bounded masked IE/DE status; JIT/native closed | S2-37e, S2-38a; independent review |
@@ -6843,6 +6844,25 @@ canonical span overflow, exactly one read16, and full rollback on read failure.
 ISSUE-025 stays open: do not infer a universal hardware tiny-result cutoff or
 claim bitwise equality with physical RCPPS.
 
+#### S2-37ea — local Long64 memory legacy RCPSS at `[RAX]`
+
+Add schema-v2 diagnostic profile `s2-long-rcpss-memory-rax-v1` for the exact
+four-byte legacy encoding `F3 0F 53 00`. Complete fetch precedes SSE bit 25,
+CR0.EM/CR4.OSFXSR and CR0.TS gates. Require strict MXCSR admission: supported
+bits only, all six exception masks set, DAZ=FTZ=0; any RC and old sticky bits
+are accepted and preserved. Read exactly one little-endian m32 from `[RAX]`;
+unaligned addresses are accepted when RFLAGS.AC=0. The bounded local profile
+refuses AC=1 before invoking the data-memory callback. Check canonical48 for
+both `[RAX,RAX+3]` endpoints. On success, apply the S2-36ab reciprocal
+reference to the memory value and replace only XMM0[31:0], preserving its high
+96 bits, other vector state, and all MXCSR bits. Gate, address and read failures
+must leave CPU state uncommitted. Keep JIT, native, generic, fragment and C ABI
+routes closed. Use an independent handwritten unaligned fixture with XMM and
+adjacent-memory canaries; validate strict schema/result constraints, AC
+callback suppression, the `3/8192` normal-result error envelope and local
+special-value policy. ISSUE-025 remains open; no exact hardware-bit or universal
+tiny-result cutoff claim is made.
+
 #### S2-37e — local Long64 register-only legacy MINSS with masked status
 
 Add schema-v2 diagnostic profile `s2-long-minss-reg-masked-v1` for exactly
@@ -7353,7 +7373,7 @@ inventory.
 | MULSD | `F2 0F 59 /r` | SSE2 | XMM, m64; low f64 | 4-148 | S2-37at register-only, OM=UM=1 masked-range; WPR tininess after precision rounding; memory and full unmasked OE/UE missing |
 | MULSS | `F3 0F 59 /r` | SSE | XMM, m32; low f32 | 4-150 | S2-37au register-only, OM=UM=1 masked-range; WPR tininess after precision rounding; memory and full unmasked OE/UE missing |
 | RCPPS | `NP 0F 53 /r` | SSE | XMM, m128; 4×f32 | 4-538 | S2-37d, bounded |
-| RCPSS | `F3 0F 53 /r` | SSE | XMM, m32; low f32 | 4-540 | S2-37b, bounded |
+| RCPSS | `F3 0F 53 /r` | SSE | XMM, m32; low f32 | 4-540 | S2-37b register-only; S2-37ea exact `F3 0F 53 00` unaligned m32 `[RAX]`; SSE bit 25 |
 | RSQRTPS | `NP 0F 52 /r` | SSE | XMM, m128; 4×f32 | 4-594 | S2-37c, bounded |
 | RSQRTSS | `F3 0F 52 /r` | SSE | XMM, m32; low f32 | 4-596 | S2-37a, bounded |
 | SQRTPD | `66 0F 51 /r` | SSE2 | XMM, m128; 2×f64 | 4-661 | S2-37al register pairs; S2-37de exact `66 0F 51 00` aligned memory `[RAX]`, masked-only, SSE2 bit 26 |

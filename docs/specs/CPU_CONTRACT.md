@@ -12419,6 +12419,35 @@ because the published threshold inequalities overlap near the normal/subnormal
 result boundary. Normal outputs are checked against the `3/8192` error envelope;
 boundary cases assert only the local reference policy. See the [S2-37dy plan](../plans/STAGE_2.md#s2-37dy--local-long64-memory-legacy-rcpps-at-rax), [implementation report](../reports/S2_37DY_RCPPS_MEMORY.md), [fixture](../../tests/fixtures/x86/stage2/s2_37dy_rcpps_m128_memory_rhs.case.json), and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
 
+## Local S2-37ea: memory RCPSS at `[RAX]`
+
+The schema-v2 diagnostic profile `s2-long-rcpss-memory-rax-v1` admits only the
+four-byte Long64 legacy encoding `F3 0F 53 00` (`RCPSS XMM0,m32 [RAX]`). It
+requires SSE feature bit 25, CR0.EM=0, CR4.OSFXSR=1, then checks CR0.TS. The
+complete instruction fetch occurs before these feature/control gates. MXCSR
+admission is strict: supported bits only, all six exception masks set, and
+DAZ=FTZ=0; any RC and prior sticky flags are accepted and preserved.
+
+The data access is exactly one four-byte read from `[RAX]`; no 16-byte
+alignment is required. The RAX and RAX+3 endpoints must both be canonical48.
+This local profile treats RFLAGS.AC=1 as an unsupported profile condition and
+refuses before the data-memory callback; AC=0 permits an unaligned source. On
+success, the deterministic `Binary32::reciprocal_sse_raw()` reference consumes
+the memory dword and replaces only XMM0's low 32 bits. Its high 96 bits, all
+other vector state, memory, RFLAGS, and full MXCSR are preserved except normal
+RIP retirement. Gate, canonical-span, and read failures leave CPU state
+uncommitted. JIT, native, generic, fragment, and C ABI routes remain closed.
+
+The fixture is handwritten, maps data at an unaligned address, poisons XMM0's
+high 96 bits, and includes an adjacent memory canary. The direct ISA matrix
+covers signed zeros, subnormals, infinities, QNaN/SNaN, normal operands, all RC
+values × prior sticky histories, successful unaligned access, AC refusal before
+callback, and rollback on read failure. Schema-v2 validates the exact encoding,
+strict MXCSR and result state, plus the `3/8192` error envelope for normal
+outputs. Local special-value and boundary bits follow the deterministic helper;
+they are not exact hardware claims. ISSUE-025 remains open for the overlapping
+published normal/subnormal threshold inequalities. See the [S2-37ea plan](../plans/STAGE_2.md#s2-37ea--local-long64-memory-legacy-rcpss-at-rax), [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-37ea--rcpss-xmm0m32-rax), [fixture](../../tests/fixtures/x86/stage2/s2_37ea_rcpss_m32_memory_rhs.case.json), and [ISSUE-025](../KNOWN_ISSUES.md#issue-025--intel-rcpssrcpps-threshold-inequalities-overlap).
+
 ## Local S2-37e register-only MINSS with masked status
 
 The schema-v2 profile `s2-long-minss-reg-masked-v1` admits exactly one Long64
