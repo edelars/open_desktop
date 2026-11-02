@@ -17744,3 +17744,60 @@ format, layout, diff and Graphify pass. Independent Sol/high review is clean
 after fixing the #GP(0) error-code expectation in the memory oracle. Linux-only
 native preflight was not run on this macOS host, and no physical x86 acceptance
 is claimed. See the [implementation report](../reports/S2_38S_MINPS_MEMORY_UNMASKED.md).
+
+## S2-31ea — historical SF with pre-existing IE for raw FSTP m80fp
+
+Only exact bare Long64 `DB 38` (`FSTP m80fp [RAX]`) admits historical SF,
+and only when IE was already set. Reject ES or B and reject SF when IE is
+clear; a current SNaN cannot make SF-only state eligible. Preserve the four
+accepted FCWs, current source/tag classes, selector policy and checked
+ten-byte canonical48 span. Copy all ten source bytes unchanged and generate
+no conversion flags. Preserve SF, IE and other sticky bits; retain the current
+C1-clear policy; commit pop/TOP, tags, pointers, status, RIP and retirement
+only after a successful all-or-error write. Other x87 gates, new SF producers,
+pseudo encodings and exception delivery remain unchanged. Native/JIT stay
+closed.
+
+Schema-v2 Unsupported validation uses the same status predicate. Cover SF+IE
+with all 32 other sticky histories across accepted source/tag classes, signs,
+FCWs, TOP and C1; raw SNaN/canonical-subnormal byte preservation; SF-only,
+ES/B and malformed source/tag/control refusals; span/write rollback; repeated
+store, FNSTSW/FNCLEX/retry; literal fixtures and backend denial. This follows
+Intel SDM Rev. 093 Vol. 1 §8.1.3.4
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=212))
+and Vol. 2A FST/FSTP pp. 3-386–3-388
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ea--historical-sf-with-pre-existing-ie-for-raw-fstp-m80fp).
+
+## S2-38t — exact MAXPS memory unmasked IM/DM
+
+The strict interpreter-only schema-v2 profile admits only exact Long64 legacy
+`0F 5F 00` (`MAXPS XMM0,m128 [RAX]`), with three-byte fetch, budget one and
+stop RIP entry+3. Require SSE (`CPUID.01H:EDX[25]`), not SSE2. Full fetch and
+exact-form rejection precede feature #UD and TS #NM. Keep masked S2-37da
+memory MAXPS and unmasked S2-38l register MAXPS separate.
+
+Require MXCSR supported bits `0xffbf`, reserved bits clear, DAZ=FTZ=0 and
+ZE/OE/UE/PE masks set; IM, DM, RC and prior sticky status vary. Require
+16-byte alignment regardless of AC. Check canonical48 `[RAX,RAX+15]` before
+exactly one `read16`; misalignment/span faults raise #GP(0) before callbacks,
+and a failed read uses the existing memory-error outcome without state commit.
+
+Evaluate all four binary32 lanes from old XMM0 and actual memory RHS. MAXPS
+raw source-2 selection chooses the raw RHS for ties and either NaN, including
+SNaN payload. Collect raw IE/DE before disposition. An unmasked event commits
+all raw sticky events, reports #XM or arithmetic #UD according to OSXMMEXCPT,
+preserves complete XMM0/RIP and retires zero instructions. Masked completion
+suppresses DE only in a lane that also raised IE and atomically commits the
+whole result/status/RIP. Native/JIT/C ABI/generic/fragment remain closed.
+
+The independent schema oracle uses raw integer classification and actual
+memory bytes. Cover the 2,048 lane-event/mask product, upper-lane events,
+RC×64 sticky histories, AC=0/1, lane/source permutations, signed-zero and
+NaN cases, MAX-vs-MIN discriminator, poisoned XMM1, fetch/gate/fault priority,
+callback counts, strict-schema/result/backend tampering and literal fixtures.
+No physical x86 acceptance is claimed. Source: Intel SDM Rev. 093 Vol. 2B
+MAXPS pp. 4-8–4-10
+([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=16));
+Vol. 1 §§4.9.2, 11.5.3.1–3 and Appendix D; Vol. 3A §16.1.3/Table 16-1.
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-38t--exact-long64-maxps-xmm0m128-rax-with-unmasked-imdm-exits).
