@@ -48,5 +48,7 @@ open; the threshold-overlap region is not claimed to be hardware-bit exact.
   checkout; it reported no new S2-37dy path or link errors.
 - Graphify AST refresh completed: 11,648 nodes, 25,237 edges, 356 communities.
 
-No physical x86 acceptance is claimed. Independent Sol/high review is pending.
-ISSUE-025 remains open and the hardware tiny-result threshold remains unresolved.
+Independent Sol/high review completed clean after correcting the public executor
+API comment and using the RCPPS memory control alias in its signature. No physical
+x86 acceptance is claimed. ISSUE-025 remains open and the hardware tiny-result
+threshold remains unresolved.
