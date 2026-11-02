@@ -17502,6 +17502,21 @@ mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn s3_dword_alias_load_reads_old_full_rax_and_commits_eax_atomically() {
+        exercise_s3_dword_alias_load_base(0x00, od_isa::Register::Rax, 0);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_20fp_rcx_base_dword_load_uses_full_rcx_and_zero_extends_eax() {
+        exercise_s3_dword_alias_load_base(0x01, od_isa::Register::Rcx, 1);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn exercise_s3_dword_alias_load_base(
+        instruction_base: u8,
+        base_register: od_isa::Register,
+        base_gpr_index: usize,
+    ) {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
         use std::collections::BTreeMap;
 
@@ -17517,7 +17532,7 @@ mod tests {
             fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
                 match address {
                     ENTRY => Ok(0x8b),
-                    address if address == ENTRY + 1 => Ok(0x00),
+                    address if address == ENTRY + 1 => Ok(instruction_base),
                     _ => self
                         .bytes
                         .get(&address)
@@ -17614,13 +17629,13 @@ mod tests {
 
         let _guard = jit_test_lock();
         let block = od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(
-            CodeView::new(ENTRY, &[0x8b, 0x00]).unwrap(),
+            CodeView::new(ENTRY, &[0x8b, instruction_base]).unwrap(),
             ENTRY,
         )
         .unwrap();
         assert_eq!(
             block.site().operand().base,
-            od_isa::long_decode::AddressBase::Register(od_isa::Register::Rax)
+            od_isa::long_decode::AddressBase::Register(base_register)
         );
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&block).unwrap();
         let stop = AtomicU8::new(0);
@@ -17631,6 +17646,10 @@ mod tests {
                 reads: Vec::new(),
                 read_error: None,
             };
+            let low32_decoy = u64::from(ADDRESS as u32);
+            for (offset, byte) in 0x1357_9bdf_u32.to_le_bytes().into_iter().enumerate() {
+                ram.bytes.insert(low32_decoy + offset as u64, byte);
+            }
             for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
                 ram.bytes.insert(ADDRESS + offset as u64, byte);
             }
@@ -17639,7 +17658,7 @@ mod tests {
                 rflags: 0x8d7,
                 ..Default::default()
             };
-            state.gpr[0] = ADDRESS;
+            state.gpr[base_gpr_index] = ADDRESS;
             let mut expected_state = state.clone();
             let mut expected_ram = ram.clone();
             let result = published
@@ -17664,10 +17683,49 @@ mod tests {
             assert_eq!(result.exit, MemoryOperationExecutionExitV2::Complete);
             assert_eq!(state, expected_state);
             assert_eq!(state.gpr[0], u64::from(value));
+            if base_gpr_index != 0 {
+                assert_eq!(state.gpr[base_gpr_index], ADDRESS);
+            }
             assert_eq!(state.rip, ENTRY + 2);
             assert_eq!(result.retired_instructions, 1);
             assert_eq!(ram.reads, [(ADDRESS, 4)]);
             assert_eq!(ram, expected_ram);
+        }
+
+        for (address, value) in [
+            (0xffff_8000_0000_1000, 0x2468_ace0_u32),
+            (u64::MAX - 3, 0xdead_beef_u32),
+        ] {
+            let mut ram = AliasRam {
+                bytes: BTreeMap::new(),
+                reads: Vec::new(),
+                read_error: None,
+            };
+            for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
+                ram.bytes.insert(address + offset as u64, byte);
+            }
+            let mut state = od_isa::LongModeState {
+                rip: ENTRY,
+                ..Default::default()
+            };
+            state.gpr[base_gpr_index] = address;
+            let result = published
+                .execute_ir_memory_dword_load_v2(
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+                .unwrap();
+            assert_eq!(result.exit, MemoryOperationExecutionExitV2::Complete);
+            assert_eq!(state.gpr[0], u64::from(value));
+            if base_gpr_index != 0 {
+                assert_eq!(state.gpr[base_gpr_index], address);
+            }
+            assert_eq!(state.rip, ENTRY + 2);
+            assert_eq!(ram.reads, [(address, 4)]);
         }
 
         for (budget, stop_rip, stop_requested, expected_exit) in [
@@ -17684,7 +17742,7 @@ mod tests {
                 rip: ENTRY,
                 ..Default::default()
             };
-            state.gpr[0] = ADDRESS;
+            state.gpr[base_gpr_index] = ADDRESS;
             let before = state.clone();
             let mut ram = AliasRam {
                 bytes: BTreeMap::new(),
@@ -17723,7 +17781,7 @@ mod tests {
             rip: ENTRY,
             ..Default::default()
         };
-        state.gpr[0] = ADDRESS;
+        state.gpr[base_gpr_index] = ADDRESS;
         let before = state.clone();
         let failed = published
             .execute_ir_memory_dword_load_v2(
@@ -17784,7 +17842,7 @@ mod tests {
                 rip: ENTRY,
                 ..Default::default()
             };
-            state.gpr[0] = address;
+            state.gpr[base_gpr_index] = address;
             let before = state.clone();
             let mut ram = AliasRam {
                 bytes: BTreeMap::new(),
@@ -17814,7 +17872,7 @@ mod tests {
             rip: ENTRY,
             ..Default::default()
         };
-        state.gpr[0] = u64::MAX - 1;
+        state.gpr[base_gpr_index] = u64::MAX - 1;
         let before = state.clone();
         let mut ram = AliasRam {
             bytes: BTreeMap::new(),

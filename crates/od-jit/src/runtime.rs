@@ -526,7 +526,7 @@ impl MemorySiteV2 {
             && matches!(
                 self.operand.base,
                 od_isa::long_decode::AddressBase::Register(
-                    od_isa::Register::Rax | od_isa::Register::Rbx
+                    od_isa::Register::Rax | od_isa::Register::Rbx | od_isa::Register::Rcx
                 )
             )
             && self.operand.index.is_none()
@@ -3506,9 +3506,11 @@ impl MemorySiteV2 {
                 && self.operand.scale == expected_scale
                 && self.operand.displacement == i64::from(displacement);
         }
-        if source == [0x8b, 0x03] || source == [0x8b, 0x00] {
+        if source == [0x8b, 0x03] || source == [0x8b, 0x01] || source == [0x8b, 0x00] {
             let expected_base = if source == [0x8b, 0x03] {
                 od_isa::Register::Rbx
+            } else if source == [0x8b, 0x01] {
+                od_isa::Register::Rcx
             } else {
                 od_isa::Register::Rax
             };

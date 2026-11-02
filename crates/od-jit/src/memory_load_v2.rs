@@ -914,7 +914,8 @@ pub fn compile_ir_memory_load_block_v2(
 }
 
 /// Compile exact unprefixed `8B 03` (`MOV EAX,[RBX]`), `8B 00`
-/// (`MOV EAX,[RAX]`), `8B 43 ib` (`MOV EAX,[RBX+disp8]`), `8B 83 id`
+/// (`MOV EAX,[RAX]`), `8B 01` (`MOV EAX,[RCX]`),
+/// `8B 43 ib` (`MOV EAX,[RBX+disp8]`), `8B 83 id`
 /// (`MOV EAX,[RBX+disp32]`), `8B 40 ib` (`MOV EAX,[RAX+disp8]`),
 /// `8B 05 id` (`MOV EAX,[RIP+disp32]`), or
 /// `67 8B 03` (`MOV EAX,[EBX]`) or `67 8B 43 ib`
@@ -971,6 +972,7 @@ fn checked_dword_load_metadata_v2(
         .ok_or(MemoryLoadCompileErrorV2::UnsupportedForm)?;
     if bytes != [0x8b, 0x03]
         && bytes != [0x8b, 0x00]
+        && bytes != [0x8b, 0x01]
         && bytes != [0x8b, 0x04, 0x24]
         && bytes != [0x8b, 0x04, 0x0b]
         && bytes != [0x8b, 0x04, 0x4b]
@@ -5898,6 +5900,50 @@ mod tests {
         assert_eq!(sites.len(), displacements.len());
     }
     #[test]
+    fn ir_dword_rcx_base_load_binds_exact_source_and_site() {
+        let entry = 0x8130;
+        let source = [0x8b, 0x01];
+        let block = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &source).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert_eq!(block.source_bytes(), &source);
+        assert_eq!(block.site().destination(), Some(0));
+        assert_eq!(
+            block.site().operand().base,
+            AddressBase::Register(Register::Rcx)
+        );
+        assert_eq!(
+            block.site().operand().address_size,
+            od_isa::OperandSize::Qword
+        );
+        assert_eq!(block.site().operand().size, od_isa::OperandSize::Dword);
+        assert_eq!(block.site().operand().index, None);
+        assert_eq!(block.site().operand().scale, 1);
+        assert_eq!(block.site().operand().displacement, 0);
+        assert_eq!(block.site().next_rip(), entry + 2);
+        assert!(block
+            .site()
+            .matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        for neighbor in [
+            &[0x8b, 0x00][..],
+            &[0x8b, 0x03][..],
+            &[0x8b, 0x41, 0x00][..],
+            &[0x8b, 0x81, 0x00, 0, 0, 0][..],
+            &[0x67, 0x8b, 0x01][..],
+            &[0x66, 0x8b, 0x01][..],
+            &[0x48, 0x8b, 0x01][..],
+            &[0x8b, 0x01, 0x90][..],
+            &[0x8b][..],
+        ] {
+            assert!(!block
+                .site()
+                .matches_source_bytes(neighbor, MemorySiteOperationV2::Load));
+        }
+    }
+
+    #[test]
     fn ir_dword_alias_load_admits_only_exact_8b00_and_preserves_its_provenance() {
         let entry = 0x8150;
         let alias = compile_ir_memory_dword_load_block_v2(
@@ -5922,8 +5968,24 @@ mod tests {
                 .site()
                 .matches_source_bytes(&[0x8b, 0x00], MemorySiteOperationV2::Load)
         );
+        let rcx_alias = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &[0x8b, 0x01]).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert_eq!(rcx_alias.source_bytes(), &[0x8b, 0x01]);
+        assert_eq!(rcx_alias.site().operand().base, AddressBase::Register(Register::Rcx));
+        assert_eq!(rcx_alias.site().next_rip(), entry + 2);
+        assert!(rcx_alias
+            .site()
+            .matches_source_bytes(&[0x8b, 0x01], MemorySiteOperationV2::Load));
+        assert!(!alias
+            .site()
+            .matches_source_bytes(&[0x8b, 0x01], MemorySiteOperationV2::Load));
+        assert!(!rcx_alias
+            .site()
+            .matches_source_bytes(&[0x8b, 0x00], MemorySiteOperationV2::Load));
         for neighbor in [
-            &[0x8b, 0x01][..],
             &[0x8b, 0x08][..],
             &[0x8b, 0x04, 0x00][..],
             &[0x66, 0x8b, 0x00][..],
