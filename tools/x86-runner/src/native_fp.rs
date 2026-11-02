@@ -64,6 +64,7 @@ pub(crate) fn native_profile_local_only(profile: od_testkit::v2::Profile) -> boo
             | od_testkit::v2::Profile::LongCmppdMemoryRaxV1
             | od_testkit::v2::Profile::LongCmppsMemoryRaxV1
             | od_testkit::v2::Profile::LongMinsdMemoryRaxV1
+            | od_testkit::v2::Profile::LongMaxpdMemoryUnmaskedRaxV1
             | od_testkit::v2::Profile::LongMaxsdMemoryRaxV1
             | od_testkit::v2::Profile::LongAddssMemoryRaxV1
             | od_testkit::v2::Profile::LongAddsdMemoryRaxV1
@@ -294,6 +295,13 @@ mod tests {
     use super::SseImage;
 
     #[test]
+    fn s2_38r_maxpd_memory_profile_is_native_local_only() {
+        assert!(super::native_profile_local_only(
+            od_testkit::v2::Profile::LongMaxpdMemoryUnmaskedRaxV1
+        ));
+    }
+
+    #[test]
     fn narrow_xorpd_is_not_blocked_with_existing_sse_and_x87_profiles_denied() {
         use od_testkit::v2::Profile;
         assert!(!super::native_profile_local_only(
@@ -342,6 +350,7 @@ mod tests {
             Profile::LongCvtps2dqMemoryRaxV1,
             Profile::LongCvttpd2dqMemoryRaxV1,
             Profile::LongCvtpd2dqMemoryRaxV1,
+            Profile::LongMaxpdMemoryUnmaskedRaxV1,
             Profile::LongCvtps2pdMemoryRaxV1,
             Profile::LongCvtss2sdMemoryRaxV1,
             Profile::LongCvtsd2ssMemoryRaxV1,

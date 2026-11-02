@@ -18434,6 +18434,89 @@ fn maxpd_unmasked_two_lane_cross_product_validates_independent_results_and_denia
 }
 
 #[test]
+fn maxpd_memory_unmasked_fixtures_validate_raw_memory_rhs_and_deny_other_backends() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut paths: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_38r_maxpd_m128_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths.len(),
+        524,
+        "lane product × AC, specials, and RC × sticky histories"
+    );
+    let mut representative = None;
+    for path in paths {
+        let source = fs::read(&path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMaxpdMemoryUnmaskedRaxV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new(),
+            "{}",
+            input.fixture.case_id
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            input.fixture.maxpd_unmasked_controls,
+            value.maxpd_unmasked_controls
+        );
+        if representative.is_none() {
+            representative = Some((input, source, result));
+        }
+    }
+    let (input, source, interpreter_result) = representative.expect("generated fixtures");
+    let (_, jit_denial) = run(&source, "jit", 4);
+    assert!(matches!(
+        jit_denial.outcome,
+        od_testkit::v2::Outcome::Unsupported { .. }
+    ));
+    jit_denial.validate_for(&input).unwrap();
+
+    let mut missing_controls: serde_json::Value = serde_json::from_slice(&source).unwrap();
+    missing_controls["maxpd_unmasked_controls"] = serde_json::Value::Null;
+    assert!(Fixture::from_json(&serde_json::to_vec(&missing_controls).unwrap()).is_err());
+    let text = String::from_utf8(source.clone()).unwrap();
+    let changed_form = text.replace("660f5f00", "660f5fc1");
+    assert!(Fixture::from_json(changed_form.as_bytes()).is_err());
+    let mut forged: serde_json::Value =
+        serde_json::from_slice(&interpreter_result.to_json().unwrap()).unwrap();
+    let current_osx = input
+        .fixture
+        .maxpd_unmasked_controls
+        .unwrap()
+        .cr4_osxmmexcpt;
+    forged["snapshot"]["value"]["maxpd_unmasked_controls"]["cr4_osxmmexcpt"] =
+        (!current_osx).into();
+    let forged = RunResult::from_json(&serde_json::to_vec(&forged).unwrap()).unwrap();
+    assert!(od_testkit::v2::compare(&input, &forged, &interpreter_result).is_err());
+    for backend in ["jit", "native_x86"] {
+        let mut forged_backend: serde_json::Value =
+            serde_json::from_slice(&interpreter_result.to_json().unwrap()).unwrap();
+        forged_backend["backend"] = backend.into();
+        let forged_backend =
+            RunResult::from_json(&serde_json::to_vec(&forged_backend).unwrap()).unwrap();
+        assert!(
+            forged_backend.validate_for(&input).is_err(),
+            "forged {backend} result"
+        );
+    }
+}
+
+#[test]
 fn cvtdq2pd_register_profile_executes_and_validates_all_256_pairs() {
     let template = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_37m_cvtdq2pd_asymmetric_pair.case.json"

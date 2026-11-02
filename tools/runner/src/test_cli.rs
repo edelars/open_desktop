@@ -1677,6 +1677,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongMaxpdMemoryUnmaskedRaxV1 {
+        let controls = loaded
+            .fixture
+            .maxpd_unmasked_controls
+            .expect("validated MAXPD m128 unmasked controls");
+        od_isa::execute::run_with_maxpd_memory_unmasked_rax_controls(
+            &mut state,
+            memory,
+            config,
+            od_isa::execute::MaxpdMemoryUnmaskedRaxControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtdq2pdMemoryV1 {
         let controls = loaded
             .fixture

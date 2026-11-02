@@ -6923,6 +6923,26 @@ mod tests {
     }
 
     #[test]
+    fn s2_38r_maxpd_memory_unmasked_is_profile_specific_native_denial() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests/fixtures/x86/stage2/s2_38r_maxpd_m128_literal_xm_memory_qnan.case.json",
+        );
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            loaded.fixture.profile,
+            v2::Profile::LongMaxpdMemoryUnmaskedRaxV1
+        );
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        assert!(matches!(
+            execute(&loaded).outcome,
+            Outcome::Unsupported { ref reason }
+                if reason == "this profile is local-only; native state does not observe every profile field"
+        ));
+    }
+
+    #[test]
     fn s2_39h_fp_init_fxsave64_fixture_is_rejected_before_native_trace() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2/s2_39h_cr0_cr4_fxsave64.case.json");
