@@ -231,7 +231,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30da | Bare `DE C8..CF` FMULP ST(i),ST(0), bounded FCW precision for Normal operands/results, write old physical destination before TOP pop, sticky PE and C1; exact p64 domain retained; JIT/native closed | Integrated main: od-isa 1,841; od-testkit 455; runner 119+499; x86-runner 8+4; workspace check, fmt/diff/layout, Graphify; static fixture runner verifies complete state/exception/memory; Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-30db | Bare `DE E8..EF` FSUBP ST(i),ST(0), bounded FCW precision with normalized gap≤64; old exact p64 domain retained; old physical destination before TOP pop; sticky PE/C1; JIT/native closed | Integrated main: od-isa 1,845; testkit 455; runner 119+501; x86-runner 8+4; workspace check/fmt/diff/layout; focused FSUBP 7 and 2,688-case odd coefficient matrix; independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-30dm | Bare `DE E8..EF` FSUBP extends normalized Normal gaps 65..32765 through S2-29af; retain gap≤64/exact fallback, physical destination then pop, sticky PE/C1 and atomic refusal; JIT/native closed | 86,016-case independent oracle; focused FSUBP 9; integrated main: od-isa 1,891, testkit 455, runner 125+518, x86-runner 8+4; workspace check/fmt/diff/layout and Graphify 11,799/25,583/372 passed; separate Sol/high review clean after anchor/provenance corrections; no physical x86 acceptance |
-| [ ] | S2-30dn | Bare `DE E0..E7` FSUBRP extends normalized Normal gaps 65..32765; preserve S2-30dc gates, old `ST(0)-ST(i)` direction, physical destination-before-pop, sticky PE/C1, atomic refusal and no exact fallback | S2-30dc helper + S2-29af large-gap arithmetic; independent signed-integer oracle, all FCW/TOP/index/sign/history combinations, literal full-state/JIT-denied fixture; no physical x86 acceptance |
+| [x] | S2-30dn | Bare `DE E0..E7` FSUBRP extends normalized Normal gaps 65..32765; preserve S2-30dc gates, old `ST(0)-ST(i)` direction, physical destination-before-pop, sticky PE/C1, atomic refusal and no exact fallback | 86,016-case independent signed-integer state matrix; PC24/PC53 midpoint/direction vectors; full-state gap-65 literal fixture/JIT denial; od-isa 1,893, testkit 455, runner 125+519; workspace/fmt/diff and Graphify pass; layout findings remain pre-existing ISSUE-023; independent Sol/high review pending; no physical x86 acceptance |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11914,6 +11914,14 @@ domain rollback, destination-before-pop snapshots, fetch/STOP/budget and no-data
 callback checks. A literal fixture must use actual operands, compare full state
 and deny JIT. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dn-large-gap-fsubrp-sti-st0-de-e0e7)
 and this [S2-30dn admission contract](#s2-30dn-large-gap-fsubrp-sti-st0-admission).
+
+Implementation report: [S2-30dn large-gap FSUBRP](../reports/S2_30DN_X87_FSUBRP_LARGE_GAPS.md).
+Local acceptance passed the 86,016-case independent signed-integer matrix,
+focused/full ISA tests, testkit and runner suites, formatting, workspace check,
+diff check, and Graphify refresh. Layout validation still reports only the
+pre-existing checkout metadata and missing historical manifests in ISSUE-023.
+The independent Sol/high implementation review is pending; physical x86 was
+not run.
 
 #### S2-30dc. Bare `FSUBRP ST(i), ST(0)` with bounded FCW precision
 

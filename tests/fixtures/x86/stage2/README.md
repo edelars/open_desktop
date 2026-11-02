@@ -1415,6 +1415,16 @@ Runner coverage adds negative directed rounding and JIT denial. The bounded
 profile is local-only; native x87 admission and general exception delivery stay
 closed.
 
+### S2-30dn large-gap FSUBRP fixture coverage
+
+`s2_30dn_fsubrp_gap65_pop.case.json` is a handwritten literal `DE E3` full-state
+fixture. Its physical TOP slot contains 1.0 and old ST(3) contains the actual
+`2^-65` operand. PC24 nearest rounding yields 1.0 with PE and incremented C1;
+the result is written to old physical ST(3) before TOP=2 is emptied and
+incremented. The case checks the popped payload, FIP/RIP, unchanged code bytes,
+and an unavailable JIT result. It is local interpreter evidence only; it does
+not claim physical x86 acceptance.
+
 ### S2-30n x87 schema coverage
 
 The schema validator admits all eight bare `D8 C8+i` FMUL encodings. Literal

@@ -3004,6 +3004,10 @@ TOP/index placements and old PE/C1. Include PC24/53 direction and midpoint
 vectors, large-helper refusal/no-commit, alias and malformed-domain rollback,
 write-before-pop snapshots, fetch/STOP/budget and zero data callbacks. A literal
 fixture must use actual operands, compare complete state and deny JIT.
+Implemented and locally verified in the
+[S2-30dn report](../reports/S2_30DN_X87_FSUBRP_LARGE_GAPS.md). Layout-check
+findings are pre-existing ISSUE-023; independent implementation review is
+pending.
 Normative opcode semantics: Intel SDM Rev. 093 Vol. 2A
 `FSUBR/FSUBRP/FISUBR`, pp. 3-397–3-399
 ([official Vol. 2A PDF](https://cdrdv2.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));

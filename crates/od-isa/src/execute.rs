@@ -25255,7 +25255,7 @@ fn step_configured(
         });
     }
     if let Operation::FsubrpStSt0 { destination } = instruction.operation
-        && bounded_x87_fsub_st0_sti_result(state, destination, false).is_none()
+        && bounded_x87_fsub_st0_sti_result(state, destination, true).is_none()
     {
         return Ok(StepOutcome::Unsupported {
             opcode: instruction.opcode.byte,
@@ -37762,7 +37762,7 @@ fn step_configured(
         }
         Operation::FsubrpStSt0 { destination } => {
             let (result, inexact, incremented) =
-                bounded_x87_fsub_st0_sti_result(state, destination, false)
+                bounded_x87_fsub_st0_sti_result(state, destination, true)
                     .expect("FSUBRP result was prevalidated");
             let x87 = state.x87.as_mut().expect("FSUBRP state was prevalidated");
             let old_top = x87.top();
@@ -55514,11 +55514,8 @@ mod tests {
     }
 
     #[test]
-    fn fsub_st0_sti_large_gap_alias_and_reverse_pop_neighbors_reject_atomically() {
-        for (bytes, operation) in [
-            ([0xd8, 0xe0], "alias"),
-            ([0xde, 0xe1], "DE E1 FSUBRP ST(1), ST(0)"),
-        ] {
+    fn fsub_st0_sti_alias_neighbor_rejects_atomically() {
+        for (bytes, operation) in [([0xd8, 0xe0], "alias")] {
             let mut state = LongModeState::default();
             state.rip = 0x5500;
             let mut x87 = crate::state::X87State::fixture_seed();
@@ -56228,11 +56225,8 @@ mod tests {
     }
 
     #[test]
-    fn fsubr_st0_sti_large_gap_alias_overflow_and_de_neighbor_reject_atomically() {
-        for (bytes, name) in [
-            ([0xd8, 0xe8], "D8 alias cancellation"),
-            ([0xde, 0xe1], "DE FSUBRP gap 65"),
-        ] {
+    fn fsubr_st0_sti_large_gap_alias_and_overflow_reject_atomically() {
+        for (bytes, name) in [([0xd8, 0xe8], "D8 alias cancellation")] {
             let mut state = LongModeState::default();
             state.rip = 0x5c00;
             let mut x87 = crate::state::X87State::fixture_seed();
@@ -57455,15 +57449,15 @@ mod tests {
             Ok(StepOutcome::Advanced)
         );
 
-        // DE FSUBRP remains capped at the prior gap-64 profile and refuses atomically.
+        // DE FSUBRP admits this normalized gap through its large-gap helper.
         let mut fsubrp = make_state();
-        let before = fsubrp.clone();
         let mut memory = Memory::at(&[0xde, 0xe1], fsubrp.rip);
         assert_eq!(
             step(&mut fsubrp, &mut memory, AccessContext::default()),
-            Ok(StepOutcome::Unsupported { opcode: 0xde })
+            Ok(StepOutcome::Advanced)
         );
-        assert_eq!(fsubrp, before);
+        assert_eq!(fsubrp.rip, 0x74f2);
+        assert_eq!(fsubrp.x87.as_ref().unwrap().status_word >> 11 & 7, 1);
         assert!(memory.accesses.is_empty());
     }
 
@@ -57722,6 +57716,230 @@ mod tests {
             assert_eq!(state.rip, 0x7162);
             assert!(memory.accesses.is_empty());
         }
+
+        // At PC53, ST(0)=2^64 + 2^11 and ST(2)=1 leave a result just
+        // below the halfway point between adjacent values. Direct rounding
+        // must choose the even lower value and report inexact without C1.
+        let mut state = LongModeState::default();
+        state.rip = 0x7168;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x027f;
+        x87.status_word = 2 << 11;
+        x87.tag_word = u16::MAX & !(3 << (2 * 2)) & !(3 << (5 * 2));
+        x87.registers[2] = binary80_normal(0x8000_0000_0000_0400, 0x403f, false);
+        x87.registers[5] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+        state.x87 = Some(x87);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xde, 0xe3], state.rip);
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Advanced)
+        );
+        let mut expected = before.clone();
+        let expected_x87 = expected.x87.as_mut().unwrap();
+        expected_x87.registers[5] = binary80_normal(0x8000_0000_0000_0000, 0x403f, false);
+        expected_x87.set_tag(2, X87Tag::Empty);
+        expected_x87.status_word = (3 << 11) | (1 << 5);
+        expected_x87.instruction_pointer = before.rip;
+        expected.rip += 2;
+        assert_eq!(state, expected);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn fsubrp_sti_st0_large_gaps_match_independent_signed_integer_oracle() {
+        const CONTROL_WORDS: [u16; 12] = [
+            0x007f, 0x047f, 0x087f, 0x0c7f, 0x027f, 0x067f, 0x0a7f, 0x0e7f, 0x037f, 0x077f, 0x0b7f,
+            0x0f7f,
+        ];
+
+        // Exact signed-magnitude arithmetic for power-of-two operands, rounded
+        // directly with integer thresholds. This does not call x87 helpers.
+        for gap in [64u16, 65, 66, 32_765] {
+            let high_exponent = if gap == 32_765 { 0x7ffe } else { 0x3fff };
+            for st0_negative in [false, true] {
+                for sti_negative in [false, true] {
+                    for high_at_st0 in [false, true] {
+                        for control_word in CONTROL_WORDS {
+                            let precision = match control_word & 0x0300 {
+                                0 => 24,
+                                0x0200 => 53,
+                                _ => 64,
+                            };
+                            let rounding = (control_word >> 10) & 3;
+                            let same_sign = st0_negative == sti_negative;
+                            let result_negative = if same_sign {
+                                if high_at_st0 {
+                                    st0_negative
+                                } else {
+                                    !sti_negative
+                                }
+                            } else {
+                                st0_negative
+                            };
+                            let unit = 1u64 << (64 - precision);
+                            let (expected_significand, expected_exponent, inexact, incremented) =
+                                if !same_sign {
+                                    let incremented = match rounding {
+                                        0 => gap < precision as u16,
+                                        1 => result_negative,
+                                        2 => !result_negative,
+                                        3 => false,
+                                        _ => unreachable!(),
+                                    };
+                                    (
+                                        (1u64 << 63) + u64::from(incremented) * unit,
+                                        high_exponent,
+                                        true,
+                                        incremented,
+                                    )
+                                } else if gap == precision as u16 {
+                                    (0u64.wrapping_sub(unit), high_exponent - 1, false, false)
+                                } else {
+                                    let round_to_high = match rounding {
+                                        0 => gap >= precision as u16 + 1,
+                                        1 => result_negative,
+                                        2 => !result_negative,
+                                        3 => false,
+                                        _ => unreachable!(),
+                                    };
+                                    if round_to_high {
+                                        (1u64 << 63, high_exponent, true, true)
+                                    } else {
+                                        (0u64.wrapping_sub(unit), high_exponent - 1, true, false)
+                                    }
+                                };
+                            let expected_result = binary80_normal(
+                                expected_significand,
+                                expected_exponent,
+                                result_negative,
+                            );
+
+                            for top in 0u8..8 {
+                                for index in 1u8..8 {
+                                    let physical_top = usize::from(top);
+                                    let physical_destination = usize::from((top + index) & 7);
+                                    let (st0, sti) = if high_at_st0 {
+                                        (
+                                            binary80_normal(
+                                                1u64 << 63,
+                                                high_exponent,
+                                                st0_negative,
+                                            ),
+                                            binary80_normal(
+                                                1u64 << 63,
+                                                high_exponent - gap,
+                                                sti_negative,
+                                            ),
+                                        )
+                                    } else {
+                                        (
+                                            binary80_normal(
+                                                1u64 << 63,
+                                                high_exponent - gap,
+                                                st0_negative,
+                                            ),
+                                            binary80_normal(
+                                                1u64 << 63,
+                                                high_exponent,
+                                                sti_negative,
+                                            ),
+                                        )
+                                    };
+                                    for old_pe in [false, true] {
+                                        for old_c1 in [false, true] {
+                                            let mut state = LongModeState::default();
+                                            state.rip = 0x73d0;
+                                            state.gpr = std::array::from_fn(|n| {
+                                                0x1020_3040_5060_7080 ^ n as u64
+                                            });
+                                            state.rflags = 0xa55a_1234_5678_9abc;
+                                            let mut x87 = crate::state::X87State::fixture_seed();
+                                            x87.control_word = control_word;
+                                            x87.status_word = (u16::from(top) << 11)
+                                                | 0x4500
+                                                | (u16::from(old_pe) << 5)
+                                                | (u16::from(old_c1) << 9);
+                                            x87.tag_word = u16::MAX;
+                                            x87.registers = std::array::from_fn(|physical| {
+                                                std::array::from_fn(|byte| {
+                                                    0x30u8
+                                                        .wrapping_add((physical * 11 + byte) as u8)
+                                                })
+                                            });
+                                            x87.registers[physical_top] = st0;
+                                            x87.registers[physical_destination] = sti;
+                                            x87.set_tag(top, X87Tag::Valid);
+                                            x87.set_tag(physical_destination as u8, X87Tag::Valid);
+                                            state.x87 = Some(x87);
+                                            let before = state.clone();
+                                            let mut memory =
+                                                Memory::at(&[0xde, 0xe0 | index], state.rip);
+                                            assert_eq!(
+                                                step(
+                                                    &mut state,
+                                                    &mut memory,
+                                                    AccessContext::default()
+                                                ),
+                                                Ok(StepOutcome::Advanced),
+                                                "gap={gap}, signs={st0_negative}/{sti_negative}, high_at_st0={high_at_st0}, cw={control_word:#06x}, TOP={top}, i={index}"
+                                            );
+                                            let mut expected = before.clone();
+                                            let expected_x87 = expected.x87.as_mut().unwrap();
+                                            expected_x87.registers[physical_destination] =
+                                                expected_result;
+                                            expected_x87.set_tag(top, X87Tag::Empty);
+                                            let new_top = top.wrapping_add(1) & 7;
+                                            expected_x87.status_word = (expected_x87.status_word
+                                                & !((7 << 11) | (1 << 9) | (1 << 5)))
+                                                | (u16::from(new_top) << 11)
+                                                | (u16::from(old_pe || inexact) << 5)
+                                                | (u16::from(incremented) << 9);
+                                            expected_x87.instruction_pointer = expected.rip;
+                                            expected.rip += 2;
+                                            assert_eq!(state, expected);
+                                            assert_eq!(
+                                                state.x87.as_ref().unwrap().registers[physical_top],
+                                                before.x87.as_ref().unwrap().registers
+                                                    [physical_top],
+                                                "popped payload retained"
+                                            );
+                                            assert!(memory.accesses.is_empty());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fsubrp_large_gap_helper_refusal_cannot_commit() {
+        let mut state = LongModeState::default();
+        state.rip = 0x73c0;
+        let mut x87 = crate::state::X87State::fixture_seed();
+        x87.control_word = 0x037f;
+        x87.status_word = 0x0220;
+        x87.tag_word = u16::MAX;
+        let one = binary80_normal(1u64 << 63, 0x3fff, false);
+        x87.registers[0] = one;
+        x87.registers[1] = one;
+        x87.set_tag(0, X87Tag::Valid);
+        x87.set_tag(1, X87Tag::Valid);
+        state.x87 = Some(x87);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xde, 0xe1], state.rip);
+
+        assert!(bounded_x87_fsub_st0_sti_result(&state, 1, true).is_none());
+        assert_eq!(
+            step(&mut state, &mut memory, AccessContext::default()),
+            Ok(StepOutcome::Unsupported { opcode: 0xde })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]
@@ -57779,10 +57997,6 @@ mod tests {
             bad.set_tag(physical, X87Tag::Special);
             rejected.push(bad);
         }
-        let mut gap_65 = make_pair();
-        gap_65.registers[0] = binary80_normal(0x8000_0000_0000_0000, 0x4040, false);
-        gap_65.registers[1] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
-        rejected.push(gap_65);
         for invalid_raw in [
             binary80_normal(0, 0, false),
             binary80_normal(1, 0, false),

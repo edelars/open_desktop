@@ -22116,6 +22116,36 @@ See [standalone report](S2_30DC_X87_FSUBRP_PRECISION.md),
 [plan](../plans/STAGE_2.md#s2-30dc-bare-fsubrp-sti-st0-with-bounded-fcw-precision),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dc-bounded-fsubrp-fixture-coverage).
 
+## S2-30dn — large-gap `FSUBRP ST(i), ST(0)`
+
+Extended exact bare Long64 `DE E0..E7` from normalized Normal exponent gaps
+through 64 to gaps 65..32765 by reusing the S2-30dc precision helper with its
+existing S2-29af large-gap path enabled. Every S2-30dc environment and result
+gate remains. The operation still computes old `ST(0)-ST(i)`, writes old
+physical `(TOP+i)&7` before popping TOP, preserves popped payload, makes PE
+sticky, and sets C1 from `incremented`. No exact fallback or data access is
+available; refusals remain atomic. `DE E8..EF`, DC and D8 neighbors are
+unchanged, as are JIT/native denial and the absence of a physical x86 claim.
+
+An 86,016-case independent signed-integer matrix covers gaps 64/65/66/32765,
+all twelve FCWs, sign/order combinations, every TOP and nonalias index, and PE
+and C1 histories. PC24/PC53 rounding vectors, helper refusal, malformed-domain
+and execution-boundary rollback are checked. The handwritten gap-65 `DE E3`
+fixture validates full state, actual operands, unchanged code, retirement,
+exception observation and JIT denial.
+
+Validation passed: focused `fsub` 55/55, full `od-isa` 1,893/1,893,
+`od-testkit` 455/455, `od-runner` 125+519, formatting, workspace all-target
+offline check, diff check, and Graphify refresh (11,857 nodes, 25,558 edges,
+371 communities). Layout validation reproduces only existing ISSUE-023
+worktree metadata and missing historical oracle manifests. Independent Sol/high
+implementation review is pending; no physical x86 check was run.
+
+See the [standalone report](S2_30DN_X87_FSUBRP_LARGE_GAPS.md),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dn-large-gap-fsubrp-sti-st0-de-e0e7),
+[plan](../plans/STAGE_2.md#s2-30dn-large-gap-fsubrp-sti-st0-admission), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dn-large-gap-fsubrp-fixture-coverage).
+
 ## S2-37dt — DIVPS XMM0,m128 [RAX]
 
 Added the exact legacy `0F 5E 00` Long64 interpreter profile with SSE bit 25,
