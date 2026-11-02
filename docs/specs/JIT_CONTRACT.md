@@ -775,6 +775,19 @@ form is admitted by this slice.
 
 The related host fixture status is recorded in [S3-20ek testing notes](../testing/JIT.md#s3-20ek-exact-address-size-32-esp-base-dword-checked-store-with-signed-disp32).
 
+#### S3-20el: exact absolute SIB Dword load with signed disp32
+
+The shared typed-IR Dword-load path admits only the exact seven-byte singleton
+`8B 04 25 id` (`MOV EAX,[disp32]`): unprefixed, SIB with no base or index,
+scale 1, Qword address size, and Dword transfer. The decoder-owned signed
+disp32 is sign-extended to form the absolute 64-bit effective address; for
+example, `-4` maps to `u64::MAX-3`. The operation performs one checked
+four-byte read, writes EAX (zero-extending to RAX), and has the guest boundary
+`A+7`. Other prefixes and neighboring encodings remain outside this exact
+admission. The fixtures are bounded and do not establish physical memory,
+MMU, or broad host behavior. See the
+[S3-20el report](../reports/STAGE_3_S3-20el_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact

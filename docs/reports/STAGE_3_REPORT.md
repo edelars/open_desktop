@@ -131,6 +131,19 @@ gate remains pending. The full Python Stage 3 harness passed 94/94 at root
 revision `190a61c`. Full `od-host` was not run. See the
 [S3-20ek runtime report](STAGE_3_S3-20ek_2026-11-02.md).
 
+S3-20el adds only the exact unprefixed absolute SIB disp32 Dword load
+`8B 04 25 id`; the signed displacement forms the 64-bit absolute EA, the
+checked read is four bytes, and RIP advances to `A+7`. On author runtime
+`aa8e38f`, formatting, test-target compilation, the exact JIT gate (1/1), and
+diff-check passed on Mac15,11. These checks ran despite the user's Mini
+deferral, following a mistaken orchestration instruction; this deviation is
+not a Mini/M1 gate. The exact host test was compiled but not executed. Cleanup
+`d483a63` was integrated as `0903953`; static Sol review and diff-check passed
+with no test/build. Full `od-jit`/`od-host` and Mini/M1 physical gates remain
+pending. ISSUE-028 remains open in [the issue registry](../KNOWN_ISSUES.md); Stage 2 remained outside this slice's
+evidence and concurrent runs were ignored per user instruction. Stage 3
+remains partial. See the [S3-20el report](STAGE_3_S3-20el_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20
