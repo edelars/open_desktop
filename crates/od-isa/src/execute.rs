@@ -57921,19 +57921,18 @@ mod tests {
         let mut state = LongModeState::default();
         state.rip = 0x73c0;
         let mut x87 = crate::state::X87State::fixture_seed();
-        x87.control_word = 0x037f;
-        x87.status_word = 0x0220;
-        x87.tag_word = u16::MAX;
-        let one = binary80_normal(1u64 << 63, 0x3fff, false);
-        x87.registers[0] = one;
-        x87.registers[1] = one;
-        x87.set_tag(0, X87Tag::Valid);
-        x87.set_tag(1, X87Tag::Valid);
+        x87.control_word = 0x0b7f; // PC64, round toward +infinity
+        x87.status_word = 0x1220; // TOP=2, old C1 and PE set
+        x87.tag_word = u16::MAX & !(3 << (2 * 2)) & !(3 << (5 * 2));
+        x87.registers[2] = binary80_normal(u64::MAX, 0x7ffe, false);
+        x87.registers[5] = binary80_normal(1u64 << 63, 0x7fbd, true);
+        x87.set_tag(2, X87Tag::Valid);
+        x87.set_tag(5, X87Tag::Valid);
         state.x87 = Some(x87);
         let before = state.clone();
-        let mut memory = Memory::at(&[0xde, 0xe1], state.rip);
+        let mut memory = Memory::at(&[0xde, 0xe3], state.rip);
 
-        assert!(bounded_x87_fsub_st0_sti_result(&state, 1, true).is_none());
+        assert!(bounded_x87_fsub_st0_sti_result(&state, 3, true).is_none());
         assert_eq!(
             step(&mut state, &mut memory, AccessContext::default()),
             Ok(StepOutcome::Unsupported { opcode: 0xde })
