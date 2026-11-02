@@ -296,11 +296,14 @@ RCX-indexed no-base scaled SIB Dword stores. Harness source `beb1c93` was
 integrated as `a76e732`; its static manifest records 234 Rust gates (224
 acceptance, 10 lifecycle), 252 local steps, and 101 self-test names.
 Independent Sol/high static review passed; no Python/harness execution was
-performed. S3-20es runtime work remains in progress, so this harness report
-does not claim runtime behavior or passing runtime gates. ISSUE-028 remains
-open. Stage 2 remained outside this slice's evidence; concurrent runs were
-ignored per user instruction. Mini/M1 remain deferred; Stage 3 remains
-partial. See the [S3-34cd report](STAGE_3_S3-34cd_2026-11-02.md).
+performed. Runtime source `ca14bac` is now integrated as `0bf9a46` and passed
+Sol/high static review after fixture corrections. No tests, builds,
+formatting, Cargo checks, or Python tests ran, so the exact runtime gates
+remain pending; the harness report itself is not runtime evidence. ISSUE-028
+remains open. Stage 2 remained outside this slice's evidence; concurrent runs
+were ignored per user instruction. Mini/M1 remain deferred; Stage 3 remains
+partial. See the [S3-20es report](STAGE_3_S3-20es_2026-11-02.md) and
+[S3-34cd report](STAGE_3_S3-34cd_2026-11-02.md).
 
 S3-20er adds only the unprefixed seven-byte address64 RCX-indexed no-base
 SIB Dword-load singletons `8B 04 4D/8D/CD disp32` (scales 2/4/8). Effective
