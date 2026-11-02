@@ -5,20 +5,24 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
-## Интеграция S2-30cz и S2-37dq
+## Интеграция S2-30da и S2-37dr
 
-В main интегрированы bounded `FADDP ST(i),ST(0)` и masked-only memory
-`ADDPS XMM0,m128 [RAX]`. Совместный прогон прошёл: od-isa — 1,837; od-testkit
-— 455; runner — 119 unit и 497 fixture; od-x86-runner — 8 library и 4 binary
+В main интегрированы bounded `FMULP ST(i),ST(0)` и masked-only memory
+`SUBPS XMM0,m128 [RAX]`. Совместный прогон прошёл: od-isa — 1,841; od-testkit
+— 455; runner — 119 unit и 499 fixture; od-x86-runner — 8 library и 4 binary
 tests; workspace all-target check, fmt, diff и layout. Graphify после обновления
-кода содержит 11,425 nodes, 24,752 edges и 344 communities.
+кода содержит 11,452 nodes, 24,798 edges и 345 communities.
 
-Независимое Sol/high review было чистым. В ходе review до принятия закрыты два
-дефекта: восстановлена проверка sticky OE/UE в MULSS result validator, а
-ADDPS добавлен во внешний MXCSR admission gate, чтобы отрицательные control
-проверки выполнялись до чтения памяти. Физическое x86 исполнение не проверялось.
-Worktree завершённого FADDP среза удалён после переноса; ADDPS worktree также
-удалён после переноса всех трёх проверенных commit.
+Независимые Sol/high reviews были чистыми. FMULP static fixture явно запускается
+через runner и проверяет полный CPU state, exception и неизменность памяти.
+SUBPS memory-vector matrix проверяет QNaN payload/sign, NaN с same-lane
+subnormal, cancellation-zero sign для RC, mixed IE/DE/OE/PE, а также прежний
+sticky UE. UE для finite binary32 subtraction при FTZ=0 недостижим: каждый
+конечный binary32 и точный результат — целое число квантов `q=2^-149`; если
+точный результат меньше `2^-126`, его коэффициент `|k|<2^23`, поэтому он точно
+представим как subnormal или ноль и не может быть tiny/inexact. Физическое x86
+исполнение не проверялось. Завершённые worktree обоих срезов удалены после
+переноса всех проверенных commit в main.
 
 ## S2-37dr — local-only Long64 legacy SUBPS m128 memory
 
