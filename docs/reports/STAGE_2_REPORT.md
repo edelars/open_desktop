@@ -21656,3 +21656,12 @@ acceptance is claimed.
 Implemented the exact legacy `F2 0F 59 00` strict interpreter-only profile. It fetches the full encoding before SSE2/#NM gates, admits only masked MXCSR with DAZ/FTZ clear, permits all RC and sticky histories, refuses AC before the span/read, validates canonical endpoints and performs one unaligned-capable read8. Execution multiplies old XMM0.low64 by the actual memory RHS through the raw binary64 kernel, merges IE/DE/OE/UE/PE and preserves upper state. Other backend/profile paths remain closed.
 
 Isolated validation passed: full `od-isa` 1,817, `od-testkit` 455, and runner 116 unit + 495 fixture tests; workspace all-target offline check, formatting, diff check and Graphify AST refresh passed. The focused 6,400-run scalar oracle matrix passed; direct/schema tests cover feature gates, truncated-fetch precedence, MXCSR runtime/schema denial without read or commit, AC/span/read rollback, tampering and backend denial. Layout reports the isolated worktree `.git` pointer and two absent historical oracle manifests recorded under ISSUE-023. Independent Sol/high review is clean (od-isa MULSD 5/5; runner matrix 1/1, 6,400 cases); no physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B MULSD pp. 4-148–4-149; Vol. 2A §2.5.3/Table 2-20; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and 11.6.6. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dn--masked-only-long64-mulsd-xmm0m64-rax), [plan](../plans/STAGE_2.md#s2-37dn--masked-only-legacy-long64-mulsd-xmm0m64-rax), [standalone report](S2_37DN_MULSD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dn--mulsd-xmm0m64-rax).
+
+## Main integration: S2-30cw + S2-37dn
+
+После переноса обоих срезов и clean Sol/high reviews в main прошли `od-isa`
+1,821, `od-testkit` 455, runner 116 unit + 495 fixture и `od-x86-runner` 8
+library + 4 binary tests. Workspace all-target offline check, formatting,
+layout и `git diff --check` прошли. Graphify AST refresh завершился с 11,339
+nodes, 24,564 edges и 343 communities. В runner MULSD дополнительно проверены
+6,400 комбинаций raw oracle. Физическая x86-проверка не выполнялась.
