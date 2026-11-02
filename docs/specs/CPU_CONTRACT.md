@@ -3758,7 +3758,33 @@ exception behavior or physical x86 acceptance is implied. See the [S2-29ae
 plan](../plans/STAGE_2.md#s2-29ae-finite-binary80-addition-precision-diagnostics-bounded-helper),
 [implementation report](../reports/STAGE_2_REPORT.md#s2-29ae--finite-binary80-addition-precision-diagnostics), and
 [standalone report](../reports/S2_29AE_X87_ADDITION_PRECISION.md). ISSUE-019
-remains open.
+remains open. This was the initial gap≤64 slice; [S2-29af](#local-s2-29af-large-gap-finite-binary80-addition-precision-diagnostics)
+extends the same helper while preserving this path's results.
+
+## Local S2-29af: large-gap finite binary80 addition precision diagnostics
+
+S2-29af extends `add_finite_to_normal_binary80_precision_with_diagnostics`
+to exponent gaps above 64 for normalized nonzero finite binary80 operands at
+p=24/53/64. It preserves the original exact-u128 path for gaps ≤64, including
+result bytes and diagnostics, and uses the existing large-gap bridge only for
+larger gaps. The legacy `add_finite_to_binary80` API remains unchanged.
+
+For a large-gap bridge result `(sign,E,q,tail)`, the exact normalized
+coefficient is `q+τ` with `0<τ<1`. E and the rounded result must remain finite
+Normal binary80. All accepted large-gap results are inexact. At p64, rounding
+uses the tail's below/at/above-half relation and q parity. At p<64, write
+`q=T·2^h+L`; the discarded fraction is `L+τ`, so it cannot equal the exact
+midpoint and nearest increment is equivalent to `L>=2^(h-1)`. Directed modes
+use the sign and nonzero tail. `incremented` records the pre-carry magnitude
+increase. Cancellation, zero/malformed input, checked exponent failure, a
+non-Normal exact exponent or non-Normal rounded result returns `None`.
+
+This adds no ISA, FCW/FSW, PE/C1, exception, signed-zero or physical x86
+semantics. Gap64/65 and large-gap engine behavior are not architectural claims.
+See the [S2-29af plan](../plans/STAGE_2.md#s2-29af-large-gap-finite-binary80-addition-precision-diagnostics),
+[implementation report](../reports/STAGE_2_REPORT.md#s2-29af--large-gap-finite-binary80-addition-precision-diagnostics),
+and [standalone report](../reports/S2_29AF_X87_LARGE_GAP_ADDITION_PRECISION.md).
+ISSUE-019 remains open.
 
 ## Источники архитектурной семантики
 

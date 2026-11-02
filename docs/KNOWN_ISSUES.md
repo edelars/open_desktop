@@ -388,6 +388,17 @@
   subnormal-output reject vector was corrected after review to use normalized
   Normal inputs; both the new helper rejection and old-helper min-subnormal
   result now pass. See [S2-29ae report](reports/S2_29AE_X87_ADDITION_PRECISION.md).
+  The initial gap≤64 bound was extended in S2-29af; this entry records the
+  original slice and checks. ISSUE-019 remains open.
+
+- **S2-29af large-gap addition precision diagnostics — bounded helper complete:**
+  the precision-aware finite addition API now handles gaps above 64 with the
+  existing large-gap bridge. The exact-u128 path for gaps≤64 retains its old
+  bytes and diagnostics. Large-gap accepted results are inexact; zero,
+  cancellation, out-of-range exact exponents, rounded overflow and malformed
+  inputs remain `None`. The legacy add helper's broader outputs are unchanged.
+  Full `od-isa`, workspace build, formatting, Graphify and independent Sol/high
+  review pass. See [S2-29af report](reports/S2_29AF_X87_LARGE_GAP_ADDITION_PRECISION.md).
   ISSUE-019 remains open.
 
 - **FCHS/FABS stale rejection assertions — resolved:** `fabs_rejects_missing_or_invalid_source_and_boundaries_atomically` and `fchs_rejects_invalid_source_and_execution_boundaries_atomically` now use standalone SF (`FSW=0x0040`) in the rejection vectors; IE|SF (`0x0041`) remains accepted as specified by S2-30bi. The existing tests continue to assert atomic state preservation, and the forbidden-status matrix passes. Validation: focused FABS/FCHS tests and the S2-30bi forbidden-status test pass; full `cargo test -p od-isa --offline` passes 739/739, `cargo test -p od-testkit --offline` 189/189, and `cargo test -p od-jit --offline` 5/5. No CPU semantics changed. Reference: [S2-30bi CPU contract](specs/CPU_CONTRACT.md#local-s2-30bi-historical-stack-fault-status-through-bounded-fchs-fabs); [S2-30bi report](reports/STAGE_2_REPORT.md#s2-30bi--historical-sf-only-with-ie-through-bounded-fchs-fabs).

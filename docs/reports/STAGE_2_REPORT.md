@@ -21227,3 +21227,23 @@ check and Graphify update passed. Independent Sol/high review is clean and
 reran the ten focused tests. No native or physical x86 acceptance is claimed.
 Sources: Intel SDM Rev. 093 Vol. 2A `FMUL/FMULP/FIMUL` pp. 3-360–3-362
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=478)); Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6 p. 8-30 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See [plan](../plans/STAGE_2.md#s2-30co-bare-fmul-st0-sti-with-bounded-fcw-precision), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30co-bounded-fmul-st0-sti-d8-c8-cf), and [standalone report](S2_30CO_X87_FMUL_PRECISION.md). S2-30 and ISSUE-019 remain open.
+
+## S2-29af — large-gap finite binary80 addition precision diagnostics
+
+Extended `add_finite_to_normal_binary80_precision_with_diagnostics` beyond
+exponent gap 64 using the existing large-gap rounding bridge. The gap≤64 exact
+u128 path retains its prior output bytes and diagnostics; only the upper gap
+limit of this helper changed. All admitted large-gap results are inexact and
+must have finite Normal exact and rounded exponents. The old
+`add_finite_to_binary80` API and its wider zero/subnormal behavior are unchanged.
+
+Independent tests cover gaps 65/66/127/128 and the maximum raw finite gap,
+both operand orders/signs, same-sign below-half, opposite-sign above-half,
+power-of-two dominant p64 tie and neighbors, p24/p53 discarded midpoint
+boundaries, all modes/precisions, directed negative rounding, carry/overflow,
+p64 legacy comparison on the shared domain, and preservation of all gap≤64
+cases. Focused addition tests and full `od-isa` (1,771) passed; format,
+workspace all-target offline check, diff check and Graphify update passed.
+Independent Sol/high review is clean. No ISA, PE/C1, exception or physical x86
+behavior is added. Precision context: Intel SDM Rev. 093 Vol. 1 §8.1.5.2/Table
+8-2 pp. 8-7–8-8 and §8.1.5.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=213)); the bridge arithmetic is project-defined. See [plan](../plans/STAGE_2.md#s2-29af-large-gap-finite-binary80-addition-precision-diagnostics), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29af-large-gap-finite-binary80-addition-precision-diagnostics), and [standalone report](S2_29AF_X87_LARGE_GAP_ADDITION_PRECISION.md). ISSUE-019 remains open.

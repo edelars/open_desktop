@@ -200,6 +200,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-29ac | Direct finite binary80 division rounding with inexact/incremented diagnostics at p24/53/64; normal-only result domain, no FCW/FSW or ISA behavior | S2-29ab; independent Sol/high review clean |
 | [x] | S2-29ad | Direct finite binary80 multiplication rounding with inexact/incremented diagnostics at p24/53/64; normal-only result domain, existing helper unchanged | S2-29ac; independent Sol/high review clean |
 | [x] | S2-29ae | Exact aligned binary80 addition to p24/53/64 with inexact/incremented diagnostics; exponent gap≤64, Normal-only result, legacy add helper unchanged | S2-29ad; independent Sol/high review clean |
+| [x] | S2-29af | Extend direct precision addition helper to gaps>64 using existing large-gap bridge; preserve gap≤64 results and old general API | S2-29ae, S2-29u; independent Sol/high review clean |
 | [x] | S2-29x | Exact truncated finite binary80 remainder coefficient decomposition for normalized nonzero operands; exact modulo for exponent gaps 0..64, lhs passthrough below, bounded rejection above; no FPREM/FPREM1 semantics | S2-29w; independent Sol/high review clean |
 | [x] | S2-29y | Exact finite nearest-even binary80 remainder coefficient for normalized nonzero operands; d=-1 half-way handling and u128 quotient/remainder for gaps 0..64; helper-only, no FPREM1/ISA or architectural effects | S2-29x; independent Sol/high review clean |
 | [x] | S2-30cl | Bare `D9 F8` FPREM; bounded positive Normal ST(0)/ST(1), complete-only exponent gap <64, interpreter-only with exact quotient CCs and explicit underflow-safe input cutoff; independent Sol/high review clean | S2-29x/y, S2-30ck |
@@ -3519,7 +3520,36 @@ a double-rounding counterexample. No ISA/PE/C1/exception semantics are added.
 
 **Результат:** проверки и clean independent Sol/high review recorded in
 [S2-29ae report](../reports/S2_29AE_X87_ADDITION_PRECISION.md). S2-29 and
-ISSUE-019 remain open.
+ISSUE-019 remain open. Its initial gap≤64 limit is extended by S2-29af without
+changing the documented S2-29ae validation results.
+
+### S2-29af. Large-gap finite binary80 addition precision diagnostics
+
+Extend `add_finite_to_normal_binary80_precision_with_diagnostics` for normalized
+nonzero operands at p=24/53/64 beyond gap 64, preserving the exact-u128 path and
+all results/diagnostics for gaps ≤64. For larger gaps, reuse the existing
+`finite_large_gap_rounding_bridge`; do not modify it or the legacy
+`add_finite_to_binary80` API. Continue rejecting cancellation, zero/malformed
+inputs, checked exponent failures, non-Normal exact exponents and non-Normal
+rounded outputs.
+
+The bridge yields `(sign,E,q,tail)`, where the normalized exact coefficient is
+`q+τ`, `0<τ<1`. Require E in the Normal binary80 range before rounding. Round
+the representative tail directly at requested precision; all accepted large-
+gap results are inexact and `incremented` is the pre-carry magnitude increase.
+For p64, tail position relative to one-half and q parity decide nearest-even.
+For p<64, writing `q=T·2^h+L`, the discarded value is `L+τ`; since τ is
+strictly between zero and one, the exact half-way tie cannot occur, and
+nearest increment is exactly `L >= 2^(h-1)`. Thus tail representatives retain
+all needed nearest and directed decisions without first rounding at p64.
+
+Cover gaps 65/66/127/128 and the maximum raw finite gap, both orders/signs,
+same-sign below-half, opposite-sign above-half, power-of-two dominant p64 tie
+and adjacent cases, p24/53 discarded-bit boundaries, all modes/precisions,
+directed negative results, carry/exponent rejection, old-domain p64 projection,
+and preservation of all gap≤64 cases. Synthetic exponent extremes are bounds
+checks, not claims about raw encodings. Normative precision context: Intel SDM
+Rev. 093 Vol. 1 §8.1.5.2/Table 8-2 pp. 8-7–8-8 and §8.1.5.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=213)); the bridge math is project-defined. See [CPU contract](../specs/CPU_CONTRACT.md#local-s2-29af-large-gap-finite-binary80-addition-precision-diagnostics), [shared report](../reports/STAGE_2_REPORT.md#s2-29af--large-gap-finite-binary80-addition-precision-diagnostics), and [standalone report](../reports/S2_29AF_X87_LARGE_GAP_ADDITION_PRECISION.md). S2-29 and ISSUE-019 remain open.
 
 ### S2-30. Основные x87 операции
 
