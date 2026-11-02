@@ -68,6 +68,18 @@ adjacent S3-20cx/S3-20cz host gates passed 1/1. After root integration
 Python Stage 3 harness passed 91/91. Full `od-host` was not run. See the
 [S3-20ef report](STAGE_3_S3-20ef_2026-11-02.md).
 
+S3-20eg adds only the address-size-32 ESP-base dword store `67 89 04 24`.
+It zero-extends `RSP as u32` for the start address, then writes a contiguous
+four-byte span, including across 4 GiB. The runtime fixture compares interpreter
+state/RAM, and callback STOP retry is explicitly rejected without a second
+write. The Sol review recorded a nonblocking coverage gap: backend-error and
+entry STOP/budget cases do not explicitly retry successfully after asserting
+no state/memory commit; see [ISSUE-028](../KNOWN_ISSUES.md). On author runtime
+commit `abd2af4`, `od-jit` passed 345/345; after integration at root `8052314`
+with harness `ac069ca`, exact JIT/host gates passed 1/1 and the cumulative
+Python Stage 3 harness passed 91/91 (including 34br). Full `od-host` was not
+run. See the [S3-20eg report](STAGE_3_S3-20eg_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20

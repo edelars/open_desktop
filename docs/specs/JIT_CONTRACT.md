@@ -684,6 +684,25 @@ address-derived fault claim, and establishes no production owner/MMU,
 MMIO/SMC, physical-hardware, or performance behavior. See the
 [S3-20ef report](../reports/STAGE_3_S3-20ef_2026-11-02.md).
 
+#### S3-20eg: exact address-size-32 ESP-base Dword store through SIB
+
+The typed-IR Dword-store path admits only the exact four-byte singleton
+`67 89 04 24` (`MOV [ESP],EAX`): address-size override, SIB, ESP base, no
+index, scale 1, and zero displacement. Effective address is `u64(RSP as u32)`;
+high RSP bits are ignored. A successful checked store writes low32 RAX in one
+contiguous four-byte operation and commits RIP to `A+4`. If ESP is
+`0xffff_fffe`, the store span continues through `0x1_0000_0001`; individual
+bytes do not wrap at 4 GiB.
+
+The host fixture compares interpreter state and memory, checks high32-poisoned
+RSP values, one width-four callback, and callback STOP followed by retry
+rejection with no second write. Backend-error and entry STOP/budget cases
+assert unchanged state/memory and no unintended write, but do not explicitly
+retry after those outcomes. This is a nonblocking test-coverage limitation,
+not an identified runtime defect; see [ISSUE-028](../KNOWN_ISSUES.md). No
+production owner/MMU, MMIO/SMC, physical-hardware, or performance behavior is
+established. See the [S3-20eg report](../reports/STAGE_3_S3-20eg_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
