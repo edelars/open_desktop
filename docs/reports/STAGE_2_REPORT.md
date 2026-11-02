@@ -21725,6 +21725,39 @@ Execution multiplies old XMM0.low32 by memory RHS via existing `Binary32::multip
 
 S2-37dm isolated validation: `od-isa` 1,811; `od-testkit` 455; runner 116 unit + 494 fixture; x86-runner 8 library + 4 binary. Workspace all-target offline check, formatting, diff check and Graphify passed (11,344 nodes, 24,413 edges, 362 communities). Layout passed in main; worktree-only `.git` pointer and absent disposable `work/stage*-oracle` targets prevent a clean isolated layout result. Independent Sol/high review is clean; no physical x86 acceptance is claimed.
 
+## S2-30db — bounded `FSUBP ST(i), ST(0)`
+
+Extended bare Long64 `DE E8..EF` to use the bounded S2-30cv subtraction
+helper, retaining the exact S2-30j fallback domain. For accepted operands,
+the rounded result is written to old physical `(TOP+i)&7` before old TOP is
+emptied and TOP advances. PE is sticky and C1 follows the helper's
+`incremented` diagnostic; other state is retained by the local policy. The
+profile requires one of twelve all-masked FCWs, canonical Valid-tagged Normal
+operands and normalized gap≤64. `i=0` cancellation and every other refusal
+remain atomic. Native/JIT and general x87 exception delivery remain closed.
+
+Direct ISA coverage checks 10,752 combinations across FCW, TOP/index, signs
+and incoming PE/C1; alias refusal spans all 12 FCWs and TOP values, gap 64
+succeeds and gap 65 refuses. A second 2,688-case matrix uses explicit expected
+bytes to check odd 65-bit coefficient rounding across FCWs and TOP/index
+pairs. The handwritten PC24 midpoint fixture checks the full post-state,
+exception observation and unchanged memory; its runner test also checks JIT
+denial. Focused test results and full validation are recorded in
+the [standalone report](S2_30DB_X87_FSUBP_PRECISION.md). No physical x86
+acceptance is claimed. Full packages passed: od-isa 1,843, od-testkit 455,
+od-runner 119 unit + 500 fixture, and od-x86-runner 8 + 4. Workspace
+all-target offline check, formatting and Graphify AST refresh (11,463 nodes,
+24,821 edges, 337 communities) passed; saved community labels need refresh
+and no Graphify LLM key was configured. Isolated layout reports only the
+worktree `.git` marker and two missing historical oracle manifests tracked by
+ISSUE-023. Independent Sol/high review passed clean after correction; no
+production findings remain. Sources: Intel SDM Rev. 093 Vol. 2A
+`FSUB/FSUBP/FISUB`, pp. 3-394–3-396, and Vol. 1 §§8.1.5.1–.3, Table 8-2,
+§8.5.6, pp. 8-7–8-8 and 8-30. See the
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30db-bounded-fcw-precision-fsubp-sti-st0-de-e8i),
+[plan](../plans/STAGE_2.md#s2-30db-bare-fsubp-sti-st0-with-bounded-fcw-precision),
+and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ## S2-30cv — bounded reverse `FSUB ST(i), ST(0)`
 
 Added direct FCW precision execution for exact bare Long64 `DC E8..EF`. It

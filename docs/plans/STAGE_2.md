@@ -219,6 +219,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cy | Bare `DC F0..F7` FDIVR ST(i),ST(0), bounded FCW precision division `ST(0)/ST(i)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | Integrated main: od-isa 1,831, testkit 455, runner 118+496, x86-runner 8+4; independent Sol/high review clean; workspace/fmt/layout/diff and Graphify 11,397/24,698/326 passed |
 | [x] | S2-30cz | Bare `DE C0..C7` FADDP ST(i),ST(0), bounded FCW precision for normalized gap≤64; physical destination then TOP pop; Normal result, sticky PE and local C1; JIT/native closed | Focused ISA 7; 3,072-case matrix; combined main: od-isa 1,837 / od-testkit 455 / runner 119+497 / x86-runner 8+4, workspace check, fmt/diff/layout and Graphify; independent Sol/high review clean; no physical x86 check |
 | [x] | S2-30da | Bare `DE C8..CF` FMULP ST(i),ST(0), bounded FCW precision for Normal operands/results, write old physical destination before TOP pop, sticky PE and C1; exact p64 domain retained; JIT/native closed | Integrated main: od-isa 1,841; od-testkit 455; runner 119+499; x86-runner 8+4; workspace check, fmt/diff/layout, Graphify; static fixture runner verifies complete state/exception/memory; Sol/high review clean; no physical x86 acceptance |
+| [x] | S2-30db | Bare `DE E8..EF` FSUBP ST(i),ST(0), bounded FCW precision with normalized gap≤64; old exact p64 domain retained; old physical destination before TOP pop; sticky PE/C1; JIT/native closed | Focused ISA matrix 10,752 cases; static full-state PC24 inexact fixture and runner JIT denial; package/workspace checks and review recorded in standalone report |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11476,6 +11477,35 @@ Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30da-bounded-fcw-precision-fmulp-sti-st0-de-c8i),
 [shared report](../reports/STAGE_2_REPORT.md#s2-30da--bounded-fmulp-sti-st0), and
 [standalone report](../reports/S2_30DA_X87_FMULP_PRECISION.md). S2-30 and
+ISSUE-019 remain open.
+
+#### S2-30db. Bare `FSUBP ST(i), ST(0)` with bounded FCW precision
+
+Extend only bare Long64 `DE E8..EF`. Reuse the S2-30cv bounded subtraction
+helper with old physical destination `(TOP+i)&7` and old physical TOP as the
+source. Require present x87 state, absent FCS/FDS, one of twelve all-masked
+PC24/53/64 FCWs, `FSW & 0x80df == 0`, Valid tags, canonical nonzero Normal
+operands and normalized exponent gap≤64. Keep the exact S2-30j fallback when
+the bounded profile does not apply, preserving its exact p64 result domain.
+Alias `i=0` cancels and remains atomically Unsupported. Only finite Normal
+results are accepted.
+
+On success, write the result to the old physical destination before marking
+old TOP Empty, then increment TOP modulo eight. PE becomes old PE OR `inexact`;
+C1 is replaced by the helper's `incremented` diagnostic. Preserve C0/C2/C3 by
+the existing local policy and retain all other state. Set FIP to old RIP,
+advance RIP by two, retire once and make no data-memory access. Native/JIT,
+general x87 exception delivery and physical x86 acceptance remain closed.
+
+Coverage includes 12 FCWs, all TOP/index placements, four sign combinations,
+prior PE/C1 histories, gap 64 success, gap 65/domain rejection, alias rollback
+for every TOP/FCW pair, execution boundaries, the
+existing DE ModR/M/prefix checks and a static PC24 inexact fixture comparing
+full CPU state, exception observation and memory. A separate explicit matrix
+checks the former odd 65-bit exact-only rejection now rounds for all FCWs and
+TOP/index pairs. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30db-bounded-fcw-precision-fsubp-sti-st0-de-e8i),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30db--bounded-fsubp-sti-st0), and
+[standalone report](../reports/S2_30DB_X87_FSUBP_PRECISION.md). S2-30 and
 ISSUE-019 remain open.
 
 #### S2-30cv. Bare reverse `FSUB ST(i), ST(0)` with bounded FCW precision

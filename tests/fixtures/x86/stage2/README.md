@@ -1402,6 +1402,19 @@ checks PE, rounded payload placement, old TOP emptying and TOP advancement.
 The eight encodings remain interpreter-only; native/JIT admission stays
 closed.
 
+### S2-30db x87 schema and fixture coverage
+
+The LongX87StateV1 profile admits all bare `DE E8..EF` FSUBP encodings. The
+static [PC24 inexact fixture](s2_30db_fsubp_pc24_inexact_pop.case.json)
+executes `FSUBP ST(1), ST(0)` with a midpoint
+result, then checks the full CPU snapshot: rounded destination bytes are
+written before the old TOP tag is emptied, TOP advances, PE becomes sticky,
+and C1 records the increment. The runner also verifies exception observation,
+unchanged memory and JIT denial. Direct ISA coverage spans all twelve FCWs,
+every TOP/index pair, operand signs and prior PE/C1 histories. Native x87 and
+general exception delivery remain unsupported; no physical x86 acceptance is
+claimed.
+
 ### S2-30q x87 schema coverage
 
 The schema validator admits all eight bare `D8 F0+i` FDIV encodings. The

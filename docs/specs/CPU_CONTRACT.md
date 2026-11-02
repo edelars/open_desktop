@@ -2887,6 +2887,44 @@ Vol.1 §8.1.5.1–.3, Table 8-2 and §8.5.6, pp.8-7–8-8 and 8-30
 clear C1; C0/C2/C3 are undefined. This bounded profile does not implement
 general rounding exceptions, special values, CR0/#NM or native x87 behavior.
 
+## Local S2-30db: bounded FCW-precision `FSUBP ST(i), ST(0)` (`DE E8+i`)
+
+The interpreter accepts only bare Long64 `DE E8..EF`. It reuses the bounded
+`FSUB ST(i), ST(0)` result helper with logical destination `i` and old
+physical TOP as source. Require present x87 state, absent FCS/FDS selectors,
+one of twelve all-exception-masked PC24/53/64 FCWs, `FSW & 0x80df == 0`, Valid
+tags for the used physical registers, canonical nonzero Normal binary80
+operands of either sign, and normalized exponent gap≤64. Accept only finite
+Normal exact or rounded results. The `i=0` alias cancels and remains
+Unsupported atomically. If the bounded gate does not apply, retain the
+S2-30j exact `FSUBP` result helper and its exact p64 domain.
+
+On success, write the result bytes to old physical `(TOP+i)&7` before marking
+old physical TOP Empty, then increment TOP modulo eight. PE becomes old PE OR
+`inexact`; C1 is replaced by the helper's pre-carry magnitude `incremented`
+diagnostic. Preserve C0/C2/C3 under the local deterministic policy and retain
+all unrelated state. Set FIP to old RIP, advance RIP by two and retire once;
+the instruction performs no data-memory access. Unsupported operands,
+environment, result range, alias and fetch/STOP/budget conditions commit
+nothing. Native/JIT, general x87 exception delivery and physical x86
+acceptance remain outside this profile.
+
+The runner's static PC24 inexact fixture checks the complete resulting CPU
+state, exception observation and unchanged memory. The direct ISA matrix
+covers all twelve FCWs, every TOP/index placement, four sign pairs and old
+PE/C1 histories. Alias cancellation is atomic for all TOP/FCW pairs; gap 64
+is admitted and gap 65 is rejected. Existing DE decoder/schema coverage
+remains in force.
+Normative source: Intel SDM revision 093, Vol.2A, “FSUB/FSUBP/FISUB—Subtract,”
+pp.3-394–3-396
+([official PDF, Vol.2A p.3-394](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=512));
+Vol.1 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp.8-7–8-8 and 8-30
+([official PDF, Vol.1 p.8-30](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+`DE E8+i` computes old `ST(i) - ST(0)` before popping old TOP. See the
+[plan](../plans/STAGE_2.md#s2-30db-bare-fsubp-sti-st0-with-bounded-fcw-precision),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30db--bounded-fsubp-sti-st0), and
+[standalone report](../reports/S2_30DB_X87_FSUBP_PRECISION.md).
+
 ## Local S2-30q: exact-only `FDIV ST(0), ST(i)` (`D8 F0+i`)
 
 The interpreter accepts exactly bare `D8 F0` through `D8 F7` with an existing
