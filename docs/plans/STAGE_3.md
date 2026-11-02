@@ -4426,7 +4426,9 @@ S3-00 прошла `python3 tools/check_layout.py`, проверку относ�
 
 Rust identities: `memory_load_v2::tests::ir_dword_rcx_base_store_binds_exact_source_and_site` и `tests::s3_20fq_rcx_base_dword_store_uses_full_rcx_and_low_eax_payload`. Harness identities: `s3_34db_ir_rcx_base_dword_store_source_binding`, `s3_34db_host_rcx_base_dword_store_full_rcx_and_low_eax_payload`; fail-closed self-test: `test_s3_34db_rcx_base_dword_store_gates_are_pinned_and_fail_closed`. Итоговые totals — 282 Rust gates (272 acceptance + 10 lifecycle), 300 local steps и 125 self-test names. Runtime commits `f6744bf`, `cc5f85a` и harness commit `c7cb7c1` прошли независимое Sol/high review. Harness identity correction `cac3a67` закрыл P1: Rust test identity согласован с pinned gate; повторное review прошло. Поведенческие проверки, сборка, форматирование, Cargo и Python harness отложены до завершения этапа; Mini также отложена до конца Stage 3, M1 regression отложена по решению пользователя. Stage 2 и production owner/MMU вне среза; Stage 3 остаётся partial. См. [S3-20fq report](../reports/STAGE_3_S3-20fq_2026-11-02.md).
 
-#### S3-20fr. RCX-base Dword load signed disp8 `8B 41 ib` — PASS
+#### S3-20fr. RCX-base Dword load signed disp8 `8B 41 ib`
+
+**Статус: PASS.**
 
 **Статус: PASS.**
 
