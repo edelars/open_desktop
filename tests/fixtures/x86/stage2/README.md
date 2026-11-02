@@ -7928,7 +7928,15 @@ It checks 16-byte alignment and canonical48 span regardless of AC before one
 The independent integer-only SUBPS oracle receives the actual memory RHS and
 validates all four output lanes and sticky status. Runner coverage crosses RC
 settings and prior sticky histories, verifies backend denial and result
-tampering, and checks the SSE gate. No physical x86 acceptance is claimed. See
+tampering, and checks the SSE gate. Additional memory-specific vectors cover
+NaN sign/payload and SNaN-vs-QNaN priority, denormal priority, opposite
+infinities, RC-sensitive ties, signed zero, tiny boundary, overflow, and
+mixed-lane IE/DE/OE/PE. Finite binary32 subtraction cannot newly raise UE: a
+finite subnormal result from same-sign operands is exact by Sterbenz's lemma.
+If opposite-sign operands yield a subnormal sum, both operands are subnormal
+and share the binary32 minimum-subnormal quantum, so the sum is exact. The
+sticky matrix verifies incoming UE preservation. The sequential fixture suite passed
+498/498. No physical x86 acceptance is claimed. See
 the [plan](../../../../docs/plans/STAGE_2.md#s2-37dr--masked-only-legacy-long64-subps-xmm0m128-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dr--masked-only-long64-subps-xmm0m128-rax),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37dr--subps-xmm0m128-rax).

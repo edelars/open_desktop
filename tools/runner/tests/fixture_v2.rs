@@ -38410,6 +38410,88 @@ fn subps_m128_memory_uses_independent_memory_lanes_and_denies_backends() {
             od_testkit::v2::compare(&input, &result, &result).unwrap();
         }
     }
+    let vectors = [
+        (
+            "s2_37dr_mixed_ie_de_oe_pe",
+            "4523c17f010000000000807fffff7f7f",
+            "1100807f000000000000807fffff7fff",
+        ),
+        (
+            "s2_37dr_nan_priority_and_opposite_infinities",
+            "2200807f4523c17f0000807f000080ff",
+            "2143c5ff1100807f000080ff0000807f",
+        ),
+        (
+            "s2_37dr_tie_signed_zero_and_tiny_boundary",
+            "0000803f000000000000008000008000",
+            "000000330000008000000000ffff7f00",
+        ),
+    ];
+    for (stem, lhs, rhs) in vectors {
+        for rc in 0..4u64 {
+            for sticky in 0..64u64 {
+                let mut case = base.clone();
+                case.case_id = format!("{stem}_rc{rc}_sticky{sticky}");
+                case.initial_state.sse.as_mut().unwrap().xmm[0] = lhs.into();
+                case.memory[1].initial_bytes_hex = rhs.into();
+                case.initial_state.sse.as_mut().unwrap().mxcsr =
+                    HexU64(0x1f80 | (rc << 13) | sticky);
+                let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                if stem == "s2_37dr_mixed_ie_de_oe_pe" {
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        _ => panic!("missing SUBPS mixed-lane snapshot"),
+                    };
+                    let xmm = &snapshot.state.sse.as_ref().unwrap().xmm[0];
+                    assert_eq!(&xmm[..24], "4523c17f010000000000c0ff");
+                    let overflow_lane = if matches!(rc, 1 | 3) {
+                        "ffff7f7f"
+                    } else {
+                        "0000807f"
+                    };
+                    assert_eq!(&xmm[24..], overflow_lane);
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                        0x2b | sticky
+                    );
+                } else if stem == "s2_37dr_nan_priority_and_opposite_infinities" {
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        _ => panic!("missing SUBPS NaN-order snapshot"),
+                    };
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().xmm[0],
+                        "2200c07f4523c17f0000807f000080ff"
+                    );
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                        1 | sticky
+                    );
+                }
+                if stem == "s2_37dr_tie_signed_zero_and_tiny_boundary" {
+                    let snapshot = match result.snapshot {
+                        Observation::Available { value } => value,
+                        _ => panic!("missing SUBPS special-value snapshot"),
+                    };
+                    let xmm = &snapshot.state.sse.as_ref().unwrap().xmm[0];
+                    let raw = od_testkit::v2::decode_bytes(xmm).unwrap();
+                    let tie_bits = u32::from_le_bytes(raw[0..4].try_into().unwrap());
+                    let expected_tie = if matches!(rc, 1 | 3) {
+                        0x3f7f_ffff
+                    } else {
+                        0x3f80_0000
+                    };
+                    assert_eq!(tie_bits, expected_tie, "RC={rc}");
+                    assert_eq!(&xmm[8..32], "000000000000008001000000");
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                        0x22 | sticky
+                    );
+                }
+            }
+        }
+    }
     let mut gate = base.clone();
     gate.case_id = "s2_37dr_no_sse_gate".into();
     gate.subps_controls.as_mut().unwrap().sse_available = false;

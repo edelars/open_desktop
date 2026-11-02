@@ -16987,14 +16987,24 @@ advances RIP by three. JIT/native/C ABI/generic/fragment and physical x86
 support remain closed.
 
 The literal fixture and independent integer-only raw-u32 oracle cover the
-four-lane memory source, all RC settings and old sticky patterns. Full suites
-passed: `od-isa` 1,840; `od-testkit` 455; runner 119 unit + 498 fixture; x86-runner
+four-lane memory source, all RC settings and old sticky patterns. Expanded
+runner vectors cover NaN payload/sign and SNaN-vs-QNaN priority, denormal
+priority, opposite infinities, RC-sensitive ties, cancellation and signed zero,
+the tiny boundary, overflow, and mixed-lane IE/DE/OE/PE aggregation. UE cannot
+be newly raised by finite binary32 subtraction: when the exact result is
+subnormal and operands are finite and same-sign, Sterbenz's lemma makes the
+difference exact. If opposite-sign operands produce a subnormal sum, both
+operands are subnormal and their values share the binary32 minimum-subnormal
+quantum, so that sum is exact too. The full sticky matrix still verifies
+preservation of an incoming UE bit. Full suites passed:
+`od-isa` 1,840; `od-testkit` 455; runner 119 unit + 498 fixture; x86-runner
 8 library + 4 binary. Workspace all-target offline check, formatting, diff
-check and Graphify refresh passed (11,483 nodes / 24,734 edges / 359
+check and Graphify refresh passed (11,488 nodes / 24,739 edges / 359
 communities). `tools/check_layout.py` reports the isolated worktree `.git`
 marker and two existing absent oracle manifests linked from `STAGE_2_REPORT.md`;
-the slice adds no paths. Independent Sol/high review follows the commit. Physical
-x86 acceptance is not claimed. See
+the slice adds no paths. Independent Sol/high follow-up review is pending the
+coverage commit. Physical x86 acceptance is not claimed. See
+[standalone report](../reports/S2_37DR_SUBPS_MEMORY.md) and
 [CPU contract](../specs/CPU_CONTRACT.md#s2-37dr--masked-only-long64-subps-xmm0m128-rax),
 [shared report](../reports/STAGE_2_REPORT.md#s2-37dr--subps-xmm0m128-rax), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dr--subps-xmm0m128-rax).

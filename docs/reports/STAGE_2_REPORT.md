@@ -45,10 +45,16 @@ Fixture использует отдельные XMM0 и m128 lanes; schema valid
 MXCSR/alignment/span и read16 rollback. Полные suites прошли: od-isa 1,840;
 od-testkit 455; runner 119 unit + 498 fixture; x86-runner 8 library + 4 binary.
 Workspace all-target offline check, fmt, diff check и Graphify refresh прошли
-(11,483 nodes / 24,734 edges / 359 communities). Layout tool сообщает о
+(11,488 nodes / 24,739 edges / 359 communities). Layout tool сообщает о
 worktree `.git` marker и двух отсутствующих исторических oracle manifests,
 ссылаемых из этого отчёта; новые пути не добавлялись. Independent Sol/high
-review ожидается после commit. No physical x86 acceptance is claimed.
+review не нашёл production дефекта и запросил более широкие арифметические
+векторы. Follow-up покрывает NaN payload/sign и SNaN-vs-QNaN priority,
+denormal priority, opposite infinities, RC-sensitive tie и signed-zero, tiny
+boundary, overflow и cross-lane IE/DE/OE/PE aggregation. Sequential fixture
+rerun прошёл 498/498, включая расширенный SUBPS test; детали follow-up и
+rationale для UE записаны в standalone report. No physical x86 acceptance is
+claimed.
 
 ## S2-37dq — local-only Long64 legacy ADDPS m128 memory
 
