@@ -116,6 +116,7 @@ SELF_TEST_NAMES = (
     "test_s3_34bn_rsp_disp8_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34bo_rsp_disp32_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34bp_rsp_disp32_dword_store_gates_are_pinned_and_fail_closed",
+    "test_s3_34bq_addr32_rsp_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -937,6 +938,14 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34bp_host_rsp_disp32_dword_store_checked_state", "local_acceptance", "od-host",
         "tests::s3_20ee_rsp_disp32_dword_store_preserves_ss_fault_and_checked_state",
+    ),
+    (
+        "s3_34bq_ir_addr32_rsp_dword_load_source_binding", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_addr32_rsp_sib_load_binds_exact_source_and_site",
+    ),
+    (
+        "s3_34bq_host_addr32_rsp_dword_load_zero_extended_esp", "local_acceptance", "od-host",
+        "tests::s3_20ef_addr32_rsp_dword_load_uses_zero_extended_esp",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
