@@ -392,6 +392,20 @@ and a valid adjacent read ending at the canonical boundary, without guest
 state commit or a memory callback on either fault. See the
 [S3-20dj report](../reports/STAGE_3_S3-20dj_2026-11-02.md).
 
+#### S3-20dk: exact address64 SIB Dword stores with signed disp32
+
+The shared typed-IR Dword-store path additionally admits exactly
+`89 84 0B id`, `89 84 4B id`, `89 84 8B id`, and `89 84 CB id`
+(`MOV [RBX+RCX*1/2/4/8+signed disp32],EAX`). Each is a seven-byte singleton
+with full-width RBX base, full-width RCX index, encoded SIB scale, and signed
+disp32. The decoder-owned `access_address_48` computes the effective address.
+Each store performs one contiguous checked four-byte write of low32 RAX; the
+guest boundary is `A+7`. Source/site binding covers all four scales and each
+encoded displacement byte. The PC map uses the seven-byte boundary. Recorded
+fixtures cover canonical-end `#GP`, u64 range overflow, fault atomicity, no
+replay, STOP, and budget behavior. See the
+[S3-20dk report](../reports/STAGE_3_S3-20dk_2026-11-02.md).
+
 #### S3-20de: exact address64 SIB Dword store
 
 The shared typed-IR Dword-store path additionally admits only the exact
