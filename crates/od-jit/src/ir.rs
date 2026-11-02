@@ -1088,6 +1088,12 @@ fn is_checked_dword_load_address(
         && ((instruction_length == 3 && operand.displacement == 0)
             || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok())
             || (instruction_length == 7 && i32::try_from(operand.displacement).is_ok()));
+    let address32_sib_profile = instruction_length == 4
+        && operand.address_size == od_isa::OperandSize::Dword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+        && operand.index == Some(od_isa::Register::Rcx)
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
+        && operand.displacement == 0;
     let rbx_rcx_sib_profile = matches!(instruction_length, 3 | 4 | 7)
         && operand.address_size == od_isa::OperandSize::Qword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
@@ -1100,7 +1106,8 @@ fn is_checked_dword_load_address(
         && ((operand.index.is_none()
             && operand.scale == 1
             && (address64_profile || address32_profile))
-            || rbx_rcx_sib_profile)
+            || rbx_rcx_sib_profile
+            || address32_sib_profile)
 }
 
 fn is_checked_dword_store_address(
