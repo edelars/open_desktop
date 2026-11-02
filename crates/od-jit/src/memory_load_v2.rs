@@ -1035,6 +1035,9 @@ pub fn compile_ir_memory_dword_store_block_v2(
         && !(bytes.len() == 4
             && bytes[..2] == [0x89, 0x44]
             && matches!(bytes[2], 0x0b | 0x4b | 0x8b | 0xcb))
+        && !(bytes.len() == 7
+            && bytes[..2] == [0x89, 0x84]
+            && matches!(bytes[2], 0x0b | 0x4b | 0x8b | 0xcb))
         && bytes != [0x67, 0x89, 0x03]
         && !(bytes.len() == 4 && bytes[..3] == [0x67, 0x89, 0x43])
         && !(bytes.len() == 7 && bytes[..3] == [0x67, 0x89, 0x83])
@@ -4425,7 +4428,6 @@ mod tests {
             &[0x89, 0x04][..],
             &[0x89, 0x04, 0x03][..],
             &[0x89, 0x0c, 0x0b][..],
-            &[0x89, 0x84, 0x0b, 0, 0, 0, 0][..],
             &[0x48, 0x89, 0x04, 0x0b][..],
             &[0x66, 0x89, 0x04, 0x0b][..],
             &[0x67, 0x89, 0x04, 0x0b][..],
@@ -4552,7 +4554,6 @@ mod tests {
             &[0x48, 0x89, 0x04, 0x4b][..],
             &[0x66, 0x89, 0x04, 0x4b][..],
             &[0x67, 0x89, 0x04, 0x4b][..],
-            &[0x89, 0x84, 0x4b, 0, 0, 0, 0][..],
             &[0x89, 0x04, 0x49][..],
             &[0x89, 0x04, 0x42][..],
             &[0x89, 0x0c, 0x4b][..],
@@ -4680,7 +4681,164 @@ mod tests {
             &[0x89, 0x44, 0x03, 0][..],
             &[0x89, 0x44, 0x0c, 0][..],
             &[0x89, 0x4c, 0x0b, 0][..],
-            &[0x89, 0x84, 0x0b, 0, 0, 0, 0][..],
+        ] {
+            assert!(
+                compile_ir_memory_dword_store_block_v2(
+                    CodeView::new(entry, neighbor).unwrap(),
+                    entry
+                )
+                .is_err(),
+                "admitted neighboring encoding {neighbor:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ir_dword_rbx_rcx_sib_disp32_store_binds_all_scales_and_source_bytes() {
+        use std::collections::HashSet;
+
+        let entry = 0x82e0;
+        let scales = [(0x0b, 1), (0x4b, 2), (0x8b, 4), (0xcb, 8)];
+        let mut identities = HashSet::new();
+        for (sib, scale) in scales {
+            for displacement in [
+                i32::MIN,
+                -129,
+                -128,
+                -1,
+                0,
+                1,
+                127,
+                128,
+                i32::MAX,
+                0x0102_0304,
+                -0x0102_0304,
+            ] {
+                let encoded = displacement.to_le_bytes();
+                let source = [
+                    0x89, 0x84, sib, encoded[0], encoded[1], encoded[2], encoded[3],
+                ];
+                let block = compile_ir_memory_dword_store_block_v2(
+                    CodeView::new(entry, &source).unwrap(),
+                    entry,
+                )
+                .unwrap();
+                assert_eq!(block.source_bytes(), source);
+                assert_eq!(block.site().guest_rip(), entry);
+                assert_eq!(block.site().next_rip(), entry + 7);
+                assert_eq!(block.site().source(), Some(0));
+                assert_eq!(block.site().destination(), None);
+                assert_eq!(block.site().operand().size, od_isa::OperandSize::Dword);
+                assert_eq!(
+                    block.site().operand().address_size,
+                    od_isa::OperandSize::Qword
+                );
+                assert_eq!(
+                    block.site().operand().base,
+                    AddressBase::Register(Register::Rbx)
+                );
+                assert_eq!(block.site().operand().index, Some(Register::Rcx));
+                assert_eq!(block.site().operand().scale, scale);
+                assert_eq!(block.site().operand().displacement, i64::from(displacement));
+                assert!(block.site().has_supported_profile());
+                assert!(
+                    block
+                        .site()
+                        .matches_source_bytes(&source, MemorySiteOperationV2::Store)
+                );
+                assert_eq!(block.pc_map().instruction_count(), 1);
+                assert_eq!(
+                    block.pc_map().boundaries()[0].rip,
+                    crate::statepoints::GuestRipBoundary::Fixed(entry + 7)
+                );
+                assert!(matches_dword_pc_map_contract(
+                    block.pc_map(),
+                    entry,
+                    entry + 7,
+                    0,
+                    1,
+                    crate::statepoints::StatePhase::HelperCall,
+                    MemorySiteOperationV2::Store,
+                ));
+                assert!(block.pc_map().ranges().iter().any(|range| {
+                    range.phase == crate::statepoints::StatePhase::AfterHelper
+                        && range.snapshot
+                            == crate::statepoints::SnapshotAdmissibility::InadmissibleAfterEffect
+                }));
+                assert!(identities.insert((sib, displacement)));
+
+                for byte_index in 3..7 {
+                    let mut changed_source = source;
+                    changed_source[byte_index] = changed_source[byte_index].wrapping_add(1);
+                    assert!(
+                        !block
+                            .site()
+                            .matches_source_bytes(&changed_source, MemorySiteOperationV2::Store)
+                    );
+                    let changed = compile_ir_memory_dword_store_block_v2(
+                        CodeView::new(entry, &changed_source).unwrap(),
+                        entry,
+                    )
+                    .unwrap();
+                    assert_ne!(block.site(), changed.site());
+                }
+
+                let mut forged = *block.site();
+                forged.operand.scale = match scale {
+                    1 => 2,
+                    2 => 4,
+                    4 => 8,
+                    8 => 1,
+                    _ => unreachable!(),
+                };
+                assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+                let mut forged = *block.site();
+                forged.operand.base = AddressBase::Register(Register::Rax);
+                assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+                let mut forged = *block.site();
+                forged.operand.index = Some(Register::Rdx);
+                assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+                let mut forged = *block.site();
+                forged.operand.size = od_isa::OperandSize::Qword;
+                assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+                let mut forged = *block.site();
+                forged.operand.address_size = od_isa::OperandSize::Dword;
+                assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+                let mut forged = *block.site();
+                forged.source = Some(1);
+                assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+                let mut forged = *block.site();
+                forged.next_rip += 1;
+                assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+                let mut changed_sib = source;
+                changed_sib[2] = match sib {
+                    0x0b => 0x4b,
+                    0x4b => 0x8b,
+                    0x8b => 0xcb,
+                    0xcb => 0x0b,
+                    _ => unreachable!(),
+                };
+                assert!(
+                    !block
+                        .site()
+                        .matches_source_bytes(&changed_sib, MemorySiteOperationV2::Store)
+                );
+            }
+        }
+        assert_eq!(identities.len(), 4 * 11);
+
+        let entry = 0x82e0;
+        for neighbor in [
+            &[0x89][..],
+            &[0x89, 0x84][..],
+            &[0x89, 0x84, 0x0b, 0, 0, 0][..],
+            &[0x89, 0x84, 0x0b, 0, 0, 0, 0, 0x90][..],
+            &[0x48, 0x89, 0x84, 0x0b, 0, 0, 0, 0][..],
+            &[0x66, 0x89, 0x84, 0x0b, 0, 0, 0, 0][..],
+            &[0x67, 0x89, 0x84, 0x0b, 0, 0, 0, 0][..],
+            &[0x89, 0x84, 0x03, 0, 0, 0, 0][..],
+            &[0x89, 0x84, 0x0c, 0, 0, 0, 0][..],
+            &[0x89, 0x8c, 0x0b, 0, 0, 0, 0][..],
         ] {
             assert!(
                 compile_ir_memory_dword_store_block_v2(
