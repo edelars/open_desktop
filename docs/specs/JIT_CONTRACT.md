@@ -739,6 +739,27 @@ limitation remains tracked in [ISSUE-028](../KNOWN_ISSUES.md); this slice does
 not close it. No production owner/MMU, physical-hardware, or performance
 behavior is established. See the [S3-20ei report](../reports/STAGE_3_S3-20ei_2026-11-02.md).
 
+#### S3-20ej: exact address-size-32 ESP-base Dword load with signed disp32
+
+The typed-IR Dword-load path admits only the exact eight-byte singleton
+`67 8B 84 24 id` (`MOV EAX,[ESP+disp32]`): address-size override, SIB, ESP
+base, no index, scale 1, and signed 32-bit displacement. The effective address
+is `(low32(RSP) + sign_extend(disp32)) mod 2^32`, zero-extended. The checked
+operation reads four contiguous bytes; if the start is `0xffff_ffff`, later
+bytes continue above 4 GiB rather than wrapping individually. A successful
+load zero-extends EAX into RAX and advances RIP to `A+8`; high RSP bits are
+ignored. Source/site identity covers representative signed disp32 values and
+all four encoded displacement bytes. Other address forms remain outside this
+admission profile.
+
+The host fixture checks interpreter parity, poisoned high32 RSP values,
+negative boundaries including `-128` and `+127`, wrap-to-zero, cross-4GiB
+contiguous reads, and entry STOP/budget guards with successful retries. It
+also checks callback STOP commit and retry rejection without a second read.
+This bounded slice makes no production owner/MMU or performance claim. The
+separate S3-20eg coverage gap remains open in [ISSUE-028](../KNOWN_ISSUES.md);
+S3-20ej does not close it. See the [S3-20ej report](../reports/STAGE_3_S3-20ej_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact

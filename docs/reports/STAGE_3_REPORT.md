@@ -105,6 +105,20 @@ passed 1/1 and the full Python Stage 3 harness passed 93/93. Full `od-host` was
 not run. ISSUE-028 remains open for the separate S3-20eg test-coverage gap;
 S3-20ei does not close it. See the [S3-20ei report](STAGE_3_S3-20ei_2026-11-02.md).
 
+S3-20ej adds only the address-size-32 ESP-base dword load with signed disp32
+`67 8B 84 24 id`. Its EA wraps low32 RSP plus sign-extended disp32 modulo
+2^32, then zero-extends; the four-byte read remains contiguous across 4 GiB.
+The JIT source/site test checks ten representatives and all displacement
+bytes; the host fixture checks `-128`/`+127`, wrap-to-zero, poisoned high RSP
+bits, parity, and entry STOP/budget retry. On author runtime commit `d649bd4`,
+`od-jit` passed 348/348; exact S3-20ej JIT/host gates and adjacent S3-20da/S3-20dx host gates
+passed 1/1, with cargo check/fmt, Graphify, and Sol review passing. At root
+`4e4fec2`, exact gates passed 1/1 and the full Python Stage 3 harness passed
+94/94 with harness source `00430e9` integrated as `4790e76` (216 gates: 206
+acceptance, 10 lifecycle; 234 local steps). Full `od-host` was not run.
+ISSUE-028 remains open for the separate S3-20eg coverage limitation. See the
+[S3-20ej runtime report](STAGE_3_S3-20ej_2026-11-02.md).
+
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at
 2,048 repetitions per side with no scored pairs. Three scored runs retained 20
