@@ -33,10 +33,11 @@ unaligned m64, one-read callback behavior, and no state or retirement changes
 after address/read faults. Runner tests cross IM×DM×OSXMMEXCPT for the QNaN
 case and all four RC values with 64 prior sticky histories.
 
-Affected suites passed: od-isa 1,906; od-testkit 455; runner 125 unit + 523
-fixture tests. Workspace all-target offline check, formatting, diff check, and
-Graphify refresh passed. Layout validation reports the unmapped root `.git`
-entry and two unrelated broken manifest links in the shared stage report. No
+Integrated main suites passed: od-isa 1,907; od-testkit 455; runner 125 unit +
+523 fixture tests; x86-runner 8 library + 4 binary tests. Workspace all-target
+offline check, formatting, layout, diff check, and Graphify refresh passed
+(11,884 nodes, 25,794 edges, 363 communities). Independent Sol/high review is
+clean after backend-result guard and raw-oracle coverage corrections. No
 physical x86 acceptance is claimed.
 
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38p--exact-maxsd-unmasked-memory-exit-for-m64-rax), [plan](../plans/STAGE_2.md#s2-38p-exact-long64-maxsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38p-maxsd-m64-unmasked-invalid-and-denormal).

@@ -22656,13 +22656,13 @@ subnormal vectors; all 32 other sticky-flag combinations; four FCWs; all TOP
 values; and both prior C1 values. It verifies complete state, payloads/tags/
 metadata, one source read and memory canaries. SF-only/ES/B atomic
 rejections, including SF-only with SNaN, and FLD→FNSTSW→FNCLEX observation and
-clearing are covered. The eight focused ISA tests, focused schema test, and all
-522 runner `fixture_v2` tests passed; workspace check, formatting, diff and
-Graphify passed. Layout check reports the existing unmapped `.git` marker and
-two broken oracle-manifest links recorded in the
-[standalone report](S2_31DW_FLD_HISTORICAL_SF.md). No SF producer, general
+clearing are covered. Integrated main suites passed: od-isa 1,907, od-testkit
+455, runner 125 unit + 523 fixtures, and x86-runner 8 library + 4 binary;
+workspace check, formatting, layout, diff check, and Graphify refresh passed
+(11,884 nodes, 25,794 edges, 363 communities). Independent Sol/high review is
+clean after coverage and matrix-count corrections. No SF producer, general
 exception delivery, JIT/native admission or physical x86 acceptance is claimed;
-ISSUE-019 remains open. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dw-historical-sf-with-ie-for-exact-binary32binary64-fld), [plan](../plans/STAGE_2.md#s2-31dw-admit-historical-sfie-through-exact-binary32binary64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dw-historical-sf-with-ie-in-bounded-m32m64-fld).
+ISSUE-019 remains open. See the [standalone report](S2_31DW_FLD_HISTORICAL_SF.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dw-historical-sf-with-ie-for-exact-binary32binary64-fld), [plan](../plans/STAGE_2.md#s2-31dw-admit-historical-sfie-through-exact-binary32binary64-fld), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31dw-historical-sf-with-ie-in-bounded-m32m64-fld).
 ## S2-38p — exact Long64 MAXSD with unmasked memory IM/DM exits
 
 Added a distinct strict schema-v2 interpreter profile for exact `F2 0F 5F 00`
@@ -22681,8 +22681,10 @@ fixture verifies IE commit, #XM delivery, XMM0 suppression and retirement
 suppression. Additional literal raw-bit oracle vectors check source-2 SNaN
 payload preservation, both finite numeric orderings and both signed-zero tie
 orders. The comparator rejects forged `jit` and `native_x86` labels for S2-38p.
-Affected suites passed: od-isa 1,906; od-testkit 455; runner 125
-unit + 523 fixture tests. Workspace check, formatting, diff check and Graphify
-refresh passed. Layout validation still reports the unmapped `.git` entry and
-two unrelated broken manifest links. No physical x86 acceptance is claimed.
+Integrated main suites passed: od-isa 1,907; od-testkit 455; runner 125 unit +
+523 fixture tests; x86-runner 8 library + 4 binary tests. Workspace all-target
+offline check, formatting, layout, diff check, and Graphify refresh passed
+(11,884 nodes, 25,794 edges, 363 communities). Independent Sol/high review is
+clean after the backend guard and raw-oracle coverage expansion. No physical
+x86 acceptance is claimed.
 See the [standalone report](S2_38P_MAXSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38p--exact-maxsd-unmasked-memory-exit-for-m64-rax), [plan](../plans/STAGE_2.md#s2-38p-exact-long64-maxsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38p-maxsd-m64-unmasked-invalid-and-denormal).

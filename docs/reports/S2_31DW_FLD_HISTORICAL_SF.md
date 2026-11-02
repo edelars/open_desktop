@@ -20,15 +20,13 @@ The FLD→FNSTSW→FNCLEX composition observes SF+IE, then verifies clearing.
 Schema-v2 coverage prevents an exact bare budget-one/no-stop Unsupported case
 from being justified by the now-admitted SF+IE history.
 
-Validation: the focused `od-isa` FLD suite passed 8/8 and the focused
-`od-testkit` schema test passed 1/1; `od-runner`'s `fixture_v2` integration
-suite passed 522/522. `cargo check --workspace --all-targets --offline`,
-`cargo fmt --all -- --check`, `git diff --check`, and `graphify update .`
-passed. `python3 tools/check_layout.py` remains nonzero on
-the existing unmapped root `.git` worktree marker and two broken oracle-manifest
-links in `STAGE_2_REPORT.md`; this change did not alter those paths.
-
-Graphify refreshed to 11,912 nodes, 25,692 edges and 382 communities.
+The focused FLD and schema checks passed, and integrated main suites passed:
+od-isa 1,907; od-testkit 455; runner 125 unit + 523 fixture tests; x86-runner
+8 library + 4 binary tests. Workspace all-target offline check, formatting,
+`git diff --check`, and `python3 tools/check_layout.py` passed. Graphify
+refreshed to 11,884 nodes, 25,794 edges and 363 communities. Independent
+Sol/high review is clean after completing the source matrix, SNaN rejection,
+sticky-status composition, and correcting the matrix count.
 
 This is local interpreter and schema evidence. It does not add an SF producer,
 general exception delivery, JIT/native admission, or physical x86 acceptance;
