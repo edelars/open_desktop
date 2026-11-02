@@ -50,10 +50,20 @@ three ISSUE-023 errors: `Unmapped root file: .git` (the isolated worktree's
 `docs/reports/STAGE_2_REPORT.md` to
 `../../work/stage2-oracle/stage2-20261022-230853-3684f650/manifest.json` and
 `../../work/stage1-oracle/stage1-20261022-230241-3b73e810/manifest.json`.
-Independent Sol/high review is pending after the author commit. No physical
-x86 acceptance, complete SSE/MMX support, or guest exception-handler
-continuation is claimed. ISSUE-025 remains open and concerns the unrelated
-RCPSS/RCPPS tiny-result threshold.
+The first independent Sol/high review found and reproduced two P2 issues
+(memory profile admitted a register encoding before feature gates; backend
+result relabeling accepted JIT/native evidence) and one broken anchor. These
+were fixed in main commit `99c2cbb` and re-reviewed clean. No physical x86 acceptance,
+complete SSE/MMX support, or guest exception-handler continuation is claimed.
+ISSUE-025 remains open and concerns the unrelated RCPSS/RCPPS tiny-result
+threshold.
+
+After integration with S2-30dm, combined main verification passed: `od-isa`
+1,891, `od-testkit` 455, runner 125 unit + 518 fixtures, and `od-x86-runner`
+8 library + 4 binary tests. Workspace all-target offline check, formatting,
+diff check, layout and Graphify update passed. The combined graph has 11,799
+nodes, 25,583 edges and 372 communities; labels were not refreshed without an
+LLM API key. The main layout checker passes.
 
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-38m-exact-long64-minss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38m--exact-minss-unmasked-memory-exit-for-m32-rax),

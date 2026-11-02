@@ -17064,9 +17064,12 @@ combined faults, callback counts, atomicity and poisoned XMM state. Native,
 JIT, C ABI, generic and fragment paths remain closed.
 
 Focused checks passed: `od-isa` S2-38m tests (2) and runner fixture test (1).
-Full affected suites passed: `od-isa` 1,889; `od-testkit` 455; runner
-`fixture_v2` 517. Workspace/layout/fmt/Graphify checks and separate review are
-recorded in the standalone [S2-38m report](S2_38M_MINSS_MEMORY_UNMASKED.md). No
+After integrating S2-30dm and S2-38m into main, combined suites passed:
+`od-isa` 1,891; `od-testkit` 455; runner 125 unit + 518 fixtures;
+`od-x86-runner` 8 library + 4 binary. Workspace all-target offline check,
+formatting, diff, layout and Graphify update passed. Separate Sol/high review is
+clean after exact-form, backend-relabel and documentation fixes; details are in
+the standalone [S2-38m report](S2_38M_MINSS_MEMORY_UNMASKED.md). No
 physical x86 or complete SSE/MMX acceptance is claimed. ISSUE-025 stays open
 and concerns the unrelated RCPSS/RCPPS threshold. See the [plan](../plans/STAGE_2.md#s2-38m-exact-long64-minss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38m--exact-minss-unmasked-memory-exit-for-m32-rax),
@@ -22486,13 +22489,28 @@ pairs, every TOP/index pair and both prior PE/C1 values. Alias, helper refusal,
 fetch/STOP/budget boundaries, destination-before-pop and no-data-access
 behavior are covered. The literal `DE E9` gap-65 fixture compares the full
 post-state, exception observation and unchanged code memory; runner verifies
-JIT denial. Focused FSUBP tests passed 9/9. The full affected suites passed:
-`od-isa` 1,889, `od-testkit` 455, runner 125 unit + 517 fixtures. Workspace
-all-target offline check, rustfmt, diff check and Graphify update passed;
-Graphify is 11,827 nodes / 25,484 edges / 382 communities (community labels
-were not refreshed because no Graphify LLM API key is configured). Layout reports only
-the isolated `.git` marker and two unavailable historical oracle manifests
-already tracked in ISSUE-023. Independent Sol/high review is pending. See the
+JIT denial. Focused FSUBP tests passed 9/9. After combined main integration,
+the suites passed: `od-isa` 1,891, `od-testkit` 455, runner 125 unit + 518
+fixtures and `od-x86-runner` 8 library + 4 binary. Workspace all-target
+offline check, rustfmt, diff, layout and Graphify update passed. Graphify is
+11,799 nodes / 25,583 edges / 372 communities; labels were not refreshed
+without an LLM API key. Independent Sol/high review is clean after anchor and
+provenance corrections. See the
 [standalone report](S2_30DM_X87_FSUBP_LARGE_GAPS.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dm-large-gap-fsubp-sti-st0-de-e8i),
 [plan](../plans/STAGE_2.md#s2-30dm-large-gap-fsubp-sti-st0-admission), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dm-large-gap-fsubp-fixture-coverage).
+
+<a id="main-integration-s2-30dm-s2-38m"></a>
+
+## Main integration: S2-30dm and S2-38m
+
+Both reviewed slices are integrated. Combined main verification passed:
+`od-isa` 1,891; `od-testkit` 455; runner 125 unit + 518 fixtures;
+`od-x86-runner` 8 library + 4 binary; workspace all-target offline check,
+`cargo fmt --all -- --check`, `git diff --check`, `python3 tools/check_layout.py`,
+and `graphify update .`. Graphify reports 11,799 nodes, 25,583 edges and 372
+communities; labels were not refreshed without an LLM API key. Sol/high review
+is clean for both slices after the S2-38m exact-form/backend fixes and S2-30dm
+anchor/provenance corrections. Main layout check passes. Neither slice claims
+physical x86 acceptance; Stage 2 remains open and ISSUE-025 remains open for the
+unrelated RCPSS/RCPPS tiny-result threshold.

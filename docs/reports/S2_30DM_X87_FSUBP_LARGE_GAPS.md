@@ -52,8 +52,16 @@ Validation passed:
   shared report (the existing ISSUE-023 caveat); no new local path violations
   were reported.
 
-No physical x86 acceptance was performed. Independent Sol/high review is
-pending.
+Independent Sol/high review found no runtime or contract defects. It found
+documentation-only anchor and operand-label corrections, integrated in main
+commit `7330174` and re-reviewed clean. After integration with S2-38m, combined main
+verification passed: `od-isa` 1,891, `od-testkit` 455, runner 125 unit + 518
+fixtures, and `od-x86-runner` 8 library + 4 binary. Workspace all-target
+offline check, formatting, diff check, and layout passed. The integrated
+Graphify graph has 11,799 nodes, 25,583 edges and 372 communities; community
+labels were not refreshed without an LLM API key.
+
+No physical x86 acceptance was performed.
 
 Sources: Intel SDM Rev. 093 Vol. 2A `FSUB/FSUBP/FISUB`, pp. 3-394–3-396;
 Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30. See the
