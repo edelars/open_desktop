@@ -5,24 +5,21 @@
 ISSUE-011/012 остаются открытыми; наличие нового состояния или local instruction
 slice не означает завершение этапа.
 
-## Интеграция S2-30da и S2-37dr
+## Интеграция S2-30db и S2-37ds
 
-В main интегрированы bounded `FMULP ST(i),ST(0)` и masked-only memory
-`SUBPS XMM0,m128 [RAX]`. Совместный прогон прошёл: od-isa — 1,841; od-testkit
-— 455; runner — 119 unit и 499 fixture; od-x86-runner — 8 library и 4 binary
+В main интегрированы bounded `FSUBP ST(i),ST(0)` и masked-only memory
+`MULPS XMM0,m128 [RAX]`. Совместный прогон прошёл: od-isa — 1,845; od-testkit
+— 455; runner — 119 unit и 501 fixture; od-x86-runner — 8 library и 4 binary
 tests; workspace all-target check, fmt, diff и layout. Graphify после обновления
-кода содержит 11,452 nodes, 24,798 edges и 345 communities.
+кода содержит 11,480 nodes, 24,856 edges и 351 communities.
 
-Независимые Sol/high reviews были чистыми. FMULP static fixture явно запускается
-через runner и проверяет полный CPU state, exception и неизменность памяти.
-SUBPS memory-vector matrix проверяет QNaN payload/sign, NaN с same-lane
-subnormal, cancellation-zero sign для RC, mixed IE/DE/OE/PE, а также прежний
-sticky UE. UE для finite binary32 subtraction при FTZ=0 недостижим: каждый
-конечный binary32 и точный результат — целое число квантов `q=2^-149`; если
-точный результат меньше `2^-126`, его коэффициент `|k|<2^23`, поэтому он точно
-представим как subnormal или ноль и не может быть tiny/inexact. Физическое x86
+Независимые Sol/high reviews были чистыми. FSUBP сохраняет exact fallback,
+проверяет округлённый physical pop state и odd 65-bit coefficient на 2,688
+сочетаниях TOP/index/FCW/флагов. MULPS проверяет 1,792 oracle-комбинации
+memory-векторов, включая NaN priority, same-lane denormal, zero×infinity,
+underflow WPR midpoint, overflow и mixed sticky flags. Физическое x86
 исполнение не проверялось. Завершённые worktree обоих срезов удалены после
-переноса всех проверенных commit в main.
+переноса проверенных commit в main.
 
 ## S2-37dr — local-only Long64 legacy SUBPS m128 memory
 
