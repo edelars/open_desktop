@@ -319,6 +319,19 @@ pub struct DivideFiniteToNormalBinary80PrecisionResult {
     pub incremented: bool,
 }
 
+/// Result of rounding a finite binary80 product to a requested precision.
+///
+/// `inexact` reports whether the exact mathematical product differs from the
+/// represented target-precision value. `incremented` reports whether rounding
+/// increased the truncated positive target-precision significand by one,
+/// before carry normalization. Neither field is architectural x87 status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MultiplyFiniteToNormalBinary80PrecisionResult {
+    pub value: X87Binary80,
+    pub inexact: bool,
+    pub incremented: bool,
+}
+
 /// Divide two normalized nonzero finite values and round the exact quotient
 /// directly to a bounded binary80 result at precision 24, 53, or 64.
 ///
@@ -1008,6 +1021,76 @@ pub fn multiply_finite_to_binary80(
     round_pack_exact_magnitude(sign, exponent, magnitude, mode)
 }
 
+/// Multiply two normalized nonzero finite values and round the exact product
+/// directly to a normal finite binary80 result at precision 24, 53, or 64.
+///
+/// Inputs may have Normal, Subnormal, or PseudoDenormal provenance, provided
+/// their normalized significands have bit 63 set. The full product is
+/// normalized without discarding bits, then rounded once to the requested
+/// precision. The exact normalized product exponent and rounded result must
+/// both stay in the binary80 normal finite range. This helper defines no x87
+/// control-word, status, exception, or instruction behavior.
+pub fn multiply_finite_to_normal_binary80_precision_with_diagnostics(
+    lhs: X87Finite,
+    rhs: X87Finite,
+    mode: RationalRoundingMode,
+    precision: u32,
+) -> Option<MultiplyFiniteToNormalBinary80PrecisionResult> {
+    if !matches!(precision, 24 | 53 | 64) {
+        return None;
+    }
+
+    let valid_source = |value: X87Finite| {
+        !value.is_zero()
+            && value.significand >= (1_u64 << 63)
+            && matches!(
+                value.source_class,
+                X87Binary80Class::Normal
+                    | X87Binary80Class::Subnormal
+                    | X87Binary80Class::PseudoDenormal
+            )
+    };
+    if !valid_source(lhs) || !valid_source(rhs) {
+        return None;
+    }
+
+    let (sign, exponent, product) = multiply_finite_significands(lhs, rhs)?;
+    let (sign, exponent, significand) = normalize_exact_magnitude(sign, exponent, product)?;
+    if !(-16382..=16383).contains(&exponent) {
+        return None;
+    }
+
+    let shift = 128 - precision;
+    let truncated = significand >> shift;
+    let remainder_mask = (1_u128 << shift) - 1;
+    let remainder = significand & remainder_mask;
+    let inexact = remainder != 0;
+    let halfway = 1_u128 << (shift - 1);
+    let increment = if !inexact {
+        false
+    } else {
+        match mode {
+            RationalRoundingMode::NearestTiesEven => {
+                remainder > halfway || (remainder == halfway && truncated & 1 != 0)
+            }
+            RationalRoundingMode::TowardZero => false,
+            RationalRoundingMode::TowardPositive => !sign,
+            RationalRoundingMode::TowardNegative => sign,
+        }
+    };
+    let rounded = truncated + u128::from(increment);
+    let value = pack_normal_rounded_significand(sign, exponent, rounded, precision)?;
+    if value.classify() != X87Binary80Class::Normal {
+        return None;
+    }
+
+    Some(MultiplyFiniteToNormalBinary80PrecisionResult {
+        value,
+        inexact,
+        incremented: increment,
+    })
+}
+
 /// Normalize an exact unsigned magnitude representing
 /// `(-1)^sign * magnitude * 2^(exponent - 127)`.
 ///
@@ -1240,7 +1323,8 @@ mod tests {
         add_finite_same_exponent, add_finite_same_exponent_to_binary80, add_finite_to_binary80,
         add_finite_unequal_exponents, align_finite_pair, divide_finite_significands,
         divide_finite_to_binary80, divide_finite_to_normal_binary80_precision_with_diagnostics,
-        multiply_finite_significands, multiply_finite_to_binary80, normalize_exact_coefficient,
+        multiply_finite_significands, multiply_finite_to_binary80,
+        multiply_finite_to_normal_binary80_precision_with_diagnostics, normalize_exact_coefficient,
         normalize_exact_magnitude, pack_normal_rounded_significand, remainder_finite_nearest_even,
         remainder_finite_nearest_even_with_quotient, remainder_finite_trunc,
         remainder_finite_trunc_with_quotient, round_pack_exact_coefficient,
@@ -2012,6 +2096,297 @@ mod tests {
             (one, three, raw_subnormal, raw_pseudo, subnormal, pseudo),
             before
         );
+    }
+
+    #[test]
+    fn finite_multiplication_direct_precision_matches_exact_and_tie_literals() {
+        use RationalRoundingMode::{NearestTiesEven as N, TowardZero as Z};
+        let one = finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let exact =
+            multiply_finite_to_normal_binary80_precision_with_diagnostics(one, one, N, 24).unwrap();
+        assert_eq!(
+            exact.value.to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 0xff, 0x3f]
+        );
+        assert!(!exact.inexact);
+        assert!(!exact.incremented);
+
+        // The other operand selects exact p24 and p53 midpoints with even and
+        // odd retained low bits. Adjacent factors straddle an even midpoint.
+        for (precision, fraction_shift) in [(24, 40), (53, 11)] {
+            let half = 1_u64 << (63 - precision);
+            let cases = [
+                (half, false, 1_u64 << (precision - 1)),
+                (3 * half, true, (1_u64 << (precision - 1)) + 2),
+            ];
+            for (offset, incremented, retained) in cases {
+                let lhs = one;
+                let rhs = finite(
+                    0,
+                    0x8000_0000_0000_0000 + offset,
+                    false,
+                    X87Binary80Class::Normal,
+                );
+                let result = multiply_finite_to_normal_binary80_precision_with_diagnostics(
+                    lhs, rhs, N, precision,
+                )
+                .unwrap();
+                assert!(result.inexact);
+                assert_eq!(result.incremented, incremented);
+                let mut expected = [0; 10];
+                expected[..8].copy_from_slice(&(retained << fraction_shift).to_le_bytes());
+                expected[8..].copy_from_slice(&0x3fff_u16.to_le_bytes());
+                assert_eq!(result.value.to_bytes(), expected);
+            }
+            let below = finite(
+                0,
+                0x8000_0000_0000_0000 + half - 1,
+                false,
+                X87Binary80Class::Normal,
+            );
+            let above = finite(
+                0,
+                0x8000_0000_0000_0000 + half + 1,
+                false,
+                X87Binary80Class::Normal,
+            );
+            let below_result = multiply_finite_to_normal_binary80_precision_with_diagnostics(
+                one, below, N, precision,
+            )
+            .unwrap();
+            let above_result = multiply_finite_to_normal_binary80_precision_with_diagnostics(
+                one, above, N, precision,
+            )
+            .unwrap();
+            assert!(below_result.inexact && above_result.inexact);
+            assert!(!below_result.incremented);
+            assert!(above_result.incremented);
+        }
+
+        // Both directed-away signs and all four modes use the exact product
+        // sign while retaining the full low product tail at p64.
+        let odd_lhs = finite(0, 0x8000_0000_0000_0001, false, X87Binary80Class::Normal);
+        let odd_rhs = finite(0, 0x8000_0000_0000_0001, false, X87Binary80Class::Normal);
+        let negative_odd_rhs = finite(0, 0x8000_0000_0000_0001, true, X87Binary80Class::Normal);
+        for precision in [24, 53, 64] {
+            for (rhs, sign) in [(odd_rhs, false), (negative_odd_rhs, true)] {
+                for (mode, expected_increment) in [
+                    (N, None),
+                    (Z, Some(false)),
+                    (RationalRoundingMode::TowardPositive, Some(!sign)),
+                    (RationalRoundingMode::TowardNegative, Some(sign)),
+                ] {
+                    let result = multiply_finite_to_normal_binary80_precision_with_diagnostics(
+                        odd_lhs, rhs, mode, precision,
+                    )
+                    .unwrap();
+                    assert!(result.inexact);
+                    if let Some(expected) = expected_increment {
+                        assert_eq!(result.incremented, expected);
+                    }
+                    assert_eq!(result.value.sign(), sign);
+                }
+            }
+        }
+
+        // Exact p64 halfway products with even and odd retained magnitudes.
+        let largest_even = finite(0, 0xffff_ffff_ffff_fffc, false, X87Binary80Class::Normal);
+        for (rhs_significand, expected_significand, incremented) in [
+            (0xe000_0000_0000_0000, 0xdfff_ffff_ffff_fffc, false),
+            (0xa000_0000_0000_0000, 0x9fff_ffff_ffff_fffe, true),
+        ] {
+            let rhs = finite(0, rhs_significand, false, X87Binary80Class::Normal);
+            let result = multiply_finite_to_normal_binary80_precision_with_diagnostics(
+                largest_even,
+                rhs,
+                N,
+                64,
+            )
+            .unwrap();
+            let significand = u64::from_le_bytes(result.value.to_bytes()[..8].try_into().unwrap());
+            assert_eq!(significand, expected_significand);
+            assert!(result.inexact);
+            assert_eq!(result.incremented, incremented);
+        }
+    }
+
+    #[test]
+    fn finite_multiplication_direct_precision_covers_range_provenance_and_projection() {
+        use RationalRoundingMode::{NearestTiesEven as N, TowardZero as Z};
+        let one = finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let minimum = finite(
+            -16382,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        let maximum = finite(
+            16383,
+            0xffff_ffff_ffff_ffff,
+            false,
+            X87Binary80Class::Normal,
+        );
+
+        for value in [minimum, maximum] {
+            let result =
+                multiply_finite_to_normal_binary80_precision_with_diagnostics(value, one, N, 64)
+                    .unwrap();
+            assert_eq!(result.value.classify(), X87Binary80Class::Normal);
+            assert_eq!(
+                result.value,
+                multiply_finite_to_binary80(value, one, N).unwrap()
+            );
+        }
+        let carry = finite(0, 0xffff_ffff_ffff_ffff, false, X87Binary80Class::Normal);
+        let carried =
+            multiply_finite_to_normal_binary80_precision_with_diagnostics(carry, carry, N, 24)
+                .unwrap();
+        assert!(carried.incremented);
+        assert_eq!(
+            carried.value.to_bytes(),
+            [0, 0, 0, 0, 0, 0, 0, 0x80, 1, 0x40]
+        );
+
+        let overflow_factor = finite(-1, 0xffff_ffff_ffff_ffff, false, X87Binary80Class::Normal);
+        assert_eq!(
+            multiply_finite_to_normal_binary80_precision_with_diagnostics(
+                maximum,
+                overflow_factor,
+                N,
+                24
+            ),
+            None
+        );
+        let too_small = finite(
+            -16383,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        assert_eq!(
+            multiply_finite_to_normal_binary80_precision_with_diagnostics(too_small, one, N, 64),
+            None
+        );
+
+        let subnormal = finite(
+            -16383,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Subnormal,
+        );
+        let pseudo = finite(
+            -16382,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::PseudoDenormal,
+        );
+        let large_normal = finite(
+            16383,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        for value in [subnormal, pseudo] {
+            let result = multiply_finite_to_normal_binary80_precision_with_diagnostics(
+                value,
+                large_normal,
+                N,
+                53,
+            )
+            .unwrap();
+            assert_eq!(result.value.classify(), X87Binary80Class::Normal);
+        }
+
+        let tiny = finite(
+            -16383,
+            0x8000_0000_0000_0000,
+            false,
+            X87Binary80Class::Normal,
+        );
+        assert_eq!(
+            multiply_finite_to_normal_binary80_precision_with_diagnostics(tiny, one, N, 64),
+            None
+        );
+        assert_eq!(
+            multiply_finite_to_binary80(tiny, one, Z)
+                .unwrap()
+                .classify(),
+            X87Binary80Class::Subnormal
+        );
+    }
+
+    #[test]
+    fn finite_multiplication_direct_precision_rejects_bad_inputs_and_avoids_double_rounding() {
+        use RationalRoundingMode::NearestTiesEven as N;
+        let one = finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Normal);
+        let other = finite(0, 0xc000_0000_0000_0000, false, X87Binary80Class::Normal);
+        for precision in [0, 1, 23, 25, 52, 54, 63, 65, u32::MAX] {
+            assert_eq!(
+                multiply_finite_to_normal_binary80_precision_with_diagnostics(
+                    one, other, N, precision,
+                ),
+                None
+            );
+        }
+        let zero = finite(0, 0, false, X87Binary80Class::Zero);
+        for invalid in [
+            zero,
+            finite(0, 0, false, X87Binary80Class::Normal),
+            finite(0, 0x7fff_ffff_ffff_ffff, false, X87Binary80Class::Normal),
+            finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Zero),
+            finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Unnormal),
+            finite(0, 0x8000_0000_0000_0000, false, X87Binary80Class::Infinity),
+        ] {
+            assert_eq!(
+                multiply_finite_to_normal_binary80_precision_with_diagnostics(invalid, one, N, 64,),
+                None
+            );
+        }
+        assert_eq!(
+            multiply_finite_to_normal_binary80_precision_with_diagnostics(one, zero, N, 64),
+            None
+        );
+        assert_eq!(
+            multiply_finite_to_normal_binary80_precision_with_diagnostics(
+                finite(
+                    i32::MAX,
+                    0x8000_0000_0000_0000,
+                    false,
+                    X87Binary80Class::Normal
+                ),
+                one,
+                N,
+                64
+            ),
+            None
+        );
+
+        // Just above an even p24 midpoint, the exact p64 product rounds to the
+        // midpoint. Direct p24 rounds upward; p64-then-p24 ties downward.
+        let lhs = finite(0, 0x8000_0000_0000_0001, false, X87Binary80Class::Normal);
+        let rhs = finite(0, 0x8000_027f_ffff_ffff, false, X87Binary80Class::Normal);
+        let direct =
+            multiply_finite_to_normal_binary80_precision_with_diagnostics(lhs, rhs, N, 24).unwrap();
+        assert!(direct.incremented);
+        assert_eq!(
+            direct.value.to_bytes(),
+            [0, 0, 0, 0, 0, 3, 0, 0x80, 0xff, 0x3f]
+        );
+        let p64 =
+            multiply_finite_to_normal_binary80_precision_with_diagnostics(lhs, rhs, N, 64).unwrap();
+        let p64_value = p64.value.normalize_finite().unwrap();
+        let rounded_twice =
+            multiply_finite_to_normal_binary80_precision_with_diagnostics(p64_value, one, N, 24)
+                .unwrap();
+        assert!(!rounded_twice.incremented);
+        assert_eq!(
+            rounded_twice.value.to_bytes(),
+            [0, 0, 0, 0, 0, 2, 0, 0x80, 0xff, 0x3f]
+        );
+
+        let before = (lhs, rhs, p64.value);
+        let _ = multiply_finite_to_normal_binary80_precision_with_diagnostics(lhs, rhs, N, 53);
+        assert_eq!((lhs, rhs, p64.value), before);
     }
 
     #[test]
