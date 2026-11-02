@@ -551,6 +551,28 @@ does not read again. This slice does not claim a separate PC-map phase or establ
 MMIO, SMC, owner/MMU integration, hardware behavior, Mini, M1, or Stage 2. See
 the [S3-20dz report](../reports/STAGE_3_S3-20dz_2026-11-02.md).
 
+#### S3-20ea: exact RSP-base Dword store through SIB
+
+The shared typed-IR Dword-store path admits only the exact three-byte
+singleton `89 04 24` (`MOV [RSP],EAX`): address64 SIB with full-width RSP
+base, no index, and scale 1. The decoded operand supplies the effective
+address; the checked helper writes one contiguous four-byte value from low32
+RAX. A successful write commits guest RIP to `A+3` and preserves registers
+and flags. This bounded fixture does not make a separate PC-map phase claim.
+
+The host test checks noncanonical RSP start and width-four range-end faults as
+`#SS`, with the corresponding RBX-base `#GP` control; width-four
+`AddressOverflow` is returned before the writer callback. Entry STOP and zero
+budget do not write. On a backend write error, exactly one width-four attempt
+is recorded while CPU state and RAM remain unchanged. If the successful
+callback raises STOP, its write and the `A+3` architectural commit remain
+visible. Retrying the same published block with committed guest RIP `A+3`
+returns `EntryRipMismatch { expected: A, actual: A+3 }`, preserves state, and
+does not issue a second write. No other base, addressing form, prefix, SIB,
+or displacement width is implied. The fixture does not establish MMIO, SMC,
+owner/MMU integration, or hardware behavior. See the
+[S3-20ea report](../reports/STAGE_3_S3-20ea_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
