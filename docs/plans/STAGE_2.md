@@ -216,6 +216,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cv | Bare `DC E8..EF` FSUB ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30i; Sol/high review clean; od-isa 1,813, testkit 455, runner 115+493; workspace check/fmt passed; Graphify 11,335/24,389/351 |
 | [x] | S2-30cw | Bare `DC E0..E7` FSUBR ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30l; independent Sol/high review clean; integrated main od-isa 1,821, testkit 455, runner 116+495, x86-runner 8+4; workspace/fmt/layout/diff and Graphify 11,339/24,564/343 passed; no physical x86 acceptance |
 | [x] | S2-30cx | Bare `DC F8..FF` FDIV ST(i),ST(0), FCW precision division `ST(i)/ST(0)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | S2-30v, S2-30cs; integrated main od-isa 1,826, testkit 455, runner 118+495; independent Sol/high review clean (neighbor fdiv filter 19/19); workspace/fmt/diff and Graphify 11,368/24,630/336 passed |
+| [ ] | S2-30cy | Bare `DC F0..F7` FDIVR ST(i),ST(0), bounded FCW precision division `ST(0)/ST(i)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | S2-30cx, S2-30cs; review and full validation pending |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11539,6 +11540,33 @@ all-target offline check, formatting and diff check passed; Graphify rebuilt
 confirms there is no division cutoff. Isolated layout reports only
 the `.git` marker and historical ISSUE-023 oracle manifests. Independent
 Independent Sol/high review is clean (focused 5/5 and neighboring `fdiv` regressions 19/19); no physical x86/JIT/native acceptance is claimed.
+
+#### S2-30cy. Bare `FDIVR ST(i), ST(0)` with bounded FCW precision
+
+Admit only exact bare Long64 `DC F0..F7`. Reuse
+`bounded_x87_fdiv_st0_sti_result(state, destination)` to compute old
+`ST(0)/ST(i)` directly at the twelve all-exception-masked PC24/53/64 FCWs,
+with all four RC modes. Require present x87 state, absent FCS/FDS,
+`FSW & 0x80df == 0`, Valid tags for used registers, canonical nonzero Normal
+binary80 operands and a finite Normal result. There is no exponent-gap cutoff.
+Alias `i=0` validates only old ST(0) and yields exact +1.
+
+On success, write old physical `(TOP+i)&7` without popping, accumulate PE from
+old PE OR `inexact`, replace C1 from helper `incremented`, preserve C0/C2/C3,
+record FIP, advance RIP by two and retire once. Preserve the previous exact p64
+domain, compared against `exact_fdiv_result(state, 0, i)` including differing
+exponents. Invalid environment, tags, operands, zero divisor or non-Normal
+result refuse atomically. Other DC directions, D8/DE neighbors, exception
+delivery, JIT/native admission and physical x86 acceptance remain outside the
+slice.
+
+Check TOP/index, all twelve FCWs, signs and sticky PE/C1 histories, literal
+PC24/53/64 1/3 in all rounding modes, alias, exact quotients, exponent gap
+above 64, range and rounding boundaries, and fetch/retirement/full-state
+refusal behavior. Intel SDM Rev. 093 Vol. 2A `FDIV/FIDIV` pp. 3-333–3-335;
+Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cy-bounded-fdivr-sti-st0-dc-f0-f7),
+[report](../reports/STAGE_2_REPORT.md#s2-30cy--bounded-fdivr-sti-st0), and
+[standalone report](../reports/S2_30CY_X87_FDIVR_REVERSE_PRECISION.md).
 
 #### S2-30cq. Bare `FSUB ST(0), ST(i)` with bounded FCW precision
 

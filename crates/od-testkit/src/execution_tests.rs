@@ -352,7 +352,7 @@ fn fdivr_runner_checks_every_top_and_index_and_inexact_rounding() {
 }
 
 #[test]
-fn fdivr_sti_st0_runner_checks_every_top_and_index_and_atomic_inexact_rejection() {
+fn fdivr_sti_st0_runner_checks_every_top_and_index_and_inexact_rounding() {
     fn normal(significand: u64, exponent: u16, negative: bool) -> [u8; 10] {
         let mut bytes = [0; 10];
         bytes[..8].copy_from_slice(&significand.to_le_bytes());
@@ -402,7 +402,7 @@ fn fdivr_sti_st0_runner_checks_every_top_and_index_and_atomic_inexact_rejection(
         }
     }
 
-    // 1 / 3 is rejected before retirement and leaves every field unchanged.
+    // Rounded 1 / 3 commits the literal p64 result and precision diagnostics.
     let mut state = LongModeState::default();
     state.rip = 0x1100;
     let mut x87 = od_isa::state::X87State::fixture_seed();
@@ -414,10 +414,16 @@ fn fdivr_sti_st0_runner_checks_every_top_and_index_and_atomic_inexact_rejection(
     state.x87 = Some(x87);
     let before = state.clone();
     let mut code = memory(&[0xdc, 0xf1], state.rip);
-    let result = run(&mut state, &mut code, config(1, None), || false);
-    assert_eq!(result.exit, RunExit::Unsupported { opcode: 0xdc });
-    assert_eq!(result.instructions_executed, 0);
-    assert_eq!(state, before);
+    let result = run(&mut state, &mut code, config(1, Some(0x1102)), || false);
+    assert_eq!(result.exit, RunExit::StopAddress);
+    assert_eq!(result.instructions_executed, 1);
+    let mut expected = before;
+    let expected_x87 = expected.x87.as_mut().unwrap();
+    expected_x87.registers[1] = normal(0xaaaa_aaaa_aaaa_aaab, 0x3ffd, false);
+    expected_x87.status_word |= (1 << 5) | (1 << 9);
+    expected_x87.instruction_pointer = 0x1100;
+    expected.rip = 0x1102;
+    assert_eq!(state, expected);
 }
 
 #[test]

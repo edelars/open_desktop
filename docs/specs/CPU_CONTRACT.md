@@ -16567,6 +16567,31 @@ Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6.
 
 
 
+## Local S2-30cy: bounded `FDIVR ST(i), ST(0)` (`DC F0..F7`)
+
+The interpreter admits only exact bare Long64 `DC F0..F7` and reuses the
+bounded reverse-division helper for old `ST(0)/ST(i)`, rounded directly under
+the x87 FCW at PC24/53/64. The profile requires present x87 state, absent FCS
+and FDS, `FSW & 0x80df == 0`, one of twelve all-masked precision/rounding FCWs,
+Valid tags for used registers and canonical nonzero Normal operands. Only a
+finite Normal quotient is accepted. There is no exponent-gap cutoff. Alias
+`i=0` validates the sole used register and produces exact +1.
+
+Success writes old physical `(TOP+i)&7` without popping, makes PE sticky from
+old PE OR inexact, replaces C1 from the rounded-magnitude increment result,
+preserves C0/C2/C3 and unrelated state, records FIP=old RIP, advances RIP by
+two and retires once. The previous exact p64 result domain is preserved by
+comparison with `exact_fdiv_result(state, 0, i)`, including unequal exponents.
+Invalid controls, status, selectors, tags, malformed/special/zero operands and
+non-Normal outputs refuse atomically. Other directions, exception delivery,
+JIT/native admission and physical x86 acceptance are outside this profile.
+
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-30cy-bare-fdivr-sti-st0-with-bounded-fcw-precision),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cy--bounded-fdivr-sti-st0),
+and [standalone report](../reports/S2_30CY_X87_FDIVR_REVERSE_PRECISION.md).
+Normative sources: Intel SDM Rev. 093 Vol. 2A `FDIV/FIDIV` pp. 3-333–3-335;
+Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6.
+
 ## S2-37do — masked-only Long64 DIVSS XMM0,m32 [RAX]
 
 The interpreter-only schema-v2 profile `s2-long-divss-memory-rax-v1` admits exactly legacy `F3 0F 5E 00`, four-byte fetch, budget one and stop RIP entry+4. DIVSS requires SSE (`CPUID.01H:EDX[25]`), Long64, CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 and XMM/MXCSR state. Fetch all four bytes before #UD/#NM gates. The local MXCSR contract admits supported bits `0xffbf`, reserved bits clear, all six exception masks set, DAZ=FTZ=0, all RC modes and prior sticky histories. AC=1 returns Unsupported before span/address/data-read work; AC=0 allows unaligned m32. Check checked `RAX+3` and both canonical48 endpoints before exactly one read4; failures preserve state and retirement.

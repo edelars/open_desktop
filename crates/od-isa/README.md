@@ -816,3 +816,13 @@ remains supported, including differing exponents. Invalid environment,
 operand, and result states refuse atomically; native x87 admission remains
 closed. See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30cx-bounded-fdiv-sti-st0-dc-f8-ff) and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30cx--bounded-fdiv-sti-st0).
+
+S2-30cy extends exact bare `DC F0+i` FDIVR to bounded FCW precision: old
+`ST(0)/ST(i)` is rounded directly at PC24/53/64 and written to old physical
+`(TOP+i)&7` without popping. Division has no exponent-gap cutoff; `i=0`
+produces exact +1 after validating the sole used register. PE is sticky, C1
+tracks the rounded magnitude increment, and the prior exact p64 quotient set
+remains supported, including differing exponents. Invalid environment,
+operand, and result states refuse atomically; native x87 admission remains
+closed. See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30cy-bounded-fdivr-sti-st0-dc-f0-f7) and
+[Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30cy--bounded-fdivr-sti-st0).

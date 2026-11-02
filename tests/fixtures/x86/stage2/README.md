@@ -1444,6 +1444,17 @@ preserve `DC F0..F7` FDIVR and adjacent groups. Native x87 admission explicitly
 rejects all eight new encodings.
 
 
+### S2-30cy x87 reverse division coverage
+
+The schema admits all eight bare `DC F0..F7` FDIVR encodings. Testkit
+execution checks every TOP/index placement, all twelve all-masked FCWs,
+rounding/sign and PE/C1 histories, the exact `i=0` +1 alias, p64 exact results
+with differing exponents, and a gap greater than 64. The former inexact
+`DC F1` rejection now succeeds with literal rounded p64 1/3, PE/C1, FIP/RIP,
+one retirement and full-state comparison. Invalid profiles still refuse
+atomically. Other DC directions remain distinct and native x87 admission stays
+closed. See [S2-30cy report](../../../../docs/reports/S2_30CY_X87_FDIVR_REVERSE_PRECISION.md).
+
 ### S2-30w x87 schema and fixture coverage
 
 The schema admits all eight bare `DD D8+i` FSTP ST(i) encodings in the local

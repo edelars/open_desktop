@@ -21695,6 +21695,33 @@ The executor reuses `Binary32::divide_raw_result`, and the independent raw-u32 `
 
 Validation: `od-isa` 1,824; `od-testkit` 455; runner 118 unit + 495 fixture tests, including 5,120 DIVSS matrix executions; workspace all-target offline check, fmt, diff check and Graphify passed. Layout check reports the isolated-worktree `.git` marker and two absent historical `work/stage*-oracle` manifest links. Independent Sol/high review is clean after backend result-guard and citation corrections. See [standalone report](S2_37DO_DIVSS_MEMORY.md). See [plan](../plans/STAGE_2.md#s2-37do--masked-only-legacy-long64-divss-xmm0m32-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37do--masked-only-long64-divss-xmm0m32-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37do--divss-xmm0m32-rax).
 
+## S2-30cy — bounded `FDIVR ST(i), ST(0)`
+
+Implemented bounded FCW precision for exact bare Long64 `DC F0..F7`. The
+operation computes old `ST(0)/ST(i)` using the existing bounded helper and
+writes old physical `(TOP+i)&7` without popping. All twelve all-masked PC24/53/64
+FCWs and rounding modes are covered; there is no exponent-gap cutoff, and the
+`i=0` alias validates only its single used operand. PE is sticky, C1 reflects
+the rounded magnitude increment, C0/C2/C3 are preserved, FIP records old RIP,
+and RIP advances by two. Existing exact p64 results are compared against
+`exact_fdiv_result(state, 0, i)`, including unequal exponents.
+
+The testkit's previously rejected inexact `DC F1` 1/3 case is now a rounded
+success and checks literal p64 output, PE/C1, FIP/RIP, one retirement and the
+complete state. Invalid environment, selector, tag, operand and range cases
+still refuse atomically. Focused od-isa tests passed 6/6; full od-isa passed
+1,829/1,829. Focused od-testkit runner passed 1/1; full od-testkit passed
+455/455. Workspace all-target offline check, formatting and diff check passed.
+The isolated layout run found only `.git`, the two missing historical
+ISSUE-023 oracle manifests, and the report link created by this slice. Graphify
+AST refresh and main layout validation remain for integration; independent
+Sol/high review is pending. No physical x86 acceptance is claimed.
+
+See [plan](../plans/STAGE_2.md#s2-30cy-bare-fdivr-sti-st0-with-bounded-fcw-precision),
+[CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cy-bounded-fdivr-sti-st0-dc-f0-f7),
+[standalone report](S2_30CY_X87_FDIVR_REVERSE_PRECISION.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30cy-x87-reverse-division-coverage).
+
 ## Main integration: S2-30cx + S2-37do
 
 После переноса обоих срезов и clean Sol/high reviews в main прошли `od-isa`
