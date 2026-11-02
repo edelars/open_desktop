@@ -3076,6 +3076,13 @@ fn build_block_with_profile(
                         })
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(5))
+                        .is_some_and(|bytes| {
+                            bytes[..3] == [0x67, 0x8b, 0x44]
+                                && matches!(bytes[3], 0x0b | 0x4b | 0x8b | 0xcb)
+                        })
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(4))
                         .is_some_and(|bytes| bytes[..3] == [0x67, 0x8b, 0x43])
                     || code
@@ -4865,10 +4872,11 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
             && ((instruction.length == 3 && operand.displacement == 0)
                 || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())
                 || (instruction.length == 7 && i32::try_from(operand.displacement).is_ok())))
-            || (instruction.length == 4
+            || (matches!(instruction.length, 4 | 5)
                 && operand.index == Some(od_isa::Register::Rcx)
                 && matches!(operand.scale, 1 | 2 | 4 | 8)
-                && operand.displacement == 0));
+                && ((instruction.length == 4 && operand.displacement == 0)
+                    || (instruction.length == 5 && i8::try_from(operand.displacement).is_ok()))));
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override
