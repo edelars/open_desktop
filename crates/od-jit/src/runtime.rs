@@ -571,6 +571,23 @@ impl MemorySiteV2 {
         }
         if self.operation == MemorySiteOperationV2::Load
             && self.instruction_index == expected_index
+            && length == 7
+            && self.destination == Some(0)
+            && self.source.is_none()
+            && self.operand.address_size == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Dword
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            )
+            && self.operand.index == Some(od_isa::Register::Rcx)
+            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
+            && i32::try_from(self.operand.displacement).is_ok()
+        {
+            return true;
+        }
+        if self.operation == MemorySiteOperationV2::Load
+            && self.instruction_index == expected_index
             && length == 3
             && self.destination == Some(0)
             && self.source.is_none()
@@ -1941,6 +1958,33 @@ impl MemorySiteV2 {
                 && self.operand.index == Some(od_isa::Register::Rcx)
                 && self.operand.scale == expected_scale
                 && self.operand.displacement == i64::from(source[3] as i8);
+        }
+        if source.len() == 7
+            && source[..2] == [0x8b, 0x84]
+            && matches!(source[2], 0x0b | 0x4b | 0x8b | 0xcb)
+        {
+            let expected_scale = match source[2] >> 6 {
+                0 => 1,
+                1 => 2,
+                2 => 4,
+                3 => 8,
+                _ => unreachable!(),
+            };
+            let displacement = i32::from_le_bytes([source[3], source[4], source[5], source[6]]);
+            return expected_operation == MemorySiteOperationV2::Load
+                && self.instruction_index == expected_index
+                && self.next_rip.checked_sub(self.guest_rip) == Some(7)
+                && self.destination == Some(0)
+                && self.source.is_none()
+                && self.operand.size == od_isa::OperandSize::Dword
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+                )
+                && self.operand.index == Some(od_isa::Register::Rcx)
+                && self.operand.scale == expected_scale
+                && self.operand.displacement == i64::from(displacement);
         }
         if source == [0x89, 0x04, 0x0b]
             || source == [0x89, 0x04, 0x4b]

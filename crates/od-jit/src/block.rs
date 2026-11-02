@@ -3058,6 +3058,13 @@ fn build_block_with_profile(
                             bytes[..2] == [0x8b, 0x44]
                                 && matches!(bytes[2], 0x0b | 0x4b | 0x8b | 0xcb)
                         })
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(7))
+                        .is_some_and(|bytes| {
+                            bytes[..2] == [0x8b, 0x84]
+                                && matches!(bytes[2], 0x0b | 0x4b | 0x8b | 0xcb)
+                        })
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                         == Some(&[0x67, 0x8b, 0x03][..])
                     || code
@@ -4861,14 +4868,15 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
             || (instruction.length == 6
                 && matches!(operand.base, AddressBase::NextRip)
                 && i32::try_from(operand.displacement).is_ok()));
-    let rbx_rcx_sib_profile = matches!(instruction.length, 3 | 4)
+    let rbx_rcx_sib_profile = matches!(instruction.length, 3 | 4 | 7)
         && instruction.address_size == OperandSize::Qword
         && operand.address_size == OperandSize::Qword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
         && operand.index == Some(od_isa::Register::Rcx)
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && ((instruction.length == 3 && operand.displacement == 0)
-            || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok()));
+            || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())
+            || (instruction.length == 7 && i32::try_from(operand.displacement).is_ok()));
     let exact_address = address64_profile || address32_profile || rbx_rcx_sib_profile;
     exact_prefix
         && instruction.opcode.map == OpcodeMap::Primary
