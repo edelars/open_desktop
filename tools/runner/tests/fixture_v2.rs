@@ -129,6 +129,9 @@ const SQRTSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
 const MINPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37db_minpd_m128_qnan_and_other_lane_denormal.case.json"
 );
+const MINPD_M128_MEMORY_UNMASKED_QNAN_XM: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38q_minpd_m128_qnan_unmasked_im.case.json"
+);
 const MAXSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cy_maxss_m32_qnan_selects_rhs.case.json"
 );
@@ -38546,6 +38549,72 @@ fn minpd_m128_memory_matches_literal_lane_oracle_and_remains_backend_denied() {
     let mut bad = fixture;
     bad.memory[1].length = 8;
     assert!(bad.validate().is_err());
+}
+
+#[test]
+fn minpd_m128_memory_unmasked_im_fixture_commits_raw_events_and_denies_backends() {
+    let (input, result) = run(MINPD_M128_MEMORY_UNMASKED_QNAN_XM, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongMinpdMemoryUnmaskedRaxV1
+    );
+    assert!(
+        od_testkit::v2::compare(&input, &result, &result)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&result), 0);
+    let value = snapshot(&result);
+    assert_eq!(
+        value.minpd_unmasked_controls,
+        input.fixture.minpd_unmasked_controls
+    );
+    assert_eq!(value.state.sse.as_ref().unwrap().mxcsr.get(), 0x1f03);
+    assert_eq!(
+        value.state.sse.as_ref().unwrap().xmm[0],
+        input.fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+    );
+    assert_eq!(value.state.rip, input.fixture.initial_state.rip);
+    for backend in ["jit", "native"] {
+        assert!(matches!(
+            run(MINPD_M128_MEMORY_UNMASKED_QNAN_XM, backend, 4)
+                .1
+                .outcome,
+            Outcome::Unsupported { .. }
+        ));
+    }
+
+    let mut forged_jit = result.clone();
+    forged_jit.backend = od_testkit::result::Backend::Jit;
+    assert!(od_testkit::v2::compare(&input, &forged_jit, &forged_jit).is_err());
+    let mut forged_native = result.clone();
+    forged_native.backend = od_testkit::result::Backend::NativeX86;
+    assert!(od_testkit::v2::compare(&input, &forged_native, &forged_native).is_err());
+
+    let mut wrong_form = input.fixture.clone();
+    wrong_form.memory[0].initial_bytes_hex = "660f5dc1".into();
+    assert!(wrong_form.validate().is_err());
+    let mut foreign_controls = input.fixture.clone();
+    foreign_controls.minpd_memory_rax_controls =
+        Some(od_testkit::v2::MinpdMemoryRaxControlSnapshot {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        });
+    assert!(foreign_controls.validate().is_err());
+    let mut missing_controls = input.fixture.clone();
+    missing_controls.minpd_unmasked_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut tampered = result.clone();
+    snapshot_mut(&mut tampered)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .mxcsr = HexU64(0x1f01);
+    assert!(od_testkit::v2::compare(&input, &tampered, &result).is_err());
 }
 
 #[test]
