@@ -84,6 +84,7 @@ SELF_TEST_NAMES = (
     "test_s3_34af_dword_store_publication_gate_is_pinned_and_fail_closed",
     "test_s3_34ag_rip_relative_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34ah_rip_relative_dword_store_gates_are_pinned_and_fail_closed",
+    "test_s3_34ai_addr32_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -629,6 +630,18 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34ah_host_rip_relative_disp32_dword_store_guest_next_rip", "local_acceptance", "od-host",
         "tests::s3_20cw_rip_relative_disp32_dword_store_uses_guest_next_rip",
+    ),
+    (
+        "s3_34ai_ir_dword_addr32_load_exact_admission_provenance", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_addr32_load_admits_only_67_8b_03_and_preserves_its_provenance",
+    ),
+    (
+        "s3_34ai_ir_dword_addr32_load_pc_map_three_byte_boundary", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_addr32_load_pc_map_uses_three_byte_guest_boundary",
+    ),
+    (
+        "s3_34ai_host_addr32_dword_load_zero_extended_ebx", "local_acceptance", "od-host",
+        "tests::s3_20cx_addr32_dword_load_uses_zero_extended_ebx",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
