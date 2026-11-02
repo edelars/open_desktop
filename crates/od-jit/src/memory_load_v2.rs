@@ -7185,6 +7185,137 @@ mod tests {
     }
 
     #[test]
+    fn ir_dword_rax_disp32_store_binds_all_signed_source_bytes_to_its_site() {
+        let entry = 0x8348;
+        for displacement in [i32::MIN, -1, 0, 1, i32::MAX] {
+            let mut source = [0x89, 0x80, 0, 0, 0, 0];
+            source[2..].copy_from_slice(&displacement.to_le_bytes());
+            let block = compile_ir_memory_dword_store_block_v2(
+                CodeView::new(entry, &source).unwrap(),
+                entry,
+            )
+            .unwrap();
+            let site = block.site();
+            assert_eq!(block.source_bytes(), source);
+            assert_eq!(site.instruction_index(), 0);
+            assert_eq!(site.guest_rip(), entry);
+            assert_eq!(site.next_rip(), entry + 6);
+            assert_eq!(site.destination(), None);
+            assert_eq!(site.source(), Some(0));
+            assert_eq!(site.operand().base, AddressBase::Register(Register::Rax));
+            assert_eq!(site.operand().index, None);
+            assert_eq!(site.operand().scale, 1);
+            assert_eq!(site.operand().displacement, i64::from(displacement));
+            assert_eq!(site.operand().address_size, od_isa::OperandSize::Qword);
+            assert_eq!(site.operand().size, od_isa::OperandSize::Dword);
+            assert!(site.has_supported_profile());
+            assert!(site.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            assert_eq!(block.pc_map().instruction_count(), 1);
+            assert_eq!(
+                block.pc_map().boundaries()[0].rip,
+                crate::statepoints::GuestRipBoundary::Fixed(entry + 6)
+            );
+            for byte_index in 0..source.len() {
+                let mut changed = source;
+                changed[byte_index] ^= 1;
+                assert!(!site.matches_source_bytes(&changed, MemorySiteOperationV2::Store));
+            }
+
+            let mut forged = *site;
+            forged.operand.base = AddressBase::Register(Register::Rbx);
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *site;
+            forged.operand.address_size = od_isa::OperandSize::Dword;
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *site;
+            forged.operand.size = od_isa::OperandSize::Qword;
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *site;
+            forged.operand.index = Some(Register::Rcx);
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *site;
+            forged.operand.scale = 2;
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *site;
+            forged.source = Some(1);
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *site;
+            forged.operation = MemorySiteOperationV2::Load;
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *site;
+            forged.instruction_index += 1;
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged = *site;
+            forged.next_rip -= 1;
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        }
+
+        let exact = [0x89, 0x80, 0, 0, 0, 0];
+        for length in 1..exact.len() {
+            assert!(compile_ir_memory_dword_store_block_v2(
+                CodeView::new(entry, &exact[..length]).unwrap(),
+                entry,
+            )
+            .is_err());
+        }
+        for neighbor in [
+            &[0x89, 0x80, 0, 0, 0, 0, 0x90][..],
+            &[0x89, 0x81, 0, 0, 0, 0][..],
+            &[0x89, 0x84, 0x00, 0, 0, 0, 0][..],
+            &[0x89, 0x88, 0, 0, 0, 0][..],
+            &[0x8b, 0x80, 0, 0, 0, 0][..],
+            &[0x48, 0x89, 0x80, 0, 0, 0, 0][..],
+            &[0x67, 0x89, 0x80, 0, 0, 0, 0][..],
+            &[0x66, 0x89, 0x80, 0, 0, 0, 0][..],
+        ] {
+            assert!(compile_ir_memory_dword_store_block_v2(
+                CodeView::new(entry, neighbor).unwrap(),
+                entry,
+            )
+            .is_err(), "admitted neighboring encoding {neighbor:02x?}");
+        }
+
+        let rbx_source = [0x89, 0x83, 0, 0, 0, 0];
+        let rbx_block = compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &rbx_source).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let mut forged_rax = *rbx_block.site();
+        forged_rax.operand.base = AddressBase::Register(Register::Rax);
+        assert!(!forged_rax.matches_source_bytes(&rbx_source, MemorySiteOperationV2::Store));
+
+        let exact_block = compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &exact).unwrap(),
+            entry,
+        )
+        .unwrap();
+        for supported_neighbor in [
+            &[0x89, 0x00][..],
+            &[0x89, 0x40, 0x01][..],
+            &[0x89, 0x83, 0, 0, 0, 0][..],
+            &[0x89, 0x85, 0, 0, 0, 0][..],
+            &[0x89, 0x05, 0, 0, 0, 0][..],
+            &[0x89, 0x04, 0x05, 0, 0, 0, 0][..],
+        ] {
+            let neighbor = compile_ir_memory_dword_store_block_v2(
+                CodeView::new(entry, supported_neighbor).unwrap(),
+                entry,
+            )
+            .unwrap();
+            assert!(neighbor
+                .site()
+                .matches_source_bytes(supported_neighbor, MemorySiteOperationV2::Store));
+            assert!(!neighbor
+                .site()
+                .matches_source_bytes(&exact, MemorySiteOperationV2::Store));
+            assert!(!exact_block
+                .site()
+                .matches_source_bytes(supported_neighbor, MemorySiteOperationV2::Store));
+        }
+    }
+
+    #[test]
     fn ir_dword_rax_index_no_base_sib_disp32_store_binds_all_source_bytes_to_its_site() {
         let entry = 0x8328;
         for displacement in [i32::MIN, -1, 0, 1, i32::MAX, 0x0102_0304] {
