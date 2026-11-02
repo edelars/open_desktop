@@ -3154,6 +3154,10 @@ fn build_block_with_profile(
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(3))
+                        .is_some_and(|bytes| bytes[0..2] == [0x8b, 0x40])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(3))
                         .is_some_and(|bytes| bytes[0..2] == [0x8b, 0x45])
                     || code
                         .bytes
