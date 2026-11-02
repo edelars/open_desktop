@@ -3192,6 +3192,8 @@ fn build_block_with_profile(
                     == Some(&[0x89, 0x03][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                         == Some(&[0x89, 0x00][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                        == Some(&[0x67, 0x89, 0x00][..])
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(3))
