@@ -1080,7 +1080,10 @@ fn is_checked_dword_load_address(
                 && matches!(
                     operand.base,
                     AddressBase::Register(
-                        od_isa::Register::Rax | od_isa::Register::Rbx | od_isa::Register::Rbp
+                        od_isa::Register::Rax
+                            | od_isa::Register::Rbx
+                            | od_isa::Register::Rbp
+                            | od_isa::Register::Rcx
                     )
                 )
                 && i8::try_from(operand.displacement).is_ok())
