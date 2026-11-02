@@ -10232,6 +10232,104 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                     ):
                         harness.validate_required_rust_test_evidence(changed, run_root)
 
+    def test_s3_34ci_rax_index_no_base_sib_disp32_dword_load_gates_are_pinned_and_fail_closed(self):
+        expected = (
+            (
+                "s3_34ci_ir_rax_index_no_base_sib_disp32_dword_load_source_binding", "local_acceptance",
+                "od-jit",
+                "memory_load_v2::tests::ir_dword_rax_index_no_base_sib_disp32_load_binds_all_source_bytes_to_its_site",
+            ),
+            (
+                "s3_34ci_host_rax_index_no_base_sib_disp32_dword_load_original_rax", "local_acceptance",
+                "od-host",
+                "tests::s3_20ex_rax_index_no_base_sib_disp32_dword_load_uses_original_rax",
+            ),
+        )
+        self.assertIn(
+            "test_s3_34ci_rax_index_no_base_sib_disp32_dword_load_gates_are_pinned_and_fail_closed",
+            harness.SELF_TEST_NAMES,
+        )
+        self.assertEqual(
+            [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34ci_")],
+            list(expected),
+        )
+        self.assertEqual(
+            [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_34ci_")],
+            list(expected),
+        )
+        manifest = harness.rust_test_gate_manifest()
+        self.assertEqual(len(harness.RUST_TEST_GATES), 244)
+        self.assertEqual(len(manifest), 244)
+        self.assertEqual(len({gate["step"] for gate in manifest}), 244)
+        self.assertEqual(len(harness.LOCAL_STEPS), 262)
+        self.assertEqual(
+            sum(gate[1] == "local_acceptance" for gate in harness.RUST_TEST_GATES), 234
+        )
+        self.assertEqual(
+            sum(gate[1] == "local_lifecycle" for gate in harness.RUST_TEST_GATES), 10
+        )
+
+        for step, suite, package, identity in expected:
+            with self.subTest(step=step):
+                self.assertEqual(harness.LOCAL_STEPS.count(step), 1)
+                self.assertEqual(
+                    [gate for gate in manifest if gate["step"] == step],
+                    [{"step": step, "suite": suite, "package": package, "identity": identity}],
+                )
+                self.assertEqual(harness.rust_test_argv(package, identity), [
+                    "cargo", "test", "--offline", "-p", package, "--lib", identity,
+                    "--", "--exact", "--test-threads=1",
+                ])
+
+        source_manifest = {
+            "gates": manifest,
+            "sources": [
+                {"path": source, "sha256": harness.sha256_file(harness.ROOT / source)}
+                for source in harness.LOCAL_RUST_TEST_SOURCES
+            ],
+        }
+        harness.validate_rust_test_manifest(source_manifest)
+        for step, _, _, identity in expected:
+            missing_manifest_gate = {
+                **source_manifest,
+                "gates": [gate for gate in manifest if gate["step"] != step],
+            }
+            with self.subTest(step=step, evidence="missing manifest gate"), self.assertRaisesRegex(
+                harness.HarnessError, "exact required Rust test gates"
+            ):
+                harness.validate_rust_test_manifest(missing_manifest_gate)
+
+        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            temporary_dir = Path(temporary)
+            run_root = temporary_dir / "run"
+            log_dir = run_root / "logs"
+            log_dir.mkdir(parents=True)
+            valid_steps = passing_rust_gate_steps(log_dir)
+            harness.validate_required_rust_test_evidence(valid_steps, run_root)
+            for step, _, _, identity in expected:
+                missing_evidence = passing_rust_gate_steps(log_dir)
+                del missing_evidence[step]
+                with self.subTest(step=step, evidence="missing summary gate"), self.assertRaisesRegex(
+                    harness.HarnessError, step
+                ):
+                    harness.validate_required_rust_test_evidence(missing_evidence, run_root)
+
+                for label, output in (
+                    (
+                        "zero matches",
+                        "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored\n",
+                    ),
+                    ("ignored", f"test {identity} ... ignored\n"),
+                    ("failed", f"test {identity} ... FAILED\n"),
+                    ("wrong identity", "test tests::unrelated_test ... ok\n"),
+                ):
+                    changed = passing_rust_gate_steps(log_dir)
+                    replace_step_log_output(changed[step], output)
+                    with self.subTest(step=step, evidence=label), self.assertRaisesRegex(
+                        harness.HarnessError, step
+                    ):
+                        harness.validate_required_rust_test_evidence(changed, run_root)
+
 
 
 if __name__ == "__main__":
