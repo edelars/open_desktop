@@ -196,6 +196,10 @@ Harness commit `62a1332` pins only `memory_load_v2::tests::ir_dword_addr32_rbx_r
 
 Harness commit `0d33332` pins only `memory_load_v2::tests::ir_dword_addr32_rbx_rcx_sib_store_binds_exact_scales_and_prefix` and `tests::s3_20dm_addr32_scaled_sib_dword_store_wraps_and_preserves_state`. Both exact Cargo gates passed 1/1; the focused harness self-test passed. The Python validator module passed 71/71 and reported 170 gates, 160 acceptance cases, 10 lifecycle cases, and 188 steps. Python byte-compilation, `git diff --check`, and Graphify update passed. No PC-map gate is pinned. The full Stage 3 harness, CPU discovery, full hardware acceptance, Mini, M1 Pro, and Stage 2 were not run. Prior S3-34aw load and S3-34ai/ak/al addr32 gates remain separate. See the [S3-20dm runtime report](../reports/STAGE_3_S3-20dm_2026-11-02.md) and [S3-34ax report](../reports/STAGE_3_S3-34ax_2026-11-02.md).
 
+## S3-34ay: exact gates for S3-20dn addr32 SIB disp8 dword loads
+
+Integrated harness commit `ed413cd` pins only `memory_load_v2::tests::ir_dword_addr32_rbx_rcx_sib_disp8_load_binds_all_scales_and_signed_bytes` and `tests::s3_20dn_addr32_scaled_disp8_sib_dword_load_uses_signed_displacement`. Both exact Cargo gates and the focused validator self-test `test_s3_34ay_addr32_scaled_disp8_sib_dword_load_gates_are_pinned_and_fail_closed` passed 1/1. No PC-map gate is pinned. Python byte-compilation, `git diff --check`, and Graphify update passed. No full Python module counts or CPU discovery result were reported for this slice; no full-module or hardware acceptance claim is made. Prior S3-34aw and S3-34ai/ak/al addr32 gates remain separate. See the [S3-20dn runtime report](../reports/STAGE_3_S3-20dn_2026-11-02.md) and [S3-34ay report](../reports/STAGE_3_S3-34ay_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
