@@ -536,6 +536,7 @@ fn capture(
         rflags_defined: HexU64(rflags_defined),
         memory,
         xorpd_prerequisites: None,
+        addsd_memory_rax_controls: None,
         minss_invalid_controls: None,
         fxsave64_cr0_controls: None,
         fxrstor64_cr0_controls: None,
@@ -1552,6 +1553,7 @@ mod tests {
             initial_state: v2::IntegerState::try_from(&state)
                 .expect("test fixture integer state is representable in the snapshot schema"),
             xorpd_prerequisites: None,
+            addsd_memory_rax_controls: None,
             minss_invalid_controls: None,
             fxsave64_cr0_controls: None,
             fxrstor64_cr0_controls: None,
@@ -6776,6 +6778,21 @@ mod tests {
             Outcome::Unsupported { ref reason }
                 if reason == "this profile is local-only; native state does not observe every profile field"
         ));
+    }
+
+    #[test]
+    fn addsd_m64_fixture_is_denied_before_native_trace() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/x86/stage2/s2_37dj_addsd_m64_halfway.case.json");
+        let loaded = Fixture::from_json(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(loaded.fixture.profile, v2::Profile::LongAddsdMemoryRaxV1);
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
+        assert!(
+            matches!(execute(&loaded).outcome, Outcome::Unsupported { ref reason }
+            if reason == "this profile is local-only; native state does not observe every profile field")
+        );
     }
 
     #[test]

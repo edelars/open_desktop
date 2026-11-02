@@ -74,6 +74,8 @@ const MINSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
 );
 const ADDSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37di_addss_m32_halfway.case.json");
+const ADDSD_M64_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dj_addsd_m64_halfway.case.json");
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dg_sqrtss_m32_unaligned_inexact.case.json"
 );
@@ -37115,6 +37117,145 @@ fn addss_m32_memory_literal_uses_memory_rhs_and_remains_backend_denied() {
         .as_mut()
         .unwrap()
         .sse_available = false;
+    assert!(bad.validate().is_err());
+}
+
+#[test]
+fn addsd_m64_memory_literal_and_end_to_end_rc_sticky_matrix_are_backend_denied() {
+    let base_loaded = Fixture::from_json(ADDSD_M64_MEMORY_RAX).unwrap();
+    let base = base_loaded.fixture.clone();
+    assert_eq!(base.profile, od_testkit::v2::Profile::LongAddsdMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "f20f5800");
+    assert_eq!(base.memory[1].length, 8);
+    assert_eq!(base.memory[1].initial_bytes_hex, "000000000000a03c");
+    assert_eq!(
+        base.initial_state.sse.as_ref().unwrap().xmm[1],
+        "efbeaddecafef00d78563412deadbeef"
+    );
+
+    let (input, literal_result) = run(ADDSD_M64_MEMORY_RAX, "interpreter", 0);
+    assert_eq!(literal_result.backend, Backend::Interpreter);
+    assert!(matches!(literal_result.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        literal_result.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let snapshot = match &literal_result.snapshot {
+        Observation::Available { value } => value,
+        other => panic!("expected available ADDSD snapshot, got {other:?}"),
+    };
+    let sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "000000000000f03fefbeadde78563412");
+    assert_eq!(sse.xmm[1], base.initial_state.sse.as_ref().unwrap().xmm[1]);
+    assert_eq!(sse.mxcsr, HexU64(0x1fa0));
+    assert_eq!(snapshot.state.rip, HexU64(0x0010_0004));
+    assert_eq!(snapshot.memory[1].bytes_hex, "000000000000a03c");
+    od_testkit::v2::compare(&input, &literal_result, &literal_result).unwrap();
+
+    let vectors: [(u64, u64); 7] = [
+        (0x3ff0_0000_0000_0000, 0x3ca0_0000_0000_0000), // midpoint
+        (0x3ff0_0000_0000_0001, 0x3ca0_0000_0000_0000), // adjacent
+        (1, 1),                                         // subnormal sum
+        (0x7fef_ffff_ffff_ffff, 0x7c90_0000_0000_0000), // overflow boundary
+        (0x7ff0_0000_0000_0001, 0x7ff8_0000_0000_1234), // NaN classes
+        (0x7ff0_0000_0000_0000, 0xfff0_0000_0000_0000), // opposite infinities
+        (0, 0x8000_0000_0000_0000),                     // signed zero
+    ];
+    let to_le_hex = |value: u64| {
+        value
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    for (vector, (lhs, rhs)) in vectors.into_iter().enumerate() {
+        for rc in 0..4u64 {
+            for sticky in 0..64u64 {
+                let mut case = base.clone();
+                case.case_id = format!("s2_37dj_v{vector}_rc{rc}_sticky{sticky:02x}");
+                let original_xmm = &base.initial_state.sse.as_ref().unwrap().xmm[0];
+                case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                    format!("{}{}", to_le_hex(lhs), &original_xmm[16..]);
+                case.memory[1].initial_bytes_hex = to_le_hex(rhs);
+                case.initial_state.sse.as_mut().unwrap().mxcsr =
+                    HexU64(0x1f80 | (rc << 13) | sticky);
+                let bytes = case.to_json().unwrap();
+                let loaded = Fixture::from_json(&bytes).unwrap();
+                let output = cli(&bytes, "interpreter");
+                assert_eq!(
+                    output.status.code(),
+                    Some(0),
+                    "{}: {}",
+                    case.case_id,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let result = RunResult::from_json(&output.stdout).unwrap();
+                assert_eq!(result.backend, Backend::Interpreter, "{}", case.case_id);
+                assert!(
+                    matches!(result.outcome, Outcome::StopAddress {}),
+                    "{}: {:?}",
+                    case.case_id,
+                    result.outcome
+                );
+                assert_eq!(
+                    result.instructions_executed,
+                    Observation::Available { value: HexU64(1) },
+                    "{}",
+                    case.case_id
+                );
+                assert!(
+                    matches!(result.snapshot, Observation::Available { .. }),
+                    "{}",
+                    case.case_id
+                );
+                result
+                    .validate_for(&loaded)
+                    .unwrap_or_else(|error| panic!("{}: {error:?}", case.case_id));
+                od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+            }
+        }
+    }
+
+    for engine in ["jit", "native"] {
+        let (input, denied) = run(ADDSD_M64_MEMORY_RAX, engine, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        denied.validate_for(&input).unwrap();
+    }
+    let mut wrong_backend = literal_result.clone();
+    wrong_backend.backend = Backend::Jit;
+    assert!(wrong_backend.validate_for(&input).is_err());
+
+    let mut missing_provenance = base.clone();
+    missing_provenance.provenance.source.clear();
+    assert!(missing_provenance.validate().is_err());
+    let mut unknown_schema =
+        serde_json::from_slice::<serde_json::Value>(ADDSD_M64_MEMORY_RAX).unwrap();
+    unknown_schema
+        .as_object_mut()
+        .unwrap()
+        .insert("unexpected_field".into(), serde_json::Value::Null);
+    assert!(Fixture::from_json(&serde_json::to_vec(&unknown_schema).unwrap()).is_err());
+
+    let mut bad = base.clone();
+    bad.memory[0].initial_bytes_hex = "f20f5801".into();
+    assert!(bad.validate().is_err());
+    let mut bad = base.clone();
+    bad.addsd_memory_rax_controls = None;
+    assert!(bad.validate().is_err());
+    let mut bad = base.clone();
+    bad.memory[1].length = 4;
+    assert!(bad.validate().is_err());
+    for mxcsr in [0x0000_1f40, 0x0000_1f00, 0x0000_9f80, 0x0001_1f80] {
+        let mut bad = base.clone();
+        bad.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(bad.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+    let mut bad = base;
+    bad.addsd_memory_rax_controls
+        .as_mut()
+        .unwrap()
+        .sse2_available = false;
     assert!(bad.validate().is_err());
 }
 

@@ -4,16 +4,17 @@ use std::io::{self, Write};
 use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
-    AddpdControls, AddpsControls, AddsdControls, AddssControls, AddssMemoryRaxControls,
-    ComissMemoryRaxControls, Cvtpd2dqMemoryControls, Cvtpd2piControls, Cvtpd2psControls,
-    Cvtpd2psMemoryControls, Cvtpi2pdControls, Cvtpi2psControls, Cvtps2dqMemoryControls,
-    Cvtps2pdMemoryControls, Cvtsd2ssControls, Cvtsd2ssMemoryControls, Cvtss2sdMemoryControls,
-    Cvttpd2dqControls, Cvttpd2dqMemoryControls, Cvttps2dqControls, Cvttps2dqMemoryControls,
-    Cvttss2siRegistersControls, DivpdControls, DivpsControls, DivsdControls, DivssControls,
-    MulpdControls, MulpsControls, MulsdControls, MulssControls, SqrtpdControls, SqrtpsControls,
-    SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls, SubsdControls, SubssControls,
-    UcomisdMemoryRaxControls, UcomissMemoryRaxControls, run_with_addpd_register_controls,
-    run_with_addps_register_controls, run_with_addsd_register_controls,
+    AddpdControls, AddpsControls, AddsdControls, AddsdMemoryRaxControls, AddssControls,
+    AddssMemoryRaxControls, ComissMemoryRaxControls, Cvtpd2dqMemoryControls, Cvtpd2piControls,
+    Cvtpd2psControls, Cvtpd2psMemoryControls, Cvtpi2pdControls, Cvtpi2psControls,
+    Cvtps2dqMemoryControls, Cvtps2pdMemoryControls, Cvtsd2ssControls, Cvtsd2ssMemoryControls,
+    Cvtss2sdMemoryControls, Cvttpd2dqControls, Cvttpd2dqMemoryControls, Cvttps2dqControls,
+    Cvttps2dqMemoryControls, Cvttss2siRegistersControls, DivpdControls, DivpsControls,
+    DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls, MulssControls,
+    SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
+    SubsdControls, SubssControls, UcomisdMemoryRaxControls, UcomissMemoryRaxControls,
+    run_with_addpd_register_controls, run_with_addps_register_controls,
+    run_with_addsd_memory_rax_controls, run_with_addsd_register_controls,
     run_with_addss_memory_rax_controls, run_with_addss_register_controls,
     run_with_cvtpd2dq_memory_controls, run_with_cvtpd2dq_register_controls,
     run_with_cvtpd2pi_mm0_memory_rax_controls, run_with_cvtpd2pi_mm0_xmm1_controls,
@@ -623,6 +624,7 @@ fn expected_native_xorpd_oracle(
                 maxss_memory_rax_controls: None,
                 minss_memory_rax_controls: None,
                 addss_memory_rax_controls: None,
+                addsd_memory_rax_controls: None,
                 maxsd_memory_rax_controls: None,
                 minpd_memory_rax_controls: None,
                 maxpd_memory_rax_controls: None,
@@ -2441,6 +2443,23 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongAddsdMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .addsd_memory_rax_controls
+            .expect("validated ADDSD m64 controls");
+        run_with_addsd_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            AddsdMemoryRaxControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongAddssMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -3523,6 +3542,7 @@ fn execute_fixture_v2(
                 maxss_memory_rax_controls: loaded.fixture.maxss_memory_rax_controls,
                 minss_memory_rax_controls: loaded.fixture.minss_memory_rax_controls,
                 addss_memory_rax_controls: loaded.fixture.addss_memory_rax_controls,
+                addsd_memory_rax_controls: loaded.fixture.addsd_memory_rax_controls,
                 maxsd_memory_rax_controls: loaded.fixture.maxsd_memory_rax_controls,
                 minpd_memory_rax_controls: loaded.fixture.minpd_memory_rax_controls,
                 minps_memory_rax_controls: loaded.fixture.minps_memory_rax_controls,
@@ -4780,6 +4800,7 @@ mod tests {
                     maxss_memory_rax_controls: input.fixture.maxss_memory_rax_controls,
                     minss_memory_rax_controls: input.fixture.minss_memory_rax_controls,
                     addss_memory_rax_controls: input.fixture.addss_memory_rax_controls,
+                    addsd_memory_rax_controls: input.fixture.addsd_memory_rax_controls,
                     maxsd_memory_rax_controls: input.fixture.maxsd_memory_rax_controls,
                     minpd_memory_rax_controls: input.fixture.minpd_memory_rax_controls,
                     minps_memory_rax_controls: input.fixture.minps_memory_rax_controls,

@@ -12,6 +12,15 @@
 
 ## Записи
 
+### ISSUE-032 — S2-37dj lacks physical x86 acceptance evidence
+
+- **Дата обнаружения:** 2026-11-02.
+- **Компонент:** локальный `Long64` interpreter profile `s2-long-addsd-memory-rax-v1` в od-isa.
+- **Статус:** открытое ограничение приёмочных свидетельств; подтверждённый дефект не установлен.
+- **Суть и последствия:** masked-only `ADDSD` m64 [RAX] проходит raw-bit ISA и независимый fixture oracle, но физическое исполнение на x86 не сравнивалось. Локальные проверки не подтверждают аппаратную fault ordering, unaligned memory behavior или `MXCSR` status.
+- **Основание:** реализация и границы описаны в [standalone report](reports/S2_37DJ_ADDSD_MEMORY.md) и [shared report](reports/STAGE_2_REPORT.md#s2-37dj--addsd-xmm0m64-rax); все доступные проверки остаются локальными.
+- **Следующий шаг:** включить точные encoding/profile, AC, span faults и `MXCSR` scenarios в общий физический x86 acceptance substage; зафиксировать CPU/microcode, режим и результаты. До этого не заявлять physical acceptance.
+
 ### ISSUE-031 — S2-37di lacks physical x86 acceptance evidence
 
 - **Дата обнаружения:** 2026-11-01.
@@ -40,6 +49,8 @@
 - **Следующий шаг:** привести Linux-only snapshot/test fixtures к текущему `od-testkit::v2` контракту и восстановить нужную test dependency, затем собрать и выполнить x86_64 Linux native runner tests. Не считать текущую macOS workspace check доказательством Linux native backend.
 - **S2-30cl:** `D9 F8` добавлен в существующий native x87-deny regression matrix, но эта Linux-only проверка не запускалась из-за описанного compile failure. См. [S2-30cl report](reports/S2_30CL_X87_FPREM.md).
 - **S2-30cm:** `D9 F5` добавлен в тот же Linux-only native x87-deny matrix. Этот тест не запускался на macOS host; Linux native backend остаётся непроверенным до исправления/запуска соответствующего target. См. [S2-30cm report](reports/S2_30CM_X87_FPREM1.md).
+
+- **S2-37dj:** cross-target check повторён 2026-11-02 после добавления `ADDSD` m64 denial test. Он остаётся заблокирован теми же неполными native_v2.rs snapshot/test fixture initializers и отсутствующим serde_json; новые поля S2-37dj заданы в этих initializer-ах, остальные существующие поля по-прежнему отсутствуют. Новый native denial test не собран и не запускался. См. [S2-37dj report](reports/S2_37DJ_ADDSD_MEMORY.md).
 
 ### ISSUE-028 — Неподтверждённый внешний report о CVTPI2PS memory x87 transition
 

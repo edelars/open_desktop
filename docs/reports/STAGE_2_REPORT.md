@@ -21439,3 +21439,12 @@ After integration with FSUBR, combined main suites passed: `od-isa` 1,791,
 `od-testkit` 455, runner 113 unit + 490 fixture tests, and od-x86-runner 8
 library + 4 binary tests. Workspace all-target offline check, formatting,
 layout, diff check and Graphify refresh passed.
+
+
+## S2-37dj — `ADDSD` XMM0,m64 [RAX]
+
+Implemented interpreter-only schema-v2 profile `s2-long-addsd-memory-rax-v1` for exact `F2 0F 58 00`, instruction budget one and stop RIP entry+4. It requires `Long64`/`SSE2`, fetches all four bytes before `#UD` then `#NM` gates, and requires XMM/`MXCSR` state. The masked-only `MXCSR` contract is `0xffbf`, all masks set, DAZ/FTZ/reserved clear; `AC=1` is local Unsupported, while `AC=0` permits unaligned m64. Canonical48 `[RAX,RAX+7]` and checked-add overflow are validated before one `read8`. Failed reads preserve the complete architectural state and retirement. Success adds old `XMM0.low64` and the memory RHS through `Binary64::add_raw_result`, preserves high64/`XMM1`, and merges generated IE/DE/OE/UE/PE sticky flags.
+
+The literal s2_37dj_addsd_m64_halfway.case.json checks `1 + 2^-53`, a poisoned `XMM1`, `XMM0.high64` canaries and unchanged memory. The independent `independent_addsd` oracle validates memory-fed results. Direct ISA tests cross four RC modes × all 64 prior sticky histories over representative scalar edge classes. The end-to-end runner matrix executes the seven representative pairs across that 256-state matrix (1,792 runs), and checks `StopAddress`, available snapshot and retirement=1 before validation. It also covers schema/provenance tampering, gates, AC, unaligned reads, address boundaries, rollback, register `ADDSD` regression and JIT/native denial.
+
+Validation and independent review results are recorded in the [standalone report](S2_37DJ_ADDSD_MEMORY.md). No physical x86 acceptance is claimed. See [plan](../plans/STAGE_2.md#s2-37dj--masked-only-legacy-long64-addsd-xmm0m64-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37dj--masked-only-legacy-long64-addsd-xmm0m64-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dj--addsd-xmm0m64-rax).
