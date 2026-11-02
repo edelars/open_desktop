@@ -17100,8 +17100,11 @@ exact-form-before-disabled-gates, AC/span/read fault priority, callback counts,
 rollback, strict result/control echo, and JIT/native denial. The literal QNaN
 fixture exercises #XM, with a masked companion completion in the runner test.
 
-Verification results, review and known limitations are recorded in the
-[standalone S2-38n report](S2_38N_MAXSS_MEMORY_UNMASKED.md). No physical x86
+Integrated main verification passed: combined `od-isa` (1,895), `od-testkit`
+(455), and `od-runner` (125 unit + 520 fixture) suites; `od-x86-runner` (8
+library + 4 binary tests), workspace all-target offline check, formatting,
+layout check, diff check, and Graphify refresh (11,828 nodes, 25,656 edges,
+376 communities). Independent Sol/high review is clean. No physical x86
 acceptance is claimed; ISSUE-025 remains unrelated to this profile. See the
 [plan](../plans/STAGE_2.md#s2-38n-exact-long64-maxss-xmm0m32-rax-memory-profile-with-mixed-imdm-exit),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38n--exact-maxss-unmasked-memory-exit-for-m32-rax),
@@ -22166,12 +22169,14 @@ and execution-boundary rollback are checked. The handwritten gap-65 `DE E3`
 fixture validates full state, actual operands, unchanged code, retirement,
 exception observation and JIT denial.
 
-Validation passed: focused `fsub` 55/55, full `od-isa` 1,893/1,893,
-`od-testkit` 455/455, `od-runner` 125+519, formatting, workspace all-target
-offline check, diff check, and Graphify refresh (11,857 nodes, 25,558 edges,
-371 communities). Layout validation reproduces only existing ISSUE-023
-worktree metadata and missing historical oracle manifests. Independent Sol/high
-implementation review is pending; no physical x86 check was run.
+Integrated main validation passed: focused `fsub` 55/55; combined
+`od-isa` 1,895/1,895, `od-testkit` 455/455, `od-runner` 125 unit + 520
+fixture, and `od-x86-runner` 8 library + 4 binary tests; workspace all-target
+offline check, formatting, layout check, diff check, and Graphify refresh
+(11,828 nodes, 25,656 edges, 376 communities). The gap-65 helper-refusal test
+was corrected after review and asserts `Unsupported`, full-state equality, and
+zero callbacks. Independent Sol/high review is clean; no physical x86 check was
+run.
 
 See the [standalone report](S2_30DN_X87_FSUBRP_LARGE_GAPS.md),
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dn-large-gap-fsubrp-sti-st0-de-e0e7),

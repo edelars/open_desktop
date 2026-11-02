@@ -33,21 +33,15 @@ JIT/native refusal.
 
 ## Verification
 
-Passed locally: `cargo test -p od-isa --offline` (1,893 tests),
-`cargo test -p od-testkit --offline` (455 tests), and
-`cargo test -p od-runner --test fixture_v2 --offline` (519 tests).
-`cargo check --workspace --all-targets --offline`,
-`cargo fmt --all -- --check`, and `git diff --check` passed. The focused
-S2-38n runner fixture verifies #XM, masked completion, strict controls/result
-echo, JIT/native denial and backend relabel rejection; direct ISA tests cover
-the arithmetic matrix and fault ordering described above.
-
-`python3 tools/check_layout.py` reports the isolated worktree's `.git` pointer
-as an unmapped root file and two existing broken oracle-manifest links from the
-shared report; the same three ISSUE-023 conditions were documented by the
-preceding worktree. `graphify update .` completed and produced 11,865 nodes,
-25,590 edges and 379 communities. The independent Sol/high review is pending
-with the parent agent.
+Integrated main verification passed: combined `od-isa` (1,895 tests),
+`od-testkit` (455), and `od-runner` (125 unit + 520 fixture tests);
+`od-x86-runner` (8 library + 4 binary tests), workspace all-target offline
+check, formatting, layout check, and `git diff --check`. The focused S2-38n
+runner fixture verifies #XM, masked completion, strict controls/result echo,
+JIT/native denial and backend relabel rejection; direct ISA tests cover the
+arithmetic matrix and fault ordering described above. `graphify update .`
+completed with 11,828 nodes, 25,656 edges and 376 communities. Independent
+Sol/high review is clean.
 
 Physical x86 execution was not run. ISSUE-025 remains open and concerns the
 unrelated reciprocal tiny-result threshold. The profile does not claim complete

@@ -30,13 +30,14 @@ unchanged code bytes, exception observation, one retirement, and JIT denial.
 This is local interpreter evidence only; no physical x86 acceptance is
 claimed.
 
-Validation passed: focused `od-isa` `fsub` 55/55; full `od-isa` 1,893/1,893;
-`od-testkit` 455/455; and `od-runner` 125 unit + 519 fixture tests. Formatting,
-workspace all-target offline check, and `git diff --check` passed. Graphify
-refreshed 11,857 nodes, 25,558 edges, and 371 communities. Layout validation
-still reports the pre-existing `.git` worktree pointer and two missing
-historical oracle manifests recorded in ISSUE-023. Independent Sol/high
-implementation review is pending. No physical x86 check was run.
+Integrated main validation passed: focused `fsub` 55/55; combined `od-isa`
+1,895/1,895, `od-testkit` 455/455, `od-runner` 125 unit + 520 fixture, and
+`od-x86-runner` 8 library + 4 binary tests. Workspace all-target offline
+check, formatting, layout check, and `git diff --check` passed. Graphify
+refreshed 11,828 nodes, 25,656 edges, and 376 communities. The Sol/high review
+found one missing large-gap refusal test; the test was fixed to exercise gap 65
+directed overflow, assert `Unsupported`, full-state preservation and zero
+callbacks, then received clean re-review. No physical x86 check was run.
 
 Normative source: Intel SDM Rev. 093 Vol. 2A `FSUBR/FSUBRP/FISUBR`,
 pp. 3-397–3-399

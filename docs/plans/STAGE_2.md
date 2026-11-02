@@ -231,7 +231,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30da | Bare `DE C8..CF` FMULP ST(i),ST(0), bounded FCW precision for Normal operands/results, write old physical destination before TOP pop, sticky PE and C1; exact p64 domain retained; JIT/native closed | Integrated main: od-isa 1,841; od-testkit 455; runner 119+499; x86-runner 8+4; workspace check, fmt/diff/layout, Graphify; static fixture runner verifies complete state/exception/memory; Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-30db | Bare `DE E8..EF` FSUBP ST(i),ST(0), bounded FCW precision with normalized gap≤64; old exact p64 domain retained; old physical destination before TOP pop; sticky PE/C1; JIT/native closed | Integrated main: od-isa 1,845; testkit 455; runner 119+501; x86-runner 8+4; workspace check/fmt/diff/layout; focused FSUBP 7 and 2,688-case odd coefficient matrix; independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-30dm | Bare `DE E8..EF` FSUBP extends normalized Normal gaps 65..32765 through S2-29af; retain gap≤64/exact fallback, physical destination then pop, sticky PE/C1 and atomic refusal; JIT/native closed | 86,016-case independent oracle; focused FSUBP 9; integrated main: od-isa 1,891, testkit 455, runner 125+518, x86-runner 8+4; workspace check/fmt/diff/layout and Graphify 11,799/25,583/372 passed; separate Sol/high review clean after anchor/provenance corrections; no physical x86 acceptance |
-| [x] | S2-30dn | Bare `DE E0..E7` FSUBRP extends normalized Normal gaps 65..32765; preserve S2-30dc gates, old `ST(0)-ST(i)` direction, physical destination-before-pop, sticky PE/C1, atomic refusal and no exact fallback | 86,016-case independent signed-integer state matrix; PC24/PC53 midpoint/direction vectors; full-state gap-65 literal fixture/JIT denial; od-isa 1,893, testkit 455, runner 125+519; workspace/fmt/diff and Graphify pass; layout findings remain pre-existing ISSUE-023; independent Sol/high review pending; no physical x86 acceptance |
+| [x] | S2-30dn | Bare `DE E0..E7` FSUBRP extends normalized Normal gaps 65..32765; preserve S2-30dc gates, old `ST(0)-ST(i)` direction, physical destination-before-pop, sticky PE/C1, atomic refusal and no exact fallback | 86,016-case independent signed-integer state matrix; PC24/PC53 midpoint/direction vectors; full-state gap-65 literal fixture/JIT denial and gap-65 helper-refusal atomicity; combined main suites: od-isa 1,895, testkit 455, runner 125+520, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,828 nodes/25,656 edges/376 communities; independent Sol/high review clean; no physical x86 acceptance |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -646,7 +646,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38k | Exact Long64 `MINPS XMM0,XMM1` unmasked IM/DM exit; strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37g, S2-38j control policy after MINPS-specific SDM review; independent Sol medium review clean |
 | [x] | S2-38l | Exact Long64 `MAXPS XMM0,XMM1` unmasked IM/DM exit; distinct strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37h, S2-38k control policy after MAXPS-specific Rev. 093 review; independent Sol medium review clean |
 | [x] | S2-38m | Exact Long64 `MINSS XMM0,m32 [RAX]` memory profile with mixed IM/DM unmasked arithmetic exit; actual memory RHS; strict schema-v2 and interpreter-only | Parent S2-38 memory/alignment/unmasked-FP-priority gap; S2-37dh address/read model and S2-38d policy; integrated main: od-isa 1,891, testkit 455, runner 125+518, x86-runner 8+4, workspace/fmt/diff/layout/Graphify; Sol/high review clean after exact-form/backend/anchor fixes; no physical x86 claim |
-| [ ] | S2-38n | Exact Long64 `MAXSS XMM0,m32 [RAX]` memory profile with MAXSS-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only; implementation/tests complete, independent Sol/high review pending | S2-37cy masked memory, S2-38f MAXSS unmasked policy and S2-38m memory/fault ordering; MAXSS-specific QNaN invalid, operand-2 SNaN preservation; no physical x86 claim |
+| [x] | S2-38n | Exact Long64 `MAXSS XMM0,m32 [RAX]` memory profile with MAXSS-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cy masked memory, S2-38f MAXSS unmasked policy and S2-38m memory/fault ordering; MAXSS-specific QNaN invalid, operand-2 SNaN preservation; combined main suites: od-isa 1,895, testkit 455, runner 125+520, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,828 nodes/25,656 edges/376 communities; independent Sol/high review clean; no physical x86 claim |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -7653,15 +7653,15 @@ backend relabel rejection, and explicit native/JIT denial. See the [CPU
 contract](../specs/CPU_CONTRACT.md#s2-38n--exact-maxss-unmasked-memory-exit-for-m32-rax)
 and [S2-38f MAXSS policy](#s2-38f-exact-long64-maxss-xmm0xmm1-unmasked-invalid-and-denormal-exit).
 
-Implementation and local validation are complete; separate Sol/high review is
-pending. Verification passed: `cargo test -p od-isa --offline` (1,893),
-`cargo test -p od-testkit --offline` (455), and
-`cargo test -p od-runner --test fixture_v2 --offline` (519); workspace
-all-target offline check, `cargo fmt --all -- --check`, and `git diff --check`
-passed. `tools/check_layout.py` reports the known isolated-worktree `.git`
-pointer error and two existing broken oracle-manifest links (ISSUE-023).
-`graphify update .` refreshed the graph to 11,865 nodes, 25,590 edges and 379
-communities. No physical x86 check was run; ISSUE-025 remains unrelated. See
+Implementation is integrated and independent Sol/high review is clean.
+Combined main verification passed: `cargo test -p od-isa -p od-testkit
+-p od-runner --offline -- --test-threads=1` (od-isa 1,895, od-testkit 455,
+runner 125 unit + 520 fixture tests), `cargo test -p od-x86-runner --offline
+-- --test-threads=1` (8 library + 4 binary tests), workspace all-target
+offline check, `cargo fmt --all -- --check`, `python3 tools/check_layout.py`,
+and `git diff --check`. `graphify update .` refreshed the main graph to
+11,828 nodes, 25,656 edges and 376 communities. No physical x86 check was run;
+ISSUE-025 remains unrelated. See
 the [standalone report](../reports/S2_38N_MAXSS_MEMORY_UNMASKED.md),
 [shared report](../reports/STAGE_2_REPORT.md#s2-38n--exact-maxss-unmasked-memory-profile-at-m32-rax),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38n--maxss-xmm0m32-rax-with-unmasked-imdm).
@@ -11929,12 +11929,12 @@ and deny JIT. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dn-larg
 and this [S2-30dn admission contract](#s2-30dn-large-gap-fsubrp-sti-st0-admission).
 
 Implementation report: [S2-30dn large-gap FSUBRP](../reports/S2_30DN_X87_FSUBRP_LARGE_GAPS.md).
-Local acceptance passed the 86,016-case independent signed-integer matrix,
-focused/full ISA tests, testkit and runner suites, formatting, workspace check,
-diff check, and Graphify refresh. Layout validation still reports only the
-pre-existing checkout metadata and missing historical manifests in ISSUE-023.
-The independent Sol/high implementation review is pending; physical x86 was
-not run.
+Integrated main acceptance passed the 86,016-case independent signed-integer
+matrix, combined `od-isa`/`od-testkit`/`od-runner` suites, `od-x86-runner`,
+workspace check, formatting, layout check, diff check, and Graphify refresh.
+The Sol/high review found a missing large-gap refusal test; after adding the
+gap-65 directed-overflow rollback case, independent re-review was clean.
+Physical x86 was not run.
 
 #### S2-30dc. Bare `FSUBRP ST(i), ST(0)` with bounded FCW precision
 
