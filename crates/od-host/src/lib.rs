@@ -7995,10 +7995,10 @@ mod tests {
             Err(MemoryOperationExecutionErrorV2::MemoryError(
                 MemoryOperationMemoryErrorV2 {
                     kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
-                    address: u64::MAX - 2,
+                    address,
                     length: 4,
                 }
-            ))
+            )) if address == u64::MAX - 2
         ));
         assert_eq!(overflow_state, before_overflow);
         assert_eq!(overflow_memory.reads, 0);
