@@ -5213,7 +5213,7 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && operand.size == OperandSize::Dword
                 && matches!(operand.base, AddressBase::None)
                 && operand.index == Some(od_isa::Register::Rax)
-                && operand.scale == 1
+                && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && i32::try_from(operand.displacement).is_ok());
     let address32_profile = instruction.prefixes.address_override
         && instruction.address_size == OperandSize::Dword
