@@ -20461,6 +20461,7 @@ impl RunResult {
         if matches!(
             loaded.fixture.profile,
             Profile::LongMinssMemoryRaxV1
+                | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
                 | Profile::LongMulssMemoryRaxV1

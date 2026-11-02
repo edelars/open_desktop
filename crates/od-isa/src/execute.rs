@@ -19368,7 +19368,12 @@ fn step_configured(
             && !instruction.prefixes.operand_override
             && !instruction.prefixes.address_override
             && instruction.prefixes.rex.is_none();
-        let exact_minss = exact_register_minss || exact_memory_minss;
+        let exact_minss =
+            if configured_minss_memory_rax_controls.is_some() && unmasked_minss_denormal {
+                exact_memory_minss
+            } else {
+                exact_register_minss
+            };
         if !exact_minss {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
@@ -120946,6 +120951,36 @@ mod tests {
         assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x5d });
         assert_eq!(state, before);
         assert!(memory.accesses.is_empty());
+
+        let register_code = [0xf3, 0x0f, 0x5d, 0xc1];
+        let mut wrong_form_memory = Memory::at(&register_code, 0x4020);
+        let mut wrong_form_state = LongModeState::default();
+        wrong_form_state.rip = 0x4020;
+        wrong_form_state.gpr[Register::Rax as usize] = wrong_form_memory.data_base;
+        wrong_form_state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f00,
+        });
+        let wrong_form_before = wrong_form_state.clone();
+        let disabled_wrong_form = MinssMemoryUnmaskedRaxControls {
+            sse_available: false,
+            cr0_ts: true,
+            ..controls
+        };
+        let result = run_with_minss_memory_unmasked_rax_controls(
+            &mut wrong_form_state,
+            &mut wrong_form_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x4024),
+                context: AccessContext::default(),
+            },
+            disabled_wrong_form,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x5d });
+        assert_eq!(wrong_form_state, wrong_form_before);
+        assert!(wrong_form_memory.accesses.is_empty());
 
         for (rip, bad_address) in [(0x4050, 0x0000_8000_0000_0000), (0x4070, u64::MAX - 1)] {
             let mut invalid_span_memory = Memory::at(&code, rip);

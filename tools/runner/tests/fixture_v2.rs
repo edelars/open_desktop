@@ -38974,11 +38974,15 @@ fn minss_m32_memory_unmasked_literal_is_strict_and_interpreter_only() {
         Observation::Available { value: Some(ref exception) } if exception.vector == 19
     ));
 
-    for backend in ["jit", "native"] {
-        assert!(matches!(
-            run(MINSS_M32_MEMORY_UNMASKED_RAX, backend, 4).1.outcome,
-            Outcome::Unsupported { .. }
-        ));
+    for (backend_name, backend) in [("jit", Backend::Jit), ("native", Backend::NativeX86)] {
+        let (denied_input, denied) = run(MINSS_M32_MEMORY_UNMASKED_RAX, backend_name, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        denied.validate_for(&denied_input).unwrap();
+
+        let mut relabeled = result.clone();
+        relabeled.backend = backend;
+        assert!(relabeled.validate_for(&input).is_err());
     }
     let mut missing_controls = fixture.clone();
     missing_controls.minss_memory_unmasked_rax_controls = None;
