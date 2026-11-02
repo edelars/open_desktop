@@ -449,6 +449,10 @@ Harness source commit `7ee99dc`, integrated as `5069141`, pins exactly `memory_l
 
 The static manifest reports 226 Rust gates (216 acceptance, 10 lifecycle) and 244 local steps. Independent Sol/high harness review passed. No Python harness validation, Cargo test, or runtime gate ran for this slice under the Mini deferral. The S3-20eo runtime commit `c98a28d` is integrated as `4970c5c` and passed static review after coverage fixes, but its exact runtime gates remain pending; that review is not harness execution. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-34bz report](../reports/STAGE_3_S3-34bz_2026-11-02.md).
 
+## S3-34ca: exact harness gates for S3-20ep RCX-indexed absolute SIB Dword load
+
+Harness source commit `8b05d2f`, integrated as `02c92fa`, pins exactly `memory_load_v2::tests::ir_dword_rcx_index_no_base_sib_disp32_load_binds_all_source_bytes_to_its_site` (`od-jit`) and `tests::s3_20ep_rcx_index_no_base_sib_disp32_dword_load_uses_signed_displacement` (`od-host --lib`). The manifest records 228 Rust gates (218 acceptance, 10 lifecycle) and 246 local steps. Independent Sol/high static review passed; no Python or harness execution was performed. These pinned identities are not evidence that the Cargo gates or runtime implementation passed. S3-20ep runtime implementation remains in progress. ISSUE-028 remains open. Stage 2 remained outside this slice's evidence; concurrent runs were ignored per user instruction. Mini/M1 remain deferred and Stage 3 remains partial. See the [S3-34ca report](../reports/STAGE_3_S3-34ca_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
