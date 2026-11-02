@@ -3080,6 +3080,10 @@ fn build_block_with_profile(
                         == Some(&[0x67, 0x89, 0x03][..])
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(4))
+                        .is_some_and(|bytes| bytes[..3] == [0x67, 0x89, 0x43])
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(6))
                         .is_some_and(|bytes| bytes[..2] == [0x89, 0x83])
                     || code
@@ -4837,14 +4841,14 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
 
 pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
     let address32_profile = instruction.prefixes.address_override
-        && instruction.length == 3
         && instruction.address_size == OperandSize::Dword
         && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
             if operand.address_size == OperandSize::Dword
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
                 && operand.index.is_none()
                 && operand.scale == 1
-                && operand.displacement == 0);
+                && ((instruction.length == 3 && operand.displacement == 0)
+                    || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())));
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override

@@ -1118,9 +1118,9 @@ fn is_checked_dword_store_address(
                     && matches!(operand.base, AddressBase::NextRip)
                     && i32::try_from(operand.displacement).is_ok())))
             || (operand.address_size == od_isa::OperandSize::Dword
-                && instruction_length == 3
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-                && operand.displacement == 0))
+                && ((instruction_length == 3 && operand.displacement == 0)
+                    || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok()))))
 }
 
 fn validate_gpr(register: GuestGpr, operation: usize) -> Result<(), VerifyError> {
