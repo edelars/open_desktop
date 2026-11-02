@@ -319,6 +319,20 @@ all four scales × all 256 signed disp8 values, and PC-map, atomic-fault, STOP,
 and budget fixtures remain bounded to these exact forms. See the
 [S3-20dn report](../reports/STAGE_3_S3-20dn_2026-11-02.md).
 
+#### S3-20do: exact address-size-32 SIB Dword stores with signed disp8
+
+The shared typed-IR Dword-store path additionally admits exactly the four
+five-byte singleton forms `67 89 44 0B ib`, `67 89 44 4B ib`,
+`67 89 44 8B ib`, and `67 89 44 CB ib`
+(`MOV [EBX+ECX*1/2/4/8+disp8],EAX`). The decoder-owned address-size-32
+effective address adds low32 EBX, low32 ECX times the selected scale, and
+signed disp8; it wraps to 32 bits and zero-extends before canonical checking.
+Each store performs one contiguous checked four-byte write of low32 RAX. The
+guest boundary is `A+5`; source/site binding covers all four scales × all
+256 signed disp8 values, with PC-map coverage at that boundary. Fixtures cover
+atomic faults, STOP, and budget behavior. See the
+[S3-20do report](../reports/STAGE_3_S3-20do_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
