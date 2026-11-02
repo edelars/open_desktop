@@ -552,6 +552,23 @@ impl MemorySiteV2 {
         {
             return true;
         }
+        if self.operation == MemorySiteOperationV2::Load
+            && self.instruction_index == expected_index
+            && length == 6
+            && self.destination == Some(0)
+            && self.source.is_none()
+            && self.operand.address_size == od_isa::OperandSize::Qword
+            && self.operand.size == od_isa::OperandSize::Dword
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && i32::try_from(self.operand.displacement).is_ok()
+        {
+            return true;
+        }
         if self.operation == MemorySiteOperationV2::Store
             && self.instruction_index == expected_index
             && length == 2
@@ -1521,7 +1538,7 @@ impl MemorySiteV2 {
     }
 
     /// Validate that immutable source bytes encode this decoded site in the
-    /// narrow qword MOV profile. The decoder remains the only authority for
+    /// narrow checked-MOV profile. The decoder remains the only authority for
     /// displacement interpretation; raw displacement bytes are not re-decoded.
     pub fn matches_source_bytes(
         self,
@@ -1578,6 +1595,30 @@ impl MemorySiteV2 {
                 && self.operand.index.is_none()
                 && self.operand.scale == 1
                 && self.operand.displacement == i64::from(source[2] as i8);
+        }
+        if source.len() == 6 && source[..2] == [0x8b, 0x83] {
+            let Some(displacement) = source[2..6]
+                .try_into()
+                .ok()
+                .map(i32::from_le_bytes)
+                .map(i64::from)
+            else {
+                return false;
+            };
+            return expected_operation == MemorySiteOperationV2::Load
+                && self.instruction_index == expected_index
+                && self.next_rip.checked_sub(self.guest_rip) == Some(6)
+                && self.destination == Some(0)
+                && self.source.is_none()
+                && self.operand.size == od_isa::OperandSize::Dword
+                && self.operand.address_size == od_isa::OperandSize::Qword
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+                )
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == displacement;
         }
         if source == [0x89, 0x03] || source == [0x89, 0x00] {
             let expected_base = if source == [0x89, 0x03] {
