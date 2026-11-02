@@ -1,0 +1,102 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_37dk_subss_m32_halfway",
+  "profile": "s2-long-subss-memory-rax-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten literal legacy SUBSS XMM0,m32 [RAX]: 1.0 minus the binary32 half-ulp value 2^-25 under round-to-nearest-even; XMM1 is poisoned to prove the RHS comes from memory.",
+    "specification": "Intel 64 and IA-32 Architectures Software Developer’s Manual, Rev. 093, Vol. 2B SUBSS pp. 4-695–4-696; Vol. 1 §§4.9.1.4–.6, 11.5.3 and DAZ/FTZ; Vol. 2A Table 2-20; Vol. 3A Event 19/Table 7-8.",
+    "specification_version": "Intel SDM revision 093; project S2-37dk."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "f30f5c00",
+      "comparison_mask_hex": "ffffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000002000",
+      "length": 4,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "00000033",
+      "comparison_mask_hex": "ffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x00000000000008d5",
+  "expected_exit": "stop_address",
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000002000",
+      "0x0000000000000101",
+      "0x0000000000000102",
+      "0x0000000000000103",
+      "0x0000000000000104",
+      "0x0000000000000105",
+      "0x0000000000000106",
+      "0x0000000000000107",
+      "0x0000000000000108",
+      "0x0000000000000109",
+      "0x000000000000010a",
+      "0x000000000000010b",
+      "0x000000000000010c",
+      "0x000000000000010d",
+      "0x000000000000010e",
+      "0x000000000000010f"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000ad7",
+    "sse": {
+      "xmm": [
+        "0000803fefbeadde78563412a5a5c3c3",
+        "010000000000f03f000000000000f03f",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+      ],
+      "mxcsr": "0x0000000000001f80",
+      "diagnostic_mxcsr_mask": "0x000000000000ffbf"
+    }
+  },
+  "ucomiss_memory_rax_controls": null,
+  "cmpss_memory_rax_controls": null,
+  "comiss_memory_rax_controls": null,
+  "cmpsd_memory_rax_controls": null,
+  "cmppd_memory_rax_controls": null,
+  "minss_memory_rax_controls": null,
+  "subss_controls": {
+    "sse_available": true,
+    "cr0_em": false,
+    "cr0_ts": false,
+    "cr4_osfxsr": true,
+    "cr4_osxmmexcpt": true
+  }
+}

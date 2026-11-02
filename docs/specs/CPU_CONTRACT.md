@@ -16359,3 +16359,45 @@ Require supported `MXCSR` bits `0xffbf`, reserved bits clear, all six exception 
 Compute `XMM0.low64` plus the loaded m64 RHS with `Binary64::add_raw_result(MXCSR.RC)`. Preserve `XMM0.high64`, `XMM1` and unrelated state. Apply `ADDSD` raw IE/DE/OE/UE/PE semantics and OR generated flags into prior stickies. Success advances by four. Generic, fragment, JIT, native and `C ABI` execution remain closed; no physical x86 acceptance is claimed.
 
 The independent integer `independent_addsd` oracle receives memory RHS and does not use host floating point or production helpers. Coverage crosses four RC modes × all 64 old sticky histories for midpoint/adjacent, tiny/subnormal, overflow, NaN, infinity and zero inputs. The runner matrix checks `StopAddress`, an available snapshot and retirement=1 before oracle validation. It also checks `XMM1`/high64 canaries, gate/fetch ordering, AC and unaligned access, canonical-span/overflow faults, one `read8`, read rollback, strict schema/provenance/result validation, register regression and backend denials. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37dj--masked-only-legacy-long64-addsd-xmm0m64-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dj--addsd-xmm0m64-rax), [standalone report](../reports/S2_37DJ_ADDSD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dj--addsd-xmm0m64-rax).
+
+## S2-37dk — masked-only Long64 SUBSS XMM0,m32 [RAX]
+
+The interpreter-only schema-v2 profile `s2-long-subss-memory-rax-v1` accepts
+only exact legacy `F3 0F 5C 00`, fetches four bytes, retires one instruction,
+and stops at entry+4. It requires Long64, SSE (`CPUID.01H:EDX[25]`),
+CR0.EM=0, CR4.OSFXSR=1, CR0.TS=0 and XMM/MXCSR state. Fetch all four bytes
+before gates; missing SSE, EM=1 or OSFXSR=0 raises #UD before TS=1 raises #NM.
+All other prefixes, REX, ModR/M/addressing forms, VEX/EVEX, truncation,
+trailing bytes and destinations are outside this profile.
+
+MXCSR admission allows only supported bits (`0xffbf`), requires all six
+exception masks set, DAZ=FTZ=0, and reserved bits clear. Any RC and any prior
+IE/DE/ZE/OE/UE/PE sticky history are accepted. Unmasked exceptions and #XM
+delivery are not modeled. AC=1 returns local Unsupported before address-span
+validation or a data read; AC=0 admits unaligned m32. Check `RAX+3` overflow
+and canonical48 endpoints for `[RAX,RAX+3]` before exactly one read4. A failed
+read leaves CPU/SSE/MXCSR/RIP and retirement unchanged.
+
+Subtract the loaded memory RHS from old XMM0.low32 with the existing raw
+binary32 subtraction path. Preserve XMM0.high96, XMM1, and unrelated state;
+merge generated IE/DE/OE/UE/PE into prior sticky flags. Classify original NaNs
+and select the first original NaN before any arithmetic treatment of the RHS
+sign. Quiet an SNaN and raise IE; a QNaN alone does not raise IE. Same-sign
+infinity subtraction produces masked indefinite and IE. For non-NaNs, a
+subnormal operand raises DE; arithmetic events are merged with old stickies.
+Success advances RIP by four and retires once. JIT/native/C ABI/generic/fragment
+execution and unmasked/#XM paths remain closed. No physical x86 acceptance is
+claimed.
+
+The independent `independent_subss` raw-u32 oracle consumes the memory RHS and
+does not use host floating point or production helpers. Coverage crosses four
+RC modes and all 64 old sticky histories for halfway/adjacent rounding,
+subnormal/zero/overflow/infinity and both SNaN/QNaN operand orders, plus
+XMM1/high96 canaries, fetch/gate order, AC, unaligned access, canonical span,
+overflow, read rollback, schema/provenance/result validation, backend denial
+and the S2-37aq register regression. See the [plan](../plans/STAGE_2.md#s2-37dk--masked-only-long64-subss-xmm0m32-rax), [standalone report](../reports/S2_37DK_SUBSS_MEMORY.md), [shared report](../reports/STAGE_2_REPORT.md#s2-37dk--subss-xmm0m32-rax), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dk--subss-xmm0m32-rax).
+
+Sources: Intel SDM Rev. 093 Vol. 2B `SUBSS` pp. 4-695–4-696 and Vol. 2A
+Table 2-20; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event
+19/Table 7-8. See the [official Intel SDM downloads](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
+and [Rev. 093 Volume 2B PDF](https://cdrdv.intel.com/v1/dl/getContent/671199).

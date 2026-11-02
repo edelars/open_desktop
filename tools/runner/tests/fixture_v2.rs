@@ -74,6 +74,8 @@ const MINSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
 );
 const ADDSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37di_addss_m32_halfway.case.json");
+const SUBSS_M32_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dk_subss_m32_halfway.case.json");
 const ADDSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dj_addsd_m64_halfway.case.json");
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
@@ -37118,6 +37120,56 @@ fn addss_m32_memory_literal_uses_memory_rhs_and_remains_backend_denied() {
         .unwrap()
         .sse_available = false;
     assert!(bad.validate().is_err());
+}
+
+#[test]
+fn subss_m32_memory_literal_uses_memory_rhs_and_remains_backend_denied() {
+    let loaded = Fixture::from_json(SUBSS_M32_MEMORY_RAX).unwrap();
+    let fixture = loaded.fixture.clone();
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongSubssMemoryRaxV1
+    );
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "f30f5c00");
+    let (input, result) = run(SUBSS_M32_MEMORY_RAX, "interpreter", 0);
+    eprintln!("SUBSS result snapshot: {:#?}", result.snapshot);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let snapshot = match &result.snapshot {
+        Observation::Available { value } => value,
+        other => panic!("unexpected SUBSS snapshot: {other:?}"),
+    };
+    let sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "0000803fefbeadde78563412a5a5c3c3");
+    assert_eq!(sse.mxcsr.get(), 0x1fa0);
+    assert_eq!(snapshot.memory[1].bytes_hex, "00000033");
+    for engine in ["jit", "native"] {
+        assert!(matches!(
+            run(SUBSS_M32_MEMORY_RAX, engine, 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+    }
+    let mut malformed = fixture.clone();
+    malformed.memory[0].initial_bytes_hex = "f30f5c01".into();
+    assert!(malformed.validate().is_err());
+    let mut malformed = fixture.clone();
+    malformed.memory[0].initial_bytes_hex = "f30f5c0090".into();
+    malformed.memory[0].length = 5;
+    malformed.memory[0].comparison_mask_hex = "ff".repeat(5);
+    malformed.stop_rip = Some(HexU64(fixture.initial_state.rip.get() + 5));
+    assert!(malformed.validate().is_err());
+    let mut malformed = fixture.clone();
+    malformed.subss_controls = None;
+    assert!(malformed.validate().is_err());
+    for mxcsr in [0x1f40, 0x1f00, 0x9f80, 0x11f80] {
+        let mut malformed = fixture.clone();
+        malformed.initial_state.sse.as_mut().unwrap().mxcsr = od_testkit::HexU64(mxcsr);
+        assert!(malformed.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..8, "0100803f");
+    }
+    assert!(tampered.validate_for(&loaded).is_err());
 }
 
 #[test]

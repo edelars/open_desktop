@@ -21488,3 +21488,11 @@ After S2-30cs and S2-37dj were transferred to main, combined validation passed:
 formatting, layout validation and Graphify AST refresh passed (11,215 nodes,
 24,238 edges, 338 communities). The Linux native-denial check remains blocked
 by ISSUE-029; no physical x86 acceptance is claimed.
+
+### S2-37dk — SUBSS XMM0,m32 [RAX]
+
+Added the interpreter-only schema-v2 profile `s2-long-subss-memory-rax-v1` for exact legacy `F3 0F 5C 00`, one four-byte fetch, one instruction and stop RIP entry+4. It requires Long64/SSE, full-fetch-before-gates, and masked MXCSR with all six masks set, reserved bits clear, DAZ=FTZ=0; all RC and prior sticky histories are admitted. AC=1 is local Unsupported before canonical-span checks or data reads; AC=0 permits unaligned m32. Checked canonical48 endpoints and overflow precede exactly one read4, and failed reads preserve state and retirement.
+
+The interpreter subtracts actual memory RHS from XMM0.low32, preserving XMM0.high96/XMM1 and ORing generated flags into prior stickies. It classifies/selects original NaNs before arithmetic treatment of the RHS sign. JIT/native/C ABI/generic/fragment and unmasked/#XM remain closed. Independent raw-u32 `independent_subss` receives the memory RHS. The runner matrix covers 12 input pairs × 4 RC modes × 64 old sticky histories (3,072 executions); direct tests cover decoder/gates, AC/address ordering, unaligned read, endpoint/fault rollback and the register SUBSS regression.
+
+No physical x86 acceptance is claimed. Full test counts, layout/Graphify and independent review results are in the [standalone report](S2_37DK_SUBSS_MEMORY.md). Normative sources: Intel SDM Rev. 093 Vol. 2B SUBSS pp. 4-695–4-696; Vol. 2A Table 2-20; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. [Official Intel SDM downloads](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
