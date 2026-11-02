@@ -721,6 +721,24 @@ callback STOP commit followed by retry rejection without a second read. No
 production owner/MMU, physical-hardware, or performance behavior is
 established. See the [S3-20eh report](../reports/STAGE_3_S3-20eh_2026-11-02.md).
 
+#### S3-20ei: exact address-size-32 ESP-base Dword store with signed disp8
+
+The typed-IR Dword-store path admits only the exact five-byte singleton
+`67 89 44 24 ib` (`MOV [ESP+disp8],EAX`): address-size override, SIB, ESP
+base, no index, scale 1, and signed 8-bit displacement. Effective address is
+`(low32(RSP) + sign_extend(disp8)) mod 2^32`, zero-extended. The checked
+operation writes low32 RAX in one contiguous four-byte access and advances RIP
+to `A+5`; the bytes in a span crossing 4 GiB do not individually wrap. High
+RSP bits are ignored. JIT source/site identity binds all 256 disp8 encodings.
+
+The bounded host fixture checks interpreter CPU/RAM parity, address wrap,
+poisoned-high32 RSP values, entry STOP/budget no-write plus successful retry,
+backend-write-error no-commit plus successful retry, and callback STOP after a
+committed write with no second write on retry. The separate S3-20eg coverage
+limitation remains tracked in [ISSUE-028](../KNOWN_ISSUES.md); this slice does
+not close it. No production owner/MMU, physical-hardware, or performance
+behavior is established. See the [S3-20ei report](../reports/STAGE_3_S3-20ei_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
