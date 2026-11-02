@@ -3069,6 +3069,8 @@ fn build_block_with_profile(
                         })
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                         == Some(&[0x67, 0x8b, 0x03][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(4))
+                        == Some(&[0x67, 0x8b, 0x04, 0x24][..])
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(4))
@@ -4939,20 +4941,28 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
     let address32_profile = instruction.prefixes.address_override
         && instruction.address_size == OperandSize::Dword
         && operand.address_size == OperandSize::Dword
-        && (matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+        && (((matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
             || matches!(instruction.length, 4 | 7)
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp)))
-        && ((operand.index.is_none()
-            && operand.scale == 1
-            && ((instruction.length == 3 && operand.displacement == 0)
-                || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())
-                || (instruction.length == 7 && i32::try_from(operand.displacement).is_ok())))
-            || (matches!(instruction.length, 4 | 5 | 8)
-                && operand.index == Some(od_isa::Register::Rcx)
-                && matches!(operand.scale, 1 | 2 | 4 | 8)
-                && ((instruction.length == 4 && operand.displacement == 0)
-                    || (instruction.length == 5 && i8::try_from(operand.displacement).is_ok())
-                    || (instruction.length == 8 && i32::try_from(operand.displacement).is_ok()))));
+            && ((operand.index.is_none()
+                && operand.scale == 1
+                && ((instruction.length == 3 && operand.displacement == 0)
+                    || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())
+                    || (instruction.length == 7
+                        && i32::try_from(operand.displacement).is_ok())))
+                || (matches!(instruction.length, 4 | 5 | 8)
+                    && operand.index == Some(od_isa::Register::Rcx)
+                    && matches!(operand.scale, 1 | 2 | 4 | 8)
+                    && ((instruction.length == 4 && operand.displacement == 0)
+                        || (instruction.length == 5
+                            && i8::try_from(operand.displacement).is_ok())
+                        || (instruction.length == 8
+                            && i32::try_from(operand.displacement).is_ok())))))
+            || (instruction.length == 4
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+                && operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0));
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
         && !instruction.prefixes.operand_override

@@ -61,9 +61,9 @@ pub struct IrMemoryLoadBlockV2 {
     pc_map: crate::statepoints::PcMap,
 }
 
-/// Compiler-issued shared-IR artifact for exact unprefixed `8B 03`, `8B 00`,
-/// and `8B 43 ib` dword loads. Its distinct type and compile flavor keep dword
-/// admission separate from the qword load profiles.
+/// Compiler-issued shared-IR artifact for the bounded exact dword-load
+/// profiles, including address32 `[ESP]`. Its distinct type and compile flavor
+/// keep dword admission separate from the qword load profiles.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IrMemoryDwordLoadBlockV2 {
     artifact: MemoryArtifactV2,
@@ -919,6 +919,7 @@ pub fn compile_ir_memory_load_block_v2(
 /// `67 8B 03` (`MOV EAX,[EBX]`) or `67 8B 43 ib`
 /// (`MOV EAX,[EBX+disp8]`) or `67 8B 83 id`
 /// (`MOV EAX,[EBX+disp32]`), `67 8B 85 id` (`MOV EAX,[EBP+disp32]`),
+/// `67 8B 04 24` (`MOV EAX,[ESP]`),
 /// `8B 44 24 ib` (`MOV EAX,[RSP+disp8]`),
 /// `8B 84 24 id` (`MOV EAX,[RSP+disp32]`),
 /// or `67 8B 44 0B/4B/8B/CB ib`
@@ -984,6 +985,7 @@ fn checked_dword_load_metadata_v2(
         && !(bytes.len() == 8
             && bytes[..3] == [0x67, 0x8b, 0x84]
             && matches!(bytes[3], 0x0b | 0x4b | 0x8b | 0xcb))
+        && bytes != [0x67, 0x8b, 0x04, 0x24]
         && !(bytes.len() == 4 && bytes[..3] == [0x67, 0x8b, 0x43])
         && !(bytes.len() == 4 && bytes[..3] == [0x67, 0x8b, 0x45])
         && !(bytes.len() == 7 && bytes[..3] == [0x67, 0x8b, 0x83])
@@ -2870,7 +2872,6 @@ mod tests {
 
         for neighbor in [
             &[0x48, 0x8b, 0x04, 0x24][..],
-            &[0x67, 0x8b, 0x04, 0x24][..],
             &[0x66, 0x8b, 0x04, 0x24][..],
             &[0x89, 0x04, 0x24][..], // the exact store form is not a load
             &[0x8b, 0x04, 0x20][..],
@@ -3871,6 +3872,94 @@ mod tests {
             &[0x67, 0x8b, 0x04, 0x23][..], // SIB
             &[0x67, 0x8b, 0x0b][..],       // ECX destination
             &[0x67, 0x48, 0x8b, 0x03][..], // REX prefix
+        ] {
+            assert!(
+                compile_ir_memory_dword_load_block_v2(
+                    CodeView::new(entry, neighbor).unwrap(),
+                    entry
+                )
+                .is_err(),
+                "admitted neighboring encoding {neighbor:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ir_dword_addr32_rsp_sib_load_binds_exact_source_and_site() {
+        let entry = 0x8110;
+        let source = [0x67, 0x8b, 0x04, 0x24];
+        let metadata =
+            checked_dword_load_metadata_v2(CodeView::new(entry, &source).unwrap(), entry);
+        assert!(metadata.is_ok(), "metadata admission: {metadata:?}");
+        let block =
+            compile_ir_memory_dword_load_block_v2(CodeView::new(entry, &source).unwrap(), entry)
+                .unwrap();
+        let site = block.site();
+        assert_eq!(block.source_bytes(), source);
+        assert_eq!(site.guest_rip(), entry);
+        assert_eq!(site.next_rip(), entry + 4);
+        assert_eq!(site.destination(), Some(0));
+        assert_eq!(site.source(), None);
+        assert_eq!(site.operand().size, od_isa::OperandSize::Dword);
+        assert_eq!(site.operand().address_size, od_isa::OperandSize::Dword);
+        assert_eq!(site.operand().base, AddressBase::Register(Register::Rsp));
+        assert_eq!(site.operand().index, None);
+        assert_eq!(site.operand().scale, 1);
+        assert_eq!(site.operand().displacement, 0);
+        assert!(site.has_supported_profile());
+        assert!(site.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        assert_eq!(block.pc_map().instruction_count(), 1);
+        assert_eq!(
+            block.pc_map().boundaries()[0].rip,
+            crate::statepoints::GuestRipBoundary::Fixed(entry + 4)
+        );
+
+        let mut forged = *site;
+        forged.operation = MemorySiteOperationV2::Store;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *site;
+        forged.destination = Some(1);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *site;
+        forged.operand.base = AddressBase::Register(Register::Rbx);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *site;
+        forged.operand.index = Some(Register::Rcx);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *site;
+        forged.operand.scale = 2;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *site;
+        forged.operand.address_size = od_isa::OperandSize::Qword;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *site;
+        forged.operand.size = od_isa::OperandSize::Qword;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *site;
+        forged.operand.displacement = 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *site;
+        forged.guest_rip += 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *site;
+        forged.next_rip += 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+
+        for neighbor in [
+            &[0x67, 0x8b][..],                         // truncated prefix/opcode
+            &[0x67, 0x8b, 0x04][..],                   // truncated SIB
+            &[0x67, 0x8b, 0x04, 0x24, 0x90][..],       // trailing byte
+            &[0x67, 0x67, 0x8b, 0x04, 0x24][..],       // repeated address override
+            &[0x66, 0x67, 0x8b, 0x04, 0x24][..],       // reordered prefix
+            &[0x67, 0x66, 0x8b, 0x04, 0x24][..],       // operand-size prefix
+            &[0x64, 0x67, 0x8b, 0x04, 0x24][..],       // segment prefix
+            &[0x67, 0x48, 0x8b, 0x04, 0x24][..],       // REX prefix
+            &[0x67, 0x8b, 0x0c, 0x24][..],             // ECX destination
+            &[0x67, 0x8b, 0x04, 0x23][..],             // EBX base SIB
+            &[0x67, 0x8b, 0x04, 0x64][..],             // indexed SIB
+            &[0x67, 0x8b, 0x04, 0xa4][..],             // scaled no-index SIB
+            &[0x67, 0x8b, 0x44, 0x24, 0x00][..],       // disp8
+            &[0x67, 0x8b, 0x84, 0x24, 0, 0, 0, 0][..], // disp32
         ] {
             assert!(
                 compile_ir_memory_dword_load_block_v2(
