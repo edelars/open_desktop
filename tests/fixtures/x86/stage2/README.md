@@ -8272,3 +8272,23 @@ backends. No physical x86 acceptance is claimed. Sources and limits are in
 the [plan](../../../../docs/plans/STAGE_2.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dx--masked-only-legacy-long64-divpd-xmm0m128-rax),
 and [standalone report](../../../../docs/reports/S2_37DX_DIVPD_MEMORY.md).
+
+### S2-38o MINSD m64 unmasked invalid and denormal
+
+The separate `s2-long-minsd-memory-unmasked-rax-v1` fixture profile admits
+only `F2 0F 5D 00` and consumes its binary64 RHS from the single 8-byte data
+mapping at RAX. Its immutable control echo is the S2-38g MINSD control object;
+the memory profile fixes CR0.MP=1. The literal masked mixed fixture combines
+XMM0 QNaN with a memory minimum subnormal and checks source-2 raw selection,
+IE priority, XMM0 high64 preservation, and one retirement. A separate masked
+SNaN memory fixture checks exact source-2 payload preservation. The unmasked
+QNaN fixture opens IM and checks IE commit, #XM delivery, full XMM0/RIP
+suppression, and zero retirement.
+
+The strict result oracle classifies raw u64 values and compares signs and
+magnitudes with integer logic. Runner coverage includes the IM×DM×OSXMMEXCPT
+event matrix, all four RC encodings crossed with 64 prior sticky combinations,
+fetch/gate ordering, AC-before-span refusal, canonical span/read rollback,
+control echo, tamper rejection, and explicit JIT/native denial. These fixtures
+document the local interpreter profile only; no physical x86 acceptance is
+claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38o--exact-minsd-unmasked-memory-exit-for-m64-rax), [plan](../../../../docs/plans/STAGE_2.md#s2-38o-exact-long64-minsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [report](../../../../docs/reports/S2_38O_MINSD_MEMORY_UNMASKED.md).

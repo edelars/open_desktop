@@ -22608,3 +22608,32 @@ is clean for both slices after the S2-38m exact-form/backend fixes and S2-30dm
 anchor/provenance corrections. Main layout check passes. Neither slice claims
 physical x86 acceptance; Stage 2 remains open and ISSUE-025 remains open for the
 unrelated RCPSS/RCPPS tiny-result threshold.
+
+## S2-38o — exact Long64 MINSD with unmasked memory IM/DM exits
+
+Added a distinct strict schema-v2 interpreter profile for exact `F2 0F 5D 00`
+`MINSD XMM0,m64 [RAX]`. It reuses only MINSD's S2-38g immutable control
+contract; CR0.MP is fixed to one. The S2-37cw masked memory and S2-38g register
+profiles are unchanged. Complete fetch and SSE2/EM/OSFXSR #UD gates precede TS
+#NM, XMM/MXCSR admission, AC refusal, checked canonical span and exactly one
+read8. Address and read failures leave state and retirement unchanged.
+
+The operation classifies source bits before selecting raw memory source 2 for
+NaNs and ties. When both IM/DM are masked, IE takes priority over DE. If either
+mask is open, new IE|DE is committed on one #XM or arithmetic #UD exit and the
+complete XMM0 write and retirement are suppressed. Success changes XMM0.low64,
+sticky bits and RIP only. Three literal fixtures and the independent raw-u64
+schema oracle cover masked mixed QNaN/subnormal source selection, exact memory
+SNaN payload preservation, and unmasked QNaN delivery. Four ISA tests cover gate order, unaligned reads, memory rollback, the event
+matrix and RC×64 prior sticky histories; the runner fixture test verifies
+control echo, tampering and JIT/native denial.
+
+Verification passed: `od-isa` 1,899, `od-testkit` 455, runner binary 125 and
+runner `fixture_v2` 521; `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `git diff --check`, and
+`graphify update .` passed. Graphify reports 11,898 nodes, 25,670 edges and
+378 communities. `python3 tools/check_layout.py` reports the temporary
+worktree's `.git` pointer as an unmapped root item and two absent archived
+oracle manifests linked from the pre-existing shared report; no new S2-38o
+layout finding appeared. Independent review is pending integration. No
+physical x86 acceptance is claimed. See the [standalone report](S2_38O_MINSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38o--exact-minsd-unmasked-memory-exit-for-m64-rax), [plan](../plans/STAGE_2.md#s2-38o-exact-long64-minsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38o-minsd-m64-unmasked-invalid-and-denormal).

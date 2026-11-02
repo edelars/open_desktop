@@ -1155,16 +1155,16 @@ fn execute_fixture_v2(
         Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdMemoryRaxControls,
         MaxsdUnmaskedControls, MaxssMemoryRaxControls, MaxssMemoryUnmaskedRaxControls,
         MaxssUnmaskedControls, MinpdUnmaskedControls, MinpsUnmaskedControls,
-        MinsdMemoryRaxControls, MinsdUnmaskedControls, MinssInvalidControls,
-        MinssMemoryRaxControls, MinssMemoryUnmaskedRaxControls, RdtscControls, RunConfig, RunExit,
-        XorpdPrerequisiteState, run, run_with_cli_profile, run_with_cmppd_memory_rax_controls,
-        run_with_cmppd_register_controls, run_with_cmpps_memory_rax_controls,
-        run_with_cmpps_register_controls, run_with_cmpsd_memory_rax_controls,
-        run_with_cmpsd_register_controls, run_with_cmpss_memory_rax_controls,
-        run_with_cmpss_register_controls, run_with_comisd_memory_rax_controls,
-        run_with_comisd_ucomisd_register_controls, run_with_comiss_memory_rax_controls,
-        run_with_comiss_ucomiss_register_controls, run_with_cr0_profile,
-        run_with_cvtdq2pd_controls, run_with_cvtdq2pd_memory_controls,
+        MinsdMemoryRaxControls, MinsdMemoryUnmaskedRaxControls, MinsdUnmaskedControls,
+        MinssInvalidControls, MinssMemoryRaxControls, MinssMemoryUnmaskedRaxControls,
+        RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState, run, run_with_cli_profile,
+        run_with_cmppd_memory_rax_controls, run_with_cmppd_register_controls,
+        run_with_cmpps_memory_rax_controls, run_with_cmpps_register_controls,
+        run_with_cmpsd_memory_rax_controls, run_with_cmpsd_register_controls,
+        run_with_cmpss_memory_rax_controls, run_with_cmpss_register_controls,
+        run_with_comisd_memory_rax_controls, run_with_comisd_ucomisd_register_controls,
+        run_with_comiss_memory_rax_controls, run_with_comiss_ucomiss_register_controls,
+        run_with_cr0_profile, run_with_cvtdq2pd_controls, run_with_cvtdq2pd_memory_controls,
         run_with_cvtdq2pd_register_controls, run_with_cvtdq2ps_memory_controls,
         run_with_cvtdq2ps_register_controls, run_with_cvtps2dq_register_controls,
         run_with_cvtps2pd_register_controls, run_with_cvtsd2si_r32_memory_controls,
@@ -1185,12 +1185,13 @@ fn execute_fixture_v2(
         run_with_maxss_memory_unmasked_rax_controls, run_with_maxss_unmasked_controls,
         run_with_minpd_memory_rax_controls, run_with_minpd_unmasked_controls,
         run_with_minps_unmasked_controls, run_with_minsd_memory_rax_controls,
-        run_with_minsd_unmasked_controls, run_with_minss_invalid_controls,
-        run_with_minss_memory_rax_controls, run_with_minss_memory_unmasked_rax_controls,
-        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
-        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
-        run_with_swapgs_profile, run_with_ucomisd_memory_rax_controls,
-        run_with_ucomiss_memory_rax_controls, run_with_xorpd_prerequisites,
+        run_with_minsd_memory_unmasked_rax_controls, run_with_minsd_unmasked_controls,
+        run_with_minss_invalid_controls, run_with_minss_memory_rax_controls,
+        run_with_minss_memory_unmasked_rax_controls, run_with_minss_unmasked_denormal_controls,
+        run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
+        run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
+        run_with_ucomisd_memory_rax_controls, run_with_ucomiss_memory_rax_controls,
+        run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -2609,6 +2610,24 @@ fn execute_fixture_v2(
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
                 cr4_osfxsr: controls.cr4_osfxsr,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongMinsdMemoryUnmaskedRaxV1 {
+        let controls = loaded
+            .fixture
+            .minsd_unmasked_controls
+            .expect("validated MINSD memory unmasked profile has controls");
+        run_with_minsd_memory_unmasked_rax_controls(
+            &mut state,
+            memory,
+            config,
+            MinsdMemoryUnmaskedRaxControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
             },
             timeout,
         )

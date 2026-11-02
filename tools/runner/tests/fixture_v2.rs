@@ -67,6 +67,13 @@ const CMPPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const MINSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cw_minsd_m64_qnan_selects_rhs.case.json"
 );
+const MINSD_M64_MEMORY_UNMASKED_NAN_DENORMAL: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38o_minsd_mixed_nan_subnormal_masked.case.json"
+);
+const MINSD_M64_MEMORY_UNMASKED_QNAN_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38o_minsd_qnan_im_unmasked_xm.case.json");
+const MINSD_M64_MEMORY_UNMASKED_SNAN_SOURCE2: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38o_minsd_snan_rhs_masked.case.json");
 const MAXSD_M64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cx_maxsd_m64_qnan_selects_rhs.case.json"
 );
@@ -37388,6 +37395,82 @@ fn minsd_m64_memory_covers_raw_nan_selection_denormal_stickies_and_controls() {
     foreign.minsd_memory_rax_controls = fixture.minsd_memory_rax_controls;
     assert!(foreign.validate().is_err());
     assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+}
+
+#[test]
+fn minsd_m64_memory_unmasked_profile_checks_mixed_priority_echo_and_backend_denial() {
+    for (source, expect_fault, expected_mxcsr, expected_low) in [
+        (
+            MINSD_M64_MEMORY_UNMASKED_NAN_DENORMAL,
+            false,
+            0x1f81u64,
+            Some("0100000000000000"),
+        ),
+        (MINSD_M64_MEMORY_UNMASKED_QNAN_XM, true, 0x1f01u64, None),
+        (
+            MINSD_M64_MEMORY_UNMASKED_SNAN_SOURCE2,
+            false,
+            0x1f81u64,
+            Some("010000000000f0ff"),
+        ),
+    ] {
+        let (input, result) = run(source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMinsdMemoryUnmaskedRaxV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            value.minsd_unmasked_controls,
+            input.fixture.minsd_unmasked_controls
+        );
+        assert_eq!(
+            value.state.sse.as_ref().unwrap().mxcsr.get(),
+            expected_mxcsr
+        );
+        if expect_fault {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            assert_eq!(count(&result), 0);
+            assert_eq!(value.state.rip, input.fixture.initial_state.rip);
+            assert_eq!(
+                value.state.sse.as_ref().unwrap().xmm[0],
+                input.fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+            );
+        } else {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+            assert_eq!(
+                &value.state.sse.as_ref().unwrap().xmm[0][..16],
+                expected_low.unwrap()
+            );
+            assert_eq!(
+                &value.state.sse.as_ref().unwrap().xmm[0][16..],
+                &input.fixture.initial_state.sse.as_ref().unwrap().xmm[0][16..]
+            );
+        }
+        for backend in ["jit", "native"] {
+            assert!(matches!(
+                run(source, backend, 4).1.outcome,
+                Outcome::Unsupported { .. }
+            ));
+        }
+    }
+
+    let (input, baseline) = run(MINSD_M64_MEMORY_UNMASKED_QNAN_XM, "interpreter", 0);
+    let mut tampered = baseline.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..16, "0000000000000000");
+    }
+    assert!(od_testkit::v2::compare(&input, &tampered, &baseline).is_err());
+    let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
+    foreign.minsd_unmasked_controls = input.fixture.minsd_unmasked_controls;
+    assert!(foreign.validate().is_err());
 }
 
 #[test]

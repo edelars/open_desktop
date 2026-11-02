@@ -129,6 +129,7 @@ pub const PROFILE_MINPD_UNMASKED_DENORMAL: &str = "s2-long-minpd-unmasked-denorm
 pub const PROFILE_MAXPD_UNMASKED_DENORMAL: &str = "s2-long-maxpd-unmasked-denormal-v1";
 pub const PROFILE_MINSD_MASKED_REGISTER: &str = "s2-long-minsd-reg-masked-v1";
 pub const PROFILE_MINSD_MEMORY_RAX: &str = "s2-long-minsd-memory-rax-v1";
+pub const PROFILE_MINSD_MEMORY_UNMASKED_RAX: &str = "s2-long-minsd-memory-unmasked-rax-v1";
 pub const PROFILE_MAXSD_MASKED_REGISTER: &str = "s2-long-maxsd-reg-masked-v1";
 pub const PROFILE_MINPD_MASKED_REGISTER: &str = "s2-long-minpd-reg-masked-v1";
 pub const PROFILE_MAXPD_MASKED_REGISTER: &str = "s2-long-maxpd-reg-masked-v1";
@@ -256,6 +257,8 @@ pub enum Profile {
     LongMaxssUnmaskedDenormalV1,
     #[serde(rename = "s2-long-minsd-unmasked-denormal-v1")]
     LongMinsdUnmaskedDenormalV1,
+    #[serde(rename = "s2-long-minsd-memory-unmasked-rax-v1")]
+    LongMinsdMemoryUnmaskedRaxV1,
     #[serde(rename = "s2-long-maxsd-unmasked-denormal-v1")]
     LongMaxsdUnmaskedDenormalV1,
     #[serde(rename = "s2-long-minpd-unmasked-denormal-v1")]
@@ -1504,6 +1507,7 @@ impl IntegerState {
                     | Profile::LongCmppdMemoryRaxV1
                     | Profile::LongCmppsMemoryRaxV1
                     | Profile::LongMinsdMemoryRaxV1
+                    | Profile::LongMinsdMemoryUnmaskedRaxV1
                     | Profile::LongMaxssMemoryRaxV1
                     | Profile::LongMinssMemoryRaxV1
                     | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -1638,6 +1642,7 @@ impl IntegerState {
                     | Profile::LongCmppdMemoryRaxV1
                     | Profile::LongCmppsMemoryRaxV1
                     | Profile::LongMinsdMemoryRaxV1
+                    | Profile::LongMinsdMemoryUnmaskedRaxV1
                     | Profile::LongMaxssMemoryRaxV1
                     | Profile::LongMinssMemoryRaxV1
                     | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -1957,6 +1962,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -2187,6 +2193,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -2552,6 +2559,7 @@ impl IntegerState {
             | Profile::LongMinssUnmaskedDenormalV1
             | Profile::LongMaxssUnmaskedDenormalV1
             | Profile::LongMinsdUnmaskedDenormalV1
+            | Profile::LongMinsdMemoryUnmaskedRaxV1
             | Profile::LongMaxsdUnmaskedDenormalV1
             | Profile::LongMinpdUnmaskedDenormalV1
             | Profile::LongMinpsUnmaskedDenormalV1
@@ -2855,6 +2863,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -3127,6 +3136,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -3408,6 +3418,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -3696,6 +3707,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -4131,6 +4143,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -4175,6 +4188,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -4490,6 +4504,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -4781,6 +4796,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -5026,6 +5042,7 @@ impl IntegerState {
                 | Profile::LongCmppdMemoryRaxV1
                 | Profile::LongCmppsMemoryRaxV1
                 | Profile::LongMinsdMemoryRaxV1
+                | Profile::LongMinsdMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
                 | Profile::LongMinssMemoryUnmaskedRaxV1
@@ -7311,10 +7328,107 @@ impl Fixture {
                     "MINSD requires reserved bits clear, ZE/OE/UE/PE masks set, and DAZ/FTZ clear; IM and DM may vary",
                 ));
             }
+        } else if self.profile == Profile::LongMinsdMemoryUnmaskedRaxV1 {
+            let controls = self.minsd_unmasked_controls.ok_or_else(|| {
+                invalid(
+                    "minsd_unmasked_controls",
+                    "required by the MINSD memory unmasked profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by the MINSD memory profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by the MINSD memory profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || !code.initial_bytes_hex.eq_ignore_ascii_case("f20f5d00")
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 8
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress | ExpectedExit::Unsupported
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "MINSD memory unmasked profile requires exact F2 0F 5D 00, code/data mappings, budget 1 and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by MINSD memory profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & 0x1e00 != 0x1e00
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "MINSD memory profile requires supported MXCSR, ZM/OM/UM/PM set, DAZ/FTZ clear; IM/DM, RC and sticky bits are allowed",
+                ));
+            }
+            let gate = !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let ac = !gate && !nm && self.initial_state.rflags.get() & (1 << 18) != 0;
+            let last = source.checked_add(7);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let span = last.is_none_or(|end| !canonical(source) || !canonical(end));
+            let lhs_bytes = decode_bytes(&self.initial_state.sse.as_ref().unwrap().xmm[0])?;
+            let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+            let lhs = u64::from_le_bytes(
+                lhs_bytes[..8]
+                    .try_into()
+                    .map_err(|_| invalid("state.sse.xmm[0]", "expected 16 bytes"))?,
+            );
+            let rhs = u64::from_le_bytes(
+                rhs_bytes[..8]
+                    .try_into()
+                    .map_err(|_| invalid("memory.data", "expected 8 bytes"))?,
+            );
+            let is_nan =
+                |bits: u64| (bits >> 52) & 0x7ff == 0x7ff && bits & 0x000f_ffff_ffff_ffff != 0;
+            let is_subnormal =
+                |bits: u64| (bits >> 52) & 0x7ff == 0 && bits & 0x000f_ffff_ffff_ffff != 0;
+            let invalid_event = is_nan(lhs) || is_nan(rhs);
+            let denormal = is_subnormal(lhs) || is_subnormal(rhs);
+            let im = mxcsr & (1 << 7) != 0;
+            let dm = mxcsr & (1 << 8) != 0;
+            let reported_de = denormal && (!invalid_event || !im || !dm);
+            let arithmetic_fault = invalid_event && !im || reported_de && !dm;
+            let expected = if gate || nm || (!ac && span) || (!ac && arithmetic_fault) {
+                ExpectedExit::Exception
+            } else if ac {
+                ExpectedExit::Unsupported
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect MINSD memory gates, AC, span, and unmasked IE/DE exit",
+                ));
+            }
         } else if self.minsd_unmasked_controls.is_some() {
             return Err(invalid(
                 "minsd_unmasked_controls",
-                "only valid for the MINSD unmasked-denormal profile",
+                "only valid for MINSD unmasked profiles",
             ));
         }
         if self.profile == Profile::LongMaxsdUnmaskedDenormalV1 {
@@ -11653,7 +11767,8 @@ impl Fixture {
                 || self.cmpps_memory_rax_controls.is_some()
                 || self.maxsd_memory_rax_controls.is_some()
                 || self.addps_memory_rax_controls.is_some()
-                || self.minsd_unmasked_controls.is_some()
+                || (self.profile != Profile::LongMinsdMemoryUnmaskedRaxV1
+                    && self.minsd_unmasked_controls.is_some())
                 || code.guest_address.get() != start
                 || code.length != 4
                 || !code.permissions.execute
@@ -16476,6 +16591,10 @@ impl Fixture {
                     .ok()
                     .filter(|bytes| bytes.len() == 4 && bytes[..3] == [0x0f, 0xc2, 0x00])
                     .map(|_| 4),
+                Profile::LongMinsdMemoryUnmaskedRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0xf2, 0x0f, 0x5d, 0x00])
+                    .map(|_| 4),
                 Profile::LongMinsdMemoryRaxV1 => decode_bytes(&code_bytes)
                     .ok()
                     .filter(|bytes| bytes == &[0xf2, 0x0f, 0x5d, 0x00])
@@ -19083,7 +19202,10 @@ impl RunResult {
                 "only valid for the MINSS invalid-controls profile",
             ));
         }
-        if self.profile == Profile::LongMinsdUnmaskedDenormalV1 {
+        if matches!(
+            self.profile,
+            Profile::LongMinsdUnmaskedDenormalV1 | Profile::LongMinsdMemoryUnmaskedRaxV1
+        ) {
             if snapshot.minsd_unmasked_controls.is_none() {
                 return Err(invalid(
                     "snapshot.minsd_unmasked_controls",
@@ -20689,8 +20811,11 @@ impl RunResult {
                 loaded.fixture.minsd_unmasked_controls,
                 value.minsd_unmasked_controls,
             ) {
-                (Profile::LongMinsdUnmaskedDenormalV1, Some(input), Some(output))
-                    if input == output => {}
+                (
+                    Profile::LongMinsdUnmaskedDenormalV1 | Profile::LongMinsdMemoryUnmaskedRaxV1,
+                    Some(input),
+                    Some(output),
+                ) if input == output => {}
                 (Profile::LongMinsdUnmaskedDenormalV1, _, _) => {
                     return Err(FormatError::CaseMismatch("minsd_unmasked_controls"));
                 }
@@ -20702,6 +20827,9 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongMinsdUnmaskedDenormalV1 {
                 validate_minsd_unmasked_result(loaded, self, value)?;
+            }
+            if loaded.fixture.profile == Profile::LongMinsdMemoryUnmaskedRaxV1 {
+                validate_minsd_memory_unmasked_rax_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -40941,6 +41069,189 @@ fn validate_minsd_memory_rax_result(
         (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
         (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("MINSD m64 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_minsd_memory_unmasked_rax_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .minsd_unmasked_controls
+        .ok_or(FormatError::CaseMismatch("minsd_unmasked_controls"))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let lhs = u64::from_le_bytes(
+        lhs_bytes[..8]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("state.sse.xmm[0]"))?,
+    );
+    let data = fixture
+        .memory
+        .iter()
+        .find(|r| r.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let rhs = u64::from_le_bytes(
+        rhs_bytes[..8]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+    );
+    let classify = |bits: u64| {
+        let exponent = (bits >> 52) & 0x7ff;
+        let fraction = bits & 0x000f_ffff_ffff_ffff;
+        if exponent == 0x7ff && fraction != 0 {
+            2
+        } else if exponent == 0 && fraction != 0 {
+            1
+        } else {
+            0
+        }
+    };
+    let lhs_class = classify(lhs);
+    let rhs_class = classify(rhs);
+    let invalid = lhs_class == 2 || rhs_class == 2;
+    let raw_de = lhs_class == 1 || rhs_class == 1;
+    let mxcsr = initial_sse.mxcsr.get() as u32;
+    let im = mxcsr & (1 << 7) != 0;
+    let dm = mxcsr & (1 << 8) != 0;
+    let reported_de = raw_de && (!invalid || !im || !dm);
+    let arithmetic_fault = invalid && !im || reported_de && !dm;
+    let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let source = fixture.initial_state.gpr[0].get();
+    let ac = gate.is_none() && fixture.initial_state.rflags.get() & (1 << 18) != 0;
+    let last = source.checked_add(7);
+    let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let vector = gate
+        .or_else(|| (!ac && span_fault).then_some(13))
+        .or_else(|| {
+            (!ac && !span_fault && arithmetic_fault).then_some(if controls.cr4_osxmmexcpt {
+                19
+            } else {
+                6
+            })
+        });
+    let unsupported = gate.is_none() && ac;
+    if !matches!(
+        (vector, unsupported, fixture.expected_exit),
+        (Some(_), false, ExpectedExit::Exception)
+            | (None, true, ExpectedExit::Unsupported)
+            | (None, false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch(
+            "MINSD memory unmasked expected exit",
+        ));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if vector.is_some() && gate.is_none() && !ac && !span_fault && arithmetic_fault {
+        let sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            mxcsr | u32::from(invalid) | (u32::from(reported_de) << 1),
+        ));
+    } else if vector.is_none() && !unsupported {
+        let sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        // Independent integer-only ordering; MINSD ties and NaNs select raw source 2.
+        let magnitude = |bits: u64| bits & 0x7fff_ffff_ffff_ffff;
+        let order = if magnitude(lhs) == 0 && magnitude(rhs) == 0 {
+            core::cmp::Ordering::Equal
+        } else if lhs >> 63 != rhs >> 63 {
+            if lhs >> 63 != 0 {
+                core::cmp::Ordering::Less
+            } else {
+                core::cmp::Ordering::Greater
+            }
+        } else if lhs >> 63 == 0 {
+            magnitude(lhs).cmp(&magnitude(rhs))
+        } else {
+            magnitude(rhs).cmp(&magnitude(lhs))
+        };
+        let selected = if invalid || order != core::cmp::Ordering::Less {
+            rhs
+        } else {
+            lhs
+        };
+        let mut xmm0 = lhs_bytes;
+        xmm0[..8].copy_from_slice(&selected.to_le_bytes());
+        sse.xmm[0] = crate::memory::encode_bytes(&xmm0);
+        sse.mxcsr = HexU64(u64::from(
+            mxcsr | u32::from(invalid) | (u32::from(reported_de) << 1),
+        ));
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("MINSD RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|r| MemoryRegionSnapshot {
+            region_id: r.region_id.clone(),
+            guest_address: r.guest_address,
+            bytes_hex: r.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch(
+            "MINSD memory unmasked output state",
+        ));
+    }
+    let retired = vector.is_none() && !unsupported;
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(retired)),
+        })
+    {
+        return Err(FormatError::CaseMismatch(
+            "MINSD memory unmasked retirement",
+        ));
+    }
+    match (vector, unsupported, &result.outcome, &snapshot.exception) {
+        (Some(v), false, Outcome::Exception {}, Observation::Available { value: Some(e) })
+            if e.vector == v
+                && e.error_code
+                    == if v == 13 {
+                        Observation::Available { value: HexU64(0) }
+                    } else {
+                        Observation::Unavailable {
+                            reason: "exception has no architectural error code".into(),
+                        }
+                    }
+                && e.faulting_rip == fixture.initial_state.rip
+                && matches!(e.fault_address, Observation::Unavailable { .. }) => {}
+        (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
+        (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "MINSD memory unmasked outcome/exception",
+            ));
+        }
     }
     Ok(())
 }

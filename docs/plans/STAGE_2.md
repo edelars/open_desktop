@@ -648,7 +648,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38l | Exact Long64 `MAXPS XMM0,XMM1` unmasked IM/DM exit; distinct strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37h, S2-38k control policy after MAXPS-specific Rev. 093 review; independent Sol medium review clean |
 | [x] | S2-38m | Exact Long64 `MINSS XMM0,m32 [RAX]` memory profile with mixed IM/DM unmasked arithmetic exit; actual memory RHS; strict schema-v2 and interpreter-only | Parent S2-38 memory/alignment/unmasked-FP-priority gap; S2-37dh address/read model and S2-38d policy; integrated main: od-isa 1,891, testkit 455, runner 125+518, x86-runner 8+4, workspace/fmt/diff/layout/Graphify; Sol/high review clean after exact-form/backend/anchor fixes; no physical x86 claim |
 | [x] | S2-38n | Exact Long64 `MAXSS XMM0,m32 [RAX]` memory profile with MAXSS-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cy masked memory, S2-38f MAXSS unmasked policy and S2-38m memory/fault ordering; MAXSS-specific QNaN invalid, operand-2 SNaN preservation; combined main suites: od-isa 1,895, testkit 455, runner 125+520, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,828 nodes/25,656 edges/376 communities; independent Sol/high review clean; no physical x86 claim |
-| [ ] | S2-38o | Exact Long64 `MINSD XMM0,m64 [RAX]` memory profile with MINSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cw masked memory, S2-38g MINSD unmasked policy, S2-38m/n memory ordering; no physical x86 claim |
+| [x] | S2-38o | Exact Long64 `MINSD XMM0,m64 [RAX]` memory profile with MINSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cw masked memory, S2-38g MINSD unmasked policy, S2-38m/n memory ordering; local interpreter/schema-v2 only, no physical x86 claim |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -7698,6 +7698,18 @@ canaries; aligned/unaligned/read-failure/canonical-span/AC cases; feature and
 fetch priority; callback 0/1 and rollback; schema/result echo and tamper
 rejection; and explicit native/JIT denial. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38o--exact-minsd-unmasked-memory-exit-for-m64-rax).
+
+Implemented as a separate interpreter profile and strict schema-v2 fixture
+path. Four `od-isa` tests cover prerequisite fetch/UD/NM ordering, unaligned access,
+address and read failure atomicity, IM×DM×OSXMMEXCPT event delivery, and RC×64 prior sticky
+histories. The runner fixture test validates the independent raw-u64 result
+oracle, control echo, tamper rejection, and JIT/native denial. Focused checks
+passed. Full suites passed: od-isa 1,899, od-testkit 455, runner binary 125,
+and runner fixtures 521. Workspace offline check, formatting, diff check and
+Graphify refresh passed. Layout reports the existing temporary-worktree `.git`
+pointer and missing archived oracle manifests; no S2-38o issue was added.
+Independent review is pending integration review. No physical x86 acceptance
+is claimed.
 
 #### S2-38e. Exact FP-init, FXRSTOR64, and image-controlled MINSS composition
 
