@@ -579,6 +579,25 @@ Harness source `2dc2bc4`, integrated as `1b8ebba`, pins the exact JIT and host i
 
 The static manifest records 248 Rust gates (238 acceptance, 10 lifecycle), 266 local steps, and 108 self-test names. Independent Sol/high harness review passed; no Python/harness execution occurred. S3-20ez runtime is integrated and passed Sol/high static review, but the exact gates remain pending, so these pins are not runtime evidence. ISSUE-028 remains open; Stage 2 is excluded; Mini/M1 remain deferred; Stage 3 remains partial. See the [S3-34ck report](../reports/STAGE_3_S3-34ck_2026-11-02.md) and [S3-20ez runtime report](../reports/STAGE_3_S3-20ez_2026-11-02.md).
 
+## S3-34cl: harness gates for S3-20fa scaled RAX-indexed Dword store
+
+Harness source `f349bad`, present at base `7479a1e`, pins these exact gates for
+the seven-byte unprefixed forms `89 04 45/85/C5 disp32`
+(`MOV [RAX*scale+signed disp32],EAX`), scales 2/4/8:
+
+- `s3_34cl_ir_rax_index_no_base_sib_scaled_disp32_dword_store_source_binding` →
+  `memory_load_v2::tests::ir_dword_rax_index_no_base_sib_scaled_disp32_store_binds_all_source_bytes_to_its_site`
+- `s3_34cl_host_rax_index_no_base_sib_scaled_disp32_dword_store_rax_address_and_data` →
+  `tests::s3_20fa_rax_index_no_base_sib_scaled_disp32_dword_store_uses_scaled_rax_address_and_low_dword_data`
+
+The static manifest records 250 Rust gates (240 acceptance, 10 lifecycle),
+268 local steps, and 109 self-test names. Independent Sol/high harness review
+passed. No Python harness, Cargo gate, build, or runtime execution occurred.
+S3-20fa runtime passed independent Sol/high static review, but its exact gates
+remain pending; these pins do not establish behavior. ISSUE-028 remains open;
+Stage 2 is excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
+[S3-34cl report](../reports/STAGE_3_S3-34cl_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
