@@ -520,6 +520,7 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cmpps_memory_rax_controls: input.fixture.cmpps_memory_rax_controls,
                 minsd_memory_rax_controls: input.fixture.minsd_memory_rax_controls,
                 maxss_memory_rax_controls: input.fixture.maxss_memory_rax_controls,
+                minss_memory_rax_controls: input.fixture.minss_memory_rax_controls,
                 maxsd_memory_rax_controls: input.fixture.maxsd_memory_rax_controls,
                 minpd_memory_rax_controls: input.fixture.minpd_memory_rax_controls,
                 minps_memory_rax_controls: input.fixture.minps_memory_rax_controls,

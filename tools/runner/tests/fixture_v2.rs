@@ -69,6 +69,9 @@ const MINPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const MAXSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cy_maxss_m32_qnan_selects_rhs.case.json"
 );
+const MINSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_37dh_minss_m32_qnan_selects_rhs.case.json"
+);
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dg_sqrtss_m32_unaligned_inexact.case.json"
 );
@@ -37026,13 +37029,19 @@ fn minpd_m128_memory_matches_literal_lane_oracle_and_remains_backend_denied() {
 
 #[test]
 fn maxss_m32_memory_literal_selects_raw_rhs_and_remains_backend_denied() {
-    let fixture = Fixture::from_json(MAXSS_M32_MEMORY_RAX).unwrap().fixture;
+    let loaded = Fixture::from_json(MAXSS_M32_MEMORY_RAX).unwrap();
+    let fixture = loaded.fixture.clone();
     assert_eq!(
         fixture.profile,
         od_testkit::v2::Profile::LongMaxssMemoryRaxV1
     );
     let (input, result) = run(MAXSS_M32_MEMORY_RAX, "interpreter", 0);
     od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0] = "0000803f3412f87f010000000000f07f".into();
+    }
+    assert!(tampered.validate_for(&loaded).is_err());
     let snapshot = match &result.snapshot {
         Observation::Available { value } => value,
         other => panic!("unexpected MAXSS snapshot: {other:?}"),
@@ -37052,6 +37061,82 @@ fn maxss_m32_memory_literal_selects_raw_rhs_and_remains_backend_denied() {
     let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
     foreign.maxss_memory_rax_controls = fixture.maxss_memory_rax_controls;
     assert!(foreign.validate().is_err());
+}
+
+#[test]
+fn minss_m32_memory_literal_selects_raw_rhs_and_remains_backend_denied() {
+    let loaded = Fixture::from_json(MINSS_M32_MEMORY_RAX).unwrap();
+    let fixture = loaded.fixture.clone();
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongMinssMemoryRaxV1
+    );
+    let (input, result) = run(MINSS_M32_MEMORY_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let mut forged_success = result.clone();
+    forged_success.backend = Backend::Jit;
+    assert!(forged_success.validate_for(&loaded).is_err());
+    let snapshot = match &result.snapshot {
+        Observation::Available { value } => value,
+        other => panic!("unexpected MINSS snapshot: {other:?}"),
+    };
+    let sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "000000403412f87f010000000000f07f");
+    assert_eq!(sse.mxcsr.get(), 0x1f81);
+    assert_eq!(snapshot.memory[1].bytes_hex, "00000040");
+    assert!(matches!(
+        run(MINSS_M32_MEMORY_RAX, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(MINSS_M32_MEMORY_RAX, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
+    foreign.minss_memory_rax_controls = fixture.minss_memory_rax_controls;
+    assert!(foreign.validate().is_err());
+
+    let mut bad = fixture.clone();
+    bad.memory[0].initial_bytes_hex = "f30f5f00".into();
+    assert!(bad.validate().is_err());
+    let mut bad = fixture.clone();
+    bad.minss_memory_rax_controls = None;
+    assert!(bad.validate().is_err());
+
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.minss_memory_rax_controls = None;
+    }
+    assert!(tampered.validate().is_err());
+
+    let mut fault_fixture = fixture.clone();
+    fault_fixture.case_id = "s2_37dh_minss_forged_backend_fault".into();
+    fault_fixture.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+    fault_fixture.memory[1].guest_address = fault_fixture.initial_state.gpr[0];
+    fault_fixture.expected_exit = ExpectedExit::Exception;
+    let fault_bytes = fault_fixture.to_json().unwrap();
+    let loaded_fault = Fixture::from_json(&fault_bytes).unwrap();
+    let fault_output = cli(&fault_bytes, "interpreter");
+    assert_eq!(fault_output.status.code(), Some(0));
+    let mut fault_result = RunResult::from_json(&fault_output.stdout).unwrap();
+    fault_result.validate_for(&loaded_fault).unwrap();
+    assert!(matches!(fault_result.outcome, Outcome::Exception {}));
+    fault_result.backend = Backend::NativeX86;
+    assert!(fault_result.validate_for(&loaded_fault).is_err());
+
+    let mut ac_fixture = fixture;
+    ac_fixture.case_id = "s2_37dh_minss_forged_backend_ac".into();
+    ac_fixture.initial_state.rflags = HexU64(ac_fixture.initial_state.rflags.get() | (1 << 18));
+    ac_fixture.expected_exit = ExpectedExit::Unsupported;
+    let ac_bytes = ac_fixture.to_json().unwrap();
+    let loaded_ac = Fixture::from_json(&ac_bytes).unwrap();
+    let ac_output = cli(&ac_bytes, "interpreter");
+    assert_eq!(ac_output.status.code(), Some(4));
+    let mut ac_result = RunResult::from_json(&ac_output.stdout).unwrap();
+    ac_result.validate_for(&loaded_ac).unwrap();
+    assert!(matches!(ac_result.outcome, Outcome::Unsupported { .. }));
+    ac_result.backend = Backend::Jit;
+    assert!(ac_result.validate_for(&loaded_ac).is_err());
 }
 
 #[test]

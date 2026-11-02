@@ -21328,3 +21328,34 @@ After integration with SQRTSS in main, the combined suites passed: full
 `od-isa` 1,782, `od-testkit` 454, runner 112 unit + 488 fixture tests, and
 workspace all-target offline check. Formatting, layout, diff check and
 Graphify refresh passed on the integrated tree.
+
+### S2-37dh — MINSS XMM0,m32 [RAX]
+
+Implemented the interpreter-only schema-v2 profile `s2-long-minss-memory-rax-v1`
+for exact `F3 0F 5D 00`. It checks the full fetch and SSE/control gates, validates
+the canonical48 span `[RAX,RAX+3]`, and performs one `read4`. As in S2-37cy,
+AC=1 causes local Unsupported before span validation or access, while AC=0
+admits unaligned m32. A failed read is atomic. Masked MXCSR accepts all RC modes
+and old sticky histories, requires DAZ/FTZ clear and the local supported-bit
+mask, and merges generated IE/DE stickies. The shared raw MINSS semantics choose
+the memory RHS on numerical ties and any QNaN/SNaN, preserving raw SNaN payload;
+NaN raises IE and suppresses DE. Only XMM0.low32 and effective status bits
+change; high96 and unrelated state remain unchanged.
+
+The independent raw-integer testkit oracle does not use host floating point or
+the production selector. Direct ISA checks cover 10 input pairs × 4 RC values ×
+64 prior sticky histories (2,560 comparisons), including signed-zero/equal ties,
+QNaN/SNaN from either operand, raw RHS payload, denormal behavior, and IE/DE
+priority. Full suites passed: od-isa 1,780, od-testkit 454, runner 112 unit +
+489 fixture tests, and od-x86-runner 8 library + 4 binary tests. The focused
+runner fixture passed, covering backend denial and schema/control/result
+tampering. Workspace all-target check, formatting, and Graphify refresh passed (11,136
+nodes / 24,046 edges / 337 communities). The isolated layout checker reported
+the known `.git` marker and two unavailable historical oracle manifests tracked
+by ISSUE-023. Independent Sol/high review is clean: MAXSS oracle validation was
+restored as a separate branch, MINSS non-interpreter provenance is restricted
+to Unsupported with unavailable snapshot, and the copied encoding diagnostic
+was corrected. Regressions cover forged success, exception and AC snapshots.
+No physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B
+`MINSS` pp. 4-24–4-25; Vol. 1 §4.9.2, §§11.5.2.1–.2 and Appendix D; Vol. 2A
+Type 2/Table 2-19; Vol. 3A §16.1.3/Table 16-1. See the [plan](../plans/STAGE_2.md#s2-37dh--exact-legacy-long64-minss-xmm0m32-rax), [CPU contract](../specs/CPU_CONTRACT.md#s2-37dh--bounded-long64-minss-xmm0m32-rax-memory-profile), [standalone implementation report](S2_37DH_MINSS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dh--minss-xmm0m32-rax). The remaining acceptance evidence gap is tracked in [ISSUE-030](../KNOWN_ISSUES.md#issue-030--s2-37dh-lacks-physical-x86-acceptance-evidence).

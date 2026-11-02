@@ -12,6 +12,15 @@
 
 ## Записи
 
+### ISSUE-030 — S2-37dh lacks physical x86 acceptance evidence
+
+- **Дата обнаружения:** 2026-11-01.
+- **Компонент:** локальный Long64 interpreter profile `s2-long-minss-memory-rax-v1` в `od-isa`.
+- **Статус:** открытое ограничение приёмочных свидетельств; подтверждённый дефект не установлен.
+- **Суть и последствия:** точное исполнение `MINSS XMM0,m32 [RAX]` проверяется локальными raw-bit ISA и fixture oracle, но на физическом x86 процессоре не сравнивалось. Поэтому локальные проверки подтверждают согласованность реализации с выбранным контрактом и oracle, но не аппаратное поведение по AC, memory faults и MXCSR.
+- **Основание:** S2-37dh добавляет только interpreter-only профиль и фиксирует отсутствие physical x86 acceptance в [standalone report](reports/S2_37DH_MINSS_MEMORY.md) и [shared report](reports/STAGE_2_REPORT.md#s2-37dh--minss-xmm0m32-rax). Локальные focused/full suites подтверждают fixture и semantic matrix.
+- **Следующий шаг:** включить этот точный encoding/profile в общий физический x86 acceptance substage; сравнить результат и fault ordering на целевой аппаратуре и записать конфигурацию и наблюдения. До этого не заявлять physical acceptance.
+
 ### ISSUE-029 — Linux x86 runner target does not compile all tests
 
 - **Дата обнаружения:** 2026-11-01.
