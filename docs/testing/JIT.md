@@ -658,6 +658,27 @@ the pins do not establish runtime behavior. ISSUE-028 remains open; Stage 2 is
 excluded/ignored; Mini/M1 are deferred; Stage 3 remains partial. See the
 [S3-34cm report](../reports/STAGE_3_S3-34cm_2026-11-02.md).
 
+## S3-20fc: exact address32 RAX-indexed no-base SIB Dword store
+
+The bounded runtime admits only the eight-byte form `67 89 04 05 disp32`:
+address-size override plus a no-base, RAX-index, scale-1 SIB Dword store. Its
+effective address is `zero_extend_64((low32(original RAX) +
+sign_extend(disp32)) mod 2^32)`, while the write payload is low32 of that same
+pre-instruction RAX. A checked contiguous four-byte write commits at the
+computed address and successful retirement advances RIP by eight; effective
+address wrap does not wrap each byte of the transfer. Exact JIT source/site
+and host acceptance identities are pinned by S3-34cn.
+
+Runtime commit `3de12be` passed independent Sol/high static review. Source
+coverage includes high-half truncation, signed disp32, 32-bit EA wrap,
+contiguous writes near 4 GiB, interpreter parity, exact source/site binding,
+entry guards with retry, backend-error atomicity and retry, and callback STOP
+commit/no-replay. These gates were not executed: no behavior tests or builds
+ran, so exact results remain pending. ISSUE-028 remains open; Stage 2 was
+ignored/excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
+[S3-20fc report](../reports/STAGE_3_S3-20fc_2026-11-02.md) and
+[S3-34cn harness report](../reports/STAGE_3_S3-34cn_2026-11-02.md).
+
 ## S3-34cn: harness gates for S3-20fc addr32 RAX-indexed Dword store
 
 Harness source `66ad423` plus count-assertion fix `f5c353e` pins two exact

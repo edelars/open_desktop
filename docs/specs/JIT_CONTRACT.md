@@ -1024,6 +1024,30 @@ original RAX. This address calculation always yields a zero-extended 32-bit
 address; this bounded slice does not claim production MMU integration. See
 the [S3-20fb report](../reports/STAGE_3_S3-20fb_2026-11-02.md).
 
+#### S3-20fc: exact address32 RAX-indexed no-base SIB Dword store
+
+The shared typed-IR Dword-store path admits only the exact eight-byte form
+`67 89 04 05 disp32` (`MOV [low32(RAX)+sign-extended disp32],EAX`). Address
+size is Dword; SIB has no base, RAX index and scale 1; transfer width is
+Dword. The effective address is
+`zero_extend_64((low32(original_RAX) + sign_extend(disp32)) mod 2^32)`. The
+store payload is low32 of that same pre-instruction RAX. High RAX bits do not
+affect the address, and RAX, other GPRs, and RFLAGS remain unchanged. A single
+contiguous checked four-byte write commits at the computed address and
+successful retirement advances to `A+8`. If the start is near `0xffff_ffff`,
+the transfer remains contiguous into the following linear addresses; only
+effective-address calculation wraps at 32 bits.
+
+Exact source bytes and decoder-owned site metadata remain bound, including
+prefix, opcode, SIB, and displacement bytes. Partial/trailing instructions,
+extra prefixes, other SIB fields, transfer widths, and neighboring load/store
+forms are not admitted. Entry guards perform no write. A backend error before
+commit preserves state and RAM; retry uses the same original address and
+payload. Callback STOP follows the committed store and re-entry at `A+8` does
+not replay it. This is bounded borrowed-memory evidence, not production
+owner/MMU integration. See the
+[S3-20fc report](../reports/STAGE_3_S3-20fc_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
