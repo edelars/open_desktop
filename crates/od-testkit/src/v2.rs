@@ -26644,6 +26644,8 @@ fn validate_mulss_memory_result(
             initial_sse.mxcsr.get()
                 | u64::from(invalid)
                 | (u64::from(denormal) << 1)
+                | (u64::from(overflow) << 3)
+                | (u64::from(underflow) << 4)
                 | (u64::from(precision) << 5),
         );
         expected.rip = HexU64(
