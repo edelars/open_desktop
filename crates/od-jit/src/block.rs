@@ -3208,6 +3208,10 @@ fn build_block_with_profile(
                         == Some(&[0x89, 0x00][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(2))
                         == Some(&[0x89, 0x01][..])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(3))
+                        .is_some_and(|bytes| bytes[..2] == [0x89, 0x41])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                         == Some(&[0x67, 0x89, 0x00][..])
                     || code
@@ -5458,7 +5462,11 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                     || (instruction.length == 3
                         && matches!(
                             operand.base,
-                            AddressBase::Register(od_isa::Register::Rbx | od_isa::Register::Rbp)
+                            AddressBase::Register(
+                                od_isa::Register::Rbx
+                                    | od_isa::Register::Rcx
+                                    | od_isa::Register::Rbp
+                            )
                         )
                         && i8::try_from(operand.displacement).is_ok())
                     || (instruction.length == 6

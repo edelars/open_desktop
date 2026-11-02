@@ -1355,7 +1355,9 @@ fn is_checked_dword_store_address(
                             && matches!(
                                 operand.base,
                                 AddressBase::Register(
-                                    od_isa::Register::Rbx | od_isa::Register::Rbp
+                                    od_isa::Register::Rbx
+                                        | od_isa::Register::Rcx
+                                        | od_isa::Register::Rbp
                                 )
                             )
                             && i8::try_from(operand.displacement).is_ok())

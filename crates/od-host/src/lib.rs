@@ -422,6 +422,7 @@ impl PublishedCode {
         if (source != [0x89, 0x03]
             && source != [0x89, 0x00]
             && source != [0x89, 0x01]
+            && !(source.len() == 3 && source[..2] == [0x89, 0x41])
             && source != [0x67, 0x89, 0x00]
             && source != [0x89, 0x04, 0x0b]
             && source != [0x89, 0x04, 0x4b]
@@ -35488,17 +35489,16 @@ mod tests {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    #[test]
-    fn s3_20fq_rcx_base_dword_store_uses_full_rcx_and_low_eax_payload() {
+    fn rcx_base_dword_store_contract(source: &[u8], displacement: i8) {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
         use std::collections::BTreeMap;
         use std::sync::Arc;
 
         const ENTRY: u64 = 0x9f20;
-        const SOURCE: [u8; 2] = [0x89, 0x01];
-
+        let next_rip = ENTRY + source.len() as u64;
         #[derive(Clone, Debug)]
         struct Ram {
+            source: Vec<u8>,
             bytes: BTreeMap<u64, u8>,
             writes: Vec<(u64, Vec<u8>)>,
             error: Option<MemoryError>,
@@ -35506,10 +35506,12 @@ mod tests {
         }
         impl GuestMemory for Ram {
             fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
-                match address.checked_sub(ENTRY) {
-                    Some(0) => Ok(SOURCE[0]),
-                    Some(1) => Ok(SOURCE[1]),
-                    _ => self.bytes.get(&address).copied().ok_or(MemoryError::Unmapped {
+                let offset = address
+                    .checked_sub(ENTRY)
+                    .and_then(|offset| usize::try_from(offset).ok());
+                match offset.and_then(|offset| self.source.get(offset)).copied() {
+                    Some(byte) => Ok(byte),
+                    None => self.bytes.get(&address).copied().ok_or(MemoryError::Unmapped {
                         address,
                         access: AccessKind::Fetch,
                     }),
@@ -35611,6 +35613,7 @@ mod tests {
                 }
             }
             Ram {
+                source: source.to_vec(),
                 bytes,
                 writes: Vec::new(),
                 error: None,
@@ -35642,16 +35645,20 @@ mod tests {
             state
         }
 
+        fn effective_address(rcx: u64, displacement: i8) -> u64 {
+            rcx.wrapping_add_signed(i64::from(displacement))
+        }
+
         let _guard = jit_test_lock();
         let block = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
-            CodeView::new(ENTRY, &SOURCE).unwrap(),
+            CodeView::new(ENTRY, source).unwrap(),
             ENTRY,
         )
         .unwrap();
         let published = PublishedCode::publish_ir_memory_dword_store_v2(&block).unwrap();
         drop(block);
 
-        for (rcx, low_eax, high_rax) in [
+        for (target_address, low_eax, high_rax) in [
             (0x0000_0001_0000_1001_u64, 0x89ab_cdef_u32, 0xfeed_beef_u32),
             (
                 0xffff_8000_0000_1000_u64,
@@ -35660,9 +35667,12 @@ mod tests {
             ),
             (0, 0_u32, 0x2468_ace0_u32),
             (u64::MAX - 3, u32::MAX, 0xa5a5_5a5a_u32),
+            (0x0000_7fff_ffff_fffc, 0x7654_3210_u32, 0xfeed_cafe_u32),
         ] {
+            let rcx = target_address.wrapping_sub(i64::from(displacement) as u64);
             let rax = (u64::from(high_rax) << 32) | u64::from(low_eax);
-            let mut native_ram = ram_at(rcx);
+            let address = effective_address(rcx, displacement);
+            let mut native_ram = ram_at(address);
             let mut interpreter_ram = native_ram.clone();
             let mut native_state = state_at(rcx, rax);
             let before = native_state.clone();
@@ -35695,32 +35705,33 @@ mod tests {
             assert_eq!(native_state.rflags, before.rflags);
             assert_eq!(native_state.gpr[0], rax);
             assert_eq!(native_state.gpr[1], rcx);
-            assert_eq!(native_state.rip, ENTRY + 2);
+            assert_eq!(native_state.rip, next_rip);
             let payload = low_eax.to_le_bytes().to_vec();
-            assert_eq!(native_ram.writes, [(rcx, payload.clone())]);
+            assert_eq!(native_ram.writes, [(address, payload.clone())]);
             assert_eq!(native_ram.writes, interpreter_ram.writes);
             assert_eq!(native_ram.bytes, interpreter_ram.bytes);
             assert_eq!(native_ram.writes[0].1.len(), 4);
             for (offset, byte) in payload.iter().copied().enumerate() {
-                assert_eq!(native_ram.bytes[&rcx.wrapping_add(offset as u64)], byte);
+                assert_eq!(native_ram.bytes[&address.wrapping_add(offset as u64)], byte);
             }
-            let decoy = rcx as u32 as u64;
-            if decoy != rcx {
+            let decoy = address as u32 as u64;
+            if decoy != address {
                 for offset in 0..4_u64 {
                     assert_eq!(native_ram.bytes[&(decoy + offset)], 0xa0 + offset as u8);
                 }
             }
-            if let Some(before_address) = rcx.checked_sub(1) {
+            if let Some(before_address) = address.checked_sub(1) {
                 assert_eq!(native_ram.bytes[&before_address], 0x62);
             }
-            if let Some(after_address) = rcx.checked_add(4) {
+            if let Some(after_address) = address.checked_add(4) {
                 assert_eq!(native_ram.bytes[&after_address], 0x67);
             }
         }
 
-        let base = 0x0000_0001_0000_1001_u64;
+        let base_rcx = 0x0000_0001_0000_1001_u64;
+        let base = effective_address(base_rcx, displacement);
         let rax = 0xfeed_beef_89ab_cdef_u64;
-        let before = state_at(base, rax);
+        let before = state_at(base_rcx, rax);
         for (budget, stop_rip, stop_requested, expected_exit) in [
             (0, None, 0, MemoryOperationExecutionExitV2::BudgetExhausted),
             (
@@ -35764,7 +35775,7 @@ mod tests {
             assert_eq!(retry.exit, MemoryOperationExecutionExitV2::Complete);
             assert_eq!(state.gpr, before.gpr);
             assert_eq!(state.rflags, before.rflags);
-            assert_eq!(state.rip, ENTRY + 2);
+            assert_eq!(state.rip, next_rip);
             assert_eq!(ram.writes, [(base, 0x89ab_cdef_u32.to_le_bytes().to_vec())]);
         }
 
@@ -35804,7 +35815,7 @@ mod tests {
         }
         .unwrap();
         assert_eq!(wrong_entry_retry.exit, MemoryOperationExecutionExitV2::Complete);
-        assert_eq!(wrong_entry_state.rip, ENTRY + 2);
+        assert_eq!(wrong_entry_state.rip, next_rip);
         assert_eq!(wrong_entry_ram.writes, [(base, 0x89ab_cdef_u32.to_le_bytes().to_vec())]);
 
         for error in [
@@ -35866,14 +35877,15 @@ mod tests {
             assert_eq!(retry.exit, MemoryOperationExecutionExitV2::Complete);
             assert_eq!(state.gpr, before.gpr);
             assert_eq!(state.rflags, before.rflags);
-            assert_eq!(state.rip, ENTRY + 2);
+            assert_eq!(state.rip, next_rip);
             assert_eq!(ram.writes.len(), 2);
             assert_eq!(ram.writes[0], (base, 0x89ab_cdef_u32.to_le_bytes().to_vec()));
             assert_eq!(ram.writes[1], ram.writes[0]);
         }
 
         for address in [0x0000_8000_0000_0000_u64, 0x0000_7fff_ffff_fffe_u64] {
-            let mut state = state_at(address, rax);
+            let rcx = address.wrapping_sub(i64::from(displacement) as u64);
+            let mut state = state_at(rcx, rax);
             let before_state = state.clone();
             let mut ram = ram_at(address);
             let before_bytes = ram.bytes.clone();
@@ -35904,7 +35916,8 @@ mod tests {
         }
 
         let overflow_address = u64::MAX - 2;
-        let mut overflow_state = state_at(overflow_address, rax);
+        let overflow_rcx = overflow_address.wrapping_sub(i64::from(displacement) as u64);
+        let mut overflow_state = state_at(overflow_rcx, rax);
         let overflow_before = overflow_state.clone();
         let mut overflow_ram = ram_at(overflow_address);
         let overflow_before_bytes = overflow_ram.bytes.clone();
@@ -35951,7 +35964,7 @@ mod tests {
         assert_eq!(committed.retired_instructions, 1);
         assert_eq!(callback_state.gpr, before.gpr);
         assert_eq!(callback_state.rflags, before.rflags);
-        assert_eq!(callback_state.rip, ENTRY + 2);
+        assert_eq!(callback_state.rip, next_rip);
         assert_eq!(callback_ram.writes.len(), 1);
         assert_eq!(callback_ram.writes[0], (base, 0x89ab_cdef_u32.to_le_bytes().to_vec()));
         let replay = unsafe {
@@ -35969,9 +35982,24 @@ mod tests {
             Err(MemoryOperationExecutionErrorV2::EntryRipMismatch {
                 expected: ENTRY,
                 actual,
-            }) if actual == ENTRY + 2
+            }) if actual == next_rip
         ));
         assert_eq!(callback_ram.writes.len(), 1);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_20fq_rcx_base_dword_store_uses_full_rcx_and_low_eax_payload() {
+        rcx_base_dword_store_contract(&[0x89, 0x01], 0);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_20fs_rcx_disp8_dword_store_uses_full_rcx_and_low_eax_payload() {
+        for displacement in [0x00_u8, 0x01, 0x7f, 0x80, 0xfc, 0xff] {
+            let source = [0x89, 0x41, displacement];
+            rcx_base_dword_store_contract(&source, displacement as i8);
+        }
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
