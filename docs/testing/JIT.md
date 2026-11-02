@@ -120,6 +120,10 @@ Harness commit `c194891` pins only `memory_load_v2::tests::ir_dword_addr32_disp8
 
 Harness commit `11bf23b` pins only `memory_load_v2::tests::ir_dword_addr32_disp32_store_binds_all_source_bytes_to_its_site` and `tests::s3_20dc_addr32_disp32_dword_store_uses_wrapped_ebx`. Both exact Cargo gates passed 1/1 and the focused harness self-test passed 1/1. The full Stage 3 harness/module and CPU discovery were not run. This gate has no PC-map claim and does not close corpus/reducer or full S3-34. Mini, M1 Pro, and Stage 2 were not run. See the [S3-34an report](../reports/STAGE_3_S3-34an_2026-11-02.md).
 
+## S3-34ao: exact harness gates for S3-20dd address64 SIB dword load
+
+Harness commit `d3d2c05` pins only `memory_load_v2::tests::ir_dword_rbx_rcx_sib_load_admits_only_exact_8b040b` and `tests::s3_20dd_rbx_rcx_sib_dword_load_uses_full_width_base_and_index`. Both exact Cargo gates passed 1/1; the focused harness self-test passed 1/1. No PC-map test is pinned, and the full Stage 3 harness/module and CPU discovery were not run. Python byte-compilation, `git diff --check`, and Graphify query/update passed. Mini, M1 Pro, and Stage 2 were not run. This harness evidence is separate from the runtime implementation checks in the [S3-20dd report](../reports/STAGE_3_S3-20dd_2026-11-02.md); see the [S3-34ao report](../reports/STAGE_3_S3-34ao_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
