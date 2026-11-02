@@ -254,6 +254,17 @@ write. This does not admit other addr32 bases, SIB/displacement forms, or a
 general Dword-store family. See the
 [S3-20cy report](../reports/STAGE_3_S3-20cy_2026-11-02.md).
 
+#### S3-20cz: exact address-size-32 Dword load with signed disp8
+
+The shared typed-IR Dword-load path additionally admits only the exact
+four-byte singleton `67 8B 43 ib` (`MOV EAX,[EBX+disp8]`). The signed disp8
+and address-size-32 wrapping/zero-extension semantics come from the decoded
+operand; the checked load reads four bytes and zero-extends into EAX. Exact
+source bytes bind to the instruction site, and the PC map has one guest
+boundary at `A+4`. This adds no other addr32 base, displacement width,
+prefix combination, or general Dword-load family. See the
+[S3-20cz report](../reports/STAGE_3_S3-20cz_2026-11-02.md).
+
 #### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 The host-side regression `s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow`
