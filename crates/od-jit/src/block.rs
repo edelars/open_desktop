@@ -3125,7 +3125,11 @@ fn build_block_with_profile(
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(6))
-                        .is_some_and(|bytes| bytes[0..2] == [0x8b, 0x05]))
+                        .is_some_and(|bytes| bytes[0..2] == [0x8b, 0x05])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(4))
+                        .is_some_and(|bytes| bytes[..3] == [0x8b, 0x44, 0x24]))
         } else if profile == BlockBuildProfile::CheckedDwordStore {
             instructions.is_empty()
                 && is_checked_dword_store_form(decoded)
@@ -4983,8 +4987,18 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
         && operand.index.is_none()
         && operand.scale == 1
         && operand.displacement == 0;
-    let exact_address =
-        address64_profile || address32_profile || rbx_rcx_sib_profile || rsp_no_index_sib_profile;
+    let rsp_disp8_sib_profile = instruction.length == 4
+        && instruction.address_size == OperandSize::Qword
+        && operand.address_size == OperandSize::Qword
+        && matches!(operand.base, AddressBase::Register(od_isa::Register::Rsp))
+        && operand.index.is_none()
+        && operand.scale == 1
+        && i8::try_from(operand.displacement).is_ok();
+    let exact_address = address64_profile
+        || address32_profile
+        || rbx_rcx_sib_profile
+        || rsp_no_index_sib_profile
+        || rsp_disp8_sib_profile;
     exact_prefix
         && instruction.opcode.map == OpcodeMap::Primary
         && instruction.opcode.byte == 0x8b
