@@ -12,8 +12,8 @@ use od_isa::execute::{
     Cvttps2dqMemoryControls, Cvttss2siRegistersControls, DivpdControls, DivpsControls,
     DivsdControls, DivssControls, MulpdControls, MulpsControls, MulsdControls, MulssControls,
     SqrtpdControls, SqrtpsControls, SqrtsdControls, SqrtssControls, SubpdControls, SubpsControls,
-    SubsdControls, SubssControls, UcomisdMemoryRaxControls, UcomissMemoryRaxControls,
-    run_with_addpd_register_controls, run_with_addps_register_controls,
+    SubsdControls, SubsdMemoryRaxControls, SubssControls, UcomisdMemoryRaxControls,
+    UcomissMemoryRaxControls, run_with_addpd_register_controls, run_with_addps_register_controls,
     run_with_addsd_memory_rax_controls, run_with_addsd_register_controls,
     run_with_addss_memory_rax_controls, run_with_addss_register_controls,
     run_with_cvtpd2dq_memory_controls, run_with_cvtpd2dq_register_controls,
@@ -39,8 +39,9 @@ use od_isa::execute::{
     run_with_sqrtps_register_controls, run_with_sqrtsd_memory_rax_controls,
     run_with_sqrtsd_register_controls, run_with_sqrtss_memory_rax_controls,
     run_with_sqrtss_register_controls, run_with_subpd_register_controls,
-    run_with_subps_register_controls, run_with_subsd_register_controls,
-    run_with_subss_memory_rax_controls, run_with_subss_register_controls,
+    run_with_subps_register_controls, run_with_subsd_memory_rax_controls,
+    run_with_subsd_register_controls, run_with_subss_memory_rax_controls,
+    run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -2209,6 +2210,24 @@ fn execute_fixture_v2(
             memory,
             config,
             SubsdControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongSubsdMemoryRaxV1 {
+        let controls = loaded
+            .fixture
+            .subsd_controls
+            .expect("validated SUBSD memory controls");
+        run_with_subsd_memory_rax_controls(
+            &mut state,
+            memory,
+            config,
+            SubsdMemoryRaxControls {
                 sse2_available: controls.sse2_available,
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
@@ -10589,6 +10608,73 @@ mod tests {
                             "SUBSS oracle mismatch for pair {lhs:08x}-{rhs:08x}, RC={rc}, sticky={old_sticky:02x}: {error:?}"
                         )
                     });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn subsd_memory_profile_execution_covers_256_operand_pairs_and_all_rc_stickies() {
+        let template = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_37dl_subsd_m64_halfway.case.json"
+        ))
+        .expect("SUBSD m64 schema")
+        .fixture;
+        let values: [u64; 16] = [
+            0x0000_0000_0000_0000, // +0
+            0x8000_0000_0000_0000, // -0
+            0x3ff0_0000_0000_0000, // +1
+            0xbff0_0000_0000_0000, // -1
+            0x3ff0_0000_0000_0001, // adjacent normal
+            0x3c90_0000_0000_0000, // half ulp at 1.0
+            0x0000_0000_0000_0001, // minimum subnormal
+            0x000f_ffff_ffff_ffff, // maximum subnormal
+            0x0010_0000_0000_0000, // minimum normal
+            0x8010_0000_0000_0000, // negative minimum normal
+            0x7ff0_0000_0000_0000, // +infinity
+            0xfff0_0000_0000_0000, // -infinity
+            0x7ff8_0000_0000_1234, // qNaN
+            0x7ff0_0000_0000_1234, // sNaN
+            0x7fef_ffff_ffff_ffff, // maximum finite
+            0x7c90_0000_0000_0000, // overflow scale operand
+        ];
+        for (lhs_index, lhs) in values.into_iter().enumerate() {
+            for (rhs_index, rhs) in values.into_iter().enumerate() {
+                for rc in 0..4u32 {
+                    for old_sticky in 0..64u32 {
+                        let mut fixture = template.clone();
+                        fixture.case_id = format!(
+                            "s2_37dl_oracle_l{lhs_index:02}_r{rhs_index:02}_rc{rc}_sticky{old_sticky:02x}"
+                        );
+                        let sse = fixture.initial_state.sse.as_mut().unwrap();
+                        let mut xmm0 = v2::decode_bytes(&sse.xmm[0]).unwrap();
+                        xmm0[..8].copy_from_slice(&lhs.to_le_bytes());
+                        sse.xmm[0] = od_testkit::memory::encode_bytes(&xmm0);
+                        sse.mxcsr = HexU64(0x1f80 | (u64::from(rc) << 13) | u64::from(old_sticky));
+                        fixture.memory[1].initial_bytes_hex =
+                            od_testkit::memory::encode_bytes(&rhs.to_le_bytes());
+
+                        let loaded = v2::Fixture::from_json(&fixture.to_json().unwrap())
+                            .unwrap_or_else(|error| panic!("fixture validation: {error:?}"));
+                        let mut memory =
+                            od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                        let result = execute_fixture_v2(&loaded, &mut memory);
+                        assert!(
+                            matches!(&result.outcome, v2::Outcome::StopAddress {}),
+                            "SUBSD profile did not execute for pair {lhs:016x}-{rhs:016x}, RC={rc}, sticky={old_sticky:02x}: {:?}",
+                            result.outcome
+                        );
+                        assert!(matches!(&result.snapshot, Observation::Available { .. }));
+                        assert_eq!(
+                            result.instructions_executed,
+                            Observation::Available { value: HexU64(1) }
+                        );
+                        result.validate_for(&loaded).unwrap_or_else(|error| {
+                            panic!(
+                                "SUBSD oracle mismatch for pair {lhs:016x}-{rhs:016x}, RC={rc}, sticky={old_sticky:02x}: {error:?}"
+                            )
+                        });
+                    }
                 }
             }
         }

@@ -16443,3 +16443,12 @@ Sources: Intel SDM Rev. 093 Vol. 2B `SUBSS` pp. 4-695–4-696 and Vol. 2A
 Table 2-20; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event
 19/Table 7-8. See the [official Intel SDM downloads](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
 and [Rev. 093 Volume 2B PDF](https://cdrdv.intel.com/v1/dl/getContent/671199).
+
+
+## S2-37dl — masked-only Long64 SUBSD XMM0,m64 [RAX]
+
+The interpreter-only schema-v2 profile `s2-long-subsd-memory-rax-v1` admits exactly legacy `F2 0F 5C 00`, fetches four bytes, retires one instruction and stops at entry+4. It requires Long64, SSE2 (`CPUID.01H:EDX[26]`), CR0.EM=0, CR4.OSFXSR=1, CR0.TS=0 and present XMM/MXCSR state. Complete fetch precedes gates: missing SSE2, EM=1 or OSFXSR=0 raises #UD before TS=1 raises #NM. Other prefixes, REX, ModR/M/addressing, VEX/EVEX, lengths and forms remain outside the profile.
+
+MXCSR admission requires supported bits `0xffbf`, reserved bits clear, all six exception masks set and DAZ=FTZ=0. All RC values and previous IE/DE/ZE/OE/UE/PE sticky histories are allowed. Unmasked exception delivery and #XM are not modeled. AC=1 returns local Unsupported before span validation or data access; AC=0 permits unaligned m64. Validate checked `RAX+7` and both canonical48 endpoints of `[RAX,RAX+7]` before exactly one read8. A failed read leaves CPU/SSE/MXCSR/RIP and retirement unchanged.
+
+Compute XMM0.low64 minus the loaded memory RHS with the existing raw binary64 subtraction behavior. Select/classify original NaNs before arithmetic treatment of RHS sign, select the first original NaN, quiet SNaN and raise IE. Merge generated IE/DE/OE/UE/PE into old sticky flags. Success changes only XMM0.low64, effective MXCSR stickies and RIP; preserve XMM0.high64, XMM1 and unrelated state. Native/JIT/C ABI/generic/fragment and unmasked/#XM paths remain closed. No physical x86 acceptance is claimed. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37dl--masked-only-legacy-long64-subsd-xmm0m64-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dl--subsd-xmm0m64-rax), [standalone report](../reports/S2_37DL_SUBSD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dl--subsd-xmm0m64-rax).

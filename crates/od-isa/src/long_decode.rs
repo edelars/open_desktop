@@ -1079,6 +1079,8 @@ pub enum Operation {
         destination: u8,
         source: u8,
     },
+    /// Local-only exact legacy `F2 0F 5C 00` scalar binary64 memory subtract.
+    SubsdMemoryRax,
     /// Local-only exact legacy `F3 0F 5C 00` scalar binary32 memory subtract.
     SubssMemoryRax,
     /// Local-only legacy `0F 5B /r` signed packed-dword-to-binary32 form.
@@ -3975,6 +3977,15 @@ impl<M: GuestMemory> Fetch<'_, M> {
             && prefixes.rex.is_none()
             && prefix_count == 1
             && prefix_bytes[0] == 0xf3;
+        let subsd_memory_rax = opcode.map == OpcodeMap::Escape0f
+            && opcode.byte == 0x5c
+            && prefixes.group1 == Some(0xf2)
+            && prefixes.segment.is_none()
+            && !prefixes.operand_override
+            && !prefixes.address_override
+            && prefixes.rex.is_none()
+            && prefix_count == 1
+            && prefix_bytes[0] == 0xf2;
         let sqrtsd_register = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0x51
             && prefixes.group1 == Some(0xf2)
@@ -5129,13 +5140,16 @@ impl<M: GuestMemory> Fetch<'_, M> {
             }
             (OpcodeMap::Escape0f, 0x5c) if subsd_register => {
                 let modrm = self.byte()?;
-                if modrm >> 6 != 3 {
+                if modrm >> 6 == 3 {
+                    let rex = prefixes.rex.unwrap_or(0x40);
+                    Operation::SubsdRegister {
+                        destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
+                        source: (modrm & 7) | ((rex & 1) << 3),
+                    }
+                } else if modrm == 0 && subsd_memory_rax {
+                    Operation::SubsdMemoryRax
+                } else {
                     return Err(self.unsupported(opcode));
-                }
-                let rex = prefixes.rex.unwrap_or(0x40);
-                Operation::SubsdRegister {
-                    destination: ((modrm >> 3) & 7) | ((rex & 4) << 1),
-                    source: (modrm & 7) | ((rex & 1) << 3),
                 }
             }
             (OpcodeMap::Escape0f, 0x5c) if subss_register => {
@@ -12414,6 +12428,27 @@ mod tests {
             &[0xf3, 0x0f, 0x5c][..],
             &[0xc5, 0xfa, 0x5c, 0x00][..],
             &[0x62, 0xf1, 0x7e, 0x08, 0x5c, 0x00][..],
+        ] {
+            let mut memory = Memory::new(bytes);
+            assert!(memory.decode().is_err(), "{bytes:02x?}");
+        }
+    }
+
+    #[test]
+    fn subsd_memory_rax_decodes_only_exact_legacy_form() {
+        let mut memory = Memory::new(&[0xf2, 0x0f, 0x5c, 0x00]);
+        let decoded = memory.decode().unwrap();
+        assert_eq!(decoded.operation, Operation::SubsdMemoryRax);
+        assert_eq!(decoded.length, 4);
+        for bytes in [
+            &[0xf2, 0x0f, 0x5c, 0x01][..],
+            &[0xf2, 0x40, 0x0f, 0x5c, 0x00][..],
+            &[0x40, 0xf2, 0x0f, 0x5c, 0x00][..],
+            &[0x66, 0xf2, 0x0f, 0x5c, 0x00][..],
+            &[0xf2, 0xf2, 0x0f, 0x5c, 0x00][..],
+            &[0xf2, 0x0f, 0x5c][..],
+            &[0xc5, 0xfb, 0x5c, 0x00][..],
+            &[0x62, 0xf1, 0xff, 0x08, 0x5c, 0x00][..],
         ] {
             let mut memory = Memory::new(bytes);
             assert!(memory.decode().is_err(), "{bytes:02x?}");

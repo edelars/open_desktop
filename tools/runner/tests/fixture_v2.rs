@@ -78,6 +78,8 @@ const SUBSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dk_subss_m32_halfway.case.json");
 const ADDSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dj_addsd_m64_halfway.case.json");
+const SUBSD_M64_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dl_subsd_m64_halfway.case.json");
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dg_sqrtss_m32_unaligned_inexact.case.json"
 );
@@ -37170,6 +37172,79 @@ fn subss_m32_memory_literal_uses_memory_rhs_and_remains_backend_denied() {
         value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..8, "0100803f");
     }
     assert!(tampered.validate_for(&loaded).is_err());
+}
+
+#[test]
+fn subsd_m64_memory_literal_preserves_canaries_and_fails_closed() {
+    let loaded = Fixture::from_json(SUBSD_M64_MEMORY_RAX).unwrap();
+    let fixture = loaded.fixture.clone();
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongSubsdMemoryRaxV1
+    );
+    assert_eq!(fixture.memory[0].initial_bytes_hex, "f20f5c00");
+    assert_eq!(fixture.memory[1].length, 8);
+    assert_eq!(fixture.memory[1].initial_bytes_hex, "000000000000903c");
+    let original_xmm = &fixture.initial_state.sse.as_ref().unwrap().xmm;
+    assert_eq!(original_xmm[1], "efbeaddecafef00d78563412deadbeef");
+
+    let (input, literal_result) = run(SUBSD_M64_MEMORY_RAX, "interpreter", 0);
+    assert_eq!(literal_result.backend, Backend::Interpreter);
+    assert!(matches!(literal_result.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        literal_result.instructions_executed,
+        Observation::Available { value: HexU64(1) }
+    );
+    let snapshot = match &literal_result.snapshot {
+        Observation::Available { value } => value,
+        other => panic!("expected available SUBSD snapshot, got {other:?}"),
+    };
+    let sse = snapshot.state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "000000000000f03fefbeadde78563412");
+    assert_eq!(sse.xmm[1], original_xmm[1]);
+    assert_eq!(sse.mxcsr, HexU64(0x1fa0));
+    assert_eq!(snapshot.state.rip, HexU64(0x0010_0004));
+    assert_eq!(snapshot.memory[1].bytes_hex, "000000000000903c");
+    od_testkit::v2::compare(&input, &literal_result, &literal_result).unwrap();
+
+    for engine in ["jit", "native"] {
+        let (input, denied) = run(SUBSD_M64_MEMORY_RAX, engine, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        denied.validate_for(&input).unwrap();
+    }
+    let mut wrong_backend = literal_result.clone();
+    wrong_backend.backend = Backend::Jit;
+    assert!(wrong_backend.validate_for(&input).is_err());
+
+    let mut missing_provenance = fixture.clone();
+    missing_provenance.provenance.source.clear();
+    assert!(missing_provenance.validate().is_err());
+    let mut unknown_schema =
+        serde_json::from_slice::<serde_json::Value>(SUBSD_M64_MEMORY_RAX).unwrap();
+    unknown_schema
+        .as_object_mut()
+        .unwrap()
+        .insert("unexpected_field".into(), serde_json::Value::Null);
+    assert!(Fixture::from_json(&serde_json::to_vec(&unknown_schema).unwrap()).is_err());
+
+    let mut tampered = literal_result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, "010000000000f03f");
+    }
+    assert!(tampered.validate_for(&loaded).is_err());
+
+    for mxcsr in [0x1f40, 0x1f00, 0x9f80, 0x11f80] {
+        let mut malformed = fixture.clone();
+        malformed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(malformed.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+    let mut malformed = fixture.clone();
+    malformed.subsd_controls = None;
+    assert!(malformed.validate().is_err());
+    let mut malformed = fixture;
+    malformed.subsd_controls.as_mut().unwrap().sse2_available = false;
+    assert!(malformed.validate().is_err());
 }
 
 #[test]

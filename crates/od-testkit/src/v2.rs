@@ -338,6 +338,8 @@ pub enum Profile {
     LongSubpsRegistersV1,
     #[serde(rename = "s2-long-subsd-registers-v1")]
     LongSubsdRegistersV1,
+    #[serde(rename = "s2-long-subsd-memory-rax-v1")]
+    LongSubsdMemoryRaxV1,
     #[serde(rename = "s2-long-subss-registers-v1")]
     LongSubssRegistersV1,
     #[serde(rename = "s2-long-subss-memory-rax-v1")]
@@ -1468,6 +1470,7 @@ impl IntegerState {
                     | Profile::LongMinssMemoryRaxV1
                     | Profile::LongAddssMemoryRaxV1
                     | Profile::LongAddsdMemoryRaxV1
+                    | Profile::LongSubsdMemoryRaxV1
                     | Profile::LongMaxsdMemoryRaxV1
                     | Profile::LongMinpdMemoryRaxV1
                     | Profile::LongMinpsMemoryRaxV1
@@ -1548,6 +1551,7 @@ impl IntegerState {
                     | Profile::LongMulpsRegistersV1
                     | Profile::LongSubpsRegistersV1
                     | Profile::LongSubsdRegistersV1
+                    | Profile::LongSubsdMemoryRaxV1
                     | Profile::LongSubssMemoryRaxV1
                     | Profile::LongSubssRegistersV1
                     | Profile::LongCvtss2sdRegistersV1
@@ -1844,6 +1848,7 @@ impl IntegerState {
                 | Profile::LongMulpsRegistersV1
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssRegistersV1
                 | Profile::LongCvtss2sdRegistersV1
                 | Profile::LongCvtsd2ssRegistersV1
@@ -2096,6 +2101,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -2484,6 +2490,7 @@ impl IntegerState {
             | Profile::LongMulpsRegistersV1
             | Profile::LongSubpsRegistersV1
             | Profile::LongSubsdRegistersV1
+            | Profile::LongSubsdMemoryRaxV1
             | Profile::LongSubssMemoryRaxV1
             | Profile::LongSubssRegistersV1
             | Profile::LongCvtss2sdRegistersV1
@@ -2617,6 +2624,7 @@ impl IntegerState {
         match (state_profile, self.fs_base) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongCliV1
                 | Profile::LongStiV1
                 | Profile::LongHltV1
@@ -2872,6 +2880,7 @@ impl IntegerState {
             }
             (
                 Profile::LongIntegerV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongCliV1
                 | Profile::LongStiV1
                 | Profile::LongHltV1
@@ -3132,6 +3141,7 @@ impl IntegerState {
         match (state_profile, self.gs_base) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongCliV1
                 | Profile::LongStiV1
                 | Profile::LongHltV1
@@ -3401,6 +3411,7 @@ impl IntegerState {
         match (state_profile, self.fs_selector) {
             (
                 Profile::LongIntegerV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongCliV1
                 | Profile::LongStiV1
                 | Profile::LongHltV1
@@ -3942,6 +3953,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -3971,6 +3983,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -4271,6 +4284,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -4544,6 +4558,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -4770,6 +4785,7 @@ impl IntegerState {
                 | Profile::LongMinsdMemoryRaxV1
                 | Profile::LongMaxssMemoryRaxV1
                 | Profile::LongMinssMemoryRaxV1
+                | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
@@ -8990,10 +9006,10 @@ impl Fixture {
                     "SUBSD requires supported MXCSR bits, DAZ=0, OM=1, and UM=1",
                 ));
             }
-        } else if self.subsd_controls.is_some() {
+        } else if self.subsd_controls.is_some() && self.profile != Profile::LongSubsdMemoryRaxV1 {
             return Err(invalid(
                 "subsd_controls",
-                "only valid for SUBSD register-space profile",
+                "only valid for SUBSD register or m64 profile",
             ));
         }
         if self.profile == Profile::LongSubssRegistersV1 {
@@ -11681,6 +11697,90 @@ impl Fixture {
                 return Err(invalid(
                     "expected_exit",
                     "must reflect SUBSS m32 gates, local AC refusal, and canonical span",
+                ));
+            }
+        }
+        if self.profile == Profile::LongSubsdMemoryRaxV1 {
+            let controls = self
+                .subsd_controls
+                .ok_or_else(|| invalid("subsd_controls", "required by SUBSD m64 profile"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by SUBSD m64 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by SUBSD m64 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            let bytes = decode_bytes(&code.initial_bytes_hex)?;
+            if self.cmpss_memory_rax_controls.is_some()
+                || self.cmpsd_memory_rax_controls.is_some()
+                || self.cmppd_memory_rax_controls.is_some()
+                || self.cmpps_memory_rax_controls.is_some()
+                || self.minsd_memory_rax_controls.is_some()
+                || self.minsd_unmasked_controls.is_some()
+                || self.addss_memory_rax_controls.is_some()
+                || self.addsd_memory_rax_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || bytes != [0xf2, 0x0f, 0x5c, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 8
+                || !data.permissions.read
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress | ExpectedExit::Unsupported
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "SUBSD m64 requires exact F2 0F 5C 00, one code/data mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by SUBSD m64 profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & 0x1f80 != 0x1f80
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "SUBSD m64 requires supported MXCSR bits, all six exception masks set, DAZ=0, and FTZ=0",
+                ));
+            }
+            let gate = !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let ac = !gate && !nm && self.initial_state.rflags.get() & (1 << 18) != 0;
+            let last = source.checked_add(7);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let span = last.is_none_or(|last| !canonical(source) || !canonical(last));
+            let expected = if gate || nm {
+                ExpectedExit::Exception
+            } else if ac {
+                ExpectedExit::Unsupported
+            } else if span {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect SUBSD m64 gates, local AC refusal, and canonical span",
                 ));
             }
         }
@@ -14445,6 +14545,10 @@ impl Fixture {
                 Profile::LongSubsdRegistersV1 => {
                     subsd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
+                Profile::LongSubsdMemoryRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0xf2, 0x0f, 0x5c, 0x00])
+                    .map(|_| 4),
                 Profile::LongSubssRegistersV1 => {
                     subss_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
@@ -17476,7 +17580,10 @@ impl RunResult {
                 "only valid for the MULPS profile",
             ));
         }
-        if self.profile == Profile::LongSubsdRegistersV1 {
+        if matches!(
+            self.profile,
+            Profile::LongSubsdRegistersV1 | Profile::LongSubsdMemoryRaxV1
+        ) {
             if snapshot.subsd_controls.is_none() {
                 return Err(invalid(
                     "snapshot.subsd_controls",
@@ -18522,12 +18629,13 @@ impl RunResult {
             Profile::LongMinssMemoryRaxV1
                 | Profile::LongAddssMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxV1
+                | Profile::LongSubsdMemoryRaxV1
         ) && self.backend != Backend::Interpreter
             && (!matches!(self.outcome, Outcome::Unsupported { .. })
                 || !matches!(self.snapshot, Observation::Unavailable { .. }))
         {
             return Err(FormatError::CaseMismatch(
-                "scalar m32 non-interpreter results require an unsupported outcome without snapshot",
+                "scalar memory non-interpreter results require an unsupported outcome without snapshot",
             ));
         }
         if loaded.fixture.profile == Profile::LongSqrtssMemoryRaxV1
@@ -19078,8 +19186,12 @@ impl RunResult {
                 loaded.fixture.subsd_controls,
                 value.subsd_controls,
             ) {
-                (Profile::LongSubsdRegistersV1, Some(input), Some(output)) if input == output => {}
-                (Profile::LongSubsdRegistersV1, _, _) => {
+                (
+                    Profile::LongSubsdRegistersV1 | Profile::LongSubsdMemoryRaxV1,
+                    Some(input),
+                    Some(output),
+                ) if input == output => {}
+                (Profile::LongSubsdRegistersV1 | Profile::LongSubsdMemoryRaxV1, _, _) => {
                     return Err(FormatError::CaseMismatch("subsd_controls"));
                 }
                 (_, None, None) => {}
@@ -19087,6 +19199,8 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongSubsdRegistersV1 {
                 validate_subsd_registers_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongSubsdMemoryRaxV1 {
+                validate_subsd_memory_rax_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -39160,6 +39274,145 @@ fn validate_subss_memory_rax_result(
         (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
         (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("SUBSS m32 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_subsd_memory_rax_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .subsd_controls
+        .ok_or(FormatError::CaseMismatch("subsd_controls"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let code_bytes = decode_bytes(&code.initial_bytes_hex)?;
+    if code_bytes != [0xf2, 0x0f, 0x5c, 0x00] {
+        return Err(FormatError::CaseMismatch("SUBSD m64 encoding"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let lhs = u64::from_le_bytes(
+        lhs_bytes[..8]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("xmm0"))?,
+    );
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let rhs = u64::from_le_bytes(
+        rhs_bytes[..8]
+            .try_into()
+            .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+    );
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (expected_low, invalid, denormal, overflow, underflow, precision) =
+        independent_subsd(lhs, rhs, old_mxcsr);
+    let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let source = fixture.initial_state.gpr[0].get();
+    let ac_refusal = gate.is_none() && fixture.initial_state.rflags.get() & (1 << 18) != 0;
+    let last = source.checked_add(7);
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let fault = gate.or_else(|| (!ac_refusal && span_fault).then_some(13));
+    let unsupported = gate.is_none() && ac_refusal;
+    if !matches!(
+        (fault, unsupported, fixture.expected_exit),
+        (Some(_), false, ExpectedExit::Exception)
+            | (None, true, ExpectedExit::Unsupported)
+            | (None, false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("SUBSD m64 expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if fault.is_none() && !unsupported {
+        let state_sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let mut output_xmm = expected_low.to_le_bytes().to_vec();
+        output_xmm.extend_from_slice(&lhs_bytes[8..]);
+        state_sse.xmm[0] = crate::memory::encode_bytes(&output_xmm);
+        state_sse.mxcsr = HexU64(
+            initial_sse.mxcsr.get()
+                | u64::from(invalid)
+                | (u64::from(denormal) << 1)
+                | (u64::from(overflow) << 3)
+                | (u64::from(underflow) << 4)
+                | (u64::from(precision) << 5),
+        );
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("SUBSD m64 RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch("SUBSD m64 output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none() && !unsupported)),
+        })
+    {
+        return Err(FormatError::CaseMismatch("SUBSD m64 retirement"));
+    }
+    match (fault, unsupported, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            false,
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
+        (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => return Err(FormatError::CaseMismatch("SUBSD m64 outcome/exception")),
     }
     Ok(())
 }
