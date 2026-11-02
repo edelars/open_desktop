@@ -68,6 +68,25 @@ Run `cargo test -p od-jit --lib ir_dword_addr32_rbx_rcx_sib_disp8_store_binds_al
 
 Run `cargo test -p od-jit --lib ir_dword_addr32_rbx_rcx_sib_disp32_load_binds_scales_and_all_displacement_bytes --offline` and `cargo test -p od-host --lib tests::s3_20dp_addr32_scaled_disp32_sib_dword_load_wraps_and_preserves_state --offline`. Admit only the four exact eight-byte forms `67 8B 84 0B/4B/8B/CB id` (`MOV EAX,[EBX+ECX*1/2/4/8+signed disp32]`). The decoder-owned addr32 sum wraps low32 EBX plus low32 ECX times scale plus signed disp32, then zero-extends before canonical checking; high halves of RBX and RCX do not contribute. Each load is one contiguous checked four-byte read, writes EAX and zero-extends into RAX, and uses the `A+8` guest boundary. Source/site binding covers all four scales and displacement bytes; PC-map, fault, STOP, and budget cases are included. Author-branch validation before cherry-pick: full `od-jit` passed 328/328; exact new JIT gates, exact new host gate, and prior S3-20dn/S3-20dl/S3-20da/S3-20dj host regressions passed 1/1; all-target offline package check, formatting, diff-check, and Graphify update passed. Full `od-host` reported 154/157 because three ignored manual artifacts were unavailable in the worktree; this is an evidence-availability limitation, not a product defect. Mini, M1, and Stage 2 were not run. See the [S3-20dp report](../reports/STAGE_3_S3-20dp_2026-11-02.md).
 
+## S3-20dq: exact address-size-32 SIB dword stores with signed disp32
+
+Admit exactly the four eight-byte forms `67 89 84 0B/4B/8B/CB id`
+(`MOV [EBX+ECX*1/2/4/8+signed disp32],EAX`). The decoder-owned addr32
+effective address wraps low32 EBX + low32 ECX×scale + signed disp32, then
+zero-extends before canonical checking; high register halves are ignored. One
+contiguous checked four-byte write stores low32 RAX at the `A+8` boundary.
+Source/site binding covers all four scales and every disp32 byte; host fixtures
+compare native execution with the interpreter and check successful writes,
+backend/architectural failures, budget, STOP, and state preservation using
+private synchronous RAM.
+
+In the author worktree, `od-jit` passed 329/329, the `od-host s3_20` filter
+passed 28/28, and the focused exact JIT/host identities passed. Targeted
+formatting, check, diff, and Graphify validation passed. The full `od-host`
+suite was not run. This evidence does not establish MMIO, SMC, owner/MMU
+integration, or hardware behavior; Mini, M1, and Stage 2 were deferred. See the
+[S3-20dq report](../reports/STAGE_3_S3-20dq_2026-11-02.md).
+
 ## S3-20db: exact address-size-32 disp8 dword checked store
 
 Run `cargo test -p od-jit --lib ir_dword_addr32_disp8_store_binds_all_signed_source_bytes_to_its_site --offline` and `cargo test -p od-host --lib tests::s3_20db_addr32_disp8_dword_store_uses_wrapped_ebx --offline`. Admit only exact `67 89 43 ib` (`MOV [EBX+disp8],EAX`), a four-byte singleton. The decoder-owned addr32 calculation wraps the signed disp8 addition and zero-extends the effective address; the store uses low32 RAX for one contiguous checked four-byte write. JIT fixtures bind all 256 disp8 source/site identities and cover the `A+4` PC-map boundary, STOP, budget, fault, and no-replay behavior. Other addr32 store forms remain closed. Mini, M1, Stage 2, and performance checks were not run. See the [S3-20db report](../reports/STAGE_3_S3-20db_2026-11-02.md).

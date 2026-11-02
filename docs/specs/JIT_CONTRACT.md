@@ -348,6 +348,21 @@ disp32 source byte; PC-map, fault, STOP, and budget fixtures remain bounded to
 these exact forms. See the
 [S3-20dp report](../reports/STAGE_3_S3-20dp_2026-11-02.md).
 
+#### S3-20dq: exact address-size-32 SIB Dword stores with signed disp32
+
+The shared typed-IR Dword-store path admits exactly the four eight-byte
+singleton forms `67 89 84 0B id`, `67 89 84 4B id`, `67 89 84 8B id`, and
+`67 89 84 CB id` (`MOV [EBX+ECX*1/2/4/8+signed disp32],EAX`). The
+decoder-owned address-size-32 effective address adds low32 EBX, low32 ECX
+times the SIB scale, and signed disp32, wraps to 32 bits, and zero-extends
+before canonical checking; high halves of RBX and RCX are ignored. The store
+writes low32 RAX in one contiguous checked four-byte access with guest
+boundary `A+8`. Source/site binding distinguishes all four scales and every
+disp32 source byte; PC-map, fault, STOP, and budget fixtures remain bounded to
+these exact forms. Host semantic checks use private synchronous RAM and do not
+establish MMIO, SMC, owner notification, or MMU integration. See the
+[S3-20dq report](../reports/STAGE_3_S3-20dq_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
