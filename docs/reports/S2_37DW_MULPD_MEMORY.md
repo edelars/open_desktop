@@ -37,10 +37,10 @@ Checks: od-isa 1,861/1,861; od-testkit 455/455; od-runner 119 unit +
 `cargo fmt --all -- --check`; `git diff --check`; Graphify AST update (11,628
 nodes, 25,045 edges, 370 communities). `tools/check_layout.py` reported only the
 known linked-worktree `.git` marker and two absent oracle manifests linked by
-the shared stage report. Independent Sol/high review found no production correctness defects. It identified
-one anchor mismatch and a fixture-contract gap; the follow-up commit corrects the
-anchor, enforces read-only RHS data, and adds runtime invalid-MXCSR/no-read and
-memory-source WPR boundary evidence. Follow-up review is pending.
+the shared stage report. Independent Sol/high review found no production correctness defects and no
+remaining findings after the correction commit. The review confirmed the anchor,
+read-only RHS schema, runtime invalid-MXCSR/no-read coverage and memory-source
+WPR boundary evidence.
 
 No physical x86 acceptance was run. The admission intentionally excludes
 unmasked arithmetic exceptions and #XM.
