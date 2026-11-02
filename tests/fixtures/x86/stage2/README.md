@@ -3345,6 +3345,18 @@ contract](../../../../docs/specs/CPU_CONTRACT.md#local-s2-31br-sticky-status-adm
 [plan](../../../../docs/plans/STAGE_2.md#s2-31br-admit-sticky-status-on-bounded-m32m64-stores),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31br--sticky-status-admission-for-bounded-m32m64-stores).
 
+### S2-31dx historical ZE in bounded m32/m64 FST/FSTP
+
+Four literal fixtures cover exact bare `D9 10`, `D9 18`, `DD 10`, and `DD 18`
+stores with historical ZE already set. They verify result bytes, retained ZE,
+source/tag/TOP/RIP state, and FNSTSW AX after FSTP. ISA tests cover other
+historical sticky-flag combinations, current conversion flags, and write/range
+rollback. The schema accepts the newly admitted status while JIT remains
+denied. Native runtime and physical x86 acceptance remain deferred under
+ISSUE-019. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31dx--historical-ze-admission-for-bounded-m32m64-fstfstp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31dx-admit-historical-ze-on-bounded-m32m64-fstfstp-stores),
+and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-31dx--historical-ze-for-bounded-m32m64-fstfstp).
+
 ### S2-31bt exact signed-zero FIST/FISTP m32int fixtures
 
 The negative-zero `DB 10` and positive-zero `DB 18` fixtures store the literal
@@ -8316,3 +8328,14 @@ IM, and checks IE sticky commit, #XM selection, preserved XMM0, and no
 retirement. The profile has its own strict MAXSD memory selector and
 `maxsd_unmasked_controls` echo; JIT and native execution are denied. No
 physical x86 acceptance is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-38p-exact-long64-maxsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38p--exact-maxsd-unmasked-memory-exit-for-m64-rax), and [standalone report](../../../../docs/reports/S2_38P_MAXSD_MEMORY_UNMASKED.md).
+
+### S2-38q MINPD m128 unmasked invalid and denormal
+
+The handwritten `s2_38q_minpd_m128_qnan_unmasked_im.case.json` fixture uses
+the dedicated unmasked MINPD memory controls for exact `66 0F 5D 00`. A QNaN
+in one lane raises unmasked IE and #XM while a subnormal in the other lane
+contributes DE; the entire XMM destination and retirement remain suppressed.
+The schema rejects foreign masked-memory controls and JIT/native result labels.
+Physical x86 acceptance is not claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38q--exact-minpd-memory-unmasked-imdm),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38q--exact-long64-minpd-xmm0m128-rax-with-unmasked-imdm-exits),
+and [standalone report](../../../../docs/reports/S2_38Q_MINPD_MEMORY_UNMASKED.md).

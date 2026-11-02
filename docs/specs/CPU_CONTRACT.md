@@ -7766,6 +7766,11 @@ Interpreter execution is the only admitted backend; JIT/native paths remain
 closed. Native runtime and physical x86 acceptance remain deferred under
 ISSUE-019. See the [plan](../plans/STAGE_2.md#s2-31dx-admit-historical-ze-on-bounded-m32m64-fstfstp-stores).
 
+Integrated verification: od-isa 1,912; od-testkit 455; od-runner 125 unit +
+526 fixture tests; od-x86-runner 8 library + 4 binary tests. Workspace
+all-target offline check, formatting, layout, diff check, and Graphify passed.
+Independent Sol/high review is clean. See the [implementation report](../reports/S2_31DX.md).
+
 
 <a id="local-s2-31cc-masked-canonical-qnan-fist-m32int"></a>
 
@@ -17601,4 +17606,8 @@ ordering. Verification covers the lane event product, source/lane permutations,
 payload/tie cases, all RC and prior-sticky histories, AC=0/1 aligned access,
 fault precedence and callback counts, backend/result tampering, and literal
 interpreter fixtures. This is local interpreter evidence; it makes no physical
-x86 acceptance claim. See the [plan](../plans/STAGE_2.md#s2-38q--exact-long64-minpd-xmm0m128-rax-with-unmasked-imdm-exits).
+x86 acceptance claim. Integrated verification passed: od-isa 1,912, od-testkit
+455, od-runner 125 unit + 526 fixture, and od-x86-runner 8 library + 4 binary
+tests; workspace check, formatting, layout, diff check, and Graphify passed.
+Sol/high review is clean. See the [implementation report](../reports/S2_38Q_MINPD_MEMORY_UNMASKED.md)
+and [plan](../plans/STAGE_2.md#s2-38q--exact-long64-minpd-xmm0m128-rax-with-unmasked-imdm-exits).

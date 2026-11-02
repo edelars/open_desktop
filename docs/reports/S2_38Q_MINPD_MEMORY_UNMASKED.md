@@ -30,10 +30,17 @@ echoes, and tampered sticky state.
 Focused checks passed: three ISA tests cover event aggregation and atomic exits,
 512 RC/sticky-history/AC combinations, and exact-form/fetch/gate/alignment/
 canonical-span/read-fault ordering. The focused runner fixture test passed,
-including strict-schema and backend-tampering checks. Full affected suites
-passed: `od-isa` (1,910), `od-testkit` (455), and `od-runner` (125 unit + 524
-fixture tests). Workspace all-target offline check, formatting, diff check, and
-Graphify refresh passed (11,946 nodes, 25,795 edges, 381 communities). A separate
-Sol/high review found and verified fixes for exact-form-before-gate admission,
-foreign masked-memory control rejection, and interpreter-only result validation;
-the follow-up review was clean. Physical x86 acceptance is not claimed.
+including strict-schema and backend-tampering checks. Integrated main suites
+passed: `od-isa` (1,912), `od-testkit` (455), `od-runner` (125 unit + 526
+fixture tests), and `od-x86-runner` (8 library + 4 binary). Workspace all-target
+offline check, formatting, layout, and diff check passed. Graphify refresh
+reports 11,911 nodes, 25,862 edges, and 344 communities; community labels were
+not refreshed because no LLM API key is configured. A separate Sol/high
+review found and verified fixes for exact-form-before-gate admission, foreign
+masked-memory control rejection, and interpreter-only result validation; the
+follow-up review was clean. Physical x86 acceptance is not claimed.
+
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38q--exact-minpd-memory-unmasked-imdm),
+[plan](../plans/STAGE_2.md#s2-38q--exact-long64-minpd-xmm0m128-rax-with-unmasked-imdm-exits),
+[shared report](STAGE_2_REPORT.md#s2-38q--minpd-xmm0m128-rax-with-unmasked-imdm-exits),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38q-minpd-m128-unmasked-invalid-and-denormal).
