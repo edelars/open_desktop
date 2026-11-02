@@ -1079,7 +1079,9 @@ pub fn compile_ir_memory_dword_store_block_v2(
             && bytes[..2] == [0x89, 0x84]
             && matches!(bytes[2], 0x0b | 0x4b | 0x8b | 0xcb))
         && !(bytes.len() == 7 && bytes[..3] == [0x89, 0x04, 0x25])
-        && !(bytes.len() == 7 && bytes[..3] == [0x89, 0x04, 0x0d])
+        && !(bytes.len() == 7
+            && bytes[..2] == [0x89, 0x04]
+            && matches!(bytes[2], 0x0d | 0x4d | 0x8d | 0xcd))
         && !(bytes.len() == 8 && bytes[..4] == [0x67, 0x89, 0x04, 0x25])
         && bytes != [0x67, 0x89, 0x03]
         && !(bytes.len() == 4
@@ -6550,7 +6552,21 @@ mod tests {
 
     #[test]
     fn ir_dword_rcx_index_no_base_sib_disp32_store_binds_all_source_bytes_to_its_site() {
+        ir_dword_rcx_index_no_base_sib_scaled_disp32_store_profile(&[(0x0d, 1)]);
+    }
+
+    #[test]
+    fn ir_dword_rcx_index_no_base_sib_scaled_disp32_store_binds_all_source_bytes_to_its_site() {
+        ir_dword_rcx_index_no_base_sib_scaled_disp32_store_profile(&[
+            (0x4d, 2),
+            (0x8d, 4),
+            (0xcd, 8),
+        ]);
+    }
+
+    fn ir_dword_rcx_index_no_base_sib_scaled_disp32_store_profile(profiles: &[(u8, u8)]) {
         let entry = 0x8318;
+        for &(sib, scale) in profiles {
         for displacement in [
             i32::MIN,
             -129,
@@ -6563,7 +6579,7 @@ mod tests {
             i32::MAX,
             0x0102_0304,
         ] {
-            let mut source = [0x89, 0x04, 0x0d, 0, 0, 0, 0];
+            let mut source = [0x89, 0x04, sib, 0, 0, 0, 0];
             source[3..].copy_from_slice(&displacement.to_le_bytes());
             let block = compile_ir_memory_dword_store_block_v2(
                 CodeView::new(entry, &source).unwrap(),
@@ -6579,7 +6595,7 @@ mod tests {
             assert_eq!(site.source(), Some(0));
             assert_eq!(site.operand().base, AddressBase::None);
             assert_eq!(site.operand().index, Some(Register::Rcx));
-            assert_eq!(site.operand().scale, 1);
+            assert_eq!(site.operand().scale, scale);
             assert_eq!(site.operand().displacement, i64::from(displacement));
             assert_eq!(site.operand().address_size, od_isa::OperandSize::Qword);
             assert_eq!(site.operand().size, od_isa::OperandSize::Dword);
@@ -6595,6 +6611,14 @@ mod tests {
                 let mut changed = source;
                 changed[byte_index] ^= 1;
                 assert!(!site.matches_source_bytes(&changed, MemorySiteOperationV2::Store));
+                if byte_index >= 3 {
+                    let changed_block = compile_ir_memory_dword_store_block_v2(
+                        CodeView::new(entry, &changed).unwrap(),
+                        entry,
+                    )
+                    .unwrap();
+                    assert_ne!(site, changed_block.site());
+                }
             }
             let mut forged = *site;
             forged.instruction_index = 1;
@@ -6620,9 +6644,11 @@ mod tests {
             let mut forged = *site;
             forged.operand.index = Some(Register::Rax);
             assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
-            let mut forged = *site;
-            forged.operand.scale = 2;
-            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            for forged_scale in [1, 2, 4, 8].into_iter().filter(|other| *other != scale) {
+                let mut forged = *site;
+                forged.operand.scale = forged_scale;
+                assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            }
             let mut forged = *site;
             forged.operand.address_size = od_isa::OperandSize::Dword;
             assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
@@ -6632,6 +6658,7 @@ mod tests {
             let mut forged = *site;
             forged.operand.displacement += 1;
             assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        }
         }
 
         let complete = [0x89, 0x04, 0x0d, 0, 0, 0, 0];
@@ -6647,8 +6674,6 @@ mod tests {
             &[0x89, 0x04, 0x0d, 0, 0, 0, 0, 0x90][..],
             &[0x89, 0x0c, 0x0d, 0, 0, 0, 0][..],
             &[0x89, 0x04, 0x05, 0, 0, 0, 0][..],
-            &[0x89, 0x04, 0x4d, 0, 0, 0, 0][..],
-            &[0x89, 0x04, 0x8d, 0, 0, 0, 0][..],
             &[0x67, 0x89, 0x04, 0x0d, 0, 0, 0, 0][..],
             &[0x48, 0x89, 0x04, 0x0d, 0, 0, 0, 0][..],
             &[0x66, 0x89, 0x04, 0x0d, 0, 0, 0, 0][..],

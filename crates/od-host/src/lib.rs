@@ -435,7 +435,9 @@ impl PublishedCode {
                 && source[..2] == [0x89, 0x84]
                 && matches!(source[2], 0x0b | 0x4b | 0x8b | 0xcb))
             && !(source.len() == 7 && source[..3] == [0x89, 0x04, 0x25])
-            && !(source.len() == 7 && source[..3] == [0x89, 0x04, 0x0d])
+            && !(source.len() == 7
+                && source[..2] == [0x89, 0x04]
+                && matches!(source[2], 0x0d | 0x4d | 0x8d | 0xcd))
             && source != [0x67, 0x89, 0x03]
             && !(source.len() == 4
                 && source[..3] == [0x67, 0x89, 0x04]
@@ -6053,6 +6055,19 @@ mod tests {
 
     #[test]
     fn s3_20eq_rcx_index_no_base_sib_disp32_dword_store_uses_signed_displacement() {
+        s3_rcx_index_no_base_sib_dword_store_uses_signed_displacement(&[(0x0d, 1)]);
+    }
+
+    #[test]
+    fn s3_20es_rcx_index_no_base_sib_scaled_disp32_dword_store_uses_full_width_scaled_index() {
+        s3_rcx_index_no_base_sib_dword_store_uses_signed_displacement(&[
+            (0x4d, 2),
+            (0x8d, 4),
+            (0xcd, 8),
+        ]);
+    }
+
+    fn s3_rcx_index_no_base_sib_dword_store_uses_signed_displacement(profiles: &[(u8, u8)]) {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 
         #[derive(Default)]
@@ -6143,8 +6158,9 @@ mod tests {
         let stop = AtomicU8::new(0);
         let payload = 0xfeed_face_89ab_cdef_u64;
 
+        for &(sib, scale) in profiles {
         for displacement in [i32::MIN, -129, -128, -1, 0, 1, 127, 128, i32::MAX] {
-            let mut source = [0x89, 0x04, 0x0d, 0, 0, 0, 0];
+            let mut source = [0x89, 0x04, sib, 0, 0, 0, 0];
             source[3..].copy_from_slice(&displacement.to_le_bytes());
             let compiled = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
                 CodeView::new(entry, &source).unwrap(),
@@ -6152,13 +6168,16 @@ mod tests {
             )
             .unwrap();
             let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
-            let expected_address = 0x1234_5000;
+            let rcx = 0x0000_0001_2345_0000_u64;
+            let expected_address = rcx
+                .wrapping_mul(u64::from(scale))
+                .wrapping_add(displacement as i64 as u64);
             let mut state = od_isa::LongModeState {
                 rip: entry,
                 ..Default::default()
             };
             state.gpr[0] = payload;
-            state.gpr[1] = expected_address.wrapping_sub(displacement as i64 as u64);
+            state.gpr[1] = rcx;
             state.gpr[2] = 0x8877_6655_4433_2211;
             state.gpr[3] = 0x1020_3040_5060_7080;
             state.rflags = 0x8d5;
@@ -6184,8 +6203,12 @@ mod tests {
             assert_eq!(memory.committed, vec![expected]);
             drop(published);
         }
+        }
 
-        let source = [0x89, 0x04, 0x0d, 0xfc, 0xff, 0xff, 0xff];
+        for &(sib, scale) in profiles {
+        let displacement = -(i32::from(scale));
+        let mut source = [0x89, 0x04, sib, 0, 0, 0, 0];
+        source[3..].copy_from_slice(&displacement.to_le_bytes());
         let compiled = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
             CodeView::new(entry, &source).unwrap(),
             entry,
@@ -6197,7 +6220,7 @@ mod tests {
             ..Default::default()
         };
         before.gpr[0] = payload;
-        before.gpr[1] = 4;
+        before.gpr[1] = 1;
         before.gpr[2] = 0x8877_6655_4433_2211;
         before.gpr[3] = 0x1020_3040_5060_7080;
         before.rflags = 0x8d5;
@@ -6263,6 +6286,38 @@ mod tests {
         assert_eq!(wrapped_state.rflags, before.rflags);
         assert_eq!(wrapped_state.rip, entry + 7);
 
+        if scale > 1 {
+            let mut multiply_wrapped_state = before.clone();
+            multiply_wrapped_state.gpr[1] =
+                (1_u64 << (64 - scale.trailing_zeros())) + 1;
+            let mut multiply_wrapped_memory = Memory::default();
+            let multiply_wrapped = unsafe {
+                published.execute_ir_memory_dword_store_v2(
+                    &mut multiply_wrapped_state,
+                    &mut multiply_wrapped_memory,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+            }
+            .unwrap();
+            assert_eq!(multiply_wrapped.exit, MemoryOperationExecutionExitV2::Complete);
+            assert_eq!(
+                multiply_wrapped_memory.writes,
+                vec![(
+                    0,
+                    vec![0xef, 0xcd, 0xab, 0x89]
+                )]
+            );
+            let mut expected_multiply_wrapped_state = before.clone();
+            expected_multiply_wrapped_state.gpr[1] =
+                (1_u64 << (64 - scale.trailing_zeros())) + 1;
+            expected_multiply_wrapped_state.rip = entry + 7;
+            assert_eq!(multiply_wrapped_state, expected_multiply_wrapped_state);
+            assert_eq!(multiply_wrapped_state.rflags, before.rflags);
+        }
+
         for rcx in [0x0000_8000_0000_0004, 0x0000_8000_0000_0001] {
             let mut state = before.clone();
             state.gpr[1] = rcx;
@@ -6293,32 +6348,6 @@ mod tests {
             assert_eq!(state, expected_state);
             assert!(memory.writes.is_empty());
         }
-
-        let mut overflow_state = before.clone();
-        overflow_state.gpr[1] = 2;
-        let overflow_before = overflow_state.clone();
-        let mut overflow_memory = Memory::default();
-        assert_eq!(
-            unsafe {
-                published.execute_ir_memory_dword_store_v2(
-                    &mut overflow_state,
-                    &mut overflow_memory,
-                    AccessContext::default(),
-                    1,
-                    None,
-                    &stop,
-                )
-            },
-            Err(MemoryOperationExecutionErrorV2::MemoryError(
-                MemoryOperationMemoryErrorV2 {
-                    kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
-                    address: u64::MAX - 1,
-                    length: 4,
-                }
-            ))
-        );
-        assert_eq!(overflow_state, overflow_before);
-        assert!(overflow_memory.writes.is_empty());
 
         let expected = (0, vec![0xef, 0xcd, 0xab, 0x89]);
         let mut failed_memory = Memory {
@@ -6403,6 +6432,83 @@ mod tests {
         }
         .is_err());
         assert_eq!(stopped_memory.writes, vec![expected]);
+        drop(published);
+
+        let boundary_source = [0x89, 0x04, sib, 0xff, 0xff, 0xff, 0xff];
+        let boundary_compiled = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &boundary_source).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let boundary_published =
+            PublishedCode::publish_ir_memory_dword_store_v2(&boundary_compiled).unwrap();
+        let mut boundary_state = before.clone();
+        boundary_state.gpr[1] = 0x0000_8000_0000_0000 / u64::from(scale);
+        let boundary_before = boundary_state.clone();
+        let mut boundary_memory = Memory::default();
+        let boundary_fault = unsafe {
+            boundary_published.execute_ir_memory_dword_store_v2(
+                &mut boundary_state,
+                &mut boundary_memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert!(matches!(
+            boundary_fault.exit,
+            MemoryOperationExecutionExitV2::GuestFault(
+                od_isa::memory::ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }
+            )
+        ));
+        assert_eq!(boundary_state, boundary_before);
+        assert!(boundary_memory.writes.is_empty());
+        drop(boundary_published);
+
+        let (overflow_displacement, overflow_rcx): (i32, u64) =
+            if scale == 1 { (-4, 2) } else { (-2, 0) };
+        let mut overflow_source = [0x89, 0x04, sib, 0, 0, 0, 0];
+        overflow_source[3..].copy_from_slice(&overflow_displacement.to_le_bytes());
+        let overflow_compiled = od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &overflow_source).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let overflow_published =
+            PublishedCode::publish_ir_memory_dword_store_v2(&overflow_compiled).unwrap();
+        let mut overflow_state = before.clone();
+        overflow_state.gpr[1] = overflow_rcx;
+        let overflow_before = overflow_state.clone();
+        let mut overflow_memory = Memory::default();
+        assert_eq!(
+            unsafe {
+                overflow_published.execute_ir_memory_dword_store_v2(
+                    &mut overflow_state,
+                    &mut overflow_memory,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+            },
+            Err(MemoryOperationExecutionErrorV2::MemoryError(
+                MemoryOperationMemoryErrorV2 {
+                    kind: od_jit::memory_bridge::MEMORY_ERROR_ADDRESS_OVERFLOW,
+                    address: u64::MAX - 1,
+                    length: 4,
+                }
+            ))
+        );
+        assert_eq!(overflow_state, overflow_before);
+        assert!(overflow_memory.writes.is_empty());
+        drop(overflow_published);
+        }
     }
 
     #[test]

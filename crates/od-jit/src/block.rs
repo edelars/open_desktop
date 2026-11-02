@@ -3210,7 +3210,10 @@ fn build_block_with_profile(
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(7))
-                        .is_some_and(|bytes| bytes[..3] == [0x89, 0x04, 0x0d])
+                        .is_some_and(|bytes| {
+                            bytes[..2] == [0x89, 0x04]
+                                && matches!(bytes[2], 0x0d | 0x4d | 0x8d | 0xcd)
+                        })
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(8))
@@ -5182,7 +5185,7 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && operand.size == OperandSize::Dword
                 && matches!(operand.base, AddressBase::None)
                 && operand.index == Some(od_isa::Register::Rcx)
-                && operand.scale == 1
+                && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && i32::try_from(operand.displacement).is_ok());
     let exact_prefix = instruction.prefixes.group1.is_none()
         && instruction.prefixes.segment.is_none()
