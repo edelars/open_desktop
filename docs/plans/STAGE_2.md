@@ -578,6 +578,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37dj | Local-only masked legacy Long64 ADDSD XMM0,m64 [RAX], exact F2 0F 58 00; SSE2 bit 26; memory RHS plus XMM0.low64 via Binary64::add_raw_result; AC=1 local refusal, AC=0 unaligned admission, one read8; strict masked MXCSR and backend closure | Isolated slice: od-isa 1,795; integrated main: 1,796; od-testkit 455; runner 113+491; od-x86-runner 8+4; workspace/layout/fmt, Graphify and independent Sol/high review clean; 1,792 independent-oracle runner executions; Linux native test and physical x86 acceptance unavailable |
 | [x] | S2-37dk | Local-only masked legacy Long64 SUBSS XMM0,m32 [RAX], exact F3 0F 5C 00; SSE bit 25; memory RHS with original-NaN selection before subtraction sign treatment; AC=1 local refusal, AC=0 unaligned admission, one read4; strict masked MXCSR and backend closure | Isolated slice: od-isa 1,798; od-testkit 455; runner 114+492; x86-runner 8+4; Graphify 11,279/24,237/347; integrated main: od-isa 1,802, testkit 455, runner 114+492, x86-runner 8+4; clean Sol/high review; layout reports only pre-existing `.git` mapping and historical manifest issues; no physical x86 acceptance |
 | [x] | S2-37dl | Local-only masked legacy Long64 SUBSD XMM0,m64 [RAX], exact F2 0F 5C 00; SSE2 bit 26; memory RHS with original-NaN selection before RHS sign treatment; AC=1 local refusal, AC=0 unaligned admission, one read8; strict masked MXCSR and backend closure | Isolated slice: od-isa 1,806; testkit 455; runner 115+493; x86-runner 8+4; 65,536 independent-oracle executions; clean Sol/high review; integrated main: od-isa 1,809, testkit 455, runner 115+493, x86-runner 8+4; Graphify 11,280/24,407/336; no physical x86 acceptance |
+| [x] | S2-37dp | Masked-only legacy Long64 DIVSD XMM0,m64 [RAX], exact F2 0F 5E 00; SSE2 bit 26; actual memory RHS; all RC/sticky histories; AC-before-span/read; strict interpreter-only schema-v2 | Full validation passed: od-isa 1,828; od-testkit 455; runner 118+496; x86-runner 8+4; workspace check/fmt/diff and Graphify 11,431/24,629/352. Independent Sol/high review clean; isolated layout findings are existing worktree pointer/ISSUE-023 manifests; main layout passes |
 | [x] | S2-37dn | Local-only masked legacy Long64 MULSD XMM0,m64 [RAX], exact F2 0F 59 00; SSE2 bit 26; actual memory RHS, masked MXCSR with all RC/stickies, AC=1 refusal, one read8; strict interpreter-only profile | Integrated main: od-isa 1,821, testkit 455, runner 116+495, x86-runner 8+4; independent Sol/high review clean; 6,400 oracle cases; workspace/fmt/layout/diff and Graphify 11,339/24,564/343 passed; no physical x86 acceptance |
 | [x] | S2-37do | Local-only masked legacy Long64 DIVSS XMM0,m32 [RAX], exact F3 0F 5E 00; SSE bit 25; divide priority IE/ZE/DE and all six flags; strict interpreter-only profile | Integrated main: od-isa 1,826, testkit 455, runner 118+495; independent Sol/high review clean after backend-guard and citation fixes; 5,120 oracle cases; workspace/fmt/layout/diff and Graphify 11,368/24,630/336 passed; no physical x86 acceptance |
 | [x] | S2-37aa | Local-only canonical Long64 CMPPS XMM register pairs; all eight predicates, four binary32 lanes, independent IE/DE accumulation and atomic destination suppression; JIT/native closed | Independent Sol-medium review clean after binary64-oracle regression fix; final combined physical stage remains outstanding |
@@ -17026,3 +17027,27 @@ Isolated validation passed: focused decoder/direct ISA checks 2/2, full `od-isa`
 Implement strict interpreter-only schema-v2 profile `s2-long-divss-memory-rax-v1` for exactly `F3 0F 5E 00`, length four, budget one, stop RIP entry+4. Require Long64/SSE (`CPUID.01H:EDX[25]`), CR0.EM=0, CR0.TS=0, CR4.OSFXSR=1 and XMM/MXCSR. Fetch the complete instruction before #UD/#NM gates. Admit only MXCSR supported bits `0xffbf`, reserved bits clear, all six masks set, DAZ=FTZ=0; allow every RC and prior sticky history. AC=1 returns local Unsupported before span/address/read; AC=0 permits unaligned m32. Check checked `RAX+3` and canonical48 endpoints before exactly one read4; failures preserve CPU state and retirement.
 
 Divide old XMM0.low32 by actual memory RHS using `Binary32::divide_raw_result`; preserve XMM0.high96 and unrelated state, merge IE/DE/ZE/OE/UE/PE. Preserve original-NaN priority, then ZE for finite nonzero / zero, then DE, then output divide flags; exact tiny does not raise UE, while WPR tiny uses tininess-after-rounding. The independent `independent_divss` raw-u32 oracle receives the actual memory RHS. Matrix: 20 operand pairs × four RC × 64 prior stickies (5,120 executions), with stop/snapshot/retirement checks before oracle validation. Direct/schema checks cover runtime MXCSR denial, full-fetch gate priority, AC/address span ordering, unaligned read, rollback, input/result provenance tampering and JIT denial. The Vol. 2A p. 3-276 Type 3 note is VEX-specific; legacy DIVSS remains SSE. Independent Sol/high review is clean after backend result-guard and citation corrections. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37do--masked-only-long64-divss-xmm0m32-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37do--divss-xmm0m32-rax), [standalone report](../reports/S2_37DO_DIVSS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37do--divss-xmm0m32-rax).
+
+
+#### S2-37dp — masked-only legacy `Long64` `DIVSD` XMM0,m64 [RAX]
+
+Implement strict interpreter-only schema-v2 profile `s2-long-divsd-memory-rax-v1`
+for exact `F2 0F 5E 00`, four-byte fetch, budget one and stop RIP entry+4. Require
+Long64, SSE2 bit 26, CR0.EM=0, CR4.OSFXSR=1 and CR0.TS=0. Complete fetch precedes
+#UD/#NM admission. Require MXCSR `0xffbf` supported bits, all exception masks,
+DAZ=FTZ=0; admit all RC values and sticky histories. AC=1 refuses before span or
+read; otherwise checked `RAX+7` and canonical48 endpoints precede one exact read8.
+Memory faults commit no state.
+
+Divide XMM0.low64 by actual memory RHS with `Binary64::divide_raw_result`;
+classify IE/ZE/DE in priority order and merge IE/DE/ZE/OE/UE/PE. Preserve high64
+and unrelated state. Runner matrix crosses 24 operand pairs × 4 RC × 64 prior sticky
+values (6,144 runs), including qNaN/sNaN in both operand orders, 0/0, infinity /
+infinity, finite and infinity divided by zero, zero/subnormal distinctions, signed
+1/3, exact and inexact tiny results, WPR boundaries and overflow. Assert stop,
+snapshot and retirement before independent raw-u64 oracle comparison. JIT and
+NativeX86 relabeling, provenance/result tampering, exact encoding/schema checks,
+SSE2 and AC gates, and noncanonical span refusal are covered.
+
+Normative source: Intel SDM Rev. 093 Vol. 2A DIVSD pp. 3-273–3-274; its Type 3
+note is VEX-specific. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dp--masked-only-long64-divsd-xmm0m64-rax) and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dp--divsd-xmm0m64-rax).

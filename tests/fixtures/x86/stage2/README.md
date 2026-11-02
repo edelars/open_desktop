@@ -7875,3 +7875,18 @@ The independent raw-u64 `independent_mulsd` oracle receives the actual memory RH
 The literal fixture `s2_37do_divss_m32_memory_rax.case.json` encodes exact legacy `F3 0F 5E 00`; XMM0.low32 is 1.0 and unaligned memory at RAX supplies 3.0. XMM0.high96 and poisoned XMM1 are canaries. The interpreter-only schema admits Long64/SSE, complete fetch before #UD/#NM gates, and masked MXCSR (`0xffbf`, all masks set, DAZ/FTZ/reserved clear), with all RC and old sticky histories. AC=1 refuses before address-span/read work; AC=0 admits unaligned m32. Checked `RAX+3` and canonical48 endpoints precede exactly one read4; read failure rolls back.
 
 The independent `independent_divss` raw-u32 oracle receives the actual memory RHS. Runner coverage crosses 20 operand pairs × 4 RC modes × 64 sticky histories (5,120 runs), checking StopAddress, snapshot and retirement before oracle comparison. Cases cover NaN orders, 0/0, infinity/infinity, ZE/DE priority, infinity/zero, WPR tiny/underflow, exact tiny, overflow and rounding. Direct tests cover runtime MXCSR denial, fetch/gates, AC/span/read rollback, result/input-digest tampering and JIT denial. The Intel SDM Type 3 note is VEX-specific; the exact form here is legacy SSE. No physical x86 acceptance is claimed. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37do--masked-only-legacy-long64-divss-xmm0m32-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37do--masked-only-long64-divss-xmm0m32-rax), [shared report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37do--divss-xmm0m32-rax), and [standalone report](../../../../docs/reports/S2_37DO_DIVSS_MEMORY.md).
+
+
+### S2-37dp — DIVSD XMM0,m64 [RAX]
+
+The literal fixture `s2_37dp_divsd_m64_memory_rax.case.json` encodes exact legacy
+`F2 0F 5E 00`; XMM0.low64 is 2.0 and unaligned memory at RAX supplies 0.5. The
+profile requires Long64/SSE2, complete fetch before #UD/#NM, supported MXCSR mask
+`0xffbf`, all six exception masks set and DAZ=FTZ=0. Every RC and sticky history
+is admitted. AC=1 refuses before span/read; checked `RAX+7` and canonical48
+endpoints precede one exact read8. The raw-u64 `independent_divsd` oracle uses the
+actual memory RHS. Coverage crosses 24 operand pairs × 4 RC × 64 sticky values
+(6,144 executions) including NaN priority, invalid/ZE/DE distinctions, 1/3, tiny,
+WPR and overflow boundaries. JIT/native/C ABI/generic/fragment and unmasked/#XM
+remain closed; no physical x86 acceptance is claimed. Source: Intel SDM Rev. 093
+Vol. 2A DIVSD pp. 3-273–3-274; Type 3 is VEX-only. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37dp--masked-only-legacy-long64-divsd-xmm0m64-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dp--masked-only-long64-divsd-xmm0m64-rax), and [shared report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37dp--divsd-xmm0m64-rax).

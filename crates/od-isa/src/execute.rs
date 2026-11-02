@@ -514,9 +514,13 @@ pub type MulsdMemoryRaxControls = MulsdControls;
 /// Explicit SSE gates for the exact local DIVSS m32-at-RAX profile.
 pub type DivssMemoryRaxControls = DivssControls;
 
+/// Explicit SSE2 gates for the exact local DIVSD m64-at-RAX profile.
+pub type DivsdMemoryRaxControls = DivsdControls;
+
 #[derive(Clone, Copy)]
 enum ScalarFloatMemoryRaxProfile {
     Divss(DivssMemoryRaxControls),
+    Divsd(DivsdMemoryRaxControls),
     Mulss(MulssControls),
     Mulsd(MulsdMemoryRaxControls),
     Subss(SubssMemoryRaxControls),
@@ -16567,6 +16571,23 @@ pub fn run_with_divss_memory_rax_controls(
     )
 }
 
+/// Execute exact legacy `F2 0F 5E 00` DIVSD m64-at-RAX with explicit gates.
+pub fn run_with_divsd_memory_rax_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: DivsdMemoryRaxControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_scalar_float_memory_rax_profile(
+        state,
+        memory,
+        config,
+        ScalarFloatMemoryRaxProfile::Divsd(controls),
+        stop_requested,
+    )
+}
+
 /// Execute exact legacy `F2 0F 59 00` MULSD m64-at-RAX with explicit gates.
 pub fn run_with_mulsd_memory_rax_controls(
     state: &mut LongModeState,
@@ -19090,6 +19111,16 @@ fn step_configured(
     }
     if let Some(profile) = configured_scalar_float_memory_rax_profile {
         let admitted = match (profile, instruction.operation) {
+            (ScalarFloatMemoryRaxProfile::Divsd(_), Operation::DivsdMemoryRax) => {
+                instruction.length == 4
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x5e
+                    && instruction.prefixes.group1 == Some(0xf2)
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.is_none()
+            }
             (ScalarFloatMemoryRaxProfile::Divss(_), Operation::DivssMemoryRax) => {
                 instruction.length == 4
                     && instruction.opcode.map == OpcodeMap::Escape0f
@@ -19148,6 +19179,15 @@ fn step_configured(
             });
         }
         let fault_vector = match profile {
+            ScalarFloatMemoryRaxProfile::Divsd(controls) => {
+                if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+                    Some(6)
+                } else if controls.cr0_ts {
+                    Some(7)
+                } else {
+                    None
+                }
+            }
             ScalarFloatMemoryRaxProfile::Divss(controls) => {
                 if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
                     Some(6)
@@ -23578,6 +23618,10 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::DivssMemoryRax => false,
+        Operation::DivsdMemoryRax if configured_scalar_float_memory_rax_profile.is_some() => {
+            state.sse.is_some()
+        }
+        Operation::DivsdMemoryRax => false,
         Operation::MulsdMemoryRax if configured_scalar_float_memory_rax_profile.is_some() => {
             state.sse.is_some()
         }
@@ -29567,6 +29611,82 @@ fn step_configured(
                 | (u32::from(new_oe) << 3)
                 | (u32::from(new_ue) << 4)
                 | (u32::from(new_pe) << 5);
+        }
+        Operation::DivsdMemoryRax
+            if matches!(
+                configured_scalar_float_memory_rax_profile,
+                Some(ScalarFloatMemoryRaxProfile::Divsd(_))
+            ) =>
+        {
+            let address = state.gpr[Register::Rax as usize];
+            if state.rflags & (1 << 18) != 0 {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            let Some(last) = address.checked_add(7) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 8];
+            memory.read(address, context, &mut source)?;
+            let (destination_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("DIVSD memory state prevalidated");
+                (sse.xmm[0], sse.mxcsr)
+            };
+            let lhs = u64::from_le_bytes(destination_xmm[..8].try_into().unwrap());
+            let rhs = u64::from_le_bytes(source);
+            let lhs_class = Binary64::from_bits(lhs).class();
+            let rhs_class = Binary64::from_bits(rhs).class();
+            let lhs_nan = matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+            let rhs_nan = matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+            let invalid_division = (lhs_class == BinaryClass::Zero
+                && rhs_class == BinaryClass::Zero)
+                || (lhs_class == BinaryClass::Infinity && rhs_class == BinaryClass::Infinity);
+            let new_ie = lhs_class == BinaryClass::SignalingNaN
+                || rhs_class == BinaryClass::SignalingNaN
+                || (!lhs_nan && !rhs_nan && invalid_division);
+            let new_ze = !lhs_nan
+                && !rhs_nan
+                && !matches!(lhs_class, BinaryClass::Zero | BinaryClass::Infinity)
+                && rhs_class == BinaryClass::Zero;
+            let new_de = !lhs_nan
+                && !rhs_nan
+                && !invalid_division
+                && !new_ze
+                && (lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal);
+            let computed = Binary64::divide_raw_result(
+                Binary64::from_bits(lhs),
+                Binary64::from_bits(rhs),
+                cvtss2si_rounding_mode(old_mxcsr),
+            );
+            let new_oe = computed.overflow();
+            let new_ue = computed.tiny_after_precision_rounding() && computed.inexact();
+            let new_pe = computed.inexact() || computed.overflow();
+            let sse = state.sse.as_mut().expect("DIVSD memory state prevalidated");
+            sse.xmm[0][..8].copy_from_slice(&computed.value().to_bits().to_le_bytes());
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_ze) << 2)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+        }
+        Operation::DivsdMemoryRax => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
         }
         Operation::DivssMemoryRax => {
             return Ok(StepOutcome::Unsupported {
@@ -158838,6 +158958,99 @@ mod cvtsi2ss_r64_memory_profile_tests {
             StepOutcome::Unsupported { opcode: 0x59 }
         );
         assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn divsd_memory_rax_reads_unaligned_m64_once_and_rolls_back_failures() {
+        use crate::memory::AccessKind;
+
+        let code = [0xf2, 0x0f, 0x5e, 0x00];
+        let controls = DivsdMemoryRaxControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let run_profile = |state: &mut LongModeState, memory: &mut Memory| {
+            run_with_divsd_memory_rax_controls(
+                state,
+                memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(state.rip + 4),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            )
+        };
+
+        let mut state = LongModeState::default();
+        state.rip = 0x5300;
+        state.gpr[Register::Rax as usize] = 0x2001;
+        state.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        state.sse.as_mut().unwrap().xmm[0][..8].copy_from_slice(&2.0f64.to_bits().to_le_bytes());
+        state.sse.as_mut().unwrap().xmm[0][8..]
+            .copy_from_slice(&[0xef, 0xbe, 0xad, 0xde, 0x78, 0x56, 0x34, 0x12]);
+        let high64 = state.sse.as_ref().unwrap().xmm[0][8..].to_vec();
+        let xmm1 = state.sse.as_ref().unwrap().xmm[1];
+        let mut memory = Memory::at(&code, 0x5300);
+        memory.data_base = 0x2000;
+        memory.bytes[1..9].copy_from_slice(&0.5f64.to_bits().to_le_bytes());
+        let result = run_profile(&mut state, &mut memory);
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            u64::from_le_bytes(state.sse.as_ref().unwrap().xmm[0][..8].try_into().unwrap()),
+            4.0f64.to_bits()
+        );
+        assert_eq!(&state.sse.as_ref().unwrap().xmm[0][8..], high64);
+        assert_eq!(state.sse.as_ref().unwrap().xmm[1], xmm1);
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1f80);
+        assert_eq!(state.rip, 0x5304);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2001, 8)]);
+
+        let mut rollback = LongModeState::default();
+        rollback.rip = 0x5300;
+        rollback.gpr[Register::Rax as usize] = 0x2000;
+        rollback.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = rollback.clone();
+        let mut failed = Memory::at(&code, 0x5300);
+        failed.data_base = 0x2000;
+        failed.error = Some(MemoryError::Unmapped {
+            address: 0x2000,
+            access: AccessKind::Read,
+        });
+        assert!(matches!(
+            run_profile(&mut rollback, &mut failed).exit,
+            RunExit::MemoryError(_)
+        ));
+        assert_eq!(rollback, before);
+        assert_eq!(failed.accesses, [(AccessKind::Read, 0x2000, 8)]);
+
+        let mut ac = LongModeState::default();
+        ac.rip = 0x5300;
+        ac.rflags = 1 << 18;
+        ac.gpr[Register::Rax as usize] = u64::MAX;
+        ac.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = ac.clone();
+        let mut untouched = Memory::at(&code, 0x5300);
+        assert!(matches!(
+            run_profile(&mut ac, &mut untouched).exit,
+            RunExit::Unsupported { .. }
+        ));
+        assert_eq!(ac, before);
+        assert!(untouched.accesses.is_empty());
     }
 
     #[test]

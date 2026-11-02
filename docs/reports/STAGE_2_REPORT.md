@@ -21730,3 +21730,24 @@ all-target offline check, formatting, layout и `git diff --check` прошли.
 Graphify AST refresh завершился с 11,368 nodes, 24,630 edges и 336
 communities. В runner DIVSS дополнительно проверены 5,120 raw-oracle
 комбинаций. Физическая x86-проверка не выполнялась.
+
+
+## S2-37dp — DIVSD XMM0,m64 [RAX]
+
+Added exact legacy `F2 0F 5E 00` as masked-only Long64 interpreter schema-v2
+profile `s2-long-divsd-memory-rax-v1`. SSE2 gates follow full fetch; MXCSR
+requires all six masks with DAZ/FTZ clear while allowing each RC and sticky
+history. AC refusal precedes checked canonical m64 span and one actual read8.
+Execution uses raw binary64 division and preserves XMM0.high64 and unrelated state.
+The independent oracle matrix has 24 operand pairs × 4 RC × 64 sticky states
+(6,144 executions). It includes NaN order, invalid/zero-divide/denormal
+distinctions, signed 1/3, WPR tiny cases and overflow. JIT/NativeX86 relabeling,
+result tampering, schema/provenance and runtime gate/span cases are covered.
+Full checks passed: `od-isa` 1,827, `od-testkit` 455, runner 118 unit + 496
+fixture, and x86-runner 8 library + 4 binary tests. Workspace all-target offline
+check, formatting, diff check, and Graphify AST refresh passed (11,431 nodes,
+24,629 edges, 352 communities). The isolated layout script reports its `.git`
+pointer and two absent historical oracle manifests already tracked as ISSUE-023;
+the main checkout layout check passes. Independent Sol/high review is clean; it found no remaining concrete correctness
+or schema issues. No physical x86 acceptance is claimed. Source: Intel SDM Rev. 093 Vol. 2A DIVSD pp. 3-273–3-274; Type 3 is
+VEX-only. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dp--masked-only-long64-divsd-xmm0m64-rax), [plan](../plans/STAGE_2.md#s2-37dp--masked-only-legacy-long64-divsd-xmm0m64-rax), and [standalone report](S2_37DP_DIVSD_MEMORY.md).

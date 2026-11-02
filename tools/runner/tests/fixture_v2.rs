@@ -84,6 +84,8 @@ const MULSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dm_mulss_m32_memory_rax.case.json");
 const MULSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dn_mulsd_m64_memory_rax.case.json");
+const DIVSD_M64_MEMORY_RAX: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dp_divsd_m64_memory_rax.case.json");
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dg_sqrtss_m32_unaligned_inexact.case.json"
 );
@@ -37478,6 +37480,172 @@ fn mulsd_m64_memory_literal_and_scalar_oracle_matrix_are_interpreter_only() {
             for sticky in 0..64u64 {
                 let mut case = base.clone();
                 case.case_id = format!("s2_37dn_v{vector}_rc{rc}_sticky{sticky:02x}");
+                let original = &base.initial_state.sse.as_ref().unwrap().xmm[0];
+                case.initial_state.sse.as_mut().unwrap().xmm[0] =
+                    format!("{}{}", encode(lhs), &original[16..]);
+                case.memory[1].initial_bytes_hex = encode(rhs);
+                case.initial_state.sse.as_mut().unwrap().mxcsr =
+                    HexU64(0x1f80 | (rc << 13) | sticky);
+                let bytes = case.to_json().unwrap();
+                let loaded = Fixture::from_json(&bytes).unwrap();
+                let output = cli(&bytes, "interpreter");
+                assert_eq!(
+                    output.status.code(),
+                    Some(0),
+                    "{}: {}",
+                    case.case_id,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let result = RunResult::from_json(&output.stdout).unwrap();
+                assert!(
+                    matches!(result.outcome, Outcome::StopAddress {}),
+                    "{}: {:?}",
+                    case.case_id,
+                    result.outcome
+                );
+                assert_eq!(
+                    result.instructions_executed,
+                    Observation::Available { value: HexU64(1) },
+                    "{}",
+                    case.case_id
+                );
+                assert!(
+                    matches!(result.snapshot, Observation::Available { .. }),
+                    "{}",
+                    case.case_id
+                );
+                result
+                    .validate_for(&loaded)
+                    .unwrap_or_else(|error| panic!("{}: {error:?}", case.case_id));
+                od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn divsd_m64_memory_literal_and_scalar_oracle_matrix_are_interpreter_only() {
+    let loaded = Fixture::from_json(DIVSD_M64_MEMORY_RAX).unwrap();
+    let base = loaded.fixture.clone();
+    assert_eq!(base.profile, od_testkit::v2::Profile::LongDivsdMemoryRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "f20f5e00");
+    assert_eq!(base.memory[1].length, 8);
+    assert_eq!(base.memory[1].initial_bytes_hex, "000000000000e03f");
+    let original_xmm = &base.initial_state.sse.as_ref().unwrap().xmm;
+    assert_eq!(original_xmm[0], "0000000000000040efbeadde78563412");
+
+    let (input, result) = run(DIVSD_M64_MEMORY_RAX, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let sse = snapshot(&result).state.sse.as_ref().unwrap();
+    assert_eq!(sse.xmm[0], "0000000000001040efbeadde78563412");
+    assert_eq!(sse.xmm[1], original_xmm[1]);
+    assert_eq!(sse.mxcsr, HexU64(0x1f80));
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    for backend in [Backend::Jit, Backend::NativeX86] {
+        let mut forged_backend = result.clone();
+        forged_backend.backend = backend;
+        assert!(forged_backend.validate_for(&input).is_err());
+    }
+    let mut gated = base.clone();
+    gated.case_id = "s2_37dp_divsd_sse2_gate".into();
+    gated.divsd_controls.as_mut().unwrap().sse2_available = false;
+    gated.expected_exit = ExpectedExit::Exception;
+    let (_, gated_result) = run(&gated.to_json().unwrap(), "interpreter", 0);
+    assert!(matches!(gated_result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&gated_result), 0);
+    let gated_snapshot = snapshot(&gated_result);
+    assert_eq!(gated_snapshot.state, gated.initial_state);
+    let mut ac = base.clone();
+    ac.case_id = "s2_37dp_divsd_ac_gate".into();
+    ac.initial_state.rflags = HexU64(ac.initial_state.rflags.get() | (1 << 18));
+    ac.expected_exit = ExpectedExit::Unsupported;
+    let (_, ac_result) = run(&ac.to_json().unwrap(), "interpreter", 4);
+    assert!(matches!(ac_result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(count(&ac_result), 0);
+    let mut bad_span = base.clone();
+    bad_span.case_id = "s2_37dp_divsd_canonical_span".into();
+    bad_span.initial_state.gpr[0] = HexU64(0x0000_7fff_ffff_fffc);
+    bad_span.memory[1].guest_address = bad_span.initial_state.gpr[0];
+    bad_span.expected_exit = ExpectedExit::Exception;
+    let (_, span_result) = run(&bad_span.to_json().unwrap(), "interpreter", 0);
+    assert!(matches!(span_result.outcome, Outcome::Exception {}));
+    assert_eq!(count(&span_result), 0);
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, "010000000000f03f");
+    }
+    assert!(tampered.validate_for(&input).is_err());
+    for engine in ["jit", "native"] {
+        let (input, denied) = run(DIVSD_M64_MEMORY_RAX, engine, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        denied.validate_for(&input).unwrap();
+    }
+    let mut bad = base.clone();
+    bad.memory[0].initial_bytes_hex = "f20f5901".into();
+    assert!(bad.validate().is_err());
+    let mut bad = base.clone();
+    bad.memory[0].initial_bytes_hex = "f20f5e0090".into();
+    bad.memory[0].length = 5;
+    bad.memory[0].comparison_mask_hex = "ff".repeat(5);
+    bad.stop_rip = Some(HexU64(bad.initial_state.rip.get() + 5));
+    assert!(bad.validate().is_err());
+    let mut bad = base.clone();
+    bad.memory[1].length = 4;
+    assert!(bad.validate().is_err());
+    for mxcsr in [0x1f40, 0x1f00, 0x9f80, 0x11f80] {
+        let mut bad = base.clone();
+        bad.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(bad.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+    let mut bad = base.clone();
+    bad.divsd_controls = None;
+    assert!(bad.validate().is_err());
+    let mut bad = base.clone();
+    bad.divsd_controls.as_mut().unwrap().sse2_available = false;
+    assert!(bad.validate().is_err());
+    let mut bad = base.clone();
+    bad.provenance.specification.clear();
+    assert!(bad.validate().is_err());
+
+    let pairs: [(u64, u64); 24] = [
+        (0x3ff0_0000_0000_0000, 0x4008_0000_0000_0000), // 1/3
+        (0xbff0_0000_0000_0000, 0x4008_0000_0000_0000), // -1/3
+        (0x7ff8_0000_0000_1234, 0x7ff0_0000_0000_0001), // qNaN / sNaN
+        (0x7ff0_0000_0000_0001, 0x7ff8_0000_0000_1234), // sNaN / qNaN
+        (0, 0),                                         // 0/0 IE, no ZE
+        (0x7ff0_0000_0000_0000, 0x7ff0_0000_0000_0000), // inf/inf IE
+        (0x3ff0_0000_0000_0000, 0),                     // finite/zero ZE
+        (0x7ff0_0000_0000_0000, 0),                     // inf/zero no ZE
+        (1, 0),                                         // subnormal/zero ZE, no DE
+        (0, 1),                                         // zero/subnormal DE, no ZE
+        (0x3ff0_0000_0000_0000, 0x7ff0_0000_0000_0000), // finite/inf
+        (0x7ff0_0000_0000_0000, 0x3ff0_0000_0000_0000), // inf/finite
+        (0x8000_0000_0000_0000, 0x3ff0_0000_0000_0000), // -0
+        (0, 0xbff0_0000_0000_0000),                     // +0 / -1
+        (0x0000_0000_0000_0001, 0x3ff0_0000_0000_0000), // exact min subnormal
+        (0x0000_0000_0000_0001, 0x4000_0000_0000_0000), // tiny inexact
+        (0x000f_ffff_ffff_ffff, 0x3ff0_0000_0000_0001), // subnormal ratio
+        (0x0010_0000_0000_0000, 0x3ff0_0000_0000_0001), // near min normal
+        (0x3ff0_0000_0000_0000, 0x7fe0_0000_0000_0000), // large exponent gap
+        (0x7fef_ffff_ffff_ffff, 0x0000_0000_0000_0001), // overflow
+        (0x7fe0_0000_0000_0000, 0x0000_0000_0000_0001), // overflow variant
+        (0x3ff0_0000_0000_0000, 0x3ca0_0000_0000_0000), // large finite
+        (0xbff0_0000_0000_0000, 0x3ca0_0000_0000_0000),
+        (0xfff0_0000_0000_0000, 0xc000_0000_0000_0000), // negative infinity
+    ];
+    let encode = |raw: u64| {
+        raw.to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    for (vector, (lhs, rhs)) in pairs.into_iter().enumerate() {
+        for rc in 0..4u64 {
+            for sticky in 0..64u64 {
+                let mut case = base.clone();
+                case.case_id = format!("s2_37dp_v{vector}_rc{rc}_sticky{sticky:02x}");
                 let original = &base.initial_state.sse.as_ref().unwrap().xmm[0];
                 case.initial_state.sse.as_mut().unwrap().xmm[0] =
                     format!("{}{}", encode(lhs), &original[16..]);

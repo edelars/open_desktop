@@ -16599,3 +16599,32 @@ The interpreter-only schema-v2 profile `s2-long-divss-memory-rax-v1` admits exac
 Divide old XMM0.low32 by the actual memory RHS via `Binary32::divide_raw_result` and the raw-u32 `independent_divss` oracle. Preserve XMM0.high96 and unrelated state; merge IE/DE/ZE/OE/UE/PE. Classify original NaNs first, then finite-nonzero/zero ZE, then DE, then result flags. WPR tiny/underflow uses tininess after rounding; exact tiny raises no UE. The Type 3 note on Intel SDM Rev. 093 Vol. 2A p. 3-276 refers to VEX forms, not this legacy SSE encoding. JIT/native/C ABI/generic/fragment and unmasked/#XM paths remain closed. No physical x86 acceptance is claimed.
 
 See [Stage 2 plan](../plans/STAGE_2.md#s2-37do--masked-only-legacy-long64-divss-xmm0m32-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37do--divss-xmm0m32-rax), [standalone report](../reports/S2_37DO_DIVSS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37do--divss-xmm0m32-rax).
+
+
+## S2-37dp — masked-only Long64 DIVSD XMM0,m64 [RAX]
+
+The interpreter-only schema-v2 profile `s2-long-divsd-memory-rax-v1` admits
+exactly legacy `F2 0F 5E 00`, length four, budget one and stop RIP entry+4.
+Require Long64, SSE2 (`CPUID.01H:EDX[26]`), CR0.EM=0, CR4.OSFXSR=1,
+CR0.TS=0 and present XMM/MXCSR state. Fetch all four bytes before #UD/#NM
+gates; adjacent prefix, REX, alternate ModR/M/addressing and VEX/EVEX forms
+remain unsupported.
+
+Admit MXCSR supported bits `0xffbf`, reserved bits clear, all six exception
+masks set and DAZ=FTZ=0; all four RC modes and every prior sticky history are
+allowed. AC=1 refuses before span validation or data access. For AC=0, check
+`RAX+7` without overflow and both canonical48 endpoints before exactly one
+read8; read failure leaves CPU, SSE, MXCSR, RIP and retirement unchanged.
+
+Divide original XMM0.low64 by the actual memory RHS using
+`Binary64::divide_raw_result` with MXCSR RC. Classify original NaNs and invalid
+0/0 or infinity/infinity before finite nonzero divided by zero; ZE excludes
+infinity/zero and NaN operands. DE applies only to a subnormal input when no
+higher-priority IE/ZE applies. Generate OE/UE/PE from the binary64 result and
+WPR tininess-after-rounding; merge IE/DE/ZE/OE/UE/PE into prior sticky flags.
+Success writes only XMM0.low64, preserving XMM0.high64, other XMM registers and
+unrelated state. JIT/native/C ABI/generic/fragment and unmasked/#XM paths remain
+closed. No physical x86 acceptance is claimed.
+
+The Type 3 note on Intel SDM Rev. 093 Vol. 2A p. 3-274 describes VEX-encoded
+forms and does not modify this legacy DIVSD contract. See [Stage 2 plan](../plans/STAGE_2.md#s2-37dp--masked-only-legacy-long64-divsd-xmm0m64-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dp--divsd-xmm0m64-rax), [standalone report](../reports/S2_37DP_DIVSD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dp--divsd-xmm0m64-rax). Sources: Intel SDM Rev. 093 Vol. 2A DIVSD pp. 3-273–3-274; Vol. 2A Table 2-20; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and 11.6.6.
