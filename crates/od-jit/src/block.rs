@@ -3082,6 +3082,12 @@ fn build_block_with_profile(
                         == Some(&[0x89, 0x00][..])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                         == Some(&[0x89, 0x04, 0x0b][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                        == Some(&[0x89, 0x04, 0x4b][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                        == Some(&[0x89, 0x04, 0x8b][..])
+                    || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                        == Some(&[0x89, 0x04, 0xcb][..])
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(3))
@@ -4884,7 +4890,7 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && operand.size == OperandSize::Dword
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
                 && operand.index == Some(od_isa::Register::Rcx)
-                && operand.scale == 1
+                && matches!(operand.scale, 1 | 2 | 4 | 8)
                 && operand.displacement == 0);
     let Operation::Mov {
         dst: Operand::Memory(operand),

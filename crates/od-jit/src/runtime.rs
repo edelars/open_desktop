@@ -682,7 +682,7 @@ impl MemorySiteV2 {
                 od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
             )
             && self.operand.index == Some(od_isa::Register::Rcx)
-            && self.operand.scale == 1
+            && matches!(self.operand.scale, 1 | 2 | 4 | 8)
             && self.operand.displacement == 0
         {
             return true;
@@ -1882,7 +1882,18 @@ impl MemorySiteV2 {
                 && self.operand.scale == expected_scale
                 && self.operand.displacement == 0;
         }
-        if source == [0x89, 0x04, 0x0b] {
+        if source == [0x89, 0x04, 0x0b]
+            || source == [0x89, 0x04, 0x4b]
+            || source == [0x89, 0x04, 0x8b]
+            || source == [0x89, 0x04, 0xcb]
+        {
+            let expected_scale = match source[2] >> 6 {
+                0 => 1,
+                1 => 2,
+                2 => 4,
+                3 => 8,
+                _ => unreachable!(),
+            };
             return expected_operation == MemorySiteOperationV2::Store
                 && self.instruction_index == expected_index
                 && self.next_rip.checked_sub(self.guest_rip) == Some(3)
@@ -1895,7 +1906,7 @@ impl MemorySiteV2 {
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
                 )
                 && self.operand.index == Some(od_isa::Register::Rcx)
-                && self.operand.scale == 1
+                && self.operand.scale == expected_scale
                 && self.operand.displacement == 0;
         }
         if source == [0x8b, 0x03] || source == [0x8b, 0x00] {
