@@ -44,9 +44,14 @@ integer magnitude thresholds rather than production floating-point helpers.
 The graph was absent at the start of this isolated checkout, so no pre-change
 query was available; the AST refresh and post-refresh query completed. The
 layout findings are pre-existing worktree/report limitations. Independent
-review is pending. No physical x86, JIT, or native execution is claimed.
+Sol/high review found no functional defects; it ran the focused FSUBR tests
+(10/10), the broader `fsub` filter (47/47), direct precision tests (2/2), the
+literal runner fixture (1/1), workspace check, formatting, and diff check.
+The review caught a P3 fixture provenance typo (`S2-30di`); commit `7648116`
+corrected it and the reviewer confirmed closure. No physical x86, JIT, or
+native execution is claimed.
 
-See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dj-large-gap-fsubr-st0-sti-d8-e8-ef),
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dj-large-gap-fsubr-st0-sti-d8-e8ef),
 [Stage 2 plan](../plans/STAGE_2.md#s2-30dj-large-gap-fsubr-st0-sti-admission),
 [shared report](STAGE_2_REPORT.md#s2-30dj--large-gap-fsubr-st0-sti),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dj-large-gap-fsubr-fixture-coverage),

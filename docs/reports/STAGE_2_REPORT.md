@@ -22315,3 +22315,30 @@ confirms JIT denial. Verification and review results are recorded in the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30dk-large-gap-fsub-sti-st0-dc-e8ef),
 [plan](../plans/STAGE_2.md#s2-30dk-large-gap-fsub-sti-st0-admission), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-30dk-large-gap-reverse-destination-fsub-fixture).
+
+<a id="main-integration-s2-30dj-s2-37ea-s2-30dk"></a>
+
+## Main integration: S2-30dj + S2-37ea + S2-30dk
+
+Transferred to main as `cf439dd`/`8c44a08` (S2-30dj and provenance correction),
+`5c39030`/`42246dc` (S2-37ea and AC-priority validator fix), and `1a4fc18`
+(S2-30dk). The Stage 2 plan and CPU contract contain both x87 forms and the
+RCPSS m32 profile; the shared report preserves each slice's scope and evidence.
+
+Combined main verification on 2026-11-02 passed:
+
+- `cargo test -p od-isa -p od-testkit -p od-runner --offline -- --test-threads=1`:
+  od-isa 1,884; runner 125 unit + 514 fixture; od-testkit 455.
+- `cargo test -p od-x86-runner --offline -- --test-threads=1`:
+  8 library + 4 binary tests.
+- `cargo check --workspace --all-targets --offline`.
+- `cargo fmt --all -- --check`, `git diff --check`, and `python3 tools/check_layout.py`.
+- `graphify update .`: 11,735 nodes / 25,431 edges / 361 communities.
+
+All three slices have independent Sol/high review with no remaining findings.
+S2-37ea's review found a schema ordering defect for AC=1 plus noncanonical RAX;
+the dedicated fix now matches the interpreter (`gates → AC → canonical span`)
+and verifies AC=1 refusal versus AC=0 #GP without retirement or state changes.
+No physical x86 acceptance was run. ISSUE-025 remains open, and these local
+reciprocal results do not claim hardware bit equality or a universal tiny-result
+cutoff. Stage 2 remains open.
