@@ -22,7 +22,11 @@ Run `cargo test -p od-jit --lib ir_dword_rbx_disp8_store --offline` and `cargo t
 
 ## S3-20cu: exact dword checked store with signed disp32
 
-Run `cargo test -p od-jit --lib ir_dword_rbx_disp32_store --offline` and `cargo test -p od-host --lib s3_20cu_disp32_dword_store_preserves_checked_semantics --offline`. Admit only the six-byte singleton `89 83 id` (`MOV [RBX+disp32],EAX`) with the decoder-owned signed displacement from full-width RBX. JIT tests bind source bytes to the site and verify the single `A+6` guest boundary. The host differential checks a bounded set of checked-write cases. It does not include a separate noncanonical-end or 64-bit range-overflow case; record this as a test coverage limit, not a runtime defect. The decoded `access_address_48` path remains the shared authoritative effective-address implementation. Other dword store forms remain exact and separate; no owner/MMU, Mini, M1, Stage 2, physical-x86, or performance conclusion follows. See the [S3-20cu report](../reports/STAGE_3_S3-20cu_2026-11-01.md).
+Run `cargo test -p od-jit --lib ir_dword_rbx_disp32_store --offline` and `cargo test -p od-host --lib s3_20cu_disp32_dword_store_preserves_checked_semantics --offline`. Admit only the six-byte singleton `89 83 id` (`MOV [RBX+disp32],EAX`) with the decoder-owned signed displacement from full-width RBX. JIT tests bind source bytes to the site and verify the single `A+6` guest boundary. The host differential checks a bounded set of checked-write cases. A separate S3-27i regression test, `cargo test -p od-host --lib tests::s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow --offline`, covers canonical-end and range-overflow behavior through the same shared `access_address_48` path. This addresses the earlier fixture coverage gap without broadening instruction admission or claiming a runtime defect. Other dword store forms remain exact and separate; no owner/MMU, Mini, M1, Stage 2, physical-x86, or performance conclusion follows. See the [S3-20cu report](../reports/STAGE_3_S3-20cu_2026-11-01.md) and [S3-27i report](../reports/STAGE_3_S3-27i_2026-11-01.md).
+
+## S3-27i: disp32 Dword-store canonical-end and range-overflow checks
+
+Run `cargo test -p od-host --lib tests::s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow --offline`. This separate host regression covers canonical-end and 64-bit range-overflow checks for the exact S3-20cu disp32 dword-store fixture using the decoder-owned `access_address_48` path. It supplements the original bounded host semantics test; it does not add an instruction form, production owner/MMU integration, or full S3-27 fault recovery. See the [S3-27i report](../reports/STAGE_3_S3-27i_2026-11-01.md).
 
 ## S3-27h: published dword load PC-map lifetime
 
@@ -35,6 +39,10 @@ The local harness pins the two exact JIT identities for source binding and the t
 ## S3-34ac: exact published dword-load PC-map integration gate
 
 The harness pins exactly `published_dword_disp8_and_disp32_load_pc_maps_match_artifacts_survive_drop_and_republish` in `od-host --test memory_corpus`. The gate remains tied to the S3-27h publication/lifetime test; it adds no host-fault recovery claim and does not complete S3-34. See the [S3-34ac report](../reports/STAGE_3_S3-34ac_2026-11-01.md).
+
+## S3-34ad / S3-34ae: exact harness gates for the disp32 dword store
+
+S3-34ad pins the S3-20cu JIT source-binding and `A+6` PC-map tests plus its exact host checked-semantics test. S3-34ae separately pins the S3-27i canonical-end/range-overflow regression. These remain bounded local acceptance evidence; they do not complete corpus/reducer or S3-34. See [S3-34ad](../reports/STAGE_3_S3-34ad_2026-11-01.md) and [S3-34ae](../reports/STAGE_3_S3-34ae_2026-11-01.md).
 
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 

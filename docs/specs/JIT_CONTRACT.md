@@ -202,12 +202,23 @@ binding and one committed guest boundary at `A+6` preserve the singleton's
 instruction boundary.
 
 This does not admit other dword bases/addressing modes, prefixes, SIB, or
-additional displacement forms beyond the enumerated exact encodings. The host
-fixture has no distinct noncanonical-end or 64-bit range-overflow case; that is
-a test coverage limitation, not a reported runtime defect. No production
+additional displacement forms beyond the enumerated exact encodings. The
+S3-20cu host fixture is complemented by a separate S3-27i regression test for
+canonical-end and range-overflow behavior through the same decoder-owned
+`access_address_48` path. This is bounded test coverage, not a reported runtime
+defect. No production
 owner/MMU, SMC, cache, dispatcher, Mini, M1, Stage 2, physical-x86 or
 performance conclusion follows. See the
 [S3-20cu report](../reports/STAGE_3_S3-20cu_2026-11-01.md).
+
+#### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
+
+The host-side regression `s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow`
+checks canonical-end and range-overflow behavior for the bounded S3-20cu
+`89 83 id` store through the shared decoded-address path. It supplements the
+original host fixture; it does not broaden instruction admission or establish
+production owner/MMU integration or complete S3-27 fault recovery. See the
+[S3-27i report](../reports/STAGE_3_S3-27i_2026-11-01.md).
 
 #### S3-20c: one-byte SIB extension
 
