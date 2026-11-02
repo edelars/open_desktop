@@ -959,6 +959,9 @@ fn checked_dword_load_metadata_v2(
     if bytes != [0x8b, 0x03]
         && bytes != [0x8b, 0x00]
         && bytes != [0x8b, 0x04, 0x0b]
+        && bytes != [0x8b, 0x04, 0x4b]
+        && bytes != [0x8b, 0x04, 0x8b]
+        && bytes != [0x8b, 0x04, 0xcb]
         && bytes != [0x67, 0x8b, 0x03]
         && !(bytes.len() == 4 && bytes[..3] == [0x67, 0x8b, 0x43])
         && !(bytes.len() == 7 && bytes[..3] == [0x67, 0x8b, 0x83])
@@ -2817,12 +2820,127 @@ mod tests {
             &[0x66, 0x8b, 0x04, 0x0b][..],
             &[0x8b, 0x44, 0x0b, 0][..],
             &[0x8b, 0x84, 0x0b, 0, 0, 0, 0][..],
-            &[0x8b, 0x04, 0x4b][..],
             &[0x8b, 0x04, 0x03][..],
             &[0x8b, 0x04, 0x0c][..],
             &[0x8b, 0x0c, 0x0b][..],
             &[0x89, 0x04, 0x0b][..],
             &[0x67, 0x8b, 0x04, 0x0b][..],
+        ] {
+            assert!(
+                compile_ir_memory_dword_load_block_v2(
+                    CodeView::new(entry, neighbor).unwrap(),
+                    entry
+                )
+                .is_err(),
+                "admitted neighboring encoding {neighbor:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ir_dword_rbx_rcx_sib_dword_load_binds_exact_scales_2_4_8() {
+        let entry = 0x8130;
+        let cases = [
+            ([0x8b, 0x04, 0x4b], 2),
+            ([0x8b, 0x04, 0x8b], 4),
+            ([0x8b, 0x04, 0xcb], 8),
+        ];
+        let mut sites = Vec::new();
+        for (source, scale) in cases {
+            let block = compile_ir_memory_dword_load_block_v2(
+                CodeView::new(entry, &source).unwrap(),
+                entry,
+            )
+            .unwrap();
+            assert_eq!(block.source_bytes(), source);
+            assert_eq!(block.site().guest_rip(), entry);
+            assert_eq!(block.site().next_rip(), entry + 3);
+            assert_eq!(block.site().destination(), Some(0));
+            assert_eq!(block.site().source(), None);
+            assert_eq!(block.site().operand().size, od_isa::OperandSize::Dword);
+            assert_eq!(
+                block.site().operand().address_size,
+                od_isa::OperandSize::Qword
+            );
+            assert_eq!(
+                block.site().operand().base,
+                AddressBase::Register(Register::Rbx)
+            );
+            assert_eq!(block.site().operand().index, Some(Register::Rcx));
+            assert_eq!(block.site().operand().scale, scale);
+            assert_eq!(block.site().operand().displacement, 0);
+            assert!(block.site().has_supported_profile());
+            assert!(
+                block
+                    .site()
+                    .matches_source_bytes(&source, MemorySiteOperationV2::Load)
+            );
+            assert_eq!(block.pc_map().instruction_count(), 1);
+            assert_eq!(
+                block.pc_map().boundaries()[0].rip,
+                crate::statepoints::GuestRipBoundary::Fixed(entry + 3)
+            );
+            assert!(matches_dword_pc_map_contract(
+                block.pc_map(),
+                entry,
+                entry + 3,
+                0,
+                1,
+                crate::statepoints::StatePhase::HelperCall,
+                MemorySiteOperationV2::Load,
+            ));
+            assert!(block.pc_map().ranges().iter().any(|range| {
+                range.phase == crate::statepoints::StatePhase::HelperCall
+                    && range.snapshot
+                        == crate::statepoints::SnapshotAdmissibility::ReplayCurrentInstruction
+            }));
+            if let Some(previous) = sites.last() {
+                assert_ne!(previous, block.site());
+            }
+            sites.push(*block.site());
+
+            let mut forged = *block.site();
+            forged.operand.scale = match scale {
+                2 => 4,
+                4 => 8,
+                8 => 2,
+                _ => unreachable!(),
+            };
+            assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+
+            let mut changed_source = source;
+            changed_source[2] = match scale {
+                2 => 0x8b,
+                4 => 0xcb,
+                8 => 0x4b,
+                _ => unreachable!(),
+            };
+            assert!(
+                !block
+                    .site()
+                    .matches_source_bytes(&changed_source, MemorySiteOperationV2::Load)
+            );
+            let changed = compile_ir_memory_dword_load_block_v2(
+                CodeView::new(entry, &changed_source).unwrap(),
+                entry,
+            )
+            .unwrap();
+            assert_ne!(block.site(), changed.site());
+        }
+
+        for neighbor in [
+            &[0x8b][..],
+            &[0x8b, 0x04][..],
+            &[0x8b, 0x04, 0x4b, 0x90][..],
+            &[0x48, 0x8b, 0x04, 0x4b][..],
+            &[0x66, 0x8b, 0x04, 0x4b][..],
+            &[0x67, 0x8b, 0x04, 0x4b][..],
+            &[0x8b, 0x44, 0x4b, 0][..],
+            &[0x8b, 0x84, 0x4b, 0, 0, 0, 0][..],
+            &[0x8b, 0x04, 0x49][..],
+            &[0x8b, 0x04, 0x42][..],
+            &[0x8b, 0x0c, 0x4b][..],
+            &[0x89, 0x04, 0x4b][..],
         ] {
             assert!(
                 compile_ir_memory_dword_load_block_v2(

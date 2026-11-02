@@ -1092,7 +1092,7 @@ fn is_checked_dword_load_address(
         && operand.address_size == od_isa::OperandSize::Qword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
         && operand.index == Some(od_isa::Register::Rcx)
-        && operand.scale == 1
+        && matches!(operand.scale, 1 | 2 | 4 | 8)
         && operand.displacement == 0;
     operand.size == od_isa::OperandSize::Dword
         && ((operand.index.is_none()
