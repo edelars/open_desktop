@@ -1508,7 +1508,7 @@ pub enum Operation {
     FdivSt0St {
         source: u8,
     },
-    /// Bare `D8 F8+i` FDIVR ST(0), ST(i), exact finite local profile only.
+    /// Bare `D8 F8+i` FDIVR ST(0), ST(i), bounded FCW precision profile.
     FdivrSt0St {
         source: u8,
     },

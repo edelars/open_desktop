@@ -11232,6 +11232,44 @@ Operation/FPU Flags Affected p. 3-334, defines the instruction and status
 fields; Vol. 1 §8.1.5.2/Table 8-2 and §8.1.5.3 define PC/RC, with §8.5.6 p. 8-30
 covering masked precision/C1 ([Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451), [Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cn-bounded-fdiv-st0-sti-d8-f0-f7), [shared report](../reports/STAGE_2_REPORT.md#s2-30cn--bounded-fdiv-st0-sti), and [standalone report](../reports/S2_30CN_X87_FDIV_PRECISION.md). S2-30 and ISSUE-019 remain open.
 
+#### S2-30cs. Bare `FDIVR ST(0), ST(i)` with bounded FCW precision
+
+Extend only exact bare Long64 `D8 F8..FF` to the S2-29ac direct finite
+division helper, in reversed operand order: `ST(i) / ST(0)`. Require present
+x87 state, absent FCS/FDS, one of the twelve all-masked PC24/53/64 FCWs, and
+`FSW & 0x80df == 0`. Used physical operands must be Valid-tagged canonical
+nonzero Normal binary80 of either sign. The self case `i=0` validates only TOP
+and yields exact +1.
+
+Accept only a finite Normal exact quotient exponent and Normal finite rounded
+result. Reject zero divisor, zero/subnormal/special or malformed operands,
+zero/subnormal/overflow results, unsupported FCW/status and out-of-domain
+exponents atomically. Do not transform FDIV into a negated/subtracted quotient.
+
+Commit to old physical TOP without popping, set PE to old PE OR helper
+`inexact`, replace C1 with helper `incremented`, preserve C0/C2/C3 under the
+existing local undefined-field policy, and preserve TOP, tags, sources, FCW and
+unrelated state. Set FIP to old RIP, advance RIP by two and retire once; no
+data access occurs. Keep DC/DE exact-only, D8 F0..F7 FDIV unchanged, and JIT,
+native and guest exception delivery closed.
+
+Cover every TOP/index, sign combination and all twelve FCWs, exact self-index,
+positive and negative 1/3, midpoint/tail/carry boundaries, order asymmetry,
+sticky PE/C1, source/canaries, exponent limits and atomic rejects. Keep
+positive baselines for refusal cases; retain neighboring opcode, prefix,
+fetch/truncation, STOP, stop-RIP, budget, fetch-only and backend-denial checks.
+The former p64 inexact reverse-division case is now a rounded success; retain
+genuine unsupported cases. Use Intel SDM Rev. 093 Vol. 2A `FDIVR` Operation
+and FPU Flags Affected, with Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6
+for PC/RC and masked precision behavior. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cs-bounded-fdivr-st0-sti-d8-f8-ff), [shared report](../reports/STAGE_2_REPORT.md#s2-30cs--bounded-fdivr-st0-sti), and [standalone report](../reports/S2_30CS_X87_FDIVR_PRECISION.md).
+
+S2-30cs implementation is complete and its required interpreter, runner, workspace,
+format, diff and Graphify checks pass. Independent Sol/high review found no
+defects. The layout check reports only the known `.git` marker and two missing
+historical oracle manifests tracked by ISSUE-023. JIT/native execution, guest
+exception delivery, physical x86 validation and overall Stage 2 acceptance
+remain open.
+
 #### S2-30co. Bare `FMUL ST(0), ST(i)` with bounded FCW precision
 
 Extend only exact bare Long64 `D8 C8..CF`. Require present x87 state, absent

@@ -9522,13 +9522,49 @@ rounding modes/precisions, midpoint parity and neighbors, C1 behavior for
 negative directed rounding, previous PE/C1 states, all TOP/index pairs,
 exponent/carry boundaries and atomic admission failures. The former 1/3 reject
 case now checks rounded success. STOP, budget, canary and fetch-only checks
-pass. Intel SDM Rev. 093 Vol. 2A `FDIV` pp. 3-333–3-335 (Operation/FPU Flags
+pass. This FDIV direction remains separate from bounded reverse-direction
+`FDIVR ST(0), ST(i)` in S2-30cs. Intel SDM Rev. 093 Vol. 2A `FDIV` pp. 3-333–3-335 (Operation/FPU Flags
 Affected p. 3-334) defines the instruction/status fields; Vol. 1 §8.1.5.2/Table
 8-2, §8.1.5.3, and §8.5.6 p. 8-30 define PC/RC and masked precision behavior.
 See the [S2-30cn plan](../plans/STAGE_2.md#s2-30cn-bare-fdiv-st0-sti-with-bounded-fcw-precision),
 [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-30cn--bounded-fdiv-st0-sti),
 [standalone report](../reports/S2_30CN_X87_FDIV_PRECISION.md), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
+## Local S2-30cs: bounded `FDIVR ST(0), ST(i)` (`D8 F8..FF`)
+
+Only exact bare Long64 `D8 F8..FF` is admitted. Require present x87 state,
+absent FCS/FDS, one of twelve all-exception-masked PC24/53/64 FCWs, and
+`FSW & 0x80df == 0`. Participating physical registers require Valid tags and
+canonical nonzero Normal binary80 operands of either sign. For `i=0`, validate
+only the physical TOP and produce exact `+1`.
+
+For `i>0`, compute the quotient directly as old `ST(i) / ST(0)` using
+`divide_finite_to_normal_binary80_precision_with_diagnostics` with dividend and
+divisor passed in that order. The helper supplies one FCW-controlled rounding
+at PC24/53/64. Both the exact quotient domain and rounded result must be
+finite Normal. Zero, subnormal, special or malformed operands, zero divisor,
+zero/subnormal/overflow output, unsupported FCW/status and out-of-domain
+exponents return atomic Unsupported. No FDIV-to-negation transformation is
+used.
+
+On success, replace old physical TOP without popping, set PE to old PE OR
+`inexact`, and replace C1 with the helper's magnitude `incremented` diagnostic.
+Preserve C0/C2/C3 as a deterministic local policy for undefined condition
+fields, plus TOP, tags, source registers, selectors, FCW and unrelated state.
+Set FIP to old RIP, advance RIP by two, retire once and make no data-memory
+callback. DC/DE directions remain exact-only; D8 F0..F7 FDIV is unchanged.
+JIT/native execution and general x87 exception delivery remain closed.
+
+Literal coverage checks all twelve FCWs across every TOP/index/sign pair,
+positive and negative 1/3, midpoint neighbors, discarded tails, carry, operand
+order and exponent boundaries. It also checks PE/C1, self-index, source/tag/
+state preservation, invalid status/control words and malformed/special/zero
+inputs, prefix/fetch/STOP/stop-RIP/budget atomicity and backend denial. The
+former p64 inexact reverse-division refusal now succeeds with rounded 1/3;
+genuine refusal cases remain. Intel SDM Rev. 093 Vol. 2A `FDIVR` operation and
+FPU Flags Affected, with Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6,
+define the instruction and FCW rounding behavior. See the [S2-30cs plan](../plans/STAGE_2.md#s2-30cs-bare-fdivr-st0-sti-with-bounded-fcw-precision), [report](../reports/STAGE_2_REPORT.md#s2-30cs--bounded-fdivr-st0-sti), [standalone report](../reports/S2_30CS_X87_FDIVR_PRECISION.md), and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
 ## Local S2-30co: bounded `FMUL ST(0), ST(i)` (`D8 C8..CF`)
 

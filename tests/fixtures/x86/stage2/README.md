@@ -1412,9 +1412,13 @@ their existing meanings; native x87 admission stays closed.
 The schema validator admits all eight bare `D8 F8+i` FDIVR encodings;
 `D8 F9` is `FDIVR ST(0), ST(1)`. Runner cases check every TOP×i
 destination, ordered `15/3 = 5`, exact `+1` alias behavior, C1 clearing and
-preservation of tags/TOP and unrelated raw state. An inexact `D8 F9` case uses
-`stop_rip: null` and budget one and verifies the full state is unchanged.
-`D8 F0..F7` FDIV remains distinct; native x87 admission stays closed.
+preservation of tags/TOP and unrelated raw state. The formerly inexact `D8 F9`
+case is now accepted by the local bounded-FCW interpreter profile and checks
+rounded p64 `1/3`, sticky PE and C1 replacement. The profile requires absent
+FCS/FDS, one of twelve all-masked PC24/53/64 FCWs, clean required FSW bits, and
+canonical nonzero Normal operands; the self-index validates only TOP. Other
+invalid inputs still refuse atomically. `D8 F0..F7` FDIV remains distinct;
+native x87 admission stays closed. See [S2-30cs](../../../../docs/reports/S2_30CS_X87_FDIVR_PRECISION.md).
 
 ### S2-30u x87 schema coverage
 

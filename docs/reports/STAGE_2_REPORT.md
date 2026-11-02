@@ -21211,6 +21211,36 @@ native or physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol.
 2A `FDIV` pp. 3-333–3-335, Operation/FPU Flags Affected p. 3-334; Vol. 1
 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6 p. 8-30 ([Vol. 2A](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451), [Vol. 1](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See the [plan](../plans/STAGE_2.md#s2-30cn-bare-fdiv-st0-sti-with-bounded-fcw-precision), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cn-bounded-fdiv-st0-sti-d8-f0-f7), and [standalone report](S2_30CN_X87_FDIV_PRECISION.md). S2-30 and ISSUE-019 remain open.
 
+### S2-30cs — bounded `FDIVR ST(0), ST(i)`
+
+The interpreter admits exact bare Long64 `D8 F8..FF` for direct precision-aware
+reverse division: old `ST(i) / ST(0)` is rounded once by the existing finite
+binary80 division helper with operands in that order. Admission is restricted
+to present x87 state, absent FCS/FDS, twelve all-masked PC24/53/64 FCWs,
+`FSW & 0x80df == 0`, Valid canonical nonzero Normal operands and finite Normal
+quotients/results. `i=0` validates only old physical TOP and produces exact
+`+1`. Success replaces old TOP without pop, accumulates PE, replaces C1 from
+the helper's magnitude increment diagnostic, preserves C0/C2/C3 and unrelated
+state, records FIP, advances RIP by two and retires once. Unsupported status,
+control, input and exponent/result domains refuse atomically; no data access,
+guest exception delivery or JIT/native admission is added.
+
+Coverage includes every TOP/index/sign/FCW combination, positive and negative
+`1/3`, midpoint neighbors, discarded tails, carry, exact self-index, operand
+order, minimum/maximum Normal results, sticky PE/C1, source and full-state
+canaries, malformed/special/zero and unsupported-environment refusals, fetch,
+prefix, STOP, stop-RIP, budget and backend denial. The previous p64 inexact
+`D8 F9` runner refusal is now rounded success; other genuine refusals remain.
+Focused ISA tests passed 6/6, focused testkit 3/3; full `od-isa` passed
+1,792/1,792, `od-testkit` 455/455, and `od-runner` 113 unit plus 490 fixture
+tests. Formatting, workspace all-target offline check, layout, diff check and
+Graphify update passed. The layout script reports only the known `.git` marker
+and two missing historical oracle manifests tracked by ISSUE-023. Independent
+Sol/high review found no defects and reran the focused ISA/testkit filters (8/8
+and 4/4). No native or physical x86 acceptance is claimed. Sources: Intel SDM
+Rev. 093 Vol. 2A `FDIVR` Operation/FPU Flags
+Affected; Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6 ([Vol. 2A](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=451), [Vol. 1](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)). See the [plan](../plans/STAGE_2.md#s2-30cs-bare-fdivr-st0-sti-with-bounded-fcw-precision), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cs-bounded-fdivr-st0-sti-d8-f8-ff), and [standalone report](S2_30CS_X87_FDIVR_PRECISION.md). S2-30 and ISSUE-019 remain open.
+
 ### S2-30co — bounded `FMUL ST(0), ST(i)`
 
 The interpreter now admits only exact bare Long64 `D8 C8..CF` in the

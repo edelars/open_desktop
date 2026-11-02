@@ -1436,14 +1436,30 @@ canonical nonzero Normal operands, all-masked PC24/53/64 FCW, and clean required
 FSW fields. It uses the direct finite division precision helper; only finite
 Normal results are admitted. PE accumulates mathematical inexactness and C1
 uses the helper's pre-carry increment diagnostic; C0/C2/C3 are preserved by
-local policy. FDIVR, reverse directions and pop forms retain their prior
-exact-only scope. Literal tests, full-state denials, `od-isa`, `od-testkit`,
+local policy. DC/DE directions and pop forms retain their prior exact-only
+scope; bounded reverse `FDIVR ST(0), ST(i)` is the separate S2-30cs slice.
+Literal tests, full-state denials, `od-isa`, `od-testkit`,
 runner, JIT-denial, workspace and clean Sol/high review results are recorded in
 [S2-30cn report](reports/S2_30CN_X87_FDIV_PRECISION.md). Native/JIT execution,
 guest exception delivery and physical x86 acceptance remain outside scope;
 ISSUE-019 remains open. See [contract](specs/CPU_CONTRACT.md#local-s2-30cn-bounded-fdiv-st0-sti-d8-f0-f7),
 [plan](plans/STAGE_2.md#s2-30cn-bare-fdiv-st0-sti-with-bounded-fcw-precision), and
 [shared report](reports/STAGE_2_REPORT.md#s2-30cn--bounded-fdiv-st0-sti).
+
+**S2-30cs local FDIVR slice:** exact bare Long64 `D8 F8..FF` directly rounds
+`ST(i) / ST(0)` through the existing finite division precision helper, with
+all-masked PC24/53/64 FCWs and the same strict x87 state, operand and normal
+result boundary as S2-30cn. It writes old physical TOP without popping, ORs PE,
+replaces C1 from magnitude `incremented`, preserves C0/C2/C3 and other state,
+and retires once. The p64 1/3 rejection is superseded by a positive rounded
+case; actual zero/special/subnormal/malformed, unsupported environment and
+out-of-domain cases remain atomic refusals. Full TOP/index/sign/FCW, midpoint,
+carry, order, sticky status, fetch/STOP/budget and canary coverage is recorded
+in [S2-30cs report](reports/S2_30CS_X87_FDIVR_PRECISION.md). JIT/native,
+guest exception delivery and physical x86 acceptance remain outside scope;
+ISSUE-019 remains open. See [contract](specs/CPU_CONTRACT.md#local-s2-30cs-bounded-fdivr-st0-sti-d8-f8-ff),
+[plan](plans/STAGE_2.md#s2-30cs-bare-fdivr-st0-sti-with-bounded-fcw-precision),
+and [shared report](reports/STAGE_2_REPORT.md#s2-30cs--bounded-fdivr-st0-sti).
 
 **S2-30co local FMUL slice:** exact bare `D8 C8..CF` now uses target-precision
 binary80 multiplication only for Valid canonical nonzero Normal operands and
