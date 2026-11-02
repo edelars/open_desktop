@@ -5068,7 +5068,9 @@ pub(crate) fn is_checked_dword_load_form(instruction: Instruction) -> bool {
             || (instruction.length == 3
                 && matches!(
                     operand.base,
-                    AddressBase::Register(od_isa::Register::Rbx | od_isa::Register::Rbp)
+                    AddressBase::Register(
+                        od_isa::Register::Rax | od_isa::Register::Rbx | od_isa::Register::Rbp
+                    )
                 )
                 && i8::try_from(operand.displacement).is_ok())
             || (instruction.length == 6
