@@ -1,6 +1,6 @@
 # S2-37dv — masked-only Long64 SUBPD XMM0,m128 [RAX]
 
-Status: implementation ready; independent Sol/high review is pending.
+Status: implementation and independent Sol/high review complete; review found no issues.
 
 ## Contract
 
@@ -46,5 +46,6 @@ existing ADDPD test while correcting the new SUBPD test. The ADDPD expectation
 was restored and its focused test plus the final serialized 506-case fixture
 suite passed. Physical x86 acceptance was not run.
 
-Independent Sol/high review and integration are outstanding; physical x86
-acceptance was not run.
+Independent Sol/high review was clean at commit `56348bb`; no findings remain.
+Integration into main and physical x86 acceptance were not performed in this
+worktree.
