@@ -806,3 +806,13 @@ one qword from captured RAX, truncates binary64 toward zero, checks signed-i64
 range, then writes full RAX. Masked invalid adds sticky IE; valid inexact adds
 PE. SSE2 bit 26, IM=PM=1, and DAZ=0 are local admission requirements. Native,
 JIT, C, and generic execution remain closed.
+
+S2-30cx extends exact bare `DC F8+i` FDIV to bounded FCW precision: old
+`ST(i)/ST(0)` is rounded directly at PC24/53/64 and written to old physical
+`(TOP+i)&7` without popping. Division has no exponent-gap cutoff; `i=0`
+produces exact +1 after validating the sole used register. PE is sticky, C1
+tracks the rounded magnitude increment, and the prior exact p64 quotient set
+remains supported, including differing exponents. Invalid environment,
+operand, and result states refuse atomically; native x87 admission remains
+closed. See [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30cx-bounded-fdiv-sti-st0-dc-f8-ff) and
+[Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30cx--bounded-fdiv-sti-st0).

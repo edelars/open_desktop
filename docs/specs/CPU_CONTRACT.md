@@ -16539,3 +16539,28 @@ The interpreter-only schema-v2 profile `s2-long-mulsd-memory-rax-v1` admits only
 MXCSR supported bits are `0xffbf`, reserved bits clear, all six exception masks set and DAZ=FTZ=0. All RC modes and prior sticky histories are allowed. AC=1 returns local Unsupported before span validation/read; AC=0 permits unaligned m64. Validate checked `RAX+7` and both canonical48 endpoints of `[RAX,RAX+7]` before exactly one read8. A failed read leaves CPU/SSE/MXCSR/RIP and retirement unchanged.
 
 Multiply old XMM0.low64 by the loaded memory RHS using `Binary64::multiply_raw_result` with MXCSR RC. Preserve original-operand NaN priority and S2-37at WPR tininess-after-rounding. Merge generated IE/DE/OE/UE/PE into prior sticky flags. Success writes only XMM0.low64, preserving XMM0.high64, XMM1 and unrelated state. Native/JIT/C ABI/generic/fragment and unmasked/#XM paths remain closed. No physical x86 acceptance is claimed. See [Stage 2 plan](../plans/STAGE_2.md#s2-37dn--masked-only-legacy-long64-mulsd-xmm0m64-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dn--mulsd-xmm0m64-rax), [standalone report](../reports/S2_37DN_MULSD_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dn--mulsd-xmm0m64-rax). Sources: Intel SDM Rev. 093 Vol. 2B MULSD pp. 4-148–4-149; Vol. 2A §2.5.3/Table 2-20; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and 11.6.6.
+
+## Local S2-30cx: bounded `FDIV ST(i), ST(0)` (`DC F8..FF`)
+
+The interpreter extends exact bare Long64 `DC F8..FF` to direct x87 FCW
+precision division. It computes old `ST(i)/ST(0)` through the existing
+bounded reverse-division helper, rounded once at PC24/53/64 under RC. Unlike
+addition/subtraction profiles, this division has no normalized-exponent-gap
+cutoff. Require present x87 state, absent instruction/data selectors,
+`FSW & 0x80df == 0`, supported all-masked FCW, Valid tags for used physical
+registers and canonical nonzero Normal binary80 operands. Accept only finite
+Normal quotient/result. The self alias `i=0` validates only old ST(0) and
+produces exact +1.
+
+Success writes only old physical `(TOP+i)&7`, does not pop, makes PE sticky
+from old PE OR inexact, replaces C1 from the helper's incremented result,
+preserves C0/C2/C3 by local policy, records FIP=old RIP, advances RIP by two
+and retires once. Every refusal is atomic. The previous exact-only S2-30v p64
+numeric result domain remains supported, including operands with different
+exponents. Other DC directions, D8 and DE forms, architectural x87 exception
+delivery, native/JIT and physical x86 acceptance remain outside this local
+profile. See the [Stage 2 plan](../plans/STAGE_2.md#s2-30cx-bare-fdiv-sti-st0-with-bounded-fcw-precision),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cx--bounded-fdiv-sti-st0), and
+[standalone report](../reports/S2_30CX_X87_FDIV_REVERSE_PRECISION.md).
+Normative sources: Intel SDM Rev. 093 Vol. 2A `FDIV/FIDIV` pp. 3-333–3-335;
+Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and §8.5.6.

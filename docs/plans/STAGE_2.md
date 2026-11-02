@@ -215,6 +215,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30cu | Bare `DC C8..CF` FMUL ST(i),ST(0), direct FCW precision/rounding; Valid canonical nonzero Normal operands/results, sticky PE and local C1 diagnostic; `D8` and `DE` neighbors unchanged | S2-29ad, S2-30co, S2-30ct; clean Sol/high review; isolated od-isa 1,805, testkit 455, runner 114+492; integrated main od-isa 1,809, testkit 455, runner 115+493, x86-runner 8+4; Graphify 11,280/24,407/336 |
 | [x] | S2-30cv | Bare `DC E8..EF` FSUB ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30i; Sol/high review clean; od-isa 1,813, testkit 455, runner 115+493; workspace check/fmt passed; Graphify 11,335/24,389/351 |
 | [x] | S2-30cw | Bare `DC E0..E7` FSUBR ST(i),ST(0), bounded FCW precision for normalized gap≤64; old exact p64 domain preserved; rounded Normal result, sticky PE and local C1; `D8`/`DE` neighbors unchanged | S2-29ae, S2-30l; independent Sol/high review clean; integrated main od-isa 1,821, testkit 455, runner 116+495, x86-runner 8+4; workspace/fmt/layout/diff and Graphify 11,339/24,564/343 passed; no physical x86 acceptance |
+| [ ] | S2-30cx | Bare `DC F8..FF` FDIV ST(i),ST(0), FCW precision division `ST(i)/ST(0)` into old ST(i), no pop; no exponent-gap cutoff; exact p64 domain preserved; sticky PE/C1 | S2-30v, S2-30cs; focused/full checks and review pending |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11497,6 +11498,46 @@ Workspace all-target offline check, formatting, diff check and Graphify passed.
 The isolated layout checker reported the known `.git` marker and two missing
 historical oracle manifests tracked by ISSUE-023; main layout has no new broken
 links. Independent Sol/high review is clean (39 `fsub` tests passed); no physical x86 acceptance is claimed.
+
+#### S2-30cx. Bare `FDIV ST(i), ST(0)` with bounded FCW precision
+
+Extend only exact bare Long64 `DC F8..FF`. Reuse
+`bounded_x87_fdivr_st0_sti_result(state, destination)` to compute old
+`ST(i)/ST(0)` directly at one of the twelve all-exception-masked PC24/53/64
+FCWs, with all four RC modes. Require present x87 state, absent FCS/FDS,
+`FSW & 0x80df == 0`, Valid tags for used operands, canonical nonzero Normal
+binary80 operands and a finite Normal result. Do not impose an exponent-gap
+cutoff: division does not need the addition/subtraction bound. The alias
+`i=0` validates only old ST(0) and returns exact +1.
+
+On success, write only old physical `(TOP+i)&7` without popping. Make PE sticky
+from old PE OR `inexact`, replace C1 from the helper's `incremented`, preserve
+C0/C2/C3 and unrelated state by local policy, record FIP, advance RIP by two
+and retire once. Preserve the previous exact-only S2-30v p64 result domain,
+including unequal operand exponents. Unsupported controls/status/selectors,
+invalid tags, zero/special/malformed operands and non-Normal quotient results
+refuse atomically before mutation. Other DC directions, D8 and DE neighbors,
+general x87 exception delivery, JIT/native admission and physical x86
+acceptance remain outside this slice.
+
+Cover every TOP/index pair across all twelve FCWs, four operand sign pairs,
+prior PE/C1 histories and alias behavior; literal 1/3 results at PC24/53/64,
+all directed modes, negative rounding, exact quotients with differing
+exponents, exponent extremes, midpoint/rounding boundaries, zero divisor,
+subnormal/overflow/malformed refusals, selectors, tags, fetch/truncation,
+STOP, budget and full-state rollback. Intel SDM Rev. 093 Vol. 2A
+`FDIV/FIDIV` pp. 3-333–3-335; Vol. 1 §8.1.5.2/Table 8-2, §8.1.5.3 and
+§8.5.6. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cx-bounded-fdiv-sti-st0-dc-f8-ff),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cx--bounded-fdiv-sti-st0),
+and [standalone report](../reports/S2_30CX_X87_FDIV_REVERSE_PRECISION.md).
+S2-30 and ISSUE-019 remain open.
+
+Focused decoder/ISA checks passed 5/5; full `od-isa` passed 1,823. Workspace
+all-target offline check, formatting and diff check passed; Graphify rebuilt
+11,392 nodes, 24,531 edges and 352 communities. A literal exponent-gap-65 case
+confirms there is no division cutoff. Isolated layout reports only
+the `.git` marker and historical ISSUE-023 oracle manifests. Independent
+Sol/high review is pending; no physical x86/JIT/native acceptance is claimed.
 
 #### S2-30cq. Bare `FSUB ST(0), ST(i)` with bounded FCW precision
 

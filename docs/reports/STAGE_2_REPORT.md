@@ -21665,3 +21665,21 @@ library + 4 binary tests. Workspace all-target offline check, formatting,
 layout и `git diff --check` прошли. Graphify AST refresh завершился с 11,339
 nodes, 24,564 edges и 343 communities. В runner MULSD дополнительно проверены
 6,400 комбинаций raw oracle. Физическая x86-проверка не выполнялась.
+
+## S2-30cx — bounded `FDIV ST(i), ST(0)`
+
+Exact bare Long64 `DC F8..FF` now uses the existing bounded reverse-division
+helper for old `ST(i)/ST(0)`, writes old physical `(TOP+i)&7` without popping,
+and supports all twelve masked PC24/53/64 FCWs and four RC modes. No exponent
+gap cutoff is applied. The `i=0` alias validates the sole used register and
+returns exact +1. PE is sticky, C1 follows `incremented`, and the prior exact
+p64 result domain—including differing exponents—is preserved. Invalid x87
+controls, status, selectors, tags, operands and non-Normal outputs refuse
+atomically.
+
+Focused tests passed 5/5; full `od-isa` passed 1,823/1,823. Workspace
+all-target offline check, formatting, diff check and Graphify AST refresh passed
+(11,392 nodes, 24,531 edges, 352 communities). A literal exponent-gap-65 case
+confirms there is no division cutoff. Independent review is pending;
+physical x86/JIT/native acceptance was not performed. Sources and test detail:
+[standalone report](S2_30CX_X87_FDIV_REVERSE_PRECISION.md), [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cx-bounded-fdiv-sti-st0-dc-f8-ff), and [plan](../plans/STAGE_2.md#s2-30cx-bare-fdiv-sti-st0-with-bounded-fcw-precision).
