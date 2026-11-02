@@ -1212,12 +1212,13 @@ fn is_checked_dword_store_address(
     operand: &od_isa::long_decode::MemoryOperand,
     instruction_length: u64,
 ) -> bool {
-    let address32_rax_alias_profile = instruction_length == 3
+    let address32_rax_alias_profile = matches!(instruction_length, 3 | 4)
         && operand.address_size == od_isa::OperandSize::Dword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rax))
         && operand.index.is_none()
         && operand.scale == 1
-        && operand.displacement == 0;
+        && ((instruction_length == 3 && operand.displacement == 0)
+            || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok()));
     let rax_disp8_profile = instruction_length == 3
         && operand.address_size == od_isa::OperandSize::Qword
         && matches!(operand.base, AddressBase::Register(od_isa::Register::Rax))

@@ -3200,6 +3200,10 @@ fn build_block_with_profile(
                         == Some(&[0x67, 0x89, 0x00][..])
                     || code
                         .bytes
+                        .get(guest_offset..guest_offset.saturating_add(4))
+                        .is_some_and(|bytes| bytes[..3] == [0x67, 0x89, 0x40])
+                    || code
+                        .bytes
                         .get(guest_offset..guest_offset.saturating_add(3))
                         .is_some_and(|bytes| bytes[..2] == [0x89, 0x40])
                     || code.bytes.get(guest_offset..guest_offset.saturating_add(3))
@@ -5296,10 +5300,10 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                     || (instruction.length == 4 && i8::try_from(operand.displacement).is_ok())
                     || (instruction.length == 7
                         && i32::try_from(operand.displacement).is_ok())));
-    // Keep the addr32 RAX base confined to its exact zero-displacement ModRM
-    // form; the existing no-base SIB RAX profiles are separate encodings.
+    // Keep the addr32 RAX base confined to its exact zero-displacement or
+    // signed-disp8 ModRM forms; no-base SIB RAX profiles are separate encodings.
     let address32_rax_base_profile = instruction.prefixes.address_override
-        && instruction.length == 3
+        && matches!(instruction.length, 3 | 4)
         && instruction.address_size == OperandSize::Dword
         && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
             if operand.address_size == OperandSize::Dword
@@ -5307,7 +5311,9 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rax))
                 && operand.index.is_none()
                 && operand.scale == 1
-                && operand.displacement == 0);
+                && ((instruction.length == 3 && operand.displacement == 0)
+                    || (instruction.length == 4
+                        && i8::try_from(operand.displacement).is_ok())));
     let rcx_no_base_sib_profile = instruction.length == 7
         && instruction.address_size == OperandSize::Qword
         && matches!(&instruction.operation, Operation::Mov { dst: Operand::Memory(operand), .. }
