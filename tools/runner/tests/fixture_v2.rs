@@ -18216,6 +18216,117 @@ fn minps_unmasked_four_lane_anchors_validate_independent_results_and_denials() {
 }
 
 #[test]
+fn minps_memory_unmasked_literal_rhs_oracle_schema_and_backend_denials() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut paths: Vec<_> = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_38s_minps_m128_literal_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(paths.len(), 3, "literal MINPS memory unmasked fixtures");
+
+    let mut first_source = None;
+    let mut representative = None;
+    for path in paths {
+        let source = fs::read(path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMinpsMemoryUnmaskedRaxV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            snapshot(&result).minps_unmasked_controls,
+            input.fixture.minps_unmasked_controls
+        );
+        first_source.get_or_insert(source.clone());
+        representative.get_or_insert((input.clone(), result.clone()));
+    }
+
+    let source = first_source.unwrap();
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&source, backend, 4);
+        assert!(
+            matches!(denied.outcome, Outcome::Unsupported { .. }),
+            "{backend} must deny S2-38s"
+        );
+    }
+
+    let (input, result) = representative.unwrap();
+    let mut missing_controls = input.fixture.clone();
+    missing_controls.minps_unmasked_controls = None;
+    assert!(missing_controls.validate().is_err());
+    for wrong in ["660f5d00", "f20f5d00", "400f5d00", "0f5dc1", "0f5f00"] {
+        let mut malformed = input.fixture.clone();
+        malformed.memory[0].initial_bytes_hex = wrong.into();
+        assert!(
+            malformed.validate().is_err(),
+            "unexpected MINPS memory form admitted: {wrong}"
+        );
+    }
+
+    for address in [0x2004u64, 0x0000_8000_0000_0000] {
+        let mut memory_fault = input.fixture.clone();
+        memory_fault.expected_exit = ExpectedExit::Exception;
+        memory_fault.initial_state.gpr[0] = HexU64(address);
+        memory_fault.memory[1].guest_address = HexU64(address);
+        let encoded = serde_json::to_vec(&memory_fault).unwrap();
+        let (fault_input, fault_result) = run(&encoded, "interpreter", 0);
+        assert_eq!(
+            od_testkit::v2::compare(&fault_input, &fault_result, &fault_result).unwrap(),
+            Vec::<String>::new(),
+            "address {address:#x}"
+        );
+        let exception = match &snapshot(&fault_result).exception {
+            Observation::Available {
+                value: Some(exception),
+            } => exception,
+            _ => panic!("memory #GP must have exception metadata"),
+        };
+        assert_eq!(exception.vector, 13);
+        assert_eq!(
+            exception.error_code,
+            Observation::Available { value: HexU64(0) }
+        );
+        assert_eq!(
+            fault_result.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
+    }
+
+    let mut bad_controls = result.clone();
+    snapshot_mut(&mut bad_controls)
+        .minps_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = !snapshot(&result)
+        .minps_unmasked_controls
+        .unwrap()
+        .cr4_osxmmexcpt;
+    assert!(od_testkit::v2::compare(&input, &result, &bad_controls).is_err());
+
+    let mut bad_result = result.clone();
+    snapshot_mut(&mut bad_result)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .xmm[0]
+        .replace_range(..2, "ff");
+    assert!(od_testkit::v2::compare(&input, &result, &bad_result).is_err());
+}
+
+#[test]
 fn maxps_unmasked_four_lane_anchors_validate_independent_results_and_denials() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
