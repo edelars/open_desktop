@@ -14,8 +14,8 @@ mask bits=1. При таких масках unmasked exception delivery не в�
 `#XM` не реализуется.
 
 Эффективный адрес берётся только из RAX. Профиль требует 16-byte alignment
-даже при AC=0 и CPL=3; сначала проверяет canonical48 для начала и конца
-`[RAX,RAX+15]`, после чего выполняет ровно один `read16`. До успешного чтения
+даже при AC=0 и CPL=3; сначала проверяет alignment, затем checked canonical48
+для начала и конца `[RAX,RAX+15]`, после чего выполняет ровно один `read16`. До успешного чтения
 никакие архитектурные изменения не фиксируются. Ошибка alignment/span
 возвращает `#GP(0)`, ошибка чтения откатывает весь instruction state. Записей
 в память нет.
@@ -24,17 +24,20 @@ mask bits=1. При таких масках unmasked exception delivery не в�
 lane старого XMM0 с помощью `Binary32::add_raw_result` и выбранного RC.
 Независимый oracle testkit вычисляет те же lanes через `independent_addps`.
 IE/DE/OE/UE/PE агрегируются по четырём lanes и добавляются к прежнему MXCSR
-через OR. ZE, reserved/high bits (которые для валидного входа равны нулю),
+через OR. Underflow sticky сохраняется, если он был установлен до инструкции;
+литералы проверяют новые IE/DE/OE/PE и сохранение старых UE/ZE flags. ZE,
+reserved/high bits (которые для валидного входа равны нулю),
 GPR, остальные XMM/x87 и RFLAGS сохраняются; успешный RIP продвигается на 3.
 
 Фикстура `tests/fixtures/x86/stage2/s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json`
 использует независимые старые XMM0 и memory значения, что выявляет неверное
 использование только одного операнда. ISA tests проверяют точное декодирование,
-все RC и sticky histories, mixed invalid/denormal/overflow/underflow/precision,
-ties-to-even и directed rounding, отсутствие SSE2, порядок полного fetch и
-gates, обязательную alignment при AC=0/1, canonical-span faults, единственный
-read callback и rollback. Runner test проверяет профиль, oracle result,
-tampering, SSE gating и отрицательное backend admission/relabel.
+все RC и sticky histories, reject для каждого unset mask/reserved/DAZ/FTZ
+MXCSR control до data read и commit, ties-to-even и directed rounding,
+отсутствие SSE2, порядок полного fetch и gates, обязательную alignment при
+AC=0/1, canonical-span faults, единственный read callback и rollback. Runner
+test проверяет QNaN/SNaN order, signed zeros и cancellation, result XMM/MXCSR/
+memory/control tampering, invalid provenance, SSE gating и backend denial/relabel.
 
 Вне этого среза остаются физическая проверка на x86, иные ADDPS encodings и
 операнды, generic exception delivery и unmasked SIMD floating-point exceptions.
@@ -44,8 +47,11 @@ tampering, SSE gating и отрицательное backend admission/relabel.
 `cargo test -p od-runner --offline --test fixture_v2` прошёл (497 tests),
 `cargo check --workspace --all-targets --offline`,
 `cargo fmt --all -- --check`, `git diff --check` и `graphify update .` прошли.
-Workspace check показывает два существовавших unused-variable warning в
-`independent_mulss`. `python3 tools/check_layout.py` завершился ошибками из-за
+Независимое review выявило недостижимую runtime MXCSR ветку: memory ADDPS не
+входил во внешний operation allowlist. Исправлено добавлением точного
+`AddpsMemoryRax` operation case; новая negative matrix проходит без data read
+или retirement и с полным rollback. `python3 tools/check_layout.py` завершился ошибками из-за
 `.git` worktree marker и двух ранее сломанных ссылок на отсутствующие oracle
-manifests; изменений layout в этом slice нет. Independent Sol/high review
-будет выполнен после commit. Физическая x86 проверка не запускалась.
+manifests; изменений layout в этом slice нет. Независимый Sol/high review
+подтвердил исправление и прошёл повторный focused ISA/runner. Физическая x86
+проверка не запускалась.

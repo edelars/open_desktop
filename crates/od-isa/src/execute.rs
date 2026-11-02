@@ -22172,6 +22172,7 @@ fn step_configured(
             | Operation::AddsdRegister { .. }
             | Operation::AddssRegister { .. }
             | Operation::AddpsRegister { .. }
+            | Operation::AddpsMemoryRax
             | Operation::DivpdRegister { .. }
             | Operation::DivsdRegister { .. }
             | Operation::DivpsRegister { .. }
@@ -22244,6 +22245,7 @@ fn step_configured(
             | Operation::AddsdRegister { .. }
             | Operation::AddssRegister { .. }
             | Operation::AddpsRegister { .. }
+            | Operation::AddpsMemoryRax
             | Operation::DivpdRegister { .. }
             | Operation::DivsdRegister { .. }
             | Operation::DivpsRegister { .. }
@@ -157152,6 +157154,43 @@ mod cvtsi2ss_r64_memory_profile_tests {
                 assert_eq!(state.rflags, 1 << 18);
                 assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
             }
+        }
+
+        let invalid_mxcsr = (7..=12).map(|bit| 0x1f80 & !(1 << bit)).chain([
+            0x1f80 | (1 << 6),
+            0x1f80 | (1 << 15),
+            0x1f80 | (1 << 16),
+        ]);
+        for mxcsr in invalid_mxcsr {
+            let mut memory = Memory::at(&code, 0x2810);
+            let mut state = LongModeState::default();
+            state.rip = 0x2810;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            let result = run_with_addps_register_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2813),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x58 },
+                "MXCSR={mxcsr:#x}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before, "MXCSR={mxcsr:#x}");
+            assert_eq!(memory.fetches, [0x2810, 0x2811, 0x2812]);
+            assert!(memory.accesses.is_empty(), "MXCSR={mxcsr:#x}");
         }
     }
 

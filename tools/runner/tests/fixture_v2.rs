@@ -38191,6 +38191,30 @@ fn addps_m128_memory_uses_xmm0_and_memory_lanes_and_denies_backends() {
         relabeled.backend = backend;
         assert!(relabeled.validate_for(&input).is_err());
     }
+    let mut wrong_xmm = good.clone();
+    if let Observation::Available { value } = &mut wrong_xmm.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(0..8, "00000000");
+    }
+    assert!(wrong_xmm.validate_for(&input).is_err());
+    let mut wrong_mxcsr = good.clone();
+    if let Observation::Available { value } = &mut wrong_mxcsr.snapshot {
+        value.state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f81);
+    }
+    assert!(wrong_mxcsr.validate_for(&input).is_err());
+    let mut wrong_memory = good.clone();
+    if let Observation::Available { value } = &mut wrong_memory.snapshot {
+        value.memory[1].bytes_hex = "00000000000000000000000000000000".into();
+    }
+    assert!(wrong_memory.validate_for(&input).is_err());
+    let mut wrong_controls = good.clone();
+    if let Observation::Available { value } = &mut wrong_controls.snapshot {
+        value
+            .addps_memory_rax_controls
+            .as_mut()
+            .unwrap()
+            .sse_available = false;
+    }
+    assert!(wrong_controls.validate_for(&input).is_err());
     assert!(matches!(
         run(ADDPS_M128_MEMORY_RAX, "jit", 4).1.outcome,
         Outcome::Unsupported { .. }
@@ -38232,12 +38256,59 @@ fn addps_m128_memory_uses_xmm0_and_memory_lanes_and_denies_backends() {
         HexU64(0x1f80 | 0x3f)
     );
 
+    let mut nan_order = base.clone();
+    nan_order.case_id = "s2_37dq_nan_operand_order".into();
+    nan_order.initial_state.sse.as_mut().unwrap().xmm[0] =
+        "4523c17f0100807f0000803fdebcca7f".into();
+    nan_order.memory[1].initial_bytes_hex = "0100807f2143c5ff010080ff4523c1ff".into();
+    let (input, result) = run(&nan_order.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let snapshot = match result.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("missing ADDPS NaN-order snapshot"),
+    };
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "4523c17f0100c07f0100c0ffdebcca7f"
+    );
+    assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f81));
+
+    let mut zero_signs = base.clone();
+    zero_signs.case_id = "s2_37dq_signed_zero_and_cancellation".into();
+    zero_signs.initial_state.sse.as_mut().unwrap().xmm[0] =
+        "00000000000000800000803f000080bf".into();
+    zero_signs.memory[1].initial_bytes_hex = "0000008000000080000080bf0000803f".into();
+    for rc in 0..4u64 {
+        let mut case = zero_signs.clone();
+        case.case_id = format!("s2_37dq_zero_rc{rc}");
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snapshot = match result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing ADDPS zero-sign snapshot"),
+        };
+        let expected = if rc == 1 {
+            "00000080000000800000008000000080"
+        } else {
+            "00000000000000800000000000000000"
+        };
+        assert_eq!(snapshot.state.sse.as_ref().unwrap().xmm[0], expected);
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr,
+            HexU64(0x1f80 | (rc << 13))
+        );
+    }
+
     let mut bad_opcode = base.clone();
     bad_opcode.memory[0].initial_bytes_hex = "0f5801".into();
     assert!(bad_opcode.validate().is_err());
     let mut missing_controls = base.clone();
     missing_controls.addps_memory_rax_controls = None;
     assert!(missing_controls.validate().is_err());
+    let mut bad_provenance = base.clone();
+    bad_provenance.provenance.specification.clear();
+    assert!(bad_provenance.validate().is_err());
 
     let mut gate = base.clone();
     gate.case_id = "s2_37dq_no_sse_gate".into();

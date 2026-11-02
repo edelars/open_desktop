@@ -16,26 +16,33 @@ memory lanes складывается с соответствующим исхо
 `Binary32::add_raw_result`; IE/DE/OE/UE/PE агрегируются по lanes и OR-ятся с
 прежними flags, ZE и верхняя часть MXCSR сохраняются.
 
-Операнд обязан быть выровнен на 16 байт при AC=0 и AC=1. До data callback
-проверяются canonical48 для полного span `[RAX,RAX+15]`; затем выполняется
-ровно одно чтение 16 байт. Ошибка доступа или проверок сохраняет CPU state,
-MXCSR, RIP и retirement. Writes отсутствуют. Strict result validator сверяет
+Операнд обязан быть выровнен на 16 байт при AC=0 и AC=1. Сначала проверяется
+alignment, затем checked canonical48 span `[RAX,RAX+15]`; только после этого
+выполняется ровно одно чтение 16 байт. Ошибка доступа или проверок сохраняет
+CPU state, MXCSR, RIP и retirement. Writes отсутствуют. Strict result validator сверяет
 вектор с независимым `independent_addps` oracle. Успешный результат нельзя
 переименовать в JIT или NativeX86; оба backend также отказывают запуску
 профиля. Decoder/register forms для остальных ADDPS не менялись.
 
 Ручной fixture `s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json`
 содержит разные старые XMM0 и RHS lanes. Проверки включают все RC и sticky
-combinations, ties, NaN/invalid, mixed IE/DE/OE/UE/PE, zeros, infinities,
+combinations, ties, QNaN/SNaN operand order, signed zeros and cancellation,
+mixed newly raised IE/DE/OE/PE with old UE/ZE stickies preserved, infinities,
 subnormal и gates, полный fetch до отказа, exact/neighbor opcode, alignment,
 canonical span, fault rollback, control/schema tampering и backend denial.
+Independent Sol/high review выявил, что runtime MXCSR check был недостижим из-за
+отсутствующего `AddpsMemoryRax` во внешнем operation allowlist; case добавлен,
+а отрицательные MXCSR проверки подтверждают отказ до data read и commit.
+Runner также проверяет NaN operand ordering, signed-zero/cancellation vectors,
+output XMM/MXCSR/memory/control tampering и provenance validation. Повторный
+Sol/high review подтвердил исправления и не нашёл оставшихся дефектов.
 
 **Проверки:** полный `cargo test -p od-isa --offline` прошёл (1834 tests),
 `cargo test -p od-testkit --offline` прошёл (455 tests), а
 `cargo test -p od-runner --offline --test fixture_v2` прошёл (497 tests).
 `cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`,
-`git diff --check` и `graphify update .` прошли. Workspace check сообщает два
-существовавших unused-variable warning в `independent_mulss`. `tools/check_layout.py`
+`git diff --check` и `graphify update .` прошли (11,459 nodes / 24,685 edges /
+361 communities). `tools/check_layout.py`
 остался красным из-за unmapped `.git` worktree marker и двух прежних ссылок на
 отсутствующие Stage 1/Stage 2 oracle manifests; структуру каталогов этот slice
 не менял. Независимое Sol/high review ожидается после commit. Физическое
