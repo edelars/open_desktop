@@ -21324,6 +21324,36 @@ admission check. No physical x86/native/JIT acceptance is claimed. See the
 [plan](../plans/STAGE_2.md#s2-30cq-bare-fsub-st0-sti-with-bounded-fcw-precision),
 and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## S2-30cr — bounded `FSUBR ST(0), ST(i)`
+
+Added bounded FCW precision execution for exact bare Long64 `D8 E8..EF`.
+Admission mirrors S2-30cq: present x87 state, absent FCS/FDS selectors, one of
+the twelve all-masked PC24/53/64 FCWs, clean required FSW fields, Valid tags,
+and canonical nonzero Normal operands. The normalized exponent gap is checked
+at ≤64 before the arithmetic helper. FSUBR computes `ST(i) - ST(0)` by flipping
+the sign bit on a validated local copy of ST(0) and adding it to ST(i) with the
+existing S2-29ae precision helper. Source payloads and all unselected state
+remain unchanged.
+
+Only finite Normal outputs are admitted; cancellation/zero (including `i=0`),
+subnormal, overflow, malformed operands and gap>64 reject atomically. Success
+commits physical TOP, accumulates PE, replaces C1 from the helper's pre-carry
+`incremented` diagnostic, preserves C0/C2/C3 by the local policy, records old
+RIP in FIP, advances by two and retires once. Fetch faults, STOP and zero budget
+do not commit; no data access occurs. `DC` reverse, `DE` pop, FSUB direction
+and JIT/native acceptance remain unchanged.
+
+Coverage includes every TOP/index pair and four sign combinations across all
+twelve FCWs, p53 midpoint neighbors, all directed modes for both result signs,
+exponent gaps 1/63/64 and atomic 65+, alias/cancellation, subnormal/overflow,
+zero/special/malformed inputs, selectors/tags/FSW/FCW refusals, preserved
+source/canaries, and fetch/STOP/budget/no-data-access behavior. Focused and full
+validation results are recorded in the [standalone report](S2_30CR_X87_FSUBR_PRECISION.md).
+Independent Sol/high review completed clean; the Stage 2 plan is marked complete.
+No physical x86/native/JIT acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cr-bounded-fsubr-st0-sti-d8-e8-ef),
+[plan](../plans/STAGE_2.md#s2-30cr-bare-fsubr-st0-sti-with-bounded-fcw-precision),
+and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 After integration with SQRTSS in main, the combined suites passed: full
 `od-isa` 1,782, `od-testkit` 454, runner 112 unit + 488 fixture tests, and
 workspace all-target offline check. Formatting, layout, diff check and

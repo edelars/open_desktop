@@ -1477,6 +1477,22 @@ contract](specs/CPU_CONTRACT.md#local-s2-30cq-bounded-fsub-st0-sti-d8-e0-e7),
 and [standalone report](reports/S2_30CQ_X87_FSUB_PRECISION.md). ISSUE-019
 remains open.
 
+**S2-30cr local FSUBR slice:** bare `D8 E8..EF` now uses the bounded target
+precision, twelve all-masked FCWs, canonical Normal operand gates, normalized
+gap≤64 limit and PE/C1 commit policy. It computes `ST(i) - ST(0)` by flipping
+only a validated local copy of ST(0) and reusing the existing finite-addition
+precision helper. `i=0` cancellation and zero/subnormal/overflow/non-Normal
+results reject atomically. Direct checks cover all TOP/index pairs, sign
+combinations and FCWs, p53 midpoint neighbors, directed rounding for both
+result signs, gaps 1/63/64 and 65+, selectors/tags/status/malformed/range
+denials, source/canaries, fetch/STOP/budget and no-data-access behavior. Focused
+and full od-isa, testkit/runner, workspace, formatting, layout, diff and
+Graphify checks are recorded in [S2-30cr report](reports/S2_30CR_X87_FSUBR_PRECISION.md).
+Independent Sol/high review completed clean. JIT/native and physical x86
+acceptance remain open. See [CPU contract](specs/CPU_CONTRACT.md#local-s2-30cr-bounded-fsubr-st0-sti-d8-e8-ef),
+[plan](plans/STAGE_2.md#s2-30cr-bare-fsubr-st0-sti-with-bounded-fcw-precision),
+and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
+
 ### ISSUE-020 — Не подтверждён победитель dual-fault для CMPS RSI/RDI
 
 - **Дата обнаружения:** 2026-10-26.

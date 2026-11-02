@@ -209,6 +209,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-30co | Bare `D8 C8..CF` FMUL ST(0),ST(i), direct FCW precision/rounding, normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ad; independent Sol/high review clean |
 | [x] | S2-30cp | Bare `D8 C0..C7` FADD ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64, normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ae; independent Sol/high review clean |
 | [x] | S2-30cq | Bare `D8 E0..E7` FSUB ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64 via validated RHS sign flip and existing addition helper; normal finite result domain, sticky PE and local C1 diagnostic; reverse/pop remain exact-only | S2-29ae; independent Sol/high review clean |
+| [x] | S2-30cr | Bare `D8 E8..EF` FSUBR ST(0),ST(i), direct FCW precision/rounding for normalized gap≤64 via validated local ST(0) sign flip and existing addition helper; normal finite result domain, sticky PE and local C1 diagnostic; DC reverse/DE pop remain unchanged | S2-29ae; independent Sol/high review clean |
 | [ ] | S2-30 | Основные x87 операции | S2-29 |
 | [x] | S2-30a | Bare `DB E3` FNINIT with existing explicit x87 state; reset environment only, payloads preserved, native closed | S2-28a |
 | [x] | S2-30b | Bare `DF E0` FNSTSW AX with existing x87 state; copy pre-operation raw FSW, preserve local x87 snapshot by deterministic policy, native closed | S2-28a |
@@ -11312,6 +11313,31 @@ boundaries. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cq-bounde
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cq--bounded-fsub-st0-sti), and
 [standalone report](../reports/S2_30CQ_X87_FSUB_PRECISION.md). Intel SDM Rev.
 093 Vol. 2A `FSUB/FSUBP/FISUB` pp. 3-394–3-396; Vol. 1 §8.1.5.2/Table 8-2,
+§8.1.5.3 and §8.5.6 p. 8-30. S2-30 and ISSUE-019 remain open.
+
+#### S2-30cr. Bare `FSUBR ST(0), ST(i)` with bounded FCW precision
+
+Admit only exact bare Long64 `D8 E8..EF` and the same present-x87,
+selector, status, FCW, Valid-tag, and canonical nonzero Normal operand profile
+as S2-30cq. Validate both operands and require normalized exponent gap≤64
+before the existing direct-addition precision helper. Compute `ST(i) - ST(0)`
+by flipping only the sign bit in a local copy of validated ST(0), then adding
+to ST(i); do not negate a rounded FSUB result. For `i=0`, cancellation to zero
+remains atomically Unsupported. Accept only finite Normal exact or rounded
+results.
+
+On success, write the old physical TOP, accumulate PE from `inexact`, replace
+C1 from the helper's pre-carry `incremented`, preserve C0/C2/C3 by local policy,
+preserve tags, source bytes and unrelated state, record FIP=old RIP, advance
+RIP by two and retire once. Refusals, fetch faults, STOP and zero budget remain
+atomic; register execution performs no data access. `DC` reverse, `DE` pop,
+FSUB direction and JIT/native execution remain unchanged. Coverage includes all
+TOP/index pairs, four sign combinations, all twelve FCWs, midpoint neighbors,
+directed modes, gaps 1/63/64 and 65+, alias/cancellation, subnormal/overflow,
+malformed inputs and execution boundaries. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cr-bounded-fsubr-st0-sti-d8-e8-ef),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti), and
+[standalone report](../reports/S2_30CR_X87_FSUBR_PRECISION.md). Intel SDM Rev.
+093 Vol. 2A `FSUBR/FSUBRP/FISUBR` pp. 3-397–3-399; Vol. 1 §8.1.5.2/Table 8-2,
 §8.1.5.3 and §8.5.6 p. 8-30. S2-30 and ISSUE-019 remain open.
 
 #### S2-18j — bare CLD/STD (локальный профиль)

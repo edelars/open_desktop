@@ -9603,6 +9603,28 @@ acceptance remain outside this profile. See the [S2-30cq report](../reports/S2_3
 [shared report](../reports/STAGE_2_REPORT.md#s2-30cq--bounded-fsub-st0-sti), and
 [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
 
+## Local S2-30cr: bounded `FSUBR ST(0), ST(i)` (`D8 E8..EF`)
+
+Only exact bare Long64 `D8 E8..EF` is admitted. Use the S2-30cq present-x87,
+absent-selector, all-masked PC24/53/64 FCW, `FSW & 0x80df == 0`, Valid-tag,
+and canonical nonzero Normal operand gates. Require normalized exponent
+gap≤64 before the helper. Compute `ST(i) - ST(0)` as `ST(i) + (-ST(0))` by
+flipping only a local copy of validated ST(0), then call the existing S2-29ae
+direct-addition precision helper. Never negate a rounded FSUB result or mutate
+guest source bytes. The `i=0` alias cancels to zero and remains Unsupported.
+Only finite Normal exact or rounded results are accepted.
+
+Success commits physical TOP, accumulates PE from `inexact`, replaces C1 from
+the helper's pre-carry `incremented` diagnostic, preserves C0/C2/C3 by local
+policy, preserves TOP/tags/source and unrelated state, sets FIP to old RIP,
+advances by two and retires once. All denials and fetch/STOP/zero-budget
+boundaries are atomic; register execution performs no data access. `DC`
+reverse, `DE` pop, FSUB direction and JIT/native acceptance are unchanged. See
+the [S2-30cr report](../reports/S2_30CR_X87_FSUBR_PRECISION.md),
+[plan](../plans/STAGE_2.md#s2-30cr-bare-fsubr-st0-sti-with-bounded-fcw-precision),
+[shared report](../reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti), and
+[ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
 ### Local S2-19b bounded REP STOSW/D/Q contract
 
 The interpreter extends `F3 AA` REP STOSB with `F3 66 AB` word, `F3 AB`
