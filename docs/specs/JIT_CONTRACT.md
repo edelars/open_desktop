@@ -221,6 +221,17 @@ disp32. Source bytes bind to the site and the PC map has a single boundary at
 production owner/MMU, or performance conclusion. See the
 [S3-20cv report](../reports/STAGE_3_S3-20cv_2026-11-01.md).
 
+#### S3-20cw: exact RIP-relative Dword store with disp32
+
+The shared typed-IR Dword-store path additionally admits the six-byte
+singleton `89 05 id` (`MOV [RIP+disp32],EAX`). Effective-address calculation
+uses the decoder-owned `NextRip` at `A+6` with the signed disp32; source bytes
+bind to the site and the PC map has a single boundary at `A+6`. The host
+fixture uses split code/data backing: its `(ENTRY,-1)` write changes only the
+BTreeMap data RAM. It supplies no SMC or backing-alias evidence. No other
+RIP-relative or dword store form is admitted by this slice. See the
+[S3-20cw report](../reports/STAGE_3_S3-20cw_2026-11-01.md).
+
 #### S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 The host-side regression `s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow`

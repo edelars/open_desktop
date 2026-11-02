@@ -28,6 +28,10 @@ Run `cargo test -p od-jit --lib ir_dword_rbx_disp32_store --offline` and `cargo 
 
 Run `cargo test -p od-jit --lib ir_dword_rip_relative_disp32_load --offline`, `cargo test -p od-host --lib tests::s3_20cv_rip_relative_disp32_dword_load_uses_guest_next_rip --offline`, and retain the existing S3-20cs identity with `cargo test -p od-host --lib s3_20cs_disp32_dword_load_zero_extends_and_reads_exactly_four_bytes --offline`. Admit only the six-byte singleton `8B 05 id` (`MOV EAX,[RIP+disp32]`): the decoded NextRip is `A+6` and supplies the relative base. JIT verifies source-byte/site binding and the six-byte PC-map boundary; the host test uses guest NextRip for the effective address. Other RIP-relative/dword forms stay separate. No owner/MMU, Mini, M1, Stage 2, physical-x86, or performance conclusion follows. See the [S3-20cv report](../reports/STAGE_3_S3-20cv_2026-11-01.md).
 
+## S3-20cw: exact RIP-relative dword checked store with disp32
+
+Run `cargo test -p od-jit --lib ir_dword_rip_relative_disp32_store --offline` and `cargo test -p od-host --lib tests::s3_20cw_rip_relative_disp32_dword_store_uses_guest_next_rip --offline`. Admit only the six-byte singleton `89 05 id` (`MOV [RIP+disp32],EAX`) with effective address derived from decoder-owned NextRip `A+6` and signed disp32. The JIT checks source/site binding and the six-byte PC-map boundary. The host fixture's code and data backing are split: its `(ENTRY,-1)` write changes only BTreeMap data RAM, so it provides no SMC or backing-alias evidence. This exact-form fixture does not establish owner/MMU integration, other RIP-relative forms, Mini, M1, Stage 2, physical-x86, or performance behavior. See the [S3-20cw report](../reports/STAGE_3_S3-20cw_2026-11-01.md).
+
 ## S3-27i: disp32 Dword-store canonical-end and range-overflow checks
 
 Run `cargo test -p od-host --lib tests::s3_27i_disp32_dword_store_checks_canonical_end_and_range_overflow --offline`. This separate host regression covers canonical-end and 64-bit range-overflow checks for the exact S3-20cu disp32 dword-store fixture using the decoder-owned `access_address_48` path. It supplements the original bounded host semantics test; it does not add an instruction form, production owner/MMU integration, or full S3-27 fault recovery. See the [S3-27i report](../reports/STAGE_3_S3-27i_2026-11-01.md).
@@ -55,6 +59,10 @@ S3-34ad pins the S3-20cu JIT source-binding and `A+6` PC-map tests plus its exac
 ## S3-34af: exact published dword-store PC-map integration gate
 
 The harness pins `published_dword_disp8_and_disp32_store_pc_maps_match_artifacts_survive_drop_and_republish` in `od-host --test memory_corpus`. It is tied to S3-27j map parity/lifetime, not host-fault recovery or full S3-34. See the [S3-34af report](../reports/STAGE_3_S3-34af_2026-11-01.md).
+
+## S3-34ag: exact gates for RIP-relative dword-load NextRip
+
+S3-34ag pins the two S3-20cv JIT identities for source/site binding and the `A+6` PC-map boundary, plus `tests::s3_20cv_rip_relative_disp32_dword_load_uses_guest_next_rip` in `od-host --lib`. It does not pin the new S3-20cw store; that implementation has its own bounded evidence report. See the [S3-34ag report](../reports/STAGE_3_S3-34ag_2026-11-01.md).
 
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
