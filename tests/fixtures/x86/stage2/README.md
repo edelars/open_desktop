@@ -7931,12 +7931,14 @@ settings and prior sticky histories, verifies backend denial and result
 tampering, and checks the SSE gate. Additional memory-specific vectors cover
 NaN sign/payload and SNaN-vs-QNaN priority, denormal priority, opposite
 infinities, RC-sensitive ties, signed zero, tiny boundary, overflow, and
-mixed-lane IE/DE/OE/PE. Finite binary32 subtraction cannot newly raise UE: a
-finite subnormal result from same-sign operands is exact by Sterbenz's lemma.
-If opposite-sign operands yield a subnormal sum, both operands are subnormal
-and share the binary32 minimum-subnormal quantum, so the sum is exact. The
-sticky matrix verifies incoming UE preservation. The sequential fixture suite passed
-498/498. No physical x86 acceptance is claimed. See
+mixed-lane IE/DE/OE/PE, RHS-only negative QNaN payload/sign preservation,
+NaN suppression of same-lane DE, and RC-dependent cancellation zero. Finite
+binary32 subtraction cannot newly raise UE: all finite operands and exact
+results are integer multiples of `2^-149`; any exact result below `2^-126`
+has coefficient magnitude below `2^23`, so it is exactly representable as a
+subnormal or zero. This proof also covers tiny results outside Sterbenz's
+factor-of-two range. The sticky matrix verifies incoming UE preservation. The
+sequential fixture suite passed 498/498. No physical x86 acceptance is claimed. See
 the [plan](../../../../docs/plans/STAGE_2.md#s2-37dr--masked-only-legacy-long64-subps-xmm0m128-rax),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dr--masked-only-long64-subps-xmm0m128-rax),
 and [Stage 2 report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37dr--subps-xmm0m128-rax).

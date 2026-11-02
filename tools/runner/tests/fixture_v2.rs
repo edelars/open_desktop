@@ -38426,6 +38426,21 @@ fn subps_m128_memory_uses_independent_memory_lanes_and_denies_backends() {
             "0000803f000000000000008000008000",
             "000000330000008000000000ffff7f00",
         ),
+        (
+            "s2_37dr_rhs_only_negative_qnan",
+            "0000803f000000000000000000000000",
+            "4523c1ff000000000000000000000000",
+        ),
+        (
+            "s2_37dr_nan_suppresses_same_lane_denormal",
+            "2200c07f000000000000000000000000",
+            "01000000000000000000000000000000",
+        ),
+        (
+            "s2_37dr_rc_cancellation_zero",
+            "0000803f000000000000000000000000",
+            "0000803f000000000000000000000000",
+        ),
     ];
     for (stem, lhs, rhs) in vectors {
         for rc in 0..4u64 {
@@ -38470,7 +38485,7 @@ fn subps_m128_memory_uses_independent_memory_lanes_and_denies_backends() {
                     );
                 }
                 if stem == "s2_37dr_tie_signed_zero_and_tiny_boundary" {
-                    let snapshot = match result.snapshot {
+                    let snapshot = match &result.snapshot {
                         Observation::Available { value } => value,
                         _ => panic!("missing SUBPS special-value snapshot"),
                     };
@@ -38487,6 +38502,49 @@ fn subps_m128_memory_uses_independent_memory_lanes_and_denies_backends() {
                     assert_eq!(
                         snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
                         0x22 | sticky
+                    );
+                }
+                if stem == "s2_37dr_rhs_only_negative_qnan" {
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        _ => panic!("missing SUBPS RHS-NaN snapshot"),
+                    };
+                    assert_eq!(
+                        &snapshot.state.sse.as_ref().unwrap().xmm[0][..8],
+                        "4523c1ff"
+                    );
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                        sticky
+                    );
+                }
+                if stem == "s2_37dr_nan_suppresses_same_lane_denormal" {
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        _ => panic!("missing SUBPS NaN/denormal snapshot"),
+                    };
+                    assert_eq!(
+                        &snapshot.state.sse.as_ref().unwrap().xmm[0][..8],
+                        "2200c07f"
+                    );
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                        sticky
+                    );
+                }
+                if stem == "s2_37dr_rc_cancellation_zero" {
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        _ => panic!("missing SUBPS cancellation snapshot"),
+                    };
+                    let expected_zero = if rc == 1 { "00000080" } else { "00000000" };
+                    assert_eq!(
+                        &snapshot.state.sse.as_ref().unwrap().xmm[0][..8],
+                        expected_zero
+                    );
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                        sticky
                     );
                 }
             }

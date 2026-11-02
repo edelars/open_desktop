@@ -22,24 +22,30 @@ operand.
 ## Arithmetic coverage and UE rationale
 
 The runner's baseline case crosses four RC modes by all 64 prior sticky masks.
-Three additional memory-specific vectors each cross that same matrix:
+Six additional memory-specific vectors each cross that same matrix:
 
 - QNaN/SNaN ordering with signs and payloads, plus opposite infinities.
 - Mixed lanes raising IE, DE, OE and PE, with explicit output assertions and
   sticky aggregation assertions.
 - A half-ULP tie, both zero-sign combinations, and the normal/subnormal
   boundary. It asserts RC-sensitive tie results and the lane results/status.
+- RHS-only negative QNaN, with exact sign/payload preservation.
+- QNaN paired with a same-lane subnormal RHS, proving the NaN lane suppresses
+  DE from its subnormal operand.
+- Exact `1.0 - 1.0` cancellation, asserting RC=round-down produces -0 while
+  the other RC modes produce +0.
 
 The mixed-lane case checks IE|DE|OE|PE (`0x2b`) across lanes and verifies that
 incoming sticky bits remain set. No finite binary32 subtraction vector can
-newly raise UE. For finite same-sign operands, a subnormal exact difference
-falls in the operands' magnitude range where Sterbenz's lemma makes subtraction
-exact. Opposite-sign operands add magnitudes; if their result is subnormal,
-both operands must be subnormal and their values share the binary32
-minimum-subnormal quantum, so the sum is exact. Therefore the S2-37dr arithmetic domain has no
-finite tiny-and-inexact case; the matrix explicitly checks preservation of an
-incoming UE sticky bit. This is a domain rationale, not a claim that the
-underlying exception mechanism is untested elsewhere.
+newly raise UE: every finite binary32 operand and exact result is an integer
+multiple of `q = 2^-149`. If the exact result magnitude is below the normal
+boundary `2^-126`, its integer coefficient has magnitude below `2^23`, so it
+is exactly representable as a subnormal or zero. This covers both same-sign
+differences inside and outside Sterbenz's factor-of-two range and opposite-sign
+sums. The arithmetic domain therefore has no finite tiny-and-inexact case; the
+matrix explicitly checks preservation of an incoming UE sticky bit. This is a
+domain rationale, not a claim that the underlying exception mechanism is
+untested elsewhere.
 
 Direct ISA tests cover decoder exactness, full fetch and SSE/control gates,
 invalid MXCSR, mandatory alignment and canonical-span checks, no-read/no-commit
@@ -49,8 +55,9 @@ are denied.
 
 ## Verification
 
-- Focused runner test `subps_m128_memory_uses_independent_memory_lanes_and_denies_backends`: passed (1/1) after vector expansion.
-- Full sequential `cargo test -p od-runner --test fixture_v2 --offline`: passed (498/498, 63.46s).
+- Focused runner test `subps_m128_memory_uses_independent_memory_lanes_and_denies_backends`: passed (1/1) after arithmetic coverage expansion.
+- Focused ISA `cargo test -p od-isa subps_memory_rax --offline`: passed (3/3).
+- Full sequential `cargo test -p od-runner --test fixture_v2 --offline`: passed (498/498, 61.76s).
 - Previously observed transient failures were rerun in isolation and passed: `cmppd_m128_memory_covers_predicates_lanes_and_independent_exceptions` (1/1) and `cmpsd_register_pairs_predicates_raw_classes_exceptions_and_denial` (1/1).
 - The prior slice verification passed: od-isa 1,840; od-testkit 455; runner unit tests 119; x86-runner library 8 and binary 4; workspace all-target offline check; fmt; diff check. Final follow-up verification repeated workspace all-target offline check, fmt and diff check; Graphify update reported 11,488 nodes, 24,739 edges and 359 communities.
 - The isolated worktree layout check reports its `.git` marker as unmapped and two historical oracle manifest references from `STAGE_2_REPORT.md` as missing. This slice added no paths. The main checkout is unaffected.

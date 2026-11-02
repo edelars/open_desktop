@@ -16990,13 +16990,15 @@ The literal fixture and independent integer-only raw-u32 oracle cover the
 four-lane memory source, all RC settings and old sticky patterns. Expanded
 runner vectors cover NaN payload/sign and SNaN-vs-QNaN priority, denormal
 priority, opposite infinities, RC-sensitive ties, cancellation and signed zero,
-the tiny boundary, overflow, and mixed-lane IE/DE/OE/PE aggregation. UE cannot
-be newly raised by finite binary32 subtraction: when the exact result is
-subnormal and operands are finite and same-sign, Sterbenz's lemma makes the
-difference exact. If opposite-sign operands produce a subnormal sum, both
-operands are subnormal and their values share the binary32 minimum-subnormal
-quantum, so that sum is exact too. The full sticky matrix still verifies
-preservation of an incoming UE bit. Full suites passed:
+the tiny boundary, overflow, mixed-lane IE/DE/OE/PE aggregation, RHS-only
+negative QNaN payload/sign preservation, NaN suppression of same-lane DE, and
+RC-dependent cancellation zero. UE cannot be newly raised by finite binary32
+subtraction: every finite binary32 operand and exact result is an integer
+multiple of `q = 2^-149`. If the exact result magnitude is below `2^-126`, its
+integer coefficient has magnitude below `2^23`, so it is exactly representable
+as a subnormal or zero. This proves exactness for tiny results both inside and
+outside Sterbenz's factor-of-two range, including opposite-sign sums. The full
+sticky matrix still verifies preservation of an incoming UE bit. Full suites passed:
 `od-isa` 1,840; `od-testkit` 455; runner 119 unit + 498 fixture; x86-runner
 8 library + 4 binary. Workspace all-target offline check, formatting, diff
 check and Graphify refresh passed (11,488 nodes / 24,739 edges / 359
