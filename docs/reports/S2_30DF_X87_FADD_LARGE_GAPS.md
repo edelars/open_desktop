@@ -42,3 +42,11 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cp-bounded-fadd-st0-s
 [Stage 2 plan](../plans/STAGE_2.md#s2-30df-large-gap-fadd-st0-sti-admission),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), the existing
 [S2-30cp report](S2_30CP_X87_FADD_PRECISION.md), and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
+
+## Main integration
+
+Integrated with S2-37dw. Combined main verification passed: od-isa 1,865,
+od-testkit 455, runner 120 unit + 508 fixture, and od-x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout, and diff
+check passed. Main Graphify refresh: 11,592 nodes, 25,116 edges, 346
+communities. Physical x86 acceptance was not run.

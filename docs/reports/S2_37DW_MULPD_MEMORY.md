@@ -44,3 +44,11 @@ WPR boundary evidence.
 
 No physical x86 acceptance was run. The admission intentionally excludes
 unmasked arithmetic exceptions and #XM.
+
+## Main integration
+
+Integrated with S2-30df. Combined main verification passed: od-isa 1,865,
+od-testkit 455, runner 120 unit + 508 fixture, and od-x86-runner 8 library + 4
+binary tests. Workspace all-target offline check, formatting, layout, and diff
+check passed. Main Graphify refresh: 11,592 nodes, 25,116 edges, 346
+communities. Physical x86 acceptance was not run.

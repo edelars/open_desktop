@@ -22048,6 +22048,16 @@ Workspace all-target offline check, formatting, layout и `git diff --check`
 с уникальными неперенесёнными коммитами сохранены. Физическая x86-проверка не
 выполнялась; Этап 2 остаётся открытым.
 
+## Main integration: S2-30df + S2-37dw
+
+После переноса large-gap `FADD ST(0),ST(i)` и masked-only memory `MULPD`
+полные проверки main прошли: `od-isa` 1,865; `od-testkit` 455; runner 120 unit
+и 508 serialized fixture tests; `od-x86-runner` 8 library + 4 binary tests.
+Workspace all-target offline check, formatting, layout и `git diff --check`
+прошли. Graphify AST refresh: 11,592 nodes, 25,116 edges, 346 communities.
+Независимые Sol/high reviews обоих срезов чистые. Физическая x86-проверка не
+выполнялась; Этап 2 остаётся открытым.
+
 ## Main integration: S2-30de + S2-37dv
 
 После переноса bounded `FDIVRP ST(i),ST(0)` и masked-only memory `SUBPD`
