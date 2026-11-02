@@ -37,7 +37,7 @@ Validation in the author worktree:
   integration.
 - Independent Sol/high review: pending. No physical x86/JIT execution claim.
 
-See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cp-bounded-fadd-st0-sti-d8-c0-c7),
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cp-bounded-fadd-st0-sti-d8-c0c7),
 [Stage 2 plan](../plans/STAGE_2.md#s2-30df-large-gap-fadd-st0-sti-admission),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), the existing
 [S2-30cp report](S2_30CP_X87_FADD_PRECISION.md), and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифметики-и-инструкций-x87-остаётся-открытой).
