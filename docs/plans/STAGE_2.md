@@ -11692,11 +11692,12 @@ boundaries remain atomic. Other DE groups retain existing behavior; native/JIT,
 general x87 exception delivery and physical x86 acceptance remain closed.
 
 Coverage includes 12,288 complete-state FCW/TOP/index/sign/PE/C1 executions,
-plus all-TOP/index gap-65 division cases. Runner coverage checks every
-admitted FCW with exact and reverse-rounded quotients, full-state
-destination-before-pop behavior, a handwritten PC24 negative-directed
-`-1/3` literal and JIT denial. Rollback covers invalid controls/status,
-selectors, tags, operands/results and fetch/STOP/zero-budget boundaries.
+plus all-TOP/index gap-65 division cases. The testkit runner checks exact
+reverse quotients across TOP/index destinations and overflow refusal. A
+handwritten PC24 negative-directed `-1/3` runner fixture checks rounded
+full-state destination-before-pop behavior and JIT denial. ISA rollback tests
+cover invalid controls/status/selectors, tags, operands/results and
+fetch/STOP/zero-budget boundaries.
 Normative source: Intel SDM Rev. 093 Vol. 2A `FDIV/FIDIV—Divide`, pp.
 3-333–3-335; Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6. See the [CPU
 contract](../specs/CPU_CONTRACT.md#local-s2-30de-bounded-fdivrp-sti-st0-de-f0f7),

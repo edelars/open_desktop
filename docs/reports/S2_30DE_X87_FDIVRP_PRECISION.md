@@ -25,10 +25,13 @@ acceptance remain closed.
   and the alias.
 - Gap-65 division coverage across admitted FCWs, TOPs, and indices, plus
   existing bounds and refusal cases.
-- Testkit runner coverage includes successful reverse-quotient rounding and
-  atomic overflow refusal. Schema preflight-refusal allowance remains scoped
-  to `DE F1` with `stop_rip: null`, including result overflow and selector
-  refusals; valid inexact quotients are no longer treated as unsupported.
+- Testkit runner coverage checks exact reverse quotients across TOP/index
+  destinations and atomic overflow refusal. The PC24 static CLI fixture covers
+  reverse rounding. Schema preflight-refusal allowance is scoped to `DE F1`
+  with `stop_rip: null` for result-range refusals such as overflow/underflow;
+  selector refusals are covered by direct ISA tests because the fixture schema
+  does not admit selectors with this encoding. Valid inexact quotients are
+  accepted.
 - Static runner fixture: handwritten PC24 `DE F2`, old `ST(0)=-1` divided by
   old `ST(2)=3`, round toward negative, full post-pop state, unchanged memory,
   and JIT denial.

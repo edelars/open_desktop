@@ -1453,10 +1453,11 @@ admission stays closed.
 The schema-v2 runner executes a handwritten `DE FA` PC24, round-toward-negative
 fixture for `ST(2)=-1` and `ST(0)=3`, checking the full state after negative
 `1/3` rounding and popping old TOP. The static fixture also verifies unchanged
-memory and JIT denial. The runner matrix exercises every admitted FCW, while
-direct ISA tests cover all FCW×TOP×index×sign×PE/C1 combinations and a gap-65
-case. Invalid controls, status, tags and operands refuse without committing
-state. `DE F0..F7` remains the distinct reverse quotient FDIVRP encoding.
+memory and JIT denial. The testkit runner matrix checks exact quotients across
+TOP/index destinations; direct ISA tests cover all FCW×TOP×index×sign×PE/C1
+combinations and gap-65 operands. Invalid controls, status, tags and operands
+refuse without committing state. `DE F0..F7` remains the distinct reverse
+quotient FDIVRP encoding.
 
 ### S2-30de bounded FDIVRP fixture coverage
 
@@ -1465,20 +1466,21 @@ fixture for old `ST(0)=-1` divided by old `ST(2)=3`, checks the full state
 after rounding to `-1/3` and popping old TOP, confirms unchanged memory, and
 denies JIT execution. Direct ISA coverage spans all FCW×TOP×index×sign×PE/C1
 combinations and gap-65 operands. Exact and alias cases verify the ordered
-quotient and destination-before-pop rules. DE F1 stop-null Unsupported cases
-remain reserved for actual preflight refusals such as unsupported selectors or
-out-of-domain/overflow results; valid inexact quotients are admitted.
+quotient and destination-before-pop rules. The DE F1 stop-null schema allowance
+covers result-range preflight refusals such as overflow/underflow. Selector
+refusals are covered by direct ISA tests because schema-v2 does not admit x87
+selectors with DE F1; valid inexact quotients are admitted.
 
 ### S2-30s x87 schema coverage
 
 The schema validator admits all eight bare `DE F0+i` FDIVRP encodings,
 including the no-operand `DE F1` alias. Runner cases check every TOP×i
 destination, ordered `15/3 = 5`, exact `+1` alias payload before the old TOP
-tag is emptied, TOP wrap, C1 clearing and unchanged unrelated state. An
-inexact `DE F1` case uses `stop_rip: null` and budget one and verifies that
-the full x87 state is unchanged. `DE F8..FF` FDIVP keeps its ordered quotient
-and pop semantics, with bounded rounding extended by S2-30dd; native x87
-admission stays closed.
+tag is emptied, TOP wrap, C1 clearing and unchanged unrelated state. Under
+S2-30de, valid inexact `DE F1` quotients round and retire; out-of-domain
+results such as overflow refuse atomically with `stop_rip: null` and budget one.
+`DE F8..FF` FDIVP keeps its ordered quotient and pop semantics, with bounded
+rounding extended by S2-30dd; native x87 admission stays closed.
 
 
 ### S2-30t x87 schema coverage
