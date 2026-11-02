@@ -145,6 +145,7 @@ SELF_TEST_NAMES = (
     "test_s3_34cq_rax_disp8_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34cr_rax_disp8_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34cs_rax_disp32_dword_load_gates_are_pinned_and_fail_closed",
+    "test_s3_34ct_rax_disp32_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -1198,6 +1199,14 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34cs_host_rax_disp32_dword_load_original_rax", "local_acceptance", "od-host",
         "tests::s3_20fh_rax_disp32_dword_load_uses_original_full_rax",
+    ),
+    (
+        "s3_34ct_ir_rax_disp32_dword_store_source_binding", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_dword_rax_disp32_store_binds_all_signed_source_bytes_to_its_site",
+    ),
+    (
+        "s3_34ct_host_rax_disp32_dword_store_rax_address_and_data", "local_acceptance", "od-host",
+        "tests::s3_20fi_rax_disp32_dword_store_uses_full_rax_address_and_low_dword_data",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
