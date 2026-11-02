@@ -21615,3 +21615,36 @@ and [ISSUE-019](../KNOWN_ISSUES.md#issue-019--семантика-арифмет�
 4 binary tests. Workspace all-target offline check, `cargo fmt --all -- --check`,
 `git diff --check`, layout validation и Graphify AST refresh завершились успешно.
 Независимые Sol/high review обоих срезов чистые; физическая x86-проверка не заявляется.
+
+## S2-30cw — bounded reverse `FSUBR ST(i), ST(0)`
+
+Added direct FCW precision execution for exact bare Long64 `DC E0..E7`. It
+computes old `ST(0) - ST(i)` into old physical `(TOP+i)&7`, without a pop, by
+reusing `bounded_x87_fsub_st0_sti_result`; no new arithmetic helper or exact
+fallback is introduced. Admission requires present x87 state, absent FCS/FDS,
+one of twelve all-masked PC24/53/64 FCWs, `FSW & 0x80df == 0`, Valid tags,
+canonical nonzero Normal operands and normalized exponent gap≤64. Alias `i=0`
+cancels and is atomically Unsupported. Only finite Normal exact or rounded
+results are accepted; the previous S2-30l exact domain is preserved by the
+p64 equal-exponent path.
+
+Success changes only old physical `ST(i)`, makes PE sticky, replaces C1 from
+`incremented`, preserves TOP/tags/source and unrelated x87 state, records FIP,
+advances RIP by two, retires once and performs no data access. Existing
+exhaustive DC ModR/M/prefix decoder tests remain in force. Native/JIT, general
+x87 exception delivery and physical x86 acceptance remain outside this slice.
+
+Focused `fsubr_sti_st0` tests passed 6/6; full `od-isa` passed 1,819/1,819.
+Workspace all-target offline check, formatting and diff check passed.
+Graphify rebuilt 11,361 nodes, 24,461 edges and 352 communities. Isolated
+layout validation reports the worktree `.git` marker and two unavailable
+historical oracle manifests tracked by ISSUE-023; no new broken documentation
+links were found. Independent Sol/high review is pending. Sources: Intel SDM
+Rev. 093 Vol. 2A `FSUBR/FSUBRP/FISUBR`, `DC E0+i`, pp. 3-397–3-399
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=515));
+Vol. 1 §§8.1.5.1–.3, Table 8-2 and §8.5.6, pp. 8-7–8-8 and 8-30
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=236)).
+See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30cw-bounded-fsubr-sti-st0-dc-e0-e7),
+[plan](../plans/STAGE_2.md#s2-30cw-bare-reverse-fsubr-sti-st0-with-bounded-fcw-precision),
+and [standalone report](S2_30CW_X87_FSUBR_REVERSE_PRECISION.md). No physical x86
+acceptance is claimed.
