@@ -445,6 +445,7 @@ impl PublishedCode {
             && !(source.len() == 8
                 && source[..3] == [0x67, 0x89, 0x84]
                 && matches!(source[3], 0x24 | 0x0b | 0x4b | 0x8b | 0xcb))
+            && !(source.len() == 8 && source[..4] == [0x67, 0x89, 0x04, 0x25])
             && !(source.len() == 4 && source[..3] == [0x67, 0x89, 0x43])
             && !(source.len() == 4 && source[..3] == [0x67, 0x89, 0x45])
             && !(source.len() == 7 && source[..3] == [0x67, 0x89, 0x83])
@@ -5671,7 +5672,10 @@ mod tests {
                 &stop,
             )
             .unwrap();
-        assert_eq!(exhausted.exit, MemoryOperationExecutionExitV2::BudgetExhausted);
+        assert_eq!(
+            exhausted.exit,
+            MemoryOperationExecutionExitV2::BudgetExhausted
+        );
         let stopped_at_entry = published
             .execute_ir_memory_dword_load_v2(
                 &mut guarded_state,
@@ -5682,7 +5686,10 @@ mod tests {
                 &stop,
             )
             .unwrap();
-        assert_eq!(stopped_at_entry.exit, MemoryOperationExecutionExitV2::StopAddress);
+        assert_eq!(
+            stopped_at_entry.exit,
+            MemoryOperationExecutionExitV2::StopAddress
+        );
         assert_eq!(guarded_state, before_guard);
         assert_eq!(guarded_memory.reads, 0);
 
@@ -5798,6 +5805,249 @@ mod tests {
         assert_eq!(failed_state.gpr[0], 0x0000_0000_efcd_ab89);
         assert_eq!(failed_state.rip, entry + 8);
         assert_eq!(failed_memory.reads, 2);
+    }
+
+    #[test]
+    fn s3_20eo_addr32_absolute_sib_disp32_dword_store_uses_zero_extended_absolute_address() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+
+        #[derive(Default)]
+        struct Memory<'a> {
+            writes: Vec<(u64, Vec<u8>)>,
+            committed: Vec<(u64, Vec<u8>)>,
+            failure: Option<MemoryError>,
+            stop_on_write: Option<&'a AtomicU8>,
+        }
+        impl GuestMemory for Memory<'_> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Fetch,
+                })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                source: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.writes.push((address, source.to_vec()));
+                if let Some(error) = self.failure.clone() {
+                    return Err(error);
+                }
+                self.committed.push((address, source.to_vec()));
+                if let Some(stop) = self.stop_on_write {
+                    stop.store(1, Ordering::Release);
+                }
+                Ok(())
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        let _guard = jit_test_lock();
+        let entry = 0x9c10;
+        let source = [0x67, 0x89, 0x04, 0x25, 0xfe, 0xff, 0xff, 0xff];
+        let code = CodeView::new(entry, &source).unwrap();
+        let compiled =
+            od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(code, entry).unwrap();
+        let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
+        let mut state = od_isa::LongModeState {
+            rip: entry,
+            ..Default::default()
+        };
+        state.gpr[0] = 0xfeed_face_89ab_cdef;
+        state.gpr[3] = 0x1234_5678_9abc_def0;
+        state.rflags = 0x8d5;
+        let before = state.clone();
+        let mut memory = Memory::default();
+        let stop = AtomicU8::new(0);
+
+        let requested = AtomicU8::new(1);
+        let stopped_before_entry = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                1,
+                None,
+                &requested,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            stopped_before_entry.exit,
+            MemoryOperationExecutionExitV2::StopRequested
+        );
+        let exhausted = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                0,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(exhausted.exit, MemoryOperationExecutionExitV2::BudgetExhausted);
+        let stopped_at_entry = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                1,
+                Some(entry),
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(stopped_at_entry.exit, MemoryOperationExecutionExitV2::StopAddress);
+        assert_eq!(state, before);
+        assert!(memory.writes.is_empty());
+
+        let expected_write = (0xffff_fffe, vec![0xef, 0xcd, 0xab, 0x89]);
+        let mut failed_memory = Memory {
+            writes: Vec::new(),
+            committed: Vec::new(),
+            failure: Some(MemoryError::Backend(
+                "addr32 absolute write failure".into(),
+            )),
+            stop_on_write: None,
+        };
+        let mut failed_state = before.clone();
+        let failure = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut failed_state,
+                &mut failed_memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert!(matches!(
+            failure.exit,
+            MemoryOperationExecutionExitV2::GuestFault(_)
+        ));
+        assert_eq!(failed_state, before);
+        assert_eq!(failed_memory.writes, vec![expected_write.clone()]);
+        assert!(failed_memory.committed.is_empty());
+        failed_memory.failure = None;
+        let retried = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut failed_state,
+                &mut failed_memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(retried.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(failed_state.gpr, before.gpr);
+        assert_eq!(failed_state.rflags, before.rflags);
+        assert_eq!(failed_state.rip, entry + 8);
+        assert_eq!(
+            failed_memory.writes,
+            vec![expected_write.clone(), expected_write.clone()]
+        );
+        assert_eq!(failed_memory.committed, vec![expected_write.clone()]);
+
+        let callback_stop = AtomicU8::new(0);
+        let mut stopped_memory = Memory {
+            writes: Vec::new(),
+            committed: Vec::new(),
+            failure: None,
+            stop_on_write: Some(&callback_stop),
+        };
+        let mut stopped_state = before.clone();
+        let stopped = unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut stopped_state,
+                &mut stopped_memory,
+                AccessContext::default(),
+                1,
+                None,
+                &callback_stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            stopped.exit,
+            MemoryOperationExecutionExitV2::StopRequested
+        );
+        assert_eq!(stopped_state.gpr, before.gpr);
+        assert_eq!(stopped_state.rflags, before.rflags);
+        assert_eq!(stopped_state.rip, entry + 8);
+        assert_eq!(stopped_memory.writes, vec![expected_write.clone()]);
+        assert_eq!(stopped_memory.committed, vec![expected_write.clone()]);
+        assert!(unsafe {
+            published.execute_ir_memory_dword_store_v2(
+                &mut stopped_state,
+                &mut stopped_memory,
+                AccessContext::default(),
+                1,
+                None,
+                &callback_stop,
+            )
+        }
+        .is_err());
+        assert_eq!(
+            stopped_memory.writes,
+            vec![expected_write.clone()]
+        );
     }
 
     #[test]
