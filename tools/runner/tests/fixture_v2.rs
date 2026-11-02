@@ -39029,6 +39029,67 @@ fn rcpss_m32_memory_rhs_is_strict_and_interpreter_only() {
         base.memory[1].initial_bytes_hex
     );
 
+    let noncanonical = HexU64(0x0000_8000_0000_0000);
+    let mut ac_noncanonical = base.clone();
+    ac_noncanonical.case_id = "s2_37ea_ac_noncanonical_refusal".into();
+    ac_noncanonical.initial_state.rflags =
+        HexU64(ac_noncanonical.initial_state.rflags.get() | (1 << 18));
+    ac_noncanonical.initial_state.gpr[0] = noncanonical;
+    ac_noncanonical.memory[1].guest_address = noncanonical;
+    ac_noncanonical.expected_exit = ExpectedExit::Unsupported;
+    assert!(ac_noncanonical.validate().is_ok());
+    let (ac_noncanonical_input, ac_noncanonical_result) =
+        run(&ac_noncanonical.to_json().unwrap(), "interpreter", 4);
+    ac_noncanonical_result
+        .validate_for(&ac_noncanonical_input)
+        .unwrap();
+    assert!(matches!(
+        ac_noncanonical_result.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert_eq!(
+        ac_noncanonical_result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert_eq!(
+        snapshot(&ac_noncanonical_result).state,
+        ac_noncanonical.initial_state
+    );
+    assert_eq!(
+        snapshot(&ac_noncanonical_result).memory[1].bytes_hex,
+        ac_noncanonical.memory[1].initial_bytes_hex
+    );
+
+    let mut gp_noncanonical = ac_noncanonical.clone();
+    gp_noncanonical.case_id = "s2_37ea_noncanonical_gp".into();
+    gp_noncanonical.initial_state.rflags =
+        HexU64(gp_noncanonical.initial_state.rflags.get() & !(1 << 18));
+    gp_noncanonical.expected_exit = ExpectedExit::Exception;
+    assert!(gp_noncanonical.validate().is_ok());
+    let (gp_noncanonical_input, gp_noncanonical_result) =
+        run(&gp_noncanonical.to_json().unwrap(), "interpreter", 0);
+    gp_noncanonical_result
+        .validate_for(&gp_noncanonical_input)
+        .unwrap();
+    assert!(matches!(
+        gp_noncanonical_result.outcome,
+        Outcome::Exception {}
+    ));
+    assert_eq!(
+        gp_noncanonical_result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert_eq!(
+        snapshot(&gp_noncanonical_result).state,
+        gp_noncanonical.initial_state
+    );
+    assert!(matches!(
+        snapshot(&gp_noncanonical_result).exception,
+        Observation::Available {
+            value: Some(ref exception)
+        } if exception.vector == 13
+    ));
+
     for backend in [Backend::Jit, Backend::NativeX86] {
         let mut relabeled = result.clone();
         relabeled.backend = backend;

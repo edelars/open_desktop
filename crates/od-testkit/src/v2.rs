@@ -12244,10 +12244,12 @@ impl Fixture {
             let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
             let span = last.is_none_or(|last| !canonical(source) || !canonical(last));
             let ac = self.initial_state.rflags.get() & (1 << 18) != 0;
-            let expected = if gate || nm || span {
+            let expected = if gate || nm {
                 ExpectedExit::Exception
             } else if ac {
                 ExpectedExit::Unsupported
+            } else if span {
+                ExpectedExit::Exception
             } else {
                 ExpectedExit::StopAddress
             };
@@ -41430,8 +41432,8 @@ fn validate_rcpss_memory_rax_result(
     let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
     let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
     let ac = fixture.initial_state.rflags.get() & (1 << 18) != 0;
-    let fault = gate.or_else(|| span_fault.then_some(13));
-    let unsupported = fault.is_none() && ac;
+    let unsupported = gate.is_none() && ac;
+    let fault = gate.or_else(|| (!ac && span_fault).then_some(13));
     let valid_exit = match (fault, fixture.expected_exit) {
         (Some(_), ExpectedExit::Exception) => true,
         (None, ExpectedExit::StopAddress) => !ac,
