@@ -903,6 +903,20 @@ crossing. GPRs and RFLAGS are preserved, and the instruction boundary is
 this exact admission. Runtime gates remain pending; see the
 [S3-20eu report](../reports/STAGE_3_S3-20eu_2026-11-02.md).
 
+#### S3-20ev: exact addr32 scaled RCX-indexed no-base SIB disp32 Dword loads
+
+The shared typed-IR Dword-load path admits only the exact eight-byte
+singletons with exactly the `67` address-size override prefix and no other
+prefixes: `67 8B 04 4D disp32`, `67 8B 04 8D disp32`, and
+`67 8B 04 CD disp32`. The address-size-32 SIB has no base and uses ECX as
+its index at scale 2, 4, or 8. The effective address is
+`zero_extend((low32(RCX)*scale + signed disp32) mod 2^32)`. Each checked read
+is one contiguous four-byte access, including the recorded 4-GiB crossing.
+EAX zero-extends into RAX; other GPRs and RFLAGS are preserved, and the
+instruction boundary is `A+8`. Other prefixes, scales, and neighboring
+encodings remain outside this exact admission. Runtime gates remain pending;
+see the [S3-20ev report](../reports/STAGE_3_S3-20ev_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
