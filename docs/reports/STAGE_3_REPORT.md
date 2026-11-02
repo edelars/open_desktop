@@ -250,10 +250,32 @@ source `e16f6fd` was integrated as `3fa9448`; the static manifest records 230
 Rust gates (220 acceptance, 10 lifecycle) and 248 local steps. Independent
 Sol/high static review passed. No Python harness test or other harness
 execution was performed, and no runtime evidence or pass is claimed.
-S3-20eq runtime implementation remains in progress. ISSUE-028 remains open.
-Stage 2 remained outside this slice's evidence; concurrent runs were ignored
-per user instruction. Mini/M1 remain deferred; Stage 3 remains partial. See
+S3-20eq runtime source `c384bce` is now integrated as `8c50c90`; independent
+Sol/high static review passed after the compiler/block/host byte gates and
+host overflow/backend expectation fixes. Runtime gates remain pending because
+no tests, builds, formatting, Cargo checks, or Python harness tests were run.
+ISSUE-028 remains open. Stage 2 remained outside this slice's evidence;
+concurrent runs were ignored per user instruction. Mini/M1 remain deferred;
+Stage 3 remains partial. See
 the [S3-34cb report](STAGE_3_S3-34cb_2026-11-02.md).
+
+S3-20eq adds only the exact unprefixed RCX-indexed no-base SIB disp32
+Dword store `89 04 0D disp32`. The decoder-owned effective address uses full
+RCX plus signed disp32 with wrapping u64 arithmetic; one checked width-four
+write stores low32 RAX and advances to `A+7`. Runtime source `c384bce` was
+integrated as `8c50c90`; independent Sol/high static review passed after fixes
+to compiler/block/host byte gates and host overflow/backend expectations. No
+tests, builds, formatting, Cargo checks, or Python harness tests ran, so the
+exact runtime gates remain pending.
+
+S3-34cb pins this slice's exact JIT and host identities. Its source `e16f6fd`
+was integrated as `3fa9448`; its historical manifest records 230 Rust gates
+(220 acceptance, 10 lifecycle) and 248 local steps, with static review passed
+and no Python/harness execution. The later S3-34cc aggregate counts are not
+attributed to S3-34cb. ISSUE-028 remains open. Stage 2 remained outside this
+slice's evidence; concurrent runs were ignored per user instruction. Mini/M1
+remain deferred; Stage 3 remains partial. See the
+[S3-20eq report](STAGE_3_S3-20eq_2026-11-02.md).
 
 S3-36e implementation is committed. Release preflight passed on Apple M3 Max
 with 2,400 frozen inputs and 4,800 parity trials. Calibration-only passed at

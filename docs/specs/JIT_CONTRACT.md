@@ -843,6 +843,17 @@ remain outside the exact admission. Runtime tests remain pending; the
 [S3-20ep report](../reports/STAGE_3_S3-20ep_2026-11-02.md) records the current
 evidence and limit.
 
+#### S3-20eq: exact RCX-indexed no-base SIB Dword store with disp32
+
+The shared typed-IR Dword-store path admits only the exact unprefixed seven-byte
+singleton `89 04 0D disp32` (`MOV [RCX+disp32],EAX`): address64, SIB without a
+base, RCX index at scale 1, and Dword transfer. The decoder-owned effective
+address is the full-width RCX plus sign-extended disp32 with wrapping u64
+arithmetic. One checked contiguous four-byte write stores low32 RAX, and the
+guest instruction boundary is `A+7`. Other prefixes and neighboring SIB
+encodings remain outside this exact admission. Runtime gates remain pending;
+see the [S3-20eq report](../reports/STAGE_3_S3-20eq_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
