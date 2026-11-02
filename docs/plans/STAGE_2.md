@@ -323,7 +323,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ds | Admit Special-tagged binary80 pseudo-NaNs (both Q-bit classes) through bounded D9 FC as masked invalid; native/JIT closed | S2-31dr |
 | [x] | S2-31dt | Admit historical sticky UE only in exact bare D9 00/DD 00 FLD m32/m64 gates; keep other x87 gates and native/JIT closed | S2-31ak |
 | [x] | S2-31du | Admit historical sticky OE only in exact bare D9 00/DD 00 FLD m32/m64 gates; keep other x87 gates and native/JIT closed | S2-31dt |
-| [x] | S2-31dv | Admit historical sticky ZE only in exact bare D9 00/DD 00 FLD m32/m64 gates; preserve other flags and x87 gates; native/JIT closed | S2-31du |
+| [x] | S2-31dv | Admit historical sticky ZE only in exact bare D9 00/DD 00 FLD m32/m64 gates; preserve other flags and x87 gates; native/JIT closed | 65,536-case full-state matrix, FNSTSW/FNCLEX composition, SF/ES/B rejection; combined main suites: od-isa 1,901, testkit 455, runner 125+522, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,858/25,727/334; implementation and test-fix Sol/high reviews clean; no physical x86 acceptance |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -648,7 +648,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38l | Exact Long64 `MAXPS XMM0,XMM1` unmasked IM/DM exit; distinct strict schema-v2 profile, four-lane raw event aggregation and atomic XMM suppression; interpreter-only | S2-37h, S2-38k control policy after MAXPS-specific Rev. 093 review; independent Sol medium review clean |
 | [x] | S2-38m | Exact Long64 `MINSS XMM0,m32 [RAX]` memory profile with mixed IM/DM unmasked arithmetic exit; actual memory RHS; strict schema-v2 and interpreter-only | Parent S2-38 memory/alignment/unmasked-FP-priority gap; S2-37dh address/read model and S2-38d policy; integrated main: od-isa 1,891, testkit 455, runner 125+518, x86-runner 8+4, workspace/fmt/diff/layout/Graphify; Sol/high review clean after exact-form/backend/anchor fixes; no physical x86 claim |
 | [x] | S2-38n | Exact Long64 `MAXSS XMM0,m32 [RAX]` memory profile with MAXSS-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cy masked memory, S2-38f MAXSS unmasked policy and S2-38m memory/fault ordering; MAXSS-specific QNaN invalid, operand-2 SNaN preservation; combined main suites: od-isa 1,895, testkit 455, runner 125+520, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,828 nodes/25,656 edges/376 communities; independent Sol/high review clean; no physical x86 claim |
-| [x] | S2-38o | Exact Long64 `MINSD XMM0,m64 [RAX]` memory profile with MINSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cw masked memory, S2-38g MINSD unmasked policy, S2-38m/n memory ordering; local interpreter/schema-v2 only, no physical x86 claim |
+| [x] | S2-38o | Exact Long64 `MINSD XMM0,m64 [RAX]` memory profile with MINSD-specific raw source-2 selection and mixed IM/DM unmasked exit; strict schema-v2, memory fault ordering and interpreter-only | S2-37cw masked memory, S2-38g MINSD unmasked policy, S2-38m/n memory ordering; combined main suites: od-isa 1,901, testkit 455, runner 125+522, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,858/25,727/334; Sol/high review clean after backend relabel and coverage fixes; no physical x86 claim |
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -7705,13 +7705,13 @@ neighboring-form rejection, unaligned access, address/read atomicity, selector
 ties, IM×DM×OSXMMEXCPT delivery, and RC×64 sticky histories across NaN,
 subnormal, and mixed event/mask cases. The runner fixture test validates the
 independent raw-u64 oracle, control echo, tamper rejection, JIT/native denial,
-and forged `jit`/`native_x86` result labels through compare-results. Focused checks
-passed. Full suites passed: od-isa 1,900, od-testkit 455, runner binary 125,
-and runner fixtures 521. Workspace offline check, formatting, diff check and
-Graphify refresh passed. Layout reports the existing temporary-worktree `.git`
-pointer and missing archived oracle manifests; no S2-38o issue was added.
-Independent review is pending integration review. No physical x86 acceptance
-is claimed.
+and forged `jit`/`native_x86` result labels through compare-results.
+Combined main suites passed: od-isa 1,901, od-testkit 455, runner binary 125,
+runner fixtures 522 and x86-runner 8 library + 4 binary. Workspace offline
+check, formatting, layout, diff check and Graphify refresh passed (11,858 nodes,
+25,727 edges, 334 communities). Sol/high review is clean after fixing forged
+JIT/native result acceptance and adding required tie/fault/RC coverage. No
+physical x86 acceptance is claimed.
 
 #### S2-38e. Exact FP-init, FXRSTOR64, and image-controlled MINSS composition
 
@@ -10866,6 +10866,16 @@ Do not add a synthetic ZE producer; the slice
 validates explicitly supplied historical state. Keep
 ISSUE-019 open and do not claim native/JIT or physical x86 acceptance. See the
 [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dv-historical-sticky-ze-for-exact-binary32binary64-fld).
+
+Implementation is integrated. The independent 65,536-case matrix, schema and
+runner checks passed. A full suite exposed two stale testkit assertions that
+still treated ZE as a reject condition; the test-only fix switched those
+Unsupported cases to SF and added explicit ZE/OE admission checks. Both the
+implementation and test-fix received clean independent Sol/high reviews.
+Combined main verification passed: `od-isa` 1,901, `od-testkit` 455,
+`od-runner` 125 unit + 522 fixture, `od-x86-runner` 8 library + 4 binary,
+workspace check, formatting, layout, diff check and Graphify refresh (11,858
+nodes, 25,727 edges, 334 communities). No physical x86 acceptance is claimed.
 
 #### S2-30bj. Narrow bare `FXCH ST(1)` (`D9 C9`)
 

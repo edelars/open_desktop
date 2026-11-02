@@ -11393,12 +11393,14 @@ visible through FNSTSW AX before FNCLEX clears the status flags. S2-31ak
 pre-read reject fixtures now use SF, and the schema regression proves ZE alone
 no longer justifies an Unsupported exact bare load. No instruction in this
 profile produces ZE; it is supplied historical state. The updated fixtures are
-`project_fixture` evidence, not native x86 results. Focused tests, the
-workspace offline check, formatting, diff check and Graphify refresh passed.
-`tools/check_layout.py` reported the worktree's `.git` marker as an unmapped
-root file and two existing report links to absent oracle manifests; no new
-layout paths were added. Native
-runtime, physical x86 and broader x87 behavior remain open under ISSUE-019.
+`project_fixture` evidence, not native x86 results. The implementation and
+follow-up test-only correction both received clean independent Sol/high
+reviews. Combined main verification passed: od-isa 1,901, od-testkit 455,
+runner 125 unit + 522 fixture, and x86-runner 8 library + 4 binary; workspace
+all-target offline check, formatting, layout, diff check and Graphify refresh
+(11,858 nodes, 25,727 edges, 334 communities). Main layout validation passes.
+Native runtime, physical x86 and broader x87 behavior remain open under
+ISSUE-019.
 See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-31dv-historical-sticky-ze-for-exact-binary32binary64-fld),
 [plan](../plans/STAGE_2.md#s2-31dv-admit-historical-sticky-ze-through-exact-binary32binary64-fld),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
@@ -22630,12 +22632,10 @@ histories across event/mask combinations. The runner fixture test verifies
 control echo, tampering, JIT/native denial, and CLI rejection of forged `jit`
 and `native_x86` backend labels.
 
-Verification passed: `od-isa` 1,900, `od-testkit` 455, runner binary 125 and
-runner `fixture_v2` 521; `cargo fmt --all -- --check`,
-`cargo check --workspace --all-targets --offline`, `git diff --check`, and
-`graphify update .` passed. Graphify reports 11,899 nodes, 25,674 edges and
-381 communities; Graphify labels were not refreshed without an LLM API key. `python3 tools/check_layout.py` reports the temporary
-worktree's `.git` pointer as an unmapped root item and two absent archived
-oracle manifests linked from the pre-existing shared report; no new S2-38o
-layout finding appeared. Independent review is pending integration. No
-physical x86 acceptance is claimed. See the [standalone report](S2_38O_MINSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38o--exact-minsd-unmasked-memory-exit-for-m64-rax), [plan](../plans/STAGE_2.md#s2-38o-exact-long64-minsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38o-minsd-m64-unmasked-invalid-and-denormal).
+Integrated main verification passed: od-isa 1,901, od-testkit 455, runner
+binary 125 and runner `fixture_v2` 522; x86-runner 8 library + 4 binary;
+workspace all-target offline check, formatting, layout, diff check and Graphify
+refresh (11,858 nodes, 25,727 edges, 334 communities). Sol/high review is clean
+after fixing forged JIT/native result acceptance and adding required
+tie/fault/RC coverage. Main layout validation passes. No physical x86
+acceptance is claimed. See the [standalone report](S2_38O_MINSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md#s2-38o--exact-minsd-unmasked-memory-exit-for-m64-rax), [plan](../plans/STAGE_2.md#s2-38o-exact-long64-minsd-xmm0m64-rax-memory-profile-with-mixed-imdm-exit), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38o-minsd-m64-unmasked-invalid-and-denormal).

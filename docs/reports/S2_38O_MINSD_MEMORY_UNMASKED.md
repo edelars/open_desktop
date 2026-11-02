@@ -40,14 +40,13 @@ Focused commands passed:
 - `cargo test -p od-isa minsd_memory_unmasked --offline` — 5 passed.
 - `cargo test -p od-runner --test fixture_v2 minsd_m64_memory_unmasked_profile_checks_mixed_priority_echo_and_backend_denial --offline` — 1 passed.
 
-Broader verification passed: `od-isa` 1,900, `od-testkit` 455, runner binary
-125 and runner `fixture_v2` 521; `cargo fmt --all -- --check`,
-`cargo check --workspace --all-targets --offline`, `git diff --check`, and
-`graphify update .` passed. Graphify reports 11,899 nodes, 25,674 edges and
-381 communities; Graphify labels were not refreshed without an LLM API key. `python3 tools/check_layout.py` reports the temporary
-worktree's `.git` pointer and two missing archived oracle manifests linked
-from the pre-existing shared report; no S2-38o layout issue was found.
-Independent Sol/high review is pending parent integration review.
+Integrated main verification passed: `od-isa` 1,901, `od-testkit` 455,
+runner binary 125, runner `fixture_v2` 522, and x86-runner 8 library + 4
+binary tests; workspace all-target offline check, formatting, layout, diff
+check and Graphify refresh (11,858 nodes, 25,727 edges, 334 communities).
+Main layout validation passes. Independent Sol/high review is clean after
+fixing forged JIT/native result acceptance and adding the required
+tie/fault/RC coverage.
 
 ## Scope limits
 
