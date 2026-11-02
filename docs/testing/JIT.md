@@ -699,6 +699,27 @@ runtime behavior. ISSUE-028 remains open; Stage 2 is ignored/excluded; Mini/M1
 are deferred; Stage 3 remains partial. See the
 [S3-34cn report](../reports/STAGE_3_S3-34cn_2026-11-02.md).
 
+## S3-34co: harness gates for S3-20fd addr32 scaled RAX-indexed Dword load
+
+Harness source `4e7619d` plus fail-closed tail restoration `9b1fa57` pins the
+exact JIT source/site and host acceptance identities for the eight-byte
+addr32 no-base scaled SIB Dword-load forms
+`67 8B 04 45/85/C5 disp32` (scales 2/4/8):
+
+- `s3_34co_ir_addr32_rax_index_no_base_sib_scaled_disp32_dword_load_source_binding` →
+  `memory_load_v2::tests::ir_dword_addr32_rax_index_no_base_sib_scaled_disp32_load_binds_all_source_bytes_to_its_site`
+- `s3_34co_host_addr32_rax_index_no_base_sib_scaled_disp32_dword_load_original_eax` →
+  `tests::s3_20fd_addr32_rax_index_no_base_sib_scaled_disp32_dword_load_uses_original_wrapped_scaled_eax`
+
+The corrected manifest records 256 Rust gates (246 acceptance, 10 lifecycle),
+274 local steps, and 112 self-test names. Distinct 34cn and 34co self-tests
+retain their own fail-closed manifest/evidence checks. Independent Sol/high
+review passed after restoring those tails. No Python harness or Cargo gate was
+run. Runtime S3-20fd separately passed static review after one borrow-lifetime
+fix, but behavior gates remain pending. ISSUE-028 remains open; Stage 2 is
+ignored/excluded; Mini/M1 are deferred; Stage 3 remains partial. See the
+[S3-34co report](../reports/STAGE_3_S3-34co_2026-11-02.md).
+
 ## S3-24b: exact future-tail immediate rewrite in the V3 fixture
 
 Run the exact `od-host` cases
