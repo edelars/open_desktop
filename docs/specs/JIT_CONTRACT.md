@@ -533,6 +533,24 @@ prefixes, SIB, or displacement widths. No address-size-64 RBP `#SS`, MMIO,
 SMC, owner/MMU, hardware, Mini, M1, or Stage 2 behavior is established. See
 the [S3-20dy report](../reports/STAGE_3_S3-20dy_2026-11-02.md).
 
+#### S3-20dz: exact RSP-base Dword load through SIB
+
+The shared typed-IR Dword-load path admits only the exact three-byte singleton
+`8B 04 24` (`MOV EAX,[RSP]`). Its decoded address64 operand uses full-width
+RSP as the base and no index. A successful checked load reads exactly four
+bytes, writes EAX with zero-extension into RAX, and advances the guest
+instruction boundary to `A+3`.
+
+The host fixture checks RSP noncanonical-start and range-end `#SS` faults
+against a noncanonical RBX `#GP` control, four-byte range overflow before the
+read callback, and no architectural commit after injected read errors. A
+callback STOP after a successful read preserves the completed load. Retrying
+the same published block with committed guest RIP `A+3` returns
+`EntryRipMismatch { expected: A, actual: A+3 }`, leaves state unchanged, and
+does not read again. This slice does not claim a separate PC-map phase or establish other SIB shapes,
+MMIO, SMC, owner/MMU integration, hardware behavior, Mini, M1, or Stage 2. See
+the [S3-20dz report](../reports/STAGE_3_S3-20dz_2026-11-02.md).
+
 #### S3-20db: exact address-size-32 Dword store with signed disp8
 
 The shared typed-IR Dword-store path additionally admits only the exact
