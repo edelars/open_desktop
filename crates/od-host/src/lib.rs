@@ -8418,6 +8418,7 @@ mod tests {
 
         #[derive(Clone, Debug)]
         struct Ram {
+            source: Vec<u8>,
             bytes: BTreeMap<u64, u8>,
             reads: Vec<(u64, usize)>,
             read_error: Option<MemoryError>,
@@ -8429,9 +8430,9 @@ mod tests {
                 if let Some(offset) = address
                     .checked_sub(ENTRY)
                     .and_then(|offset| usize::try_from(offset).ok())
-                    .filter(|offset| *offset < SOURCE.len())
+                    .filter(|offset| *offset < self.source.len())
                 {
-                    return Ok(SOURCE[offset]);
+                    return Ok(self.source[offset]);
                 }
                 self.bytes
                     .get(&address)
@@ -8550,14 +8551,15 @@ mod tests {
             state
         }
 
-        fn ram_for(address: u64, value: u32) -> Ram {
+        fn ram_for(source: &[u8], address: u64, value: u32) -> Ram {
             let mut bytes = BTreeMap::new();
-            bytes.insert(address - 1, 0x51);
+            bytes.insert(address.wrapping_sub(1), 0x51);
             for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
                 bytes.insert(address + offset as u64, byte);
             }
-            bytes.insert(address + 4, 0x95);
+            bytes.insert(address.wrapping_add(4), 0x95);
             Ram {
+                source: source.to_vec(),
                 bytes,
                 reads: Vec::new(),
                 read_error: None,
@@ -8588,7 +8590,7 @@ mod tests {
         let value = 0x89ab_cdef;
         let initial = state_for(target - 1);
         let mut native_state = initial.clone();
-        let mut native_ram = ram_for(target, value);
+        let mut native_ram = ram_for(&SOURCE, target, value);
         let mut interpreter_state = initial.clone();
         let mut interpreter_ram = native_ram.clone();
         assert_eq!(
@@ -8630,6 +8632,104 @@ mod tests {
         assert_eq!(native_ram.bytes[&(target - 1)], 0x51);
         assert_eq!(native_ram.bytes[&(target + 4)], 0x95);
 
+        drop(published);
+        let negative_source = [0x8b, 0x44, 0x24, 0xff];
+        let negative_block = od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(
+            CodeView::new(ENTRY, &negative_source).unwrap(),
+            ENTRY,
+        )
+        .unwrap();
+        let negative_published =
+            PublishedCode::publish_ir_memory_dword_load_v2(&negative_block).unwrap();
+        let negative_target = 0x1000;
+        let negative_initial = state_for(0x1001);
+        assert_eq!(
+            negative_block
+                .site()
+                .operand()
+                .access_address_48(&negative_initial, ENTRY + 4),
+            Ok(negative_target)
+        );
+        let mut negative_native_state = negative_initial.clone();
+        let mut negative_native_ram = ram_for(&negative_source, negative_target, value);
+        let mut negative_interpreter_state = negative_initial.clone();
+        let mut negative_interpreter_ram = negative_native_ram.clone();
+        let negative_native = negative_published
+            .execute_ir_memory_dword_load_v2(
+                &mut negative_native_state,
+                &mut negative_native_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+            )
+            .unwrap();
+        assert_eq!(
+            od_isa::execute::step(
+                &mut negative_interpreter_state,
+                &mut negative_interpreter_ram,
+                AccessContext::default(),
+            )
+            .unwrap(),
+            od_isa::execute::StepOutcome::Advanced
+        );
+        assert_eq!(
+            negative_native.exit,
+            MemoryOperationExecutionExitV2::Complete
+        );
+        assert_eq!(negative_native.retired_instructions, 1);
+        assert_eq!(negative_native_state, negative_interpreter_state);
+        let mut negative_expected = negative_initial.clone();
+        negative_expected.gpr[0] = u64::from(value);
+        negative_expected.rip = ENTRY + 4;
+        assert_eq!(negative_native_state, negative_expected);
+        assert_eq!(negative_native_ram.reads, [(negative_target, 4)]);
+        assert_eq!(negative_native_ram.reads, negative_interpreter_ram.reads);
+
+        drop(negative_published);
+        let published = PublishedCode::publish_ir_memory_dword_load_v2(&block).unwrap();
+        let wrap_target = 0;
+        let wrap_initial = state_for(u64::MAX);
+        assert_eq!(
+            block
+                .site()
+                .operand()
+                .access_address_48(&wrap_initial, ENTRY + 4),
+            Ok(wrap_target)
+        );
+        let mut wrap_native_state = wrap_initial.clone();
+        let mut wrap_native_ram = ram_for(&SOURCE, wrap_target, value);
+        let mut wrap_interpreter_state = wrap_initial.clone();
+        let mut wrap_interpreter_ram = wrap_native_ram.clone();
+        let wrap_native = published
+            .execute_ir_memory_dword_load_v2(
+                &mut wrap_native_state,
+                &mut wrap_native_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+            )
+            .unwrap();
+        assert_eq!(
+            od_isa::execute::step(
+                &mut wrap_interpreter_state,
+                &mut wrap_interpreter_ram,
+                AccessContext::default(),
+            )
+            .unwrap(),
+            od_isa::execute::StepOutcome::Advanced
+        );
+        assert_eq!(wrap_native.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(wrap_native.retired_instructions, 1);
+        assert_eq!(wrap_native_state, wrap_interpreter_state);
+        let mut wrap_expected = wrap_initial.clone();
+        wrap_expected.gpr[0] = u64::from(value);
+        wrap_expected.rip = ENTRY + 4;
+        assert_eq!(wrap_native_state, wrap_expected);
+        assert_eq!(wrap_native_ram.reads, [(wrap_target, 4)]);
+        assert_eq!(wrap_native_ram.reads, wrap_interpreter_ram.reads);
+
         for (budget, stop_rip, requested, expected_exit) in [
             (0, None, 0, MemoryOperationExecutionExitV2::BudgetExhausted),
             (
@@ -8641,7 +8741,7 @@ mod tests {
             (1, None, 1, MemoryOperationExecutionExitV2::StopRequested),
         ] {
             let mut state = initial.clone();
-            let mut ram = ram_for(target, value);
+            let mut ram = ram_for(&SOURCE, target, value);
             let before = ram.bytes.clone();
             let result = published
                 .execute_ir_memory_dword_load_v2(
@@ -8662,7 +8762,7 @@ mod tests {
 
         let requested = Arc::new(AtomicU8::new(0));
         let mut stop_state = initial.clone();
-        let mut stop_ram = ram_for(target, value);
+        let mut stop_ram = ram_for(&SOURCE, target, value);
         stop_ram.stop_on_read = Some(requested.clone());
         let stop_result = published
             .execute_ir_memory_dword_load_v2(
@@ -8704,7 +8804,7 @@ mod tests {
         for effective_address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffd] {
             let initial = state_for(effective_address - 1);
             let mut state = initial.clone();
-            let mut ram = ram_for(target, value);
+            let mut ram = ram_for(&SOURCE, target, value);
             assert_eq!(
                 block
                     .site()
@@ -8744,7 +8844,7 @@ mod tests {
         let overflow_address = u64::MAX - 1;
         let overflow_state = state_for(overflow_address - 1);
         let mut state = overflow_state.clone();
-        let mut ram = ram_for(target, value);
+        let mut ram = ram_for(&SOURCE, target, value);
         assert_eq!(
             block
                 .site()
@@ -8776,7 +8876,7 @@ mod tests {
         assert_eq!(state, overflow_state);
         assert!(ram.reads.is_empty());
 
-        let mut error_ram = ram_for(target, value);
+        let mut error_ram = ram_for(&SOURCE, target, value);
         error_ram.read_error = Some(MemoryError::Unmapped {
             address: target,
             access: AccessKind::Read,
@@ -8815,7 +8915,7 @@ mod tests {
         let mut rbx_state = state_for(0x0000_7000_0000_0000);
         rbx_state.gpr[3] = 0x0000_8000_0000_0000;
         let rbx_before = rbx_state.clone();
-        let mut rbx_ram = ram_for(target, value);
+        let mut rbx_ram = ram_for(&SOURCE, target, value);
         let rbx_fault = rbx_published
             .execute_ir_memory_dword_load_v2(
                 &mut rbx_state,
