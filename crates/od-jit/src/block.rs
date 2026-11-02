@@ -2621,8 +2621,8 @@ pub(crate) fn build_checked_dword_load_block(
     )
 }
 
-/// Build exact unprefixed `89 03`, `89 00`, or `89 43 ib`
-/// (`MOV [RBX+disp8],EAX`) checked-store forms.
+/// Build exact unprefixed `89 03`, `89 00`, `89 43 ib`, `89 83 id`, or
+/// `89 05 id` (`MOV [RIP+disp32],EAX`) checked-store forms.
 pub(crate) fn build_checked_dword_store_block(
     code: CodeView<'_>,
     entry_rip: u64,
@@ -3069,7 +3069,11 @@ fn build_block_with_profile(
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(6))
-                        .is_some_and(|bytes| bytes[..2] == [0x89, 0x83]))
+                        .is_some_and(|bytes| bytes[..2] == [0x89, 0x83])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(6))
+                        .is_some_and(|bytes| bytes[..2] == [0x89, 0x05]))
         } else if profile == BlockBuildProfile::CheckedQwordLoad {
             instructions.is_empty()
                 && is_checked_qword_load_form(decoded)
@@ -4841,6 +4845,9 @@ pub(crate) fn is_checked_dword_store_form(instruction: Instruction) -> bool {
                 && i8::try_from(operand.displacement).is_ok())
             || (instruction.length == 6
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
+                && i32::try_from(operand.displacement).is_ok())
+            || (instruction.length == 6
+                && matches!(operand.base, AddressBase::NextRip)
                 && i32::try_from(operand.displacement).is_ok()))
 }
 
