@@ -708,16 +708,18 @@ See [S3-20ga](STAGE_3_S3-20ga_2026-11-02.md) and
   [ISSUE-027 diagnostics](ISSUE_027_DIAGNOSTIC_2026-10-30.md).
 - [Открытые проблемы](../KNOWN_ISSUES.md).
 
-S3-34dm plans a deterministic differential corpus for the existing S3-20eg
+S3-34dm adds a deterministic differential corpus for the existing S3-20eg
 singleton store `67 89 04 24`: three fixed seeds and a local SplitMix64 stream
 produce 400 unique CPU/RAM inputs per seed,
 with two reset-state executions per backend and full CPU/RAM, `A+4`, retirement,
 single contiguous callback, and canary checks. Zero, unaligned, and 4-GiB
-crossing address classes are included. The planned Rust identity is
+crossing address classes are included. The Rust identity is
 `tests::fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input`;
 the harness gate is `s3_34dm_addr32_rsp_dword_store_fixed_seed_corpus`.
-Implementation and independent review are pending; execution is deferred.
-Target manifest totals are 303 gates (293 acceptance + 10 lifecycle), 321
-steps, and 136 self-test names; these are unverified targets. This plan adds
-no opcode/runtime semantics and does not start S3-34.2 persisted replay,
-envelope, or reducer work. See the [S3-34dm report](STAGE_3_S3-34dm_2026-11-02.md).
+Corpus commit `c7bb9c7` and harness commit `2fb1265` are integrated; S3-34.1,
+S3-34.3, and S3-34.5 passed independent static Sol/high review. No Rust
+behavior gate or Python harness self-test has been executed. Pinned totals are
+303 gates (293 acceptance + 10 lifecycle), 321 steps, and 136 self-test names;
+execution remains pending. S3-34.2 persisted replay/reducer remains pending, and
+ISSUE-028 remains open until S3-20eg execution acceptance. No opcode/runtime
+semantics were added. See the [S3-34dm report](STAGE_3_S3-34dm_2026-11-02.md).

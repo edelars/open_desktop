@@ -2475,10 +2475,14 @@ execution checks have been run for this slice. See the
 
 ## S3-34dm: fixed-seed differential corpus for S3-20eg
 
-Planned Rust identity:
+Rust identity:
 `tests::fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input`.
-The planned harness gate is
+Harness gate:
 `s3_34dm_addr32_rsp_dword_store_fixed_seed_corpus`.
+
+Corpus commit `c7bb9c7` and harness commit `2fb1265` are integrated. The
+S3-34.1/.3/.5 implementation and gates passed independent static Sol/high
+review; the Rust behavior gate and Python harness self-test remain unexecuted.
 
 The test covers only the existing exact singleton `67 89 04 24`. Three fixed
 seeds (`0x2034_d001`, `0x2034_d002`, `0x2034_d003`) drive a local SplitMix64
@@ -2491,8 +2495,9 @@ and `0xffff_fffd` through `0xffff_ffff` starts; crossing-4-GiB bytes remain
 contiguous above the boundary. Fault/retry and callback STOP remain covered by
 the focused S3-20eg checks.
 
-Target totals are 303 Rust gates (293 acceptance and 10 lifecycle), 321 local
-steps, and 136 self-test names. Implementation/review are pending and all
-execution is deferred; these totals and the new acceptance gate are not
-verified. This adds no runtime behavior, persisted replay format, envelope,
-reducer API, or S3-34.2 work. See the [S3-34dm report](../reports/STAGE_3_S3-34dm_2026-11-02.md).
+Pinned totals are 303 Rust gates (293 acceptance and 10 lifecycle), 321 local
+steps, and 136 self-test names; they have not been executed. S3-34.2 persisted
+replay/reducer remains pending. ISSUE-028 remains open pending S3-20eg
+execution acceptance; this review does not close it. This adds no runtime
+semantics, persisted replay format, envelope, or reducer API. See the
+[S3-34dm report](../reports/STAGE_3_S3-34dm_2026-11-02.md).

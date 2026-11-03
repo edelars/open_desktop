@@ -422,6 +422,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34dk | Exact harness gates for S3-20fz | Harness commit `2de1cab` pins the exact JIT/host identities and fail-closed self-test; independent static review passed. Manifest totals are pinned at 300 gates (290 acceptance + 10 lifecycle), 318 local steps, 134 self-test names; execution remains pending. |
 | [partial] | S3-20ga | Address32 RCX-base Dword store signed disp32 `67 89 81 id` | Seven-byte exact store; starting EA is `zero_extend((low32(RCX) + signed_i32_disp32) mod 2^32)`, one checked contiguous write4 of low32 RAX, preserved GPR/RFLAGS and `A+7`. Runtime `b7b361b` integrated and passed independent Sol/high review. No tests/build/fmt/Cargo/Python checks run; see bounded report. |
 | [partial] | S3-34dl | Exact harness gates for S3-20ga | Harness `c2a3e8f` pins the JIT source/site, host checked-store and fail-closed self-test identities; independent Sol/high review passed. Totals 302 gates (292 acceptance + 10 lifecycle), 320 local steps, 135 self-test names are pinned/reviewed but not executed. |
+| [partial] | S3-34dm | Fixed-seed differential corpus for S3-20eg `67 89 04 24` | Corpus implementation `c7bb9c7` and harness `2fb1265` are integrated; S3-34.1/.3/.5 code/gates passed independent static Sol/high review. Pinned totals: 303 gates (293 acceptance + 10 lifecycle), 321 local steps, 136 self-test names; the S3-34dm behavior gate and harness self-test remain unexecuted. S3-34.2 persisted replay/reducer remains pending. ISSUE-028 remains open pending S3-20eg execution acceptance. См. [JIT testing reference](../testing/JIT.md#s3-34dm-fixed-seed-differential-corpus-for-s3-20eg) and [report](../reports/STAGE_3_S3-34dm_2026-11-02.md) |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
@@ -4567,7 +4568,11 @@ Totals after S3-34dl are pinned and statically reviewed: 302 gates (292 acceptan
 
 #### S3-34dm. Fixed-seed differential corpus for S3-20eg
 
-**Статус реализации и независимого Sol/high review: pending; execution deferred.**
+**Статус реализации и независимого Sol/high review: PASS; исполнение отложено.**
+
+Corpus implementation commit `c7bb9c7` and harness commit `2fb1265` are
+integrated. The S3-34.1/.3/.5 implementation and gates passed independent
+static Sol/high review. No behavior gate has been executed.
 
 Add one deterministic differential host test for the existing exact S3-20eg
 singleton `67 89 04 24` (`MOV [ESP],EAX`). It uses three fixed seeds
@@ -4594,13 +4599,15 @@ This corpus covers successful execution only. Fault/retry and callback STOP
 semantics remain in the existing focused S3-20eg checks; no additional fault
 or retry behavior is introduced. Runtime semantic contracts do not change.
 
-Planned Rust identity:
+Rust identity:
 `tests::fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input`.
-Planned fail-closed harness gate:
+Fail-closed harness gate:
 `s3_34dm_addr32_rsp_dword_store_fixed_seed_corpus`. Target manifest totals are
 303 Rust gates (293 acceptance + 10 lifecycle), 321 local steps, and 136
-self-test names, up from 302/320/135. These counts are planned and unverified.
-Implementation and independent review are pending; execution, build,
-formatting, Cargo, Python harness, and Mini remain deferred. See the
+self-test names. These totals are pinned and statically reviewed, not executed.
+The Rust behavior gate and Python harness self-test were not run; build, formatting,
+Cargo, Python harness execution, and Mini remain deferred. S3-34.2 persisted
+replay/reducer work remains pending. ISSUE-028 remains open until S3-20eg
+execution acceptance; this review and the corpus gate do not close it. See the
 [S3-34dm report](../reports/STAGE_3_S3-34dm_2026-11-02.md) and the
 [JIT testing reference](../testing/JIT.md#s3-34dm-fixed-seed-differential-corpus-for-s3-20eg).
