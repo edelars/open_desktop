@@ -431,6 +431,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34do | Bounded value-only reducer for one S3-34dn artifact | Runtime commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated and passed independent static Sol/high review. Reducer, reducer self-check, and harness identities are pinned. Totals: 305 gates (295 acceptance + 10 lifecycle), 323 steps, 138 self-test names; all remain unexecuted. No real S3-34dn artifact was reduced. S3-34.2 execution acceptance remains pending. ISSUE-028/029 remain open; Stage 3 partial. См. [JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact) and [report](../reports/STAGE_3_S3-34do_2026-11-03.md) |
 | [partial] | S3-34dp | Exact local harness gates for S3-38e session ownership | Four exact `od-host --lib` lifecycle identities and the fail-closed harness self-check are pinned, including the `session.rs` source fingerprint. Current totals: 312 gates (298 acceptance + 14 lifecycle), 330 local steps, 140 self-test names. Static review only; no harness or Rust gate execution. Mini/M1 remain deferred. См. [JIT testing reference](../testing/JIT.md#s3-38e-bounded-local-rust-session-owner) and [report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
 | [partial] | S3-34dq | Exact Store→Store fixed-seed corpus, replay/reducer coverage, and gates | Adds 1,200 unique exact `48 89 03 48 89 02` inputs, strict profile `s3-26f-two-site-qword-store-store-v1`, second-write fault/continuation no-replay evidence, and two exact corpus/generator gates. Totals 320 Rust gates, 338 local steps, 4,800 unique corpus inputs. Independent Sol/high review passed; execution remains deferred and ISSUE-028 stays open pending acceptance. См. [implementation report](../reports/STAGE_3_S3-34dq_2026-11-03.md) |
+| [partial] | S3-34dr | Exact local harness gates for retained Load→Load S3-18f | Pins the two JIT profile/entry-boundary gates and one od-host retained load-pair regression with exact local acceptance identities; adds a fail-closed source/gate/evidence self-test. Totals 324 Rust gates (306 acceptance + 18 lifecycle), 342 local steps, 149 self-test names, and 18 Rust source pins. Sol/high review PASS; the new self-test and all three exact Rust gates passed 1/1. Full unittest run exceeded 180s and was killed without a final result (not classified as failure). Mini has not run; M1 remains deferred. См. [implementation report](../reports/STAGE_3_S3-34dr_2026-11-03.md) and [JIT testing reference](../testing/JIT.md#s3-34dr-exact-harness-gates-for-the-s3-18f-loadload-profile) |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
@@ -934,12 +935,12 @@ are not replayed. No instruction forms or production fallback paths were added.
 The harness gate is
 `s3_16o_store_store_not_rcx_store_store_corpus`; fail-closed self-test is
 `test_s3_16o_store_store_not_rcx_mixed_corpus_gate_is_pinned_once_and_fail_closed`.
-The self-check now pins all 146 unittest identities exactly once, including
+The self-check now pins all 149 unittest identities exactly once, including
 three previously omitted process, S3-34bg, and S3-34bh methods found during
 static review.
-Totals are 321 Rust gates (303 acceptance + 18 lifecycle), 339 local steps,
-321 distinct step IDs, and 146 self-test names. Independent Sol/high review
-passed; the gate and self-check remain unexecuted. General S3-16 and its
+Current totals are 324 Rust gates (306 acceptance + 18 lifecycle), 342 local
+steps, 324 distinct step IDs, 149 self-test names, and 18 Rust source pins.
+Independent Sol/high review passed; the gate and self-check remain unexecuted. General S3-16 and its
 production owner/MMU integration remain open. See the
 [S3-16o implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md).
 
@@ -5014,3 +5015,28 @@ Rust gate, harness, build, formatting, or Python execution was performed.
 ISSUE-028 remains open pending runtime acceptance; Mini and M1 checks remain
 deferred. See the [S3-34dq report](../reports/STAGE_3_S3-34dq_2026-11-03.md)
 and [JIT testing reference](../testing/JIT.md#s3-34dq-storestore-corpus-replay-and-reducer-coverage).
+
+#### S3-34dr. Exact local harness gates for the S3-18f Load→Load profile
+
+The harness pins the JIT exact-profile admission gate,
+`memory_cache::tests::profiles_admit_only_the_exact_load_store_sequences`,
+the internal second-site entry rejection gate,
+`memory_cache::tests::internal_second_site_rip_remains_rejected_for_load_pair`,
+and the retained host regression,
+`tests::retained_load_load_pair_uses_fresh_reads_and_continues_after_second_read_fault`.
+Each is a distinct exact `od-jit --lib` or `od-host --lib` local-acceptance
+identity. The source manifest now includes
+`crates/od-jit/src/memory_cache.rs`; the global source fingerprint already
+covers tracked files. The fail-closed self-test verifies exact identities,
+step/manifest uniqueness, exact Cargo arguments, required source pins, and
+rejection of missing, zero-match, or forged-argv evidence.
+
+Totals are 324 Rust gates (306 acceptance + 18 lifecycle), 342 local steps,
+149 self-test names, and 18 local Rust source pins. Independent Sol/high review
+passed. The new fail-closed self-test and each of the three exact Rust gates
+passed 1/1. The full `PYTHONPATH=tests/cpu python3 -m unittest
+test_stage3_harness` run exceeded 180 seconds and was killed without a final
+result; this is not classified as a test failure. Mini has not run; M1 remains
+deferred. See the
+[S3-34dr report](../reports/STAGE_3_S3-34dr_2026-11-03.md) and
+[JIT testing reference](../testing/JIT.md#s3-34dr-exact-harness-gates-for-the-s3-18f-loadload-profile).

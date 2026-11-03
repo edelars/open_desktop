@@ -1580,6 +1580,29 @@ gates and the harness remain unexecuted. ISSUE-028 remains open pending runtime
 acceptance. See the
 [S3-34dq report](../reports/STAGE_3_S3-34dq_2026-11-03.md).
 
+### S3-34dr Exact harness gates for the S3-18f Load→Load profile
+
+The harness pins three exact local acceptance identities:
+
+- JIT profile admission: `memory_cache::tests::profiles_admit_only_the_exact_load_store_sequences`.
+- JIT rejection of entry at the internal second site: `memory_cache::tests::internal_second_site_rip_remains_rejected_for_load_pair`.
+- Host retained Load→Load execution, fault, and continuation regression: `tests::retained_load_load_pair_uses_fresh_reads_and_continues_after_second_read_fault`.
+
+`crates/od-jit/src/memory_cache.rs` is added to the local Rust source manifest;
+the global source fingerprint already covers tracked files. The fail-closed
+self-test pins exact gate identities and Cargo arguments, checks unique
+manifest/step membership and required source hashes, and rejects missing gates,
+missing source pins, zero-match output, or forged arguments.
+
+Current manifest totals are 324 Rust gates (306 acceptance + 18 lifecycle),
+342 local steps, 149 self-test names, and 18 source pins. Sol/high review
+passed. The new fail-closed self-test and all three exact Rust gates passed
+1/1. The full `PYTHONPATH=tests/cpu python3 -m unittest test_stage3_harness`
+run exceeded 180 seconds and was killed without a final result; this is not
+classified as a test failure. Mini has not run; M1 remains deferred. No
+Stage 3 acceptance claim follows. See the
+[S3-34dr report](../reports/STAGE_3_S3-34dr_2026-11-03.md).
+
 ### Bounded S3-27b next fetch after memory pair
 
 The native fixture runs either exact two-site pair through the generated entry,
@@ -1689,9 +1712,10 @@ Harness gate `s3_16o_store_store_not_rcx_store_store_corpus` pins the exact
 `od-host --lib` command and `crates/od-host/src/lib.rs` fingerprint. Its
 fail-closed self-test is
 `test_s3_16o_store_store_not_rcx_mixed_corpus_gate_is_pinned_once_and_fail_closed`.
-Totals are 321 Rust gates, 339 local steps, 321 distinct step IDs, and 146
-self-test names. Sol/high static review passed; the gate and harness were not
-run. General S3-16 and production owner/MMU integration remain open. See the
+Current totals are 324 Rust gates (306 acceptance + 18 lifecycle), 342 local
+steps, 324 distinct step IDs, 149 self-test names, and 18 local Rust source
+pins. Sol/high static review passed; the gate and harness were not run.
+General S3-16 and production owner/MMU integration remain open. See the
 [S3-16o implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md).
 
 ### S3-28b cooperative events in bounded checked-memory dispatch

@@ -174,6 +174,7 @@ SELF_TEST_NAMES = (
     "test_s3_34dm_addr32_rsp_dword_store_corpus_gate_is_pinned_and_fail_closed",
     "test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed",
     "test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed",
+    "test_s3_34dr_load_load_profile_gates_are_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38e_session_lifecycle_gates_are_pinned_once_and_fail_closed",
     "test_s3_38d_result_state_validator_rejects_corruption",
@@ -1471,6 +1472,18 @@ ADDITIONAL_TEST_GATES = (
         "s3_16o_store_store_not_rcx_store_store_corpus", "local_acceptance", "od-host",
         "tests::s3_16o_s3_34_store_store_not_rcx_store_store_fixed_seed_boundaries",
     ),
+    (
+        "s3_34dr_load_load_profile_exact_sequences", "local_acceptance", "od-jit",
+        "memory_cache::tests::profiles_admit_only_the_exact_load_store_sequences",
+    ),
+    (
+        "s3_34dr_load_load_internal_rip_rejected", "local_acceptance", "od-jit",
+        "memory_cache::tests::internal_second_site_rip_remains_rejected_for_load_pair",
+    ),
+    (
+        "s3_34dr_retained_load_load_host_regression", "local_acceptance", "od-host",
+        "tests::retained_load_load_pair_uses_fresh_reads_and_continues_after_second_read_fault",
+    ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
     (
@@ -1746,6 +1759,7 @@ LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/src/session.rs",
     "crates/od-host/src/tests/native_register_v1_corpus.rs",
     "tests/cpu/stage3_dword_store_corpus.rs",
+    "crates/od-jit/src/memory_cache.rs",
     "crates/od-jit/src/memory_load_v2.rs",
     "crates/od-jit/src/block.rs",
     "crates/od-jit/src/block_emitter.rs",
