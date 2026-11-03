@@ -23831,3 +23831,39 @@ performed. Implementation details and fixture coverage are in the
 [stage plan](../plans/STAGE_2.md#s2-38ay--exact-legacy-long64-cvtpd2dq-xmm0-m128-rax-with-unmasked-exceptions),
 [fixture README](../../tests/fixtures/x86/stage2/README.md#s2-38ay--cvtpd2dq-m128-memory-unmasked-profile)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ay-cvtpd2dq-m128-memory-unmasked-profile).
+
+### S2-38az — CVTTPD2DQ m128 memory unmasked profile
+
+Code commit `410aa0d` implements exact legacy Long64 `66 0F E6 00`
+(`CVTTPD2DQ XMM0,m128 [RAX]`) as the separate schema-v2 interpreter-only
+profile `s2-long-cvttpd2dq-memory-unmasked-rax-v1`, with immutable
+`cvttpd2dq_m128_unmasked_controls`. The existing masked profile and fixtures
+are preserved. Each lane truncates TowardZero independently of MXCSR.RC before
+signed-i32 range checking. Success writes the two i32 results to low64 and
+zeroes high64; any SIMD event preserves XMM0, RIP and retirement while
+committing the specified status. Unmasked IE suppresses new PE across lanes.
+
+The independent integer-only raw-u64 memory-RHS oracle passed the 18,432-case
+actual-interpreter matrix (nine ordered lane classes ×4 RC ×64 sticky histories
+×4 IM/PM ×2 deliveries), with full CPU-state and source-memory comparison per
+case. Sixteen literal fixtures passed, covering masked/unmasked IE and PE,
+both delivery modes, mixed lane order, masked aggregation, exact INT32_MIN,
+prerequisite gates, stale flags and aligned AC=1. Generated numeric samples
+cover raw-u64 signed-boundary neighbors, `+2147483647.75` and
+`-2147483648.75`, ties, signed zero, subnormals, NaN/infinity and
+DM/OM/UM/ZM/FTZ controls.
+
+Direct ISA checks passed for all 120 nonzero-offset×CPL×AC misalignments,
+aligned AC=0/1, fetch/span/gate ordering, STOP and zero budget without data
+callback, generic-route denial, exactly one read16 and injected-read-error
+rollback. Focused runner checks cover literal CLI execution, schema/result
+validation, control tampering, profile isolation and native/JIT denial. Host
+fragment and C ABI denial passed. `od-isa` passed 1,997 tests and `od-testkit`
+461 tests; workspace all-target offline check, formatting and diff checks
+passed. Independent Sol/high review found no functional defects after fixing
+three nits in the opcode diagnostic, comparison labels and generated case ID.
+The full `od-runner` suite was not run. Physical x86 acceptance was not
+performed. See the [plan](../plans/STAGE_2.md#s2-38az--exact-legacy-long64-cvttpd2dq-xmm0-m128-rax-with-unmasked-exceptions),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38az--exact-cvttpd2dq-m128-memory-profile-with-unmasked-exceptions),
+[fixture README](../../tests/fixtures/x86/stage2/README.md#s2-38az--cvttpd2dq-m128-memory-unmasked-profile)
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38az-cvttpd2dq-m128-memory-unmasked-profile).

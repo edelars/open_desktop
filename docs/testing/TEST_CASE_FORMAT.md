@@ -2126,7 +2126,7 @@ and [stage report](../reports/STAGE_2_REPORT.md#s2-38ay--cvtpd2dq-m128-memory-un
 
 ## S2-38az CVTTPD2DQ m128 memory unmasked profile
 
-Pending schema/implementation contract. Reserve distinct interpreter-only
+Implemented in code commit `410aa0d`. This distinct interpreter-only
 `s2-long-cvttpd2dq-memory-unmasked-rax-v1` for exact Long64 `66 0f e6 00`,
 one executable mapping, one read-only exact-width 16-byte mapping at RAX,
 budget one and stop RIP entry+4. Require `cvttpd2dq_m128_unmasked_controls`
@@ -2167,7 +2167,16 @@ fixtures. Tampered controls, full destination, event/status, retirement and
 source bytes must fail validation. Check masked/profile cross-denial and actual
 generic/native/JIT/host fragment/C ABI rejection, not only invalid CLI names.
 
-Provenance: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247; exact shared
-exception/alignment pages and official links are in the CPU contract. This
-section reserves acceptance requirements; it does not claim fixtures or passing
-execution. See the [plan](../plans/STAGE_2.md#s2-38az--exact-legacy-long64-cvttpd2dq-xmm0-m128-rax-with-unmasked-exceptions).
+Sixteen literal fixtures and the 18,432-case full-state/raw-u64 runner matrix
+pass. Generated numeric and direct ISA cases cover raw-u64 boundaries, ties,
+subnormals, NaNs/infinities, status masks, FTZ, alignment, fetch/span/gate
+ordering, STOP/budget, generic-route denial and read rollback. Focused runner
+checks cover schema/result validation, control tampering, profile isolation and
+native/JIT denial; host fragment/C ABI denial passed. `od-isa` (1,997),
+`od-testkit` (461), workspace all-target offline check, formatting and diff
+checks pass. Independent Sol/high review found no functional defects after
+three nits were fixed. The full `od-runner` suite and physical x86 acceptance
+were not run. Provenance: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247;
+exact shared exception/alignment pages and official links are in the CPU
+contract. See the [plan](../plans/STAGE_2.md#s2-38az--exact-legacy-long64-cvttpd2dq-xmm0-m128-rax-with-unmasked-exceptions)
+and [stage report](../reports/STAGE_2_REPORT.md#s2-38az--cvttpd2dq-m128-memory-unmasked-profile).

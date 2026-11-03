@@ -19544,9 +19544,10 @@ and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ay-cvtpd2dq-m128-memory
 
 ## S2-38az — exact CVTTPD2DQ m128 memory profile with unmasked exceptions
 
-Pending contract only. Build on masked-memory S2-37bw and register-unmasked
-S2-37ai. Reserve separate profile `s2-long-cvttpd2dq-memory-unmasked-rax-v1`
-for exact legacy Long64 `66 0F E6 00` (`CVTTPD2DQ XMM0,m128 [RAX]`) and
+Implemented in code commit `410aa0d`; this exact Long64 `66 0F E6 00` profile
+builds on masked-memory S2-37bw and register-unmasked S2-37ai. It uses the
+separate profile `s2-long-cvttpd2dq-memory-unmasked-rax-v1` for
+`CVTTPD2DQ XMM0,m128 [RAX]` and
 `cvttpd2dq_m128_unmasked_controls` with the same five immutable booleans.
 Preserve the existing masked wrapper/admission/wire/digest and keep its private
 `Masked`/`Unmasked` policy separate from the CVTPD2DQ profile.
