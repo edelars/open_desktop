@@ -165,6 +165,7 @@ SELF_TEST_NAMES = (
     "test_s3_34dk_addr32_rcx_disp32_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34dl_addr32_rcx_disp32_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34dm_addr32_rsp_dword_store_corpus_gate_is_pinned_and_fail_closed",
+    "test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
@@ -1388,6 +1389,10 @@ ADDITIONAL_TEST_GATES = (
         "s3_34dm_addr32_rsp_dword_store_fixed_seed_corpus", "local_acceptance", "od-host",
         "fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input",
     ),
+    (
+        "s3_34dn_replay_artifact_self_check", "local_acceptance", "od-host",
+        "s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed",
+    ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
     (
@@ -1413,6 +1418,10 @@ RUST_TEST_TARGET_OVERRIDES = {
     (
         "od-host",
         "fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input",
+    ): ("--test", "stage3_dword_store_corpus"),
+    (
+        "od-host",
+        "s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed",
     ): ("--test", "stage3_dword_store_corpus"),
 }
 RUST_TEST_ARGV_OVERRIDES = {
