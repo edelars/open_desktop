@@ -2824,6 +2824,12 @@ fn build_block_with_profile(
                         && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                             == Some(&[0x48, 0x89, 0x03][..])
                 }
+                (0, _, true, _, _) => {
+                    is_checked_qword_store_form(decoded)
+                        && exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
+                        && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
+                            == Some(&[0x48, 0x89, 0x03][..])
+                }
                 (1, true, _, _, _) => {
                     is_checked_qword_load_form(decoded)
                         && exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
