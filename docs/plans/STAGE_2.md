@@ -8317,6 +8317,15 @@ documentation-only result; CPU tests и hardware checks не выполняли�
 
 **Готово:** обязательные system/mode строки проверены нужным независимым способом и integrated backend, ограничения приложены к результатам. До этого можно принять срез A/B/D, но не весь профиль этапа 2, включающий непроверенные C requirements.
 
+#### S2-41a — bounded LGDT oracle protocol
+
+Подготовлен docs-only [протокол](../testing/S2_41A_LGDT_ORACLE.md) для точных
+байтов `0F 01 55 F6`: CPL0 success и отдельные CPL1/2/3 `#GP(0)` cases.
+Зафиксированы literal inputs, GDTR/RIP/retirement expectations, будущие
+SGDT/trap-frame observations и разделение CPU-only evidence / independent
+privileged oracle / machine integration. Harness ещё не реализован; physical
+results всех четырёх cases — `not_run`. S2-41 остаётся открытым.
+
 ### S2-42. Собрать общий corpus, reducer и harness
 
 **Файлы:** существующий testkit и CPU harness; новые stage2 entry points только при реальной необходимости.

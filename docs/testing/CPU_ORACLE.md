@@ -240,3 +240,12 @@ OS ptrace register structure and not guest FXSAVE serialization. Pure codec,
 strict admission and interpreter/literal comparisons are portable; the Linux
 transport has compile-only coverage on this Mac. Physical execution remains
 `not_run`; existing x87/SSE and FXSAVE profiles, JIT and C adapter stay denied.
+
+## S2-41a privileged LGDT protocol
+
+The documentation-only [bounded LGDT protocol](S2_41A_LGDT_ORACLE.md) defines
+exact `0F 01 55 F6` inputs for CPL0 success and CPL1/2/3 `#GP(0)`, with SGDT
+and raw trap-frame observations required from a future independent harness.
+Existing CPU callback/policy tests are separate evidence. All four physical
+results are `not_run`; Linux user-mode native admission stays closed and
+S2-41 / Stage 4 machine-integration requirements remain open.

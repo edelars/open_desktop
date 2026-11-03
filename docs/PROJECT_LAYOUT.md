@@ -76,6 +76,10 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 | Логи, scratch и локальные VM | `work/logs/`, `work/tmp/`, `work/vms/` |
 | Готовые deliverables | `outputs/` |
 
+Ограниченный privileged LGDT oracle protocol S2-41a размещён в
+[docs/testing/S2_41A_LGDT_ORACLE.md](testing/S2_41A_LGDT_ORACLE.md); это методика
+будущей проверки, не реализованный harness и не physical evidence.
+
 Не копировать одну реализацию в несколько этих мест. Например, disk parser — в `od-storage`, а `image-tool` лишь использует его; x86 interpreter — в `od-isa`, а `runner` управляет запуском.
 
 ### Неочевидные границы

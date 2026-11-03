@@ -16909,6 +16909,24 @@ The documentation and its Markdown links are the only checks for this slice;
 CPU tests, physical checks, and guest boot were not run. S2-26, S2-39, S2-40,
 S2-41, and S2-42 remain open.
 
+## S2-41a — bounded LGDT oracle protocol
+
+Prepared a docs-only [four-case protocol](../testing/S2_41A_LGDT_ORACLE.md)
+for exact `0F 01 55 F6`: one CPL0 success and CPL1/2/3 `#GP(0)` with a valid
+shared operand. It fixes literal input/state and expected GDTR/RIP/completion
+fields, and specifies a future independent SGDT/trap-frame observation path.
+Existing S2-27a CPU-only checks and static Ubuntu mapping remain separate from
+physical evidence. No code, fixture, native admission or harness changed;
+CPU tests, privileged execution and hardware checks were not run. All four
+physical results are `not_run`; parent S2-41 and Stage 4 integration stay open.
+
+Documentation checks: all new/added relative links and anchors pass;
+`git diff --check` passes. `python3 tools/check_layout.py` fails in this linked
+worktree on its `.git` pointer file (`Unmapped root file: .git`), the existing
+[ISSUE-023](../KNOWN_ISSUES.md#issue-023--layout-checker-reports-worktree-metadata-and-stale-oracle-links).
+No checker or worktree structure was changed to hide that limitation.
+Independent review is pending; this protocol is not a completed experiment.
+
 ## S2-40b — bounded SSE-only native XORPD oracle
 
 Implemented `s2-long-native-xorpd-xmm0-xmm1-v1` as an exact one-instruction
