@@ -40504,6 +40504,13 @@ fn subsd_m64_memory_literal_preserves_canaries_and_fails_closed() {
     assert_eq!(snapshot.memory[1].bytes_hex, "000000000000903c");
     od_testkit::v2::compare(&input, &literal_result, &literal_result).unwrap();
 
+    let mut writable_masked = fixture.clone();
+    writable_masked.memory[1].permissions.write = true;
+    let writable_bytes = writable_masked.to_json().unwrap();
+    let (writable_input, writable_result) = run(&writable_bytes, "interpreter", 0);
+    assert!(matches!(writable_result.outcome, Outcome::StopAddress {}));
+    od_testkit::v2::compare(&writable_input, &writable_result, &writable_result).unwrap();
+
     for engine in ["jit", "native"] {
         let (input, denied) = run(SUBSD_M64_MEMORY_RAX, engine, 4);
         assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));

@@ -11199,3 +11199,24 @@ fn subsd_m64_unmasked_matrix_matches_independent_raw_u64_oracle() {
         }
     }
 }
+
+#[test]
+fn subsd_memory_write_permission_preserves_masked_admission_only() {
+    let mut masked = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37dl_subsd_m64_halfway.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(masked.profile, Profile::LongSubsdMemoryRaxV1);
+    masked.memory[1].permissions.write = true;
+    assert!(masked.validate().is_ok());
+
+    let mut unmasked = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38af_subsd_unmasked_success.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    assert_eq!(unmasked.profile, Profile::LongSubsdMemoryRaxUnmaskedV1);
+    unmasked.memory[1].permissions.write = true;
+    assert!(unmasked.validate().is_err());
+}

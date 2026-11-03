@@ -14506,7 +14506,7 @@ impl Fixture {
                 || data.guest_address.get() != source
                 || data.length != 8
                 || !data.permissions.read
-                || data.permissions.write
+                || (unmasked && data.permissions.write)
                 || data.permissions.execute
                 || self.instruction_budget != 1
                 || self.stop_rip.map(HexU64::get) != start.checked_add(4)

@@ -6,7 +6,7 @@ Added the immutable schema-v2 interpreter-only profile `s2-long-subsd-memory-unm
 
 The interpreter classifies original raw operands before computation. It selects the first original NaN, quiets a selected SNaN, suppresses DE when either operand is NaN, raises IE for SNaN or same-sign infinity subtraction, and uses the subtraction indefinite for invalid infinity pairs. Unmasked IE/DE commits applicable IE/DE status then suppresses PE, XMM0, RIP and retirement. Otherwise binary64 subtraction uses MXCSR.RC; unmasked PE commits status and suppresses the destination and retirement. OSXMMEXCPT maps SIMD delivery to #XM(19), or arithmetic #UD(6) when clear. Success changes low64 only and preserves high64 and unrelated state.
 
-The direct interpreter matrix contains 22 raw operand vectors × 4 RC modes × 64 old sticky histories × 16 IM/DM/ZM/PM patterns × 2 OSXMMEXCPT settings (180,224 runs). It includes signed QNaN/SNaN in both operand positions, NaN+subnormal, invalid and valid infinity subtraction, finite rounding, signed zero, exact tiny and overflow values. The independent testkit raw-u64 oracle uses the actual fixture memory RHS and validates complete state, status, retirement and exception outcomes. Four literal fixtures cover success, IE/#XM, DE/#UD and PE/#XM. Focused checks cover STOP and zero-budget suppression before fetch/read, gate priority, AC-before-read, canonical-span #GP(0), one-read behavior and read-failure rollback. Runner tests deny JIT/native backends and reject control echo, low/high XMM, MXCSR status, RIP, exception vector, #GP error-code and retirement tampering, as well as writable mappings and missing controls.
+The direct interpreter matrix contains 22 raw operand vectors × 4 RC modes × 64 old sticky histories × 16 IM/DM/ZM/PM patterns × 2 OSXMMEXCPT settings (180,224 runs). It includes signed QNaN/SNaN in both operand positions, NaN+subnormal, invalid and valid infinity subtraction, finite rounding, signed zero, exact tiny and overflow values. The independent testkit raw-u64 oracle uses the actual fixture memory RHS and validates complete state, status, retirement and exception outcomes. Four literal fixtures cover success, IE/#XM, DE/#UD and PE/#XM. Focused checks cover STOP and zero-budget suppression before fetch/read, gate priority, AC-before-read, canonical-span #GP(0), one-read behavior and read-failure rollback. Runner tests deny JIT/native backends and reject control echo, low/high XMM, MXCSR status, RIP, exception vector, #GP error-code and retirement tampering, as well as writable mappings and missing controls. A regression test preserves the pre-existing masked S2-37dl schema and execution behavior for a writable data mapping while keeping S2-38af writable mappings invalid.
 
 ## Verification
 
@@ -14,9 +14,9 @@ The direct interpreter matrix contains 22 raw operand vectors × 4 RC modes × 6
 - `git diff --check` — passed.
 - `cargo check --workspace --all-targets --offline` — passed.
 - `cargo test -p od-isa --offline` — 1,957 passed, including gate/span/read rollback tests.
-- `cargo test -p od-testkit --offline` — 457 passed, including the independent 180,224-case raw-u64 matrix.
+- `cargo test -p od-testkit --offline` — 458 passed, including the independent 180,224-case raw-u64 matrix.
 - `cargo test -p od-runner --offline --quiet` — 136 unit and 560 fixture tests passed.
-- `graphify update .` — passed; graph has 12,456 nodes, 26,894 edges and 383 communities.
+- `graphify update .` — passed; graph has 12,457 nodes, 26,895 edges and 397 communities.
 
 Independent Sol/high review is pending. Physical x86 execution was not run and is not claimed.
 
