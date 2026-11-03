@@ -29,6 +29,29 @@ def read_inventory(document, name):
     return entries
 
 
+def is_valid_gitdir_pointer(path):
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    if len(lines) != 1 or not lines[0].startswith("gitdir: "):
+        return False
+    target = lines[0][len("gitdir: ") :]
+    if not target:
+        return False
+    target_path = Path(target)
+    if not target_path.is_absolute():
+        target_path = path.parent / target_path
+    return (
+        target_path.is_dir()
+        and (target_path / "HEAD").is_file()
+        and (
+            (target_path / "objects").is_dir()
+            or (target_path / "commondir").is_file()
+        )
+    )
+
+
 def check():
     document = LAYOUT.read_text(encoding="utf-8")
     directories = read_inventory(document, "required-directories")
@@ -54,7 +77,12 @@ def check():
     for path in sorted(ROOT.iterdir()):
         if path.is_dir() and path.name not in allowed_directories:
             errors.append(f"Unmapped root directory: {path.name}")
-        elif path.is_file() and path.name != ".DS_Store" and path.name not in root_files:
+        elif (
+            path.is_file()
+            and path.name != ".DS_Store"
+            and path.name not in root_files
+            and not (path.name == ".git" and is_valid_gitdir_pointer(path))
+        ):
             errors.append(f"Unmapped root file: {path.name}")
 
     scopes = sorted(components | {"guest/windows", "guest/linux"})
