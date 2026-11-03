@@ -18596,3 +18596,103 @@ SDM Rev. 093 Vol. 2B MULSD pp. 4-148–4-149, Vol. 2A §2.5.3/Table 2-20, Vol. 1
 §§4.9.1.4–.6, 11.5.2–11.5.3 and 11.6.6, and Vol. 3A Event 19/Table 7-8.
 Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance remain
 closed.
+
+## S2-38ai — exact DIVSS memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-divss-memory-unmasked-rax-v1` for exact Long64 legacy `F3 0F 5E 00`
+(`DIVSS XMM0,m32 [RAX]`), separate
+`divss_memory_rax_unmasked_controls`, one executable mapping, one read-only
+m32 mapping, budget one and stop RIP=entry+4. Require SSE bit 25; preserve
+masked-memory S2-37do and register S2-37ay. Complete four-byte fetch and exact
+form checks precede feature/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM`, at
+CPL0–3. Require supported MXCSR bits `0xffbf`, reserved bits clear, DAZ=FTZ=0
+and OM=UM=1; permit all RC, IM/DM/ZM/PM and prior sticky flags. AC=1 returns
+local Unsupported before span/read; AC=0 permits unaligned RAX. Validate
+canonical48 `[RAX,RAX+3]`, then exactly one read4. Span/read faults preserve
+full CPU state, memory and retirement.
+
+Divide original XMM0.low32 by the actual memory RHS using the existing raw
+DIVSS semantics and an independent integer-only raw-u32 oracle. Preserve
+original-operand NaN selection and quieting. Any original SNaN, `0/0`, or
+`∞/∞` raises IE; QNaN alone does not raise IE. Classify IE before finite
+nonzero divided by zero as ZE; `∞/0` does not raise ZE. NaN suppresses
+same-lane ZE and DE. Classify remaining subnormal inputs as precompute DE
+after IE/ZE priority. If applicable new IE/ZE/DE is unmasked,
+commit those generated pre-event flags and suppress subsequent OE/UE/PE,
+computation result, XMM0, RIP and retirement. Otherwise compute with MXCSR.RC,
+apply WPR tininess-after-rounding and process PE; an unmasked PE suppresses the
+whole destination, RIP and retirement. OM=UM=1 keeps OE/UE masked. Prior sticky
+bits alone do not fault. OSXMMEXCPT=1 delivers arithmetic exceptions as #XM
+(vector 19); OSXMMEXCPT=0 delivers SIMD-generated #UD (vector 6); neither has
+an error code. Success changes only XMM0.low32, applicable MXCSR
+status, RIP and retirement; preserve XMM0.high96, RFLAGS and unrelated state.
+
+Cover every RC × 64 prior sticky histories × IM/DM/ZM/PM × both OSXMMEXCPT
+mappings with an actual-interpreter matrix checked against the independent
+actual-memory-RHS oracle. Include signed SNaN in both operand positions,
+QNaN and same-lane ZE/DE suppression, `0/0`, `∞/∞`, finite and subnormal
+nonzero divided by signed zero (ZE only), `∞/zero` (no ZE), zero/subnormal,
+`∞/subnormal`, other DE inputs, exact and inexact ratios, `1/3`, exact tiny,
+half-minsub, inexact tiny, min-normal WPR boundaries, overflow, and cases
+where unmasked IE/ZE/DE suppress later PE/OE/UE versus masked pre-events
+followed by unmasked PE. Verify state suppression, gates/fetch/CPL, AC,
+unaligned access, canonical-span/read rollback, one callback, strict read-only
+schema, literal fixtures, result/status/control/exception tampering, older
+masked-profile permissions and backend denial. Sources: Intel SDM Rev. 093
+Vol. 2A DIVSS pp. 3-275–3-276, Vol. 2A §2.5.3/Table 2-20, Vol. 1
+§§4.9.1.3–.6, 4.9.2, 11.5.1–11.5.3 and 11.6.6, and Vol. 3A Event 19/Table
+7-8.
+The Type 3 note at Vol. 2A p. 3-276 refers to VEX forms, not this legacy SSE
+encoding. Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance
+remain closed.
+
+## S2-38aj — exact DIVSD memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-divsd-memory-unmasked-rax-v1` for exact Long64 legacy `F2 0F 5E 00`
+(`DIVSD XMM0,m64 [RAX]`), separate
+`divsd_memory_rax_unmasked_controls`, one executable mapping, one read-only
+m64 mapping, budget one and stop RIP=entry+4. Require SSE2 bit 26; preserve
+masked-memory S2-37dp and register S2-37ax. Complete four-byte fetch and exact
+form checks precede feature/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM`, at
+CPL0–3. Require supported MXCSR bits `0xffbf`, reserved bits clear, DAZ=FTZ=0
+and OM=UM=1; permit all RC, IM/DM/ZM/PM and prior sticky flags. AC=1 returns
+local Unsupported before span/read; AC=0 permits unaligned RAX. Validate
+canonical48 `[RAX,RAX+7]`, then exactly one read8. Span/read faults preserve
+full CPU state, memory and retirement.
+
+Divide original XMM0.low64 by the actual memory RHS using the existing raw
+DIVSD semantics and an independent integer-only raw-u64 oracle. Preserve
+original-operand NaN selection and quieting. Any original SNaN, `0/0`, or
+`∞/∞` raises IE; QNaN alone does not raise IE. Classify IE before finite
+nonzero divided by zero as ZE; `∞/0` does not raise ZE. NaN suppresses
+same-lane ZE and DE. Classify remaining subnormal inputs as precompute DE
+after IE/ZE priority. If applicable new IE/ZE/DE is unmasked,
+commit those generated pre-event flags and suppress subsequent OE/UE/PE,
+computation result, XMM0, RIP and retirement. Otherwise compute with MXCSR.RC,
+apply WPR tininess-after-rounding and process PE; an unmasked PE suppresses the
+whole destination, RIP and retirement. OM=UM=1 keeps OE/UE masked. Prior sticky
+bits alone do not fault. OSXMMEXCPT=1 delivers arithmetic exceptions as #XM
+(vector 19); OSXMMEXCPT=0 delivers SIMD-generated #UD (vector 6); neither has
+an error code. Success changes only XMM0.low64, applicable MXCSR
+status, RIP and retirement; preserve XMM0.high64, RFLAGS and unrelated state.
+
+Cover every RC × 64 prior sticky histories × IM/DM/ZM/PM × both OSXMMEXCPT
+mappings with an actual-interpreter matrix checked against the independent
+actual-memory-RHS oracle. Include signed SNaN in both operand positions,
+QNaN and same-lane ZE/DE suppression, `0/0`, `∞/∞`, finite and subnormal
+nonzero divided by signed zero (ZE only), `∞/zero` (no ZE), zero/subnormal,
+`∞/subnormal`, other DE inputs, exact and inexact ratios, `1/3`, exact tiny,
+half-minsub, inexact tiny, min-normal WPR boundaries, overflow, and cases
+where unmasked IE/ZE/DE suppress later PE/OE/UE versus masked pre-events
+followed by unmasked PE. Verify state suppression, gates/fetch/CPL, AC,
+unaligned access, canonical-span/read rollback, one callback, strict read-only
+schema, literal fixtures, result/status/control/exception tampering, older
+masked-profile permissions and backend denial. Sources: Intel SDM Rev. 093
+Vol. 2A DIVSD pp. 3-273–3-274, Vol. 2A §2.5.3/Table 2-20, Vol. 1
+§§4.9.1.3–.6, 4.9.2, 11.5.1–11.5.3 and 11.6.6, and Vol. 3A Event 19/Table
+7-8.
+The Type 3 note at Vol. 2A pp. 3-273–3-274 refers to VEX forms, not this legacy
+SSE2 encoding. Native/JIT/C ABI/generic/fragment routes and physical x86
+acceptance remain closed.
