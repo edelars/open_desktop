@@ -11950,7 +11950,7 @@ mod tests {
         ))
         .expect("unmasked ADDSS schema")
         .fixture;
-        let cases: [(u32, u32, bool, bool, bool); 8] = [
+        let cases: [(u32, u32, bool, bool, bool); 9] = [
             (0x3f80_0000, 0x3380_0000, false, false, true), // halfway PE
             (0x3f80_0000, 1, false, true, true),            // DE then PE
             (0x7f80_0000, 0xff80_0000, true, false, false), // opposite infinities IE
@@ -11958,6 +11958,7 @@ mod tests {
             (0xff80_0001, 0x3f80_0000, true, false, false), // negative SNaN
             (0x7fc0_1234, 0x3f80_0000, false, false, false), // positive QNaN
             (0xffc0_1234, 0x3f80_0000, false, false, false), // negative QNaN
+            (0x7fc0_1234, 0x0000_0001, false, false, false), // QNaN lhs suppresses subnormal RHS DE
             (0x7f80_0000, 1, false, true, false),           // infinity plus subnormal
         ];
         for (case_index, (lhs, rhs, ie, de, pe)) in cases.into_iter().enumerate() {

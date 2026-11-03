@@ -25,10 +25,12 @@ Native/JIT/C ABI/generic/fragment paths stay closed.
 
 Three literal fixtures cover masked success, unmasked IE `#XM`, and unmasked
 PE arithmetic `#UD`. The runner's independent integer-only binary32 oracle
-executes eight operand/event classes × four RC modes × 64 previous sticky
-histories × eight IM/DM/PM mask combinations × both OSXMMEXCPT mappings: 32,768
+executes nine operand/event classes × four RC modes × 64 previous sticky
+histories × eight IM/DM/PM mask combinations × both OSXMMEXCPT mappings: 36,864
 executions. Classes include halfway PE, DE+PE, opposite infinities, signed
-SNaNs, signed QNaNs, exact addition, and infinity plus subnormal. Each result
+SNaNs, signed QNaNs,
+QNaN destination plus subnormal memory source (DE suppressed), exact addition,
+and infinity plus subnormal. Each result
 checks complete state, status, RIP, retirement, exception mapping, and memory.
 
 Focused ISA tests check fetch and feature-gate order, CPL-independent gates,
