@@ -83033,21 +83033,42 @@ mod tests {
                                 state.x87 = Some(x87);
                                 let mut memory = Memory::at(&[opcode, modrm], state.rip);
                                 memory.bytes[1..1 + width].copy_from_slice(&source[..width]);
+                                let memory_before = memory.bytes.clone();
+                                let expected_status =
+                                    (u16::from(target) << 11) | (0x4500 & !0x3a00) | sticky;
+                                let mut expected_state = state.clone();
+                                let expected_x87 = expected_state.x87.as_mut().unwrap();
+                                expected_x87.registers[usize::from(target)] = expected_raw;
+                                expected_x87.set_tag(target, expected_tag);
+                                expected_x87.status_word = expected_status;
+                                expected_x87.instruction_pointer = 0x8200;
+                                expected_x87.data_pointer = 0x1001;
+                                expected_state.rip = 0x8202;
 
                                 assert_eq!(
                                     step(&mut state, &mut memory, AccessContext::default()),
                                     Ok(StepOutcome::Advanced),
                                     "op={opcode:02x}{modrm:02x} flags={sticky:02x} literal={literal_index} TOP={top} FCW={control_word:04x} C1={old_c1}"
                                 );
+                                assert_eq!(
+                                    state, expected_state,
+                                    "complete state: op={opcode:02x}{modrm:02x} flags={sticky:02x} literal={literal_index} TOP={top} FCW={control_word:04x} C1={old_c1}"
+                                );
+                                assert_eq!(
+                                    memory.bytes, memory_before,
+                                    "FILD does not write memory"
+                                );
+                                assert!(
+                                    memory
+                                        .accesses
+                                        .iter()
+                                        .all(|(kind, _, _)| *kind == AccessKind::Read)
+                                );
                                 let result = state.x87.as_ref().unwrap();
                                 assert_eq!(result.registers[usize::from(target)], expected_raw);
                                 assert_eq!(result.tag(target), Some(expected_tag));
                                 assert_eq!(result.top(), target);
-                                assert_eq!(
-                                    result.status_word,
-                                    ((u16::from(target) << 11) | (0x4500 & !0x3a00) | sticky),
-                                    "status"
-                                );
+                                assert_eq!(result.status_word, expected_status, "status");
                                 assert_eq!(result.instruction_pointer, 0x8200);
                                 assert_eq!(result.data_pointer, 0x1001);
                                 assert_eq!(result.control_word, control_word);
