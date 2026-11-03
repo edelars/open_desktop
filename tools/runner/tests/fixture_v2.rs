@@ -503,6 +503,9 @@ const CVTSD2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
 );
 const CVTSS2SI_R32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37ch_cvtss2si_m32_i32_min.case.json");
+const CVTSS2SI_R32_MEMORY_UNMASKED_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38as_cvtss2si_r32_success_int32_min.case.json"
+);
 const CVTSS2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cl_cvtss2si_m32_i64_rc_rounding.case.json"
 );
@@ -44391,6 +44394,130 @@ fn divpd_m128_unmasked_memory_commits_events_atomically_and_keeps_lane_precedenc
     gate.expected_exit = ExpectedExit::Exception;
     let (input, result) = run(&gate.to_json().unwrap(), "interpreter", 0);
     od_testkit::v2::compare(&input, &result, &result).unwrap();
+}
+
+#[test]
+fn cvtss2si_m32_r32_unmasked_memory_matches_integer_oracle_across_masks_and_delivery() {
+    use od_testkit::v2::Profile;
+
+    let base = Fixture::from_json(CVTSS2SI_R32_MEMORY_UNMASKED_RAX)
+        .unwrap()
+        .fixture;
+    assert_eq!(base.profile, Profile::LongCvtss2siR32MemoryUnmaskedRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "f30f2d00");
+    assert_eq!(base.memory[1].guest_address, base.initial_state.gpr[0]);
+
+    for name in [
+        "success_int32_min",
+        "pe_masked",
+        "ie_unmasked_xm",
+        "pe_unmasked_ud",
+        "ac_refusal",
+        "gate_ud",
+        "gate_nm",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../tests/fixtures/x86/stage2/s2_38as_cvtss2si_r32_{name}.case.json"
+        ));
+        let bytes = fs::read(path).unwrap();
+        let exit = if name == "ac_refusal" { 4 } else { 0 };
+        let (input, result) = run(&bytes, "interpreter", exit);
+        if name == "ac_refusal" {
+            result.validate_for(&input).unwrap();
+            assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        } else {
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+
+    // Instruction-fetch #GP wins over both the SSE gate and local AC refusal.
+    let mut fetch_span = base.clone();
+    fetch_span.case_id = "s2_38as_fetch_span_precedes_gate_and_ac".into();
+    fetch_span.initial_state.rip = HexU64(0x0000_7fff_ffff_fffe);
+    fetch_span.memory[0].guest_address = fetch_span.initial_state.rip;
+    fetch_span.stop_rip = Some(HexU64(0x0000_8000_0000_0002));
+    fetch_span.expected_exit = ExpectedExit::Exception;
+    fetch_span.initial_state.rflags = HexU64(fetch_span.initial_state.rflags.get() | (1 << 18));
+    let controls = fetch_span
+        .cvtss2si_r32_memory_unmasked_controls
+        .as_mut()
+        .unwrap();
+    controls.cr0_ts = true;
+    let (input, result) = run(&fetch_span.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert!(matches!(result.outcome, Outcome::Exception {}));
+    assert_eq!(snapshot(&result).state, input.fixture.initial_state);
+    assert_eq!(
+        result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+
+    // Focused DM/OM/UM/ZM and FTZ variants prove these controls do not alter conversion.
+    for unrelated_masks in 0..16u64 {
+        for ftz in [false, true] {
+            let mut case = base.clone();
+            case.case_id = format!("s2_38as_focus_masks{unrelated_masks}_ftz{ftz}");
+            case.memory[1].initial_bytes_hex = "0000c03f".into();
+            let mask = (1 << 7)
+                | (1 << 12)
+                | ((unrelated_masks & 1) << 8)
+                | (((unrelated_masks >> 1) & 1) << 10)
+                | (((unrelated_masks >> 2) & 1) << 11)
+                | (((unrelated_masks >> 3) & 1) << 9);
+            let mxcsr = 0x15 | mask | (u64::from(ftz) << 15);
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+            case.expected_exit = ExpectedExit::StopAddress;
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            assert_eq!(
+                snapshot(&result).state.sse.as_ref().unwrap().mxcsr,
+                HexU64(mxcsr | 0x20)
+            );
+        }
+    }
+
+    let (input, good) = run(CVTSS2SI_R32_MEMORY_UNMASKED_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &good, &good).unwrap();
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(CVTSS2SI_R32_MEMORY_UNMASKED_RAX, backend, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+    }
+    let mut forged = good.clone();
+    forged.backend = Backend::Jit;
+    assert!(forged.validate_for(&input).is_err());
+    forged.backend = Backend::NativeX86;
+    assert!(forged.validate_for(&input).is_err());
+
+    let mut missing = base.clone();
+    missing.cvtss2si_r32_memory_unmasked_controls = None;
+    assert!(missing.to_json().is_err());
+    let mut writable_data = base.clone();
+    writable_data.memory[1].permissions.write = true;
+    assert!(writable_data.to_json().is_err());
+    let mut unknown: serde_json::Value =
+        serde_json::from_slice(CVTSS2SI_R32_MEMORY_UNMASKED_RAX).unwrap();
+    unknown["cvtss2si_r32_memory_unmasked_controls"]["unexpected"] = serde_json::json!(true);
+    assert!(Fixture::from_json(&serde_json::to_vec(&unknown).unwrap()).is_err());
+    let mut foreign = base.clone();
+    foreign.profile = Profile::LongCvtss2siR32MemoryRaxV1;
+    assert!(foreign.to_json().is_err());
+    let mut changed_controls = base.clone();
+    changed_controls
+        .cvtss2si_r32_memory_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = false;
+    assert!(changed_controls.to_json().is_ok());
+    let mut tampered = good.clone();
+    if let Observation::Available { value: snapshot } = &mut tampered.snapshot {
+        snapshot
+            .cvtss2si_r32_memory_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = false;
+    }
+    assert!(od_testkit::v2::compare(&input, &tampered, &tampered).is_err());
 }
 
 #[test]
