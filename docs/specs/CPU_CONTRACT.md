@@ -19448,8 +19448,9 @@ and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ax-cvttps2dq-m128-memor
 
 ## S2-38ay — exact CVTPD2DQ m128 memory profile with unmasked exceptions
 
-Pending contract only; implementation, executable evidence and physical x86
-acceptance remain open. Build on masked-memory S2-37bx and register-unmasked
+Implemented in code commit `417334b`; executable evidence is recorded in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-38ay--cvtpd2dq-m128-memory-unmasked-profile).
+Physical x86 acceptance remains open. Build on masked-memory S2-37bx and register-unmasked
 S2-37ah. Reserve interpreter-only schema-v2 profile
 `s2-long-cvtpd2dq-memory-unmasked-rax-v1` for exact legacy Long64 `F2 0F E6 00`
 (`CVTPD2DQ XMM0,m128 [RAX]`), budget one and stop RIP entry+4. The separate

@@ -19617,12 +19617,12 @@ matrix assertion fix in `640a9f0`; the result report records the executed checks
 
 ## S2-38ay — exact legacy Long64 CVTPD2DQ XMM0, m128 [RAX] with unmasked exceptions
 
-Pending implementation; bases are masked-memory S2-37bx and register-unmasked
-S2-37ah. Reserve `s2-long-cvtpd2dq-memory-unmasked-rax-v1`, exact `F2 0F E6 00`,
-and separate immutable `cvtpd2dq_m128_unmasked_controls` with five booleans
-`sse2_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`, `cr4_osxmmexcpt`.
-Use the private `Masked`/`Unmasked` pattern without changing the masked wrapper,
-admission, digest or fixtures. This remains a bounded interpreter-only slice.
+Implemented in `417334b`, based on masked-memory S2-37bx and register-unmasked
+S2-37ah. Exact `F2 0F E6 00` is admitted only by the separate schema-v2 profile
+`s2-long-cvtpd2dq-memory-unmasked-rax-v1`, with immutable
+`cvtpd2dq_m128_unmasked_controls` booleans `sse2_available`, `cr0_em`, `cr0_ts`,
+`cr4_osfxsr`, and `cr4_osxmmexcpt`. The existing masked wrapper, admission,
+digest and fixtures are preserved. Execution remains interpreter-only.
 
 Two raw binary64 memory lanes use MXCSR.RC rounding before signed-i32 range checking.
 Success writes two i32 lanes in low64, zeroes high64 and retires once; any SIMD
@@ -19634,7 +19634,7 @@ four-byte fetch precedes SSE2/EM/OSFXSR `#UD`, then TS `#NM`, then canonical48
 regardless of CPL/AC; aligned AC0/1 are admitted. MXCSR mask `0xffbf`, DAZ=0,
 all supported masks/RC/status and FTZ0/1; subnormals give PE without DE.
 
-Acceptance requires nine ordered lane classes ×4 RC ×64 sticky ×4 IM/PM
+Acceptance uses nine ordered lane classes ×4 RC ×64 sticky ×4 IM/PM
 ×2 deliveries = **18,432 actual-interpreter cases**, each comparing full CPU
 state and source memory to an independent raw-u64 memory-RHS oracle. Add both
 IE/PE permutations, representable binary64 i32-limit fractions and ties, all
@@ -19643,7 +19643,20 @@ fetch/span/gate collisions, controls/result tampering, preserved masked fixtures
 and actual generic/native/JIT/fragment/C ABI denials. Literal fixtures cover
 schema-expressible outcomes; generated runner/direct cases cover additional
 numeric/fault matrices, while injected read errors require direct GuestMemory.
-No acceptance run or physical x86 result is claimed by this contract.
+The actual-interpreter matrix passes all 18,432 cases with complete CPU-state
+and source-memory comparison. Sixteen literal fixtures pass; generated raw-u64
+coverage includes signed-boundary neighbors, ties, signed zero, subnormals,
+NaNs/infinities and DM/OM/UM/ZM/FTZ samples. Direct ISA checks cover all 120
+misalignment×CPL×AC combinations, aligned AC=0/1, fetch/span/gate precedence,
+STOP and zero budget without data callback, exactly one read16 for success and
+IE/PE events, and injected-read-error rollback. Focused runner checks cover the
+literal CLI cases, profile/control validation, result tampering, profile
+cross-denial and native/JIT denial. Direct ISA checks deny generic execution;
+host fragment and C ABI denial passed. `od-isa` passed 1,995 tests;
+`od-testkit` passed 461 tests;
+workspace all-target offline check, formatting and diff checks passed. The
+full `od-runner` suite was not run. Independent Sol/high review is clean after
+three test-coverage fixes. Physical x86 acceptance was not performed.
 
 Normative details and verified sources: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ
 pp. 3-214–3-217, Vol. 1 §§11.5.2.1–2, 11.5.3.1–3/Table 14-21, Vol. 3A

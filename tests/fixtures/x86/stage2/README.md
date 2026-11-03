@@ -9105,35 +9105,39 @@ and [plan](../../../../docs/plans/STAGE_2.md#s2-38ax--exact-legacy-long64-cvttps
 
 ## S2-38ay — CVTPD2DQ m128 memory unmasked profile
 
-Pending fixture contract; no implementation or executed corpus is claimed.
-Reserve `s2-long-cvtpd2dq-memory-unmasked-rax-v1`, exact `f2 0f e6 00`,
-and separate immutable `cvtpd2dq_m128_unmasked_controls`. Preserve existing
-S2-37bx masked fixtures/digests. Two binary64 lanes use MXCSR.RC rounding before signed-i32 range checking.
+Implemented in code commit `417334b`: exact `F2 0F E6 00`, separate
+interpreter-only `s2-long-cvtpd2dq-memory-unmasked-rax-v1` profile and immutable
+`cvtpd2dq_m128_unmasked_controls`; existing S2-37bx masked fixtures/digests are
+preserved. Two binary64 lanes round by MXCSR.RC before signed-i32 range checking.
 Success writes low64 and zeroes high64; IE/PE events preserve all128.
 
-Planned handwritten literals cover exact INT32_MIN, masked and unmasked IE/PE,
-both deliveries and both mixed lane orders, IE-before-new-PE suppression,
-masked IE|PE aggregation, old-flags-only success, prerequisite `#UD/#NM`, and
-aligned AC=1 success. Each uses a read-only 16-byte RHS different from a nonzero
-high64 XMM0 canary. Numeric fractions/ties/i32-limit raw-u64 neighbors,
-subnormals/NaNs and unrelated-mask/FTZ coverage may be generated runner cases;
-do not list generated cases as literal files. Require a separate independent
-raw-u64 memory-RHS matrix of 9 ordered classes ×4 RC ×64 sticky ×4 IM/PM
-×2 deliveries = 18,432 actual-interpreter cases, each comparing full CPU state
-and source bytes. Both real fractions `+2147483647.75` and `-2147483648.75`
-are required numeric inputs.
+Sixteen literal fixtures cover exact INT32_MIN, masked and unmasked IE/PE, both
+deliveries and mixed lane orders, IE-before-new-PE suppression, masked IE|PE
+aggregation, stale-flags-only success, prerequisite `#UD/#NM`, and aligned
+AC=1 success. Each uses a read-only 16-byte RHS distinct from a nonzero high64
+XMM0 canary. Generated runner inputs cover raw-u64 neighbors of both signed-i32
+limits, `+2147483647.75` and `-2147483648.75`, ties, signed zero,
+subnormals/NaNs/infinities and DM/OM/UM/ZM/FTZ samples; these generated inputs
+are not literal fixture files.
 
-Direct GuestMemory checks prove one read16 on success and IE/PE events and
-injected-read-error rollback. Fetch/span/gate/alignment cases use generated or
-direct tests as schema permits: 15 offsets ×4 CPL ×2 AC =120 `#GP(0)` cases,
-plus separate aligned AC0/1 checks. Unreadable/short mappings are schema errors,
-not literal runtime read faults. Actual generic/native/JIT/fragment/C ABI routes
-remain denied; physical x86 acceptance stays open. Provenance must cite Intel
-SDM Rev. 093 Vol. 2A **CVTPD2DQ pp. 3-214–3-217**, with shared Vol. 1/3A
-exception/alignment references in the
+The independent integer-only memory-RHS oracle passed all 18,432 actual-
+interpreter cases (9 ordered lane classes ×4 RC ×64 sticky histories ×4 IM/PM
+×2 deliveries), comparing full CPU state and source bytes. Direct GuestMemory
+checks cover one read16 for success and IE/PE events, injected-read-error
+rollback, fetch/span/gate ordering, STOP/zero-budget without a data callback,
+and all 120 misalignment×CPL×AC `#GP(0)` cases plus aligned AC=0/1. A direct
+ISA check denies generic execution. Schema and runner checks cover
+malformed/tampered controls and results, profile isolation, and native/JIT
+denial; host fragment/C ABI denial passed. `od-isa`
+passed 1,995 tests, `od-testkit` 461 tests, focused runner checks and workspace
+all-target offline check/formatting passed. Independent Sol/high review is
+clean after three coverage fixes. The full `od-runner` suite and physical x86
+acceptance were not run. Provenance: Intel SDM Rev. 093 Vol. 2A **CVTPD2DQ
+pp. 3-214–3-217**, with shared Vol. 1/3A exception/alignment references in the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ay--exact-cvtpd2dq-m128-memory-profile-with-unmasked-exceptions). See the
-[fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38ay-cvtpd2dq-m128-memory-unmasked-profile)
-and [plan](../../../../docs/plans/STAGE_2.md#s2-38ay--exact-legacy-long64-cvtpd2dq-xmm0-m128-rax-with-unmasked-exceptions).
+[fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38ay-cvtpd2dq-m128-memory-unmasked-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38ay--exact-legacy-long64-cvtpd2dq-xmm0-m128-rax-with-unmasked-exceptions)
+and [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38ay--cvtpd2dq-m128-memory-unmasked-profile).
 
 ## S2-38az — CVTTPD2DQ m128 memory unmasked profile
 

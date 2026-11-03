@@ -2071,7 +2071,7 @@ and [plan](../plans/STAGE_2.md#s2-38ax--exact-legacy-long64-cvttps2dq-xmm0-m128-
 
 ## S2-38ay CVTPD2DQ m128 memory unmasked profile
 
-Pending schema/implementation contract. Reserve distinct interpreter-only
+Implemented in code commit `417334b`. This distinct interpreter-only
 `s2-long-cvtpd2dq-memory-unmasked-rax-v1` for exact Long64 `f2 0f e6 00`,
 one executable mapping, one read-only exact-width 16-byte mapping at RAX,
 budget one and stop RIP entry+4. Require `cvtpd2dq_m128_unmasked_controls`
@@ -2112,10 +2112,17 @@ fixtures. Tampered controls, full destination, event/status, retirement and
 source bytes must fail validation. Check masked/profile cross-denial and actual
 generic/native/JIT/host fragment/C ABI rejection, not only invalid CLI names.
 
-Provenance: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ pp. 3-214–3-217; exact shared
-exception/alignment pages and official links are in the CPU contract. This
-section reserves acceptance requirements; it does not claim fixtures or passing
-execution. See the [plan](../plans/STAGE_2.md#s2-38ay--exact-legacy-long64-cvtpd2dq-xmm0-m128-rax-with-unmasked-exceptions).
+All sixteen literal fixtures and the 18,432-case full-state/raw-u64 runner
+matrix pass. Generated numeric and direct ISA cases cover boundaries, ties,
+subnormals, NaNs/infinities, status masks, FTZ, fetch/gate/span ordering,
+alignment, STOP/budget and read rollback. Focused host fragment/C ABI denial,
+`od-isa` (1,995), `od-testkit` (461), workspace all-target offline check,
+formatting and diff checks pass. Independent Sol/high review is clean. The full
+`od-runner` suite and physical x86 acceptance were not run. Provenance: Intel
+SDM Rev. 093 Vol. 2A CVTPD2DQ pp. 3-214–3-217; exact shared
+exception/alignment pages and official links are in the CPU contract. See the
+[plan](../plans/STAGE_2.md#s2-38ay--exact-legacy-long64-cvtpd2dq-xmm0-m128-rax-with-unmasked-exceptions)
+and [stage report](../reports/STAGE_2_REPORT.md#s2-38ay--cvtpd2dq-m128-memory-unmasked-profile).
 
 ## S2-38az CVTTPD2DQ m128 memory unmasked profile
 
