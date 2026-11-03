@@ -12,6 +12,17 @@
 
 ## Записи
 
+<a id="issue-033-s2-37cq-comiss-mixed-event-handling-audit"></a>
+
+### ISSUE-033 — S2-37cq COMISS mixed-event handling needs audit
+
+- **Дата обнаружения:** 2026-11-02.
+- **Компонент:** `od-isa` COMISS comparison and the bounded S2-37cq/S2-37v profiles.
+- **Статус:** открыто; расхождение с SDM или физическим x86 не установлено.
+- **Суть и последствия:** S2-37cq и S2-37v задают локальную обработку mixed NaN/denormal operands. Нужен отдельный аудит raw classification, mask-dependent control flow и независимых oracle, чтобы подтвердить согласованность локальных профилей с применимыми правилами Intel SDM. S2-38u намеренно остаётся invalid-only и отказывает после чтения при любом subnormal.
+- **Основание:** Intel SDM Rev. 093 Vol. 2A перечисляет для COMISS invalid и denormal conditions; Vol. 1 §§4.9.2, 11.5.2.1–2 описывают precedence и SIMD exception behavior ([official PDF, Vol. 1](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=112), [Vol. 2A](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=319)). Это основание для аудита, а не подтверждение дефекта. Физические проверки не выполнялись. См. [S2-37cq](specs/CPU_CONTRACT.md#s2-37cq--bounded-long64-comiss-xmm0dword-ptr-rax-m32-memory-profile), [S2-37v](specs/CPU_CONTRACT.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs) и [S2-38u](specs/CPU_CONTRACT.md#s2-38u--exact-comiss-memory-invalid-only-profile).
+- **Следующий шаг:** выполнить профильный аудит production paths и независимых schema/testkit oracles S2-37cq/S2-37v на NaN, subnormal и mixed operands; при доступности физического x86 добавить контрольные MXCSR cases. Регистрировать mismatch только если его подтвердят код, нормативный анализ или измерение.
+
 ### ISSUE-032 — S2-37dj lacks physical x86 acceptance evidence
 
 - **Дата обнаружения:** 2026-11-02.

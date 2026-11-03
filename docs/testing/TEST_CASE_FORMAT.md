@@ -1353,6 +1353,32 @@ contract](../specs/CPU_CONTRACT.md#s2-37v--canonical-long64-comiss-and-ucomiss-x
 [plan](../plans/STAGE_2.md#s2-37v--canonical-long64-comiss-and-ucomiss-xmm-register-pairs),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37v-canonical-comiss-and-ucomiss-register-pairs).
 
+## S2-31eb historical status on raw FLD m80fp
+
+The schema-v2 DB28 profile admits only the exact `DB 28` memory load. Its
+status predicate is local to this profile and permits historical IE and DE
+while preserving all existing FCW, Empty destination, class/tag, address and
+read gates. Results and expected snapshots preserve the ten raw source bytes,
+existing x87 status effects and push state. Fixtures must reject other forms,
+invalid controls, disallowed status bits and source/tag classes; the validator
+must preserve one-read and no-commit-on-failure semantics. The S2-31eb
+Unsupported predicate must share the production status/class envelope without
+changing FILD or adjacent FLD profiles.
+
+## S2-38u COMISS memory invalid-only profile
+
+The strict profile identifies exact `0F 2F 00`, one four-byte data read, SSE
+controls, CPL0–3 and the COMISS-specific immutable gate inputs. The validator
+derives comparison and event results from actual memory bytes using an
+independent integer oracle. A successfully read subnormal operand is an
+explicit Unsupported case that preserves the complete architectural state.
+For admitted non-subnormal values, fixtures cover masked IE results and
+unmasked `#XM`/arithmetic `#UD`, including sticky IE, RFLAGS/RIP suppression,
+retirement, exception metadata and control echoes. Reject cross-profile
+controls, malformed code, tampered results, and JIT/native backend labels.
+Subnormal and NaN mixed-status behavior remains excluded and is tracked in
+[ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
+
 ## S2-37dw MULPD m128 memory profile
 
 The local-only schema-v2 profile `s2-long-mulpd-memory-rax-v1` accepts exact

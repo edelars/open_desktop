@@ -17814,3 +17814,51 @@ tests; workspace check, format, layout, diff and Graphify passed. Independent
 Sol/high review is clean after correcting oracle fault priority and the SDM
 citation. No physical x86 acceptance is claimed. See the [integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ea-s2-38t)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38t-maxps-m128-unmasked-invalid-and-denormal).
+
+## S2-31eb — historical IE and DE for raw FLD m80fp
+
+Only exact bare Long64 `DB 28` (`FLD m80fp [RAX]`) receives the expanded
+historical status admission. Its local gate changes to `FSW & 0x80dc == 0`;
+the shared FILD gate `0x80df` and every other instruction gate remain
+unchanged. Retain S2-31ad's FCW, Empty destination, selector, accepted raw
+binary80 classes, tag mapping, and checked canonical48 ten-byte span. After
+all gates, perform exactly one all-or-error ten-byte read and preserve the
+source bytes. Add no new IE/DE, quieting, conversion, or other status effects.
+Preserve existing push/TOP, C1, PE, FIP/FDP/RIP and retirement behavior; a read
+failure or pre-read refusal commits no CPU state. Native/JIT remain closed.
+
+No physical x86 acceptance is claimed; broader x87/native behavior remains
+open under ISSUE-019. Sources: Intel SDM Rev. 093 Vol. 2A FLD m80fp
+pp. 3-352–3-353 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol. 1 §8.1.3.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211)).
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp).
+
+## S2-38u — exact COMISS memory invalid-only profile
+
+The strict schema-v2 interpreter-only profile admits exact Long64 legacy
+`0F 2F 00` (`COMISS XMM0,m32 [RAX]`), three-byte fetch, budget one and stop
+RIP entry+3. Require SSE bit 25. Full fetch and exact-form rejection precede
+feature/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM`. Require MXCSR supported
+bits `0xffbf`, reserved bits clear, DAZ=FTZ=0, and DM/ZM/OM/UM/PM set; IM and
+old sticky status may vary. Cover CPL0–3. AC=1 is a pre-read Unsupported
+result; AC=0 permits unaligned memory. Check canonical48 `[RAX,RAX+3]` before
+exactly one `read4`; span/read failure leaves state unchanged.
+
+After a successful read, any subnormal among XMM0.low32 and memory m32 returns
+Unsupported without changing MXCSR, RFLAGS, RIP or retirement. Mixed
+NaN/denormal handling is outside this invalid-only slice; its existing-profile
+audit is tracked in ISSUE-033. For admitted non-subnormal inputs, raw binary32
+comparison sets CF/ZF/PF to `0`, CF, ZF or CF|PF|ZF for greater, less, equal
+or unordered, clears OF/SF/AF, and
+preserves other RFLAGS. QNaN and SNaN raise IE. For NaN cases, masked
+completion commits sticky IE and comparison flags; ordinary finite comparisons
+preserve prior MXCSR status. Unmasked IE commits sticky IE, raises `#XM` or
+arithmetic `#UD` according to OSXMMEXCPT, preserves RFLAGS/RIP and retires
+nothing. All XMM and unrelated CPU state is preserved. Native/JIT/C ABI/
+generic/fragment routes remain closed.
+
+Sources: Intel SDM Rev. 093 Vol. 2A COMISS pp. 3-201–3-202
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=319));
+Vol. 1 §§4.9.2, 11.5.2.2 and 11.5.3; Vol. 3A §16.1.3/Table 16-1. See the
+[Stage 2 plan](../plans/STAGE_2.md#s2-38u--exact-comiss-memory-invalid-only-profile)
+and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).

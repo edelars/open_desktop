@@ -329,6 +329,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dy | Admit historical ZE only in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte source and post-write pop; native/JIT closed | ZE plus all 32 other sticky histories across accepted classes/signs/FCWs/TOP/C1; raw SNaN bytes, malformed ZE-set preflight rejects, rollback/repeat/FNSTSW/FNCLEX, schema and backend denial; integrated main suites: od-isa 1,915, testkit 455, runner 125+528, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,947/25,946/383; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31dz | Admit historical SF only with pre-existing IE in exact bare D9 10/D9 18/DD 10/DD 18 bounded FST/FSTP m32/m64 stores; preserve conversion and atomic write/commit; native/JIT closed | 73,728-case full-state SF+IE matrix over nine sources; SF-only SNaN, ES/B and source/tag/control refusals, rollback, repeated store/FNSTSW/FNCLEX/retry; four success fixtures plus Unsupported and JIT/native denial; integrated main suites: od-isa 1,923, testkit 455, runner 532, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,985/26,039/340; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31ea | Admit historical SF only with pre-existing IE in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte store and post-write pop; native/JIT closed | 24,576 full-state SF+IE cases across accepted source/tag pairs, signs, FCWs, TOP, C1 and DE/ZE/OE/PE histories; raw SNaN/subnormal preservation, SF-only/ES/B and malformed gates, rollback/repeat/FNSTSW/FNCLEX/retry, schema and backend denial; integrated main suites: od-isa 1,925, testkit 455, runner 535, x86-runner 8+6; workspace/fmt/layout/diff pass, Graphify 12,023/26,124/317; clean Sol/high review; no physical x86 acceptance |
+| [ ] | S2-31eb | Admit historical IE and DE on exact bare DB 28 raw FLD m80fp [RAX]; retain existing raw classes, push behavior and native/JIT denial | S2-31ad accepted classes/gates; separate DB28 gate mask `0x80dc`; preserve one-read/rollback contract |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -660,6 +661,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38r | Exact Long64 `MAXPD XMM0,m128 [RAX]` memory profile with packed unmasked IM/DM lane events; strict schema-v2 and interpreter-only | S2-37cz masked memory, S2-38j packed register policy, S2-38q MINPD memory/backend pattern; 524 generated lane/event cases, RC×64 histories, MAX-vs-MIN/RHS/fault/control/backend checks; integrated main suites: od-isa 1,915, testkit 455, runner 125+528, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,947/25,946/383; clean Sol/high review; no physical x86 acceptance; Linux native_v2 preflight not run on macOS |
 | [x] | S2-38s | Exact Long64 `MINPS XMM0,m128 [RAX]` memory profile with packed unmasked IM/DM lane events; strict schema-v2 and interpreter-only | S2-37dc masked memory, S2-38k packed register policy, S2-38q/r memory/backend patterns; 2,048 lane-event/mask cases, three literal fixtures, memory-RHS oracle, #GP(0) misalignment/noncanonical cases, SSE-only gate, tampering/backend denial; integrated main suites: od-isa 1,923, testkit 455, runner 532, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,985/26,039/340; clean Sol/high review after oracle fix; no physical x86 acceptance |
 | [x] | S2-38t | Exact Long64 MAXPS XMM0,m128 [RAX] memory profile with packed unmasked IM/DM lane events; strict schema-v2 and interpreter-only | 2,316 fixtures: 2,048 lane-event/mask + 256 RC/sticky + 12 special/priority cases; memory-RHS oracle, #GP(0) alignment/span and gate-fault priority, callback/result tampering; integrated main suites: od-isa 1,925, testkit 455, runner 535, x86-runner 8+6; workspace/fmt/layout/diff pass, Graphify 12,023/26,124/317; clean Sol/high review after correcting oracle priority and source citation; no physical x86 acceptance |
+| [ ] | S2-38u | Exact Long64 COMISS XMM0,m32 [RAX], invalid-only unmasked-IE profile; post-read subnormal operands are Unsupported; interpreter-only | S2-37cq COMISS memory behavior; ISSUE-033 tracks an audit of existing mixed-event handling |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -18256,3 +18258,61 @@ library + 6 binary tests; workspace check, format, layout, diff and Graphify
 passed. Sol/high review is clean after correcting oracle priority and the SDM
 citation. No physical x86 acceptance is claimed. See the [integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ea-s2-38t)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38t-maxps-m128-unmasked-invalid-and-denormal).
+
+#### S2-31eb — historical IE and DE for raw FLD m80fp
+
+Extend only exact bare Long64 `DB 28` (`FLD m80fp [RAX]`). Use a DB28-local
+status gate mask `0x80dc` to admit historical IE and DE while retaining the
+existing FCW, Empty destination, tag/class, selector, canonical48 ten-byte
+span and source acceptance envelope established by S2-31ad. Do not change the
+shared FILD gate (`0x80df`) or other x87 forms. After all pre-read gates,
+perform exactly one all-or-error ten-byte read; preserve all raw bytes and the
+existing class-to-tag behavior. Generate no new IE/DE, quieting or conversion
+effects. Preserve the existing push/TOP, C1, PE, FIP/FDP/RIP and retirement
+policy. Read failure and every pre-read refusal commit no CPU state. Keep
+native/JIT closed.
+
+Cover all accepted raw classes with IE/DE independently varied and the
+existing admitted PE histories; verify rejected ES/B and other masked status
+gates, FCWs, Empty/tag/source classes, span/read rollback, one-read callback
+counts, repeated FLD/FNSTSW/FNCLEX composition, exact schema-v2 admission and
+Unsupported predicates, literal fixtures and backend denial. Source: Intel
+SDM Rev. 093 Vol. 2A FLD m80fp pp. 3-352–3-353 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
+Vol. 1 §8.1.3.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211)).
+No physical x86 acceptance is claimed; broader x87/native behavior remains
+open under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp).
+
+#### S2-38u — exact COMISS memory invalid-only profile
+
+Add a strict schema-v2 interpreter-only profile for exact Long64 legacy
+`0F 2F 00` (`COMISS XMM0,m32 [RAX]`), three-byte fetch, budget one and stop RIP
+entry+3. Require SSE bit 25. Complete fetch and exact-form rejection precede
+feature/CR0.EM/CR4.OSFXSR `#UD` and CR0.TS `#NM`. Cover CPL0–3, following
+S2-37cq. Require MXCSR supported bits
+`0xffbf`, reserved bits clear, DAZ=FTZ=0, DM/ZM/OM/UM/PM set; IM and old sticky
+status may vary. AC=1 is an Unsupported pre-read refusal; AC=0
+allows unaligned access. Validate canonical48 `[RAX,RAX+3]` before exactly one
+`read4`; span/read failures do not commit state.
+
+After the successful read, any subnormal in either operand is an atomic
+Unsupported result, with no MXCSR, RFLAGS, RIP or retirement change. Mixed
+NaN/denormal handling remains outside this invalid-only slice; ISSUE-033 tracks
+an audit of the existing profiles. For admitted non-subnormal operands,
+compare raw binary32 values: greater/less/equal/unordered set CF/ZF/PF to `0`, CF, ZF and
+CF|PF|ZF; clear OF/SF/AF and preserve other RFLAGS. QNaN and SNaN raise IE.
+Masked IE commits sticky status and comparison flags; unmasked IE commits the
+sticky IE, reports `#XM` or arithmetic `#UD` per OSXMMEXCPT, and suppresses
+RFLAGS, RIP and retirement. Preserve all XMM and unrelated CPU state. Keep
+native/JIT/C ABI/generic/fragment execution closed.
+
+Use an independent integer-only oracle over actual memory bytes. Cover both
+NaN classes on both operand sides, ordinary finite/infinity/zero relations,
+IM × OSXMMEXCPT × old-sticky histories, exact fetch/form and feature/gate order,
+AC, canonical span, callback counts, read rollback, post-read subnormal
+Unsupported, #XM/#UD metadata and RFLAGS/RIP suppression, schema/control/result
+tampering and literal fixtures. Do not describe local results as physical x86
+acceptance. Source: Intel SDM Rev. 093 Vol. 2A COMISS pp. 3-201–3-202
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=319));
+Vol. 1 §§4.9.2, 11.5.2.2 and 11.5.3; Vol. 3A §16.1.3/Table 16-1. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38u--exact-comiss-memory-invalid-only-profile)
+and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
