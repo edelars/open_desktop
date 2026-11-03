@@ -30219,6 +30219,7 @@ mod tests {
         struct Ram {
             bytes: BTreeMap<u64, u8>,
             writes: Vec<(u64, Vec<u8>)>,
+            successful_commits: usize,
             write_error: Option<MemoryError>,
             stop_on_write: Option<Arc<AtomicU8>>,
         }
@@ -30271,6 +30272,7 @@ mod tests {
                 for (offset, byte) in input.iter().copied().enumerate() {
                     self.bytes.insert(address + offset as u64, byte);
                 }
+                self.successful_commits += 1;
                 if let Some(stop) = &self.stop_on_write {
                     stop.store(1, Ordering::Release);
                 }
@@ -30332,6 +30334,7 @@ mod tests {
             Ram {
                 bytes,
                 writes: Vec::new(),
+                successful_commits: 0,
                 write_error: None,
                 stop_on_write: None,
             }
@@ -30415,6 +30418,7 @@ mod tests {
             assert_eq!(native_state.rip, ENTRY + 4);
             assert_eq!(native.retired_instructions, 1);
             assert_eq!(native_ram.writes, [(target, VALUE.to_le_bytes().to_vec())]);
+            assert_eq!(native_ram.successful_commits, 1);
             assert_eq!(native_ram.bytes, interpreter_ram.bytes);
             assert_eq!(native_ram.writes, interpreter_ram.writes);
             assert_eq!(native_ram.bytes[&(target - 1)], 0x61);
@@ -30444,7 +30448,10 @@ mod tests {
         ] {
             let mut ram = ram_for(target);
             let before_bytes = ram.bytes.clone();
+            let mut interpreter_ram = ram.clone();
             let mut state = before.clone();
+            let mut interpreter_state = before.clone();
+            let stop = AtomicU8::new(requested);
             let result = unsafe {
                 published.execute_ir_memory_dword_store_v2(
                     &mut state,
@@ -30452,7 +30459,7 @@ mod tests {
                     AccessContext::default(),
                     budget,
                     stop_rip,
-                    &AtomicU8::new(requested),
+                    &stop,
                 )
             }
             .unwrap();
@@ -30460,7 +30467,45 @@ mod tests {
             assert_eq!(result.retired_instructions, 0);
             assert_eq!(state, before);
             assert!(ram.writes.is_empty());
+            assert_eq!(ram.successful_commits, 0);
             assert_eq!(ram.bytes, before_bytes);
+
+            stop.store(0, Ordering::Release);
+            let retry = unsafe {
+                published.execute_ir_memory_dword_store_v2(
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &stop,
+                )
+            }
+            .unwrap();
+            assert_eq!(retry.exit, MemoryOperationExecutionExitV2::Complete);
+            assert_eq!(retry.retired_instructions, 1);
+            let mut expected_state = before.clone();
+            expected_state.rip = ENTRY + 4;
+            assert_eq!(state, expected_state);
+            assert_eq!(state.gpr, before.gpr);
+            assert_eq!(state.rflags, before.rflags);
+            assert_eq!(state.rip, ENTRY + 4);
+            let interpreted = od_isa::execute::step(
+                &mut interpreter_state,
+                &mut interpreter_ram,
+                AccessContext::default(),
+            )
+            .unwrap();
+            assert_eq!(interpreted, od_isa::execute::StepOutcome::Advanced);
+            assert_eq!(state, interpreter_state);
+            assert_eq!(ram.bytes, interpreter_ram.bytes);
+            assert_eq!(ram.writes, [(target, VALUE.to_le_bytes().to_vec())]);
+            assert_eq!(ram.successful_commits, 1);
+            assert_eq!(ram.bytes[&(target - 1)], 0x61);
+            assert_eq!(ram.bytes[&(target + 4)], 0x66);
+            for (offset, expected_byte) in VALUE.to_le_bytes().into_iter().enumerate() {
+                assert_eq!(ram.bytes[&(target + offset as u64)], expected_byte);
+            }
         }
 
         let callback_stop = Arc::new(AtomicU8::new(0));
@@ -30488,6 +30533,7 @@ mod tests {
             callback_ram.writes,
             [(target, VALUE.to_le_bytes().to_vec())]
         );
+        assert_eq!(callback_ram.successful_commits, 1);
         callback_stop.store(0, Ordering::Release);
         let committed_state = callback_state.clone();
         let committed_writes = callback_ram.writes.clone();
@@ -30525,7 +30571,9 @@ mod tests {
             let mut ram = ram_for(target);
             ram.write_error = Some(error.clone());
             let before_bytes = ram.bytes.clone();
+            let mut interpreter_ram = ram.clone();
             let mut state = before.clone();
+            let mut interpreter_state = before.clone();
             let result = unsafe {
                 published.execute_ir_memory_dword_store_v2(
                     &mut state,
@@ -30539,6 +30587,7 @@ mod tests {
             assert_eq!(state, before);
             assert_eq!(ram.bytes, before_bytes);
             assert_eq!(ram.writes, [(target, VALUE.to_le_bytes().to_vec())]);
+            assert_eq!(ram.successful_commits, 0);
             match error {
                 MemoryError::Architectural(fault) => {
                     let result = result.unwrap();
@@ -30559,6 +30608,50 @@ mod tests {
                     ))
                 ),
                 _ => unreachable!(),
+            }
+
+            ram.write_error = None;
+            interpreter_ram.write_error = None;
+            let retry = unsafe {
+                published.execute_ir_memory_dword_store_v2(
+                    &mut state,
+                    &mut ram,
+                    AccessContext::default(),
+                    1,
+                    None,
+                    &AtomicU8::new(0),
+                )
+            }
+            .unwrap();
+            assert_eq!(retry.exit, MemoryOperationExecutionExitV2::Complete);
+            assert_eq!(retry.retired_instructions, 1);
+            let mut expected_state = before.clone();
+            expected_state.rip = ENTRY + 4;
+            assert_eq!(state, expected_state);
+            assert_eq!(state.gpr, before.gpr);
+            assert_eq!(state.rflags, before.rflags);
+            assert_eq!(state.rip, ENTRY + 4);
+            let interpreted = od_isa::execute::step(
+                &mut interpreter_state,
+                &mut interpreter_ram,
+                AccessContext::default(),
+            )
+            .unwrap();
+            assert_eq!(interpreted, od_isa::execute::StepOutcome::Advanced);
+            assert_eq!(state, interpreter_state);
+            assert_eq!(ram.bytes, interpreter_ram.bytes);
+            assert_eq!(
+                ram.writes,
+                [
+                    (target, VALUE.to_le_bytes().to_vec()),
+                    (target, VALUE.to_le_bytes().to_vec()),
+                ]
+            );
+            assert_eq!(ram.successful_commits, 1);
+            assert_eq!(ram.bytes[&(target - 1)], 0x61);
+            assert_eq!(ram.bytes[&(target + 4)], 0x66);
+            for (offset, expected_byte) in VALUE.to_le_bytes().into_iter().enumerate() {
+                assert_eq!(ram.bytes[&(target + offset as u64)], expected_byte);
             }
         }
     }
