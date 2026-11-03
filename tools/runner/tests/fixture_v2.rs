@@ -43722,6 +43722,92 @@ fn sqrtsd_m64_unmasked_literal_fixtures_validate_exceptions_and_denials() {
 }
 
 #[test]
+fn sqrtsd_m64_unmasked_validator_rejects_state_retirement_and_exception_tampering() {
+    let (success_input, success) = run(SQRTSD_M64_UNMASKED_MASKED, "interpreter", 0);
+    od_testkit::v2::compare(&success_input, &success, &success).unwrap();
+
+    let mut bad_low64 = success.clone();
+    snapshot_mut(&mut bad_low64).state.sse.as_mut().unwrap().xmm[0]
+        .replace_range(0..16, "0000000000000000");
+    assert!(bad_low64.validate_for(&success_input).is_err());
+
+    let mut bad_high64 = success.clone();
+    snapshot_mut(&mut bad_high64)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .xmm[0]
+        .replace_range(16..32, "eeeeeeeeeeeeeeee");
+    assert!(bad_high64.validate_for(&success_input).is_err());
+
+    let mut bad_rip = success.clone();
+    let next_rip = snapshot(&bad_rip).state.rip.get() + 1;
+    snapshot_mut(&mut bad_rip).state.rip = HexU64(next_rip);
+    assert!(bad_rip.validate_for(&success_input).is_err());
+
+    for (source, sticky_bit) in [
+        (SQRTSD_M64_UNMASKED_IE_XM, 1u64),
+        (SQRTSD_M64_UNMASKED_DE_XM, 1 << 1),
+        (SQRTSD_M64_UNMASKED_PE_XM, 1 << 5),
+    ] {
+        let (input, expected) = run(source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &expected, &expected).unwrap();
+        let mut tampered = expected.clone();
+        let sse = snapshot_mut(&mut tampered).state.sse.as_mut().unwrap();
+        sse.mxcsr = HexU64(sse.mxcsr.get() ^ sticky_bit);
+        assert!(
+            tampered.validate_for(&input).is_err(),
+            "sticky bit {sticky_bit:#x}"
+        );
+    }
+
+    let (ie_input, ie) = run(SQRTSD_M64_UNMASKED_IE_XM, "interpreter", 0);
+    let mut bad_retirement = ie.clone();
+    bad_retirement.instructions_executed = Observation::Available { value: HexU64(1) };
+    assert!(bad_retirement.validate_for(&ie_input).is_err());
+
+    let mut bad_vector = ie.clone();
+    match &mut snapshot_mut(&mut bad_vector).exception {
+        Observation::Available {
+            value: Some(exception),
+        } => exception.vector = 6,
+        other => panic!("expected exception snapshot, got {other:?}"),
+    }
+    assert!(bad_vector.validate_for(&ie_input).is_err());
+
+    let mut bad_gp = Fixture::from_json(SQRTSD_M64_UNMASKED_MASKED)
+        .unwrap()
+        .fixture;
+    bad_gp.case_id = "s2_38z_gp_zero_error_code_tamper".into();
+    bad_gp.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+    bad_gp.memory[1].guest_address = bad_gp.initial_state.gpr[0];
+    bad_gp.expected_exit = od_testkit::v2::ExpectedExit::Exception;
+    let (gp_input, gp) = run(&bad_gp.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&gp_input, &gp, &gp).unwrap();
+    let gp_snapshot = snapshot(&gp);
+    let Observation::Available {
+        value: Some(gp_exception),
+    } = &gp_snapshot.exception
+    else {
+        panic!("expected #GP(0)")
+    };
+    assert_eq!(gp_exception.vector, 13);
+    assert_eq!(
+        gp_exception.error_code,
+        Observation::Available { value: HexU64(0) }
+    );
+    let mut bad_gp_code = gp.clone();
+    match &mut snapshot_mut(&mut bad_gp_code).exception {
+        Observation::Available {
+            value: Some(exception),
+        } => exception.error_code = Observation::Available { value: HexU64(1) },
+        other => panic!("expected #GP exception snapshot, got {other:?}"),
+    }
+    assert!(bad_gp_code.validate_for(&gp_input).is_err());
+}
+
+#[test]
 fn sqrtsd_m64_unmasked_subnormal_ie_and_ac_span_priority_are_atomic() {
     use od_testkit::v2::ExpectedExit;
 
