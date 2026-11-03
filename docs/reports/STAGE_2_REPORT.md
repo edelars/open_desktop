@@ -23213,3 +23213,47 @@ pending. No native/JIT or physical x86 acceptance is claimed. See
 [S2-38ab implementation report](S2_38AB_SQRTPD_MEMORY_UNMASKED.md),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions),
 and [stage plan](../plans/STAGE_2.md).
+
+<a id="main-integration-s2-38ae-s2-38af"></a>
+
+## Main integration: S2-38ae and S2-38af
+
+S2-38ae adds exact Long64 `F3 0F 5C 00` SUBSS XMM0,m32 `[RAX]`, SSE bit 25;
+S2-38af adds exact `F2 0F 5C 00` SUBSD XMM0,m64 with SSE2 bit 26. Each has a
+separate immutable schema-v2 interpreter-only profile and controls, one
+read-only data read, and budget one with stop RIP=entry+4. The profiles preserve
+the existing masked-memory and register implementations. They accept all RC,
+IM/DM/ZM/PM masks and prior sticky histories with DAZ=FTZ=0 and OM=UM=1. AC
+refusal precedes span validation and memory access; otherwise the checked
+canonical span precedes exactly one read4/read8. Original operands remain
+available for subtraction-specific NaN selection. Unmasked IE/DE are pre-events;
+PE is handled after computation. Unmasked outcomes update applicable MXCSR
+status and suppress the destination, RIP and retirement. Native/JIT/C ABI/
+generic/fragment dispatch and physical x86 acceptance remain closed.
+
+The independent raw-u32 SUBSS oracle covers 21 operand/event pairs × 4 RC × 64
+prior sticky histories × 8 IM/DM/PM masks × 2 OSXMMEXCPT mappings (86,016
+cases). The independent raw-u64 SUBSD oracle covers 22 vectors × 4 RC × 64
+histories × 16 IM/DM/ZM/PM masks × 2 OSXMMEXCPT mappings (180,224 cases).
+Five SUBSS and four SUBSD literal fixtures, focused fault-priority and rollback
+checks, result/control tampering, interpreter-only backend denial, and
+writable-mapping compatibility regressions are included. Independent Sol/high
+reviews are clean after correcting (1) SUBSD result validation when an earlier
+gate/AC/span fault wins, (2) production-helper use in the SUBSD matrix oracle,
+and (3) accidental changes to pre-existing SUBSS/DIVSS/SUBSD writable-data
+admission.
+
+On combined main, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `python3
+tools/check_layout.py`, and `git diff --check` passed. Package tests passed:
+od-isa 1,958; od-testkit 459; od-runner 138 unit + 560 fixture tests. Graphify
+reported 12,430 nodes / 26,995 edges / 370 communities; labels were not
+refreshed without an LLM API key. Full workspace tests, `od-x86-runner` and
+physical x86 were not run.
+
+Main commits: contract preparation `0d64017`; S2-38af `03f41e9` and mapping
+compatibility fix `2650d80`; S2-38ae `58bce98`, permission correction `73aa4a8`,
+and review/report update `0bf0ad8`. See [S2-38ae](S2_38AE_SUBSS_MEMORY_UNMASKED.md),
+[S2-38af](S2_38AF_SUBSD_MEMORY_UNMASKED.md), the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ae--exact-subss-memory-profile-with-unmasked-exceptions),
+and [stage plan](../plans/STAGE_2.md). Stage 2 remains open.
