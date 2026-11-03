@@ -848,6 +848,17 @@ pub struct ComisdMemoryRaxControls {
     pub cr4_osfxsr: bool,
 }
 
+/// Explicit SSE2 and SIMD exception-delivery controls for the S2-38w
+/// COMISD m64 invalid-only profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ComisdMemoryInvalidRaxControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit SSE2 prerequisite gates for exact S2-37cp UCOMISD m64 at [RAX].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UcomisdMemoryRaxControls {
@@ -15331,6 +15342,34 @@ pub fn run_with_comisd_memory_rax_controls(
             precision: ComparisonMemoryRaxPrecision::Binary64,
             quiet_nan_raises_ie: true,
             reject_subnormals: false,
+        },
+        stop_requested,
+    )
+}
+
+/// Execute the exact S2-38w COMISD profile, refusing any subnormal operand after its read.
+pub fn run_with_comisd_memory_invalid_rax_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: ComisdMemoryInvalidRaxControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_comparison_memory_rax_profile(
+        state,
+        memory,
+        config,
+        ComparisonMemoryRaxProfile {
+            controls: ComparisonMemoryRaxControls {
+                feature_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            precision: ComparisonMemoryRaxPrecision::Binary64,
+            quiet_nan_raises_ie: true,
+            reject_subnormals: true,
         },
         stop_requested,
     )
@@ -149398,6 +149437,415 @@ mod swapgs_profile_tests {
             assert!(memory.accesses.is_empty());
             assert_eq!(state, before);
         }
+    }
+
+    #[test]
+    fn comisd_m64_invalid_only_profile_refuses_subnormals_and_delivers_ie_at_all_cpls() {
+        let code = [0x66, 0x0f, 0x2f, 0x00];
+        let controls = ComisdMemoryInvalidRaxControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let qnan = 0x7ff8_1234_5678_9abcu64;
+        let snan = 0x7ff0_1234_5678_9abcu64;
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for left in [0x4000_0000_0000_0000u64, qnan, snan] {
+                let mut state = LongModeState::default();
+                state.rip = 0x9c00;
+                state.gpr[Register::Rax as usize] = 0x2000;
+                state.rflags = 0x0ad7;
+                let mut xmm0 = [0x5a; 16];
+                xmm0[..8].copy_from_slice(&left.to_le_bytes());
+                state.sse = Some(SseState {
+                    xmm: [xmm0; 16],
+                    mxcsr: 0x1f80,
+                });
+                state.x87 = Some(X87State::fixture_seed());
+                let before_x87 = state.x87.clone();
+                let mut memory = Memory::at(&code, state.rip);
+                memory.data_base = 0x2000;
+                memory.bytes = 0x3ff0_0000_0000_0000u64.to_le_bytes().to_vec();
+                let result = run_with_comisd_memory_invalid_rax_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0x9c04),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    controls,
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress);
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(memory.fetches, vec![0x9c00, 0x9c01, 0x9c02, 0x9c03]);
+                assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x2000, 8)]);
+                assert_eq!(
+                    state.sse.as_ref().unwrap().mxcsr & 0x3f,
+                    u32::from(left == qnan || left == snan)
+                );
+                if left == qnan || left == snan {
+                    assert_eq!(state.rflags & 0x45, 0x45);
+                }
+                assert_eq!(state.x87, before_x87);
+            }
+        }
+
+        let mut unaligned_state = LongModeState::default();
+        unaligned_state.rip = 0x9c10;
+        unaligned_state.gpr[Register::Rax as usize] = 0x2001;
+        unaligned_state.rflags = 0x0ad7;
+        let mut unaligned_xmm0 = [0x6a; 16];
+        unaligned_xmm0[..8].copy_from_slice(&0x4000_0000_0000_0000u64.to_le_bytes());
+        unaligned_state.sse = Some(SseState {
+            xmm: [unaligned_xmm0; 16],
+            mxcsr: 0x1f80,
+        });
+        let mut unaligned = Memory::at(&code, unaligned_state.rip);
+        unaligned.data_base = 0x2001;
+        unaligned.bytes = 0x3ff0_0000_0000_0000u64.to_le_bytes().to_vec();
+        let unaligned_result = run_with_comisd_memory_invalid_rax_controls(
+            &mut unaligned_state,
+            &mut unaligned,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x9c14),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(unaligned_result.exit, RunExit::StopAddress);
+        assert_eq!(unaligned_result.instructions_executed, 1);
+        assert_eq!(unaligned.accesses, vec![(AccessKind::Read, 0x2001, 8)]);
+        assert_eq!(unaligned_state.rflags & 0x45, 0);
+
+        for (lhs, rhs) in [(qnan, 1u64), (1, qnan)] {
+            let mut state = LongModeState::default();
+            state.rip = 0x9d00;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            let mut xmm0 = [0x7b; 16];
+            xmm0[..8].copy_from_slice(&lhs.to_le_bytes());
+            state.sse = Some(SseState {
+                xmm: [xmm0; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            memory.data_base = 0x2000;
+            memory.bytes = rhs.to_le_bytes().to_vec();
+            let result = run_with_comisd_memory_invalid_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x9d04),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2f }));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x2000, 8)]);
+        }
+
+        for (nan, osxmmexcpt, vector) in [(qnan, true, 19), (snan, false, 6)] {
+            let mut state = LongModeState::default();
+            state.rip = 0x9e00;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.rflags = 0x0ad7;
+            let mut xmm0 = [0x37; 16];
+            xmm0[..8].copy_from_slice(&nan.to_le_bytes());
+            state.sse = Some(SseState {
+                xmm: [xmm0; 16],
+                mxcsr: 0x1f00,
+            });
+            let before_flags = state.rflags;
+            let before_rip = state.rip;
+            let mut memory = Memory::at(&code, state.rip);
+            memory.data_base = 0x2000;
+            memory.bytes = 0x3ff0_0000_0000_0000u64.to_le_bytes().to_vec();
+            let result = run_with_comisd_memory_invalid_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x9e04),
+                    context: AccessContext::default(),
+                },
+                ComisdMemoryInvalidRaxControls {
+                    cr4_osxmmexcpt: osxmmexcpt,
+                    ..controls
+                },
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state.rflags, before_flags);
+            assert_eq!(state.rip, before_rip);
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1f01);
+            assert_eq!(memory.accesses, vec![(AccessKind::Read, 0x2000, 8)]);
+        }
+
+        for (gate_controls, vector) in [
+            (
+                ComisdMemoryInvalidRaxControls {
+                    sse2_available: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                ComisdMemoryInvalidRaxControls {
+                    cr0_em: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                ComisdMemoryInvalidRaxControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                ComisdMemoryInvalidRaxControls {
+                    cr4_osfxsr: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                ComisdMemoryInvalidRaxControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x9f00;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x44; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            memory.data_base = 0x2000;
+            memory.bytes = 1u64.to_le_bytes().to_vec();
+            let result = run_with_comisd_memory_invalid_rax_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x9f04),
+                    context: AccessContext::default(),
+                },
+                gate_controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut ac_state = LongModeState::default();
+        ac_state.rip = 0x9f10;
+        ac_state.gpr[Register::Rax as usize] = 0x2000;
+        ac_state.rflags = 1 << 18;
+        ac_state.sse = Some(SseState {
+            xmm: [[0x55; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before_ac = ac_state.clone();
+        let mut ac_memory = Memory::at(&code, ac_state.rip);
+        ac_memory.data_base = 0x2000;
+        ac_memory.bytes = 1u64.to_le_bytes().to_vec();
+        let ac_result = run_with_comisd_memory_invalid_rax_controls(
+            &mut ac_state,
+            &mut ac_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x9f14),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(
+            ac_result.exit,
+            RunExit::Unsupported { opcode: 0x2f }
+        ));
+        assert_eq!(ac_state, before_ac);
+        assert!(ac_memory.accesses.is_empty());
+
+        let mut malformed_state = LongModeState::default();
+        malformed_state.rip = 0x9f18;
+        malformed_state.gpr[Register::Rax as usize] = 0x2000;
+        malformed_state.sse = Some(SseState {
+            xmm: [[0x77; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let mut malformed = Memory::at(&[0x66, 0x0f, 0x2f, 0x08], malformed_state.rip);
+        malformed.data_base = 0x2000;
+        malformed.bytes = 1u64.to_le_bytes().to_vec();
+        let malformed_result = run_with_comisd_memory_invalid_rax_controls(
+            &mut malformed_state,
+            &mut malformed,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x9f1c),
+                context: AccessContext::default(),
+            },
+            ComisdMemoryInvalidRaxControls {
+                cr0_em: true,
+                ..controls
+            },
+            || false,
+        );
+        assert!(matches!(
+            malformed_result.exit,
+            RunExit::Unsupported { opcode: 0x2f }
+        ));
+        assert!(malformed.accesses.is_empty());
+
+        let mut truncated_state = LongModeState::default();
+        truncated_state.rip = 0x9f28;
+        truncated_state.sse = Some(SseState {
+            xmm: [[0x88; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let mut truncated = Memory::at(&code[..3], truncated_state.rip);
+        truncated.fetch_error = Some((
+            0x9f2b,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(4),
+                linear_address: Some(0x9f2b),
+            }),
+        ));
+        let fetch_result = run_with_comisd_memory_invalid_rax_controls(
+            &mut truncated_state,
+            &mut truncated,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x9f2c),
+                context: AccessContext::default(),
+            },
+            ComisdMemoryInvalidRaxControls {
+                cr0_em: true,
+                ..controls
+            },
+            || false,
+        );
+        assert_eq!(
+            fetch_result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(4),
+                linear_address: Some(0x9f2b),
+            })
+        );
+        assert_eq!(truncated.accesses.len(), 0);
+
+        let mut span_state = LongModeState::default();
+        span_state.rip = 0x9f30;
+        span_state.gpr[Register::Rax as usize] = 0x0000_7fff_ffff_fffc;
+        span_state.sse = Some(SseState {
+            xmm: [[0x99; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let mut span = Memory::at(&code, span_state.rip);
+        span.data_base = 0x0000_7fff_ffff_fffc;
+        span.bytes = 1u64.to_le_bytes().to_vec();
+        let span_result = run_with_comisd_memory_invalid_rax_controls(
+            &mut span_state,
+            &mut span,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x9f34),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(
+            span_result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert!(span.accesses.is_empty());
+
+        let mut read_failure_state = LongModeState::default();
+        read_failure_state.rip = 0x9f20;
+        read_failure_state.gpr[Register::Rax as usize] = 0x2000;
+        read_failure_state.sse = Some(SseState {
+            xmm: [[0x66; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before_read_failure = read_failure_state.clone();
+        let mut read_failure = Memory::at(&code, read_failure_state.rip);
+        read_failure.data_base = 0x2000;
+        read_failure.bytes = 1u64.to_le_bytes().to_vec();
+        read_failure.error = Some(MemoryError::Unmapped {
+            address: 0x2000,
+            access: AccessKind::Read,
+        });
+        read_failure.error_kind = Some(AccessKind::Read);
+        let failed = run_with_comisd_memory_invalid_rax_controls(
+            &mut read_failure_state,
+            &mut read_failure,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x9f24),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(
+            failed.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                address: 0x2000,
+                access: AccessKind::Read
+            })
+        );
+        assert_eq!(read_failure_state, before_read_failure);
+        assert_eq!(read_failure.accesses, vec![(AccessKind::Read, 0x2000, 8)]);
     }
 
     #[test]

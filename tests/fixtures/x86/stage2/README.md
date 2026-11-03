@@ -8485,3 +8485,24 @@ mappings and forged result/backend fields. No physical x86 acceptance is
 claimed. ISSUE-033 remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
 and [standalone report](../../../../docs/reports/S2_38V_UCOMISS_MEMORY_INVALID_ONLY.md).
+
+<a id="s2-38w-comisd-memory-invalid-only-profile"></a>
+
+### S2-38w COMISD memory invalid-only profile
+
+Six literal fixtures cover a finite comparison, masked QNaN/SNaN, unmasked
+SNaN `#XM`, unmasked QNaN arithmetic `#UD`, and QNaN plus subnormal refusal.
+The independent raw-u64 runner oracle covers both NaN classes and operand
+sides × IM × OSXMMEXCPT × all 64 prior sticky states (1,024 cases); the RC
+field cycles through all four encodings. It also checks QNaN+SNaN in both
+orders, finite/infinity/signed-zero and normal-range boundaries, prior IE alone,
+and atomic NaN/subnormal refusal. Direct ISA tests cover CPL0–3, prerequisite
+order including combined EM+TS precedence, exact form/fetch, successful
+unaligned access with AC=0, AC=1 refusal, canonical span, read failure and
+state rollback.
+The schema enforces a read-only eight-byte mapping and rejects foreign control
+echo/result changes. JIT/native remain unsupported. No physical x86 acceptance
+is claimed; ISSUE-033 remains an audit of older COMISS mixed-event profiles.
+See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38w--exact-comisd-memory-invalid-only-profile),
+[plan](../../../../docs/plans/STAGE_2.md), and
+[standalone report](../../../../docs/reports/S2_38W_COMISD_MEMORY_INVALID_ONLY.md).

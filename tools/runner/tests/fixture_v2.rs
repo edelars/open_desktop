@@ -207,6 +207,20 @@ const CVTTSD2SI_R64_MEMORY_RAX: &[u8] = include_bytes!(
 const COMISD_M64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37co_comisd_m64_qnan_subnormal_priority.case.json"
 );
+const COMISD_M64_INVALID_FIXTURES: [&[u8]; 6] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38w_comisd_m64_finite_greater.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38w_comisd_m64_qnan_masked.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38w_comisd_m64_snan_masked.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38w_comisd_m64_snan_unmasked_xm.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38w_comisd_m64_qnan_unmasked_ud.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38w_comisd_m64_qnan_subnormal_refusal.case.json"
+    ),
+];
 const UCOMISD_M64_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cp_ucomisd_m64_qnan_subnormal_priority.case.json"
 );
@@ -27860,6 +27874,262 @@ fn comisd_m64_memory_uses_raw_bits_flags_priority_and_denies_other_backends() {
         run(COMISD_M64_MEMORY_RAX, "jit", 4).1.outcome,
         Outcome::Unsupported { .. }
     ));
+}
+
+#[test]
+fn comisd_m64_invalid_only_covers_nan_masks_stickies_rc_and_refusals() {
+    use od_testkit::v2::Profile;
+
+    let base = Fixture::from_json(COMISD_M64_INVALID_FIXTURES[0])
+        .unwrap()
+        .fixture;
+    assert_eq!(base.profile, Profile::LongComisdMemoryInvalidRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "660f2f00");
+    let encode_u64 = |value: u64| {
+        value
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let nan_inputs = [
+        (
+            0x7ff8_1234_5678_9abcu64,
+            0x3ff0_0000_0000_0000u64,
+            "qnan_lhs",
+        ),
+        (0x3ff0_0000_0000_0000, 0x7ff8_1234_5678_9abc, "qnan_memory"),
+        (
+            0x7ff0_1234_5678_9abcu64,
+            0x3ff0_0000_0000_0000u64,
+            "snan_lhs",
+        ),
+        (0x3ff0_0000_0000_0000, 0x7ff0_1234_5678_9abc, "snan_memory"),
+    ];
+    let mut cases = 0usize;
+    for (lhs, rhs, stem) in nan_inputs {
+        for im in [false, true] {
+            for osxmmexcpt in [false, true] {
+                for prior_sticky in 0..64u64 {
+                    // RC cycles through all four modes while the status matrix
+                    // independently covers every prior IE/DE/ZE/OE/UE/PE state.
+                    let rc = prior_sticky & 3;
+                    let mut case = base.clone();
+                    case.case_id = format!(
+                        "s2_38w_{stem}_im{}_os{}_sticky{prior_sticky:02x}",
+                        u8::from(im),
+                        u8::from(osxmmexcpt),
+                    );
+                    case.initial_state.sse.as_mut().unwrap().xmm[0]
+                        .replace_range(0..16, &encode_u64(lhs));
+                    case.memory[1].initial_bytes_hex = encode_u64(rhs);
+                    case.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x1f00 | (u64::from(im) << 7) | prior_sticky | (rc << 13));
+                    case.comisd_memory_rax_invalid_controls
+                        .as_mut()
+                        .unwrap()
+                        .cr4_osxmmexcpt = osxmmexcpt;
+                    let fault = !im;
+                    case.expected_exit = if fault {
+                        ExpectedExit::Exception
+                    } else {
+                        ExpectedExit::StopAddress
+                    };
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    let observed = snapshot(&result);
+                    let mxcsr = observed.state.sse.as_ref().unwrap().mxcsr.get();
+                    assert_eq!(mxcsr & 0x3f, prior_sticky | 1, "{}", case.case_id);
+                    if fault {
+                        assert!(matches!(result.outcome, Outcome::Exception {}));
+                        assert_eq!(observed.state.rflags, case.initial_state.rflags);
+                        assert_eq!(observed.state.rip, case.initial_state.rip);
+                        assert_eq!(
+                            result.instructions_executed,
+                            Observation::Available { value: HexU64(0) }
+                        );
+                        assert!(matches!(
+                            &observed.exception,
+                            Observation::Available { value: Some(exception) }
+                                if exception.vector == if osxmmexcpt { 19 } else { 6 }
+                        ));
+                    } else {
+                        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+                        assert_eq!(observed.state.rflags.get() & 0x45, 0x45);
+                        assert_eq!(
+                            result.instructions_executed,
+                            Observation::Available { value: HexU64(1) }
+                        );
+                    }
+                    assert_eq!(observed.state.x87, case.initial_state.x87);
+                    cases += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 1024);
+
+    for (lhs, rhs) in [
+        (0x7ff8_1234_5678_9abcu64, 0x7ff0_1234_5678_9abc),
+        (0x7ff0_1234_5678_9abcu64, 0x7ff8_1234_5678_9abc),
+    ] {
+        let mut case = base.clone();
+        case.case_id = format!("s2_38w_qnan_snan_{lhs:016x}_{rhs:016x}");
+        case.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, &encode_u64(lhs));
+        case.memory[1].initial_bytes_hex = encode_u64(rhs);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+        case.comisd_memory_rax_invalid_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = true;
+        case.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert!(matches!(
+            &snapshot(&result).exception,
+            Observation::Available { value: Some(exception) } if exception.vector == 19
+        ));
+    }
+
+    // A NaN/subnormal pair is refused only after the single successful read;
+    // memory faults remain higher priority in the executor and oracle.
+    for (lhs, rhs) in [(0x7ff8_1234_5678_9abc, 1u64), (1, 0x7ff8_1234_5678_9abc)] {
+        let mut case = base.clone();
+        case.case_id = format!("s2_38w_nan_subnormal_{lhs:016x}_{rhs:016x}");
+        case.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, &encode_u64(lhs));
+        case.memory[1].initial_bytes_hex = encode_u64(rhs);
+        case.expected_exit = ExpectedExit::Unsupported;
+        let (_, result) = run(&case.to_json().unwrap(), "interpreter", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available { value: HexU64(0) }
+        );
+    }
+
+    for (lhs, rhs, expected_flags, label) in [
+        (
+            0x4000_0000_0000_0000u64,
+            0x3ff0_0000_0000_0000u64,
+            0,
+            "greater",
+        ),
+        (
+            0xbff0_0000_0000_0000,
+            0x3ff0_0000_0000_0000,
+            1,
+            "negative_less",
+        ),
+        (
+            0x0000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+            1 << 6,
+            "signed_zero",
+        ),
+        (
+            0x7ff0_0000_0000_0000,
+            0x3ff0_0000_0000_0000,
+            0,
+            "positive_infinity",
+        ),
+        (
+            0xfff0_0000_0000_0000,
+            0xbff0_0000_0000_0000,
+            1,
+            "negative_infinity",
+        ),
+        (0x0010_0000_0000_0000, 0, 0, "minimum_normal"),
+        (
+            0x7fef_ffff_ffff_ffff,
+            0x7ff0_0000_0000_0000,
+            1,
+            "maximum_finite",
+        ),
+    ] {
+        let mut case = base.clone();
+        case.case_id = format!("s2_38w_finite_{label}");
+        case.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, &encode_u64(lhs));
+        case.memory[1].initial_bytes_hex = encode_u64(rhs);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(
+            snapshot(&result).state.rflags.get() & 0x45,
+            expected_flags,
+            "{label}"
+        );
+    }
+
+    let mut prior_ie = base.clone();
+    prior_ie.case_id = "s2_38w_prior_ie_only_no_fault".into();
+    prior_ie.initial_state.sse.as_mut().unwrap().xmm[0]
+        .replace_range(0..16, &encode_u64(0x4000_0000_0000_0000));
+    prior_ie.memory[1].initial_bytes_hex = encode_u64(0x3ff0_0000_0000_0000);
+    prior_ie.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f01);
+    let (input, result) = run(&prior_ie.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+
+    for fixture in COMISD_M64_INVALID_FIXTURES {
+        let expected = if fixture == COMISD_M64_INVALID_FIXTURES[5] {
+            4
+        } else {
+            0
+        };
+        let (input, result) = run(fixture, "interpreter", expected);
+        if expected == 0 {
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+    assert!(matches!(
+        run(COMISD_M64_INVALID_FIXTURES[0], "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(COMISD_M64_INVALID_FIXTURES[0], "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+
+    let mut malformed = base.clone();
+    malformed.memory[1].permissions.write = true;
+    assert!(
+        malformed.validate().is_err(),
+        "writable m64 data was accepted"
+    );
+    malformed = base.clone();
+    malformed.comisd_memory_rax_controls = Some(od_testkit::v2::ComisdMemoryRaxControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(
+        malformed.validate().is_err(),
+        "legacy COMISD controls crossed profiles"
+    );
+    let mut foreign = Fixture::from_json(COMISD_M64_MEMORY_RAX).unwrap().fixture;
+    foreign.comisd_memory_rax_invalid_controls = base.comisd_memory_rax_invalid_controls;
+    assert!(
+        foreign.validate().is_err(),
+        "invalid-only controls crossed profiles"
+    );
+    assert!(Fixture::from_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
+
+    let (input, baseline) = run(COMISD_M64_INVALID_FIXTURES[0], "interpreter", 0);
+    let mut bad_echo = baseline.clone();
+    if let Observation::Available { value: snapshot } = &mut bad_echo.snapshot {
+        snapshot
+            .comisd_memory_rax_invalid_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = false;
+    }
+    assert!(od_testkit::v2::compare(&input, &bad_echo, &baseline).is_err());
+    let mut bad_flags = baseline.clone();
+    if let Observation::Available { value: snapshot } = &mut bad_flags.snapshot {
+        snapshot.state.rflags = HexU64(snapshot.state.rflags.get() ^ 1);
+    }
+    assert!(od_testkit::v2::compare(&input, &bad_flags, &baseline).is_err());
 }
 
 #[test]
