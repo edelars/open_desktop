@@ -36120,7 +36120,7 @@ mod tests {
             }
         }
 
-        let ram_at = |address: u64| -> Ram {
+        let ram_at = |address: u64, rcx: u64| -> Ram {
             let mut bytes = BTreeMap::new();
             for offset in 0..10_u64 {
                 bytes.insert(
@@ -36132,6 +36132,32 @@ mod tests {
             if decoy != address {
                 for offset in 0..4_u64 {
                     bytes.insert(decoy + offset, 0xa0 + offset as u8);
+                }
+            }
+            let contains_address = |start: u64, candidate: u64| {
+                (0..4_u64).any(|offset| start.wrapping_add(offset) == candidate)
+            };
+            let full64_address = rcx.wrapping_add_signed(displacement);
+            if address32 && rcx != address {
+                for offset in 0..4_u64 {
+                    let candidate = rcx.wrapping_add(offset);
+                    if !contains_address(address, candidate)
+                        && !contains_address(full64_address, candidate)
+                    {
+                        bytes.insert(candidate, 0xb0 + offset as u8);
+                    }
+                }
+            }
+            if address32 && full64_address != address {
+                for offset in 0..4_u64 {
+                    let candidate = full64_address.wrapping_add(offset);
+                    if !contains_address(address, candidate)
+                        && !(address32
+                            && rcx != address
+                            && contains_address(rcx, candidate))
+                    {
+                        bytes.insert(candidate, 0xc0 + offset as u8);
+                    }
                 }
             }
             Ram {
@@ -36196,7 +36222,7 @@ mod tests {
             ] {
                 let mut state = state_at(0x0000_0001_0000_1000, 0xfeed_beef_89ab_cdef);
                 let before = state.clone();
-                let mut ram = ram_at(0x0000_0001_0000_1000);
+                let mut ram = ram_at(0x0000_0001_0000_1000, 0x0000_0001_0000_1000);
                 ram.fetch_error = Some((fetch_address, fetch_error.clone()));
                 let mut native_state = before.clone();
                 let native_fetch = unsafe {
@@ -36243,14 +36269,7 @@ mod tests {
             let rcx = target_address.wrapping_sub(displacement as u64);
             let rax = (u64::from(high_rax) << 32) | u64::from(low_eax);
             let address = effective_address(rcx, displacement, address32);
-            let mut native_ram = ram_at(address);
-            if address32 && rcx != address {
-                for offset in 0..4_u64 {
-                    native_ram
-                        .bytes
-                        .insert(rcx.wrapping_add(offset), 0xb0 + offset as u8);
-                }
-            }
+            let mut native_ram = ram_at(address, rcx);
             let mut interpreter_ram = native_ram.clone();
             let mut native_state = state_at(rcx, rax);
             let before = native_state.clone();
@@ -36298,9 +36317,28 @@ mod tests {
                     assert_eq!(native_ram.bytes[&(decoy + offset)], 0xa0 + offset as u8);
                 }
             }
-            if address32 && rcx != address {
-                for offset in 0..4_u64 {
-                    assert_eq!(native_ram.bytes[&rcx.wrapping_add(offset)], 0xb0 + offset as u8);
+            let contains_address = |start: u64, candidate: u64| {
+                (0..4_u64).any(|offset| start.wrapping_add(offset) == candidate)
+            };
+            let full64_address = rcx.wrapping_add_signed(displacement);
+            for offset in 0..4_u64 {
+                let candidate = rcx.wrapping_add(offset);
+                if address32
+                    && rcx != address
+                    && !contains_address(address, candidate)
+                    && !contains_address(full64_address, candidate)
+                {
+                    assert_eq!(native_ram.bytes[&candidate], 0xb0 + offset as u8);
+                }
+                let full64_candidate = full64_address.wrapping_add(offset);
+                if address32
+                    && full64_address != address
+                    && !contains_address(address, full64_candidate)
+                    && !(address32
+                        && rcx != address
+                        && contains_address(rcx, full64_candidate))
+                {
+                    assert_eq!(native_ram.bytes[&full64_candidate], 0xc0 + offset as u8);
                 }
             }
             if let Some(before_address) = address.checked_sub(1) {
@@ -36326,7 +36364,7 @@ mod tests {
             (1, None, 1, MemoryOperationExecutionExitV2::StopRequested),
         ] {
             let mut state = before.clone();
-            let mut ram = ram_at(base);
+            let mut ram = ram_at(base, base_rcx);
             let stop = AtomicU8::new(stop_requested);
             let blocked = unsafe {
                 published.execute_ir_memory_dword_store_v2(
@@ -36365,7 +36403,7 @@ mod tests {
         let mut wrong_entry_state = before.clone();
         wrong_entry_state.rip += 1;
         let wrong_entry_before = wrong_entry_state.clone();
-        let mut wrong_entry_ram = ram_at(base);
+        let mut wrong_entry_ram = ram_at(base, base_rcx);
         let wrong_entry = unsafe {
             published.execute_ir_memory_dword_store_v2(
                 &mut wrong_entry_state,
@@ -36410,7 +36448,7 @@ mod tests {
             }),
         ] {
             let mut state = before.clone();
-            let mut ram = ram_at(base);
+            let mut ram = ram_at(base, base_rcx);
             let before_bytes = ram.bytes.clone();
             ram.error = Some(error.clone());
             let failed = unsafe {
@@ -36470,7 +36508,7 @@ mod tests {
             let rcx = address.wrapping_sub(displacement as u64);
             let mut state = state_at(rcx, rax);
             let before_state = state.clone();
-            let mut ram = ram_at(address);
+            let mut ram = ram_at(address, rcx);
             let before_bytes = ram.bytes.clone();
             let fault = unsafe {
                 published.execute_ir_memory_dword_store_v2(
@@ -36518,7 +36556,7 @@ mod tests {
             let overflow_rcx = overflow_address.wrapping_sub(displacement as u64);
             let mut overflow_state = state_at(overflow_rcx, rax);
             let overflow_before = overflow_state.clone();
-            let mut overflow_ram = ram_at(overflow_address);
+            let mut overflow_ram = ram_at(overflow_address, overflow_rcx);
             let overflow_before_bytes = overflow_ram.bytes.clone();
             let overflow = unsafe {
                 published.execute_ir_memory_dword_store_v2(
@@ -36546,7 +36584,7 @@ mod tests {
         }
 
         let stop = Arc::new(AtomicU8::new(0));
-        let mut callback_ram = ram_at(base);
+        let mut callback_ram = ram_at(base, base_rcx);
         callback_ram.stop = Some(stop.clone());
         let mut callback_state = before.clone();
         let committed = unsafe {
