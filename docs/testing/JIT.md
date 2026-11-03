@@ -1088,10 +1088,11 @@ raised during the pair does not interrupt its two reads, and code-end wins at
 `A+6`. The profile and retained publisher accept only exact
 `48 8B 03 48 8B 0B`; `StoreThenStore` remains rejected.
 
-Workspace formatting and the focused Rust checks remain pending while ISSUE-030
-blocks Rust parsing in `od-jit/src/ir.rs`. This cache option is experimental;
-the tests do not establish a performance benefit, production owner/MMU
-integration, or Mini/M1 acceptance. See the
+The ISSUE-030 parser error is repaired. Current Rust acceptance remains blocked
+by the seventeen od-jit failures in ISSUE-032 and nine od-host compile errors in
+ISSUE-031; see the [implementation report](../reports/STAGE_3_S3-18f_2026-11-03.md).
+This cache option is experimental; the tests do not establish a performance
+benefit, production owner/MMU integration, or Mini/M1 acceptance. See the
 [S3-18f implementation report](../reports/STAGE_3_S3-18f_2026-11-03.md) and
 [ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md).
 

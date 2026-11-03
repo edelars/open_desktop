@@ -6090,7 +6090,7 @@ mod tests {
             entry,
         )
         .unwrap();
-        assert_ne!(site, full64.site());
+        assert_ne!(site, *full64.site());
         assert!(!site.matches_source_bytes(&full64_source, MemorySiteOperationV2::Load));
         assert!(!full64
             .site()
@@ -7449,6 +7449,7 @@ mod tests {
             entry,
         )
         .unwrap();
+        let mut sites = vec![*reference_block.site()];
         for displacement in displacements {
             let mut source = [0x8b, 0x80, 0, 0, 0, 0];
             source[2..].copy_from_slice(&displacement.to_le_bytes());
@@ -7457,6 +7458,7 @@ mod tests {
                 entry,
             )
             .unwrap();
+            sites.push(*block.site());
             assert_eq!(block.source_bytes(), source);
             assert_eq!(block.site().operand().displacement, i64::from(displacement));
             assert_eq!(

@@ -147,7 +147,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-17 | Cache key и code dependencies | S3-04, S3-15 |
 | [ ] | S3-18 | Ограниченный block cache | S3-07, S3-17 |
 | [partial] | S3-18e | Capacity-one retained cache for exact Store→Load and Load→Store fixture pairs | See implementation report; production owner/MMU and broader S3-18 remain open |
-| [partial] | S3-18f | Opt-in retained cache for the exact Load→Load pair `48 8B 03 48 8B 0B` | Independent review passed; exact two-read/fault/continuation behavior is covered in code, but Rust execution is blocked by ISSUE-030. Store→Store remains rejected. См. [implementation report](../reports/STAGE_3_S3-18f_2026-11-03.md) |
+| [partial] | S3-18f | Opt-in retained cache for the exact Load→Load pair `48 8B 03 48 8B 0B` | Independent review passed; exact two-read/fault/continuation behavior is covered in code, but host execution acceptance remains blocked by ISSUE-031/032. Store→Store remains rejected. См. [implementation report](../reports/STAGE_3_S3-18f_2026-11-03.md) |
 | [partial] | S3-19 | Checked memory/helper bridge | S3-08, S3-16; S2-04/08 |
 | [partial] | S3-19a | Invocation-local checked helper ABI и native probe | Узкий standalone slice внутри S3-19; production block exits остаются открыты |
 | [partial] | S3-19b | Production V2 block/helper path для одного MOV r64 load | Точный `48 8B /r`, base/dst RAX..RBX; без cache/general IR |
@@ -1118,8 +1118,8 @@ STOP/event controls, budget, and stop-RIP. Two same-address reads remain
 independent; a second-read fault commits the first result at `A+3`, and a
 continuation does not replay it. An entry beginning at `A+3` remains rejected,
 and `StoreThenStore` is still rejected. Sol/high static review passed. Rust
-execution and workspace formatting are blocked by the unchanged parse error
-recorded as ISSUE-030. This adds no benchmark/default-policy or performance
+host acceptance is blocked by ISSUE-031/032; the ISSUE-030 parser error is
+repaired. This adds no benchmark/default-policy or performance
 claim. See the [S3-18f report](../reports/STAGE_3_S3-18f_2026-11-03.md),
 [JIT test scope](../testing/JIT.md),
 and [ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md).

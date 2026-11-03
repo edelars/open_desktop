@@ -57,14 +57,32 @@
 - **Основание:** commit `ee2af23` updates `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed` in [`stage3_dword_store_corpus.rs`](../tests/cpu/stage3_dword_store_corpus.rs); the runtime/test diff passed independent static Sol/high review. The [S3-34dn report](reports/STAGE_3_S3-34dn_2026-11-03.md) records deferred Rust, harness, and self-check execution.
 - **Следующий шаг:** run the exact S3-34dn Rust self-check `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed` and harness gate `s3_34dn_replay_artifact_self_check` at Stage 3 end. Keep this issue open until execution acceptance succeeds.
 
-### ISSUE-030 — Rust workspace formatting and check blocked by parse error in `od-jit/src/ir.rs`
+### ISSUE-030 — Rust parser rejected the addr32 checked-load predicate
 
 - **Дата обнаружения:** 2026-11-03.
-- **Компонент:** `crates/od-jit/src/ir.rs`, function containing `address32_profile` near line 1122.
-- **Статус:** открыта; файл не изменён в S3-18f; следующий шаг — исправить delimiter mismatch в отдельном согласованном срезе и повторить workspace formatting/check.
-- **Суть и последствия:** `cargo fmt --all` and `cargo check -p od-jit -p od-host --all-targets --offline` stop before checking the S3-18f changes with `mismatched closing delimiter: '}'` at `ir.rs:1122`; the reported opening `{` is at line 1069 and the parser reaches the function close at line 1231 with the expression still unclosed. Workspace formatting and these crate checks therefore cannot currently provide acceptance evidence. The file is clean relative to HEAD and outside S3-18f scope; no broader runtime failure is inferred from the parse error.
-- **Основание:** exact tool output during S3-18f formatting/check attempts; `git diff -- crates/od-jit/src/ir.rs` was empty. Targeted `rustfmt` on the changed `memory_cache.rs` succeeded, but it does not establish workspace formatting or compilation.
-- **Следующий шаг:** repair the delimiter mismatch in the appropriate follow-up, then rerun `cargo fmt --all -- --check` and `cargo check -p od-jit -p od-host --all-targets --offline`; keep this issue open until both commands pass.
+- **Компонент:** `crates/od-jit/src/ir.rs`, `is_checked_dword_load_address` / `address32_profile`.
+- **Статус:** решена в текущем follow-up: добавлена закрывающая скобка, сохраняющая все прежние OR branches под guard `operand.address_size == Dword`; independent Sol/high review passed; targeted rustfmt passed. См. [repair report](reports/STAGE_3_ISSUE-030_2026-11-03.md).
+- **Суть и последствия:** до исправления Rust не мог разобрать `address32_profile`: `cargo fmt --all` и `cargo check` завершались с `mismatched closing delimiter: '}'` около `ir.rs:1122`. Формы, predicate atoms и итоговые size/index/scale checks не менялись; code review подтвердил, что допуск не расширен и не сужен.
+- **Основание:** исходный parser diagnostic; после правки `rustfmt --edition 2024 --check crates/od-jit/src/ir.rs` прошёл. Затронутые downstream Type/acceptance issues зафиксированы отдельно в ISSUE-031 и ISSUE-032; parser fix сам по себе их не закрывает.
+- **Результат:** точечный формат прошёл; следующий `cargo check` дошёл до od-host и выявил ISSUE-031. `cargo test -p od-jit --lib --offline` запустился и дал 380 passed / 17 failed (ISSUE-032). Это подтверждает снятие parser barrier, но не завершение workspace acceptance.
+
+### ISSUE-031 — od-host workspace check reports nine compile errors
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `crates/od-host/src/lib.rs`, `crates/od-host/src/session.rs` and host test implementations.
+- **Статус:** открыта; ошибки найдены после снятия ISSUE-030 parser barrier; происхождение до первого успешного compilation не установлено.
+- **Суть и последствия:** `cargo check -p od-jit -p od-host --all-targets --offline` reaches `od-host` but fails with nine diagnostics: unresolved `PublishedMemoryBlockExecutor` import; private `RuntimeExitTag` import; two `GuestMemory` test impls missing four required methods; four ambiguous integer `wrapping_add`/`wrapping_add_signed` calls; and one comparison between `MemoryOperationExecutionErrorV2` and `MemoryError`. The host crate and S3-18f host regression cannot yet compile.
+- **Основание:** command output recorded in `/private/tmp/issue030_followup_od_host_check.log`; static review confirmed none of the nine sites are modified by the ISSUE-030 prerequisite diff. No runtime defect is inferred.
+- **Следующий шаг:** fix each diagnostic in the correct owner/test boundary, receive independent Sol/high review, then rerun the exact `cargo check` and required affected host tests.
+
+### ISSUE-032 — seventeen existing od-jit unit gates fail after parser repair
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `crates/od-jit/src/lowering.rs`, `memory_dispatch.rs`, and `memory_load_v2.rs` tests and admitted-profile implementation.
+- **Статус:** открыта; baseline outcomes before ISSUE-030 repair are unknown because the unmodified predicate did not parse.
+- **Суть и последствия:** `cargo test -p od-jit --lib --offline` now runs 397 tests: 380 pass and 17 fail. Four failures cover `StoreThenStore` lowering/dispatch, exact sites, and PC maps; twelve cover addr32/qword dword-load/store admission/source expectations; one is a source-byte mutation mismatch. Failures include `NoNativePrefix`, `Unsupported`/`UnsupportedForm`, false source-mutation assertions, and `RCX` scaled/no-base admission mismatch. This means these gates do not currently establish the recorded Stage 3 slices. It is not established whether the failures predated the prerequisite repair; the changed code in ISSUE-030 only restores the missing delimiter and fixes compilation in tests/dispatch.
+- **Основание:** exact command summary and failing identities in `/private/tmp/issue030_followup_od_jit_tests.log`; independent review found the changed compile repairs do not touch the affected lowering/admission predicates. No runtime claim is made.
+- **Следующий шаг:** inspect each failed profile against its existing Stage 3 contract, make bounded code/test fixes, review independently, and rerun the exact od-jit command. Keep this issue open until all 17 gates pass or are corrected to match an explicitly revised contract.
 
 ### ISSUE-024 — checked memory lowering ограничен узкими V2 MOV slices
 

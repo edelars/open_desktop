@@ -1124,17 +1124,16 @@ fn is_checked_dword_load_address(
             && operand.index.is_none()
             && operand.scale == 1
             && ((instruction_length == 3 && operand.displacement == 0)
-                || (instruction_length == 4
-                    && i8::try_from(operand.displacement).is_ok())))
+                || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok())))
             || (instruction_length == 7
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rcx))
                 && operand.index.is_none()
                 && operand.scale == 1
                 && i32::try_from(operand.displacement).is_ok())
             || (matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
-            && ((instruction_length == 3 && operand.displacement == 0)
-                || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok())
-                || (instruction_length == 7 && i32::try_from(operand.displacement).is_ok())))
+                && ((instruction_length == 3 && operand.displacement == 0)
+                    || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok())
+                    || (instruction_length == 7 && i32::try_from(operand.displacement).is_ok())))
             || (matches!(instruction_length, 4 | 7)
                 && matches!(operand.base, AddressBase::Register(od_isa::Register::Rbp))
                 && ((instruction_length == 4 && i8::try_from(operand.displacement).is_ok())
@@ -1164,10 +1163,8 @@ fn is_checked_dword_load_address(
                 && operand.index.is_none()
                 && operand.scale == 1
                 && ((instruction_length == 3 && operand.displacement == 0)
-                    || (instruction_length == 4
-                        && i8::try_from(operand.displacement).is_ok())
-                    || (instruction_length == 7
-                        && i32::try_from(operand.displacement).is_ok())));
+                    || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok())
+                    || (instruction_length == 7 && i32::try_from(operand.displacement).is_ok()))));
     let addr32_rcx_no_base_sib_profile = instruction_length == 8
         && operand.address_size == od_isa::OperandSize::Dword
         && matches!(operand.base, AddressBase::None)

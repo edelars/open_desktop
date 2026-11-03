@@ -1518,7 +1518,7 @@ pub unsafe fn run_with_nop_fallback_controlled<E: MemoryBlockExecutor>(
                 retired_interpreter,
                 blocks_executed,
             });
-        }
+        };
 
         // `run` has already sampled stop-RIP, STOP, byte boundary and budget
         // before reporting Unsupported. Keep explicit guards here as well so
