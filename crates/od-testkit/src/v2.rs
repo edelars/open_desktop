@@ -358,6 +358,8 @@ pub enum Profile {
     LongDivpsRegistersV1,
     #[serde(rename = "s2-long-divps-memory-rax-v1")]
     LongDivpsMemoryRaxV1,
+    #[serde(rename = "s2-long-divps-memory-unmasked-rax-v1")]
+    LongDivpsMemoryRaxUnmaskedV1,
     #[serde(rename = "s2-long-divss-registers-v1")]
     LongDivssRegistersV1,
     #[serde(rename = "s2-long-divss-memory-rax-v1")]
@@ -1691,6 +1693,7 @@ impl IntegerState {
                     | Profile::LongDivssMemoryRaxUnmaskedV1
                     | Profile::LongDivsdMemoryRaxV1
                     | Profile::LongDivpsMemoryRaxV1
+                    | Profile::LongDivpsMemoryRaxUnmaskedV1
                     | Profile::LongMulsdRegistersV1
                     | Profile::LongMulssRegistersV1
                     | Profile::LongMulpsRegistersV1
@@ -2300,6 +2303,7 @@ impl IntegerState {
                 | Profile::LongDivssMemoryRaxUnmaskedV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
+                | Profile::LongDivpsMemoryRaxUnmaskedV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -2768,6 +2772,7 @@ impl IntegerState {
             | Profile::LongDivssMemoryRaxUnmaskedV1
             | Profile::LongDivsdMemoryRaxV1
             | Profile::LongDivpsMemoryRaxV1
+            | Profile::LongDivpsMemoryRaxUnmaskedV1
             | Profile::LongMulsdRegistersV1
             | Profile::LongMulssRegistersV1
             | Profile::LongMulpsRegistersV1
@@ -2918,6 +2923,7 @@ impl IntegerState {
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
+                | Profile::LongDivpsMemoryRaxUnmaskedV1
                 | Profile::LongDivpdMemoryRaxV1
                 | Profile::LongDivpdMemoryUnmaskedRaxV1
                 | Profile::LongSubsdMemoryRaxV1
@@ -3227,6 +3233,7 @@ impl IntegerState {
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
+                | Profile::LongDivpsMemoryRaxUnmaskedV1
                 | Profile::LongDivpdMemoryRaxV1
                 | Profile::LongDivpdMemoryUnmaskedRaxV1
                 | Profile::LongSubsdMemoryRaxV1
@@ -3533,6 +3540,7 @@ impl IntegerState {
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
+                | Profile::LongDivpsMemoryRaxUnmaskedV1
                 | Profile::LongDivpdMemoryRaxV1
                 | Profile::LongDivpdMemoryUnmaskedRaxV1
                 | Profile::LongSubsdMemoryRaxV1
@@ -3947,6 +3955,7 @@ impl IntegerState {
                 | Profile::LongDivssMemoryRaxUnmaskedV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
+                | Profile::LongDivpsMemoryRaxUnmaskedV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -4445,6 +4454,7 @@ impl IntegerState {
                 | Profile::LongDivssMemoryRaxUnmaskedV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
+                | Profile::LongDivpsMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -4514,6 +4524,7 @@ impl IntegerState {
                 | Profile::LongDivssMemoryRaxUnmaskedV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
+                | Profile::LongDivpsMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -5132,6 +5143,7 @@ impl IntegerState {
                 | Profile::LongDivssMemoryRaxUnmaskedV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
+                | Profile::LongDivpsMemoryRaxUnmaskedV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -5406,6 +5418,7 @@ impl IntegerState {
                 | Profile::LongDivssMemoryRaxUnmaskedV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
+                | Profile::LongDivpsMemoryRaxUnmaskedV1
                 | Profile::LongMulsdRegistersV1
                 | Profile::LongMulssRegistersV1
                 | Profile::LongMulpsRegistersV1
@@ -5816,6 +5829,8 @@ pub struct Fixture {
     pub divsd_controls: Option<DivpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub divps_controls: Option<DivpsControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divps_memory_rax_unmasked_controls: Option<DivpsMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub divss_controls: Option<DivpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6507,6 +6522,7 @@ pub type AddpsMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 pub type AddpsMemoryRaxUnmaskedControlSnapshot = SqrtpsMemoryRaxUnmaskedControlSnapshot;
 pub type SubpsMemoryRaxUnmaskedControlSnapshot = SqrtpsMemoryRaxUnmaskedControlSnapshot;
 pub type MulpsMemoryRaxUnmaskedControlSnapshot = SqrtpsMemoryRaxUnmaskedControlSnapshot;
+pub type DivpsMemoryRaxUnmaskedControlSnapshot = SqrtpsMemoryRaxUnmaskedControlSnapshot;
 pub type SqrtssMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -10911,6 +10927,14 @@ impl Fixture {
                 "only valid for DIVPS register-space profile",
             ));
         }
+        if self.divps_memory_rax_unmasked_controls.is_some()
+            && self.profile != Profile::LongDivpsMemoryRaxUnmaskedV1
+        {
+            return Err(invalid(
+                "divps_memory_rax_unmasked_controls",
+                "only valid for unmasked DIVPS m128 profile",
+            ));
+        }
         if self.profile == Profile::LongDivpsMemoryRaxV1 {
             let controls = self
                 .divps_controls
@@ -10982,6 +11006,112 @@ impl Fixture {
                 return Err(invalid(
                     "expected_exit",
                     "must reflect DIVPS m128 gates, 16-byte alignment and canonical span",
+                ));
+            }
+        }
+        if self.profile == Profile::LongDivpsMemoryRaxUnmaskedV1 {
+            let controls = self
+                .divps_memory_rax_unmasked_controls
+                .ok_or_else(|| invalid("divps_memory_rax_unmasked_controls", "required"))?;
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by unmasked DIVPS m128"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by unmasked DIVPS m128"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if self.divps_controls.is_some()
+                || self.divpd_controls.is_some()
+                || self.divsd_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 3
+                || !code.permissions.execute
+                || decode_bytes(&code.initial_bytes_hex)? != [0x0f, 0x5e, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 16
+                || !data.permissions.read
+                || data.permissions.write
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(3)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "unmasked DIVPS m128 requires exact 0F 5E 00, one code/data mapping, budget 1, and stop RIP entry+3",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by unmasked DIVPS m128"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "unmasked DIVPS m128 requires supported MXCSR bits, DAZ=FTZ=0, OM=UM=1",
+                ));
+            }
+            let fetch_last = start.checked_add(2);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let fetch_fault = fetch_last.is_none_or(|end| !canonical(start) || !canonical(end));
+            let gate = !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let address_fault = source & 15 != 0
+                || source
+                    .checked_add(15)
+                    .is_none_or(|end| !canonical(source) || !canonical(end));
+            let arithmetic_fault = if fetch_fault || gate || nm || address_fault {
+                false
+            } else {
+                let initial_sse = self.initial_state.sse.as_ref().expect("SSE validated");
+                let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+                let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+                let lhs = std::array::from_fn::<_, 4, _>(|lane| {
+                    u32::from_le_bytes(
+                        lhs_bytes[lane * 4..lane * 4 + 4]
+                            .try_into()
+                            .expect("validated XMM width"),
+                    )
+                });
+                let rhs = std::array::from_fn::<_, 4, _>(|lane| {
+                    u32::from_le_bytes(
+                        rhs_bytes[lane * 4..lane * 4 + 4]
+                            .try_into()
+                            .expect("validated memory width"),
+                    )
+                });
+                let mxcsr = mxcsr as u32;
+                let (_, ie, de, ze, _, _, pe) = independent_divps(lhs, rhs, mxcsr);
+                let masks = (mxcsr >> 7) & 0x3f;
+                ie && masks & 1 == 0
+                    || ze && masks & (1 << 2) == 0
+                    || de && masks & (1 << 1) == 0
+                    || pe && masks & (1 << 5) == 0
+            };
+            let expected = if fetch_fault || gate || nm || address_fault || arithmetic_fault {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect fetch span, DIVPS gates, 16-byte alignment and canonical data span",
                 ));
             }
         }
@@ -21833,6 +21963,7 @@ impl Fixture {
             divpd_memory_rax_unmasked_controls: None,
             divsd_controls: None,
             divps_controls: None,
+            divps_memory_rax_unmasked_controls: None,
             divss_controls: None,
             divss_memory_rax_unmasked_controls: None,
             mulsd_controls: None,
@@ -22083,6 +22214,8 @@ pub struct Snapshot {
     pub divsd_controls: Option<DivpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub divps_controls: Option<DivpsControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divps_memory_rax_unmasked_controls: Option<DivpsMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub divss_controls: Option<DivpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -24303,6 +24436,7 @@ impl RunResult {
                 | Profile::LongDivssMemoryRaxUnmaskedV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
+                | Profile::LongDivpsMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -25058,6 +25192,25 @@ impl RunResult {
             }
             match (
                 loaded.fixture.profile,
+                loaded.fixture.divps_memory_rax_unmasked_controls,
+                value.divps_memory_rax_unmasked_controls,
+            ) {
+                (Profile::LongDivpsMemoryRaxUnmaskedV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongDivpsMemoryRaxUnmaskedV1, _, _) => {
+                    return Err(FormatError::CaseMismatch(
+                        "divps_memory_rax_unmasked_controls",
+                    ));
+                }
+                (_, None, None) => {}
+                _ => {
+                    return Err(FormatError::CaseMismatch(
+                        "divps_memory_rax_unmasked_controls",
+                    ));
+                }
+            }
+            match (
+                loaded.fixture.profile,
                 loaded.fixture.mulsd_controls,
                 value.mulsd_controls,
             ) {
@@ -25305,6 +25458,8 @@ impl RunResult {
                 validate_subps_memory_rax_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongDivpsMemoryRaxV1 {
                 validate_divps_memory_rax_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongDivpsMemoryRaxUnmaskedV1 {
+                validate_divps_memory_rax_unmasked_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -34791,6 +34946,170 @@ fn validate_divps_memory_rax_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("DIVPS m128 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_divps_memory_rax_unmasked_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .divps_memory_rax_unmasked_controls
+        .ok_or(FormatError::CaseMismatch(
+            "divps_memory_rax_unmasked_controls",
+        ))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0x0f, 0x5e, 0x00] {
+        return Err(FormatError::CaseMismatch("DIVPS m128 unmasked encoding"));
+    }
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let lhs = std::array::from_fn::<_, 4, _>(|lane| {
+        u32::from_le_bytes(lhs_bytes[lane * 4..lane * 4 + 4].try_into().unwrap())
+    });
+    let rhs = std::array::from_fn::<_, 4, _>(|lane| {
+        u32::from_le_bytes(rhs_bytes[lane * 4..lane * 4 + 4].try_into().unwrap())
+    });
+    let mxcsr = initial_sse.mxcsr.get() as u32;
+    let (values, ie, de, ze, oe, ue, pe) = independent_divps(lhs, rhs, mxcsr);
+    let masks = (mxcsr >> 7) & 0x3f;
+    let pre_unmasked =
+        ie && masks & 1 == 0 || ze && masks & (1 << 2) == 0 || de && masks & (1 << 1) == 0;
+    let post_unmasked = !pre_unmasked && pe && masks & (1 << 5) == 0;
+    let source = fixture.initial_state.gpr[0].get();
+    let code_start = fixture.initial_state.rip.get();
+    let fetch_last = code_start.checked_add(2);
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let fetch_fault = fetch_last.is_none_or(|end| !canonical(code_start) || !canonical(end));
+    let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let last = source.checked_add(15);
+    let address_fault =
+        source & 0xf != 0 || last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let arithmetic_fault = pre_unmasked || post_unmasked;
+    let fault = if fetch_fault {
+        Some(13)
+    } else {
+        gate.or_else(|| address_fault.then_some(13))
+            .or_else(|| arithmetic_fault.then_some(if controls.cr4_osxmmexcpt { 19 } else { 6 }))
+    };
+    if !matches!(
+        (fault, fixture.expected_exit),
+        (Some(_), ExpectedExit::Exception) | (None, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch(
+            "DIVPS m128 unmasked expected exit",
+        ));
+    }
+    let arithmetic_reached = !fetch_fault && gate.is_none() && !address_fault;
+    let generated = u32::from(ie)
+        | (u32::from(de) << 1)
+        | (u32::from(ze) << 2)
+        | (u32::from(oe) << 3)
+        | (u32::from(ue) << 4)
+        | (u32::from(pe) << 5);
+    let expected_mxcsr = if arithmetic_reached {
+        if pre_unmasked {
+            mxcsr | u32::from(ie) | (u32::from(de) << 1) | (u32::from(ze) << 2)
+        } else if post_unmasked || fault.is_none() {
+            mxcsr | generated
+        } else {
+            mxcsr
+        }
+    } else {
+        mxcsr
+    };
+    let mut expected = fixture.initial_state.clone();
+    let sse = expected
+        .sse
+        .as_mut()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    sse.mxcsr = HexU64(u64::from(expected_mxcsr));
+    if fault.is_none() {
+        let mut destination = [0u8; 16];
+        for (lane, value) in values.into_iter().enumerate() {
+            destination[lane * 4..lane * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        sse.xmm[0] = crate::memory::encode_bytes(&destination);
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(3)
+                .ok_or(FormatError::CaseMismatch("DIVPS m128 RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch(
+            "DIVPS m128 unmasked output state",
+        ));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none())),
+        })
+    {
+        return Err(FormatError::CaseMismatch("DIVPS m128 unmasked retirement"));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "DIVPS m128 unmasked outcome/exception",
+            ));
+        }
     }
     Ok(())
 }

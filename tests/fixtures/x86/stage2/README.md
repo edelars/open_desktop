@@ -1,5 +1,27 @@
 # Собственные schema v2 fixtures этапа 2
 
+### S2-38aq — unmasked DIVPS m128 memory profile
+
+Eleven handwritten literals cover exact Long64 `0F 5E 00`: seven arithmetic
+cases for SNaN IE, finite/zero ZE, cross-lane IE+ZE and ZE+DE, masked IE
+followed by unmasked PE, QNaN suppression of same-lane ZE, and unmasked PE for
+an inexact tiny quotient; plus SSE #UD gate, misaligned RAX, noncanonical data
+span, and noncanonical fetch span cases.
+The separate interpreter-only schema profile reads one actual m128 RHS from
+`[RAX]`, requires `DAZ=FTZ=0` and `OM=UM=1`, and admits all RC, sticky, IM/DM/
+ZM/PM and OSXMMEXCPT values. The independent integer raw-u32 rational oracle
+checks the memory operand, quotient boundaries, result/status snapshots, and
+whole-destination suppression. A runner matrix compares 73,728 actual
+interpreter outcomes against that oracle across the event vector and eight
+arithmetic boundaries; three directed SNaN/QNaN oracle cases supplement it. A
+separate direct ISA matrix checks 73,728 control and boundary executions for
+IE→ZE→DE resolution within each lane before cross-lane OR. Fetch/gate/CPL
+order, mandatory alignment, canonical span, read16 rollback, tampering, and
+backend denial are also covered. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38aq--exact-divps-memory-profile-with-unmasked-exceptions),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38aq--exact-divps-memory-form-with-unmasked-exceptions),
+and [report](../../../../docs/reports/S2_38AQ_DIVPS_MEMORY_UNMASKED.md).
+
 ### S2-38aj — unmasked DIVSD m64 memory profile
 
 Five handwritten literals cover exact `F2 0F 5E 00`: one success case and

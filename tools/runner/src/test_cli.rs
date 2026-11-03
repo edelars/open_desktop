@@ -12,35 +12,36 @@ use od_isa::execute::{
     Cvtsd2ssControls, Cvtsd2ssMemoryControls, Cvtss2sdMemoryControls, Cvttpd2dqControls,
     Cvttpd2dqMemoryControls, Cvttps2dqControls, Cvttps2dqMemoryControls,
     Cvttss2siRegistersControls, DivpdControls, DivpdMemoryRaxUnmaskedControls, DivpsControls,
-    DivsdControls, DivsdMemoryRaxControls, DivsdMemoryRaxUnmaskedControls, DivssControls,
-    DivssMemoryRaxControls, MulpdControls, MulpdMemoryRaxUnmaskedControls, MulpsControls,
-    MulpsMemoryRaxUnmaskedControls, MulsdControls, MulsdMemoryRaxUnmaskedControls, MulssControls,
-    MulssMemoryRaxUnmaskedControls, SqrtpdControls, SqrtpdMemoryRaxUnmaskedControls,
-    SqrtpsControls, SqrtsdControls, SqrtsdMemoryRaxUnmaskedControls, SqrtssControls,
-    SqrtssMemoryRaxUnmaskedControls, SubpdControls, SubpdMemoryRaxUnmaskedControls, SubpsControls,
-    SubpsMemoryRaxUnmaskedControls, SubsdControls, SubsdMemoryRaxControls,
-    SubsdMemoryRaxUnmaskedControls, SubssControls, SubssMemoryRaxUnmaskedControls,
-    UcomisdMemoryRaxControls, UcomissMemoryRaxControls, run_with_addpd_memory_rax_controls,
-    run_with_addpd_memory_rax_unmasked_controls, run_with_addpd_register_controls,
-    run_with_addps_memory_rax_unmasked_controls, run_with_addps_register_controls,
-    run_with_addsd_memory_rax_controls, run_with_addsd_memory_rax_unmasked_controls,
-    run_with_addsd_register_controls, run_with_addss_memory_rax_controls,
-    run_with_addss_memory_rax_unmasked_controls, run_with_addss_register_controls,
-    run_with_cvtpd2dq_memory_controls, run_with_cvtpd2dq_register_controls,
-    run_with_cvtpd2pi_mm0_memory_rax_controls, run_with_cvtpd2pi_mm0_xmm1_controls,
-    run_with_cvtpd2ps_memory_controls, run_with_cvtpd2ps_register_controls,
-    run_with_cvtpi2pd_memory_controls, run_with_cvtpi2pd_xmm0_mm1_controls,
-    run_with_cvtpi2ps_memory_controls, run_with_cvtpi2ps_xmm0_mm1_controls,
-    run_with_cvtps2dq_memory_controls, run_with_cvtps2pd_memory_controls,
-    run_with_cvtps2pi_mm0_memory_rax_controls, run_with_cvtps2pi_mm0_xmm1_controls,
-    run_with_cvtsd2ss_memory_controls, run_with_cvtsd2ss_register_controls,
-    run_with_cvtss2sd_memory_controls, run_with_cvttpd2dq_memory_controls,
-    run_with_cvttpd2dq_register_controls, run_with_cvttpd2pi_mm0_memory_rax_controls,
-    run_with_cvttpd2pi_mm0_xmm1_controls, run_with_cvttps2dq_memory_controls,
-    run_with_cvttps2dq_register_controls, run_with_cvttps2pi_mm0_memory_rax_controls,
-    run_with_cvttps2pi_mm0_xmm1_controls, run_with_cvttsd2si_registers_controls,
-    run_with_cvttss2si_registers_controls, run_with_divpd_memory_rax_controls,
-    run_with_divpd_memory_rax_unmasked_controls, run_with_divpd_register_controls,
+    DivpsMemoryRaxUnmaskedControls, DivsdControls, DivsdMemoryRaxControls,
+    DivsdMemoryRaxUnmaskedControls, DivssControls, DivssMemoryRaxControls, MulpdControls,
+    MulpdMemoryRaxUnmaskedControls, MulpsControls, MulpsMemoryRaxUnmaskedControls, MulsdControls,
+    MulsdMemoryRaxUnmaskedControls, MulssControls, MulssMemoryRaxUnmaskedControls, SqrtpdControls,
+    SqrtpdMemoryRaxUnmaskedControls, SqrtpsControls, SqrtsdControls,
+    SqrtsdMemoryRaxUnmaskedControls, SqrtssControls, SqrtssMemoryRaxUnmaskedControls,
+    SubpdControls, SubpdMemoryRaxUnmaskedControls, SubpsControls, SubpsMemoryRaxUnmaskedControls,
+    SubsdControls, SubsdMemoryRaxControls, SubsdMemoryRaxUnmaskedControls, SubssControls,
+    SubssMemoryRaxUnmaskedControls, UcomisdMemoryRaxControls, UcomissMemoryRaxControls,
+    run_with_addpd_memory_rax_controls, run_with_addpd_memory_rax_unmasked_controls,
+    run_with_addpd_register_controls, run_with_addps_memory_rax_unmasked_controls,
+    run_with_addps_register_controls, run_with_addsd_memory_rax_controls,
+    run_with_addsd_memory_rax_unmasked_controls, run_with_addsd_register_controls,
+    run_with_addss_memory_rax_controls, run_with_addss_memory_rax_unmasked_controls,
+    run_with_addss_register_controls, run_with_cvtpd2dq_memory_controls,
+    run_with_cvtpd2dq_register_controls, run_with_cvtpd2pi_mm0_memory_rax_controls,
+    run_with_cvtpd2pi_mm0_xmm1_controls, run_with_cvtpd2ps_memory_controls,
+    run_with_cvtpd2ps_register_controls, run_with_cvtpi2pd_memory_controls,
+    run_with_cvtpi2pd_xmm0_mm1_controls, run_with_cvtpi2ps_memory_controls,
+    run_with_cvtpi2ps_xmm0_mm1_controls, run_with_cvtps2dq_memory_controls,
+    run_with_cvtps2pd_memory_controls, run_with_cvtps2pi_mm0_memory_rax_controls,
+    run_with_cvtps2pi_mm0_xmm1_controls, run_with_cvtsd2ss_memory_controls,
+    run_with_cvtsd2ss_register_controls, run_with_cvtss2sd_memory_controls,
+    run_with_cvttpd2dq_memory_controls, run_with_cvttpd2dq_register_controls,
+    run_with_cvttpd2pi_mm0_memory_rax_controls, run_with_cvttpd2pi_mm0_xmm1_controls,
+    run_with_cvttps2dq_memory_controls, run_with_cvttps2dq_register_controls,
+    run_with_cvttps2pi_mm0_memory_rax_controls, run_with_cvttps2pi_mm0_xmm1_controls,
+    run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
+    run_with_divpd_memory_rax_controls, run_with_divpd_memory_rax_unmasked_controls,
+    run_with_divpd_register_controls, run_with_divps_memory_rax_unmasked_controls,
     run_with_divps_register_controls, run_with_divsd_memory_rax_controls,
     run_with_divsd_memory_rax_unmasked_controls, run_with_divsd_register_controls,
     run_with_divss_memory_rax_controls, run_with_divss_register_controls,
@@ -619,6 +620,7 @@ fn expected_native_xorpd_oracle(
                 divpd_memory_rax_unmasked_controls: None,
                 divsd_controls: None,
                 divps_controls: None,
+                divps_memory_rax_unmasked_controls: None,
                 divss_controls: None,
                 divss_memory_rax_unmasked_controls: None,
                 mulsd_controls: None,
@@ -2415,6 +2417,24 @@ fn execute_fixture_v2(
             memory,
             config,
             DivssMemoryRaxControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongDivpsMemoryRaxUnmaskedV1 {
+        let controls = loaded
+            .fixture
+            .divps_memory_rax_unmasked_controls
+            .expect("unmasked DIVPS memory controls validated");
+        run_with_divps_memory_rax_unmasked_controls(
+            &mut state,
+            memory,
+            config,
+            DivpsMemoryRaxUnmaskedControls {
                 sse_available: controls.sse_available,
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
@@ -4422,6 +4442,9 @@ fn execute_fixture_v2(
                     .divpd_memory_rax_unmasked_controls,
                 divsd_controls: loaded.fixture.divsd_controls,
                 divps_controls: loaded.fixture.divps_controls,
+                divps_memory_rax_unmasked_controls: loaded
+                    .fixture
+                    .divps_memory_rax_unmasked_controls,
                 divss_controls: loaded.fixture.divss_controls,
                 divss_memory_rax_unmasked_controls: loaded
                     .fixture
@@ -5652,6 +5675,174 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    #[test]
+    fn divps_memory_unmasked_full_controls_match_independent_rational_oracle() {
+        let template = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_masked_ze_qnan_success.case.json"
+        ))
+        .unwrap();
+        let vectors = [
+            (
+                "ie_ze_de_pe",
+                [0, 0x3f80_0000, 1, 0x3f80_0000],
+                [0, 0, 0x3f80_0000, 0x4040_0000],
+                0b00_0111,
+                true,
+            ),
+            (
+                "exact_tiny",
+                [0x0080_0000, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                [0x4000_0000, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                0,
+                false,
+            ),
+            (
+                "half_min_subnormal",
+                [1, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                [0x4000_0000, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                1 << 1,
+                true,
+            ),
+            (
+                "max_subnormal_wpr",
+                [0x0080_0000, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                [0x3f80_0001, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                0,
+                true,
+            ),
+            (
+                "minnormal_wpr_tie",
+                [0x3fff_ffff, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                [0x7f00_0000, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                0,
+                true,
+            ),
+            (
+                "overflow_pe",
+                [0x7f7f_ffff, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                [0x0080_0000, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                0,
+                true,
+            ),
+            (
+                "large_gap",
+                [1, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                [0x7f7f_ffff, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                1 << 1,
+                true,
+            ),
+            (
+                "infinity_over_zero",
+                [0x7f80_0000, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                [0, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                0,
+                false,
+            ),
+            (
+                "subnormal_over_negative_zero",
+                [1, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                [0x8000_0000, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000],
+                1 << 2,
+                false,
+            ),
+        ];
+        let lane_bytes = |lanes: [u32; 4]| {
+            lanes
+                .iter()
+                .flat_map(|lane| lane.to_le_bytes())
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let mut runs = 0usize;
+        for (stem, lhs, rhs, pre_flags, inexact) in vectors {
+            for rc in 0..4u32 {
+                for sticky in 0..64u32 {
+                    for mask_bits in 0..16u32 {
+                        for osxmmexcpt in [false, true] {
+                            let masks = ((mask_bits & 1) << 7)
+                                | (((mask_bits >> 1) & 1) << 8)
+                                | (((mask_bits >> 2) & 1) << 9)
+                                | (1 << 10)
+                                | (1 << 11)
+                                | (((mask_bits >> 3) & 1) << 12);
+                            let pre_unmasked = pre_flags & !(mask_bits & 0b0111) != 0;
+                            let post_unmasked = !pre_unmasked && inexact && mask_bits & 0b1000 == 0;
+                            let mut loaded = template.clone();
+                            {
+                                let fixture = &mut loaded.fixture;
+                                fixture.case_id = format!(
+                                    "s2_38aq_{stem}_rc{rc}_sticky{sticky}_m{mask_bits}_os{}",
+                                    u8::from(osxmmexcpt)
+                                );
+                                fixture.initial_state.sse.as_mut().unwrap().xmm[0] =
+                                    lane_bytes(lhs);
+                                fixture.memory[1].initial_bytes_hex = lane_bytes(rhs);
+                                fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                                    HexU64(u64::from(masks | (rc << 13) | sticky));
+                                fixture
+                                    .divps_memory_rax_unmasked_controls
+                                    .as_mut()
+                                    .unwrap()
+                                    .cr4_osxmmexcpt = osxmmexcpt;
+                                fixture.expected_exit = if pre_unmasked || post_unmasked {
+                                    v2::ExpectedExit::Exception
+                                } else {
+                                    v2::ExpectedExit::StopAddress
+                                };
+                            }
+                            let bytes = loaded.fixture.to_json().unwrap();
+                            let loaded = v2::Fixture::from_json(&bytes).unwrap();
+                            let case_id = loaded.fixture.case_id.clone();
+                            loaded
+                                .fixture
+                                .validate()
+                                .unwrap_or_else(|error| panic!("{case_id}: {error:?}"));
+                            let mut memory =
+                                od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture)
+                                    .unwrap();
+                            let result = execute_fixture_v2(&loaded, &mut memory);
+                            result
+                                .validate_for(&loaded)
+                                .unwrap_or_else(|error| panic!("{case_id}: {error:?}"));
+                            runs += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(runs, 73_728);
+
+        // Directed NaN witnesses extend the product without multiplying its
+        // dimensions: signed SNaNs in both operand positions, plus lhs QNaN
+        // selection while the original rhs is still a signaling NaN.
+        for (stem, lhs0, rhs0) in [
+            ("positive_snan_lhs", 0x7f81_2345, 0x3f80_0000),
+            ("negative_snan_rhs", 0x3f80_0000, 0xff81_2345),
+            ("lhs_qnan_rhs_snan_ie", 0x7fc1_2345, 0xff81_2345),
+        ] {
+            let mut loaded = template.clone();
+            loaded.fixture.case_id = format!("s2_38aq_{stem}");
+            loaded.fixture.initial_state.sse.as_mut().unwrap().xmm[0] =
+                lane_bytes([lhs0, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000]);
+            loaded.fixture.memory[1].initial_bytes_hex =
+                lane_bytes([rhs0, 0x3f80_0000, 0x3f80_0000, 0x3f80_0000]);
+            loaded.fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+            loaded.fixture.expected_exit = v2::ExpectedExit::StopAddress;
+            let bytes = loaded.fixture.to_json().unwrap();
+            let loaded = v2::Fixture::from_json(&bytes).unwrap();
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            let result = execute_fixture_v2(&loaded, &mut memory);
+            result
+                .validate_for(&loaded)
+                .unwrap_or_else(|error| panic!("{}: {error:?}", loaded.fixture.case_id));
+            let actual = match result.snapshot {
+                Observation::Available { value } => value,
+                _ => panic!("{}: missing snapshot", loaded.fixture.case_id),
+            };
+            assert_eq!(actual.state.sse.unwrap().mxcsr.get() & 1, 1, "{stem}");
+        }
+    }
+
     struct Files(PathBuf);
 
     impl Files {
@@ -6285,6 +6476,9 @@ mod tests {
                         .divpd_memory_rax_unmasked_controls,
                     divsd_controls: input.fixture.divsd_controls,
                     divps_controls: input.fixture.divps_controls,
+                    divps_memory_rax_unmasked_controls: input
+                        .fixture
+                        .divps_memory_rax_unmasked_controls,
                     divss_controls: input.fixture.divss_controls,
                     divss_memory_rax_unmasked_controls: input
                         .fixture

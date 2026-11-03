@@ -182,6 +182,37 @@ const SUBPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const DIVPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dt_divps_m128_memory_source_and_destination_lanes.case.json"
 );
+const DIVPS_M128_UNMASKED: [&[u8]; 11] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_snan_ie_unmasked_xm.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_finite_zero_ze_unmasked_xm.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_cross_lane_ie_ze.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_cross_lane_ze_de.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_masked_ie_unmasked_pe.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_masked_ze_qnan_success.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_inexact_tiny_pe_unmasked_xm.case.json"
+    ),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_sse_gate_ud.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_misaligned_gp.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_noncanonical_data_span_gp.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aq_divps_m128_noncanonical_fetch_span_gp.case.json"
+    ),
+];
 const DIVPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dx_divpd_m128_memory_source_and_destination_lanes.case.json"
 );
@@ -43608,6 +43639,252 @@ fn divps_m128_memory_uses_independent_division_oracle_and_denies_backends() {
     no_sse.divps_controls.as_mut().unwrap().sse_available = false;
     no_sse.expected_exit = od_testkit::v2::ExpectedExit::Exception;
     let (input, result) = run(&no_sse.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+}
+
+#[test]
+fn divps_m128_memory_unmasked_covers_priority_masks_and_literal_cases() {
+    use od_testkit::v2::Profile;
+
+    for bytes in DIVPS_M128_UNMASKED {
+        let fixture = Fixture::from_json(bytes).unwrap().fixture;
+        assert_eq!(fixture.profile, Profile::LongDivpsMemoryRaxUnmaskedV1);
+        assert_eq!(fixture.memory[0].initial_bytes_hex, "0f5e00");
+        let (input, result) = run(bytes, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert_eq!(result.backend, od_testkit::result::Backend::Interpreter);
+        for backend in [
+            od_testkit::result::Backend::Jit,
+            od_testkit::result::Backend::NativeX86,
+        ] {
+            let mut forged = result.clone();
+            forged.backend = backend;
+            assert!(forged.validate_for(&input).is_err());
+        }
+        let mut wrong_echo = result.clone();
+        if let Observation::Available { value } = &mut wrong_echo.snapshot {
+            value
+                .divps_memory_rax_unmasked_controls
+                .as_mut()
+                .unwrap()
+                .cr4_osxmmexcpt = false;
+        }
+        assert!(wrong_echo.validate_for(&input).is_err());
+        let mut wrong_status = result.clone();
+        if let Observation::Available { value } = &mut wrong_status.snapshot {
+            value.state.sse.as_mut().unwrap().mxcsr =
+                HexU64(value.state.sse.as_ref().unwrap().mxcsr.get() ^ 1);
+        }
+        assert!(wrong_status.validate_for(&input).is_err());
+        if matches!(result.outcome, Outcome::Exception {}) {
+            let mut wrong_exception = result.clone();
+            if let Observation::Available { value } = &mut wrong_exception.snapshot {
+                if let Observation::Available {
+                    value: Some(exception),
+                } = &mut value.exception
+                {
+                    exception.vector ^= 1;
+                }
+            }
+            assert!(wrong_exception.validate_for(&input).is_err());
+        }
+    }
+
+    let base = Fixture::from_json(DIVPS_M128_UNMASKED[5]).unwrap().fixture;
+    let mut missing_controls = base.clone();
+    missing_controls.divps_memory_rax_unmasked_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut wrong_legacy_controls = base.clone();
+    wrong_legacy_controls.divps_controls = Some(od_testkit::v2::DivpsControlSnapshot {
+        sse_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(wrong_legacy_controls.validate().is_err());
+    let mut bad_daz = base.clone();
+    bad_daz.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 6));
+    assert!(bad_daz.validate().is_err());
+    let mut bad_reserved_mxcsr = base.clone();
+    bad_reserved_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 16));
+    assert!(bad_reserved_mxcsr.validate().is_err());
+    for rc in 0..4u64 {
+        for sticky in 0..64u64 {
+            let mut case = base.clone();
+            case.case_id = format!("s2_38aq_rc{rc}_sticky{sticky}");
+            let sse = case.initial_state.sse.as_mut().unwrap();
+            sse.mxcsr = HexU64((sse.mxcsr.get() & !((3 << 13) | 0x3f)) | (rc << 13) | sticky);
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+
+    let mut boundary_base = base.clone();
+    boundary_base.case_id = "s2_38aq_boundary_base".into();
+    for (stem, lhs, rhs, mxcsr, expected_status) in [
+        (
+            "zero_over_zero_ie",
+            [0, 0x3f800000, 0x3f800000, 0x3f800000],
+            [0, 0x3f800000, 0x3f800000, 0x3f800000],
+            0x1f00,
+            1,
+        ),
+        (
+            "infinity_over_infinity_ie",
+            [0x7f800000, 0x3f800000, 0x3f800000, 0x3f800000],
+            [0x7f800000, 0x3f800000, 0x3f800000, 0x3f800000],
+            0x1f00,
+            1,
+        ),
+        (
+            "subnormal_over_negative_zero_ze",
+            [1, 0x3f800000, 0x3f800000, 0x3f800000],
+            [0x80000000, 0x3f800000, 0x3f800000, 0x3f800000],
+            0x1d80,
+            4,
+        ),
+        (
+            "infinity_over_zero_no_ze",
+            [0x7f800000, 0x3f800000, 0x3f800000, 0x3f800000],
+            [0, 0x3f800000, 0x3f800000, 0x3f800000],
+            0x1f80,
+            0,
+        ),
+        (
+            "exact_tiny",
+            [0x00800000, 0x3f800000, 0x3f800000, 0x3f800000],
+            [0x40000000, 0x3f800000, 0x3f800000, 0x3f800000],
+            0x1f80,
+            0,
+        ),
+        (
+            "minnormal_wpr_boundary_to_max_subnormal",
+            [0x00800000, 0x3f800000, 0x3f800000, 0x3f800000],
+            [0x3f800001, 0x3f800000, 0x3f800000, 0x3f800000],
+            0x1f80,
+            0x30,
+        ),
+        (
+            "wpr_tiny_rounds_to_minnormal",
+            [0x3fffffff, 0x3f800000, 0x3f800000, 0x3f800000],
+            [0x7f000000, 0x3f800000, 0x3f800000, 0x3f800000],
+            0x1f80,
+            0x30,
+        ),
+        (
+            "half_min_subnormal",
+            [1, 0x3f800000, 0x3f800000, 0x3f800000],
+            [0x40000000, 0x3f800000, 0x3f800000, 0x3f800000],
+            0x0f80,
+            0x32,
+        ),
+        (
+            "overflow_pe",
+            [0x7f7fffff, 0x3f800000, 0x3f800000, 0x3f800000],
+            [0x00800000, 0x3f800000, 0x3f800000, 0x3f800000],
+            0x0f80,
+            0x28,
+        ),
+        (
+            "large_exponent_gap",
+            [1, 0x3f800000, 0x3f800000, 0x3f800000],
+            [0x7f7fffff, 0x3f800000, 0x3f800000, 0x3f800000],
+            0x1f80,
+            0x32,
+        ),
+    ] {
+        let mut case = boundary_base.clone();
+        case.case_id = format!("s2_38aq_{stem}");
+        let lane_bytes = |lanes: [u32; 4]| {
+            lanes
+                .iter()
+                .flat_map(|lane| lane.to_le_bytes())
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        case.initial_state.sse.as_mut().unwrap().xmm[0] = lane_bytes(lhs);
+        case.memory[1].initial_bytes_hex = lane_bytes(rhs);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        case.expected_exit = if matches!(stem, "half_min_subnormal" | "overflow_pe") {
+            ExpectedExit::Exception
+        } else if matches!(
+            stem,
+            "zero_over_zero_ie" | "infinity_over_infinity_ie" | "subnormal_over_negative_zero_ze"
+        ) {
+            ExpectedExit::Exception
+        } else {
+            ExpectedExit::StopAddress
+        };
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snapshot = match result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing DIVPS unmasked boundary snapshot: {stem}"),
+        };
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            expected_status,
+            "{stem}"
+        );
+        if stem == "minnormal_wpr_boundary_to_max_subnormal" {
+            assert_eq!(
+                snapshot.state.sse.as_ref().unwrap().xmm[0].get(..8),
+                Some("ffff7f00")
+            );
+        }
+        if stem == "wpr_tiny_rounds_to_minnormal" {
+            assert_eq!(
+                snapshot.state.sse.as_ref().unwrap().xmm[0].get(..8),
+                Some("00008000")
+            );
+        }
+    }
+
+    // Independent raw-rational validation of the exact WPR-tiny quotient
+    // that becomes the minimum-normal destination at RN and RU, while RD/RZ
+    // select the largest subnormal. The status retains UE+PE in every mode.
+    for rc in 0..4u64 {
+        let mut case = boundary_base.clone();
+        case.case_id = format!("s2_38aq_wpr_tiny_to_minnormal_rc{rc}");
+        case.initial_state.sse.as_mut().unwrap().xmm[0] =
+            format!("ffffff3f{}", "0000803f".repeat(3));
+        case.memory[1].initial_bytes_hex = format!("0000007f{}", "0000803f".repeat(3));
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (rc << 13));
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snapshot = match result.snapshot {
+            Observation::Available { value } => value,
+            _ => panic!("missing DIVPS WPR minimum-normal snapshot"),
+        };
+        let expected_low = if rc == 0 || rc == 2 {
+            "00008000"
+        } else {
+            "ffff7f00"
+        };
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().xmm[0].get(..8),
+            Some(expected_low),
+            "RC={rc}"
+        );
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            0x30
+        );
+    }
+
+    // SNaN wins within a lane; QNaN suppresses ZE there, while independent
+    // lanes still contribute their surviving pre-event before aggregate masks.
+    let base = Fixture::from_json(DIVPS_M128_UNMASKED[2]).unwrap().fixture;
+    let mut qnan_and_zero = base.clone();
+    qnan_and_zero.case_id = "s2_38aq_qnan_suppresses_same_lane_ze".into();
+    qnan_and_zero.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(..8, "4523c17f");
+    qnan_and_zero.memory[1]
+        .initial_bytes_hex
+        .replace_range(..8, "00000000");
+    qnan_and_zero.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    qnan_and_zero.expected_exit = ExpectedExit::StopAddress;
+    let (input, result) = run(&qnan_and_zero.to_json().unwrap(), "interpreter", 0);
     od_testkit::v2::compare(&input, &result, &result).unwrap();
 }
 

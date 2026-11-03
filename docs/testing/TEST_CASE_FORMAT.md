@@ -1688,7 +1688,7 @@ one-read rollback, strict read-only schema, literal fixtures, tampering and
 backend denial. Preserve S2-37dl/S2-37ap. Unmasked OE/UE and native/JIT/C ABI/
 generic/fragment and physical x86 acceptance remain outside this profile.
 
-## S2-38aq DIVPS m128 memory unmasked exceptions (pending)
+## S2-38aq DIVPS m128 memory unmasked exceptions
 
 Define a distinct immutable schema-v2 fixture profile
 `s2-long-divps-memory-unmasked-rax-v1`; do not extend or mutate masked
@@ -1709,10 +1709,19 @@ according to `OSXMMEXCPT`), fetch/gate faults, alignment `#GP(0)`, canonical-spa
 faults and read errors. Require event-aware MXCSR status and whole-destination/
 RIP/retirement checks. Acceptance fixtures must include memory-source-sensitive
 success and representative IE, ZE, DE, PE, masked UE+PE, gate/fetch/alignment/
-span/read faults; include quotient-specific NaN, zero-divide and tiny
-boundaries in the oracle matrix. JIT/native and all other closed backends
-reject the profile without result snapshots. Status: pending; no fixture or
-runtime support is claimed.
+span faults, plus direct read-error rollback coverage; include quotient-specific
+NaN, zero-divide and tiny boundaries in the oracle matrix. The implementation
+includes eleven literal schema-v2 fixtures and an independent raw-u32 rational
+validator using the actual memory RHS. The actual-interpreter runner matrix
+crosses the four-lane IE+ZE+DE+PE event vector and eight quotient-boundary
+vectors with all RC modes, sticky histories, IM/DM/ZM/PM masks and both
+OSXMMEXCPT routes (73,728 independent-oracle comparisons); three directed
+SNaN/QNaN cases supplement that product. A separate direct ISA matrix has the
+same control count and checks runtime event ordering, but is not counted as
+oracle coverage. Each lane resolves IE→ZE→DE before surviving pre-event flags
+are ORed across lanes. JIT/native and all other closed backends reject the
+profile without result snapshots. See the S2-38aq report for boundary
+witnesses and validation results.
 
 ## S2-38ar DIVPD m128 memory unmasked exceptions (pending)
 
