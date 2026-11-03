@@ -626,6 +626,7 @@ fn expected_native_xorpd_oracle(
                 comisd_memory_rax_controls: None,
                 ucomisd_memory_rax_controls: None,
                 comiss_memory_rax_controls: None,
+                comiss_memory_invalid_rax_controls: None,
                 ucomiss_memory_rax_controls: None,
                 cmpss_memory_rax_controls: None,
                 cmpsd_memory_rax_controls: None,
@@ -1143,29 +1144,29 @@ fn execute_fixture_v2(
     use od_isa::execute::{
         CmppdControls, CmppdMemoryRaxControls, CmppsControls, CmppsMemoryRaxControls,
         CmpsdControls, CmpsdMemoryRaxControls, CmpssControls, CmpssMemoryRaxControls,
-        ComisdMemoryRaxControls, ComisdUcomisdControls, ComissUcomissControls, Cr0Profile,
-        Cr4Profile, Cvtdq2pdControls, Cvtdq2pdMemoryControls, Cvtdq2psControls,
-        Cvtdq2psMemoryControls, Cvtpd2dqControls, Cvtps2dqControls, Cvtps2pdControls,
-        Cvtsd2siMemoryR32Controls, Cvtsd2siMemoryR64Controls, Cvtsd2siRegistersControls,
-        Cvtsi2sdR32Controls, Cvtsi2sdR64Controls, Cvtsi2sdR64MemoryControls,
-        Cvtsi2ssR32MemoryControls, Cvtsi2ssR64MemoryControls, Cvtsi2ssRegistersControls,
-        Cvtss2sdControls, Cvtss2siMemoryR32Controls, Cvtss2siMemoryR64Controls,
-        Cvtss2siRegistersControls, Cvttsd2siMemoryR32Controls, Cvttsd2siMemoryR64Controls,
-        Cvttss2siMemoryR32Controls, Cvttss2siMemoryR64Controls, Fxrstor64Cr0Controls,
-        Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdMemoryRaxControls,
-        MaxsdMemoryUnmaskedRaxControls, MaxsdUnmaskedControls, MaxssMemoryRaxControls,
-        MaxssMemoryUnmaskedRaxControls, MaxssUnmaskedControls, MinpdUnmaskedControls,
-        MinpsUnmaskedControls, MinsdMemoryRaxControls, MinsdMemoryUnmaskedRaxControls,
-        MinsdUnmaskedControls, MinssInvalidControls, MinssMemoryRaxControls,
-        MinssMemoryUnmaskedRaxControls, RdtscControls, RunConfig, RunExit, XorpdPrerequisiteState,
-        run, run_with_cli_profile, run_with_cmppd_memory_rax_controls,
+        ComisdMemoryRaxControls, ComisdUcomisdControls, ComissMemoryInvalidRaxControls,
+        ComissUcomissControls, Cr0Profile, Cr4Profile, Cvtdq2pdControls, Cvtdq2pdMemoryControls,
+        Cvtdq2psControls, Cvtdq2psMemoryControls, Cvtpd2dqControls, Cvtps2dqControls,
+        Cvtps2pdControls, Cvtsd2siMemoryR32Controls, Cvtsd2siMemoryR64Controls,
+        Cvtsd2siRegistersControls, Cvtsi2sdR32Controls, Cvtsi2sdR64Controls,
+        Cvtsi2sdR64MemoryControls, Cvtsi2ssR32MemoryControls, Cvtsi2ssR64MemoryControls,
+        Cvtsi2ssRegistersControls, Cvtss2sdControls, Cvtss2siMemoryR32Controls,
+        Cvtss2siMemoryR64Controls, Cvtss2siRegistersControls, Cvttsd2siMemoryR32Controls,
+        Cvttsd2siMemoryR64Controls, Cvttss2siMemoryR32Controls, Cvttss2siMemoryR64Controls,
+        Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls,
+        MaxsdMemoryRaxControls, MaxsdMemoryUnmaskedRaxControls, MaxsdUnmaskedControls,
+        MaxssMemoryRaxControls, MaxssMemoryUnmaskedRaxControls, MaxssUnmaskedControls,
+        MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdMemoryRaxControls,
+        MinsdMemoryUnmaskedRaxControls, MinsdUnmaskedControls, MinssInvalidControls,
+        MinssMemoryRaxControls, MinssMemoryUnmaskedRaxControls, RdtscControls, RunConfig, RunExit,
+        XorpdPrerequisiteState, run, run_with_cli_profile, run_with_cmppd_memory_rax_controls,
         run_with_cmppd_register_controls, run_with_cmpps_memory_rax_controls,
         run_with_cmpps_register_controls, run_with_cmpsd_memory_rax_controls,
         run_with_cmpsd_register_controls, run_with_cmpss_memory_rax_controls,
         run_with_cmpss_register_controls, run_with_comisd_memory_rax_controls,
-        run_with_comisd_ucomisd_register_controls, run_with_comiss_memory_rax_controls,
-        run_with_comiss_ucomiss_register_controls, run_with_cr0_profile,
-        run_with_cvtdq2pd_controls, run_with_cvtdq2pd_memory_controls,
+        run_with_comisd_ucomisd_register_controls, run_with_comiss_memory_invalid_rax_controls,
+        run_with_comiss_memory_rax_controls, run_with_comiss_ucomiss_register_controls,
+        run_with_cr0_profile, run_with_cvtdq2pd_controls, run_with_cvtdq2pd_memory_controls,
         run_with_cvtdq2pd_register_controls, run_with_cvtdq2ps_memory_controls,
         run_with_cvtdq2ps_register_controls, run_with_cvtps2dq_register_controls,
         run_with_cvtps2pd_register_controls, run_with_cvtsd2si_r32_memory_controls,
@@ -3225,6 +3226,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongComissMemoryInvalidRaxV1 {
+        let controls = loaded
+            .fixture
+            .comiss_memory_invalid_rax_controls
+            .expect("validated invalid-only COMISS controls");
+        run_with_comiss_memory_invalid_rax_controls(
+            &mut state,
+            memory,
+            config,
+            ComissMemoryInvalidRaxControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongUcomissMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -3987,6 +4006,9 @@ fn execute_fixture_v2(
                 comisd_memory_rax_controls: loaded.fixture.comisd_memory_rax_controls,
                 ucomisd_memory_rax_controls: loaded.fixture.ucomisd_memory_rax_controls,
                 comiss_memory_rax_controls: loaded.fixture.comiss_memory_rax_controls,
+                comiss_memory_invalid_rax_controls: loaded
+                    .fixture
+                    .comiss_memory_invalid_rax_controls,
                 ucomiss_memory_rax_controls: loaded.fixture.ucomiss_memory_rax_controls,
                 cmpss_memory_rax_controls: loaded.fixture.cmpss_memory_rax_controls,
                 cmpsd_memory_rax_controls: loaded.fixture.cmpsd_memory_rax_controls,
@@ -4439,6 +4461,229 @@ fn write_json(json: &[u8]) -> io::Result<()> {
 fn invalid_input(message: &str) -> ExitCode {
     eprintln!("invalid input: {message}");
     ExitCode::from(EXIT_INVALID_INPUT)
+}
+
+#[cfg(test)]
+mod comiss_invalid_memory_profile_tests {
+    use super::*;
+    use od_testkit::HexU64;
+    use od_testkit::memory::FlatMemory;
+    use od_testkit::result::Observation;
+    use od_testkit::v2::{ExpectedExit, Fixture, Outcome};
+
+    const CASE: &[u8] =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_38u_comiss_qnan_masked.case.json");
+
+    fn loaded_case() -> od_testkit::v2::LoadedFixture {
+        Fixture::from_json(CASE).expect("literal invalid-only COMISS fixture validates")
+    }
+
+    #[test]
+    fn generated_nan_control_sticky_and_operand_side_matrix_matches_integer_oracle() {
+        for signaling in [false, true] {
+            let nan = if signaling { "4523817f" } else { "4523c17f" };
+            for nan_in_xmm0 in [false, true] {
+                for im_masked in [false, true] {
+                    for osxmmexcpt in [false, true] {
+                        for sticky in 0u32..64 {
+                            let mut loaded = loaded_case();
+                            let fixture = &mut loaded.fixture;
+                            let controls =
+                                fixture.comiss_memory_invalid_rax_controls.as_mut().unwrap();
+                            controls.cr4_osxmmexcpt = osxmmexcpt;
+                            fixture.expected_exit = if im_masked {
+                                ExpectedExit::StopAddress
+                            } else {
+                                ExpectedExit::Exception
+                            };
+                            let sse = fixture.initial_state.sse.as_mut().unwrap();
+                            let mut xmm0 = decode_hex_bytes(&sse.xmm[0]).unwrap();
+                            let lhs = if nan_in_xmm0 {
+                                decode_hex_bytes(nan).unwrap()
+                            } else {
+                                decode_hex_bytes("0000803f").unwrap()
+                            };
+                            xmm0[..4].copy_from_slice(&lhs);
+                            sse.xmm[0] = od_testkit::memory::encode_bytes(&xmm0);
+                            sse.mxcsr =
+                                HexU64(u64::from(0x1f00 | u32::from(im_masked) * 0x80 | sticky));
+                            let data = fixture
+                                .memory
+                                .iter_mut()
+                                .find(|r| r.region_id == "data")
+                                .unwrap();
+                            data.initial_bytes_hex =
+                                if nan_in_xmm0 { "0000803f" } else { nan }.into();
+
+                            let mut memory = FlatMemory::from_fixture(fixture).unwrap();
+                            let result = execute_fixture_v2(&loaded, &mut memory);
+                            result
+                                .validate_for(&loaded)
+                                .expect("generated case agrees with independent oracle");
+                            assert_eq!(
+                                matches!(result.outcome, Outcome::StopAddress {}),
+                                im_masked
+                            );
+                            assert_eq!(matches!(result.outcome, Outcome::Exception {}), !im_masked);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exact_form_gates_ac_and_canonical_span_have_contract_priority() {
+        for (sse, em, osfxsr, ts, vector) in [
+            (false, false, true, false, 6),
+            (true, true, true, false, 6),
+            (true, false, false, false, 6),
+            (true, false, true, true, 7),
+        ] {
+            let mut loaded = loaded_case();
+            loaded.fixture.expected_exit = ExpectedExit::Exception;
+            let controls = loaded
+                .fixture
+                .comiss_memory_invalid_rax_controls
+                .as_mut()
+                .unwrap();
+            controls.sse_available = sse;
+            controls.cr0_em = em;
+            controls.cr4_osfxsr = osfxsr;
+            controls.cr0_ts = ts;
+            loaded.fixture.initial_state.rflags =
+                HexU64(loaded.fixture.initial_state.rflags.get() | (1 << 18));
+            let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            let result = execute_fixture_v2(&loaded, &mut memory);
+            result.validate_for(&loaded).unwrap();
+            let Observation::Available { value: snapshot } = result.snapshot else {
+                panic!("fault snapshot available")
+            };
+            let Observation::Available {
+                value: Some(exception),
+            } = snapshot.exception
+            else {
+                panic!("exception available")
+            };
+            assert_eq!(exception.vector, vector);
+        }
+
+        let mut ac = loaded_case();
+        ac.fixture.expected_exit = ExpectedExit::Unsupported;
+        ac.fixture.initial_state.rflags = HexU64(ac.fixture.initial_state.rflags.get() | (1 << 18));
+        let mut memory = FlatMemory::from_fixture(&ac.fixture).unwrap();
+        let result = execute_fixture_v2(&ac, &mut memory);
+        result.validate_for(&ac).unwrap();
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+
+        let mut span = loaded_case();
+        span.fixture.expected_exit = ExpectedExit::Exception;
+        span.fixture.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+        span.fixture
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "data")
+            .unwrap()
+            .guest_address = HexU64(0x0000_8000_0000_0000);
+        let mut memory = FlatMemory::from_fixture(&span.fixture).unwrap();
+        let result = execute_fixture_v2(&span, &mut memory);
+        result.validate_for(&span).unwrap();
+        let Observation::Available { value: snapshot } = result.snapshot else {
+            panic!("fault snapshot available")
+        };
+        let Observation::Available {
+            value: Some(exception),
+        } = snapshot.exception
+        else {
+            panic!("exception available")
+        };
+        assert_eq!(exception.vector, 13);
+
+        let mut json: serde_json::Value = serde_json::from_slice(CASE).unwrap();
+        json["memory"][0]["initial_bytes_hex"] = serde_json::Value::String("660f2f00".into());
+        json["memory"][0]["length"] = serde_json::Value::from(4);
+        assert!(Fixture::from_json(&serde_json::to_vec(&json).unwrap()).is_err());
+    }
+
+    #[test]
+    fn generated_finite_infinity_and_zero_orderings_use_raw_bits() {
+        for (lhs, rhs) in [
+            (0x0000_0000u32, 0x8000_0000u32),
+            (0x3f80_0000, 0x7f80_0000),
+            (0x7f80_0000, 0x3f80_0000),
+            (0xff80_0000, 0x7f80_0000),
+        ] {
+            let mut loaded = loaded_case();
+            let fixture = &mut loaded.fixture;
+            fixture.expected_exit = ExpectedExit::StopAddress;
+            let sse = fixture.initial_state.sse.as_mut().unwrap();
+            let mut xmm0 = decode_hex_bytes(&sse.xmm[0]).unwrap();
+            xmm0[..4].copy_from_slice(&lhs.to_le_bytes());
+            sse.xmm[0] = od_testkit::memory::encode_bytes(&xmm0);
+            let data = fixture
+                .memory
+                .iter_mut()
+                .find(|r| r.region_id == "data")
+                .unwrap();
+            data.initial_bytes_hex = rhs
+                .to_le_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let mut memory = FlatMemory::from_fixture(fixture).unwrap();
+            execute_fixture_v2(&loaded, &mut memory)
+                .validate_for(&loaded)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn ac_refusal_precedes_unmasked_ie_and_result_controls_are_tamper_evident() {
+        let mut loaded = loaded_case();
+        loaded.fixture.expected_exit = ExpectedExit::Unsupported;
+        loaded.fixture.initial_state.rflags =
+            HexU64(loaded.fixture.initial_state.rflags.get() | (1 << 18));
+        loaded.fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f20);
+        loaded
+            .fixture
+            .comiss_memory_invalid_rax_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = true;
+        let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let result = execute_fixture_v2(&loaded, &mut memory);
+        result
+            .validate_for(&loaded)
+            .expect("AC refusal suppresses unmasked IE delivery");
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+
+        let completed_fixture = loaded_case();
+        let mut completed_memory = FlatMemory::from_fixture(&completed_fixture.fixture).unwrap();
+        let completed = execute_fixture_v2(&completed_fixture, &mut completed_memory);
+        for backend in [
+            od_testkit::result::Backend::Jit,
+            od_testkit::result::Backend::NativeX86,
+        ] {
+            let mut forged = completed.clone();
+            forged.backend = backend;
+            assert!(forged.validate_for(&completed_fixture).is_err());
+        }
+
+        let mut tampered = result.clone();
+        let Observation::Available { value: snapshot } = &mut tampered.snapshot else {
+            panic!("snapshot available")
+        };
+        snapshot
+            .comiss_memory_invalid_rax_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = false;
+        assert!(tampered.validate_for(&loaded).is_err());
+
+        let mut json: serde_json::Value = serde_json::from_slice(CASE).unwrap();
+        json["comiss_memory_invalid_rax_controls"]["unexpected"] = serde_json::Value::Bool(true);
+        assert!(Fixture::from_json(&serde_json::to_vec(&json).unwrap()).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -5390,6 +5635,9 @@ mod tests {
                     comisd_memory_rax_controls: input.fixture.comisd_memory_rax_controls,
                     ucomisd_memory_rax_controls: input.fixture.ucomisd_memory_rax_controls,
                     comiss_memory_rax_controls: input.fixture.comiss_memory_rax_controls,
+                    comiss_memory_invalid_rax_controls: input
+                        .fixture
+                        .comiss_memory_invalid_rax_controls,
                     ucomiss_memory_rax_controls: input.fixture.ucomiss_memory_rax_controls,
                     cmpss_memory_rax_controls: input.fixture.cmpss_memory_rax_controls,
                     cmpsd_memory_rax_controls: input.fixture.cmpsd_memory_rax_controls,

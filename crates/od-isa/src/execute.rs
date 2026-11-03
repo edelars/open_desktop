@@ -866,6 +866,16 @@ pub struct ComissMemoryRaxControls {
     pub cr4_osfxsr: bool,
 }
 
+/// Explicit SSE and SIMD exception-delivery controls for the S2-38u invalid-only profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ComissMemoryInvalidRaxControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit SSE prerequisite gates for exact S2-37cr UCOMISS m32 at [RAX].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UcomissMemoryRaxControls {
@@ -881,6 +891,7 @@ struct ComparisonMemoryRaxControls {
     cr0_em: bool,
     cr0_ts: bool,
     cr4_osfxsr: bool,
+    cr4_osxmmexcpt: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -894,6 +905,7 @@ struct ComparisonMemoryRaxProfile {
     controls: ComparisonMemoryRaxControls,
     precision: ComparisonMemoryRaxPrecision,
     quiet_nan_raises_ie: bool,
+    reject_subnormals: bool,
 }
 
 /// Explicit prerequisites for the exact S2-37n CVTSI2SD r32 profile.
@@ -15303,9 +15315,11 @@ pub fn run_with_comisd_memory_rax_controls(
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
                 cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: false,
             },
             precision: ComparisonMemoryRaxPrecision::Binary64,
             quiet_nan_raises_ie: true,
+            reject_subnormals: false,
         },
         stop_requested,
     )
@@ -15329,9 +15343,11 @@ pub fn run_with_ucomisd_memory_rax_controls(
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
                 cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: false,
             },
             precision: ComparisonMemoryRaxPrecision::Binary64,
             quiet_nan_raises_ie: false,
+            reject_subnormals: false,
         },
         stop_requested,
     )
@@ -15355,9 +15371,39 @@ pub fn run_with_comiss_memory_rax_controls(
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
                 cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: false,
             },
             precision: ComparisonMemoryRaxPrecision::Binary32,
             quiet_nan_raises_ie: true,
+            reject_subnormals: false,
+        },
+        stop_requested,
+    )
+}
+
+/// Execute the exact S2-38u COMISS profile, refusing any subnormal operand after its read.
+pub fn run_with_comiss_memory_invalid_rax_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: ComissMemoryInvalidRaxControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_comparison_memory_rax_profile(
+        state,
+        memory,
+        config,
+        ComparisonMemoryRaxProfile {
+            controls: ComparisonMemoryRaxControls {
+                feature_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            precision: ComparisonMemoryRaxPrecision::Binary32,
+            quiet_nan_raises_ie: true,
+            reject_subnormals: true,
         },
         stop_requested,
     )
@@ -15381,9 +15427,11 @@ pub fn run_with_ucomiss_memory_rax_controls(
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
                 cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: false,
             },
             precision: ComparisonMemoryRaxPrecision::Binary32,
             quiet_nan_raises_ie: false,
+            reject_subnormals: false,
         },
         stop_requested,
     )
@@ -23945,7 +23993,10 @@ fn step_configured(
         let mxcsr = sse.mxcsr;
         if mxcsr & !0x0000_ffbf != 0
             || mxcsr & (1 << 6) != 0
-            || mxcsr & ((1 << 7) | (1 << 8)) != ((1 << 7) | (1 << 8))
+            || (!profile.reject_subnormals
+                && mxcsr & ((1 << 7) | (1 << 8)) != ((1 << 7) | (1 << 8)))
+            || (profile.reject_subnormals
+                && (mxcsr & 0x0000_1f00 != 0x0000_1f00 || mxcsr & (1 << 15) != 0))
             || state.rflags & (1 << 18) != 0
         {
             return Ok(StepOutcome::Unsupported {
@@ -37282,6 +37333,14 @@ fn step_configured(
                     .quiet_nan_raises_ie
                     || left_class == 4
                     || right_class == 4);
+            let reject_subnormals = configured_comparison_memory_rax_controls
+                .expect("comparison memory profile prevalidated")
+                .reject_subnormals;
+            if reject_subnormals && (left_class == 2 || right_class == 2) {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
             let new_de = !has_nan && (left_class == 2 || right_class == 2);
             let old_mxcsr = state
                 .sse
@@ -37293,6 +37352,19 @@ fn step_configured(
                 .as_mut()
                 .expect("comparison memory state prevalidated")
                 .mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+            let profile = configured_comparison_memory_rax_controls
+                .expect("comparison memory profile prevalidated");
+            if reject_subnormals && new_ie && old_mxcsr & (1 << 7) == 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if profile.controls.cr4_osxmmexcpt {
+                        19
+                    } else {
+                        6
+                    },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
 
             let relation = if has_nan {
                 core::cmp::Ordering::Equal
@@ -149452,6 +149524,182 @@ mod swapgs_profile_tests {
             assert!(memory.accesses.is_empty());
             assert_eq!(state, before);
         }
+    }
+
+    #[test]
+    fn comiss_invalid_only_refuses_subnormals_after_read_and_delivers_ie() {
+        let code = [0x0f, 0x2f, 0x00];
+        let config = |privilege| RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(0xa203),
+            context: AccessContext {
+                privilege,
+                ..AccessContext::default()
+            },
+        };
+        let controls = |osxmmexcpt| ComissMemoryInvalidRaxControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: osxmmexcpt,
+        };
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            for (left, right) in [(1u32, 0x3f80_0000u32), (0x3f80_0000, 1)] {
+                let mut state = LongModeState::default();
+                state.rip = 0xa200;
+                state.gpr[Register::Rax as usize] = 0x2003;
+                state.rflags = 0x0ad7;
+                let mut xmm = [0x5a; 16];
+                xmm[..4].copy_from_slice(&left.to_le_bytes());
+                state.sse = Some(SseState {
+                    xmm: [xmm; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let mut memory = Memory::at(&code, state.rip);
+                memory.data_base = 0x2003;
+                memory.bytes = right.to_le_bytes().to_vec();
+                let result = run_with_comiss_memory_invalid_rax_controls(
+                    &mut state,
+                    &mut memory,
+                    config(privilege),
+                    controls(true),
+                    || false,
+                );
+                assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2f }));
+                assert_eq!(memory.accesses, [(AccessKind::Read, 0x2003, 4)]);
+                assert_eq!(state, before);
+            }
+        }
+        let mut state = LongModeState::default();
+        state.rip = 0xa200;
+        state.gpr[Register::Rax as usize] = 0x2003;
+        state.rflags = 0x0ad7;
+        let mut xmm = [0x5a; 16];
+        xmm[..4].copy_from_slice(&0x3f80_0000u32.to_le_bytes());
+        state.sse = Some(SseState {
+            xmm: [xmm; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&code, state.rip);
+        memory.data_base = 0x2003;
+        memory.error = Some(MemoryError::Backend("injected read failure".into()));
+        memory.error_kind = Some(AccessKind::Read);
+        let result = run_with_comiss_memory_invalid_rax_controls(
+            &mut state,
+            &mut memory,
+            config(PrivilegeLevel::Ring3),
+            controls(true),
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2003, 4)]);
+        assert_eq!(state, before);
+
+        for (osxmmexcpt, vector) in [(true, 19), (false, 6)] {
+            let mut state = LongModeState::default();
+            state.rip = 0xa200;
+            state.gpr[Register::Rax as usize] = 0x2003;
+            state.rflags = 0x0ad7;
+            let mut xmm = [0x5a; 16];
+            xmm[..4].copy_from_slice(&0x7fc1_2345u32.to_le_bytes());
+            state.sse = Some(SseState {
+                xmm: [xmm; 16],
+                mxcsr: 0x1f20,
+            });
+            let mut memory = Memory::at(&code, state.rip);
+            memory.data_base = 0x2003;
+            memory.bytes = 0x3f80_0000u32.to_le_bytes().to_vec();
+            let result = run_with_comiss_memory_invalid_rax_controls(
+                &mut state,
+                &mut memory,
+                config(PrivilegeLevel::Ring3),
+                controls(osxmmexcpt),
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr, 0x1f21);
+            assert_eq!(state.rflags, 0x0ad7);
+            assert_eq!(state.rip, 0xa200);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x2003, 4)]);
+        }
+    }
+
+    #[test]
+    fn comiss_invalid_only_fetches_exact_bytes_before_prerequisite_gates() {
+        let code = [0x0f, 0x2f, 0x00];
+        let mut state = LongModeState::default();
+        state.rip = 0xa200;
+        state.gpr[Register::Rax as usize] = 0x2003;
+        state.rflags = 0x0ad7;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let controls = ComissMemoryInvalidRaxControls {
+            sse_available: false,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let mut memory = Memory::at(&code, state.rip);
+        memory.data_base = 0x2003;
+        let result = run_with_comiss_memory_invalid_rax_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xa203),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault { vector: 6, .. })
+        ));
+        assert_eq!(memory.fetches, [0xa200, 0xa201, 0xa202]);
+        assert!(memory.accesses.is_empty());
+        assert_eq!(state, before);
+
+        let mut memory = Memory::at(&code, state.rip);
+        memory.data_base = 0x2003;
+        memory.fetch_error = Some((
+            0xa201,
+            MemoryError::Backend("injected fetch failure".into()),
+        ));
+        let result = run_with_comiss_memory_invalid_rax_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xa203),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(memory.fetches, [0xa200, 0xa201]);
+        assert!(memory.accesses.is_empty());
+        assert_eq!(state, before);
     }
 
     #[test]
