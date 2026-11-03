@@ -3976,32 +3976,6 @@ mod tests {
             block.pc_map().boundaries()[0].rip,
             crate::statepoints::GuestRipBoundary::Fixed(entry + 3)
         );
-        assert_eq!(block.pc_map().boundaries()[0].instruction_index, 0);
-        assert_eq!(block.pc_map().boundaries()[0].committed_instructions, 1);
-        assert!(!site.matches_source_bytes(&source, MemorySiteOperationV2::Load));
-
-        for index in 0..source.len() {
-            let mut changed = source;
-            changed[index] ^= 1;
-            assert!(!site.matches_source_bytes(&changed, MemorySiteOperationV2::Store));
-            if changed == [0x67, 0x89, 0x00] {
-                let changed_block = compile_ir_memory_dword_store_block_v2(
-                    CodeView::new(entry, &changed).unwrap(),
-                    entry,
-                )
-                .unwrap();
-                assert!(!changed_block
-                    .site()
-                    .matches_source_bytes(&source, MemorySiteOperationV2::Store));
-            } else {
-                assert!(compile_ir_memory_dword_store_block_v2(
-                    CodeView::new(entry, &changed).unwrap(),
-                    entry,
-                )
-                .is_err());
-            }
-        }
-
         for (mut forged, change) in [
             (*site, 0),
             (*site, 1),
@@ -10069,6 +10043,31 @@ mod tests {
             block.pc_map().boundaries()[0].rip,
             crate::statepoints::GuestRipBoundary::Fixed(entry + 3)
         );
+        assert_eq!(block.pc_map().boundaries()[0].instruction_index, 0);
+        assert_eq!(block.pc_map().boundaries()[0].committed_instructions, 1);
+        assert!(!site.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+
+        for index in 0..source.len() {
+            let mut changed = source;
+            changed[index] ^= 1;
+            assert!(!site.matches_source_bytes(&changed, MemorySiteOperationV2::Store));
+            if changed == [0x67, 0x89, 0x00] {
+                let changed_block = compile_ir_memory_dword_store_block_v2(
+                    CodeView::new(entry, &changed).unwrap(),
+                    entry,
+                )
+                .unwrap();
+                assert!(!changed_block
+                    .site()
+                    .matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            } else {
+                assert!(compile_ir_memory_dword_store_block_v2(
+                    CodeView::new(entry, &changed).unwrap(),
+                    entry,
+                )
+                .is_err());
+            }
+        }
 
         for (mut forged, change) in [
             (*site, 0),

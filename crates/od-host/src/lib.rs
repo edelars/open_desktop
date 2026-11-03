@@ -35983,7 +35983,7 @@ mod tests {
             }
         }
 
-        for (target_address, low_eax, high_rax) in [
+        let mut target_cases = vec![
             (0x0000_0001_0000_1001_u64, 0x89ab_cdef_u32, 0xfeed_beef_u32),
             (
                 0xffff_8000_0000_1000_u64,
@@ -35993,12 +35993,15 @@ mod tests {
             (0, 0_u32, 0x2468_ace0_u32),
             (u64::MAX - 3, u32::MAX, 0xa5a5_5a5a_u32),
             (0x0000_7fff_ffff_fffc, 0x7654_3210_u32, 0xfeed_cafe_u32),
-            (0x0000_8000_0000_1001, 0x7654_3210, 0xfeed_cafe),
             (0xffff_8000_0000_1001, 0x8000_0000, 0x1357_9bdf),
             (0xffff_fffd, 0x0123_4567, 0x89ab_cdef),
             (0xffff_fffe, 0x89ab_cdef, 0x0123_4567),
             (0xffff_ffff, 0, u32::MAX),
-        ] {
+        ];
+        if address32 {
+            target_cases.push((0x0000_8000_0000_1001, 0x7654_3210, 0xfeed_cafe));
+        }
+        for (target_address, low_eax, high_rax) in target_cases {
             let rcx = target_address.wrapping_sub(displacement as u64);
             let rax = (u64::from(high_rax) << 32) | u64::from(low_eax);
             let address = effective_address(rcx, displacement, address32);
