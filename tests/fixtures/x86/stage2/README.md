@@ -8389,3 +8389,25 @@ tampering and JIT/native denial. No physical x86 acceptance is claimed. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-38s--exact-long64-minps-xmm0m128-rax-with-unmasked-imdm-exits),
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38s--exact-minps-memory-unmasked-imdm),
 and [standalone report](../../../../docs/reports/S2_38S_MINPS_MEMORY_UNMASKED.md).
+
+### S2-31ea historical SF on raw FSTP m80fp
+
+The S2-31ea interpreter matrix covers 24,576 full-state SF+IE cases across
+accepted source/tag pairs, signs, FCWs, TOP, C1 and DE/ZE/OE/UE/PE histories.
+Runner fixtures preserve raw ten-byte values and exercise SF-only, ES/B and
+malformed source/tag/control refusals, write/span rollback, repeated store,
+FNSTSW/FNCLEX/retry, schema-v2 validation and backend denial. No physical x86
+acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31ea--historical-sf-with-pre-existing-ie-for-raw-fstp-m80fp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ea--historical-sf-with-pre-existing-ie-for-raw-fstp-m80fp),
+and [standalone report](../../../../docs/reports/S2_31EA_FSTP_M80FP_HISTORICAL_SF.md).
+
+### S2-38t MAXPS m128 unmasked invalid and denormal
+
+The 2,316 fixture cases comprise the full 2,048 lane-event/IM/DM/OSXMMEXCPT
+product, 256 RC/prior-sticky histories, and 12 special and priority cases.
+The independent integer oracle reads actual memory RHS bytes; fault cases cover
+fetch/gates, #GP(0) alignment/span, failed reads and suppression of arithmetic
+sticky writes. Literal fixtures, schema/result tampering and backend denial are
+included. No physical x86 acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38t--exact-maxps-memory-unmasked-imdm),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38t--exact-long64-maxps-xmm0m128-rax-with-unmasked-imdm-exits),
+and [standalone report](../../../../docs/reports/S2_38T_MAXPS_MEMORY_UNMASKED.md).

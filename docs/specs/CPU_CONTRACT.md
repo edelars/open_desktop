@@ -17768,6 +17768,12 @@ Intel SDM Rev. 093 Vol. 1 §8.1.3.4
 and Vol. 2A FST/FSTP pp. 3-386–3-388
 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=504)).
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ea--historical-sf-with-pre-existing-ie-for-raw-fstp-m80fp).
+Integrated main verification: od-isa 1,925, od-testkit 455, runner fixture_v2
+535, and od-x86-runner 8 library + 6 binary tests; workspace all-target offline
+check, format, layout, diff and Graphify passed. Independent Sol/high review is
+clean. No physical x86 acceptance is claimed; broader x87/native behavior
+remains open under ISSUE-019. See the [integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ea-s2-38t)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ea-historical-sf-on-raw-fstp-m80fp).
 
 ## S2-38t — exact MAXPS memory unmasked IM/DM
 
@@ -17801,3 +17807,10 @@ MAXPS pp. 4-8–4-10
 ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=16));
 Vol. 1 §§4.9.2, 11.5.3.1–3 and Appendix D; Vol. 3A §16.1.3/Table 16-1.
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-38t--exact-long64-maxps-xmm0m128-rax-with-unmasked-imdm-exits).
+The integrated main oracle verifies that fetch/gate/alignment and memory faults
+suppress arithmetic sticky updates. Main suites passed with od-isa 1,925,
+od-testkit 455, runner fixture_v2 535, and od-x86-runner 8 library + 6 binary
+tests; workspace check, format, layout, diff and Graphify passed. Independent
+Sol/high review is clean after correcting oracle fault priority and the SDM
+citation. No physical x86 acceptance is claimed. See the [integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ea-s2-38t)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38t-maxps-m128-unmasked-invalid-and-denormal).

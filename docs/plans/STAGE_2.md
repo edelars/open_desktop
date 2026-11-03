@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последняя интегрированная пара — S2-31dz (historical SF+IE для bounded FST/FSTP m32/m64) и S2-38s (unmasked MINPS m128). Совместная проверка main прошла: od-isa 1,923; od-testkit 455; runner 532 fixtures; od-x86-runner 8 library + 5 binary; workspace all-target offline check, fmt, diff и layout. Graphify: 11,985 nodes / 26,039 edges / 340 communities; community labels не обновлялись без настроенного LLM API key. Независимые Sol/high reviews обоих срезов clean после исправления oracle #GP(0). ISSUE-019 остаётся открытым для более широкого x87/native acceptance, ISSUE-025 — для RCPSS/RCPPS tiny-result threshold; физическая x86-проверка не выполнялась, Этап 2 остаётся открытым. Полная сводка — в [отчёте](../reports/STAGE_2_REPORT.md#main-integration-s2-31dz-s2-38s); более ранние срезы описаны там и в соответствующих standalone reports.
+Последняя интегрированная пара — S2-31ea (historical SF+IE для raw FSTP m80fp) и S2-38t (unmasked MAXPS m128). Совместная проверка main прошла: od-isa 1,925; od-testkit 455; runner 535 fixtures; od-x86-runner 8 library + 6 binary; workspace all-target offline check, fmt, diff и layout. Graphify: 12,023 nodes / 26,124 edges / 317 communities; community labels не обновлялись без настроенного LLM API key. Независимые Sol/high reviews обоих срезов clean. ISSUE-019 остаётся открытым для более широкого x87/native acceptance, ISSUE-025 — для RCPSS/RCPPS tiny-result threshold; физическая x86-проверка не выполнялась, Этап 2 остаётся открытым. Полная сводка — в [отчёте](../reports/STAGE_2_REPORT.md#main-integration-s2-31ea-s2-38t); более ранние срезы описаны там и в соответствующих standalone reports.
 
 Предыдущий завершённый срез S2-37dd — exact legacy SQRTPS XMM0,m128 `[RAX]` (`0F 51 00`): SSE bit 25, полный fetch, обязательное 16-byte alignment при AC=0/1, canonical48 span и ровно один read16. Результат строится только по четырём memory lanes; masked-only admission допускает все RC и прежние sticky flags, а binary32 integer sqrt агрегирует IE|DE|PE. Focused ISA 3/3; od-isa 1736, od-testkit 454, runner 112 unit + 485 fixture; workspace all-target check, fmt/layout/Graphify и независимый Sol/high review прошли. Первый полный workspace test исчерпал место (`No space left on device`); после очистки только disposable target relevant component suites прошли. Физическая x86-проверка не заявляется. Interpreter-only; native/JIT/C ABI/generic/fragment и unmasked/#XM path закрыты.
 
@@ -328,7 +328,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dx | Admit historical ZE only in exact bare D9 10/D9 18/DD 10/DD 18 FST/FSTP m32/m64 stores; preserve conversion behavior and atomic commit; native/JIT closed | 32 historical IE/DE/OE/UE/PE combinations with ZE across widths/opcodes/FCWs/TOP/C1; four literal CLI fixtures; schema, rollback, repeated store, FNSTSW/FNCLEX and JIT denial; integrated main suites: od-isa 1,912, testkit 455, runner 125+526, x86-runner 8+4; workspace/fmt/layout/diff pass, Graphify 11,911/25,862/344; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31dy | Admit historical ZE only in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte source and post-write pop; native/JIT closed | ZE plus all 32 other sticky histories across accepted classes/signs/FCWs/TOP/C1; raw SNaN bytes, malformed ZE-set preflight rejects, rollback/repeat/FNSTSW/FNCLEX, schema and backend denial; integrated main suites: od-isa 1,915, testkit 455, runner 125+528, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,947/25,946/383; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31dz | Admit historical SF only with pre-existing IE in exact bare D9 10/D9 18/DD 10/DD 18 bounded FST/FSTP m32/m64 stores; preserve conversion and atomic write/commit; native/JIT closed | 73,728-case full-state SF+IE matrix over nine sources; SF-only SNaN, ES/B and source/tag/control refusals, rollback, repeated store/FNSTSW/FNCLEX/retry; four success fixtures plus Unsupported and JIT/native denial; integrated main suites: od-isa 1,923, testkit 455, runner 532, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,985/26,039/340; clean Sol/high review; no physical x86 acceptance |
-| [ ] | S2-31ea | Admit historical SF only with pre-existing IE in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte store and post-write pop; native/JIT closed | S2-31dy raw-store envelope; S2-31dz historical SF admission policy |
+| [x] | S2-31ea | Admit historical SF only with pre-existing IE in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte store and post-write pop; native/JIT closed | 24,576 full-state SF+IE cases across accepted source/tag pairs, signs, FCWs, TOP, C1 and DE/ZE/OE/PE histories; raw SNaN/subnormal preservation, SF-only/ES/B and malformed gates, rollback/repeat/FNSTSW/FNCLEX/retry, schema and backend denial; integrated main suites: od-isa 1,925, testkit 455, runner 535, x86-runner 8+6; workspace/fmt/layout/diff pass, Graphify 12,023/26,124/317; clean Sol/high review; no physical x86 acceptance |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -659,7 +659,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-38 | MXCSR, FP exceptions и порядок faults | S2-37 |
 | [x] | S2-38r | Exact Long64 `MAXPD XMM0,m128 [RAX]` memory profile with packed unmasked IM/DM lane events; strict schema-v2 and interpreter-only | S2-37cz masked memory, S2-38j packed register policy, S2-38q MINPD memory/backend pattern; 524 generated lane/event cases, RC×64 histories, MAX-vs-MIN/RHS/fault/control/backend checks; integrated main suites: od-isa 1,915, testkit 455, runner 125+528, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,947/25,946/383; clean Sol/high review; no physical x86 acceptance; Linux native_v2 preflight not run on macOS |
 | [x] | S2-38s | Exact Long64 `MINPS XMM0,m128 [RAX]` memory profile with packed unmasked IM/DM lane events; strict schema-v2 and interpreter-only | S2-37dc masked memory, S2-38k packed register policy, S2-38q/r memory/backend patterns; 2,048 lane-event/mask cases, three literal fixtures, memory-RHS oracle, #GP(0) misalignment/noncanonical cases, SSE-only gate, tampering/backend denial; integrated main suites: od-isa 1,923, testkit 455, runner 532, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,985/26,039/340; clean Sol/high review after oracle fix; no physical x86 acceptance |
-| [ ] | S2-38t | Exact Long64 MAXPS XMM0,m128 [RAX] memory profile with packed unmasked IM/DM lane events; strict schema-v2 and interpreter-only | S2-37da masked memory; S2-38l MAXPS register policy; S2-38s memory/backend pattern |
+| [x] | S2-38t | Exact Long64 MAXPS XMM0,m128 [RAX] memory profile with packed unmasked IM/DM lane events; strict schema-v2 and interpreter-only | 2,316 fixtures: 2,048 lane-event/mask + 256 RC/sticky + 12 special/priority cases; memory-RHS oracle, #GP(0) alignment/span and gate-fault priority, callback/result tampering; integrated main suites: od-isa 1,925, testkit 455, runner 535, x86-runner 8+6; workspace/fmt/layout/diff pass, Graphify 12,023/26,124/317; clean Sol/high review after correcting oracle priority and source citation; no physical x86 acceptance |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -18206,6 +18206,12 @@ and Vol. 2A FST/FSTP pp. 3-386–3-388
 See [CPU contract](../specs/CPU_CONTRACT.md#s2-31ea--historical-sf-with-pre-existing-ie-for-raw-fstp-m80fp),
 [S2-31dy](#s2-31dy-admit-historical-ze-on-exact-raw-db38-fstp-m80fp),
 and [S2-31dz](#s2-31dz-admit-historical-sf-only-with-pre-existing-ie-on-bounded-m32m64-stores).
+Integrated main verification: od-isa 1,925; od-testkit 455; runner fixture_v2
+535; od-x86-runner 8 library + 6 binary; workspace all-target offline check,
+format, layout, diff and Graphify passed. Sol/high review is clean. No physical
+x86 acceptance is claimed; broader x87/native behavior remains open under
+ISSUE-019. See the [integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ea-s2-38t)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ea-historical-sf-on-raw-fstp-m80fp).
 
 #### S2-38t — exact Long64 MAXPS XMM0,m128 [RAX] with unmasked IM/DM exits
 
@@ -18243,3 +18249,10 @@ See [CPU contract](../specs/CPU_CONTRACT.md#s2-38t--exact-maxps-memory-unmasked-
 [masked MAXPS memory profile](#s2-37da--exact-legacy-long64-maxps-xmm0m128-rax),
 [register unmasked profile](../specs/CPU_CONTRACT.md#s2-38l--exact-maxps-unmasked-invalid-and-denormal-exit),
 and [S2-38s](#s2-38s--exact-long64-minps-xmm0m128-rax-with-unmasked-imdm-exits).
+The integrated main oracle also verifies fault priority: fetch/gate/alignment
+and memory faults suppress arithmetic sticky updates. Main suites passed with
+od-isa 1,925, od-testkit 455, runner fixture_v2 535, and od-x86-runner 8
+library + 6 binary tests; workspace check, format, layout, diff and Graphify
+passed. Sol/high review is clean after correcting oracle priority and the SDM
+citation. No physical x86 acceptance is claimed. See the [integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ea-s2-38t)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38t-maxps-m128-unmasked-invalid-and-denormal).

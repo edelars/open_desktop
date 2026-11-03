@@ -22800,3 +22800,30 @@ ISSUE-025 remains open for the unrelated RCPSS/RCPPS tiny-result threshold, and
 Stage 2 remains open. See [S2-31dz](S2_31DZ_FST_M32_M64_HISTORICAL_SF.md),
 [S2-38s](S2_38S_MINPS_MEMORY_UNMASKED.md), the [CPU contract](../specs/CPU_CONTRACT.md#s2-31dz--historical-sf-with-pre-existing-ie-for-bounded-m32m64-stores),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38s-minps-m128-unmasked-invalid-and-denormal).
+
+<a id="main-integration-s2-31ea-s2-38t"></a>
+
+## Main integration: S2-31ea and S2-38t
+
+Both reviewed slices are integrated. S2-31ea admits historical SF only with
+pre-existing IE for exact bare `DB 38` raw FSTP m80fp. Its 24,576 full-state
+cases cover accepted source/tag pairs, signs, FCWs, TOP, C1 and all combinations
+of DE/ZE/OE/UE/PE; raw SNaN/subnormal preservation, rejected statuses, rollback,
+repeat/FNSTSW/FNCLEX/retry, schema validation and backend denial are included.
+S2-38t adds exact legacy `0F 5F 00` MAXPS memory with SSE (not SSE2), four-lane
+unmasked IM/DM aggregation, an independent memory-RHS oracle, literal fixtures,
+and #GP(0) alignment/span and gate-fault priority coverage. Its 2,316 fixture
+cases comprise 2,048 lane-event/mask, 256 RC/sticky and 12 special/priority
+cases.
+
+Integrated main verification passed: `od-isa` 1,925, `od-testkit` 455,
+`od-runner` fixture_v2 535, and `od-x86-runner` 8 library + 6 binary tests.
+Workspace all-target offline check, formatting, layout, diff and Graphify passed.
+Graphify reports 12,023 nodes, 26,124 edges and 317 communities; community
+labels were not refreshed without an LLM API key. Independent Sol/high review
+is clean for both slices. No physical x86 acceptance is claimed; Linux-only
+native preflight was not run on this macOS host. ISSUE-019 remains open for
+broader x87/native behavior, ISSUE-025 remains open for the unrelated RCPSS/
+RCPPS tiny-result threshold, and Stage 2 remains open. See [S2-31ea](S2_31EA_FSTP_M80FP_HISTORICAL_SF.md),
+[S2-38t](S2_38T_MAXPS_MEMORY_UNMASKED.md), the [CPU contract](../specs/CPU_CONTRACT.md#s2-31ea--historical-sf-with-pre-existing-ie-for-raw-fstp-m80fp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38t-maxps-m128-unmasked-invalid-and-denormal).
