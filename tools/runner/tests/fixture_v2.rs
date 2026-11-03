@@ -1153,6 +1153,18 @@ const FILD_M32_HISTORICAL_FNSTSW: &[u8] = include_bytes!(
 );
 const FILD_M64_HISTORICAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ee_fild_m64_historical.case.json");
+const FILD_M16_HISTORICAL_SF_IE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31ef_fild_m16_historical_sf_ie.case.json"
+);
+const FILD_M32_HISTORICAL_SF_IE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31ef_fild_m32_historical_sf_ie.case.json"
+);
+const FILD_M64_HISTORICAL_SF_IE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31ef_fild_m64_historical_sf_ie.case.json"
+);
+const FILD_M32_HISTORICAL_SF_IE_FNSTSW: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_31ef_fild_m32_historical_sf_ie_fnstsw.case.json"
+);
 const FLD_M32_SUBNORMAL: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31y_fld_m32fp_min_subnormal.case.json");
 const FRNDINT_FLD_M32_SUBNORMAL: &[u8] = include_bytes!(
@@ -5607,6 +5619,48 @@ fn local_x87_fild_historical_sticky_fixtures_preserve_flags_and_deny_backends() 
         );
         let x87 = observed.state.x87.as_ref().unwrap();
         assert_eq!(x87.status_word, HexU64(0x7d3f));
+        assert_eq!(x87.registers[7], raw);
+        assert_eq!(x87.tag_word, HexU64(0x3ffc));
+        assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);
+        assert_eq!(x87.data_pointer, input.fixture.initial_state.gpr[0]);
+        for backend in ["jit", "native"] {
+            let (_, denied) = run(fixture, backend, 4);
+            assert!(
+                matches!(denied.outcome, Outcome::Unsupported { .. }),
+                "{backend}"
+            );
+            assert!(
+                matches!(denied.snapshot, Observation::Unavailable { .. }),
+                "{backend}"
+            );
+        }
+    }
+}
+
+#[test]
+fn local_x87_fild_historical_sf_ie_fixtures_preserve_flags_and_deny_backends() {
+    for (fixture, code_bytes, raw) in [
+        (FILD_M16_HISTORICAL_SF_IE, "df00", "00000000000000800ec0"),
+        (FILD_M32_HISTORICAL_SF_IE, "db00", "00000000000000801ec0"),
+        (FILD_M64_HISTORICAL_SF_IE, "df28", "00000000000000803ec0"),
+        (
+            FILD_M32_HISTORICAL_SF_IE_FNSTSW,
+            "db00dfe0",
+            "00000000000000801ec0",
+        ),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+        assert_eq!(count(&result), input.fixture.instruction_budget);
+        let observed = snapshot(&result);
+        let composed = code_bytes.ends_with("dfe0");
+        assert_eq!(observed.state.rip, input.fixture.stop_rip.unwrap());
+        assert_eq!(
+            observed.state.gpr[0],
+            HexU64(if composed { 0x0030_7d7f } else { 0x0030_0001 })
+        );
+        let x87 = observed.state.x87.as_ref().unwrap();
+        assert_eq!(x87.status_word, HexU64(0x7d7f));
         assert_eq!(x87.registers[7], raw);
         assert_eq!(x87.tag_word, HexU64(0x3ffc));
         assert_eq!(x87.instruction_pointer, input.fixture.initial_state.rip);

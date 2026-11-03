@@ -8467,6 +8467,18 @@ local unit tests. No physical x86 acceptance is claimed. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ee--exact-fild-historical-sticky-flag-admission),
 and [standalone report](../../../../docs/reports/S2_31EE_FILD_HISTORICAL_STICKY_FLAGS.md).
 
+### S2-31ef historical SF+IE on bounded FILD
+
+Four additional handwritten schema-v2 fixtures cover exact DF 00, DB 00 and
+DF 28 FILD with historical SF+IE and all five other sticky flags; the fourth
+composes DB 00 with FNSTSW AX. Runner checks literal binary80 results, retained
+SF and cleared C1, plus JIT/native denial. The independent ISA matrix checks
+all 30,720 SF+IE states and retains S2-31ee's separate SF=0 matrix. SF-only,
+ES and B stay pre-read refusals. No physical x86 acceptance is claimed. See
+the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31ef--historical-sf-with-prior-ie-on-exact-bounded-fild-forms),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ef--historical-sf-with-prior-ie-on-bounded-fild),
+and [standalone report](../../../../docs/reports/S2_31EF_FILD_HISTORICAL_SF.md).
+
 <a id="s2-38u-comiss-memory-invalid-only-profile"></a>
 
 ### S2-38u COMISS memory invalid-only profile
