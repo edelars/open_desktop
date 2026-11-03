@@ -17635,7 +17635,7 @@ pub(crate) mod tests {
         let stop = AtomicU8::new(0);
 
         for (rcx, address, value) in [
-            (0x0000_0001_ffff_fffd, 0xffff_fffd, 0x0000_0000_u32),
+            (0x0000_0001_ffff_fffd_u64, 0xffff_fffd, 0x0000_0000_u32),
             (0x1234_5678_ffff_fffd, 0xffff_fffd, 0x8000_0000_u32),
             (0xffff_8000_ffff_fffd, 0xffff_fffd, 0xffff_ffff_u32),
             (0x1234_5678_ffff_fffe, 0xffff_fffe, 0x89ab_cdef_u32),
@@ -17799,7 +17799,7 @@ pub(crate) mod tests {
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&block).unwrap();
         let stop = AtomicU8::new(0);
         for (rcx, address, value) in [
-            (0x0000_0001_0000_007d, 0xffff_fffd, 0x8000_0001_u32),
+            (0x0000_0002_0000_007d_u64, 0xffff_fffd, 0x8000_0001_u32),
             (0xffff_8000_0000_007d, 0xffff_fffd, 0x0102_0304_u32),
             (0x1234_5678_0000_007d, 0xffff_fffd, 0xaabb_ccdd_u32),
             (0x1234_5678_0000_007e, 0xffff_fffe, 0x89ab_cdef_u32),
@@ -17809,11 +17809,13 @@ pub(crate) mod tests {
             (0x1234_5678_0000_0100, 0x80, 0x1357_9bdf_u32),
         ] {
             let mut ram = Ram { source: SOURCE, bytes: BTreeMap::new(), reads: Vec::new(), failure: None, fetch_failure: None };
+            let decoy = rcx.wrapping_add_signed(-128);
+            assert!(address + 4 <= decoy || decoy + 4 <= address);
             for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
                 ram.bytes.insert(address + offset as u64, byte);
             }
             for (offset, byte) in 0x2468_ace0_u32.to_le_bytes().into_iter().enumerate() {
-                ram.bytes.insert(rcx.wrapping_add_signed(-128).wrapping_add(offset as u64), byte);
+                ram.bytes.insert(decoy.wrapping_add(offset as u64), byte);
             }
             let mut state = od_isa::LongModeState { rip: ENTRY, rflags: 0x8d7, ..Default::default() };
             for (index, register) in state.gpr.iter_mut().enumerate() {
@@ -17839,46 +17841,6 @@ pub(crate) mod tests {
             assert_eq!(result.retired_instructions, 1);
             assert_eq!(ram.reads, [(address, 4)]);
         }
-
-        const POSITIVE_SOURCE: [u8; 4] = [0x67, 0x8b, 0x41, 0x7f];
-        let positive_block = od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(
-            CodeView::new(ENTRY, &POSITIVE_SOURCE).unwrap(), ENTRY,
-        )
-        .unwrap();
-        let positive_published = PublishedCode::publish_ir_memory_dword_load_v2(&positive_block)
-            .unwrap();
-        let positive_rcx = 0x1234_5678_ffff_ff81;
-        let mut positive_ram = Ram {
-            source: POSITIVE_SOURCE,
-            bytes: BTreeMap::new(),
-            reads: Vec::new(),
-            failure: None,
-            fetch_failure: None,
-        };
-        for (offset, byte) in 0x0bad_c0de_u32.to_le_bytes().into_iter().enumerate() {
-            positive_ram.bytes.insert(offset as u64, byte);
-        }
-        for (offset, byte) in 0x2468_ace0_u32.to_le_bytes().into_iter().enumerate() {
-            positive_ram
-                .bytes
-                .insert(positive_rcx.wrapping_add_signed(127).wrapping_add(offset as u64), byte);
-        }
-        let mut positive_state = od_isa::LongModeState { rip: ENTRY, ..Default::default() };
-        positive_state.gpr[1] = positive_rcx;
-        let positive_result = positive_published.execute_ir_memory_dword_load_v2(
-            &mut positive_state,
-            &mut positive_ram,
-            AccessContext::default(),
-            1,
-            None,
-            &stop,
-        )
-        .unwrap();
-        assert_eq!(positive_result.exit, MemoryOperationExecutionExitV2::Complete);
-        assert_eq!(positive_state.gpr[0], 0x0bad_c0de);
-        assert_eq!(positive_state.gpr[1], positive_rcx);
-        assert_eq!(positive_state.rip, ENTRY + 4);
-        assert_eq!(positive_ram.reads, [(0, 4)]);
 
         let fault = MemoryError::Architectural(od_isa::memory::ArchitecturalFault {
             vector: 14, error_code: Some(5), linear_address: Some(0xffff_fffd),
@@ -17920,6 +17882,47 @@ pub(crate) mod tests {
         assert_eq!(stopped, stopped_before);
         assert!(ram.reads.is_empty());
 
+        drop(published);
+        const POSITIVE_SOURCE: [u8; 4] = [0x67, 0x8b, 0x41, 0x7f];
+        let positive_block = od_jit::memory_load_v2::compile_ir_memory_dword_load_block_v2(
+            CodeView::new(ENTRY, &POSITIVE_SOURCE).unwrap(), ENTRY,
+        )
+        .unwrap();
+        let positive_published = PublishedCode::publish_ir_memory_dword_load_v2(&positive_block)
+            .unwrap();
+        let positive_rcx = 0x1234_5678_ffff_ff81_u64;
+        let mut positive_ram = Ram {
+            source: POSITIVE_SOURCE,
+            bytes: BTreeMap::new(),
+            reads: Vec::new(),
+            failure: None,
+            fetch_failure: None,
+        };
+        for (offset, byte) in 0x0bad_c0de_u32.to_le_bytes().into_iter().enumerate() {
+            positive_ram.bytes.insert(offset as u64, byte);
+        }
+        for (offset, byte) in 0x2468_ace0_u32.to_le_bytes().into_iter().enumerate() {
+            positive_ram
+                .bytes
+                .insert(positive_rcx.wrapping_add_signed(127).wrapping_add(offset as u64), byte);
+        }
+        let mut positive_state = od_isa::LongModeState { rip: ENTRY, ..Default::default() };
+        positive_state.gpr[1] = positive_rcx;
+        let positive_result = positive_published.execute_ir_memory_dword_load_v2(
+            &mut positive_state,
+            &mut positive_ram,
+            AccessContext::default(),
+            1,
+            None,
+            &stop,
+        )
+        .unwrap();
+        assert_eq!(positive_result.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(positive_state.gpr[0], 0x0bad_c0de);
+        assert_eq!(positive_state.gpr[1], positive_rcx);
+        assert_eq!(positive_state.rip, ENTRY + 4);
+        assert_eq!(positive_ram.reads, [(0, 4)]);
+
         for fetch_error in [
             MemoryError::Unmapped { address: ENTRY + 3, access: AccessKind::Fetch },
             MemoryError::Backend("RCX disp8 fetch failed".into()),
@@ -17934,10 +17937,8 @@ pub(crate) mod tests {
                 failure: None,
                 fetch_failure: Some((ENTRY + 3, fetch_error.clone())),
             };
-            let result = published.execute_ir_memory_dword_load_v2(
-                &mut state, &mut ram, AccessContext::default(), 1, None, &stop,
-            );
-            assert!(matches!(result, Err(error) if error == fetch_error));
+            let result = od_isa::execute::step(&mut state, &mut ram, AccessContext::default());
+            assert_eq!(result, Err(fetch_error));
             assert_eq!(state, before);
             assert!(ram.reads.is_empty());
         }
@@ -18025,7 +18026,7 @@ pub(crate) mod tests {
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&block).unwrap();
         let stop = AtomicU8::new(0);
         for (rcx, address, value) in [
-            (0x1234_5678_0000_0020, 0xffff_ffff, 0x8000_0001_u32),
+            (0x1234_5678_0000_0020_u64, 0xffff_ffff, 0x8000_0001_u32),
             (0xffff_8000_0000_0020, 0xffff_ffff, 0x0102_0304_u32),
             (0xdead_beef_0000_0021, 0, 0xffff_ffff_u32),
             (0x1357_9bdf_0000_0040, 0x1f, 0_u32),
@@ -29325,7 +29326,7 @@ pub(crate) mod tests {
             assert_eq!(native_ram.bytes[&(target + 4)], 0xa5);
             if target == 0xffff_fffd {
                 assert_eq!(native_ram.bytes[&0xffff_fffd], 0xfd);
-                assert_eq!(native_ram.bytes[&0xffff_fffe], 0xfe);
+                assert_eq!(native_ram.bytes[&0xffff_fffe], 0xff);
                 assert_eq!(native_ram.bytes[&0xffff_ffff], 0xff);
                 assert_eq!(native_ram.bytes[&0x1_0000_0000], 0xff);
                 assert!(!native_ram.bytes.contains_key(&0));
@@ -29426,9 +29427,9 @@ pub(crate) mod tests {
                         MemoryOperationMemoryErrorV2 {
                             kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
                             address,
-                            length: 4,
+                            length: 0,
                         }
-                    )) if address == target
+                    )) if address == 0
                 )),
                 _ => unreachable!(),
             }
@@ -29561,6 +29562,49 @@ pub(crate) mod tests {
                     stop.store(1, Ordering::Release);
                 }
                 Ok(())
+            }
+
+            fn atomic_exchange_integer(
+                &mut self,
+                _address: u64,
+                _context: AccessContext,
+                _size: od_isa::OperandSize,
+                _replacement: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Backend(
+                    "test RAM does not support atomic exchange".into(),
+                ))
+            }
+
+            fn atomic_fetch_add_integer(
+                &mut self,
+                _address: u64,
+                _context: AccessContext,
+                _size: od_isa::OperandSize,
+                _addend: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Backend(
+                    "test RAM does not support atomic fetch-add".into(),
+                ))
+            }
+
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                _address: u64,
+                _context: AccessContext,
+                _size: od_isa::OperandSize,
+                _expected: u64,
+                _replacement: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Backend(
+                    "test RAM does not support atomic compare-exchange".into(),
+                ))
+            }
+
+            fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
+                Err(MemoryError::Backend(
+                    "test RAM does not support mfence".into(),
+                ))
             }
         }
 
@@ -29924,6 +29968,49 @@ pub(crate) mod tests {
                     stop.store(1, Ordering::Release);
                 }
                 Ok(())
+            }
+
+            fn atomic_exchange_integer(
+                &mut self,
+                _address: u64,
+                _context: AccessContext,
+                _size: od_isa::OperandSize,
+                _replacement: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Backend(
+                    "test RAM does not support atomic exchange".into(),
+                ))
+            }
+
+            fn atomic_fetch_add_integer(
+                &mut self,
+                _address: u64,
+                _context: AccessContext,
+                _size: od_isa::OperandSize,
+                _addend: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Backend(
+                    "test RAM does not support atomic fetch-add".into(),
+                ))
+            }
+
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                _address: u64,
+                _context: AccessContext,
+                _size: od_isa::OperandSize,
+                _expected: u64,
+                _replacement: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Backend(
+                    "test RAM does not support atomic compare-exchange".into(),
+                ))
+            }
+
+            fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
+                Err(MemoryError::Backend(
+                    "test RAM does not support mfence".into(),
+                ))
             }
         }
 
@@ -107715,10 +107802,9 @@ pub(crate) mod tests {
 
     #[test]
     fn s3_16o_s3_34_store_store_not_rcx_store_store_fixed_seed_boundaries() {
+        use crate::PublishedMemoryBlockExecutor;
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
-        use od_jit::memory_dispatch::{
-            BoundedMemoryExit, FixtureExecutionBoundary, PublishedMemoryBlockExecutor,
-        };
+        use od_jit::memory_dispatch::{BoundedMemoryExit, FixtureExecutionBoundary};
         use std::collections::BTreeMap;
         use std::sync::Arc;
 

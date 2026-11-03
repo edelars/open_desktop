@@ -70,10 +70,9 @@
 
 - **Дата обнаружения:** 2026-11-03.
 - **Компонент:** `crates/od-host/src/lib.rs`, `crates/od-host/src/session.rs` and host test implementations.
-- **Статус:** открыта; ошибки найдены после снятия ISSUE-030 parser barrier; происхождение до первого успешного compilation не установлено.
-- **Суть и последствия:** `cargo check -p od-jit -p od-host --all-targets --offline` reaches `od-host` but fails with nine diagnostics: unresolved `PublishedMemoryBlockExecutor` import; private `RuntimeExitTag` import; two `GuestMemory` test impls missing four required methods; four ambiguous integer `wrapping_add`/`wrapping_add_signed` calls; and one comparison between `MemoryOperationExecutionErrorV2` and `MemoryError`. The host crate and S3-18f host regression cannot yet compile.
-- **Основание:** command output recorded in `/private/tmp/issue030_followup_od_host_check.log`; static review confirmed none of the nine sites are modified by the ISSUE-030 prerequisite diff. No runtime defect is inferred.
-- **Следующий шаг:** fix each diagnostic in the correct owner/test boundary, receive independent Sol/high review, then rerun the exact `cargo check` and required affected host tests.
+- **Статус:** решена локальными compile repairs в `crates/od-host/src/lib.rs` и `crates/od-host/src/session.rs`; independent Sol/high review passed.
+- **Суть и последствия:** исправлены import paths, две test-only `GuestMemory` реализации, четыре неоднозначных integer literals и сравнение error types. Семантика runtime не менялась; unsupported test memory operations возвращают явную backend error.
+- **Основание и результат:** `cargo check -p od-jit -p od-host --all-targets --offline` завершился успешно. Полный `cargo test -p od-jit --lib --offline` прошёл: 397 passed / 0 failed. Точный host regression S3-18f и host regressions S3-20fk/S3-20fx прошли после исправления stale test expectations/setup. Это закрывает compile barrier и перечисленные local cases, но не заменяет stage-wide или hardware acceptance; Mini/M1 deferred.
 
 ### ISSUE-032 — seventeen existing od-jit unit gates fail after parser repair
 
