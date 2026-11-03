@@ -425,6 +425,7 @@ impl PublishedCode {
             && !(source.len() == 3 && source[..2] == [0x89, 0x41])
             && source != [0x67, 0x89, 0x00]
             && source != [0x67, 0x89, 0x01]
+            && !(source.len() == 4 && source[..3] == [0x67, 0x89, 0x41])
             && source != [0x89, 0x04, 0x0b]
             && source != [0x89, 0x04, 0x4b]
             && source != [0x89, 0x04, 0x8b]
@@ -36008,7 +36009,8 @@ mod tests {
         use std::sync::Arc;
 
         const ENTRY: u64 = 0x9f20;
-        let address32 = source == [0x67, 0x89, 0x01];
+        let address32 = source == [0x67, 0x89, 0x01]
+            || (source.len() == 4 && source[..3] == [0x67, 0x89, 0x41]);
         let next_rip = ENTRY + source.len() as u64;
         #[derive(Clone, Debug)]
         struct Ram {
@@ -36168,7 +36170,7 @@ mod tests {
 
         fn effective_address(rcx: u64, displacement: i64, address32: bool) -> u64 {
             if address32 {
-                u64::from(rcx as u32)
+                u64::from((rcx as u32).wrapping_add(displacement as u32))
             } else {
                 rcx.wrapping_add_signed(displacement)
             }
@@ -36190,7 +36192,7 @@ mod tests {
                     address: fetch_address,
                     access: AccessKind::Fetch,
                 },
-                MemoryError::Backend("RCX disp32 fetch failed".into()),
+                MemoryError::Backend("RCX store instruction fetch failed".into()),
             ] {
                 let mut state = state_at(0x0000_0001_0000_1000, 0xfeed_beef_89ab_cdef);
                 let before = state.clone();
@@ -36589,6 +36591,15 @@ mod tests {
     #[test]
     fn s3_20fw_addr32_rcx_base_dword_store_uses_zero_extended_ecx_and_low_eax_payload() {
         rcx_base_dword_store_contract(&[0x67, 0x89, 0x01], 0_i64);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_20fy_addr32_rcx_disp8_dword_store_uses_wrapped_ecx_and_low_eax_payload() {
+        for displacement in u8::MIN..=u8::MAX {
+            let source = [0x67, 0x89, 0x41, displacement];
+            rcx_base_dword_store_contract(&source, i64::from(displacement as i8));
+        }
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

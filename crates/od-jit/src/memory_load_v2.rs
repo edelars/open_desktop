@@ -1082,6 +1082,7 @@ fn checked_dword_load_metadata_v2(
 /// `67 89 04 05/45/85/C5 id` (`MOV [low32(RAX)*scale+sign-extended disp32],EAX`), or
 /// `67 89 00` (`MOV [EAX],EAX`)
 /// or `67 89 01` (`MOV [ECX],EAX`)
+/// or `67 89 41 ib` (`MOV [ECX+sign-extended disp8],EAX`)
 /// or `67 89 40 ib` (`MOV [EAX+sign-extended disp8],EAX`),
 /// or `67 89 80 id` (`MOV [EAX+sign-extended disp32],EAX`)
 /// through the common block builder, typed IR, allocator, and runtime helper emitter.
@@ -1104,6 +1105,7 @@ pub fn compile_ir_memory_dword_store_block_v2(
         && !(bytes.len() == 3 && bytes[..2] == [0x89, 0x41])
         && bytes != [0x67, 0x89, 0x00]
         && bytes != [0x67, 0x89, 0x01]
+        && !(bytes.len() == 4 && bytes[..3] == [0x67, 0x89, 0x41])
         && !(bytes.len() == 4 && bytes[..3] == [0x67, 0x89, 0x40])
         && !(bytes.len() == 7 && bytes[..3] == [0x67, 0x89, 0x80])
         && bytes != [0x89, 0x04, 0x0b]
@@ -10158,6 +10160,101 @@ mod tests {
     }
 
     #[test]
+    fn ir_dword_addr32_rcx_disp8_store_binds_all_signed_source_bytes_to_its_site() {
+        let entry = 0x8240;
+        let singleton_source = [0x67, 0x89, 0x01];
+        let singleton = compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &singleton_source).unwrap(),
+            entry,
+        )
+        .unwrap();
+
+        for displacement in u8::MIN..=u8::MAX {
+            let source = [0x67, 0x89, 0x41, displacement];
+            let block = compile_ir_memory_dword_store_block_v2(
+                CodeView::new(entry, &source).unwrap(),
+                entry,
+            )
+            .unwrap();
+            let site = block.site();
+            assert_eq!(block.source_bytes(), source);
+            assert_eq!(site.guest_rip(), entry);
+            assert_eq!(site.next_rip(), entry + 4);
+            assert_eq!(site.destination(), None);
+            assert_eq!(site.source(), Some(0));
+            assert_eq!(site.operand().base, AddressBase::Register(Register::Rcx));
+            assert_eq!(site.operand().index, None);
+            assert_eq!(site.operand().scale, 1);
+            assert_eq!(site.operand().address_size, od_isa::OperandSize::Dword);
+            assert_eq!(site.operand().size, od_isa::OperandSize::Dword);
+            assert_eq!(site.operand().displacement, i64::from(displacement as i8));
+            assert!(site.has_supported_profile());
+            assert!(site.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            assert_eq!(block.pc_map().instruction_count(), 1);
+            assert_eq!(block.pc_map().boundaries().len(), 1);
+            assert_eq!(
+                block.pc_map().boundaries()[0].rip,
+                crate::statepoints::GuestRipBoundary::Fixed(entry + 4)
+            );
+            assert_eq!(block.pc_map().boundaries()[0].instruction_index, 0);
+            assert_eq!(block.pc_map().boundaries()[0].committed_instructions, 1);
+
+            let mut forged_displacement = *site;
+            forged_displacement.operand.displacement += 1;
+            assert!(!forged_displacement
+                .matches_source_bytes(&source, MemorySiteOperationV2::Store));
+            let mut forged_base = *site;
+            forged_base.operand.base = AddressBase::Register(Register::Rax);
+            assert!(!forged_base.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+
+            for index in 0..source.len() {
+                let mut changed = source;
+                changed[index] ^= 1;
+                assert!(!site.matches_source_bytes(&changed, MemorySiteOperationV2::Store));
+                if index == 3 || changed[..3] == [0x67, 0x89, 0x40] {
+                    let changed_block = compile_ir_memory_dword_store_block_v2(
+                        CodeView::new(entry, &changed).unwrap(),
+                        entry,
+                    )
+                    .unwrap();
+                    assert!(!changed_block
+                        .site()
+                        .matches_source_bytes(&source, MemorySiteOperationV2::Store));
+                } else {
+                    assert!(compile_ir_memory_dword_store_block_v2(
+                        CodeView::new(entry, &changed).unwrap(),
+                        entry,
+                    )
+                    .is_err());
+                }
+            }
+
+            assert!(!site.matches_source_bytes(
+                &singleton_source,
+                MemorySiteOperationV2::Store
+            ));
+            assert!(!singleton
+                .site()
+                .matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        }
+
+        for neighbor in [
+            &[0x67, 0x89, 0x41, 0x80, 0x90][..],
+            &[0x67, 0x67, 0x89, 0x41, 0x80][..],
+            &[0x66, 0x67, 0x89, 0x41, 0x80][..],
+            &[0x67, 0x48, 0x89, 0x41, 0x80][..],
+            &[0x67, 0x89, 0x81, 0, 0, 0, 0][..],
+            &[0x67, 0x89, 0x04, 0x09][..],
+        ] {
+            assert!(compile_ir_memory_dword_store_block_v2(
+                CodeView::new(entry, neighbor).unwrap(),
+                entry,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
     fn ir_dword_addr32_rcx_base_store_binds_exact_source_and_site() {
         let entry = 0x8250;
         let source = [0x67, 0x89, 0x01];
@@ -10265,7 +10362,6 @@ mod tests {
             &[0x67, 0x67, 0x89, 0x01][..],
             &[0x66, 0x67, 0x89, 0x01][..],
             &[0x67, 0x48, 0x89, 0x01][..],
-            &[0x67, 0x89, 0x41, 0x00][..],
             &[0x67, 0x89, 0x04, 0x09][..],
         ] {
             assert!(!site.matches_source_bytes(neighbor, MemorySiteOperationV2::Store));
@@ -10275,6 +10371,16 @@ mod tests {
             )
             .is_err());
         }
+        let disp8_source = [0x67, 0x89, 0x41, 0x00];
+        let disp8_block = compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &disp8_source).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert!(!site.matches_source_bytes(&disp8_source, MemorySiteOperationV2::Store));
+        assert!(!disp8_block
+            .site()
+            .matches_source_bytes(&source, MemorySiteOperationV2::Store));
     }
 
     #[test]
