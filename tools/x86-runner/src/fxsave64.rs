@@ -478,7 +478,7 @@ fn execute_case(case: Fxsave64Case, repetition: u8, cpu: usize) -> Result<Fxsave
         (*shared).right_guard.fill(case.right_guard());
         (*shared).context.target_mxcsr = u32::from_le_bytes(case.mxcsr());
         for register in 0..16 {
-            (*shared).context.input_xmm[register * 16..(register + 1) * 16]
+            (&mut (*shared).context.input_xmm)[register * 16..(register + 1) * 16]
                 .copy_from_slice(&xmm_literal(case, register));
         }
     }

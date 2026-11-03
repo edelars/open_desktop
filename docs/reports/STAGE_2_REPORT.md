@@ -23988,19 +23988,23 @@ observations, and wrong stops.
 Validation on Darwin arm64: `cargo fmt --all -- --check`; `cargo test -p
 od-testkit --offline` (473 passed, including 12 FXSAVE64 evidence tests);
 `cargo check -p od-x86-runner --offline`;
-`cargo test -p od-x86-runner --offline` (14 passed); Graphify update; and direct
-clang ELF assembly/disassembly of the `global_asm!` source. Disassembly confirms
-`48 0f ae 40 40` at E followed by `cc` at E+5. The Linux x86_64 Rust target is
-installed, but its full runner check stops at an existing `native_v2.rs:533`
-Snapshot initializer missing the 142 newer fields. This reproduces unchanged
-at base `115d66f`; the `--all-targets` check also encounters existing incomplete
-native_v2 test initializers. The worktree layout check reports only its known
-worktree metadata `.git` pointer as an unmapped root file.
+`cargo test -p od-x86-runner --offline` (14 passed); Graphify update; direct
+clang ELF assembly/disassembly of the `global_asm!` source; and
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`. The Linux target `cargo check` passes for all targets after the ISSUE-029 fix;
+it type-checks but does not link the final runner binary. A current compiler
+raw-pointer lint in the S2-39k setup was satisfied with an explicit mutable
+reference to the existing XMM input array field. The two
+`native_v2.rs` schema-v2 literals now explicitly initialize the 142 optional
+fields each that were missing. `serde_json` 1.0.151 was already available and
+compiled for this target. Disassembly confirms `48 0f ae 40 40` at E followed
+by `cc` at E+5. The worktree layout check reports only its known worktree
+metadata `.git` pointer as an unmapped root file.
 
-No oracle execution occurred on this host; physical and hardware observations
-remain `not_run`. Final Linux-target Rust build/disassembly and supported-host
-runtime validation remain outstanding. Initial Sol/high review found validator
-bypasses for `not_run` pass status, CPUID FXSR/SSE, canonical/overlapping
-observation spans, and raw MXCSR_MASK consistency. This follow-up closes those
-and adds regression coverage; fresh independent code/ABI review remains
-outstanding. Parent S2-39 remains open.
+No final linked Linux oracle binary inspection, Linux runtime, ptrace oracle
+execution, or physical/hardware observation occurred on this host; each remains
+`not_run`. Initial Sol/high review found
+validator bypasses for `not_run` pass status, CPUID FXSR/SSE,
+canonical/overlapping observation spans, and raw MXCSR_MASK consistency. This
+follow-up closes those and adds regression coverage; fresh independent
+code/ABI review remains outstanding. Parent S2-39 remains open.

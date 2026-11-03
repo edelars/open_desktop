@@ -75,14 +75,20 @@ inputs, image, and guards.
 
 ## Verification status and limits
 
-This host is Darwin arm64, so execution and physical/virtual hardware evidence
-are unavailable. The installed Rust Linux x86_64 target was attempted; the
-runner check reaches a pre-existing `native_v2.rs` Snapshot initializer error
-with many newly added fields missing, outside this slice. `--all-targets` also
-exposes existing test compilation failures in that file. The independent
-`global_asm!` strings were extracted and assembled by Apple clang for ELF
-x86_64; disassembly shows `48 0f ae 40 40` at E and `cc` at E+5. This does not
-replace compiling the complete runner or inspecting its final linked binary.
+This host is Darwin arm64, so Linux runtime/ptrace execution and physical or
+virtual hardware evidence remain `not_run`. The Linux x86_64 target `cargo
+check` passes for all targets with
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`. This check type-checks the runner and tests but does not link the
+final runner binary. The former blocker was two `native_v2.rs` schema-v2
+literals missing 142 optional fields each; they now explicitly use `None`.
+`serde_json` 1.0.151 was already available and compiled for this target. A
+current compiler raw-pointer lint in the S2-39k setup was satisfied with an
+explicit mutable reference to the existing XMM input array field. The
+independent `global_asm!` strings were extracted and assembled by Apple clang
+for ELF x86_64; disassembly shows `48 0f ae 40 40` at E and `cc` at E+5. Final
+Linux binary inspection, ptrace runtime, and hardware behavior remain
+unverified.
 
 No interpreter integration, native profile widening, FXRSTOR, privileged
 gates/faults, JIT, or machine integration is added. Parent S2-39 remains open.

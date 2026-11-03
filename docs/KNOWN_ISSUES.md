@@ -50,18 +50,17 @@
 - **Основание:** S2-37dh добавляет только interpreter-only профиль и фиксирует отсутствие physical x86 acceptance в [standalone report](reports/S2_37DH_MINSS_MEMORY.md) и [shared report](reports/STAGE_2_REPORT.md#s2-37dh--minss-xmm0m32-rax). Локальные focused/full suites подтверждают fixture и semantic matrix.
 - **Следующий шаг:** включить этот точный encoding/profile в общий физический x86 acceptance substage; сравнить результат и fault ordering на целевой аппаратуре и записать конфигурацию и наблюдения. До этого не заявлять physical acceptance.
 
-### ISSUE-029 — Linux x86 runner target does not compile all tests
+### ISSUE-029 — Linux x86 runner target did not compile all tests
 
-- **Дата обнаружения:** 2026-11-01.
+- **Дата обнаружения:** 2026-11-01; исправлено 2026-11-03.
 - **Компонент:** `tools/x86-runner`, Linux x86_64-only `native_v2` backend.
-- **Статус:** открыта; найдено при попытке проверить native FSQRT denial, не вызвано S2-30ck.
-- **Основание и последствия:** на macOS host `cargo check --workspace --all-targets --offline` проходит, но `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline` завершается ошибками в Linux-only backend: `Snapshot` initializer в `native_v2.rs:533` не задаёт 98 новых profile/control fields; тестовая `Fixture` initializer в `native_v2.rs:1536` также неполна; tests используют `serde_json::json!`/`from_slice` без доступной зависимости. В результате native admission regression test не собирается/не запускается на доступном macOS host, а Linux-target regression coverage остаётся непроверенной.
-- **Воспроизведение:** указанная cross-target `cargo check`; в выводе перечислены указанные initializers и неразрешённый `serde_json`.
-- **Следующий шаг:** привести Linux-only snapshot/test fixtures к текущему `od-testkit::v2` контракту и восстановить нужную test dependency, затем собрать и выполнить x86_64 Linux native runner tests. Не считать текущую macOS workspace check доказательством Linux native backend.
-- **S2-30cl:** `D9 F8` добавлен в существующий native x87-deny regression matrix, но эта Linux-only проверка не запускалась из-за описанного compile failure. См. [S2-30cl report](reports/S2_30CL_X87_FPREM.md).
-- **S2-30cm:** `D9 F5` добавлен в тот же Linux-only native x87-deny matrix. Этот тест не запускался на macOS host; Linux native backend остаётся непроверенным до исправления/запуска соответствующего target. См. [S2-30cm report](reports/S2_30CM_X87_FPREM1.md).
-
-- **S2-37dj:** cross-target check повторён 2026-11-02 после добавления `ADDSD` m64 denial test. Он остаётся заблокирован теми же неполными native_v2.rs snapshot/test fixture initializers и отсутствующим serde_json; новые поля S2-37dj заданы в этих initializer-ах, остальные существующие поля по-прежнему отсутствуют. Новый native denial test не собран и не запускался. См. [S2-37dj report](reports/S2_37DJ_ADDSD_MEMORY.md).
+- **Статус:** compile blocker решён 2026-11-03. Linux runtime/native admission execution, ptrace oracle execution и hardware acceptance остаются `not_run` на Darwin arm64 host.
+- **Основание и последствия:** ранее `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline` обнаруживал два неполных Linux-only initializer-а в `native_v2.rs`: `Snapshot` и тестовый `Fixture`. Каждый не задавал 142 текущих optional control fields schema-v2. Все поля теперь явно заданы как `None`; наблюдаемое состояние, native admission policy и семантика не менялись. `serde_json` 1.0.151 уже присутствует в зависимостях runner и успешно компилируется для Linux target; отдельная dependency правка не потребовалась.
+- **Воспроизведение и результат:** указанная cross-target команда после исправления завершается успешно для `--all-targets --offline`. Это подтверждает успешную type-check проверку Linux x86_64 targets, но не линкует final runner binary и не подтверждает Linux runtime, ptrace, native admission execution или hardware behavior.
+- **Следующий шаг:** выполнить Linux native admission regression tests и S2-39k ptrace run на подходящей Linux x86_64 системе; hardware acceptance требует отдельно описанной физической среды и evidence. Не трактовать успешный cross-target type-check как выполнение этих проверок.
+- **S2-30cl:** `D9 F8` добавлен в существующий native x87-deny regression matrix. После устранения compile blocker тест проходит Linux target type-check; runtime execution остаётся `not_run`. См. [S2-30cl report](reports/S2_30CL_X87_FPREM.md).
+- **S2-30cm:** `D9 F5` добавлен в тот же Linux-only native x87-deny matrix. После устранения compile blocker тест проходит Linux target type-check; runtime execution остаётся `not_run`. См. [S2-30cm report](reports/S2_30CM_X87_FPREM1.md).
+- **S2-37dj:** прежнее cross-target compile препятствие устранено. Тест denial для `ADDSD` m64 проходит Linux target type-check, но на Darwin arm64 host не запускался. См. [S2-37dj report](reports/S2_37DJ_ADDSD_MEMORY.md).
 
 ### ISSUE-028 — Неподтверждённый внешний report о CVTPI2PS memory x87 transition
 
