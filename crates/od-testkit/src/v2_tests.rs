@@ -435,6 +435,20 @@ fn masked_subss_and_divss_memory_permission_rules_remain_unchanged() {
         .write = true;
     assert!(subss.validate().is_ok());
 
+    let mut mulss = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37dm_mulss_m32_memory_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    mulss
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "data")
+        .unwrap()
+        .permissions
+        .write = true;
+    assert!(mulss.validate().is_ok());
+
     let mut divss = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_37do_divss_m32_memory_rax.case.json"
     ))
@@ -530,6 +544,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                 divss_controls: input.fixture.divss_controls,
                 mulsd_controls: input.fixture.mulsd_controls,
                 mulss_controls: input.fixture.mulss_controls,
+                mulss_memory_rax_unmasked_controls: input
+                    .fixture
+                    .mulss_memory_rax_unmasked_controls,
                 mulps_controls: input.fixture.mulps_controls,
                 subps_controls: input.fixture.subps_controls,
                 subsd_controls: input.fixture.subsd_controls,
@@ -11219,4 +11236,133 @@ fn subsd_memory_write_permission_preserves_masked_admission_only() {
     assert_eq!(unmasked.profile, Profile::LongSubsdMemoryRaxUnmaskedV1);
     unmasked.memory[1].permissions.write = true;
     assert!(unmasked.validate().is_err());
+}
+
+#[test]
+fn mulss_memory_unmasked_raw_u32_oracle_matrix() {
+    let seed = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38ag_mulss_memory_unmasked_wpr_min_normal.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    let operands: [(u32, u32); 13] = [
+        (0x7fc0_0001, 0x3f80_0000), // QNaN in destination.
+        (0x3f80_0000, 0xffc1_2345), // signed QNaN in memory.
+        (0x7f80_0001, 0x3f80_0000), // SNaN in destination.
+        (0x3f80_0000, 0xff80_0001), // signed SNaN in memory.
+        (0x7fc0_0001, 0x0000_0001), // QNaN suppresses denormal.
+        (0x0000_0000, 0xff80_0000), // zero times negative infinity.
+        (0x8000_0000, 0xc040_0000), // signed zero times negative finite.
+        (0x7f80_0000, 0xc000_0000), // signed infinity product.
+        (0x4000_0000, 0x3f00_0000), // exact product.
+        (0x3f8c_cccd, 0x3f8c_cccd), // inexact product.
+        (0x0000_0001, 0x3f00_0000), // tiny inexact product.
+        (0x7f7f_ffff, 0x4000_0000), // overflow.
+        (0x007f_ffff, 0x3f80_0001), // WPR rounds to minimum normal.
+    ];
+    let mut comparisons = 0usize;
+    for (vector_index, (lhs, rhs)) in operands.into_iter().enumerate() {
+        for rc in 0..4u32 {
+            for sticky in 0..64u32 {
+                for masks in 0..16u32 {
+                    for osxmmexcpt in [false, true] {
+                        let mask_bits = ((masks & 1) << 7)
+                            | (((masks >> 1) & 1) << 8)
+                            | (((masks >> 2) & 1) << 9)
+                            | (((masks >> 3) & 1) << 12)
+                            | (1 << 10)
+                            | (1 << 11);
+                        let mxcsr = (rc << 13) | sticky | mask_bits;
+                        let mut fixture = seed.clone();
+                        fixture.case_id = format!(
+                            "s2_38ag_matrix_{vector_index}_{rc}_{sticky}_{masks}_{osxmmexcpt}"
+                        );
+                        fixture.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(
+                            0..8,
+                            &lhs.to_le_bytes()
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>(),
+                        );
+                        fixture.memory[1].initial_bytes_hex = rhs
+                            .to_le_bytes()
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect();
+                        fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                            HexU64(u64::from(mxcsr));
+                        fixture
+                            .mulss_memory_rax_unmasked_controls
+                            .as_mut()
+                            .unwrap()
+                            .cr4_osxmmexcpt = osxmmexcpt;
+                        let (value, ie, de, oe, ue, pe) = independent_mulss(lhs, rhs, mxcsr);
+                        let pre = ie && mxcsr & (1 << 7) == 0 || de && mxcsr & (1 << 8) == 0;
+                        let post = !pre && pe && mxcsr & (1 << 12) == 0;
+                        let faults = pre || post;
+                        fixture.expected_exit = if faults {
+                            ExpectedExit::Exception
+                        } else {
+                            ExpectedExit::StopAddress
+                        };
+                        fixture
+                            .validate()
+                            .unwrap_or_else(|error| panic!("fixture: {error:?}"));
+                        let loaded = LoadedFixture {
+                            fixture,
+                            input_sha256: "0".repeat(64),
+                        };
+                        let mut actual = result(&loaded);
+                        let snapshot = match &mut actual.snapshot {
+                            Observation::Available { value } => value,
+                            _ => unreachable!(),
+                        };
+                        let status = HexU64(u64::from(
+                            mxcsr
+                                | u32::from(ie)
+                                | (u32::from(de) << 1)
+                                | (u32::from(oe) << 3)
+                                | (u32::from(ue) << 4)
+                                | (u32::from(pe) << 5),
+                        ));
+                        snapshot.state.sse.as_mut().unwrap().mxcsr = status;
+                        if faults {
+                            let vector = if osxmmexcpt { 19 } else { 6 };
+                            actual.outcome = Outcome::Exception {};
+                            actual.instructions_executed =
+                                Observation::Available { value: HexU64(0) };
+                            snapshot.state = loaded.fixture.initial_state.clone();
+                            snapshot.state.sse.as_mut().unwrap().mxcsr = status;
+                            snapshot.exception = Observation::Available {
+                                value: Some(crate::result::ExceptionSnapshot {
+                                    vector,
+                                    error_code: Observation::Unavailable {
+                                        reason: "exception has no architectural error code".into(),
+                                    },
+                                    faulting_rip: loaded.fixture.initial_state.rip,
+                                    fault_address: Observation::Unavailable {
+                                        reason: "not applicable to SIMD exception".into(),
+                                    },
+                                }),
+                            };
+                        } else {
+                            snapshot.state.sse.as_mut().unwrap().xmm[0].replace_range(
+                                0..8,
+                                &value
+                                    .to_le_bytes()
+                                    .iter()
+                                    .map(|byte| format!("{byte:02x}"))
+                                    .collect::<String>(),
+                            );
+                        }
+                        actual.validate_for(&loaded).unwrap_or_else(|error| {
+                            panic!("vector={vector_index} RC={rc} sticky={sticky:#x} masks={masks:#x} OSXMMEXCPT={osxmmexcpt}: {error:?}")
+                        });
+                        comparisons += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(comparisons, 13 * 4 * 64 * 16 * 2);
 }

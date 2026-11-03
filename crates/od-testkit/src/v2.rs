@@ -372,6 +372,8 @@ pub enum Profile {
     LongSubsdMemoryRaxUnmaskedV1,
     #[serde(rename = "s2-long-mulss-memory-rax-v1")]
     LongMulssMemoryRaxV1,
+    #[serde(rename = "s2-long-mulss-memory-unmasked-rax-v1")]
+    LongMulssMemoryRaxUnmaskedV1,
     #[serde(rename = "s2-long-mulsd-memory-rax-v1")]
     LongMulsdMemoryRaxV1,
     #[serde(rename = "s2-long-subss-registers-v1")]
@@ -1556,6 +1558,7 @@ impl IntegerState {
                     | Profile::LongAddsdMemoryRaxV1
                     | Profile::LongAddsdMemoryRaxUnmaskedV1
                     | Profile::LongMulssMemoryRaxV1
+                    | Profile::LongMulssMemoryRaxUnmaskedV1
                     | Profile::LongMulsdMemoryRaxV1
                     | Profile::LongSubsdMemoryRaxV1
                     | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -1664,6 +1667,7 @@ impl IntegerState {
                     | Profile::LongSubpsRegistersV1
                     | Profile::LongSubsdRegistersV1
                     | Profile::LongMulssMemoryRaxV1
+                    | Profile::LongMulssMemoryRaxUnmaskedV1
                     | Profile::LongMulsdMemoryRaxV1
                     | Profile::LongSubsdMemoryRaxV1
                     | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -1994,6 +1998,7 @@ impl IntegerState {
                 | Profile::LongSubpsRegistersV1
                 | Profile::LongSubsdRegistersV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -2285,6 +2290,7 @@ impl IntegerState {
                 | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -2710,6 +2716,7 @@ impl IntegerState {
             | Profile::LongSubpsRegistersV1
             | Profile::LongSubsdRegistersV1
             | Profile::LongMulssMemoryRaxV1
+            | Profile::LongMulssMemoryRaxUnmaskedV1
             | Profile::LongMulsdMemoryRaxV1
             | Profile::LongSubsdMemoryRaxV1
             | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -2849,6 +2856,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryUnmaskedRaxV1
                 | Profile::LongMaxpdMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
@@ -3141,6 +3149,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryUnmaskedRaxV1
                 | Profile::LongMaxpdMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
@@ -3438,6 +3447,7 @@ impl IntegerState {
                 | Profile::LongMinpdMemoryUnmaskedRaxV1
                 | Profile::LongMaxpdMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
@@ -3745,6 +3755,7 @@ impl IntegerState {
                 | Profile::LongMaxpdMemoryUnmaskedRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongDivpdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
@@ -4327,6 +4338,7 @@ impl IntegerState {
                 | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongDivssMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
@@ -4389,6 +4401,7 @@ impl IntegerState {
                 | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongDivssMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
@@ -4722,6 +4735,7 @@ impl IntegerState {
                 | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -5027,6 +5041,7 @@ impl IntegerState {
                 | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -5290,6 +5305,7 @@ impl IntegerState {
                 | Profile::LongMinssMemoryUnmaskedRaxV1
                 | Profile::LongMaxssMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
@@ -5651,6 +5667,8 @@ pub struct Fixture {
     pub mulsd_controls: Option<MulsdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mulss_controls: Option<MulssControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mulss_memory_rax_unmasked_controls: Option<MulssMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mulps_controls: Option<SubpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6041,6 +6059,15 @@ pub type DivpdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type DivpsControlSnapshot = SqrtssControlSnapshot;
 pub type MulsdControlSnapshot = Cvtdq2psControlSnapshot;
 pub type MulssControlSnapshot = SubpsControlSnapshot;
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MulssMemoryRaxUnmaskedControlSnapshot {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
 pub type SubsdControlSnapshot = Cvtdq2psControlSnapshot;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -14668,6 +14695,98 @@ impl Fixture {
                 ));
             }
         }
+        if self.profile == Profile::LongMulssMemoryRaxUnmaskedV1 {
+            let controls = self.mulss_memory_rax_unmasked_controls.ok_or_else(|| {
+                invalid(
+                    "mulss_memory_rax_unmasked_controls",
+                    "required by unmasked MULSS m32 profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by unmasked MULSS m32"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by unmasked MULSS m32"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if self.mulss_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || decode_bytes(&code.initial_bytes_hex)? != [0xf3, 0x0f, 0x59, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 4
+                || !data.permissions.read
+                || data.permissions.write
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress | ExpectedExit::Unsupported
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "unmasked MULSS m32 requires exact F3 0F 59 00, one executable code and read-only data mapping, budget 1, and entry+4 stop",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by unmasked MULSS m32"))?
+                .mxcsr
+                .get() as u32;
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "unmasked MULSS m32 requires supported MXCSR bits, DAZ=FTZ=0, OM=UM=1, and reserved bits clear",
+                ));
+            }
+            let gate = !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let ac = !gate && !nm && self.initial_state.rflags.get() & (1 << 18) != 0;
+            let last = source.checked_add(3);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let span = last.is_none_or(|last| !canonical(source) || !canonical(last));
+            let lhs_bytes = decode_bytes(&self.initial_state.sse.as_ref().unwrap().xmm[0])?;
+            let lhs = u32::from_le_bytes(lhs_bytes[..4].try_into().unwrap());
+            let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+            let rhs = u32::from_le_bytes(rhs_bytes[..4].try_into().unwrap());
+            let (_, ie, de, _, _, pe) = independent_mulss(lhs, rhs, mxcsr);
+            let pre = ie && mxcsr & (1 << 7) == 0 || de && mxcsr & (1 << 8) == 0;
+            let post = !pre && pe && mxcsr & (1 << 12) == 0;
+            let expected = if gate || nm {
+                ExpectedExit::Exception
+            } else if ac {
+                ExpectedExit::Unsupported
+            } else if span || pre || post {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect unmasked MULSS gates, AC, canonical span, and IE/DE/PE events",
+                ));
+            }
+        } else if self.mulss_memory_rax_unmasked_controls.is_some() {
+            return Err(invalid(
+                "mulss_memory_rax_unmasked_controls",
+                "only valid for the unmasked MULSS m32 profile",
+            ));
+        }
         if self.profile == Profile::LongMulsdMemoryRaxV1 {
             let controls = self
                 .mulsd_controls
@@ -18178,10 +18297,12 @@ impl Fixture {
                 Profile::LongMulssRegistersV1 => {
                     mulss_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
-                Profile::LongMulssMemoryRaxV1 => decode_bytes(&code_bytes)
-                    .ok()
-                    .filter(|bytes| bytes == &[0xf3, 0x0f, 0x59, 0x00])
-                    .map(|_| 4),
+                Profile::LongMulssMemoryRaxV1 | Profile::LongMulssMemoryRaxUnmaskedV1 => {
+                    decode_bytes(&code_bytes)
+                        .ok()
+                        .filter(|bytes| bytes == &[0xf3, 0x0f, 0x59, 0x00])
+                        .map(|_| 4)
+                }
                 Profile::LongMulsdMemoryRaxV1 => decode_bytes(&code_bytes)
                     .ok()
                     .filter(|bytes| bytes == &[0xf2, 0x0f, 0x59, 0x00])
@@ -20427,6 +20548,7 @@ impl Fixture {
             divss_controls: None,
             mulsd_controls: None,
             mulss_controls: None,
+            mulss_memory_rax_unmasked_controls: None,
             mulps_controls: None,
             subps_controls: None,
             subsd_controls: None,
@@ -20664,6 +20786,8 @@ pub struct Snapshot {
     pub mulsd_controls: Option<MulsdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mulss_controls: Option<MulssControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mulss_memory_rax_unmasked_controls: Option<MulssMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mulps_controls: Option<SubpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -21416,6 +21540,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.mulss_controls",
                 "only valid for the MULSS profile",
+            ));
+        }
+        if self.profile == Profile::LongMulssMemoryRaxUnmaskedV1 {
+            if snapshot.mulss_memory_rax_unmasked_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.mulss_memory_rax_unmasked_controls",
+                    "required by the unmasked MULSS profile",
+                ));
+            }
+        } else if snapshot.mulss_memory_rax_unmasked_controls.is_some() {
+            return Err(invalid(
+                "snapshot.mulss_memory_rax_unmasked_controls",
+                "only valid for the unmasked MULSS profile",
             ));
         }
         if matches!(
@@ -22715,6 +22852,7 @@ impl RunResult {
                 | Profile::LongAddsdMemoryRaxV1
                 | Profile::LongAddsdMemoryRaxUnmaskedV1
                 | Profile::LongMulssMemoryRaxV1
+                | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongDivssMemoryRaxV1
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
@@ -23392,6 +23530,25 @@ impl RunResult {
             }
             match (
                 loaded.fixture.profile,
+                loaded.fixture.mulss_memory_rax_unmasked_controls,
+                value.mulss_memory_rax_unmasked_controls,
+            ) {
+                (Profile::LongMulssMemoryRaxUnmaskedV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongMulssMemoryRaxUnmaskedV1, _, _) => {
+                    return Err(FormatError::CaseMismatch(
+                        "mulss_memory_rax_unmasked_controls",
+                    ));
+                }
+                (_, None, None) => {}
+                _ => {
+                    return Err(FormatError::CaseMismatch(
+                        "mulss_memory_rax_unmasked_controls",
+                    ));
+                }
+            }
+            match (
+                loaded.fixture.profile,
                 loaded.fixture.mulps_controls,
                 value.mulps_controls,
             ) {
@@ -23524,6 +23681,8 @@ impl RunResult {
                 validate_mulsd_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulsdMemoryRaxV1 {
                 validate_mulsd_memory_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongMulssMemoryRaxUnmaskedV1 {
+                validate_mulss_memory_rax_unmasked_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulssMemoryRaxV1 {
                 validate_mulss_memory_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulssRegistersV1 {
@@ -30933,6 +31092,155 @@ fn validate_mulss_memory_result(
         (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
         (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("MULSS m32 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_mulss_memory_rax_unmasked_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .mulss_memory_rax_unmasked_controls
+        .ok_or(FormatError::CaseMismatch(
+            "mulss_memory_rax_unmasked_controls",
+        ))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0xf3, 0x0f, 0x59, 0x00] {
+        return Err(FormatError::CaseMismatch("MULSS m32 encoding"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let lhs = u32::from_le_bytes(lhs_bytes[..4].try_into().unwrap());
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let rhs = u32::from_le_bytes(rhs_bytes[..4].try_into().unwrap());
+    let old_mxcsr = initial_sse.mxcsr.get() as u32;
+    let (value, ie, de, oe, ue, pe) = independent_mulss(lhs, rhs, old_mxcsr);
+    let pre_unmasked = ie && old_mxcsr & (1 << 7) == 0 || de && old_mxcsr & (1 << 8) == 0;
+    let post_unmasked = !pre_unmasked && pe && old_mxcsr & (1 << 12) == 0;
+    let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let source = fixture.initial_state.gpr[0].get();
+    let ac_refusal = gate.is_none() && fixture.initial_state.rflags.get() & (1 << 18) != 0;
+    let last = source.checked_add(3);
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let arithmetic = pre_unmasked || post_unmasked;
+    let fault = gate
+        .or_else(|| (!ac_refusal && span_fault).then_some(13))
+        .or_else(|| {
+            (!ac_refusal && !span_fault && arithmetic).then_some(if controls.cr4_osxmmexcpt {
+                19
+            } else {
+                6
+            })
+        });
+    let unsupported = gate.is_none() && ac_refusal;
+    if !matches!(
+        (fault, unsupported, fixture.expected_exit),
+        (Some(_), false, ExpectedExit::Exception)
+            | (None, true, ExpectedExit::Unsupported)
+            | (None, false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("unmasked MULSS expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if gate.is_none() && !unsupported && !span_fault {
+        let state_sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        state_sse.mxcsr = HexU64(u64::from(
+            old_mxcsr
+                | u32::from(ie)
+                | (u32::from(de) << 1)
+                | (u32::from(oe) << 3)
+                | (u32::from(ue) << 4)
+                | (u32::from(pe) << 5),
+        ));
+        if !pre_unmasked && !post_unmasked {
+            let mut xmm = decode_bytes(&state_sse.xmm[0])?;
+            xmm[..4].copy_from_slice(&value.to_le_bytes());
+            state_sse.xmm[0] = crate::memory::encode_bytes(&xmm);
+            expected.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(4)
+                    .ok_or(FormatError::CaseMismatch("MULSS m32 RIP overflow"))?,
+            );
+        }
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch("unmasked MULSS m32 output state"));
+    }
+    let retired = fault.is_none() && !unsupported;
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(retired)),
+        })
+    {
+        return Err(FormatError::CaseMismatch("unmasked MULSS retirement"));
+    }
+    match (fault, unsupported, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            false,
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}
+        (None, false, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "unmasked MULSS outcome/exception",
+            ));
+        }
     }
     Ok(())
 }

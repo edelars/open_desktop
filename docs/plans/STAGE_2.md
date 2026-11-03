@@ -679,7 +679,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38ad | Exact Long64 ADDSD XMM0,m64 [RAX], unmasked IE/DE/PE profile; interpreter-only | 20 signed-NaN/subnormal and other vectors × 4 RC ×64 stickies ×8 IM/DM/PM masks ×2 OSXMMEXCPT =81,920 executions; four literal fixtures, result/control/exception/#GP tampering and backend denial; Sol/high review clean after NaN+DE/tampering fixes; preserve S2-37dj/S2-37bb; no physical x86 acceptance; [report](../reports/S2_38AD_ADDSD_MEMORY_UNMASKED.md) |
 | [x] | S2-38ae | Exact Long64 `SUBSS XMM0,m32 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 21 operand/event pairs × 4 RC ×64 sticky histories ×8 IM/DM/PM masks ×2 OSXMMEXCPT =86,016 raw-u32 memory-RHS oracle executions; five literal fixtures; one-read unaligned/canonical-span/read rollback, schema/result/backend checks; affected package suites, workspace check, Graphify and fmt pass; Sol/high review clean after permission regression fix; [report](../reports/S2_38AE_SUBSS_MEMORY_UNMASKED.md); preserve S2-37dk/S2-37aq; no physical x86 acceptance |
 | [x] | S2-38af | Exact Long64 `SUBSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 22 raw operand vectors ×4 RC ×64 sticky histories ×16 IM/DM/ZM/PM masks ×2 OSXMMEXCPT =180,224 independent raw-u64 cases; four literal fixtures, precedence-aware status validation, pre/post suppression, one read8, AC/span/read rollback, result/control/backend tampering and #GP(0); S2-37dl/S2-37ap preserved; Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AF_SUBSD_MEMORY_UNMASKED.md) |
-| [ ] | S2-38ag | Exact Long64 `MULSS XMM0,m32 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dm masked memory, S2-37au register semantics, and S2-38ae control/fault pattern; independent raw-u32 memory-RHS oracle over RC × 64 sticky histories × IM/DM/ZM/PM × OSXMMEXCPT; zero×infinity, signed NaNs, subnormal DE, WPR tininess, PE and preservation/backend checks; Sol/high review required; no physical x86 acceptance |
+| [ ] | S2-38ag | Exact Long64 `MULSS XMM0,m32 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | Implementation in isolated worktree: 13 raw-u32 event vectors ×4 RC ×64 prior stickies ×16 IM/DM/ZM/PM ×2 OSXMMEXCPT =106,496 independent oracle/result validations; three literal fixtures; direct gate/fetch/CPL/TS, AC, unaligned one-read, canonical-span/read rollback, status/result/control tampering and backend denial; masked S2-37dm/S2-37dk/S2-37do permission behavior checked; Sol/high review pending; [report](../reports/S2_38AG_MULSS_MEMORY_UNMASKED.md); no physical x86 acceptance |
 | [ ] | S2-38ah | Exact Long64 `MULSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dn masked memory, S2-37at register semantics, and S2-38af control/fault pattern; independent raw-u64 memory-RHS oracle over RC × 64 sticky histories × IM/DM/ZM/PM × OSXMMEXCPT; zero×infinity, signed NaNs, subnormal DE, WPR tininess, PE and preservation/backend checks; Sol/high review required; no physical x86 acceptance |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -18698,23 +18698,23 @@ Verification and independent review status are recorded in the
 acceptance is not claimed; unmasked OE/UE and generic, fragment, C ABI and JIT
 routes remain closed.
 
-#### S2-38ag — planned outcomes for exact MULSS memory form
+#### S2-38ag — implementation status for exact MULSS memory form
 
-Implement a separate immutable schema-v2 interpreter-only profile for exact
-Long64 `F3 0F 59 00`, SSE bit 25 and read-only m32 `[RAX]`, one read4, budget
-one and stop RIP=entry+4. Preserve masked-memory S2-37dm and register S2-37au.
-Require `DAZ=FTZ=0`, reserved MXCSR bits clear and `OM=UM=1`, while admitting
-every RC, IM/DM/ZM/PM mask and previous sticky history. Use existing raw MULSS
-semantics and an independent integer-only raw-u32 oracle that consumes memory
-RHS. Preserve original-operand NaN priority and WPR tininess-after-rounding.
-Cover SNaN/QNaN in either position, NaN+subnormal, zero×infinity invalid,
-signed zero/infinity, exact/inexact products, overflow, tiny/underflow, and
-rounding to min-normal. Verify unmasked IE/DE pre-events suppress postcompute
-OE/UE/PE; masked pre-events followed by unmasked PE suppress the destination,
-RIP and retirement while committing applicable status. Include fetch/gate/CPL,
-AC-before-span/read, unaligned access when AC=0, canonical span/read rollback,
-read-only input, fixtures, result/control tampering and backend denial. Native/
-JIT/C ABI/generic/fragment and physical x86 acceptance remain closed.
+Implemented in the assigned isolated worktree as immutable schema-v2 profile
+`s2-long-mulss-memory-unmasked-rax-v1` for exact Long64 `F3 0F 59 00`, SSE
+bit 25 and read-only m32 `[RAX]`. It performs one read4 after checked
+canonical48 span validation, with full fetch and gate ordering, AC refusal,
+unaligned AC=0 access, rollback, and whole-state suppression for unmasked
+IE/DE/PE. The dedicated controls echo includes OSXMMEXCPT; the independent
+raw-u32 oracle checks 106,496 combinations across 13 event vectors. Three
+literal fixtures and the direct ISA probes are in place. The existing masked
+MULSS/SUBSS/DIVSS writable-data admission remains covered. Package suites passed
+(od-isa 1,959; od-testkit 460; od-runner 138 unit + 561 fixture tests), as did
+the workspace all-target offline check, formatting, Graphify refresh, and diff
+check. `tools/check_layout.py` still reports the worktree `.git` marker and two
+pre-existing links to absent `work/` oracle manifests from the aggregate report.
+Independent Sol/high review is pending. Native/JIT/C ABI/generic/fragment routes
+and physical x86 acceptance remain closed. See the [standalone report](../reports/S2_38AG_MULSS_MEMORY_UNMASKED.md).
 
 #### S2-38ah — planned outcomes for exact MULSD memory form
 

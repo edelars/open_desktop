@@ -528,6 +528,16 @@ pub struct SubssMemoryRaxUnmaskedControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// SSE and SIMD exception-delivery controls for unmasked MULSS m32 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MulssMemoryRaxUnmaskedControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit SSE2 gates for the exact local SUBSD m64-at-RAX profile.
 pub type SubsdMemoryRaxControls = SubsdControls;
 
@@ -555,6 +565,7 @@ enum ScalarFloatMemoryRaxProfile {
     Divss(DivssMemoryRaxControls),
     Divsd(DivsdMemoryRaxControls),
     Mulss(MulssControls),
+    MulssUnmasked(MulssMemoryRaxUnmaskedControls),
     Mulsd(MulsdMemoryRaxControls),
     Subss(SubssMemoryRaxControls),
     SubssUnmasked(SubssMemoryRaxUnmaskedControls),
@@ -19882,6 +19893,23 @@ pub fn run_with_mulss_memory_rax_controls(
     )
 }
 
+/// Execute exact legacy `F3 0F 59 00` MULSS m32-at-RAX with unmasked IE/DE/PE delivery.
+pub fn run_with_mulss_memory_rax_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: MulssMemoryRaxUnmaskedControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_scalar_float_memory_rax_profile(
+        state,
+        memory,
+        config,
+        ScalarFloatMemoryRaxProfile::MulssUnmasked(controls),
+        stop_requested,
+    )
+}
+
 /// Execute exact legacy `F3 0F 5E 00` DIVSS m32-at-RAX with explicit gates.
 pub fn run_with_divss_memory_rax_controls(
     state: &mut LongModeState,
@@ -22721,6 +22749,16 @@ fn step_configured(
                     && !instruction.prefixes.address_override
                     && instruction.prefixes.rex.is_none()
             }
+            (ScalarFloatMemoryRaxProfile::MulssUnmasked(_), Operation::MulssMemoryRax) => {
+                instruction.length == 4
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x59
+                    && instruction.prefixes.group1 == Some(0xf3)
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.is_none()
+            }
             (ScalarFloatMemoryRaxProfile::Mulsd(_), Operation::MulsdMemoryRax) => {
                 instruction.length == 4
                     && instruction.opcode.map == OpcodeMap::Escape0f
@@ -22800,6 +22838,15 @@ fn step_configured(
                     None
                 }
             }
+            ScalarFloatMemoryRaxProfile::MulssUnmasked(controls) => {
+                if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+                    Some(6)
+                } else if controls.cr0_ts {
+                    Some(7)
+                } else {
+                    None
+                }
+            }
             ScalarFloatMemoryRaxProfile::Mulsd(controls) => {
                 if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
                     Some(6)
@@ -22864,7 +22911,8 @@ fn step_configured(
         let invalid_mxcsr = sse.mxcsr & !0xffbf != 0
             || sse.mxcsr & ((1 << 6) | (1 << 15)) != 0
             || match profile {
-                ScalarFloatMemoryRaxProfile::SubssUnmasked(_)
+                ScalarFloatMemoryRaxProfile::MulssUnmasked(_)
+                | ScalarFloatMemoryRaxProfile::SubssUnmasked(_)
                 | ScalarFloatMemoryRaxProfile::SubsdUnmasked(_) => {
                     sse.mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
                 }
@@ -34285,6 +34333,115 @@ fn step_configured(
                 }));
             }
             sse.xmm[usize::from(destination)] = result;
+        }
+        Operation::MulssMemoryRax
+            if matches!(
+                configured_scalar_float_memory_rax_profile,
+                Some(ScalarFloatMemoryRaxProfile::MulssUnmasked(_))
+            ) =>
+        {
+            let address = state.gpr[Register::Rax as usize];
+            if state.rflags & (1 << 18) != 0 {
+                return Ok(StepOutcome::Unsupported {
+                    opcode: instruction.opcode.byte,
+                });
+            }
+            let Some(last) = address.checked_add(3) else {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            };
+            if !long_decode::canonical(address) || !long_decode::canonical(last) {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            let mut source = [0u8; 4];
+            memory.read(address, context, &mut source)?;
+            let (destination_xmm, old_mxcsr) = {
+                let sse = state.sse.as_ref().expect("MULSS memory state prevalidated");
+                (sse.xmm[0], sse.mxcsr)
+            };
+            let lhs = u32::from_le_bytes(destination_xmm[..4].try_into().unwrap());
+            let rhs = u32::from_le_bytes(source);
+            let lhs_class = Binary32::from_bits(lhs).class();
+            let rhs_class = Binary32::from_bits(rhs).class();
+            let lhs_nan = matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+            let rhs_nan = matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+            let invalid_product = (lhs_class == BinaryClass::Infinity
+                && rhs_class == BinaryClass::Zero)
+                || (lhs_class == BinaryClass::Zero && rhs_class == BinaryClass::Infinity);
+            let new_ie = lhs_class == BinaryClass::SignalingNaN
+                || rhs_class == BinaryClass::SignalingNaN
+                || (!lhs_nan && !rhs_nan && invalid_product);
+            let new_de = !lhs_nan
+                && !rhs_nan
+                && !invalid_product
+                && (lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal);
+            let controls = match configured_scalar_float_memory_rax_profile
+                .expect("MULSS memory profile prevalidated")
+            {
+                ScalarFloatMemoryRaxProfile::MulssUnmasked(controls) => controls,
+                _ => unreachable!("MULSS unmasked arm has its matching profile"),
+            };
+            let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+            let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+            if unmasked_ie || unmasked_de {
+                let sse = state.sse.as_mut().expect("MULSS memory state prevalidated");
+                sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            let computed = if lhs_nan || rhs_nan || invalid_product {
+                None
+            } else {
+                Some(Binary32::multiply_raw_result(
+                    Binary32::from_bits(lhs),
+                    Binary32::from_bits(rhs),
+                    cvtss2si_rounding_mode(old_mxcsr),
+                ))
+            };
+            let raw = if lhs_nan || rhs_nan {
+                let (selected, selected_snan) = if lhs_nan {
+                    (lhs, lhs_class == BinaryClass::SignalingNaN)
+                } else {
+                    (rhs, rhs_class == BinaryClass::SignalingNaN)
+                };
+                selected | if selected_snan { 1 << 22 } else { 0 }
+            } else if invalid_product {
+                0xffc0_0000
+            } else {
+                computed
+                    .expect("finite MULSS operands were evaluated")
+                    .value()
+                    .to_bits()
+            };
+            let new_oe = computed.is_some_and(|value| value.overflow());
+            let new_ue = computed
+                .is_some_and(|value| value.tiny_after_precision_rounding() && value.inexact());
+            let new_pe = computed.is_some_and(|value| value.inexact() || value.overflow());
+            let sse = state.sse.as_mut().expect("MULSS memory state prevalidated");
+            sse.mxcsr = old_mxcsr
+                | u32::from(new_ie)
+                | (u32::from(new_de) << 1)
+                | (u32::from(new_oe) << 3)
+                | (u32::from(new_ue) << 4)
+                | (u32::from(new_pe) << 5);
+            if new_pe && old_mxcsr & (1 << 12) == 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            sse.xmm[0][..4].copy_from_slice(&raw.to_le_bytes());
         }
         Operation::MulssMemoryRax
             if matches!(
@@ -177398,6 +177555,335 @@ mod cvtsi2ss_r64_memory_profile_tests {
             step(&mut unconfigured, &mut memory, AccessContext::default()).unwrap(),
             StepOutcome::Unsupported { opcode: 0x59 }
         );
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn mulss_memory_rax_unmasked_orders_gates_memory_and_simd_events() {
+        use crate::memory::{AccessKind, PrivilegeLevel};
+
+        let code = [0xf3, 0x0f, 0x59, 0x00];
+        let controls = MulssMemoryRaxUnmaskedControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let run_profile = |state: &mut LongModeState,
+                           memory: &mut Memory,
+                           controls: MulssMemoryRaxUnmaskedControls,
+                           context: AccessContext| {
+            run_with_mulss_memory_rax_unmasked_controls(
+                state,
+                memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(state.rip + 4),
+                    context,
+                },
+                controls,
+                || false,
+            )
+        };
+        let mut base = LongModeState::default();
+        base.rip = 0x5300;
+        base.gpr[Register::Rax as usize] = 0x2001;
+        base.sse = Some(SseState {
+            xmm: [[0xa5; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        base.sse.as_mut().unwrap().xmm[0][..4].copy_from_slice(&2.0f32.to_bits().to_le_bytes());
+
+        // The exact memory form admits an unaligned m32 when AC=0, and reads once.
+        let mut success = base.clone();
+        let mut memory = Memory::at(&code, 0x5300);
+        memory.data_base = 0x2000;
+        memory.bytes[1..5].copy_from_slice(&0.5f32.to_bits().to_le_bytes());
+        let result = run_profile(
+            &mut success,
+            &mut memory,
+            controls,
+            AccessContext::default(),
+        );
+        assert_eq!(result.exit, RunExit::StopAddress);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            u32::from_le_bytes(
+                success.sse.as_ref().unwrap().xmm[0][..4]
+                    .try_into()
+                    .unwrap()
+            ),
+            1.0f32.to_bits()
+        );
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2001, 4)]);
+
+        // AC refusal precedes even a noncanonical address and invokes no memory callback.
+        let mut ac = base.clone();
+        ac.gpr[Register::Rax as usize] = u64::MAX - 1;
+        ac.rflags |= 1 << 18;
+        let before = ac.clone();
+        let mut memory = Memory::at(&code, 0x5300);
+        assert_eq!(
+            run_profile(&mut ac, &mut memory, controls, AccessContext::default()).exit,
+            RunExit::Unsupported { opcode: 0x59 }
+        );
+        assert_eq!(ac, before);
+        assert!(memory.accesses.is_empty());
+
+        // The control gate precedes address validation, and TS is #NM after full fetch.
+        for (blocked, vector) in [
+            (
+                MulssMemoryRaxUnmaskedControls {
+                    sse_available: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                MulssMemoryRaxUnmaskedControls {
+                    cr0_em: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                MulssMemoryRaxUnmaskedControls {
+                    cr4_osfxsr: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                MulssMemoryRaxUnmaskedControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = base.clone();
+            state.gpr[Register::Rax as usize] = u64::MAX - 1;
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x5300);
+            assert_eq!(
+                run_profile(&mut state, &mut memory, blocked, AccessContext::default()).exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        // Full fetch completes before a missing-SSE/TS gate is evaluated.
+        let mut truncated_state = base.clone();
+        let before = truncated_state.clone();
+        let mut truncated = Memory::at(&code[..2], 0x5300);
+        truncated.fetch_error = Some((
+            0x5302,
+            MemoryError::Unmapped {
+                address: 0x5302,
+                access: AccessKind::Read,
+            },
+        ));
+        let no_sse = MulssMemoryRaxUnmaskedControls {
+            sse_available: false,
+            cr0_ts: true,
+            ..controls
+        };
+        assert!(matches!(
+            run_profile(
+                &mut truncated_state,
+                &mut truncated,
+                no_sse,
+                AccessContext::default()
+            )
+            .exit,
+            RunExit::MemoryError(_)
+        ));
+        assert_eq!(truncated_state, before);
+        assert_eq!(truncated.fetches, [0x5300, 0x5301, 0x5302]);
+        assert!(truncated.accesses.is_empty());
+
+        // An unmasked IE commits only pre-event status and suppresses destination/retirement.
+        let mut invalid = base.clone();
+        invalid.sse.as_mut().unwrap().mxcsr = 0x1f00;
+        invalid.sse.as_mut().unwrap().xmm[0][..4].copy_from_slice(&0x7f80_0001u32.to_le_bytes());
+        let before_xmm = invalid.sse.as_ref().unwrap().xmm[0];
+        let mut memory = Memory::at(&code, 0x5300);
+        memory.data_base = 0x2000;
+        memory.bytes[1..5].copy_from_slice(&0x7f7f_ffffu32.to_le_bytes());
+        let result = run_profile(
+            &mut invalid,
+            &mut memory,
+            controls,
+            AccessContext::default(),
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(invalid.sse.as_ref().unwrap().mxcsr, 0x1f01);
+        assert_eq!(invalid.sse.as_ref().unwrap().xmm[0], before_xmm);
+        assert_eq!(invalid.rip, 0x5300);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2001, 4)]);
+
+        // An unmasked DE also wins over a later inexact product and commits no PE.
+        let mut denormal = base.clone();
+        denormal.sse.as_mut().unwrap().mxcsr = 0x0e80;
+        denormal.sse.as_mut().unwrap().xmm[0][..4].copy_from_slice(&1u32.to_le_bytes());
+        let before_xmm = denormal.sse.as_ref().unwrap().xmm[0];
+        let mut memory = Memory::at(&code, 0x5300);
+        memory.data_base = 0x2000;
+        memory.bytes[1..5].copy_from_slice(&0x7f7f_ffffu32.to_le_bytes());
+        let result = run_profile(
+            &mut denormal,
+            &mut memory,
+            controls,
+            AccessContext::default(),
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(denormal.sse.as_ref().unwrap().mxcsr, 0x0e82);
+        assert_eq!(denormal.sse.as_ref().unwrap().xmm[0], before_xmm);
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None
+            })
+        );
+
+        // Precision is a post-event fault: status commits, but XMM0, RIP, and retirement do not.
+        let mut inexact = base.clone();
+        inexact.sse.as_mut().unwrap().mxcsr = 0x0f80;
+        inexact.sse.as_mut().unwrap().xmm[0][..4].copy_from_slice(&0x3f8c_cccdu32.to_le_bytes());
+        let before_xmm = inexact.sse.as_ref().unwrap().xmm[0];
+        let mut memory = Memory::at(&code, 0x5300);
+        memory.data_base = 0x2000;
+        memory.bytes[1..5].copy_from_slice(&0x3f8c_cccdu32.to_le_bytes());
+        let result = run_profile(
+            &mut inexact,
+            &mut memory,
+            controls,
+            AccessContext::default(),
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(inexact.sse.as_ref().unwrap().mxcsr, 0x0fa0);
+        assert_eq!(inexact.sse.as_ref().unwrap().xmm[0], before_xmm);
+        assert_eq!(inexact.rip, 0x5300);
+
+        // SIMD delivery switches to arithmetic #UD when OSXMMEXCPT=0, at every CPL.
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = base.clone();
+            state.sse.as_mut().unwrap().mxcsr = 0x0f80;
+            state.sse.as_mut().unwrap().xmm[0][..4].copy_from_slice(&0x3f8c_cccdu32.to_le_bytes());
+            let mut context = AccessContext::default();
+            context.privilege = privilege;
+            let mut memory = Memory::at(&code, 0x5300);
+            memory.data_base = 0x2000;
+            memory.bytes[1..5].copy_from_slice(&0x3f8c_cccdu32.to_le_bytes());
+            let result = run_profile(
+                &mut state,
+                &mut memory,
+                MulssMemoryRaxUnmaskedControls {
+                    cr4_osxmmexcpt: false,
+                    ..controls
+                },
+                context,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+        }
+
+        // A failed one-read callback and a wrapping/canonical span both roll state back.
+        let mut rollback = base.clone();
+        let before = rollback.clone();
+        let mut memory = Memory::at(&code, 0x5300);
+        memory.data_base = 0x2000;
+        memory.error = Some(MemoryError::Unmapped {
+            address: 0x2001,
+            access: AccessKind::Read,
+        });
+        assert!(matches!(
+            run_profile(
+                &mut rollback,
+                &mut memory,
+                controls,
+                AccessContext::default()
+            )
+            .exit,
+            RunExit::MemoryError(_)
+        ));
+        assert_eq!(rollback, before);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2001, 4)]);
+        let mut bad_span = base.clone();
+        bad_span.gpr[Register::Rax as usize] = u64::MAX - 1;
+        let before = bad_span.clone();
+        let mut memory = Memory::at(&code, 0x5300);
+        assert_eq!(
+            run_profile(
+                &mut bad_span,
+                &mut memory,
+                controls,
+                AccessContext::default()
+            )
+            .exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(bad_span, before);
+        assert!(memory.accesses.is_empty());
+        let mut noncanonical = base.clone();
+        noncanonical.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+        let before = noncanonical.clone();
+        let mut memory = Memory::at(&code, 0x5300);
+        assert_eq!(
+            run_profile(
+                &mut noncanonical,
+                &mut memory,
+                controls,
+                AccessContext::default()
+            )
+            .exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(noncanonical, before);
         assert!(memory.accesses.is_empty());
     }
 

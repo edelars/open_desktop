@@ -233,6 +233,15 @@ const SUBSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dl_subsd_m64_halfway.case.json");
 const MULSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dm_mulss_m32_memory_rax.case.json");
+const MULSS_M32_MEMORY_UNMASKED_IE_SNAN_QNAN: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ag_mulss_memory_unmasked_ie_snan_qnan.case.json"
+);
+const MULSS_M32_MEMORY_UNMASKED_PE_INEXACT: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ag_mulss_memory_unmasked_pe_inexact.case.json"
+);
+const MULSS_M32_MEMORY_UNMASKED_WPR_MIN_NORMAL: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ag_mulss_memory_unmasked_wpr_min_normal.case.json"
+);
 const MULSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dn_mulsd_m64_memory_rax.case.json");
 const DIVSD_M64_MEMORY_RAX: &[u8] =
@@ -40678,6 +40687,151 @@ fn mulss_m32_memory_literal_preserves_scalar_canaries_and_fails_closed() {
         assert_eq!(exception.vector, 13);
         assert_eq!(count(&result), 0);
     }
+}
+
+#[test]
+fn mulss_m32_memory_unmasked_literals_check_pre_and_post_event_priority() {
+    use od_testkit::v2::Profile;
+
+    let cases = [
+        (
+            MULSS_M32_MEMORY_UNMASKED_IE_SNAN_QNAN,
+            Some(19),
+            0x1f01,
+            false,
+        ),
+        (
+            MULSS_M32_MEMORY_UNMASKED_PE_INEXACT,
+            Some(19),
+            0x0fa0,
+            false,
+        ),
+        (MULSS_M32_MEMORY_UNMASKED_WPR_MIN_NORMAL, None, 0x1fa2, true),
+    ];
+    for (source, vector, expected_mxcsr, success) in cases {
+        let loaded = Fixture::from_json(source).unwrap();
+        assert_eq!(
+            loaded.fixture.profile,
+            Profile::LongMulssMemoryRaxUnmaskedV1
+        );
+        assert!(!loaded.fixture.memory[1].permissions.write);
+        let (input, result) = run(source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let output = snapshot(&result);
+        assert_eq!(
+            output.state.sse.as_ref().unwrap().mxcsr.get(),
+            expected_mxcsr
+        );
+        if let Some(vector) = vector {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            let Observation::Available {
+                value: Some(exception),
+            } = &output.exception
+            else {
+                panic!("missing MULSS SIMD exception")
+            };
+            assert_eq!(exception.vector, vector);
+            assert_eq!(count(&result), 0);
+            assert_eq!(output.state.rip, input.fixture.initial_state.rip);
+            assert_eq!(
+                output.state.sse.as_ref().unwrap().xmm[0],
+                input.fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+            );
+        } else {
+            assert!(success);
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+            assert_eq!(&output.state.sse.as_ref().unwrap().xmm[0][..8], "00008000");
+            assert_eq!(
+                &output.state.sse.as_ref().unwrap().xmm[0][8..],
+                &input.fixture.initial_state.sse.as_ref().unwrap().xmm[0][8..]
+            );
+        }
+        for backend in ["jit", "native"] {
+            let (_, denied) = run(source, backend, 4);
+            assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        }
+        let mut bad_echo = result.clone();
+        snapshot_mut(&mut bad_echo)
+            .mulss_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = false;
+        assert!(bad_echo.validate_for(&input).is_err());
+        let mut bad_status = result.clone();
+        snapshot_mut(&mut bad_status)
+            .state
+            .sse
+            .as_mut()
+            .unwrap()
+            .mxcsr = HexU64(expected_mxcsr ^ 1);
+        assert!(bad_status.validate_for(&input).is_err());
+        let mut bad_backend = result.clone();
+        bad_backend.backend = Backend::Jit;
+        assert!(bad_backend.validate_for(&input).is_err());
+        let mut bad_gpr = result.clone();
+        snapshot_mut(&mut bad_gpr).state.gpr[1] = HexU64(0xdead_beef);
+        assert!(bad_gpr.validate_for(&input).is_err());
+        let mut bad_memory = result.clone();
+        snapshot_mut(&mut bad_memory).memory[1].bytes_hex = "00000000".into();
+        assert!(bad_memory.validate_for(&input).is_err());
+        if vector.is_some() {
+            let mut bad_rip = result.clone();
+            snapshot_mut(&mut bad_rip).state.rip =
+                HexU64(input.fixture.initial_state.rip.get() + 4);
+            assert!(bad_rip.validate_for(&input).is_err());
+            let mut bad_xmm = result.clone();
+            snapshot_mut(&mut bad_xmm).state.sse.as_mut().unwrap().xmm[0]
+                .replace_range(0..8, "00000000");
+            assert!(bad_xmm.validate_for(&input).is_err());
+            let mut bad_exception = result.clone();
+            match &mut snapshot_mut(&mut bad_exception).exception {
+                Observation::Available {
+                    value: Some(exception),
+                } => exception.vector = 13,
+                other => panic!("expected SIMD exception, got {other:?}"),
+            }
+            assert!(bad_exception.validate_for(&input).is_err());
+            let mut bad_retirement = result.clone();
+            bad_retirement.instructions_executed = Observation::Available { value: HexU64(1) };
+            assert!(bad_retirement.validate_for(&input).is_err());
+        } else {
+            let mut bad_rip = result.clone();
+            snapshot_mut(&mut bad_rip).state.rip =
+                HexU64(input.fixture.stop_rip.unwrap().get() - 1);
+            assert!(bad_rip.validate_for(&input).is_err());
+            let mut bad_xmm = result.clone();
+            snapshot_mut(&mut bad_xmm).state.sse.as_mut().unwrap().xmm[0]
+                .replace_range(0..8, "00000000");
+            assert!(bad_xmm.validate_for(&input).is_err());
+            let mut bad_high = result.clone();
+            snapshot_mut(&mut bad_high).state.sse.as_mut().unwrap().xmm[0]
+                .replace_range(8..32, "ee".repeat(12).as_str());
+            assert!(bad_high.validate_for(&input).is_err());
+        }
+    }
+    let mut missing = Fixture::from_json(MULSS_M32_MEMORY_UNMASKED_IE_SNAN_QNAN)
+        .unwrap()
+        .fixture;
+    missing.mulss_memory_rax_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut writable = Fixture::from_json(MULSS_M32_MEMORY_UNMASKED_IE_SNAN_QNAN)
+        .unwrap()
+        .fixture;
+    writable.memory[1].permissions.write = true;
+    assert!(writable.validate().is_err());
+    let mut mixed = Fixture::from_json(MULSS_M32_MEMORY_UNMASKED_IE_SNAN_QNAN)
+        .unwrap()
+        .fixture;
+    mixed.mulss_controls = Some(od_testkit::v2::MulssControlSnapshot {
+        sse_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(mixed.validate().is_err());
 }
 
 #[test]
