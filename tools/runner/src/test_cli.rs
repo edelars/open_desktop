@@ -693,6 +693,7 @@ fn expected_native_xorpd_oracle(
                 cvtss2si_controls: None,
                 cvtsd2si_controls: None,
                 cvtsd2si_r32_memory_controls: None,
+                cvtsd2si_r32_memory_unmasked_controls: None,
                 cvtsd2si_r64_memory_controls: None,
                 cvttsd2si_r32_memory_controls: None,
                 cvttsd2si_r64_memory_controls: None,
@@ -1189,18 +1190,19 @@ fn execute_fixture_v2(
         ComissMemoryInvalidRaxControls, ComissUcomissControls, Cr0Profile, Cr4Profile,
         Cvtdq2pdControls, Cvtdq2pdMemoryControls, Cvtdq2psControls, Cvtdq2psMemoryControls,
         Cvtpd2dqControls, Cvtps2dqControls, Cvtps2pdControls, Cvtsd2siMemoryR32Controls,
-        Cvtsd2siMemoryR64Controls, Cvtsd2siRegistersControls, Cvtsi2sdR32Controls,
-        Cvtsi2sdR64Controls, Cvtsi2sdR64MemoryControls, Cvtsi2ssR32MemoryControls,
-        Cvtsi2ssR64MemoryControls, Cvtsi2ssRegistersControls, Cvtss2sdControls,
-        Cvtss2siMemoryR32Controls, Cvtss2siMemoryR32UnmaskedControls, Cvtss2siMemoryR64Controls,
-        Cvtss2siRegistersControls, Cvttsd2siMemoryR32Controls, Cvttsd2siMemoryR64Controls,
-        Cvttss2siMemoryR32Controls, Cvttss2siMemoryR64Controls, DivssMemoryRaxUnmaskedControls,
-        Fxrstor64Cr0Controls, Fxsave64Cr0Controls, MaxpdUnmaskedControls, MaxpsUnmaskedControls,
-        MaxsdMemoryRaxControls, MaxsdMemoryUnmaskedRaxControls, MaxsdUnmaskedControls,
-        MaxssMemoryRaxControls, MaxssMemoryUnmaskedRaxControls, MaxssUnmaskedControls,
-        MinpdUnmaskedControls, MinpsUnmaskedControls, MinsdMemoryRaxControls,
-        MinsdMemoryUnmaskedRaxControls, MinsdUnmaskedControls, MinssInvalidControls,
-        MinssMemoryRaxControls, MinssMemoryUnmaskedRaxControls, RdtscControls, RunConfig, RunExit,
+        Cvtsd2siMemoryR32UnmaskedControls, Cvtsd2siMemoryR64Controls, Cvtsd2siRegistersControls,
+        Cvtsi2sdR32Controls, Cvtsi2sdR64Controls, Cvtsi2sdR64MemoryControls,
+        Cvtsi2ssR32MemoryControls, Cvtsi2ssR64MemoryControls, Cvtsi2ssRegistersControls,
+        Cvtss2sdControls, Cvtss2siMemoryR32Controls, Cvtss2siMemoryR32UnmaskedControls,
+        Cvtss2siMemoryR64Controls, Cvtss2siRegistersControls, Cvttsd2siMemoryR32Controls,
+        Cvttsd2siMemoryR64Controls, Cvttss2siMemoryR32Controls, Cvttss2siMemoryR64Controls,
+        DivssMemoryRaxUnmaskedControls, Fxrstor64Cr0Controls, Fxsave64Cr0Controls,
+        MaxpdUnmaskedControls, MaxpsUnmaskedControls, MaxsdMemoryRaxControls,
+        MaxsdMemoryUnmaskedRaxControls, MaxsdUnmaskedControls, MaxssMemoryRaxControls,
+        MaxssMemoryUnmaskedRaxControls, MaxssUnmaskedControls, MinpdUnmaskedControls,
+        MinpsUnmaskedControls, MinsdMemoryRaxControls, MinsdMemoryUnmaskedRaxControls,
+        MinsdUnmaskedControls, MinssInvalidControls, MinssMemoryRaxControls,
+        MinssMemoryUnmaskedRaxControls, RdtscControls, RunConfig, RunExit,
         UcomisdMemoryInvalidRaxControls, UcomissMemoryInvalidRaxControls, XorpdPrerequisiteState,
         run, run_with_cli_profile, run_with_cmppd_memory_rax_controls,
         run_with_cmppd_register_controls, run_with_cmpps_memory_rax_controls,
@@ -1214,33 +1216,33 @@ fn execute_fixture_v2(
         run_with_cvtdq2pd_register_controls, run_with_cvtdq2ps_memory_controls,
         run_with_cvtdq2ps_register_controls, run_with_cvtps2dq_register_controls,
         run_with_cvtps2pd_register_controls, run_with_cvtsd2si_r32_memory_controls,
-        run_with_cvtsd2si_r64_memory_controls, run_with_cvtsd2si_registers_controls,
-        run_with_cvtsi2sd_r32_controls, run_with_cvtsi2sd_r32_memory_controls,
-        run_with_cvtsi2sd_r64_controls, run_with_cvtsi2sd_r64_memory_controls,
-        run_with_cvtsi2sd_registers_controls, run_with_cvtsi2ss_r32_memory_controls,
-        run_with_cvtsi2ss_r64_memory_controls, run_with_cvtsi2ss_registers_controls,
-        run_with_cvtss2sd_register_controls, run_with_cvtss2si_r32_memory_controls,
-        run_with_cvtss2si_r32_memory_unmasked_controls, run_with_cvtss2si_r64_memory_controls,
-        run_with_cvtss2si_registers_controls, run_with_cvttsd2si_r32_memory_controls,
-        run_with_cvttsd2si_r64_memory_controls, run_with_cvttss2si_r32_memory_controls,
-        run_with_cvttss2si_r64_memory_controls, run_with_divss_memory_rax_unmasked_controls,
-        run_with_efer_rdmsr_profile, run_with_fxrstor64_cr0_controls,
-        run_with_fxsave64_cr0_controls, run_with_halt_profile, run_with_kernel_gs_base_profile,
-        run_with_maxpd_memory_rax_controls, run_with_maxpd_unmasked_controls,
-        run_with_maxps_unmasked_controls, run_with_maxsd_memory_rax_controls,
-        run_with_maxsd_memory_unmasked_rax_controls, run_with_maxsd_unmasked_controls,
-        run_with_maxss_memory_rax_controls, run_with_maxss_memory_unmasked_rax_controls,
-        run_with_maxss_unmasked_controls, run_with_minpd_memory_rax_controls,
-        run_with_minpd_memory_unmasked_rax_controls, run_with_minpd_unmasked_controls,
-        run_with_minps_unmasked_controls, run_with_minsd_memory_rax_controls,
-        run_with_minsd_memory_unmasked_rax_controls, run_with_minsd_unmasked_controls,
-        run_with_minss_invalid_controls, run_with_minss_memory_rax_controls,
-        run_with_minss_memory_unmasked_rax_controls, run_with_minss_unmasked_denormal_controls,
-        run_with_msr_profile, run_with_rdtsc_source, run_with_rep_continuation,
-        run_with_sep_profile, run_with_sti_profile, run_with_swapgs_profile,
-        run_with_ucomisd_memory_invalid_rax_controls, run_with_ucomisd_memory_rax_controls,
-        run_with_ucomiss_memory_invalid_rax_controls, run_with_ucomiss_memory_rax_controls,
-        run_with_xorpd_prerequisites,
+        run_with_cvtsd2si_r32_memory_unmasked_controls, run_with_cvtsd2si_r64_memory_controls,
+        run_with_cvtsd2si_registers_controls, run_with_cvtsi2sd_r32_controls,
+        run_with_cvtsi2sd_r32_memory_controls, run_with_cvtsi2sd_r64_controls,
+        run_with_cvtsi2sd_r64_memory_controls, run_with_cvtsi2sd_registers_controls,
+        run_with_cvtsi2ss_r32_memory_controls, run_with_cvtsi2ss_r64_memory_controls,
+        run_with_cvtsi2ss_registers_controls, run_with_cvtss2sd_register_controls,
+        run_with_cvtss2si_r32_memory_controls, run_with_cvtss2si_r32_memory_unmasked_controls,
+        run_with_cvtss2si_r64_memory_controls, run_with_cvtss2si_registers_controls,
+        run_with_cvttsd2si_r32_memory_controls, run_with_cvttsd2si_r64_memory_controls,
+        run_with_cvttss2si_r32_memory_controls, run_with_cvttss2si_r64_memory_controls,
+        run_with_divss_memory_rax_unmasked_controls, run_with_efer_rdmsr_profile,
+        run_with_fxrstor64_cr0_controls, run_with_fxsave64_cr0_controls, run_with_halt_profile,
+        run_with_kernel_gs_base_profile, run_with_maxpd_memory_rax_controls,
+        run_with_maxpd_unmasked_controls, run_with_maxps_unmasked_controls,
+        run_with_maxsd_memory_rax_controls, run_with_maxsd_memory_unmasked_rax_controls,
+        run_with_maxsd_unmasked_controls, run_with_maxss_memory_rax_controls,
+        run_with_maxss_memory_unmasked_rax_controls, run_with_maxss_unmasked_controls,
+        run_with_minpd_memory_rax_controls, run_with_minpd_memory_unmasked_rax_controls,
+        run_with_minpd_unmasked_controls, run_with_minps_unmasked_controls,
+        run_with_minsd_memory_rax_controls, run_with_minsd_memory_unmasked_rax_controls,
+        run_with_minsd_unmasked_controls, run_with_minss_invalid_controls,
+        run_with_minss_memory_rax_controls, run_with_minss_memory_unmasked_rax_controls,
+        run_with_minss_unmasked_denormal_controls, run_with_msr_profile, run_with_rdtsc_source,
+        run_with_rep_continuation, run_with_sep_profile, run_with_sti_profile,
+        run_with_swapgs_profile, run_with_ucomisd_memory_invalid_rax_controls,
+        run_with_ucomisd_memory_rax_controls, run_with_ucomiss_memory_invalid_rax_controls,
+        run_with_ucomiss_memory_rax_controls, run_with_xorpd_prerequisites,
     };
     use od_testkit::v2;
     use std::time::{Duration, Instant};
@@ -4171,6 +4173,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongCvtsd2siR32MemoryUnmaskedRaxV1 {
+        let controls = loaded
+            .fixture
+            .cvtsd2si_r32_memory_unmasked_controls
+            .expect("validated unmasked CVTSD2SI controls");
+        run_with_cvtsd2si_r32_memory_unmasked_controls(
+            &mut state,
+            memory,
+            config,
+            Cvtsd2siMemoryR32UnmaskedControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongCvtsd2siR64MemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -4596,6 +4616,9 @@ fn execute_fixture_v2(
                 cvtss2si_controls: loaded.fixture.cvtss2si_controls,
                 cvtsd2si_controls: loaded.fixture.cvtsd2si_controls,
                 cvtsd2si_r32_memory_controls: loaded.fixture.cvtsd2si_r32_memory_controls,
+                cvtsd2si_r32_memory_unmasked_controls: loaded
+                    .fixture
+                    .cvtsd2si_r32_memory_unmasked_controls,
                 cvtsd2si_r64_memory_controls: loaded.fixture.cvtsd2si_r64_memory_controls,
                 cvttsd2si_r32_memory_controls: loaded.fixture.cvttsd2si_r32_memory_controls,
                 cvttsd2si_r64_memory_controls: loaded.fixture.cvttsd2si_r64_memory_controls,
@@ -6633,6 +6656,9 @@ mod tests {
                     cvtss2si_controls: input.fixture.cvtss2si_controls,
                     cvtsd2si_controls: input.fixture.cvtsd2si_controls,
                     cvtsd2si_r32_memory_controls: input.fixture.cvtsd2si_r32_memory_controls,
+                    cvtsd2si_r32_memory_unmasked_controls: input
+                        .fixture
+                        .cvtsd2si_r32_memory_unmasked_controls,
                     cvtsd2si_r64_memory_controls: input.fixture.cvtsd2si_r64_memory_controls,
                     cvttsd2si_r32_memory_controls: input.fixture.cvttsd2si_r32_memory_controls,
                     cvttsd2si_r64_memory_controls: input.fixture.cvttsd2si_r64_memory_controls,
@@ -17043,6 +17069,248 @@ mod cvtss2si_r32_memory_unmasked_oracle_tests {
                         HexU64(mxcsr | (u64::from(generated_pe) << 5))
                     );
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod cvtsd2si_r32_memory_unmasked_oracle_tests {
+    use super::execute_fixture_v2;
+    use od_testkit::HexU64;
+    use od_testkit::memory::FlatMemory;
+    use od_testkit::result::{Backend, Observation};
+    use od_testkit::v2::{ExpectedExit, Fixture};
+
+    const CASE: &[u8] = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38at_cvtsd2si_m64_i32_unmasked.case.json"
+    );
+
+    fn oracle(raw: u64, rc: u32) -> (u32, bool, bool) {
+        let negative = raw >> 63 != 0;
+        let exponent = ((raw >> 52) & 0x7ff) as i32;
+        let fraction = raw & 0x000f_ffff_ffff_ffff;
+        if exponent == 0x7ff {
+            return (0x8000_0000, true, false);
+        }
+        let significand = if exponent == 0 {
+            fraction
+        } else {
+            (1u64 << 52) | fraction
+        };
+        if significand == 0 {
+            return (0, false, false);
+        }
+        let shift = if exponent == 0 {
+            -1074
+        } else {
+            exponent - 1023 - 52
+        };
+        let (mut magnitude, discarded, divisor) = if shift >= 0 {
+            if shift >= 64 || significand > (u64::MAX >> shift) {
+                return (0x8000_0000, true, false);
+            }
+            (significand << shift, false, 1u64)
+        } else {
+            let bits = (-shift) as u32;
+            if bits >= 64 {
+                (0, true, u64::MAX)
+            } else {
+                let divisor = 1u64 << bits;
+                (
+                    significand >> bits,
+                    significand & (divisor - 1) != 0,
+                    divisor,
+                )
+            }
+        };
+        let remainder = if divisor == u64::MAX {
+            significand
+        } else {
+            significand & (divisor - 1)
+        };
+        if discarded {
+            let increment = match rc {
+                0 => {
+                    divisor != u64::MAX
+                        && (remainder > divisor / 2
+                            || remainder == divisor / 2 && magnitude & 1 != 0)
+                }
+                1 => negative,
+                2 => !negative,
+                _ => false,
+            };
+            if increment {
+                magnitude = magnitude.saturating_add(1);
+            }
+        }
+        let limit = if negative {
+            1u64 << 31
+        } else {
+            (1u64 << 31) - 1
+        };
+        if magnitude > limit {
+            return (0x8000_0000, true, false);
+        }
+        let bits = if negative {
+            (0u64.wrapping_sub(magnitude)) as u32
+        } else {
+            magnitude as u32
+        };
+        (bits, false, discarded)
+    }
+
+    #[test]
+    fn actual_interpreter_matches_independent_memory_oracle_over_full_control_product() {
+        let base = Fixture::from_json(CASE).unwrap().fixture;
+        assert_eq!(
+            base.profile,
+            od_testkit::v2::Profile::LongCvtsd2siR32MemoryUnmaskedRaxV1
+        );
+        let vectors = [
+            0x0000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            0x8000_0000_0000_0001,
+            0x3ff0_0000_0000_0000,
+            0xbff0_0000_0000_0000,
+            0x3ff7_ffff_ffff_ffff,
+            0x3ff8_0000_0000_0000,
+            0x3ff8_0000_0000_0001,
+            0xbff7_ffff_ffff_ffff,
+            0xbff8_0000_0000_0000,
+            0xbff8_0000_0000_0001,
+            0x4003_ffff_ffff_ffff,
+            0x4004_0000_0000_0000,
+            0x4004_0000_0000_0001,
+            0xc003_ffff_ffff_ffff,
+            0xc004_0000_0000_0000,
+            0xc004_0000_0000_0001,
+            0x41df_ffff_ffff_ffff,
+            0x41df_ffff_ffe0_0000,
+            0x41df_ffff_ffe0_0001,
+            0x41e0_0000_0000_0000,
+            0x41e0_0000_0000_0001,
+            0xc1e0_0000_0000_0000,
+            0xc1e0_0000_0000_0001,
+            0xc1e0_0000_000f_ffff,
+            0xc1e0_0000_0010_0000,
+            0xc1e0_0000_0010_0001,
+            0xc1df_ffff_ffff_ffff,
+            0x7ff0_0000_0000_0000,
+            0xfff0_0000_0000_0000,
+            0x7ff8_0000_0000_0001,
+            0xfff8_0000_0000_0001,
+            0x7ff0_0000_0000_0001,
+            0xfff0_0000_0000_0001,
+        ];
+        let mut executions = 0usize;
+        for (vector_index, raw) in vectors.into_iter().enumerate() {
+            for rc in 0..4u64 {
+                for sticky in 0..64u64 {
+                    let (expected, invalid, inexact) = oracle(raw, rc as u32);
+                    for masks in 0..4u64 {
+                        for osxmmexcpt in [false, true] {
+                            let mut case = base.clone();
+                            case.case_id = format!(
+                                "s2_38at_oracle_v{vector_index}_rc{rc}_sticky{sticky}_m{masks}_os{osxmmexcpt}"
+                            );
+                            case.memory[1].initial_bytes_hex = raw
+                                .to_le_bytes()
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect();
+                            let im_masked = masks & 1 != 0;
+                            let pm_masked = masks & 2 != 0;
+                            let mxcsr = 0x0f00
+                                | (u64::from(im_masked) << 7)
+                                | (u64::from(pm_masked) << 12)
+                                | (rc << 13)
+                                | sticky;
+                            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+                            case.cvtsd2si_r32_memory_unmasked_controls
+                                .as_mut()
+                                .unwrap()
+                                .cr4_osxmmexcpt = osxmmexcpt;
+                            let event = invalid && !im_masked || !invalid && inexact && !pm_masked;
+                            case.expected_exit = if event {
+                                ExpectedExit::Exception
+                            } else {
+                                ExpectedExit::StopAddress
+                            };
+                            let loaded = Fixture::from_json(&case.to_json().unwrap()).unwrap();
+                            let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                            let result = execute_fixture_v2(&loaded, &mut memory);
+                            assert_eq!(result.backend, Backend::Interpreter);
+                            od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+                            assert_eq!(
+                                result.instructions_executed,
+                                Observation::Available {
+                                    value: HexU64(u64::from(!event))
+                                }
+                            );
+                            let snapshot = match &result.snapshot {
+                                Observation::Available { value } => value,
+                                other => panic!("missing snapshot: {other:?}"),
+                            };
+                            let raised = u32::from(invalid) | (u32::from(!invalid && inexact) << 5);
+                            assert_eq!(
+                                snapshot.state.sse.as_ref().unwrap().mxcsr,
+                                HexU64(mxcsr | u64::from(raised))
+                            );
+                            assert_eq!(
+                                snapshot.state.gpr[0],
+                                if event {
+                                    loaded.fixture.initial_state.gpr[0]
+                                } else {
+                                    HexU64(u64::from(expected))
+                                }
+                            );
+                            if event {
+                                assert_eq!(snapshot.state.rip, loaded.fixture.initial_state.rip);
+                                assert!(
+                                    matches!(&snapshot.exception, Observation::Available { value: Some(e) } if e.vector == if osxmmexcpt { 19 } else { 6 })
+                                );
+                            } else {
+                                assert_eq!(
+                                    snapshot.state.rip,
+                                    HexU64(loaded.fixture.initial_state.rip.get() + 4)
+                                );
+                            }
+                            executions += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(executions, vectors.len() * 4 * 64 * 4 * 2);
+
+        // Unrelated DM/OM/UM/ZM masks and FTZ may vary without conversion events.
+        for unrelated_masks in 0..16u64 {
+            for ftz in [false, true] {
+                let mut case = base.clone();
+                case.case_id = format!("s2_38at_other_masks{unrelated_masks}_ftz{ftz}");
+                case.memory[1].initial_bytes_hex = 0x3ff0_0000_0000_0000u64
+                    .to_le_bytes()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                let unrelated = ((unrelated_masks & 1) << 8)
+                    | (((unrelated_masks >> 1) & 1) << 9)
+                    | (((unrelated_masks >> 2) & 1) << 10)
+                    | (((unrelated_masks >> 3) & 1) << 11);
+                let mxcsr = 0x1080 | unrelated | (u64::from(ftz) << 15) | 0x25;
+                case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+                case.expected_exit = ExpectedExit::StopAddress;
+                let loaded = Fixture::from_json(&case.to_json().unwrap()).unwrap();
+                let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                let result = execute_fixture_v2(&loaded, &mut memory);
+                od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+                let snapshot = match &result.snapshot {
+                    Observation::Available { value } => value,
+                    other => panic!("missing snapshot: {other:?}"),
+                };
+                assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr, HexU64(mxcsr));
             }
         }
     }

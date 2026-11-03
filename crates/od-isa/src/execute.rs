@@ -1506,6 +1506,22 @@ pub struct Cvtsd2siMemoryR32Controls {
     pub cr4_osfxsr: bool,
 }
 
+/// SSE2 prerequisites and SIMD exception delivery for S2-38at CVTSD2SI EAX,m64.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Cvtsd2siMemoryR32UnmaskedControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Cvtsd2siMemoryR32ExecutionProfile {
+    Masked(Cvtsd2siMemoryR32Controls),
+    Unmasked(Cvtsd2siMemoryR32UnmaskedControls),
+}
+
 /// Explicit SSE2 prerequisite gates for the exact S2-37ck CVTSD2SI RAX,m64 profile.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Cvtsd2siMemoryR64Controls {
@@ -1759,7 +1775,7 @@ struct ExecutionProfiles<'a> {
     cvtss2si_registers: Option<Cvtss2siRegistersControls>,
     cvttss2si_registers: Option<Cvttss2siRegistersControls>,
     cvtsd2si_registers: Option<Cvtsd2siRegistersControls>,
-    cvtsd2si_r32_memory: Option<Cvtsd2siMemoryR32Controls>,
+    cvtsd2si_r32_memory: Option<Cvtsd2siMemoryR32ExecutionProfile>,
     cvtsd2si_r64_memory: Option<Cvtsd2siMemoryR64Controls>,
     cvttsd2si_r32_memory: Option<Cvttsd2siMemoryR32Controls>,
     cvttsd2si_r64_memory: Option<Cvttsd2siMemoryR64Controls>,
@@ -5246,6 +5262,39 @@ pub fn run_with_cvtsd2si_r32_memory_controls(
     memory: &mut impl GuestMemory,
     config: RunConfig,
     controls: Cvtsd2siMemoryR32Controls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_cvtsd2si_r32_memory_profile(
+        state,
+        memory,
+        config,
+        Cvtsd2siMemoryR32ExecutionProfile::Masked(controls),
+        stop_requested,
+    )
+}
+
+/// Execute exact `F2 0F 2D 00` CVTSD2SI EAX,m64 with unmasked exceptions.
+pub fn run_with_cvtsd2si_r32_memory_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: Cvtsd2siMemoryR32UnmaskedControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_cvtsd2si_r32_memory_profile(
+        state,
+        memory,
+        config,
+        Cvtsd2siMemoryR32ExecutionProfile::Unmasked(controls),
+        stop_requested,
+    )
+}
+
+fn run_with_cvtsd2si_r32_memory_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: Cvtsd2siMemoryR32ExecutionProfile,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
     run_configured(
@@ -5358,7 +5407,7 @@ pub fn run_with_cvtsd2si_r32_memory_controls(
             cvtss2si_registers: None,
             cvttss2si_registers: None,
             cvtsd2si_registers: None,
-            cvtsd2si_r32_memory: Some(controls),
+            cvtsd2si_r32_memory: Some(profile),
             cvtsd2si_r64_memory: None,
             cvttsd2si_r32_memory: None,
             cvttsd2si_r64_memory: None,
@@ -21581,7 +21630,7 @@ fn step_configured(
         cvtss2si_registers: configured_cvtss2si_register_controls,
         cvttss2si_registers: configured_cvttss2si_register_controls,
         cvtsd2si_registers: configured_cvtsd2si_register_controls,
-        cvtsd2si_r32_memory: configured_cvtsd2si_memory_r32_controls,
+        cvtsd2si_r32_memory: configured_cvtsd2si_memory_r32_profile,
         cvtsd2si_r64_memory: configured_cvtsd2si_memory_r64_controls,
         cvttsd2si_r32_memory: configured_cvttsd2si_memory_r32_controls,
         cvttsd2si_r64_memory: configured_cvttsd2si_memory_r64_controls,
@@ -26421,7 +26470,9 @@ fn step_configured(
             }));
         }
     }
-    if let Some(controls) = configured_cvtsd2si_memory_r32_controls {
+    if let Some(Cvtsd2siMemoryR32ExecutionProfile::Masked(controls)) =
+        configured_cvtsd2si_memory_r32_profile
+    {
         let admitted = instruction.operation == Operation::Cvtsd2siR32MemoryRax
             && instruction.length == 4
             && instruction.opcode.map == OpcodeMap::Escape0f
@@ -26459,6 +26510,51 @@ fn step_configured(
             || sse.mxcsr & (1 << 6) != 0
             || sse.mxcsr & (1 << 7) == 0
             || sse.mxcsr & (1 << 12) == 0
+            || state.rflags & (1 << 18) != 0
+        {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+    }
+    if let Some(Cvtsd2siMemoryR32ExecutionProfile::Unmasked(controls)) =
+        configured_cvtsd2si_memory_r32_profile
+    {
+        let admitted = instruction.operation == Operation::Cvtsd2siR32MemoryRax
+            && instruction.length == 4
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x2d
+            && instruction.prefixes.group1 == Some(0xf2)
+            && instruction.prefixes.segment.is_none()
+            && !instruction.prefixes.operand_override
+            && !instruction.prefixes.address_override
+            && instruction.prefixes.rex.is_none();
+        if !admitted {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let fault_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = fault_vector {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+        let Some(sse) = state.sse.as_ref() else {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        };
+        if sse.mxcsr & !0x0000_ffbf != 0
+            || sse.mxcsr & (1 << 6) != 0
             || state.rflags & (1 << 18) != 0
         {
             return Ok(StepOutcome::Unsupported {
@@ -28242,8 +28338,18 @@ fn step_configured(
             )
         {
             sse.mxcsr & !0x0000_ffbf == 0
-        } else if configured_cvtsd2si_memory_r32_controls.is_some()
-            && instruction.operation == Operation::Cvtsd2siR32MemoryRax
+        } else if matches!(
+            configured_cvtsd2si_memory_r32_profile,
+            Some(Cvtsd2siMemoryR32ExecutionProfile::Unmasked(_))
+        ) && instruction.operation == Operation::Cvtsd2siR32MemoryRax
+        {
+            sse.mxcsr & !0x0000_ffbf == 0
+                && sse.mxcsr & (1 << 6) == 0
+                && state.rflags & (1 << 18) == 0
+        } else if matches!(
+            configured_cvtsd2si_memory_r32_profile,
+            Some(Cvtsd2siMemoryR32ExecutionProfile::Masked(_))
+        ) && instruction.operation == Operation::Cvtsd2siR32MemoryRax
         {
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & (1 << 6) == 0
@@ -29338,7 +29444,7 @@ fn step_configured(
             state.sse.is_some()
         }
         Operation::Cvtsd2siR32Register { .. } | Operation::Cvtsd2siR64Register { .. } => false,
-        Operation::Cvtsd2siR32MemoryRax if configured_cvtsd2si_memory_r32_controls.is_some() => {
+        Operation::Cvtsd2siR32MemoryRax if configured_cvtsd2si_memory_r32_profile.is_some() => {
             state.sse.is_some()
         }
         Operation::Cvtsd2siR32MemoryRax => false,
@@ -40843,7 +40949,7 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         }
-        Operation::Cvtsd2siR32MemoryRax if configured_cvtsd2si_memory_r32_controls.is_some() => {
+        Operation::Cvtsd2siR32MemoryRax if configured_cvtsd2si_memory_r32_profile.is_some() => {
             // RAX is both the source address and the architectural EAX destination.
             // Capture the address and complete the read before changing any state.
             let address = state.gpr[Register::Rax as usize];
@@ -40877,6 +40983,18 @@ fn step_configured(
                 .as_mut()
                 .expect("CVTSD2SI m64 SSE state prevalidated");
             sse.mxcsr = old_mxcsr | u32::from(invalid) | (u32::from(inexact) << 5);
+            if invalid && old_mxcsr & (1 << 7) == 0 || inexact && old_mxcsr & (1 << 12) == 0 {
+                let Some(Cvtsd2siMemoryR32ExecutionProfile::Unmasked(controls)) =
+                    configured_cvtsd2si_memory_r32_profile
+                else {
+                    unreachable!("masked CVTSD2SI memory profile requires both exception masks");
+                };
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
             state.write(
                 RegisterView::low(Register::Rax, OperandSize::Dword),
                 u64::from(*converted.value() as u32),
@@ -156397,6 +156515,272 @@ mod swapgs_profile_tests {
         assert!(matches!(result.exit, RunExit::MemoryError(_)));
         assert_eq!(failed_read, before);
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
+    }
+
+    #[test]
+    fn cvtsd2si_r32_memory_unmasked_events_gates_and_memory_are_atomic() {
+        let code = [0xf2, 0x0f, 0x2d, 0x00];
+        for osxmmexcpt in [false, true] {
+            let controls = Cvtsd2siMemoryR32UnmaskedControls {
+                sse2_available: true,
+                cr0_em: false,
+                cr0_ts: false,
+                cr4_osfxsr: true,
+                cr4_osxmmexcpt: osxmmexcpt,
+            };
+            for (raw, mxcsr, raised, event) in [
+                (0x7ff0_0000_0000_0000u64, 0x1f00, 1u32, true), // unmasked IE
+                (0x3ff8_0000_0000_0000, 0x0f80, 0x20, true),    // unmasked PE
+                (0x7ff8_0000_0000_0001, 0x1f80, 1, false),      // masked QNaN IE
+                (0xc1e0_0000_0000_0000, 0x1f00, 0, false),      // valid INT32_MIN, no IE
+            ] {
+                let mut state = LongModeState::default();
+                state.rip = 0xc000;
+                state.gpr[Register::Rax as usize] = 0x1001;
+                state.rflags = 0x2 | crate::CF | (1 << 9);
+                state.sse = Some(SseState {
+                    xmm: std::array::from_fn(|i| [0x70 + i as u8; 16]),
+                    mxcsr,
+                });
+                let before = state.clone();
+                let mut memory = Memory::at(&code, 0xc000);
+                memory.bytes[1..9].copy_from_slice(&raw.to_le_bytes());
+                let result = run_with_cvtsd2si_r32_memory_unmasked_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(0xc004),
+                        context: AccessContext::default(),
+                    },
+                    controls,
+                    || false,
+                );
+                assert_eq!(memory.fetches, [0xc000, 0xc001, 0xc002, 0xc003]);
+                assert_eq!(memory.accesses, [(AccessKind::Read, 0x1001, 8)]);
+                assert_eq!(state.sse.as_ref().unwrap().mxcsr, mxcsr | raised);
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm,
+                    before.sse.as_ref().unwrap().xmm
+                );
+                assert_eq!(state.x87, before.x87);
+                if event {
+                    assert_eq!(
+                        result.exit,
+                        RunExit::Fault(ArchitecturalFault {
+                            vector: if osxmmexcpt { 19 } else { 6 },
+                            error_code: None,
+                            linear_address: None,
+                        })
+                    );
+                    assert_eq!(result.instructions_executed, 0);
+                    assert_eq!(state.gpr, before.gpr);
+                    assert_eq!(state.rip, before.rip);
+                    assert_eq!(state.rflags, before.rflags);
+                } else {
+                    assert_eq!(result.exit, RunExit::StopAddress);
+                    assert_eq!(result.instructions_executed, 1);
+                    assert_eq!(
+                        state.gpr[Register::Rax as usize],
+                        if raw == 0xc1e0_0000_0000_0000 {
+                            0x8000_0000
+                        } else {
+                            0x8000_0000
+                        }
+                    );
+                    assert_eq!(state.gpr[1..], before.gpr[1..]);
+                    assert_eq!(state.rip, 0xc004);
+                    assert_eq!(state.rflags, before.rflags);
+                }
+            }
+        }
+
+        let controls = Cvtsd2siMemoryR32UnmaskedControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let run_refusal = |mut state: LongModeState,
+                           controls: Cvtsd2siMemoryR32UnmaskedControls,
+                           code: &[u8; 4]| {
+            let before = state.clone();
+            let rip = state.rip;
+            let mut memory = Memory::at(code, rip);
+            let result = run_with_cvtsd2si_r32_memory_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(rip + 4),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            (state, before, memory, result)
+        };
+        let baseline = || {
+            let mut state = LongModeState::default();
+            state.rip = 0xc100;
+            state.gpr[Register::Rax as usize] = 0x1001;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            state
+        };
+        let mut ac_state = baseline();
+        ac_state.rflags |= 1 << 18;
+        let (state, before, memory, result) = run_refusal(ac_state, controls, &code);
+        assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2d }));
+        assert_eq!(memory.fetches, [0xc100, 0xc101, 0xc102, 0xc103]);
+        assert!(memory.accesses.is_empty());
+        assert_eq!(state, before);
+
+        let mut gated_ac_state = baseline();
+        gated_ac_state.rflags |= 1 << 18;
+        let gate_controls = Cvtsd2siMemoryR32UnmaskedControls {
+            cr0_ts: true,
+            ..controls
+        };
+        let (state, before, memory, result) = run_refusal(gated_ac_state, gate_controls, &code);
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 7,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(memory.fetches, [0xc100, 0xc101, 0xc102, 0xc103]);
+        assert!(memory.accesses.is_empty());
+        assert_eq!(state, before);
+
+        let mut bad_span = baseline();
+        bad_span.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+        let (state, before, memory, result) = run_refusal(bad_span, controls, &code);
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(memory.fetches, [0xc100, 0xc101, 0xc102, 0xc103]);
+        assert!(memory.accesses.is_empty());
+        assert_eq!(state, before);
+
+        let mut ac_bad_span = baseline();
+        ac_bad_span.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+        ac_bad_span.rflags |= 1 << 18;
+        let (state, before, memory, result) = run_refusal(ac_bad_span, controls, &code);
+        assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x2d }));
+        assert!(memory.accesses.is_empty());
+        assert_eq!(state, before);
+
+        for (case_controls, vector) in [
+            (
+                Cvtsd2siMemoryR32UnmaskedControls {
+                    sse2_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                Cvtsd2siMemoryR32UnmaskedControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                Cvtsd2siMemoryR32UnmaskedControls {
+                    cr4_osfxsr: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+        ] {
+            let mut state = baseline();
+            state.rflags |= 1 << 18;
+            let before = state.clone();
+            let mut memory = Memory::at(&code, state.rip);
+            let result = run_with_cvtsd2si_r32_memory_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0xc104),
+                    context: AccessContext::default(),
+                },
+                case_controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+
+        let mut failed_fetch = baseline();
+        let before = failed_fetch.clone();
+        let mut memory = Memory::at(&code, failed_fetch.rip);
+        memory.fetch_error = Some((
+            failed_fetch.rip + 2,
+            MemoryError::Unmapped {
+                address: failed_fetch.rip + 2,
+                access: AccessKind::Fetch,
+            },
+        ));
+        let result = run_with_cvtsd2si_r32_memory_unmasked_controls(
+            &mut failed_fetch,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xc104),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert!(memory.accesses.is_empty());
+        assert_eq!(failed_fetch, before);
+
+        let mut failed_read = baseline();
+        let before = failed_read.clone();
+        let mut memory = Memory::at(&code, failed_read.rip);
+        memory.error = Some(MemoryError::Unmapped {
+            address: 0x1001,
+            access: AccessKind::Read,
+        });
+        memory.error_kind = Some(AccessKind::Read);
+        let result = run_with_cvtsd2si_r32_memory_unmasked_controls(
+            &mut failed_read,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0xc104),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1001, 8)]);
+        assert_eq!(failed_read, before);
     }
 
     #[test]
