@@ -426,6 +426,7 @@ impl PublishedCode {
             && source != [0x67, 0x89, 0x00]
             && source != [0x67, 0x89, 0x01]
             && !(source.len() == 4 && source[..3] == [0x67, 0x89, 0x41])
+            && !(source.len() == 7 && source[..3] == [0x67, 0x89, 0x81])
             && source != [0x89, 0x04, 0x0b]
             && source != [0x89, 0x04, 0x4b]
             && source != [0x89, 0x04, 0x8b]
@@ -36173,7 +36174,8 @@ mod tests {
 
         const ENTRY: u64 = 0x9f20;
         let address32 = source == [0x67, 0x89, 0x01]
-            || (source.len() == 4 && source[..3] == [0x67, 0x89, 0x41]);
+            || (source.len() == 4 && source[..3] == [0x67, 0x89, 0x41])
+            || (source.len() == 7 && source[..3] == [0x67, 0x89, 0x81]);
         let next_rip = ENTRY + source.len() as u64;
         #[derive(Clone, Debug)]
         struct Ram {
@@ -36798,6 +36800,27 @@ mod tests {
         for displacement in u8::MIN..=u8::MAX {
             let source = [0x67, 0x89, 0x41, displacement];
             rcx_base_dword_store_contract(&source, i64::from(displacement as i8));
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_20ga_addr32_rcx_disp32_dword_store_uses_wrapped_ecx_and_low_eax_payload() {
+        for displacement in [
+            i32::MIN,
+            -0x0102_0304,
+            -129,
+            -1,
+            0,
+            1,
+            127,
+            128,
+            0x0102_0304,
+            i32::MAX,
+        ] {
+            let mut source = [0x67, 0x89, 0x81, 0, 0, 0, 0];
+            source[3..].copy_from_slice(&displacement.to_le_bytes());
+            rcx_base_dword_store_contract(&source, i64::from(displacement));
         }
     }
 
