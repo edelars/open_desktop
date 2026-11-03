@@ -23030,3 +23030,43 @@ open. See the [S2-31ee standalone report](S2_31EE_FILD_HISTORICAL_STICKY_FLAGS.m
 [S2-38x standalone report](S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md),
 [contracts](../specs/CPU_CONTRACT.md#s2-31ee--historical-sticky-flags-on-exact-bounded-fild-memory-forms),
 [plan](../plans/STAGE_2.md), and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
+
+
+<a id="main-integration-s2-31ef-s2-38y"></a>
+
+## Main integration: S2-31ef and S2-38y
+
+S2-31ef admits historical x87 SF only alongside prior IE for exact bounded
+FILD m16/m32/m64. It preserves SF and all six sticky flags, clears C1, and
+leaves FLD/FST admission unchanged. Its independent literal matrix covers
+30,720 full-state cases and retains S2-31ee's separate 12,288-case SF=0
+regression. The first Sol/high review found that matrix comparisons omitted
+parts of `LongModeState`; `e058e5c` added complete-state equality and source
+memory immutability checks, after which the review was clean.
+
+S2-38y adds the exact Long64 `F3 0F 51 00` SQRTSS XMM0,m32 `[RAX]`
+unmasked IE/DE/PE schema-v2 profile. Its integer-only raw-u32 oracle covers
+65,536 combinations, with atomic suppression, strict event priority, and
+both `#XM` and arithmetic `#UD` mappings. The initial Sol/high review found
+four P2 issues and a coverage gap. `c608374` restores MINSD's FTZ=0 gate,
+rejects writable source mappings, corrects AC-before-span ordering and
+`#GP(0)` validation, and adds negative-subnormal/SNaN regressions. Independent
+re-review was clean, including a rerun of the 65,536-case matrix.
+
+On combined main, `cargo fmt --all -- --check`, `python3
+tools/check_layout.py`, `git diff --check`, `cargo check --workspace
+--all-targets --offline`, `cargo test -p od-isa --offline --quiet` (1,942),
+`cargo test -p od-testkit --offline --quiet` (455), and `cargo test -p
+od-runner --offline --quiet` (131 unit + 550 fixture) passed. Graphify after
+integration: 12,207 nodes / 26,487 edges / 346 communities; labels were not
+refreshed because no LLM API key is configured. Layout reports the linked
+worktree `.git` pointer and two historical ignored `work/` manifest links;
+neither blocks the new fixtures or report links.
+
+Main commits: `bbe0482` and `e058e5c` for S2-31ef, `0465818` and `c608374`
+for S2-38y; contract preparation is `eb71ff9`. No `od-x86-runner` or physical
+x86 acceptance was run. Both profiles remain interpreter-only, with native/JIT
+closed. ISSUE-019 and ISSUE-033 remain open; Stage 2 remains open. See the
+[S2-31ef standalone report](S2_31EF_FILD_HISTORICAL_SF.md),
+[S2-38y standalone report](S2_38Y_SQRTSS_MEMORY_UNMASKED.md),
+[CPU contract](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).

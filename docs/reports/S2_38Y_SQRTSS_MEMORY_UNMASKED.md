@@ -52,11 +52,21 @@ confirms its existing FTZ=0 restriction remains enforced.
 - `cargo fmt --all -- --check` and `git diff --check`: passed.
 - `graphify update .`: passed; refreshed graph has 12,236 nodes, 26,406 edges,
   and 366 communities.
+- Combined main verification after integration: od-isa 1,942; od-testkit 455;
+  od-runner 131 unit + 550 fixture tests; workspace offline check, fmt, layout,
+  and diff checks passed; Graphify 12,207 nodes, 26,487 edges, 346 communities.
 - `python3 tools/check_layout.py`: reports the linked-worktree `.git` pointer
   as an unmapped root file and two missing historical stage-oracle manifests
   referenced by `STAGE_2_REPORT.md`. These are worktree/layout environment
   findings; no layout files or unrelated reports were changed.
-- Independent review: pending at author completion.
+- Independent Sol/high review first reported four P2 findings and a focused
+  coverage gap. Follow-up commit `c608374` restored MINSD's FTZ=0 admission,
+  refused writable source mappings, corrected AC/span priority and `#GP(0)`
+  validation, and added negative-subnormal/SNaN regressions. Re-review was
+  clean; the reviewer reran the 65,536-case matrix (26.51 seconds), 11 SQRTSS
+  integration tests, the MINSD regression, and CPL/gate-priority checks.
+- Main commits: `0465818` implementation, `c608374` review fixes;
+  contract preparation `eb71ff9`.
 
 No physical x86 acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38y--exact-sqrtss-m32-memory-profile-with-unmasked-exceptions),
 [stage plan](../plans/STAGE_2.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38y-sqrtss-memory-unmasked).

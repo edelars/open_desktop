@@ -29,7 +29,14 @@ addresses remain represented in the success matrix.
 - `python3 tools/check_layout.py`: reports the linked worktree `.git` pointer
   as an unmapped root file and two historical Stage 2 report links into absent
   ignored `work/` manifests. No S2-31ef fixture or report link is broken.
-- Independent code review: pending after commit
+- Independent Sol/high code review: clean after the reviewer found incomplete
+  full-state comparison in the matrix; commit `e058e5c` now compares the
+  complete expected `LongModeState` and verifies source memory is unchanged.
+- Combined main verification after integration: od-isa 1,942; od-testkit 455;
+  od-runner 131 unit + 550 fixture tests; workspace offline check, fmt, layout,
+  and diff checks passed; Graphify 12,207 nodes, 26,487 edges, 346 communities.
+- Main commits: `bbe0482` implementation, `e058e5c` full-state matrix fix;
+  contract preparation `eb71ff9`.
 
 No physical x86 acceptance is claimed. The SF=>IE condition is a local
 interpreter-profile admission rule.
