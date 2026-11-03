@@ -35598,7 +35598,7 @@ mod tests {
             }
         }
 
-        fn ram_at(address: u64) -> Ram {
+        let ram_at = |address: u64| -> Ram {
             let mut bytes = BTreeMap::new();
             for offset in 0..10_u64 {
                 bytes.insert(
