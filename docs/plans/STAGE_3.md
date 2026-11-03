@@ -442,6 +442,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38i | Process-level STOP isolation and EOF during active V1 RUN | Pins exact STOP_ACK→RESULT order, stopped result, fresh next invocation, and bounded clean teardown after active-run EOF. Static review passed; no process execution. См. [implementation report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md) |
 | [partial] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Pins fragmented HELLO/RUN, coalesced RUN admission with BUSY evidence, partial-frame EOF, and overlength rejection before body; INVALID_STATE batch closure remains uncovered. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
 | [partial] | S3-38k | Process-level immutable-code mismatch and RUN-ID high-watermark | Pins CODE_MISMATCH without rebinding, advances IDs on rejected RUNs, rejects reused IDs, and then runs the original code on a fresh higher ID. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md) |
+| [partial] | S3-38l | Process-level active STOP, rejected RUN/STOP IDs and RUN-ID high-watermark | Pins wrong-ID STOP, duplicate/decreasing IDs, BUSY ID consumption, exact STOP_ACK→RESULT order, stale retry rejection and a fresh successful RUN. Independent static reviews passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md) |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
@@ -4102,6 +4103,19 @@ VMHost binary hash. Independent Sol/high review passed; no process execution
 was performed. INVALID_STATE batch closure and physical V1 acceptance remain
 open. See the
 [S3-38k report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md).
+
+#### S3-38l. Process-level active STOP and RUN-ID high-watermark
+
+The smoke holds RUN ID 1 in an active loop, rejects STOP ID 2, duplicate RUN
+ID 1, BUSY RUN ID 3, and decreasing RUN ID 2 with exact responses. Correct
+STOP ID 1 must receive STOP_ACK before the terminal RESULT; RUN ID 3 then
+remains stale because BUSY consumed it. RUN ID 4 proves the session remains
+usable with fresh registers, flags, and budget. The process harness pins the
+command, 30-second timeout, source fingerprint, success marker, and VMHost
+binary hash. Two independent Sol/high static reviews passed; no process or
+other runtime execution was performed. INVALID_STATE batch closure and broader
+V1 acceptance remain open. See the
+[S3-38l report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md).
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
