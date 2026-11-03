@@ -14,30 +14,69 @@ enum ControlKind: UInt16 {
 
 struct ControlFrame {
     static let magic = Array("ODCP".utf8)
-    static let version: UInt16 = 0
+    static let versionV0: UInt16 = 0
+    static let versionV1: UInt16 = 1
     static let headerLength = 16
     static let maxPayloadLength = 8192
 
     let kind: ControlKind
     let requestID: UInt32
     let payload: Data
+    let protocolVersion: UInt16
+
+    init(kind: ControlKind, requestID: UInt32, payload: Data, protocolVersion: UInt16 = versionV0) {
+        self.kind = kind
+        self.requestID = requestID
+        self.payload = payload
+        self.protocolVersion = protocolVersion
+    }
 
     func write(to fd: Int32) throws {
+        try writeAll(fd: fd, data: encoded())
+    }
+
+    func encoded() throws -> Data {
         guard payload.count <= Self.maxPayloadLength else { throw ControlFrameError.tooLarge }
         var bytes = Data(Self.magic)
-        bytes.appendLE(Self.version)
+        bytes.appendLE(protocolVersion)
         bytes.appendLE(kind.rawValue)
         bytes.appendLE(requestID)
         bytes.appendLE(UInt32(payload.count))
         bytes.append(payload)
-        try writeAll(fd: fd, data: bytes)
+        return bytes
     }
 
     static func read(from fd: Int32) throws -> ControlFrame {
+        try read(from: fd, expectedVersion: versionV0)
+    }
+
+    static func readInitial(from fd: Int32) throws -> ControlFrame {
         let header = try readExact(fd: fd, length: headerLength)
         let bytes = [UInt8](header)
         guard Array(bytes[0..<4]) == magic else { throw ControlFrameError.badMagic }
-        guard bytes.readLE(UInt16.self, at: 4) == version else { throw ControlFrameError.badVersion }
+        let frameVersion = bytes.readLE(UInt16.self, at: 4)
+        guard frameVersion == versionV0 || frameVersion == versionV1 else {
+            throw ControlFrameError.badVersion
+        }
+        guard let kind = ControlKind(rawValue: bytes.readLE(UInt16.self, at: 6)) else {
+            throw ControlFrameError.badKind
+        }
+        let requestID = bytes.readLE(UInt32.self, at: 8)
+        let length = Int(bytes.readLE(UInt32.self, at: 12))
+        guard length <= maxPayloadLength else { throw ControlFrameError.tooLarge }
+        return ControlFrame(
+            kind: kind,
+            requestID: requestID,
+            payload: try readExact(fd: fd, length: length),
+            protocolVersion: frameVersion
+        )
+    }
+
+    private static func read(from fd: Int32, expectedVersion: UInt16) throws -> ControlFrame {
+        let header = try readExact(fd: fd, length: headerLength)
+        let bytes = [UInt8](header)
+        guard Array(bytes[0..<4]) == magic else { throw ControlFrameError.badMagic }
+        guard bytes.readLE(UInt16.self, at: 4) == expectedVersion else { throw ControlFrameError.badVersion }
         guard let kind = ControlKind(rawValue: bytes.readLE(UInt16.self, at: 6)) else {
             throw ControlFrameError.badKind
         }
@@ -47,35 +86,74 @@ struct ControlFrame {
         return ControlFrame(kind: kind, requestID: requestID, payload: try readExact(fd: fd, length: length))
     }
 
-    fileprivate static func decodePrefix(_ data: Data) throws -> (frame: ControlFrame, length: Int)? {
+    fileprivate static func decodePrefix(_ data: Data, expectedVersion: UInt16) throws -> (frame: ControlFrame, length: Int)? {
         let bytes = [UInt8](data)
         guard bytes.count >= headerLength else { return nil }
-        guard Array(bytes[0..<4]) == magic else { throw ControlFrameError.badMagic }
-        guard bytes.readLE(UInt16.self, at: 4) == version else { throw ControlFrameError.badVersion }
+        let frameLength = try frameLength(fromHeader: data, expectedVersion: expectedVersion)
         guard let kind = ControlKind(rawValue: bytes.readLE(UInt16.self, at: 6)) else {
             throw ControlFrameError.badKind
         }
         let requestID = bytes.readLE(UInt32.self, at: 8)
-        let payloadLength = Int(bytes.readLE(UInt32.self, at: 12))
-        guard payloadLength <= maxPayloadLength else { throw ControlFrameError.tooLarge }
-        let frameLength = headerLength + payloadLength
         guard bytes.count >= frameLength else { return nil }
         return (
-            ControlFrame(kind: kind, requestID: requestID, payload: Data(bytes[headerLength..<frameLength])),
+            ControlFrame(
+                kind: kind,
+                requestID: requestID,
+                payload: Data(bytes[headerLength..<frameLength]),
+                protocolVersion: expectedVersion
+            ),
             frameLength
         )
+    }
+
+    fileprivate static func frameLength(fromHeader data: Data, expectedVersion: UInt16) throws -> Int {
+        guard data.count >= headerLength else { throw ControlFrameError.truncated }
+        let bytes = [UInt8](data.prefix(headerLength))
+        guard Array(bytes[0..<4]) == magic else { throw ControlFrameError.badMagic }
+        guard bytes.readLE(UInt16.self, at: 4) == expectedVersion else { throw ControlFrameError.badVersion }
+        guard ControlKind(rawValue: bytes.readLE(UInt16.self, at: 6)) != nil else {
+            throw ControlFrameError.badKind
+        }
+        let payloadLength = Int(bytes.readLE(UInt32.self, at: 12))
+        guard payloadLength <= maxPayloadLength else { throw ControlFrameError.tooLarge }
+        return headerLength + payloadLength
     }
 }
 
 struct ControlFrameDecoder {
+    private let expectedVersion: UInt16
     private var buffered = Data()
 
+    init(expectedVersion: UInt16 = ControlFrame.versionV0) {
+        self.expectedVersion = expectedVersion
+    }
+
+    var isEmpty: Bool { buffered.isEmpty }
+
     mutating func append(_ bytes: Data) throws -> [ControlFrame] {
-        buffered.append(bytes)
         var frames: [ControlFrame] = []
-        while let decoded = try ControlFrame.decodePrefix(buffered) {
-            frames.append(decoded.frame)
-            buffered.removeSubrange(0..<decoded.length)
+        var inputOffset = 0
+        while inputOffset < bytes.count {
+            if buffered.count < ControlFrame.headerLength {
+                let count = min(ControlFrame.headerLength - buffered.count, bytes.count - inputOffset)
+                buffered.append(bytes[inputOffset..<(inputOffset + count)])
+                inputOffset += count
+                if buffered.count < ControlFrame.headerLength { break }
+            }
+
+            let frameLength = try ControlFrame.frameLength(fromHeader: buffered, expectedVersion: expectedVersion)
+            let count = min(frameLength - buffered.count, bytes.count - inputOffset)
+            if count > 0 {
+                buffered.append(bytes[inputOffset..<(inputOffset + count)])
+                inputOffset += count
+            }
+            if buffered.count == frameLength {
+                guard let decoded = try ControlFrame.decodePrefix(buffered, expectedVersion: expectedVersion) else {
+                    throw ControlFrameError.truncated
+                }
+                frames.append(decoded.frame)
+                buffered.removeAll(keepingCapacity: true)
+            }
         }
         return frames
     }

@@ -6,7 +6,7 @@ Build and run on macOS ARM64 from the repository root:
 
 ```sh
 cargo build --release -p od-host --offline
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/vmhost/Sources/ControlFrame.swift apps/vmhost/Sources/main.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-smoke
+xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/VMHostABI.h apps/vmhost/Sources/ControlFrame.swift apps/vmhost/Sources/main.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-smoke
 codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements target/od-vmhost-smoke
 codesign --verify --strict --verbose=2 target/od-vmhost-smoke
 xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/vmhost/Sources/ControlFrame.swift apps/macos/Sources/launcher.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/open-desktop-launcher-smoke
@@ -24,7 +24,7 @@ Run the two-instance crash/stop isolation scenario with `python3 tests/system/vm
 Build the dedicated generated-code-fault helper with the same control framing and host ABI:
 
 ```sh
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/vmhost/Sources/ControlFrame.swift tests/system/vmhost_generated_fault_helper.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-generated-fault-smoke
+xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/VMHostABI.h apps/vmhost/Sources/ControlFrame.swift tests/system/vmhost_generated_fault_helper.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-generated-fault-smoke
 codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements target/od-vmhost-generated-fault-smoke
 python3 tests/system/vmhost_generated_fault_smoke.py target/open-desktop-launcher-smoke target/od-vmhost-generated-fault-smoke
 ```

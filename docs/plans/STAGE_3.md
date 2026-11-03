@@ -435,6 +435,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38c | Sequential cross-thread V0 handle lifecycle | One idle handle called sequentially from two host threads, second-handle interleaving, pre-run STOP and per-call mapping release; persistent cache and full S3-38 remain open |
 | [partial] | S3-38e | Bounded opt-in local Rust S0-09 session owner | Retains copied code/admission, bounded cache and one executable-memory lease across synchronous calls; no VMHost IPC RUN/session or production MMU integration. Four exact local gates are pinned but unexecuted. См. [implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md) and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
 | [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Adds ABI V1 create/begin/STOP/wait/destroy, fresh CLOEXEC notification descriptors and exact local lifecycle gates. Independent Sol/high static review passed; execution/build/fmt and harness self-check remain deferred. VMHost control V1 and event loop remain the next slice. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
+| [partial] | S3-38g | VMHost control V1 repeated same-code RUN transport | Adds explicit opt-in V1 selection, session ABI adapter, event-driven socket/completion loop, incremental bounded frame staging and a 16,416-byte output queue; V0 remains the default path. Full Sol/high static review passed. No build, test or runtime execution; acceptance gates remain open. См. [implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md) |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
@@ -4001,6 +4002,26 @@ Stage3 harness self-check. It does not connect the proxy to VMHost or implement
 the control V1 event loop. The Rust gates and harness self-check are pinned but
 unexecuted under the current deferred-execution instruction. See the
 [S3-38f report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md).
+
+#### S3-38g. VMHost control V1 repeated same-code RUN transport
+
+The Swift VMHost now selects control protocol V1 only when the initial HELLO
+frame explicitly carries version 1. It imports the public session ABI header,
+creates at most one same-code S0-09 session, admits strictly increasing RUN
+IDs, handles exact-ID STOP, and waits on the control socket and each fresh
+completion descriptor from one control thread. Frame input is incremental and
+limited to one maximum-size frame of staging; nonblocking output is bounded to
+16,416 bytes. The V0 handshake, one-RUN lifecycle, and frame bytes remain on
+the separate version-0 path.
+
+Independent Sol/high static review passed after corrections for STOP status,
+socket backpressure, `INVALID_STATE` admission closure, completion teardown,
+and input staging bounds. No Swift build, test, signing, or runtime execution
+was performed. S3-38g remains partial pending repeated same-code state/budget
+results, STOP and completion races, monotonic/mismatched IDs, malformed and
+partial frames, EOF while idle/running, backpressure behavior, completion and
+descriptor/lease teardown, and unchanged V0 regressions on a supported macOS
+ARM host. See the [S3-38g implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md).
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
