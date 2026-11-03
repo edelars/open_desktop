@@ -1536,6 +1536,37 @@ the next native publication; the executor contract and explicit host drop
 place that release before the interpreter step. This is fixture-only evidence;
 it adds neither general interpreter fallback nor production owner/MMU tests.
 
+### S3-16n bounded-memory exact NOT RCX fallback
+
+The opt-in `memory_dispatch::run_with_nop_fallback` path additionally admits
+only exact bare `48 F7 D1` (`NOT RCX`) after strict native dispatch returns
+`Unsupported`. The decoder and literal bytes must agree on W64 NOT RCX, length
+three, and the absence of other prefixes. The helper receives an immutable
+three-byte fetch view and calls `od_isa::execute::step`; native admission and
+strict `run` remain unchanged, and other unsupported forms stay unsupported.
+Accounting charges one interpreter retirement and three bytes of RIP progress.
+
+The primary Rust identity is
+`memory_dispatch::tests::not_rcx_fallback_is_exact_and_strict_run_stays_strict`
+(`cargo test --offline -p od-jit --lib
+memory_dispatch::tests::not_rcx_fallback_is_exact_and_strict_run_stays_strict
+-- --exact --test-threads=1`). Additional identities cover NOP fallback with
+`code_end == u64::MAX` and host dispatch through native pair → NOT RCX → native
+pair. Run the regressions with
+`cargo test --offline -p od-jit --lib memory_dispatch::tests::nop_fallback_handles_code_end_at_u64_max -- --exact --test-threads=1`
+and
+`cargo test --offline -p od-host --lib tests::bounded_memory_dispatch_not_rcx_fallback_composes_native_prefix_and_suffix -- --exact --test-threads=1`.
+The host case compares full state, RAM, and retirement at budgets 0..=5,
+stop-RIP before and after fallback, atomic STOP after the native prefix, and
+strict/opt-in rejection of the NOT RAX neighbor. Harness steps `s3_16_not_rcx_fallback`,
+`s3_16_nop_u64_max_regression`, and `s3_16_not_rcx_host_continuation` pin all
+three identities and reject missing gates, zero-match output, or forged argv.
+The identities, manifest, and self-check are encoded and statically reviewed
+but unexecuted. Totals are 308 gates (298 acceptance + 10 lifecycle), 326
+local steps, and 139 self-test names. No build, formatting, Cargo, Python
+harness, Mini, or M1 check is claimed. These exact fixture forms do not close
+S3-16 or establish production owner/MMU integration.
+
 ### S3-28b cooperative events in bounded checked-memory dispatch
 
 Run focused dispatcher tests with

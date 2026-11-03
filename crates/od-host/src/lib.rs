@@ -81062,6 +81062,362 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn bounded_memory_dispatch_not_rcx_fallback_composes_native_prefix_and_suffix() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+        use od_jit::memory_dispatch::{BoundedMemoryExit, FixtureExecutionBoundary};
+        let _guard = jit_test_lock();
+
+        const BASE: u64 = 0x12e0;
+        const CODE: [u8; 15] = [
+            0x48, 0x8b, 0x03, 0x48, 0x89, 0x02, // native load/store pair
+            0x48, 0xf7, 0xd1, // exact bare NOT RCX, interpreter fallback
+            0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b, // native store/load pair
+        ];
+
+        #[derive(Clone)]
+        struct Ram<const CODE_LEN: usize> {
+            code: [u8; CODE_LEN],
+            data: [u8; 64],
+            reads: usize,
+            writes: usize,
+        }
+        impl<const CODE_LEN: usize> Ram<CODE_LEN> {
+            fn fresh(code: [u8; CODE_LEN]) -> Self {
+                let mut data = [0; 64];
+                data[8..16].copy_from_slice(&0x1234_5678_9abc_def0_u64.to_le_bytes());
+                data[24..32].copy_from_slice(&0xfeed_face_cafe_beef_u64.to_le_bytes());
+                Self {
+                    code,
+                    data,
+                    reads: 0,
+                    writes: 0,
+                }
+            }
+        }
+        impl<const CODE_LEN: usize> GuestMemory for Ram<CODE_LEN> {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(BASE)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .and_then(|offset| self.code.get(offset).copied())
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                out: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                self.reads += 1;
+                let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })?;
+                let source = self.data.get(start..start + out.len()).ok_or(
+                    MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Read,
+                    },
+                )?;
+                out.copy_from_slice(source);
+                Ok(())
+            }
+
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                input: &[u8],
+            ) -> Result<(), MemoryError> {
+                self.writes += 1;
+                let start = usize::try_from(address).map_err(|_| MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })?;
+                let destination = self.data.get_mut(start..start + input.len()).ok_or(
+                    MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Write,
+                    },
+                )?;
+                destination.copy_from_slice(input);
+                Ok(())
+            }
+
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        let view = CodeView::new(BASE, &CODE).unwrap();
+        let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
+        let initial_state = || od_isa::LongModeState {
+            gpr: [0, 0x0123_4567_89ab_cdef, 24, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            rip: BASE,
+            rflags: 0x8d7,
+            ..Default::default()
+        };
+        let stop = AtomicU8::new(0);
+
+        for budget in 0..=5 {
+            let mut actual = initial_state();
+            let mut actual_ram = Ram::fresh(CODE);
+            let mut executor = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    view,
+                    boundary.clone(),
+                    &mut actual,
+                    &mut actual_ram,
+                    AccessContext::default(),
+                    budget,
+                    None,
+                    &stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+
+            let mut expected = initial_state();
+            let mut expected_ram = Ram::fresh(CODE);
+            for _ in 0..budget {
+                if expected.rip == view.code_end() {
+                    break;
+                }
+                od_isa::execute::step(
+                    &mut expected,
+                    &mut expected_ram,
+                    AccessContext::default(),
+                )
+                .unwrap();
+            }
+            assert_eq!(actual, expected, "budget {budget}");
+            assert_eq!(actual_ram.data, expected_ram.data, "budget {budget}");
+            assert_eq!((actual_ram.reads, actual_ram.writes), (expected_ram.reads, expected_ram.writes));
+            assert_eq!(
+                result.retired_native + result.retired_interpreter,
+                budget.min(5),
+                "budget {budget}"
+            );
+            if budget == 5 {
+                assert_eq!((result.retired_native, result.retired_interpreter), (4, 1));
+                assert_eq!(result.exit, BoundedMemoryExit::BoundaryReached { rip: view.code_end() });
+            }
+        }
+
+        for (stop_rip, expected_retired, expected_interpreter) in
+            [(BASE + 6, 2, 0), (BASE + 9, 3, 1)]
+        {
+            let mut actual = initial_state();
+            let mut actual_ram = Ram::fresh(CODE);
+            let mut executor = PublishedMemoryBlockExecutor;
+            let result = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    view,
+                    boundary.clone(),
+                    &mut actual,
+                    &mut actual_ram,
+                    AccessContext::default(),
+                    5,
+                    Some(stop_rip),
+                    &stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            let mut expected = initial_state();
+            let mut expected_ram = Ram::fresh(CODE);
+            for _ in 0..expected_retired {
+                od_isa::execute::step(
+                    &mut expected,
+                    &mut expected_ram,
+                    AccessContext::default(),
+                )
+                .unwrap();
+            }
+            assert_eq!(result.exit, BoundedMemoryExit::StopAddress);
+            assert_eq!(
+                (result.retired_native, result.retired_interpreter),
+                (expected_retired - expected_interpreter, expected_interpreter)
+            );
+            assert_eq!(actual, expected);
+            assert_eq!(actual_ram.data, expected_ram.data);
+            assert_eq!((actual_ram.reads, actual_ram.writes), (expected_ram.reads, expected_ram.writes));
+        }
+
+        struct StopAfterNativePrefix {
+            stop_after_rip: u64,
+        }
+        unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for StopAfterNativePrefix {
+            type Error = PublishedMemoryBlockError;
+
+            unsafe fn execute_one_memory_block(
+                &mut self,
+                block: &od_jit::memory_dispatch::BoundedMemoryArtifact,
+                state: &mut od_isa::LongModeState,
+                memory: &mut dyn GuestMemory,
+                access_context: AccessContext,
+                incoming_budget: u64,
+                stop_rip: Option<u64>,
+                stop_requested: &AtomicU8,
+            ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error> {
+                let report = unsafe {
+                    <PublishedMemoryBlockExecutor as od_jit::memory_dispatch::MemoryBlockExecutor>::
+                        execute_one_memory_block(
+                        &mut PublishedMemoryBlockExecutor,
+                        block,
+                        state,
+                        memory,
+                        access_context,
+                        incoming_budget,
+                        stop_rip,
+                        stop_requested,
+                    )?
+                };
+                if state.rip == self.stop_after_rip {
+                    stop_requested.store(1, Ordering::Release);
+                }
+                Ok(report)
+            }
+        }
+        let mut stopped_state = initial_state();
+        let mut stopped_ram = Ram::fresh(CODE);
+        let mut executor = StopAfterNativePrefix {
+            stop_after_rip: BASE + 6,
+        };
+        stop.store(0, Ordering::Release);
+        let stopped = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                view,
+                boundary.clone(),
+                &mut stopped_state,
+                &mut stopped_ram,
+                AccessContext::default(),
+                5,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        let mut stopped_expected = initial_state();
+        let mut stopped_expected_ram = Ram::fresh(CODE);
+        for _ in 0..2 {
+            od_isa::execute::step(
+                &mut stopped_expected,
+                &mut stopped_expected_ram,
+                AccessContext::default(),
+            )
+            .unwrap();
+        }
+        assert_eq!(stopped.exit, BoundedMemoryExit::StopRequested);
+        assert_eq!((stopped.retired_native, stopped.retired_interpreter), (2, 0));
+        assert_eq!(stopped_state, stopped_expected);
+        assert_eq!(stopped_ram.data, stopped_expected_ram.data);
+        assert_eq!(stop.load(Ordering::Acquire), 1);
+        stop.store(0, Ordering::Release);
+
+        const NEIGHBOR: [u8; 9] = [
+            0x48, 0x8b, 0x03, 0x48, 0x89, 0x02, // same native prefix
+            0x48, 0xf7, 0xd0, // exact NOT RAX remains unsupported here
+        ];
+        let neighbor_view = CodeView::new(BASE, &NEIGHBOR).unwrap();
+        let neighbor_boundary =
+            FixtureExecutionBoundary::new(neighbor_view, neighbor_view.code_end()).unwrap();
+        let mut strict_neighbor_state = initial_state();
+        let mut strict_neighbor_ram = Ram::fresh(NEIGHBOR);
+        let strict_neighbor = unsafe {
+            od_jit::memory_dispatch::run(
+                neighbor_view,
+                neighbor_boundary.clone(),
+                &mut strict_neighbor_state,
+                &mut strict_neighbor_ram,
+                AccessContext::default(),
+                4,
+                None,
+                &stop,
+                &mut PublishedMemoryBlockExecutor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            strict_neighbor.exit,
+            BoundedMemoryExit::Unsupported { rip: BASE + 6 }
+        );
+        assert_eq!(strict_neighbor.retired_instructions, 2);
+        assert_eq!(strict_neighbor_state.rip, BASE + 6);
+        assert_eq!((strict_neighbor_ram.reads, strict_neighbor_ram.writes), (1, 1));
+
+        let mut neighbor_state = initial_state();
+        let mut neighbor_ram = Ram::fresh(NEIGHBOR);
+        let mut executor = PublishedMemoryBlockExecutor;
+        let neighbor = unsafe {
+            od_jit::memory_dispatch::run_with_nop_fallback(
+                neighbor_view,
+                neighbor_boundary,
+                &mut neighbor_state,
+                &mut neighbor_ram,
+                AccessContext::default(),
+                4,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(neighbor.exit, BoundedMemoryExit::Unsupported { rip: BASE + 6 });
+        assert_eq!((neighbor.retired_native, neighbor.retired_interpreter), (2, 0));
+        assert_eq!(neighbor_state.rip, BASE + 6);
+        assert_eq!((neighbor_ram.reads, neighbor_ram.writes), (1, 1));
+        assert_eq!(neighbor_state, strict_neighbor_state);
+        assert_eq!(neighbor_ram.data, strict_neighbor_ram.data);
+    }
+
+    #[test]
     fn bounded_memory_dispatch_resumes_faults_and_honors_boundary_guards() {
         use od_isa::memory::{AccessContext, ArchitecturalFault};
         let _guard = jit_test_lock();

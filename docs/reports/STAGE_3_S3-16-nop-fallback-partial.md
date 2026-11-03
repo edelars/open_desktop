@@ -86,3 +86,32 @@ long benchmark was run; none was needed for this scoped slice.
 Review signed off with no open findings. The reviewer independently passed
 the focused dispatcher tests, `od-host` and `od-jit` suites, formatting,
 workspace/Linux checks, and diff check.
+
+## S3-16n: bounded-memory exact NOT RCX fallback (2026-11-03)
+
+The opt-in `run_with_nop_fallback{,_controlled}` now also admits exact bare
+`48 F7 D1` (`NOT RCX`) after strict dispatch reports `Unsupported`. The exact
+decoder matcher requires W64 NOT, RCX destination, three-byte length, no other
+prefix, and matching source bytes. The dispatcher gives the existing
+`od_isa::execute::step` an immutable three-byte fetch view, then resumes with
+the actual RIP and remaining budget. Strict `run`, native admission, and all
+other unsupported forms remain unchanged. Existing STOP, event, boundary,
+budget, retirement, and native mapping release ordering are retained. The host
+fixture composes native pair → NOT RCX interpreter step → native pair and
+compares complete CPU/RAM state and accounting with the interpreter for budgets
+0..=5, stop-RIP before and after fallback, atomic STOP after the native prefix,
+and a strict/opt-in NOT RAX neighbor. The od-jit regression also preserves
+bare-NOP fallback when code ends at `u64::MAX`.
+
+Rust identities:
+`memory_dispatch::tests::not_rcx_fallback_is_exact_and_strict_run_stays_strict`,
+`memory_dispatch::tests::nop_fallback_handles_code_end_at_u64_max`, and
+`tests::bounded_memory_dispatch_not_rcx_fallback_composes_native_prefix_and_suffix`.
+Harness gates: `s3_16_not_rcx_fallback`, `s3_16_nop_u64_max_regression`, and
+`s3_16_not_rcx_host_continuation`; fail-closed self-test:
+`test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed`. The manifest is
+pinned at 308 Rust gates (298 acceptance + 10 lifecycle), 326 local steps, and
+139 self-test names. Gates and self-check are encoded and statically reviewed
+but unexecuted. No behavior test, build, formatting, Cargo, Python harness,
+Mini, or M1 check was run for this addition. Production owner/MMU integration,
+broader fallback coverage, and S3-16 completion remain open.

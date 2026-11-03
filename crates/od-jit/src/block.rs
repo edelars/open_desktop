@@ -2174,6 +2174,23 @@ pub(crate) fn is_exact_bare_nop(instruction: Instruction, first_byte: u8) -> boo
         && first_byte == 0x90
 }
 
+pub(crate) fn is_exact_not_rcx(instruction: Instruction, bytes: &[u8]) -> bool {
+    matches!(instruction.operation,
+        Operation::Logic { kind: LogicKind::Not, dst: Operand::Register(dst), src: Operand::Immediate(0) }
+        if dst.register() == od_isa::Register::Rcx && dst.size() == OperandSize::Qword)
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0xf7
+        && instruction.prefixes.rex == Some(0x48)
+        && instruction.prefixes.group1.is_none()
+        && instruction.prefixes.segment.is_none()
+        && !instruction.prefixes.operand_override
+        && !instruction.prefixes.address_override
+        && instruction.operand_size == OperandSize::Qword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.length == 3
+        && bytes.get(..3) == Some(&[0x48, 0xf7, 0xd1])
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdmissionError {
     FixtureDecodeRejected(od_isa::DecodeError),

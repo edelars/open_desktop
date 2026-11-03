@@ -851,3 +851,27 @@ Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
 outside this fixture evidence. Do not repeat the ISSUE-027 VMHost process suite
 without a new diagnostic basis; its existing status and procedure remain in
 [ISSUE-027](../KNOWN_ISSUES.md).
+
+### S3-16n bounded-memory exact NOT RCX fallback
+
+The opt-in bounded memory dispatcher admits exact bare `48 F7 D1` only after
+strict dispatch returns `Unsupported`, then calls the existing interpreter on
+an immutable three-byte fetch view. A host fixture composes native pair → NOT
+RCX interpreter step → native pair, checks full CPU/RAM parity and accounting
+at budgets 0..=5, stop-RIP boundaries, and atomic STOP after the native prefix,
+and preserves strict/opt-in rejection of neighboring NOT RAX. A separate od-jit regression covers bare-NOP fallback
+at `CodeView` end `u64::MAX`. Rust identities are
+`memory_dispatch::tests::not_rcx_fallback_is_exact_and_strict_run_stays_strict`,
+`memory_dispatch::tests::nop_fallback_handles_code_end_at_u64_max`, and
+`tests::bounded_memory_dispatch_not_rcx_fallback_composes_native_prefix_and_suffix`;
+harness gates are `s3_16_not_rcx_fallback`,
+`s3_16_nop_u64_max_regression`, and `s3_16_not_rcx_host_continuation`. Manifest
+totals are 308 gates (298 acceptance + 10 lifecycle), 326 local steps, and 139
+self-test names. The gates and fail-closed self-check are encoded and
+statically reviewed but unexecuted. No behavior test, Rust/Python build or
+test, formatting, Mini, or M1 result is claimed. Strict `run`, native
+admission, unrelated unsupported instructions, and production owner/MMU
+integration remain outside this slice. S3-16 remains partial; see the
+[focused report](STAGE_3_S3-16-nop-fallback-partial.md),
+[plan](../plans/STAGE_3.md#s3-16-подключить-interpreter-fallback), and
+[JIT testing reference](../testing/JIT.md#s3-16n-bounded-memory-exact-not-rcx-fallback).

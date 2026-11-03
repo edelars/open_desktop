@@ -187,6 +187,7 @@ SELF_TEST_NAMES = (
     "test_app_bundle_smoke_preserves_and_executes_five_argument_bundle",
     "test_vmhost_process_timeout_kills_child_group",
     "test_s3_30p3_allocator_helper_clobber_gate_is_pinned_and_fails_closed",
+    "test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed",
 )
 SELF_TEST_IDENTITIES = {
     f"__main__.Stage3HarnessValidationTests.{name}" for name in SELF_TEST_NAMES
@@ -1397,6 +1398,18 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34do_value_only_reducer_self_check", "local_acceptance", "od-host",
         "s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature",
+    ),
+    (
+        "s3_16_not_rcx_fallback", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::not_rcx_fallback_is_exact_and_strict_run_stays_strict",
+    ),
+    (
+        "s3_16_nop_u64_max_regression", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::nop_fallback_handles_code_end_at_u64_max",
+    ),
+    (
+        "s3_16_not_rcx_host_continuation", "local_acceptance", "od-host",
+        "tests::bounded_memory_dispatch_not_rcx_fallback_composes_native_prefix_and_suffix",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {

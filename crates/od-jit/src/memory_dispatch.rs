@@ -1396,16 +1396,18 @@ pub unsafe fn run_controlled<E: MemoryBlockExecutor>(
     }
 }
 
-/// Run the checked-memory fixture path with an opt-in interpreter step for
-/// exactly the decoder-confirmed bare `0x90` instruction. The strict `run`
-/// entry remains unchanged and still returns `Unsupported` at NOP.
+/// Run the checked-memory fixture path with opt-in interpreter steps for the
+/// decoder-confirmed bare `0x90` and exact bare `48 F7 D1` (`NOT RCX`). The
+/// strict `run` entry remains unchanged and still returns `Unsupported` at
+/// either instruction.
 ///
 /// Each strict native run stops at its first unsupported instruction. When
-/// that RIP decodes as exact bare NOP, the native executor has already
+/// that RIP decodes as one of the admitted exact instructions, the native executor has already
 /// returned (and its host adapter must have dropped the published mapping)
-/// before this function steps the one-byte, immutable code view with the
+/// before this function steps the immutable instruction bytes with the
 /// existing interpreter. It then resumes native dispatch at the resulting
-/// actual RIP with the remaining total budget.
+/// actual RIP with the remaining total budget. Every other unsupported form
+/// remains unsupported.
 ///
 /// # Safety
 /// The same private synchronous ordinary RAM, immutable non-aliasing code,
@@ -1440,7 +1442,7 @@ pub unsafe fn run_with_nop_fallback<E: MemoryBlockExecutor>(
 }
 
 /// Event-aware version of [`run_with_nop_fallback`]. An event is checked
-/// before each native artifact and before each bare-NOP interpreter step.
+/// before each native artifact and before each admitted interpreter step.
 /// The caller owns clearing the request and resuming at the actual guest RIP.
 ///
 /// # Safety
@@ -1497,7 +1499,18 @@ pub unsafe fn run_with_nop_fallback_controlled<E: MemoryBlockExecutor>(
                 blocks_executed,
             });
         };
-        if rip != state.rip || !is_exact_bare_nop_at(code, boundary.end_rip, rip) {
+        if rip != state.rip {
+            return Ok(BoundedMemoryFallbackResult {
+                exit: BoundedMemoryExit::Unsupported { rip },
+                remaining_budget: remaining,
+                retired_native,
+                retired_interpreter,
+                blocks_executed,
+            });
+        }
+        let Some(instruction_length) =
+            exact_fallback_instruction_length(code, boundary.end_rip, rip)
+        else {
             return Ok(BoundedMemoryFallbackResult {
                 exit: BoundedMemoryExit::Unsupported { rip },
                 remaining_budget: remaining,
@@ -1556,7 +1569,10 @@ pub unsafe fn run_with_nop_fallback_controlled<E: MemoryBlockExecutor>(
             });
         }
 
-        let one_byte = CodeMemory::one_instruction(code, rip).ok_or(
+        let instruction_end = rip
+            .checked_add(u64::from(instruction_length))
+            .ok_or(BoundedMemoryError::CounterOverflow)?;
+        let instruction_memory = CodeMemory::bounded_range(code, rip, instruction_end).ok_or(
             BoundedMemoryError::InterpreterMemory {
                 rip,
                 error: MemoryError::Unmapped {
@@ -1566,12 +1582,13 @@ pub unsafe fn run_with_nop_fallback_controlled<E: MemoryBlockExecutor>(
             },
         )?;
         // SAFETY: this operation is the same borrowed private-RAM invocation
-        // guarded by this function's caller contract; NOP performs no data access.
-        let mut fetch = one_byte;
+        // guarded by this function's caller contract; admitted NOP and NOT
+        // RCX forms access registers only and use the immutable code view.
+        let mut fetch = instruction_memory;
         match od_isa::execute::step(state, &mut fetch, access_context) {
             Ok(od_isa::execute::StepOutcome::Advanced) => {
                 let expected = rip
-                    .checked_add(1)
+                    .checked_add(u64::from(instruction_length))
                     .ok_or(BoundedMemoryError::CounterOverflow)?;
                 if state.rip != expected {
                     return Err(BoundedMemoryError::InterpreterRipMismatch {
@@ -1595,29 +1612,30 @@ pub unsafe fn run_with_nop_fallback_controlled<E: MemoryBlockExecutor>(
     }
 }
 
-fn is_exact_bare_nop_at(code: CodeView<'_>, execution_end: u64, rip: u64) -> bool {
-    let Some(end) = rip.checked_add(1) else {
-        return false;
-    };
-    if end > execution_end {
-        return false;
+fn exact_fallback_instruction_length(
+    code: CodeView<'_>,
+    execution_end: u64,
+    rip: u64,
+) -> Option<u8> {
+    if rip >= execution_end {
+        return None;
     }
-    let Some(mut fetch) = CodeMemory::one_instruction(code, rip) else {
-        return false;
-    };
-    let Ok(decoded) = long_decode::decode(&mut fetch, rip, AccessContext::default()) else {
-        return false;
-    };
+    let mut fetch = CodeMemory::bounded_range(code, rip, rip.saturating_add(3).min(execution_end))?;
+    let decoded = long_decode::decode(&mut fetch, rip, AccessContext::default()).ok()?;
     let Some(offset) = rip
         .checked_sub(code.base_rip())
         .and_then(|offset| usize::try_from(offset).ok())
     else {
-        return false;
+        return None;
     };
-    let Some(first_byte) = code.bytes().get(offset).copied() else {
-        return false;
-    };
-    crate::block::is_exact_bare_nop(decoded, first_byte)
+    let bytes = code.bytes().get(offset..)?;
+    if crate::block::is_exact_bare_nop(decoded, *bytes.first()?) {
+        Some(1)
+    } else if crate::block::is_exact_not_rcx(decoded, bytes) {
+        Some(3)
+    } else {
+        None
+    }
 }
 
 fn validate_fallback_accounting<E>(
@@ -3766,6 +3784,145 @@ mod tests {
             (0, 1, 1)
         );
         assert_eq!(executor.entries, [(ENTRY, 3), (ENTRY + 4, 3)]);
+    }
+
+    #[test]
+    fn not_rcx_fallback_is_exact_and_strict_run_stays_strict() {
+        const ENTRY: u64 = 0x9d00;
+        let source = [0x48, 0xf7, 0xd1];
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let initial = LongModeState {
+            gpr: [
+                0x1234_5678_9abc_def0,
+                0x0123_4567_89ab_cdef,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ],
+            rip: ENTRY,
+            rflags: 0x0ed7,
+            ..Default::default()
+        };
+        let stop = AtomicU8::new(0);
+        let mut memory = EmptyMemory;
+
+        let mut strict_state = initial.clone();
+        let mut strict_executor = AdvancingExecutor::default();
+        let strict = unsafe {
+            run(
+                code,
+                boundary.clone(),
+                &mut strict_state,
+                &mut memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                &mut strict_executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(strict.exit, BoundedMemoryExit::Unsupported { rip: ENTRY });
+        assert_eq!(strict_state, initial);
+        assert!(strict_executor.entries.is_empty());
+
+        let mut expected = initial.clone();
+        let mut interpreter_fetch = CodeMemory::full_code(code);
+        assert_eq!(
+            od_isa::execute::step(
+                &mut expected,
+                &mut interpreter_fetch,
+                AccessContext::default()
+            ),
+            Ok(od_isa::execute::StepOutcome::Advanced)
+        );
+
+        let mut fallback_state = initial;
+        let mut fallback_executor = AdvancingExecutor::default();
+        let fallback = unsafe {
+            run_with_nop_fallback(
+                code,
+                boundary,
+                &mut fallback_state,
+                &mut memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                &mut fallback_executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            fallback.exit,
+            BoundedMemoryExit::BoundaryReached { rip: ENTRY + 3 }
+        );
+        assert_eq!(fallback_state, expected);
+        assert_eq!(
+            (
+                fallback.remaining_budget,
+                fallback.retired_native,
+                fallback.retired_interpreter
+            ),
+            (0, 0, 1)
+        );
+        assert!(fallback_executor.entries.is_empty());
+    }
+
+    #[test]
+    fn nop_fallback_handles_code_end_at_u64_max() {
+        let base = u64::MAX - 1;
+        let source = [0x90];
+        let code = CodeView::new(base, &source).unwrap();
+        assert_eq!(code.code_end(), u64::MAX);
+        let boundary = FixtureExecutionBoundary::new(code, u64::MAX).unwrap();
+        let stop = AtomicU8::new(0);
+        let mut state = LongModeState {
+            rip: base,
+            ..Default::default()
+        };
+        let mut memory = EmptyMemory;
+        let mut executor = AdvancingExecutor::default();
+
+        let result = unsafe {
+            run_with_nop_fallback(
+                code,
+                boundary,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            result.exit,
+            BoundedMemoryExit::BoundaryReached { rip: u64::MAX }
+        );
+        assert_eq!(state.rip, u64::MAX);
+        assert_eq!(
+            (
+                result.remaining_budget,
+                result.retired_native,
+                result.retired_interpreter
+            ),
+            (0, 0, 1)
+        );
     }
 
     #[test]
