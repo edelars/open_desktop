@@ -1292,6 +1292,23 @@ impl MemorySiteV2 {
             && length == 3
             && self.destination.is_none()
             && self.source == Some(0)
+            && self.operand.address_size == od_isa::OperandSize::Dword
+            && self.operand.size == od_isa::OperandSize::Dword
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rcx)
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && self.operand.displacement == 0
+        {
+            return true;
+        }
+        if self.operation == MemorySiteOperationV2::Store
+            && self.instruction_index == expected_index
+            && length == 3
+            && self.destination.is_none()
+            && self.source == Some(0)
             && self.operand.address_size == od_isa::OperandSize::Qword
             && self.operand.size == od_isa::OperandSize::Dword
             && matches!(
@@ -2675,6 +2692,22 @@ impl MemorySiteV2 {
                 && self.operand.index.is_none()
                 && self.operand.scale == 1
                 && self.operand.displacement == i64::from(source[3] as i8);
+        }
+        if source == [0x67, 0x89, 0x01] {
+            return expected_operation == MemorySiteOperationV2::Store
+                && self.instruction_index == expected_index
+                && self.next_rip.checked_sub(self.guest_rip) == Some(3)
+                && self.destination.is_none()
+                && self.source == Some(0)
+                && self.operand.size == od_isa::OperandSize::Dword
+                && self.operand.address_size == od_isa::OperandSize::Dword
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rcx)
+                )
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == 0;
         }
         if source == [0x67, 0x8b, 0x03] {
             return expected_operation == MemorySiteOperationV2::Load
