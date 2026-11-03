@@ -437,7 +437,9 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38e | Bounded opt-in local Rust S0-09 session owner | Retains copied code/admission, bounded cache and one executable-memory lease across synchronous calls; no VMHost IPC RUN/session or production MMU integration. Four exact local gates are pinned but unexecuted. См. [implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md) and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
 | [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Adds ABI V1 create/begin/STOP/wait/destroy, fresh CLOEXEC notification descriptors and exact local lifecycle gates. Independent Sol/high static review passed; execution/build/fmt and harness self-check remain deferred. VMHost control V1 is implemented separately in S3-38g. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
 | [partial] | S3-38g | VMHost control V1 repeated same-code RUN transport | Adds explicit opt-in V1 selection, session ABI adapter, event-driven socket/completion loop, incremental bounded frame staging and a 16,416-byte output queue; V0 remains the default path. Full Sol/high static review passed. No build, test or runtime execution; acceptance gates remain open. См. [implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md) |
-| [partial] | S3-38h | Process-level V1 same-code repeated RUN smoke and exact process-harness gate | Pins two sequential RUNs on one VMHost with distinct CPU state/budget, full RESULT payloads, increasing IDs, ACK/RESULT order and idle EOF cleanup. Harness command/source identity is pinned; process execution and STOP/EOF-during-RUN races remain pending. См. [implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md) |
+| [partial] | S3-38h | Process-level V1 same-code repeated RUN smoke and exact process-harness gate | Pins two sequential RUNs on one VMHost with distinct CPU state/budget, full RESULT payloads, increasing IDs, ACK/RESULT order and idle EOF cleanup. Process execution remains pending; S3-38i/j separately pin active STOP/EOF and framing gates. См. [implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md) |
+| [partial] | S3-38i | Process-level STOP isolation and EOF during active V1 RUN | Pins exact STOP_ACK→RESULT order, stopped result, fresh next invocation, and bounded clean teardown after active-run EOF. Static review passed; no process execution. См. [implementation report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md) |
+| [partial] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Pins fragmented HELLO/RUN, coalesced RUN admission with BUSY evidence, partial-frame EOF, and overlength rejection before body; INVALID_STATE batch closure remains uncovered. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
@@ -4037,6 +4039,32 @@ cover STOP during RUN, EOF during RUN, malformed/partial frames, or the broader
 V1 race and backpressure suite. Those runtime acceptance gates remain open;
 Mini checks remain deferred. See the
 [S3-38h implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md).
+
+#### S3-38i. Process-level STOP isolation and active-run EOF
+
+The smoke runs the admitted `75 FE` loop with ZF clear, sends exact-ID STOP
+after RUN_ACK, and checks STOP_ACK before the terminal RESULT with STOP reason.
+It then runs the same code with ZF set and a one-instruction budget to prove a
+STOP request does not carry into the next invocation. A separate VMHost process
+closes the control socket after RUN_ACK and must exit cleanly within the bounded
+timeout. No positive retirement count is required after STOP. Independent
+Sol/high static review passed; no Python, build, or process execution was
+performed. Process termination does not prove descriptor or executable-lease
+cleanup before exit. See the
+[S3-38i report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md).
+
+#### S3-38j. Process-level framing and admission checks
+
+The smoke sends HELLO and RUN in header/body fragments, exercises coalesced
+RUN frames, checks partial-header/body EOF teardown, and submits an oversized
+declared payload without a body to pin early rejection. Coalesced admission
+expects the second RUN to receive scope-1 BUSY while the first invocation
+finishes with its exact RESULT. Invalid-state admission closure within the same
+frame batch has no deterministic process-level trigger yet and remains open.
+This process evidence does not claim the VMHost's internal buffer size. The
+two new harness steps and source identities are statically reviewed but
+unexecuted. See the
+[S3-38j report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md).
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 

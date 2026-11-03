@@ -4526,8 +4526,35 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "tests/system/vmhost_control_v1_same_code_smoke.py",
                 harness.PROCESS_SOURCE_PATHS,
             )
+            vmhost_path = str(harness.vmhost_process_paths(run_root)["vmhost"])
+            for step_name, script_path, marker_key, marker in (
+                (
+                    "process_control_v1_frames",
+                    "tests/system/vmhost_control_v1_frames_smoke.py",
+                    "control_v1_frames",
+                    "VMHost control V1 smoke passed: fragmented/coalesced frames, bounded EOF teardown, oversized length",
+                ),
+                (
+                    "process_control_v1_stop_eof",
+                    "tests/system/vmhost_control_v1_stop_eof_smoke.py",
+                    "control_v1_stop_eof",
+                    "VMHost control V1 smoke passed: STOP isolation and bounded active-run EOF teardown",
+                ),
+            ):
+                with self.subTest(step=step_name):
+                    self.assertEqual(commands[step_name], [sys.executable, script_path, vmhost_path])
+                    self.assertIn(script_path, harness.PROCESS_SOURCE_PATHS)
+                    self.assertEqual(harness.PROCESS_STEP_TIMEOUTS[step_name], 30)
+                    self.assertEqual(harness.PROCESS_SUCCESS_MARKERS[marker_key], marker)
+                    command = next(
+                        entry for entry in manifest_commands if entry["step"] == step_name
+                    )
+                    self.assertEqual(
+                        command["argv"], [sys.executable, script_path, "${RUN_ROOT}/artifacts/od-vmhost-smoke"]
+                    )
             self.assertIn("apps/vmhost/Sources/VMHostABI.h", harness.PROCESS_SOURCE_PATHS)
             self.assertIn("include/open_desktop/session_abi_v1.h", harness.PROCESS_SOURCE_PATHS)
+            self.assertIn("apps/vmhost/Sources/ControlFrame.swift", harness.PROCESS_SOURCE_PATHS)
             self.assertIn(
                 "apps/vmhost/Sources/VMHostABI.h",
                 commands["process_compile_vmhost"],

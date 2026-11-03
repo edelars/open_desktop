@@ -1604,6 +1604,8 @@ PROCESS_SUITE_STEPS = (
     "process_fault_helper_entitlements",
     "process_control_race",
     "process_control_v1_sessions",
+    "process_control_v1_frames",
+    "process_control_v1_stop_eof",
     "process_isolation",
     "process_app_bundle",
     "process_bundle_verify",
@@ -1619,6 +1621,12 @@ PROCESS_SUCCESS_MARKERS = {
     "control_race": "VMHost control smoke passed:",
     "control_v1_sessions": (
         "VMHost control V1 smoke passed: same-code sequential RUNs with fresh state and budgets"
+    ),
+    "control_v1_frames": (
+        "VMHost control V1 smoke passed: fragmented/coalesced frames, bounded EOF teardown, oversized length"
+    ),
+    "control_v1_stop_eof": (
+        "VMHost control V1 smoke passed: STOP isolation and bounded active-run EOF teardown"
     ),
     "isolation": "VMHost isolation smoke passed:",
     "generated_fault": "VMHost terminated by SIGSEGV",
@@ -1663,6 +1671,8 @@ PROCESS_STEP_TIMEOUTS = {
     "process_fault_helper_entitlements": 120,
     "process_control_race": 900,
     "process_control_v1_sessions": 30,
+    "process_control_v1_frames": 30,
+    "process_control_v1_stop_eof": 30,
     "process_isolation": 120,
     "process_generated_fault": 30,
     "process_app_bundle": 180,
@@ -1690,6 +1700,8 @@ PROCESS_SOURCE_PATHS = (
     "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     "tests/system/vmhost_control_race_smoke.py",
     "tests/system/vmhost_control_v1_same_code_smoke.py",
+    "tests/system/vmhost_control_v1_frames_smoke.py",
+    "tests/system/vmhost_control_v1_stop_eof_smoke.py",
     "tests/system/vmhost_isolation_smoke.py",
     "tests/system/vmhost_generated_fault_smoke.py",
     "tests/system/vmhost_generated_fault_helper.swift",
@@ -2352,6 +2364,14 @@ def vmhost_process_commands(
         ],
         "process_control_v1_sessions": [
             sys.executable, "tests/system/vmhost_control_v1_same_code_smoke.py",
+            str(paths["vmhost"]),
+        ],
+        "process_control_v1_frames": [
+            sys.executable, "tests/system/vmhost_control_v1_frames_smoke.py",
+            str(paths["vmhost"]),
+        ],
+        "process_control_v1_stop_eof": [
+            sys.executable, "tests/system/vmhost_control_v1_stop_eof_smoke.py",
             str(paths["vmhost"]),
         ],
         "process_isolation": [
@@ -3389,8 +3409,9 @@ def run_vmhost_process_suite(
                 raise HarnessError(
                     f"process command failed before semantic validation: {step.get('failure')}"
                 )
-            if step_name in {"process_control_race", "process_control_v1_sessions", "process_isolation",
-                             "process_generated_fault", "process_app_bundle"}:
+            if step_name in {"process_control_race", "process_control_v1_sessions",
+                             "process_control_v1_frames", "process_control_v1_stop_eof",
+                             "process_isolation", "process_generated_fault", "process_app_bundle"}:
                 if step_name == "process_control_race":
                     artifacts = collect_vmhost_process_artifacts(run_root)
                     step["binary_inputs"] = process_binary_inputs(
@@ -3402,6 +3423,18 @@ def run_vmhost_process_suite(
                     require_process_marker(
                         step,
                         PROCESS_SUCCESS_MARKERS["control_v1_sessions"],
+                        step_name,
+                    )
+                elif step_name in {"process_control_v1_frames", "process_control_v1_stop_eof"}:
+                    step["binary_inputs"] = process_binary_inputs(artifacts, "vmhost")
+                    marker_key = (
+                        "control_v1_frames"
+                        if step_name == "process_control_v1_frames"
+                        else "control_v1_stop_eof"
+                    )
+                    require_process_marker(
+                        step,
+                        PROCESS_SUCCESS_MARKERS[marker_key],
                         step_name,
                     )
                 elif step_name == "process_isolation":
@@ -4185,6 +4218,16 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
         PROCESS_SUCCESS_MARKERS["control_v1_sessions"],
         "process_control_v1_sessions",
     )
+    require_process_marker(
+        steps["process_control_v1_frames"],
+        PROCESS_SUCCESS_MARKERS["control_v1_frames"],
+        "process_control_v1_frames",
+    )
+    require_process_marker(
+        steps["process_control_v1_stop_eof"],
+        PROCESS_SUCCESS_MARKERS["control_v1_stop_eof"],
+        "process_control_v1_stop_eof",
+    )
     require_process_marker(steps["process_isolation"], "VMHost isolation smoke passed:", "process_isolation")
     generated = generated_fault_observation(steps["process_generated_fault"])
     if steps["process_generated_fault"].get("process_observation") != generated:
@@ -4198,6 +4241,8 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
     expected_binary_inputs = {
         "process_control_race": process_binary_inputs(expected_artifacts, "launcher", "vmhost"),
         "process_control_v1_sessions": process_binary_inputs(expected_artifacts, "vmhost"),
+        "process_control_v1_frames": process_binary_inputs(expected_artifacts, "vmhost"),
+        "process_control_v1_stop_eof": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_isolation": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_generated_fault": process_binary_inputs(expected_artifacts, "launcher", "fault_helper"),
         "process_app_bundle": process_binary_inputs(expected_artifacts, "bundle_launcher", "bundle_vmhost"),
