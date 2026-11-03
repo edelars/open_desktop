@@ -23480,3 +23480,44 @@ host-side checks do not claim physical x86 acceptance. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ao--exact-mulps-memory-profile-with-unmasked-exceptions),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [stage plan](../plans/STAGE_2.md#s2-38ao--exact-mulps-memory-form-with-unmasked-exceptions).
+
+## S2-38ap — MULPD m128 memory unmasked exceptions
+
+Implemented exact Long64 `66 0F 59 00` MULPD XMM0,m128 `[RAX]` with a separate
+immutable schema-v2 profile, unmasked controls and an independent raw-u64
+oracle that reads the actual memory RHS. Six literal fixtures cover success,
+unmasked IE/DE/PE, UE+PE rounding to minimum normal, and noncanonical fetch
+precedence. The 1,568-case event product and 393,216-case boundary/history
+matrix cover inexact tiny multiplication, true normal halfway results across
+all RC values, cross-lane event suppression, masked DE followed by unmasked
+PE, and all sticky/mask/delivery combinations. Direct checks cover malformed
+OM/UM controls, fetch/gate/CPL order, alignment independent of AC, canonical
+span/read rollback, output tampering and backend denial. Package suites,
+workspace check, format and diff checks passed. Independent Sol/high review
+confirmed the literal tie results for all RC modes. No physical x86
+acceptance is claimed. See the
+[S2-38ap report](S2_38AP_MULPD_MEMORY_UNMASKED.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ap--exact-mulpd-memory-profile-with-unmasked-exceptions),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[stage plan](../plans/STAGE_2.md#s2-38ap--exact-mulpd-memory-form-with-unmasked-exceptions).
+
+## Main integration: S2-38am through S2-38ap
+
+The four profiles preserve separate immutable schema-v2 contracts for packed
+SUBPS/SUBPD and MULPS/MULPD memory forms. Each uses the actual m128 RHS,
+requires 16-byte alignment regardless of AC, checks the complete instruction
+fetch before feature/control gates, and keeps JIT/native routes closed. SUBPD
+and MULPD use four-byte code spans; SUBPS and MULPS use three-byte spans. The
+independent raw-u32/u64 oracles cover NaN and pre-event priority across lanes;
+the multiplication profiles additionally cover inexact-tiny UE+PE and
+rounding to minimum normal. The profiles retain their distinct SSE/SSE2 gates
+and their prior masked/register siblings.
+
+On combined main, `cargo test -p od-isa -p od-testkit -p od-runner --offline
+--no-fail-fast --quiet` passed: od-isa 1,971; od-runner unit 159;
+`fixture_v2` 567; od-testkit 461. `cargo check --workspace --all-targets
+--offline`, `cargo fmt --all -- --check`, `git diff --check`,
+`python3 tools/check_layout.py`, and `GRAPHIFY_NO_AUTO_REFRESH=1 graphify update .`
+also passed. Graphify contains 12,681 nodes / 29,485 edges / 327 communities.
+The independent merged-integration review found no lost dispatch, schema,
+validator, fixture or rounding checks. Physical x86 acceptance was not run.
