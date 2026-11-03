@@ -714,6 +714,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
+| [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; 22 mocked harness tests; no CPU execution; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -8456,6 +8457,35 @@ deletion, branches, memory/REP, FP faults и physical comparison остаютс�
 открытыми. См. [формат и replay](../testing/TEST_CASE_FORMAT.md#s2-42b-bounded-native-xorpd-xmm-input-reducer),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42b-native-xorpd-xmm-input-reducer)
 и [отчёт](../reports/STAGE_2_REPORT.md#s2-42b--bounded-native-xorpd-xmm-input-reducer).
+
+### S2-42c. XORPD corpus harness
+
+**Статус:** выбранная S2-42a XORPD corpus suite подключена к существующему
+CPU harness; S2-42 остаётся открытым из-за зависимостей S2-21/S2-39/S2-40,
+остальных corpus/reducer групп и физической проверки.
+
+Команда `tests/cpu/stage2_oracle.py --suite xorpd-native-corpus` принимает
+только сохранённый S2-42a manifest: четыре фиксированных seed, ровно 1024
+ordered case hashes и уникальные полные XMM input states. До orchestration
+существующий `od-runner --verify-native-xorpd-corpus` выполняет строгую
+проверку schema/profile/corpus. Integer suite остаётся CLI default.
+
+Для каждого fixture harness сохраняет два interpreter и два native результата,
+полные JSON, stderr, process status, provenance и replay. Native runner выдаёт
+отдельный flushed JSONL record на fixture; evidence записывается по мере
+поступления, поэтому timeout позднего case не удаляет предыдущие результаты.
+Ожидания фиксируют полный XMM/GPR/RIP/MXCSR/retirement state; malformed,
+missing, mismatch, native unavailable и timeout переводят manifest в failure с
+доступными partial records. Nested malformed snapshots превращаются в
+`Stage2Error`, а timeout cleanup ограничивает process/pipes/reap.
+
+**Проверки:** 22 Python harness tests, включая mocked двухcase/two-repeat
+успех, manifest/profile/hash rejection, malformed result, missing/failed native
+batch, сохранение case 1 при timeout case 2, closed-pipes и descendant-held-pipe
+timeouts; 5 соответствующих Rust verifier tests; formatting и offline workspace
+check. На машине разработки эти ответы синтетические: native/physical
+execution `not_run`. См. [S2-42c evidence protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md)
+и [отчёт](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness).
 
 ### S2-43. Диагностический interpreter и граница JIT
 

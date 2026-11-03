@@ -17268,6 +17268,29 @@ comparison. See [plan](../plans/STAGE_2.md#s2-42b-bounded-xmm-input-reducer),
 [format/replay](../testing/TEST_CASE_FORMAT.md#s2-42b-bounded-native-xorpd-xmm-input-reducer),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42b-native-xorpd-xmm-input-reducer).
 
+## S2-42c — XORPD corpus harness
+
+Extended `tests/cpu/stage2_oracle.py` with an opt-in native XORPD corpus suite;
+the existing integer fixture suite remains the default. The suite validates the
+recorded S2-42a manifest and invokes the existing strict Rust corpus verifier
+before running two interpreter and two native repeats per fixture. It records
+fixture hashes, full result JSON, stderr, process status, provenance and replay
+commands. Native batch results stream as JSON Lines and are persisted per case;
+timeouts and malformed nested results fail the run without losing completed
+case evidence. Timeout handling bounds process and inherited-pipe cleanup.
+
+The orchestration tests cover exact manifest/profile validation, integer-default
+compatibility, two-case/two-repeat success, malformed nested snapshots, failed
+or missing native batches, timeout evidence retention, and subprocesses that
+close output pipes or leave descendants holding them. Python harness tests
+passed (22); relevant Rust verifier tests passed (5). Formatting and workspace
+offline check passed. These are simulated orchestration checks; no native CPU,
+Linux hardware or physical/Mac mini execution occurred (`not_run`). The new
+S2-42c harness does not implement a native reducer; S2-42 remains open because
+S2-21/S2-39/S2-40 and other corpus groups/physical acceptance remain pending.
+See the [S2-42c protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md) and
+[Stage 2 plan](../plans/STAGE_2.md).
+
 ## S2-27g — exact Long64 SWAPGS
 
 Implemented exact bare `0F 01 F8` execution under explicit `SwapgsV1` with
@@ -24015,7 +24038,8 @@ metadata `.git` pointer as an unmapped root file.
 No final linked Linux oracle binary inspection, Linux runtime, ptrace oracle
 execution, or physical/hardware observation occurred on this host; each remains
 `not_run`. Testkit regressions round-trip completed plus partial rejected
-evidence, verify pre-entry setup classification, exercise cleared snapshots
+evidence, validate setup-level `not_run` evidence and attempted-run rejection,
+exercise cleared snapshots
 when register/siginfo reads or a new wait fail, and reject inconsistent raw
 wait/exit/signal data. Fresh Sol/high review of the final code and protocol
 found no remaining findings. Initial Sol/high review found
