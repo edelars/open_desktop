@@ -471,6 +471,7 @@ impl PublishedCode {
             && !(source.len() == 3 && source[..2] == [0x89, 0x40])
             && !(source.len() == 3 && source[..2] == [0x89, 0x45])
             && !(source.len() == 6 && source[..2] == [0x89, 0x80])
+            && !(source.len() == 6 && source[..2] == [0x89, 0x81])
             && !(source.len() == 6 && source[..2] == [0x89, 0x83])
             && !(source.len() == 6 && source[..2] == [0x89, 0x85])
             && !(source.len() == 6 && source[..2] == [0x89, 0x05]))
@@ -35587,7 +35588,7 @@ mod tests {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fn rcx_base_dword_store_contract(source: &[u8], displacement: i8) {
+    fn rcx_base_dword_store_contract(source: &[u8], displacement: i64) {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
         use std::collections::BTreeMap;
         use std::sync::Arc;
@@ -35600,10 +35601,16 @@ mod tests {
             bytes: BTreeMap<u64, u8>,
             writes: Vec<(u64, Vec<u8>)>,
             error: Option<MemoryError>,
+            fetch_error: Option<(u64, MemoryError)>,
             stop: Option<Arc<AtomicU8>>,
         }
         impl GuestMemory for Ram {
             fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                if let Some((fault_address, error)) = &self.fetch_error {
+                    if *fault_address == address {
+                        return Err(error.clone());
+                    }
+                }
                 let offset = address
                     .checked_sub(ENTRY)
                     .and_then(|offset| usize::try_from(offset).ok());
@@ -35715,6 +35722,7 @@ mod tests {
                 bytes,
                 writes: Vec::new(),
                 error: None,
+                fetch_error: None,
                 stop: None,
             }
         };
@@ -35743,8 +35751,8 @@ mod tests {
             state
         }
 
-        fn effective_address(rcx: u64, displacement: i8) -> u64 {
-            rcx.wrapping_add_signed(i64::from(displacement))
+        fn effective_address(rcx: u64, displacement: i64) -> u64 {
+            rcx.wrapping_add_signed(displacement)
         }
 
         let _guard = jit_test_lock();
@@ -35755,6 +35763,28 @@ mod tests {
         .unwrap();
         let published = PublishedCode::publish_ir_memory_dword_store_v2(&block).unwrap();
         drop(block);
+
+        for displacement_byte in 2..6 {
+            let fetch_address = ENTRY + displacement_byte;
+            for fetch_error in [
+                MemoryError::Unmapped {
+                    address: fetch_address,
+                    access: AccessKind::Fetch,
+                },
+                MemoryError::Backend("RCX disp32 fetch failed".into()),
+            ] {
+                let mut state = state_at(0x0000_0001_0000_1000, 0xfeed_beef_89ab_cdef);
+                let before = state.clone();
+                let mut ram = ram_at(0x0000_0001_0000_1000);
+                ram.fetch_error = Some((fetch_address, fetch_error.clone()));
+                assert_eq!(
+                    od_isa::execute::step(&mut state, &mut ram, AccessContext::default()),
+                    Err(fetch_error)
+                );
+                assert_eq!(state, before);
+                assert!(ram.writes.is_empty());
+            }
+        }
 
         for (target_address, low_eax, high_rax) in [
             (0x0000_0001_0000_1001_u64, 0x89ab_cdef_u32, 0xfeed_beef_u32),
@@ -35767,7 +35797,7 @@ mod tests {
             (u64::MAX - 3, u32::MAX, 0xa5a5_5a5a_u32),
             (0x0000_7fff_ffff_fffc, 0x7654_3210_u32, 0xfeed_cafe_u32),
         ] {
-            let rcx = target_address.wrapping_sub(i64::from(displacement) as u64);
+            let rcx = target_address.wrapping_sub(displacement as u64);
             let rax = (u64::from(high_rax) << 32) | u64::from(low_eax);
             let address = effective_address(rcx, displacement);
             let mut native_ram = ram_at(address);
@@ -35982,7 +36012,7 @@ mod tests {
         }
 
         for address in [0x0000_8000_0000_0000_u64, 0x0000_7fff_ffff_fffe_u64] {
-            let rcx = address.wrapping_sub(i64::from(displacement) as u64);
+            let rcx = address.wrapping_sub(displacement as u64);
             let mut state = state_at(rcx, rax);
             let before_state = state.clone();
             let mut ram = ram_at(address);
@@ -36014,7 +36044,7 @@ mod tests {
         }
 
         let overflow_address = u64::MAX - 2;
-        let overflow_rcx = overflow_address.wrapping_sub(i64::from(displacement) as u64);
+        let overflow_rcx = overflow_address.wrapping_sub(displacement as u64);
         let mut overflow_state = state_at(overflow_rcx, rax);
         let overflow_before = overflow_state.clone();
         let mut overflow_ram = ram_at(overflow_address);
@@ -36088,7 +36118,7 @@ mod tests {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn s3_20fq_rcx_base_dword_store_uses_full_rcx_and_low_eax_payload() {
-        rcx_base_dword_store_contract(&[0x89, 0x01], 0);
+        rcx_base_dword_store_contract(&[0x89, 0x01], 0_i64);
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -36096,7 +36126,17 @@ mod tests {
     fn s3_20fs_rcx_disp8_dword_store_uses_full_rcx_and_low_eax_payload() {
         for displacement in [0x00_u8, 0x01, 0x7f, 0x80, 0xfc, 0xff] {
             let source = [0x89, 0x41, displacement];
-            rcx_base_dword_store_contract(&source, displacement as i8);
+            rcx_base_dword_store_contract(&source, i64::from(displacement as i8));
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_20fu_rcx_disp32_dword_store_uses_full_rcx_and_low_eax_payload() {
+        for displacement in [i32::MIN, -0x0102_0304, -1, 0, 1, 0x0102_0304, i32::MAX] {
+            let mut source = [0x89, 0x81, 0, 0, 0, 0];
+            source[2..].copy_from_slice(&displacement.to_le_bytes());
+            rcx_base_dword_store_contract(&source, i64::from(displacement));
         }
     }
 
