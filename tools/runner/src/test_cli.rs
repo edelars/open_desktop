@@ -4,8 +4,9 @@ use std::io::{self, Write};
 use std::process::{Command, ExitCode};
 
 use od_isa::execute::{
-    AddpdControls, AddpsControls, AddsdControls, AddsdMemoryRaxControls, AddssControls,
-    AddssMemoryRaxControls, AddssMemoryRaxUnmaskedControls, ComissMemoryRaxControls,
+    AddpdControls, AddpsControls, AddsdControls, AddsdMemoryRaxControls,
+    AddsdMemoryRaxUnmaskedControls, AddssControls, AddssMemoryRaxControls,
+    AddssMemoryRaxUnmaskedControls, ComissMemoryRaxControls,
     Cvtpd2dqMemoryControls, Cvtpd2piControls, Cvtpd2psControls, Cvtpd2psMemoryControls,
     Cvtpi2pdControls, Cvtpi2psControls, Cvtps2dqMemoryControls, Cvtps2pdMemoryControls,
     Cvtsd2ssControls, Cvtsd2ssMemoryControls, Cvtss2sdMemoryControls, Cvttpd2dqControls,
@@ -18,8 +19,9 @@ use od_isa::execute::{
     SubsdMemoryRaxControls, SubssControls, UcomisdMemoryRaxControls, UcomissMemoryRaxControls,
     run_with_addpd_memory_rax_controls, run_with_addpd_register_controls,
     run_with_addps_register_controls, run_with_addsd_memory_rax_controls,
-    run_with_addsd_register_controls, run_with_addss_memory_rax_controls,
-    run_with_addss_memory_rax_unmasked_controls, run_with_addss_register_controls,
+    run_with_addsd_memory_rax_unmasked_controls, run_with_addsd_register_controls,
+    run_with_addss_memory_rax_controls, run_with_addss_memory_rax_unmasked_controls,
+    run_with_addss_register_controls,
     run_with_cvtpd2dq_memory_controls, run_with_cvtpd2dq_register_controls,
     run_with_cvtpd2pi_mm0_memory_rax_controls, run_with_cvtpd2pi_mm0_xmm1_controls,
     run_with_cvtpd2ps_memory_controls, run_with_cvtpd2ps_register_controls,
@@ -652,6 +654,7 @@ fn expected_native_xorpd_oracle(
                 addss_memory_rax_controls: None,
                 addss_memory_rax_unmasked_controls: None,
                 addsd_memory_rax_controls: None,
+                addsd_memory_rax_unmasked_controls: None,
                 maxsd_memory_rax_controls: None,
                 minpd_memory_rax_controls: None,
                 maxpd_memory_rax_controls: None,
@@ -2757,6 +2760,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongAddsdMemoryRaxUnmaskedV1 {
+        let controls = loaded
+            .fixture
+            .addsd_memory_rax_unmasked_controls
+            .expect("validated S2-38ad ADDSD m64 controls");
+        run_with_addsd_memory_rax_unmasked_controls(
+            &mut state,
+            memory,
+            config,
+            AddsdMemoryRaxUnmaskedControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongAddsdMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -4198,6 +4219,9 @@ fn execute_fixture_v2(
                     .fixture
                     .addss_memory_rax_unmasked_controls,
                 addsd_memory_rax_controls: loaded.fixture.addsd_memory_rax_controls,
+                addsd_memory_rax_unmasked_controls: loaded
+                    .fixture
+                    .addsd_memory_rax_unmasked_controls,
                 maxsd_memory_rax_controls: loaded.fixture.maxsd_memory_rax_controls,
                 minpd_memory_rax_controls: loaded.fixture.minpd_memory_rax_controls,
                 minps_memory_rax_controls: loaded.fixture.minps_memory_rax_controls,
@@ -5851,6 +5875,9 @@ mod tests {
                         .fixture
                         .addss_memory_rax_unmasked_controls,
                     addsd_memory_rax_controls: input.fixture.addsd_memory_rax_controls,
+                    addsd_memory_rax_unmasked_controls: input
+                        .fixture
+                        .addsd_memory_rax_unmasked_controls,
                     maxsd_memory_rax_controls: input.fixture.maxsd_memory_rax_controls,
                     minpd_memory_rax_controls: input.fixture.minpd_memory_rax_controls,
                     minps_memory_rax_controls: input.fixture.minps_memory_rax_controls,
@@ -12348,6 +12375,10 @@ mod memory_instruction_matrix_tests {
     const SQRTSD_UNMASKED_MATRIX_BASE: &[u8] =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_38z_sqrtsd_masked_success.case.json");
 
+    const ADDSD_UNMASKED_MATRIX_BASE: &[u8] = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38ad_addsd_unmasked_success.case.json"
+    );
+
     const SQRTPD_UNMASKED_MATRIX_BASE: &[u8] = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_37de_sqrtpd_m128_memory_source_lanes_rounding.case.json"
     );
@@ -12683,6 +12714,153 @@ mod memory_instruction_matrix_tests {
             }
         }
         assert_eq!(covered, 65_536);
+    }
+
+    #[test]
+    fn addsd_unmasked_memory_covers_rounding_sticky_masks_and_operand_classes() {
+        let base = Fixture::from_json(ADDSD_UNMASKED_MATRIX_BASE)
+            .unwrap()
+            .fixture;
+        let vectors: [(&str, u64, u64); 12] = [
+            ("exact", 0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000),
+            ("halfway", 0x3ff0_0000_0000_0000, 0x3ca0_0000_0000_0000),
+            ("cancellation", 0x3ff0_0000_0000_0000, 0xbff0_0000_0000_0000),
+            ("tiny", 1, 1),
+            ("subnormal_normal", 0x0010_0000_0000_0000, 1),
+            (
+                "overflow_midpoint",
+                0x7fef_ffff_ffff_ffff,
+                0x7c90_0000_0000_0000,
+            ),
+            ("overflow", 0x7fef_ffff_ffff_ffff, 0x7fef_ffff_ffff_ffff),
+            ("infinity", 0x7ff0_0000_0000_0000, 0x3ff0_0000_0000_0000),
+            (
+                "invalid_infinities",
+                0x7ff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+            ),
+            ("infinity_subnormal", 0x7ff0_0000_0000_0000, 1),
+            ("qnan_left", 0xfff8_1234_5678_9abc, 0x3ff0_0000_0000_0000),
+            ("snan_right", 0x3ff0_0000_0000_0000, 0xfff0_1234_5678_9abc),
+        ];
+        let mut covered = 0usize;
+        for (name, lhs, rhs) in vectors {
+            for mask_pattern in 0..8u32 {
+                for osxmmexcpt in [false, true] {
+                    for rc in 0..4u32 {
+                        for old_sticky in 0..64u32 {
+                            let mut fixture = base.clone();
+                            fixture.case_id = format!(
+                                "s2_38ad_{name}_m{mask_pattern}_os{}_rc{rc}_s{old_sticky:02x}",
+                                u8::from(osxmmexcpt)
+                            );
+                            fixture.memory[1].initial_bytes_hex = rhs
+                                .to_le_bytes()
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect();
+                            let xmm0 = &mut fixture.initial_state.sse.as_mut().unwrap().xmm[0];
+                            xmm0.replace_range(
+                                0..16,
+                                &lhs.to_le_bytes()
+                                    .iter()
+                                    .map(|byte| format!("{byte:02x}"))
+                                    .collect::<String>(),
+                            );
+                            let mut mxcsr = 0x1f80 | (rc << 13) | old_sticky;
+                            if mask_pattern & 1 == 0 {
+                                mxcsr &= !(1 << 7);
+                            }
+                            if mask_pattern & 2 == 0 {
+                                mxcsr &= !(1 << 8);
+                            }
+                            if mask_pattern & 4 == 0 {
+                                mxcsr &= !(1 << 12);
+                            }
+                            fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                                HexU64(u64::from(mxcsr));
+                            fixture
+                                .addsd_memory_rax_unmasked_controls
+                                .as_mut()
+                                .unwrap()
+                                .cr4_osxmmexcpt = osxmmexcpt;
+                            let initial_xmm0 =
+                                fixture.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+
+                            let (expected_low, invalid, denormal, overflow, underflow, precision) =
+                                v2::independent_addsd_for_test(lhs, rhs, mxcsr);
+                            let pre_unmasked = (invalid && mxcsr & (1 << 7) == 0)
+                                || (denormal && mxcsr & (1 << 8) == 0);
+                            let should_fault =
+                                pre_unmasked || (precision && mxcsr & (1 << 12) == 0);
+                            fixture.expected_exit = if should_fault {
+                                v2::ExpectedExit::Exception
+                            } else {
+                                v2::ExpectedExit::StopAddress
+                            };
+
+                            let loaded = Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
+                            let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                            let result = execute_fixture_v2(&loaded, &mut memory);
+                            result.validate_for(&loaded).unwrap_or_else(|error| {
+                                panic!("{name} masks={mask_pattern} OSXMMEXCPT={osxmmexcpt} RC={rc} sticky={old_sticky:#x}: {error}")
+                            });
+                            assert_eq!(
+                                matches!(result.outcome, Outcome::Exception {}),
+                                should_fault,
+                                "{name} masks={mask_pattern} OSXMMEXCPT={osxmmexcpt} RC={rc} sticky={old_sticky:#x}"
+                            );
+                            let Observation::Available { value } = &result.snapshot else {
+                                panic!("expected ADDSD snapshot")
+                            };
+                            let flags = if pre_unmasked {
+                                u32::from(invalid) | (u32::from(denormal) << 1)
+                            } else {
+                                u32::from(invalid)
+                                    | (u32::from(denormal) << 1)
+                                    | (u32::from(overflow) << 3)
+                                    | (u32::from(underflow) << 4)
+                                    | (u32::from(precision) << 5)
+                            };
+                            assert_eq!(
+                                value.state.sse.as_ref().unwrap().mxcsr.get(),
+                                u64::from(mxcsr | flags),
+                                "{name} masks={mask_pattern} OSXMMEXCPT={osxmmexcpt} RC={rc} sticky={old_sticky:#x}"
+                            );
+                            if should_fault {
+                                assert_eq!(value.state.sse.as_ref().unwrap().xmm[0], initial_xmm0);
+                                assert_eq!(value.state.rip, base.initial_state.rip);
+                                assert_eq!(
+                                    result.instructions_executed,
+                                    Observation::Available { value: HexU64(0) }
+                                );
+                            } else {
+                                let mut expected_xmm =
+                                    base.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+                                expected_xmm.replace_range(
+                                    0..16,
+                                    &format!(
+                                        "{}",
+                                        expected_low
+                                            .to_le_bytes()
+                                            .iter()
+                                            .map(|byte| format!("{byte:02x}"))
+                                            .collect::<String>()
+                                    ),
+                                );
+                                assert_eq!(value.state.sse.as_ref().unwrap().xmm[0], expected_xmm);
+                                assert_eq!(
+                                    result.instructions_executed,
+                                    Observation::Available { value: HexU64(1) }
+                                );
+                            }
+                            covered += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(covered, 49_152);
     }
 
     #[test]

@@ -450,6 +450,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                     .fixture
                     .addss_memory_rax_unmasked_controls,
                 addsd_memory_rax_controls: input.fixture.addsd_memory_rax_controls,
+                addsd_memory_rax_unmasked_controls: input
+                    .fixture
+                    .addsd_memory_rax_unmasked_controls,
                 minss_invalid_controls: input.fixture.minss_invalid_controls,
                 maxss_unmasked_controls: input.fixture.maxss_unmasked_controls,
                 maxss_memory_unmasked_rax_controls: input

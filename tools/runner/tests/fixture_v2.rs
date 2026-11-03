@@ -178,6 +178,14 @@ const SQRTSD_M64_UNMASKED_PE_XM: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_38z_sqrtsd_pe_xm.case.json");
 const SQRTSD_M64_UNMASKED_PE_UD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_38z_sqrtsd_pe_ud.case.json");
+const ADDSD_M64_UNMASKED_SUCCESS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ad_addsd_unmasked_success.case.json");
+const ADDSD_M64_UNMASKED_IE_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ad_addsd_unmasked_ie_xm.case.json");
+const ADDSD_M64_UNMASKED_DE_UD: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ad_addsd_unmasked_de_ud.case.json");
+const ADDSD_M64_UNMASKED_PE_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ad_addsd_unmasked_pe_xm.case.json");
 const SQRTPD_M128_UNMASKED_SUCCESS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ab_sqrtpd_unmasked_success.case.json");
 const SQRTPD_M128_UNMASKED_IE_XM: &[u8] =
@@ -43958,6 +43966,116 @@ fn sqrtpd_m128_memory_profile_covers_rounding_stickies_nan_classes_and_denials()
     let mut missing = base;
     missing.sqrtpd_memory_rax_controls = None;
     assert!(missing.validate().is_err());
+}
+
+#[test]
+fn addsd_m64_unmasked_literal_fixtures_validate_ie_de_pe_and_denials() {
+    use od_testkit::v2::Profile;
+
+    let cases = [
+        (ADDSD_M64_UNMASKED_SUCCESS, None, 0x1f80),
+        (ADDSD_M64_UNMASKED_IE_XM, Some(19), 0x1f01),
+        (ADDSD_M64_UNMASKED_DE_UD, Some(6), 0x1e82),
+        (ADDSD_M64_UNMASKED_PE_XM, Some(19), 0x0fa0),
+    ];
+    for (source, vector, expected_mxcsr) in cases {
+        let fixture = Fixture::from_json(source).unwrap().fixture;
+        assert_eq!(fixture.profile, Profile::LongAddsdMemoryRaxUnmaskedV1);
+        let (input, result) = run(source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let result_snapshot = snapshot(&result);
+        assert_eq!(
+            result_snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+            expected_mxcsr
+        );
+        if let Some(vector) = vector {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            let Observation::Available {
+                value: Some(exception),
+            } = &result_snapshot.exception
+            else {
+                panic!("missing ADDSD exception")
+            };
+            assert_eq!(exception.vector, vector);
+            assert_eq!(count(&result), 0);
+            assert_eq!(result_snapshot.state.rip, fixture.initial_state.rip);
+            assert_eq!(
+                result_snapshot.state.sse.as_ref().unwrap().xmm[0],
+                fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+            );
+        } else {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+            assert_eq!(
+                &result_snapshot.state.sse.as_ref().unwrap().xmm[0][..16],
+                "0000000000000040"
+            );
+            assert_eq!(
+                &result_snapshot.state.sse.as_ref().unwrap().xmm[0][16..32],
+                "deadbeefcafef00d"
+            );
+        }
+        for backend in ["jit", "native"] {
+            let (_, denied) = run(source, backend, 4);
+            assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        }
+
+        let mut bad_echo = result.clone();
+        snapshot_mut(&mut bad_echo)
+            .addsd_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = !fixture
+            .addsd_memory_rax_unmasked_controls
+            .unwrap()
+            .cr4_osxmmexcpt;
+        assert!(bad_echo.validate_for(&input).is_err());
+        let mut bad_rip = result.clone();
+        snapshot_mut(&mut bad_rip).state.rip = HexU64(fixture.initial_state.rip.get() + 1);
+        assert!(bad_rip.validate_for(&input).is_err());
+        if vector.is_some() {
+            let mut bad_exception = result.clone();
+            match &mut snapshot_mut(&mut bad_exception).exception {
+                Observation::Available {
+                    value: Some(exception),
+                } => exception.vector = 13,
+                other => panic!("expected exception snapshot, got {other:?}"),
+            }
+            assert!(bad_exception.validate_for(&input).is_err());
+            let mut bad_retirement = result.clone();
+            bad_retirement.instructions_executed = Observation::Available { value: HexU64(1) };
+            assert!(bad_retirement.validate_for(&input).is_err());
+        }
+    }
+
+    let mut missing = Fixture::from_json(ADDSD_M64_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    missing.addsd_memory_rax_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut wrong_echo = Fixture::from_json(ADDSD_M64_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    wrong_echo.addsd_memory_rax_controls = Some(od_testkit::v2::AddsdMemoryRaxControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(wrong_echo.validate().is_err());
+    let mut writable = Fixture::from_json(ADDSD_M64_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    writable.memory[1].permissions.write = true;
+    assert!(writable.validate().is_err());
+    for mxcsr in [0x1b80, 0x1780, 0x1fc0, 0x9f80, 0x0001_1f80] {
+        let mut invalid = Fixture::from_json(ADDSD_M64_UNMASKED_SUCCESS)
+            .unwrap()
+            .fixture;
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
 }
 
 #[test]

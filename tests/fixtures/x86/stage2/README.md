@@ -8665,7 +8665,7 @@ and [stage plan](../../../../docs/plans/STAGE_2.md).
 
 ### S2-38ad ADDSD m64 memory unmasked exceptions
 
-The planned exact Long64 `F2 0F 58 00` profile requires SSE2 bit 26 and performs
+The exact Long64 `F2 0F 58 00` profile requires SSE2 bit 26 and performs
 one read-only read8 from `[RAX]`. The independent raw-u64 oracle covers the
 existing ADDSD operand/result classes across RC × 64 prior sticky histories ×
 IM/DM/PM × OSXMMEXCPT. Verify pre-event IE/DE, post-event PE, signed NaNs,
