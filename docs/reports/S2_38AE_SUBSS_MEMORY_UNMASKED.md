@@ -53,11 +53,11 @@ canonical-span #GP(0) without a data read.
 - Focused ISA event/read/span test: passed.
 - Five-fixture interpreter-only, backend-denial and result-echo test: passed.
 - `cargo test -p od-isa -p od-testkit -p od-runner --offline --quiet`: passed;
-  od-isa 1,957, runner 138 unit and 559 fixture tests, od-testkit 456.
+  od-isa 1,957, runner 138 unit and 559 fixture tests, od-testkit 457.
 - `cargo check --workspace --all-targets --offline`: passed.
 - `cargo fmt --all -- --check` and `git diff --check`: passed.
-- `graphify update .`: passed; graph has 12,453 nodes, 26,905 edges and 390
-  communities.
+- `graphify update .`: passed; graph has 12,455 nodes, 26,907 edges and 410
+  communities after the permission-regression follow-up.
 - Independent Sol/high review is pending after this slice is committed.
 
 No physical x86 acceptance is claimed. The slice adds no unmasked OE/UE,
@@ -65,3 +65,13 @@ native/JIT/C ABI/generic/fragment execution or changes to S2-37dk/S2-37aq.
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38ae--exact-subss-memory-profile-with-unmasked-exceptions),
 [Stage 2 plan](../plans/STAGE_2.md#s2-38ae--outcomes-for-exact-subss-memory-form),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38ae-subss-m32-memory-unmasked-exceptions).
+
+## Review follow-up
+
+Initial Sol/high review identified that the first implementation changed the
+legacy S2-37dk SUBSS writable-source admission and DIVSS S2-37do rejection in
+opposite directions. Both predicates are restored to their pre-slice behavior;
+the new unmasked SUBSS profile alone requires a read-only source. A regression
+test confirms masked SUBSS accepts the former writable case and DIVSS rejects
+it. The focused test and all affected package suites pass; targeted Sol/high
+re-review of the correction is pending.

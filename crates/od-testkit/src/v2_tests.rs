@@ -419,6 +419,37 @@ fn loaded() -> LoadedFixture {
     Fixture::from_json(&converted.to_json().unwrap()).unwrap()
 }
 
+#[test]
+fn masked_subss_and_divss_memory_permission_rules_remain_unchanged() {
+    let mut subss = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37dk_subss_m32_halfway.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    subss
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "data")
+        .unwrap()
+        .permissions
+        .write = true;
+    assert!(subss.validate().is_ok());
+
+    let mut divss = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37do_divss_m32_memory_rax.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    divss
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "data")
+        .unwrap()
+        .permissions
+        .write = true;
+    assert!(divss.validate().is_err());
+}
+
 fn result(input: &LoadedFixture) -> RunResult {
     let mut state = input.fixture.initial_state.clone();
     state.rip = input.fixture.stop_rip.unwrap();
