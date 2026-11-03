@@ -1897,11 +1897,16 @@ delivery modes; prove identical results/events across RC. Include representable
 signed-i32 boundary neighbors, fractional values and halves, infinities, QNaN/SNaN,
 signed zero, normal/subnormal values, exact valid `-2^31` and invalid sentinel alias,
 and an old-RAX destination-address case. For binary32, do not use unrepresentable
-near-limit fractions as boundary evidence. Require literal success, IE, PE,
-schema-representable fetch/gate/span and AC-refusal cases; check exact status,
-full-state rollback, control/result tampering, strict profile separation, and closed
-JIT/native/C ABI/generic/fragment routes. No implementation, fixture, or physical x86
-acceptance is claimed by this pending contract. Intel SDM Rev. 093 sources: Vol. 2A
+near-limit fractions as boundary evidence. Require literal success, IE, PE, prerequisite-gate and AC-refusal cases. Verify
+instruction-fetch and canonical-span faults through generated runner/direct ISA checks;
+prove read counts and injected read-error rollback with direct `GuestMemory` tests,
+since the exact-width readable wire mapping cannot express a runtime read error. Check
+exact status, full-state rollback, control/result tampering, strict profile separation,
+and closed
+JIT/native/C ABI/generic/fragment routes. Implementation and fixture results are in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-38au--cvttss2si-eax-m32-memory-unmasked-exceptions).
+The full `od-runner` package suite was not run, and no physical x86 acceptance is claimed.
+Intel SDM Rev. 093 sources: Vol. 2A
 `CVTTSS2SI` pp. 3-255–3-256; Vol. 1 §§11.5.2.2 and 11.5.3.2; Vol. 3A §§4.1, 5.6–5.7, and
 Event 17 `#AC`. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38au--exact-cvttss2si-m32-memory-profile-with-unmasked-exceptions)

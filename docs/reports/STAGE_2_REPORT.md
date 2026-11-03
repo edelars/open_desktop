@@ -23639,3 +23639,34 @@ physical x86 acceptance is claimed. See the
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38at--cvtsd2si-m64-memory-unmasked-profile),
 [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38at-cvtsd2si-m64-memory-unmasked-profile),
 and [stage plan](../plans/STAGE_2.md#s2-38at--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax-with-unmasked-exceptions).
+
+
+## S2-38au — CVTTSS2SI EAX, m32 memory unmasked exceptions
+
+Implemented exact Long64 `F3 0F 2C 00` (`CVTTSS2SI EAX,dword ptr [RAX]`) as a
+separate immutable schema-v2 interpreter profile, preserving masked S2-37ci.
+The independent integer-only raw-u32 oracle consumes the fixture memory RHS.
+Its actual-interpreter matrix covers 26 vectors × 4 RC modes × 64 prior sticky
+histories × four IM/PM combinations × both OSXMMEXCPT mappings: 53,248 runs,
+plus 64 focused DM/OM/UM/ZM/FTZ samples. The matrix completed in 20.61 seconds.
+
+Eight literal fixtures cover high-old-RAX success and EAX zero-extension, masked
+IE/PE, unmasked IE/PE delivery, OSFXSR `#UD`, TS `#NM`, and AC refusal. Direct
+ISA tests cover AC collisions with SSE/EM/OSFXSR/TS, bad canonical spans, zero
+data reads on preflight faults, one read4 on admitted conversion, and full state
+rollback on injected read errors. The fetch-span collision at RIP
+`0x00007ffffffffffe` confirms fetch `#GP` before TS/AC. Writable mappings are
+rejected. Actual generic `run`, fragment, and C ABI paths remain closed; direct
+host entrypoint checks cover `execute_x86_fragment` and `od_fragment_create`.
+
+Checks passed: focused od-isa tests 2/2 plus profile isolation 1/1; od-testkit
+461/461; runner integration 2/2; actual-interpreter matrix 1/1; eight literal
+fixtures 1/1; generic/fragment/C ABI denial 1/1;
+`cargo check --workspace --all-targets --offline`, formatting, and diff checks.
+The full `od-runner` package suite was not run. The layout checker reported only
+the linked-worktree `.git` marker. Independent Sol/high review is clean; no
+physical x86 acceptance is claimed. Implementation commit: `aa926cc`. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38au--exact-cvttss2si-m32-memory-profile-with-unmasked-exceptions),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38au--cvttss2si-m32-memory-unmasked-profile),
+[fixture format](../testing/TEST_CASE_FORMAT.md#s2-38au-cvttss2si-m32-memory-unmasked-profile),
+and [stage plan](../plans/STAGE_2.md#s2-38au--exact-legacy-long64-cvttss2si-eaxdword-ptr-rax-with-unmasked-exceptions).

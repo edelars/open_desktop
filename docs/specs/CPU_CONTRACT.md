@@ -19246,7 +19246,8 @@ conversion helpers. Sources: Intel SDM Rev. 093 Vol. 2A `CVTTSS2SI` pp. 3-255–
 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1 §§11.5.2.2 and
 11.5.3.2 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §§4.1,
 5.6–5.7, and Event 17 `#AC` ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
-Contract status: pending implementation and independent review.
+Contract status: implemented and independently reviewed. Runtime verification is recorded in the
+[Stage 2 report](../reports/STAGE_2_REPORT.md#s2-38au--cvttss2si-eax-m32-memory-unmasked-exceptions); physical x86 acceptance has not been run.
 
 The strict wire schema requires an exact-width readable m32 mapping and cannot encode an
 injected source-read failure. Prove read counts and runtime read-error rollback with

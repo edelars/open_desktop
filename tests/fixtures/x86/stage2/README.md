@@ -8959,13 +8959,14 @@ acceptance is not claimed. See the
 and [plan](../../../../docs/plans/STAGE_2.md#s2-38at--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax-with-unmasked-exceptions),
 plus the [Stage 2 result](../../../../docs/reports/STAGE_2_REPORT.md#s2-38at--cvtsd2si-eax-m64-memory-unmasked-exceptions).
 
-### S2-38au — proposed CVTTSS2SI m32 memory unmasked profile
+### S2-38au — CVTTSS2SI m32 memory unmasked profile
 
-The pending contract reserves a distinct schema-v2 profile for exact `F3 0F 2C 00`
+Implemented as a separate immutable schema-v2 profile for exact `F3 0F 2C 00`
 (`CVTTSS2SI EAX,dword ptr [RAX]`). It requires local AC=0, captures old RAX as the
 address, checks the canonical48 m32 span, and reads once before any destination write.
-The planned independent raw-u32 memory-RHS oracle crosses all RC modes, 64 prior sticky
-histories, four IM/PM settings, and both OSXMMEXCPT deliveries. Separate cases sample
+The independent integer-only raw-u32 oracle consumes actual memory bytes and crosses
+26 vectors × 4 RC modes × 64 prior sticky histories × four IM/PM settings × both
+OSXMMEXCPT deliveries (53,248 runs). It also passed 64 DM/OM/UM/ZM/FTZ samples. Separate cases sample
 DM/OM/UM/ZM both ways and check that they neither generate an event nor change.
 Conversion uses TowardZero independently of RC and checks i32 range after truncation.
 Coverage includes signed fractions/halves, representable i32 boundary neighbors,
@@ -8978,8 +8979,16 @@ source read. AC=1 combined with a fetch or prerequisite-gate failure keeps that 
 outcome. Exact read counts and injected read-error rollback use direct `GuestMemory`
 acceptance; the wire schema requires an exact-width readable mapping and cannot encode
 those runtime read faults. Binary32 boundary evidence must use representable neighbors;
-fractions near ±2^31 are not representable. This section records intended coverage; no
-implementation or fixture result exists yet. See the
+fractions near ±2^31 are not representable. Eight literal fixtures passed end-to-end:
+[success/high-old-RAX](s2_38au_cvttss2si_m32_i32_unmasked.case.json),
+[masked IE](s2_38au_cvttss2si_m32_i32_masked_ie.case.json),
+[masked PE](s2_38au_cvttss2si_m32_i32_masked_pe.case.json),
+[unmasked IE](s2_38au_cvttss2si_m32_i32_unmasked_ie_xm.case.json),
+[unmasked PE](s2_38au_cvttss2si_m32_i32_unmasked_pe_ud.case.json),
+[TS #NM](s2_38au_cvttss2si_m32_i32_gate_nm.case.json),
+[gate #UD](s2_38au_cvttss2si_m32_i32_gate_ud.case.json), and
+[AC refusal](s2_38au_cvttss2si_m32_i32_ac_refusal.case.json). Verification details are in the
+[Stage 2 result](../../../../docs/reports/STAGE_2_REPORT.md#s2-38au--cvttss2si-eax-m32-memory-unmasked-exceptions); physical x86 acceptance has not been run. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38au--exact-cvttss2si-m32-memory-profile-with-unmasked-exceptions)
 and
 [plan](../../../../docs/plans/STAGE_2.md#s2-38au--exact-legacy-long64-cvttss2si-eaxdword-ptr-rax-with-unmasked-exceptions).
