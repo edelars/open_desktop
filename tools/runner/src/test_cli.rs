@@ -11950,9 +11950,12 @@ mod tests {
         ))
         .expect("unmasked ADDSS schema")
         .fixture;
-        let cases: [(u32, u32, bool, bool, bool); 9] = [
+        let cases: [(u32, u32, bool, bool, bool); 12] = [
             (0x3f80_0000, 0x3380_0000, false, false, true), // halfway PE
+            (0x7f7f_ffff, 0x7300_0000, false, false, true), // directed overflow OE+PE
             (0x3f80_0000, 1, false, true, true),            // DE then PE
+            (0x3f80_0000, 0xbf80_0000, false, false, false), // exact cancellation
+            (1, 1, false, true, false),                     // exact tiny subnormal result
             (0x7f80_0000, 0xff80_0000, true, false, false), // opposite infinities IE
             (0x7f80_0001, 0x3f80_0000, true, false, false), // positive SNaN
             (0xff80_0001, 0x3f80_0000, true, false, false), // negative SNaN

@@ -25,15 +25,15 @@ Native/JIT/C ABI/generic/fragment paths stay closed.
 
 Three literal fixtures cover masked success, unmasked IE `#XM`, and unmasked
 PE arithmetic `#UD`. The runner's independent integer-only binary32 oracle
-executes nine operand/event classes × four RC modes × 64 previous sticky
-histories × eight IM/DM/PM mask combinations × both OSXMMEXCPT mappings: 36,864
-executions. Classes include halfway PE, DE+PE, opposite infinities, signed
-SNaNs, signed QNaNs,
-QNaN destination plus subnormal memory source (DE suppressed), exact addition,
+executes twelve operand/event classes × four RC modes × 64 previous sticky
+histories × eight IM/DM/PM mask combinations × both OSXMMEXCPT mappings: 49,152
+executions. Classes include directed overflow OE+PE, halfway PE, DE+PE, exact
+cancellation, exact tiny subnormal result, opposite infinities, signed SNaNs,
+signed QNaNs, QNaN destination plus subnormal memory source (DE suppressed),
 and infinity plus subnormal. Each result
 checks complete state, status, RIP, retirement, exception mapping, and memory.
 
-Focused ISA tests check fetch and feature-gate order, CPL-independent gates,
+Focused ISA tests check fetch and separate SSE/EM/OSFXSR gates at CPL0–3,
 AC-before-span, canonical span `#GP(0)`, unaligned read at AC=0, one callback,
 read rollback, pre-event versus post-event status, XMM suppression, high96
 preservation, and successful retirement. Fixture validation rejects missing or
@@ -45,7 +45,7 @@ result/control/exception tampering, and non-interpreter backends.
 - `cargo test -p od-isa --offline --quiet`: 1,954 passed.
 - `cargo test -p od-testkit --offline --quiet`: 456 passed.
 - `cargo test -p od-runner --offline --quiet`: 135 unit and 558 fixture tests passed.
-- Focused ADDSS matrix: 32,768 cases passed in 13.72 seconds.
+- Focused ADDSS matrix: 49,152 cases passed in 20.41 seconds.
 - Focused ISA and fixture tests passed, including the three literal cases.
 - `cargo check --workspace --all-targets --offline`: passed.
 - `cargo fmt --all -- --check` and `git diff --check`: passed.
