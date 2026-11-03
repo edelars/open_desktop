@@ -19378,8 +19378,11 @@ RAX, other GPRs/XMM registers, RFLAGS and x87 state are preserved in all cases.
 Acceptance uses an independent integer-only raw-u32 oracle that reads actual
 memory RHS, not XMM0 or production helpers. Require all 81 ordered lane classes
 `{exact, IE, PE}^4 × 4 RC × 64 sticky histories × 4 IM/PM × 2 deliveries` =
-**165,888 planned interpreter cases**, plus numeric vectors and unrelated-mask/FTZ
-samples. The class split is 1 exact, 15 IE-only, 15 PE-only and 50 mixed. Check
+**165,888 actual-interpreter cases** (matrix test 1/1, 0.44 s); commit
+`640a9f0` ensures each case compares full `LongModeState` and source memory.
+Numeric vectors and unrelated-mask/FTZ samples are also covered; details are in the
+[result report](../reports/STAGE_2_REPORT.md#s2-38aw--cvtps2dq-xmm0-m128-memory-unmasked-exceptions).
+The class split is 1 exact, 15 IE-only, 15 PE-only and 50 mixed. Check
 both `[IE, PE, exact, exact]` and `[PE, IE, exact, exact]`, all-lane suppression,
 prior PE retention, all six representable binary32 i32-boundary neighbors, ties,
 zeros, infinities, QNaN/SNaN and signed subnormal inputs. The matrix must compare
@@ -19401,7 +19404,10 @@ Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227
 §16.1.3/Table 16-1 p. 16-3
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)). The VEX-only
 Type 2/Table 2-19 entry is not the legacy SSE alignment contract.
-Contract status: pending implementation and independent review. See the
+Contract status: implemented; fresh independent Sol/high review of the corrected
+full-state matrix is pending. See the
+[result report](../reports/STAGE_2_REPORT.md#s2-38aw--cvtps2dq-xmm0-m128-memory-unmasked-exceptions).
+The full `od-runner` suite and physical x86 acceptance were not run. See the
 [plan](../plans/STAGE_2.md#s2-38aw--exact-legacy-long64-cvtps2dq-xmm0-m128-rax-with-unmasked-exceptions)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38aw-cvtps2dq-m128-memory-unmasked-profile).
 

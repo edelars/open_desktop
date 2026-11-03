@@ -2009,10 +2009,11 @@ lane is invalid; PM=0 then produces an event with the accumulated IE/PE status.
 OSXMMEXCPT selects `#XM`19 or SIMD `#UD`6. Old flags alone do not fault; subnormals
 raise no DE and FTZ is irrelevant. Compare event-specific MXCSR and full XMM0.
 
-Require all 81 ordered `{exact, IE, PE}^4` distributions ×4 RC×64 sticky×4 IM/PM×2
-deliveries = 165,888 planned actual-interpreter cases. Add representable binary32
-i32 neighbors, ties, NaNs, infinities, zeros, normals/subnormals and both IE/PE
-lane orders. Separate samples exercise every DM/OM/UM/ZM bit both ways and FTZ0/1.
+The actual-interpreter run covered all 81 ordered `{exact, IE, PE}^4` distributions
+×4 RC×64 sticky×4 IM/PM×2 deliveries = 165,888 cases (test 1/1, 0.44 s);
+commit `640a9f0` makes every matrix case compare full `LongModeState` and source
+memory. Add representable binary32 i32 neighbors, ties, NaNs, infinities, zeros,
+normals/subnormals and both IE/PE lane orders. Separate samples exercise every DM/OM/UM/ZM bit both ways and FTZ0/1.
 Literals cover schema-expressible exact success (including valid INT32_MIN),
 masked IE/PE, mixed IM=0 suppression, mixed IM=1/PM=0, mixed fully masked, both
 event deliveries, stale-flags-only success, prerequisite `#UD/#NM` and aligned
@@ -2027,8 +2028,11 @@ collisions. An unreadable or short mapping is a schema error, not a runtime
 injected-read fixture. Controls/result/memory/status tampering and masked/profile
 cross-denial must fail. Test real native/JIT/generic/fragment/C ABI entrypoints.
 
-Status: pending implementation, fixtures and independent review; no execution or
-physical acceptance evidence is claimed. Provenance: Intel SDM Rev. 093 Vol. 2A
+Status: implemented with 15 literal fixtures; fresh independent Sol/high review
+of the corrected full-state matrix is pending. Execution evidence and limits are
+in the [result report](../reports/STAGE_2_REPORT.md#s2-38aw--cvtps2dq-xmm0-m128-memory-unmasked-exceptions).
+The full `od-runner` suite and physical x86 acceptance were not run. Provenance:
+Intel SDM Rev. 093 Vol. 2A
 CVTPS2DQ pp. 3-225–3-227; the exception/alignment sources and official PDF links
 are in the [CPU contract](../specs/CPU_CONTRACT.md#s2-38aw--exact-cvtps2dq-m128-memory-profile-with-unmasked-exceptions).
 See the [plan](../plans/STAGE_2.md#s2-38aw--exact-legacy-long64-cvtps2dq-xmm0-m128-rax-with-unmasked-exceptions).
