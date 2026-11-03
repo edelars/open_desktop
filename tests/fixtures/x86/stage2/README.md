@@ -8833,3 +8833,19 @@ unaligned access with AC clear, canonical span/read rollback, one callback,
 read-only schema, result/control tampering and interpreter-only backend denial.
 Keep S2-37dn/S2-37at separate; native/JIT/C ABI/generic/fragment and physical
 x86 acceptance remain outside this profile.
+
+### S2-38an — unmasked SUBPD m128 memory profile
+
+Five handwritten literals cover exact `66 0F 5C 00`: a successful two-lane
+subtraction, unmasked IE, DE and PE delivery, plus a noncanonical four-byte
+fetch crossing that preempts disabled SSE2 with `#GP(0)`. The immutable schema-v2
+profile requires aligned read-only m128 `[RAX]`, SSE2, `DAZ=FTZ=0`, and
+`OM=UM=1`, while allowing all RC, IM/DM/ZM/PM masks and prior sticky histories.
+The runner compares actual interpreter results with an independent integer-only
+raw-u64 SUBPD oracle using the memory RHS. A 1,152-case event matrix and 48
+cross-lane/boundary vectors across RC, sticky histories, masks and both delivery
+routes cover 394,368 executions. JIT/native routes remain denied. These are
+host-side interpreter checks, not physical x86 acceptance. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38an--exact-subpd-memory-profile-with-unmasked-exceptions),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38an--exact-subpd-memory-form-with-unmasked-exceptions),
+and [report](../../../../docs/reports/S2_38AN_SUBPD_MEMORY_UNMASKED.md).

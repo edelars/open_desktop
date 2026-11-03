@@ -16,7 +16,8 @@ use od_isa::execute::{
     MulpdControls, MulpsControls, MulsdControls, MulsdMemoryRaxUnmaskedControls, MulssControls,
     MulssMemoryRaxUnmaskedControls, SqrtpdControls, SqrtpdMemoryRaxUnmaskedControls,
     SqrtpsControls, SqrtsdControls, SqrtsdMemoryRaxUnmaskedControls, SqrtssControls,
-    SqrtssMemoryRaxUnmaskedControls, SubpdControls, SubpsControls, SubpsMemoryRaxUnmaskedControls,
+    SqrtssMemoryRaxUnmaskedControls, SubpdControls, SubpdMemoryRaxUnmaskedControls, SubpsControls,
+    SubpsMemoryRaxUnmaskedControls,
     SubsdControls, SubsdMemoryRaxControls, SubsdMemoryRaxUnmaskedControls, SubssControls,
     SubssMemoryRaxUnmaskedControls, UcomisdMemoryRaxControls, UcomissMemoryRaxControls,
     run_with_addpd_memory_rax_controls, run_with_addpd_memory_rax_unmasked_controls,
@@ -54,8 +55,9 @@ use od_isa::execute::{
     run_with_sqrtsd_memory_rax_controls, run_with_sqrtsd_memory_rax_unmasked_controls,
     run_with_sqrtsd_register_controls, run_with_sqrtss_memory_rax_controls,
     run_with_sqrtss_memory_rax_unmasked_controls, run_with_sqrtss_register_controls,
-    run_with_subpd_memory_rax_controls, run_with_subpd_register_controls,
-    run_with_subps_memory_rax_unmasked_controls, run_with_subps_register_controls,
+    run_with_subpd_memory_rax_controls, run_with_subpd_memory_rax_unmasked_controls,
+    run_with_subpd_register_controls, run_with_subps_memory_rax_unmasked_controls,
+    run_with_subps_register_controls,
     run_with_subsd_memory_rax_controls, run_with_subsd_memory_rax_unmasked_controls,
     run_with_subsd_register_controls, run_with_subss_memory_rax_controls,
     run_with_subss_memory_rax_unmasked_controls, run_with_subss_register_controls,
@@ -601,6 +603,7 @@ fn expected_native_xorpd_oracle(
                 sqrtps_controls: None,
                 sqrtpd_controls: None,
                 subpd_controls: None,
+                subpd_memory_rax_unmasked_controls: None,
                 mulpd_controls: None,
                 addpd_controls: None,
                 addpd_memory_rax_unmasked_controls: None,
@@ -2047,6 +2050,24 @@ fn execute_fixture_v2(
             memory,
             config,
             SubpdControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongSubpdMemoryUnmaskedRaxV1 {
+        let controls = loaded
+            .fixture
+            .subpd_memory_rax_unmasked_controls
+            .expect("validated unmasked SUBPD m128 controls");
+        run_with_subpd_memory_rax_unmasked_controls(
+            &mut state,
+            memory,
+            config,
+            SubpdMemoryRaxUnmaskedControls {
                 sse2_available: controls.sse2_available,
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
@@ -4321,6 +4342,9 @@ fn execute_fixture_v2(
                 sqrtps_controls: loaded.fixture.sqrtps_controls,
                 sqrtpd_controls: loaded.fixture.sqrtpd_controls,
                 subpd_controls: loaded.fixture.subpd_controls,
+                subpd_memory_rax_unmasked_controls: loaded
+                    .fixture
+                    .subpd_memory_rax_unmasked_controls,
                 mulpd_controls: loaded.fixture.mulpd_controls,
                 addpd_controls: loaded.fixture.addpd_controls,
                 addpd_memory_rax_unmasked_controls: loaded
@@ -6172,6 +6196,9 @@ mod tests {
                     sqrtps_controls: input.fixture.sqrtps_controls,
                     sqrtpd_controls: input.fixture.sqrtpd_controls,
                     subpd_controls: input.fixture.subpd_controls,
+                    subpd_memory_rax_unmasked_controls: input
+                        .fixture
+                        .subpd_memory_rax_unmasked_controls,
                     mulpd_controls: input.fixture.mulpd_controls,
                     addpd_controls: input.fixture.addpd_controls,
                     addpd_memory_rax_unmasked_controls: input
@@ -15428,6 +15455,376 @@ mod memory_instruction_matrix_tests {
                                 .cr4_osxmmexcpt = osxmmexcpt;
                             let (_, ie, de, _, _, pe) =
                                 v2::independent_addpd_for_test(lhs, rhs, mxcsr);
+                            let pre = ie && mxcsr & (1 << 7) == 0 || de && mxcsr & (1 << 8) == 0;
+                            let should_fault = pre || !pre && pe && mxcsr & (1 << 12) == 0;
+                            fixture.expected_exit = if should_fault {
+                                v2::ExpectedExit::Exception
+                            } else {
+                                v2::ExpectedExit::StopAddress
+                            };
+                            let loaded = Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
+                            let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                            let result = execute_fixture_v2(&loaded, &mut memory);
+                            assert_eq!(result.backend, Backend::Interpreter);
+                            result.validate_for(&loaded).unwrap_or_else(|error| panic!("{name}, RC={rc}, sticky={old_sticky:#x}, masks={mask_bits:#x}, OSXMMEXCPT={osxmmexcpt}: {error}"));
+                            assert_eq!(
+                                matches!(result.outcome, Outcome::Exception {}),
+                                should_fault
+                            );
+                            checks += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checks, vectors.len() * 4 * 64 * 16 * 2);
+    }
+
+    #[test]
+    fn subpd_memory_unmasked_covers_event_product_and_full_boundary_histories() {
+        use od_testkit::v2::{Profile, SubpdMemoryRaxUnmaskedControlSnapshot};
+
+        let mut base = Fixture::from_json(ADDPD_UNMASKED_MATRIX_BASE)
+            .unwrap()
+            .fixture;
+        base.profile = Profile::LongSubpdMemoryUnmaskedRaxV1;
+        base.addpd_controls = None;
+        base.addpd_memory_rax_unmasked_controls = None;
+        base.subpd_controls = None;
+        base.memory[0].initial_bytes_hex = "660f5c00".into();
+        base.subpd_memory_rax_unmasked_controls = Some(SubpdMemoryRaxUnmaskedControlSnapshot {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        });
+
+        // Fixed RC=nearest and zero old sticky bits: 6^2 event representatives
+        // × IM/DM/ZM/PM × both SIMD exception-delivery mappings.
+        let reps: [(&str, u64, u64, bool, bool, bool); 6] = [
+            (
+                "neutral",
+                0x3ff0_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+                false,
+                false,
+                false,
+            ),
+            (
+                "ie",
+                0x7ff0_0000_0000_0000,
+                0x7ff0_0000_0000_0000,
+                true,
+                false,
+                false,
+            ),
+            ("de", 1, 0, false, true, false),
+            (
+                "pe",
+                0x3ff0_0000_0000_0000,
+                0x3c90_0000_0000_0000,
+                false,
+                false,
+                true,
+            ),
+            ("de_pe", 1, 0x3ff0_0000_0000_0000, false, true, true),
+            (
+                "oe_pe",
+                0x7fef_ffff_ffff_ffff,
+                0xffef_ffff_ffff_ffff,
+                false,
+                false,
+                true,
+            ),
+        ];
+        let mut checks = 0usize;
+        for (lane0_name, lane0_lhs, lane0_rhs, lane0_ie, lane0_de, lane0_pe) in reps {
+            for (lane1_name, lane1_lhs, lane1_rhs, lane1_ie, lane1_de, lane1_pe) in reps {
+                let lhs = [lane0_lhs, lane1_lhs];
+                let rhs = [lane0_rhs, lane1_rhs];
+                for mask_bits in 0u32..16 {
+                    for osxmmexcpt in [false, true] {
+                        let mut fixture = base.clone();
+                        fixture.case_id = format!(
+                            "s2_38an_event_{lane0_name}_{lane1_name}_m{mask_bits}_os{}",
+                            u8::from(osxmmexcpt),
+                        );
+                        fixture.memory[1].initial_bytes_hex = rhs
+                            .into_iter()
+                            .flat_map(u64::to_le_bytes)
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect();
+                        fixture.initial_state.sse.as_mut().unwrap().xmm[0] = lhs
+                            .into_iter()
+                            .flat_map(u64::to_le_bytes)
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect();
+                        let mut mxcsr = 0x0c00u32;
+                        for (index, bit) in [(0, 7), (1, 8), (2, 9), (3, 12)] {
+                            if mask_bits & (1 << index) != 0 {
+                                mxcsr |= 1 << bit;
+                            }
+                        }
+                        fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                            HexU64(u64::from(mxcsr));
+                        fixture
+                            .subpd_memory_rax_unmasked_controls
+                            .as_mut()
+                            .unwrap()
+                            .cr4_osxmmexcpt = osxmmexcpt;
+                        let has_ie = lane0_ie || lane1_ie;
+                        let has_de = lane0_de || lane1_de;
+                        let has_pe = lane0_pe || lane1_pe;
+                        let unmasked_pre =
+                            has_ie && mask_bits & 1 == 0 || has_de && mask_bits & 2 == 0;
+                        let should_fault =
+                            unmasked_pre || !unmasked_pre && has_pe && mask_bits & 8 == 0;
+                        fixture.expected_exit = if should_fault {
+                            v2::ExpectedExit::Exception
+                        } else {
+                            v2::ExpectedExit::StopAddress
+                        };
+                        let loaded = Fixture::from_json(&fixture.to_json().unwrap_or_else(|error| panic!("serialize {lane0_name}+{lane1_name} mask={mask_bits}: {error:?}"))).unwrap_or_else(|error| panic!("{lane0_name}+{lane1_name} mask={mask_bits}: {error:?}"));
+                        let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                        let result = execute_fixture_v2(&loaded, &mut memory);
+                        assert_eq!(result.backend, Backend::Interpreter);
+                        result.validate_for(&loaded).unwrap_or_else(|error| {
+                            panic!("{lane0_name}+{lane1_name} masks={mask_bits:#x} osxmmexcpt={osxmmexcpt}: {error}")
+                        });
+                        assert_eq!(
+                            matches!(result.outcome, Outcome::Exception {}),
+                            should_fault
+                        );
+                        let Observation::Available { value: snapshot } = &result.snapshot else {
+                            panic!("missing SUBPD snapshot")
+                        };
+                        let (_, ie, de, oe, ue, pe) =
+                            v2::independent_subpd_for_test(lhs, rhs, mxcsr);
+                        let expected_flags = u32::from(ie)
+                            | (u32::from(de) << 1)
+                            | (u32::from(oe) << 3)
+                            | (u32::from(ue) << 4)
+                            | (u32::from(pe) << 5);
+                        assert_eq!(
+                            snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                            u64::from(expected_flags)
+                        );
+                        assert_eq!(
+                            snapshot.state.rip,
+                            if should_fault {
+                                fixture.initial_state.rip
+                            } else {
+                                HexU64(fixture.initial_state.rip.get() + 4)
+                            }
+                        );
+                        if should_fault {
+                            assert_eq!(
+                                snapshot.state.sse.as_ref().unwrap().xmm[0],
+                                fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+                            );
+                            assert_eq!(
+                                result.instructions_executed,
+                                Observation::Available { value: HexU64(0) }
+                            );
+                            let Observation::Available {
+                                value: Some(exception),
+                            } = &snapshot.exception
+                            else {
+                                panic!("missing SIMD exception")
+                            };
+                            assert_eq!(exception.vector, if osxmmexcpt { 19 } else { 6 });
+                        } else {
+                            assert_eq!(
+                                result.instructions_executed,
+                                Observation::Available { value: HexU64(1) }
+                            );
+                        }
+                        checks += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checks, 1_152);
+
+        // Selected cross-lane and boundary pairs span every RC, six prior
+        // sticky flags, all IM/DM/ZM/PM combinations, and both deliveries.
+        let qnan_pos = 0x7ff8_1234_5678_9abc;
+        let qnan_neg = 0xfff8_1234_5678_9abc;
+        let snan_pos = 0x7ff0_1234_5678_9abc;
+        let snan_neg = 0xfff0_1234_5678_9abc;
+        let one = 0x3ff0_0000_0000_0000;
+        let max = 0x7fef_ffff_ffff_ffff;
+        let vectors: [(&str, [u64; 2], [u64; 2]); 48] = [
+            (
+                "ie_de",
+                [0x7ff0_0000_0000_0000, 1],
+                [0x7ff0_0000_0000_0000, 0],
+            ),
+            (
+                "pre_ie_suppresses_oe_pe",
+                [0x7ff0_0000_0000_0000, max],
+                [0x7ff0_0000_0000_0000, 0xffef_ffff_ffff_ffff],
+            ),
+            (
+                "masked_de_unmasked_pe",
+                [1, one],
+                [0, 0x3c90_0000_0000_0000],
+            ),
+            (
+                "ie_de_permuted",
+                [1, 0x7ff0_0000_0000_0000],
+                [0, 0x7ff0_0000_0000_0000],
+            ),
+            ("qnan_pos_lhs", [qnan_pos, one], [one, one]),
+            ("qnan_neg_rhs", [one, one], [qnan_neg, one]),
+            ("snan_pos_lhs", [snan_pos, one], [one, one]),
+            ("snan_neg_rhs", [one, one], [snan_neg, one]),
+            ("snan_neg_lhs", [snan_neg, one], [one, one]),
+            ("qnan_pos_rhs", [one, one], [qnan_pos, one]),
+            ("exact_tiny", [1, 0], [0, 0]),
+            ("cancellation", [one, 0xbff0_0000_0000_0000], [one, one]),
+            ("halfway_and_gap", [one, one], [0x3c90_0000_0000_0000, 1]),
+            (
+                "overflow_midpoint",
+                [max, one],
+                [0xfc90_0000_0000_0000, one],
+            ),
+            ("both_qnan_lhs_priority", [qnan_neg, one], [qnan_pos, one]),
+            ("both_snan_lhs_priority", [snan_neg, one], [snan_pos, one]),
+            ("nan_lhs_subnormal_rhs", [qnan_pos, one], [1, one]),
+            ("nan_rhs_subnormal_lhs", [1, one], [qnan_neg, one]),
+            (
+                "positive_infinities_opposite",
+                [0x7ff0_0000_0000_0000, one],
+                [0xfff0_0000_0000_0000, one],
+            ),
+            (
+                "negative_infinities_opposite",
+                [0xfff0_0000_0000_0000, one],
+                [0x7ff0_0000_0000_0000, one],
+            ),
+            (
+                "same_positive_infinity_invalid",
+                [0x7ff0_0000_0000_0000, one],
+                [0x7ff0_0000_0000_0000, one],
+            ),
+            (
+                "same_negative_infinity_invalid",
+                [0xfff0_0000_0000_0000, one],
+                [0xfff0_0000_0000_0000, one],
+            ),
+            ("positive_zero_cancel", [0, one], [0, one]),
+            ("minsub_exact", [1, 0], [0, 0]),
+            (
+                "minnormal_minus_maxsub",
+                [0x0010_0000_0000_0000, 0],
+                [0x000f_ffff_ffff_ffff, 0],
+            ),
+            ("normal_gap_adjacent", [one, 0], [0x3fefffffffffffff, 0]),
+            (
+                "halfway_odd",
+                [0x3ff0000000000001, 0],
+                [0x3ca0000000000000, 0],
+            ),
+            (
+                "halfway_negative",
+                [0xbff0000000000000, 0],
+                [0x3ca0000000000000, 0],
+            ),
+            ("near_halfway_above", [one, 0], [0x3ca0000000000001, 0]),
+            ("near_halfway_below", [one, 0], [0x3c9fffffffffffff, 0]),
+            ("tiny_exponent_gap", [0x0010000000000000, 0], [1, 0]),
+            ("wide_exponent_gap", [0x7fe0000000000000, 0], [1, 0]),
+            (
+                "de_pe_permuted",
+                [one, 1],
+                [0x3ca0000000000000, 0x3ff0000000000000],
+            ),
+            ("positive_overflow", [max, 0], [0xbfefffffffffffff, 0]),
+            (
+                "negative_overflow",
+                [0xffefffffffffffff, 0],
+                [0x3fefffffffffffff, 0],
+            ),
+            ("snan_with_de_other_lane", [1, snan_pos], [0, one]),
+            ("qnan_with_de_other_lane", [qnan_neg, 1], [one, 0]),
+            ("de_lane0_pe_lane1", [1, one], [0, 0x3c90000000000000]),
+            ("pe_lane0_de_lane1", [one, 1], [0x3c90000000000000, 0]),
+            (
+                "invalid_plus_overflow",
+                [0x7ff0000000000000, max],
+                [0x7ff0000000000000, 0xbc90000000000000],
+            ),
+            ("ie_de_pe_all", [snan_neg, 1], [qnan_pos, 0]),
+            (
+                "asymmetric_nan_payloads",
+                [0xfff0123456789abc, 0x7ff8123456789abc],
+                [0x7ff8fedcba987654, 0xfff0fedcba987654],
+            ),
+            (
+                "signed_zero_lane_swap",
+                [0, 0x8000000000000000],
+                [0x8000000000000000, 0],
+            ),
+            (
+                "subnormal_rhs_and_infinity_other",
+                [1, 0x7ff0000000000000],
+                [0, 0x7ff0000000000000],
+            ),
+            ("nan_rhs_priority_sign", [one, 0], [0xfff0123456789abc, 0]),
+            (
+                "nan_lhs_priority_sign",
+                [0xfff0123456789abc, 0],
+                [0x7ff8fedcba987654, 0],
+            ),
+            (
+                "large_gap_sign_lane_swap",
+                [0x7fefffffffffffff, 0xbfefffffffffffff],
+                [1, 0x3ca0000000000000],
+            ),
+            (
+                "overflow_and_ie_lane_swap",
+                [max, 0x7ff0000000000000],
+                [0xbc90000000000000, 0x7ff0000000000000],
+            ),
+        ];
+        checks = 0;
+        for (name, lhs, rhs) in vectors {
+            for rc in 0u32..4 {
+                for old_sticky in 0u32..64 {
+                    for mask_bits in 0u32..16 {
+                        for osxmmexcpt in [false, true] {
+                            let mut fixture = base.clone();
+                            fixture.case_id = format!(
+                                "s2_38an_{name}_rc{rc}_s{old_sticky:02x}_m{mask_bits}_os{}",
+                                u8::from(osxmmexcpt)
+                            );
+                            fixture.initial_state.sse.as_mut().unwrap().xmm[0] = lhs
+                                .into_iter()
+                                .flat_map(u64::to_le_bytes)
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect();
+                            fixture.memory[1].initial_bytes_hex = rhs
+                                .into_iter()
+                                .flat_map(u64::to_le_bytes)
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect();
+                            let mut mxcsr = 0x0c00 | (rc << 13) | old_sticky;
+                            for (index, bit) in [(0, 7), (1, 8), (2, 9), (3, 12)] {
+                                if mask_bits & (1 << index) != 0 {
+                                    mxcsr |= 1 << bit;
+                                }
+                            }
+                            fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                                HexU64(u64::from(mxcsr));
+                            fixture
+                                .subpd_memory_rax_unmasked_controls
+                                .as_mut()
+                                .unwrap()
+                                .cr4_osxmmexcpt = osxmmexcpt;
+                            let (_, ie, de, _, _, pe) =
+                                v2::independent_subpd_for_test(lhs, rhs, mxcsr);
                             let pre = ie && mxcsr & (1 << 7) == 0 || de && mxcsr & (1 << 8) == 0;
                             let should_fault = pre || !pre && pe && mxcsr & (1 << 12) == 0;
                             fixture.expected_exit = if should_fault {

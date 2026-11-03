@@ -322,6 +322,8 @@ pub enum Profile {
     LongSubpdRegistersV1,
     #[serde(rename = "s2-long-subpd-memory-rax-v1")]
     LongSubpdMemoryRaxV1,
+    #[serde(rename = "s2-long-subpd-memory-unmasked-rax-v1")]
+    LongSubpdMemoryUnmaskedRaxV1,
     #[serde(rename = "s2-long-mulpd-registers-v1")]
     LongMulpdRegistersV1,
     #[serde(rename = "s2-long-mulpd-memory-rax-v1")]
@@ -1666,6 +1668,7 @@ impl IntegerState {
                     | Profile::LongAddpdMemoryRaxV1
                     | Profile::LongAddpdMemoryUnmaskedRaxV1
                     | Profile::LongSubpdMemoryRaxV1
+                    | Profile::LongSubpdMemoryUnmaskedRaxV1
                     | Profile::LongCvtpd2psRegistersV1
                     | Profile::LongAddsdRegistersV1
                     | Profile::LongAddssRegistersV1
@@ -2006,6 +2009,7 @@ impl IntegerState {
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongAddpdMemoryUnmaskedRaxV1
                 | Profile::LongSubpdMemoryRaxV1
+                | Profile::LongSubpdMemoryUnmaskedRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -2269,6 +2273,7 @@ impl IntegerState {
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongAddpdMemoryUnmaskedRaxV1
                 | Profile::LongSubpdMemoryRaxV1
+                | Profile::LongSubpdMemoryUnmaskedRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -2733,6 +2738,7 @@ impl IntegerState {
             | Profile::LongAddpdMemoryRaxV1
             | Profile::LongAddpdMemoryUnmaskedRaxV1
             | Profile::LongSubpdMemoryRaxV1
+            | Profile::LongSubpdMemoryUnmaskedRaxV1
             | Profile::LongCvtpd2psRegistersV1
             | Profile::LongAddsdRegistersV1
             | Profile::LongAddssRegistersV1
@@ -2978,6 +2984,7 @@ impl IntegerState {
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongAddpdMemoryUnmaskedRaxV1
                 | Profile::LongSubpdMemoryRaxV1
+                | Profile::LongSubpdMemoryUnmaskedRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -3279,6 +3286,7 @@ impl IntegerState {
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongAddpdMemoryUnmaskedRaxV1
                 | Profile::LongSubpdMemoryRaxV1
+                | Profile::LongSubpdMemoryUnmaskedRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -3585,6 +3593,7 @@ impl IntegerState {
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongAddpdMemoryUnmaskedRaxV1
                 | Profile::LongSubpdMemoryRaxV1
+                | Profile::LongSubpdMemoryUnmaskedRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -3897,6 +3906,7 @@ impl IntegerState {
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongAddpdMemoryUnmaskedRaxV1
                 | Profile::LongSubpdMemoryRaxV1
+                | Profile::LongSubpdMemoryUnmaskedRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -5076,6 +5086,7 @@ impl IntegerState {
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongAddpdMemoryUnmaskedRaxV1
                 | Profile::LongSubpdMemoryRaxV1
+                | Profile::LongSubpdMemoryUnmaskedRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -5346,6 +5357,7 @@ impl IntegerState {
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongAddpdMemoryUnmaskedRaxV1
                 | Profile::LongSubpdMemoryRaxV1
+                | Profile::LongSubpdMemoryUnmaskedRaxV1
                 | Profile::LongCvtpd2psRegistersV1
                 | Profile::LongAddsdRegistersV1
                 | Profile::LongAddssRegistersV1
@@ -5738,6 +5750,8 @@ pub struct Fixture {
     pub sqrtpd_controls: Option<SqrtpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subpd_controls: Option<SubpdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subpd_memory_rax_unmasked_controls: Option<SubpdMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mulpd_controls: Option<MulpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6536,6 +6550,16 @@ pub struct AddsdMemoryRaxUnmaskedControlSnapshot {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AddpdMemoryRaxUnmaskedControlSnapshot {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubpdMemoryRaxUnmaskedControlSnapshot {
     pub sse2_available: bool,
     pub cr0_em: bool,
     pub cr0_ts: bool,
@@ -9826,6 +9850,108 @@ impl Fixture {
                     "must reflect SUBPD m128 gates, mandatory alignment, and canonical span",
                 ));
             }
+        }
+        if self.profile == Profile::LongSubpdMemoryUnmaskedRaxV1 {
+            if self.subpd_controls.is_some() {
+                return Err(invalid(
+                    "subpd_controls",
+                    "masked controls cannot be combined with unmasked SUBPD m128 profile",
+                ));
+            }
+            let controls = self.subpd_memory_rax_unmasked_controls.ok_or_else(|| {
+                invalid(
+                    "subpd_memory_rax_unmasked_controls",
+                    "required by unmasked SUBPD m128 profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by SUBPD m128 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by SUBPD m128 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if decode_bytes(&code.initial_bytes_hex)? != [0x66, 0x0f, 0x5c, 0x00]
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 16
+                || !data.permissions.read
+                || data.permissions.write
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "unmasked SUBPD m128 requires exact 66 0F 5C 00, one read-only source, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by SUBPD m128 profile"))?
+                .mxcsr
+                .get() as u32;
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "unmasked SUBPD requires supported MXCSR bits, DAZ=FTZ=0, OM=UM=1",
+                ));
+            }
+            let gate = !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let last = source.checked_add(15);
+            let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+            let fetch_last = start.checked_add(3);
+            let fetch_span_fault =
+                fetch_last.is_none_or(|end| !canonical(start) || !canonical(end));
+            let span = last.is_none_or(|end| !canonical(source) || !canonical(end));
+            let lhs_bytes = decode_bytes(&self.initial_state.sse.as_ref().unwrap().xmm[0])?;
+            let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+            let mut lhs = [0u64; 2];
+            let mut rhs = [0u64; 2];
+            for lane in 0..2 {
+                lhs[lane] =
+                    u64::from_le_bytes(lhs_bytes[lane * 8..lane * 8 + 8].try_into().unwrap());
+                rhs[lane] =
+                    u64::from_le_bytes(rhs_bytes[lane * 8..lane * 8 + 8].try_into().unwrap());
+            }
+            let (_, ie, de, _, _, pe) = independent_subpd(lhs, rhs, mxcsr);
+            let pre = ie && mxcsr & (1 << 7) == 0 || de && mxcsr & (1 << 8) == 0;
+            let post = !pre && pe && mxcsr & (1 << 12) == 0;
+            let expected =
+                if fetch_span_fault || gate || nm || source & 0xf != 0 || span || pre || post {
+                    ExpectedExit::Exception
+                } else {
+                    ExpectedExit::StopAddress
+                };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect unmasked SUBPD gates, alignment, canonical span, and exceptions",
+                ));
+            }
+        } else if self.subpd_memory_rax_unmasked_controls.is_some() {
+            return Err(invalid(
+                "subpd_memory_rax_unmasked_controls",
+                "only valid for unmasked SUBPD m128 profile",
+            ));
         }
         if self.profile == Profile::LongCvtpd2psRegistersV1 {
             let _ = self
@@ -19023,10 +19149,12 @@ impl Fixture {
                         .filter(|bytes| bytes == &[0x66, 0x0f, 0x58, 0x00])
                         .map(|_| 4)
                 }
-                Profile::LongSubpdMemoryRaxV1 => decode_bytes(&code_bytes)
-                    .ok()
-                    .filter(|bytes| bytes == &[0x66, 0x0f, 0x5c, 0x00])
-                    .map(|_| 4),
+                Profile::LongSubpdMemoryRaxV1 | Profile::LongSubpdMemoryUnmaskedRaxV1 => {
+                    decode_bytes(&code_bytes)
+                        .ok()
+                        .filter(|bytes| bytes == &[0x66, 0x0f, 0x5c, 0x00])
+                        .map(|_| 4)
+                }
                 Profile::LongAddsdRegistersV1 => {
                     addsd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
@@ -21309,6 +21437,7 @@ impl Fixture {
             sqrtps_controls: None,
             sqrtpd_controls: None,
             subpd_controls: None,
+            subpd_memory_rax_unmasked_controls: None,
             mulpd_controls: None,
             addpd_controls: None,
             addpd_memory_rax_unmasked_controls: None,
@@ -21541,6 +21670,8 @@ pub struct Snapshot {
     pub sqrtpd_controls: Option<SqrtpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subpd_controls: Option<SubpdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subpd_memory_rax_unmasked_controls: Option<SubpdMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mulpd_controls: Option<MulpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -22215,6 +22346,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.subpd_controls",
                 "only valid for the SUBPD profile",
+            ));
+        }
+        if self.profile == Profile::LongSubpdMemoryUnmaskedRaxV1 {
+            if snapshot.subpd_memory_rax_unmasked_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.subpd_memory_rax_unmasked_controls",
+                    "required by unmasked SUBPD m128 profile",
+                ));
+            }
+        } else if snapshot.subpd_memory_rax_unmasked_controls.is_some() {
+            return Err(invalid(
+                "snapshot.subpd_memory_rax_unmasked_controls",
+                "only valid for unmasked SUBPD m128 profile",
             ));
         }
         if matches!(
@@ -23747,6 +23891,7 @@ impl RunResult {
                 | Profile::LongAddpdMemoryRaxV1
                 | Profile::LongAddpdMemoryUnmaskedRaxV1
                 | Profile::LongSubpdMemoryRaxV1
+                | Profile::LongSubpdMemoryUnmaskedRaxV1
                 | Profile::LongMulpdMemoryRaxV1
                 | Profile::LongDivpdMemoryRaxV1
                 | Profile::LongComissMemoryInvalidRaxV1
@@ -24226,6 +24371,28 @@ impl RunResult {
                 }
                 (_, None, None) => {}
                 _ => return Err(FormatError::CaseMismatch("subpd_controls")),
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.subpd_memory_rax_unmasked_controls,
+                value.subpd_memory_rax_unmasked_controls,
+            ) {
+                (Profile::LongSubpdMemoryUnmaskedRaxV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongSubpdMemoryUnmaskedRaxV1, _, _) => {
+                    return Err(FormatError::CaseMismatch(
+                        "subpd_memory_rax_unmasked_controls",
+                    ));
+                }
+                (_, None, None) => {}
+                _ => {
+                    return Err(FormatError::CaseMismatch(
+                        "subpd_memory_rax_unmasked_controls",
+                    ));
+                }
+            }
+            if loaded.fixture.profile == Profile::LongSubpdMemoryUnmaskedRaxV1 {
+                validate_subpd_memory_rax_unmasked_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -42978,6 +43145,15 @@ pub fn independent_addpd_for_test(
     independent_addpd(lhs, rhs, mxcsr)
 }
 
+/// Exposes the independent raw-u64 memory SUBPD oracle to interpreter matrix tests.
+pub fn independent_subpd_for_test(
+    lhs: [u64; 2],
+    rhs: [u64; 2],
+    mxcsr: u32,
+) -> ([u64; 2], bool, bool, bool, bool, bool) {
+    independent_subpd(lhs, rhs, mxcsr)
+}
+
 fn independent_narrow_binary64(raw: u64, rc: u32) -> (u32, bool, bool, bool, bool, bool, bool) {
     let sign = (raw >> 63) as u32;
     let exponent = ((raw >> 52) & 0x7ff) as i32;
@@ -48257,6 +48433,202 @@ fn validate_addpd_memory_rax_unmasked_result(
         _ => {
             return Err(FormatError::CaseMismatch(
                 "unmasked ADDPD m128 outcome/exception",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_subpd_memory_rax_unmasked_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .subpd_memory_rax_unmasked_controls
+        .ok_or(FormatError::CaseMismatch(
+            "subpd_memory_rax_unmasked_controls",
+        ))?;
+    let start = fixture.initial_state.rip.get();
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let fetch_last = start.checked_add(3);
+    let fetch_fault = fetch_last.is_none_or(|end| !canonical(start) || !canonical(end));
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0x66, 0x0f, 0x5c, 0x00] {
+        return Err(FormatError::CaseMismatch("unmasked SUBPD m128 encoding"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    if !data.permissions.read || data.permissions.write || data.permissions.execute {
+        return Err(FormatError::CaseMismatch(
+            "unmasked SUBPD source permissions",
+        ));
+    }
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let mut lhs = [0u64; 2];
+    let mut rhs = [0u64; 2];
+    for lane in 0..2 {
+        lhs[lane] = u64::from_le_bytes(
+            lhs_bytes[lane * 8..lane * 8 + 8]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("xmm0"))?,
+        );
+        rhs[lane] = u64::from_le_bytes(
+            rhs_bytes[lane * 8..lane * 8 + 8]
+                .try_into()
+                .map_err(|_| FormatError::CaseMismatch("memory.data"))?,
+        );
+    }
+    let mxcsr = initial_sse.mxcsr.get() as u32;
+    let (values, invalid, denormal, overflow, underflow, raw_precision) =
+        independent_subpd(lhs, rhs, mxcsr);
+    let pre_unmasked = (invalid && mxcsr & (1 << 7) == 0) || (denormal && mxcsr & (1 << 8) == 0);
+    let precision = !pre_unmasked && raw_precision;
+    let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let source = fixture.initial_state.gpr[0].get();
+    let aligned = source & 0xf == 0;
+    let last = source.checked_add(15);
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let memory_fault = !aligned || span_fault;
+    let unmasked_ie = invalid && mxcsr & (1 << 7) == 0;
+    let unmasked_de = denormal && mxcsr & (1 << 8) == 0;
+    let unmasked_pe = !pre_unmasked && precision && mxcsr & (1 << 12) == 0;
+    let simd_vector = if !fetch_fault && gate.is_none() && !memory_fault {
+        (unmasked_ie || unmasked_de || unmasked_pe).then_some(if controls.cr4_osxmmexcpt {
+            19
+        } else {
+            6
+        })
+    } else {
+        None
+    };
+    let fault = fetch_fault
+        .then_some(13)
+        .or(gate)
+        .or_else(|| memory_fault.then_some(13))
+        .or(simd_vector);
+    let expected_exit = if fault.is_some() {
+        ExpectedExit::Exception
+    } else {
+        ExpectedExit::StopAddress
+    };
+    if fixture.expected_exit != expected_exit {
+        return Err(FormatError::CaseMismatch(
+            "unmasked SUBPD m128 expected exit",
+        ));
+    }
+
+    let mut expected = fixture.initial_state.clone();
+    if let Some(vector) = simd_vector {
+        let generated = if pre_unmasked {
+            u32::from(invalid) | (u32::from(denormal) << 1)
+        } else {
+            u32::from(invalid)
+                | (u32::from(denormal) << 1)
+                | (u32::from(overflow) << 3)
+                | (u32::from(underflow) << 4)
+                | (u32::from(precision) << 5)
+        };
+        expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?
+            .mxcsr = HexU64(u64::from(mxcsr | generated));
+        let _ = vector;
+    } else if fault.is_none() {
+        let sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let mut xmm = [0u8; 16];
+        for lane in 0..2 {
+            xmm[lane * 8..lane * 8 + 8].copy_from_slice(&values[lane].to_le_bytes());
+        }
+        sse.xmm[0] = crate::memory::encode_bytes(&xmm);
+        sse.mxcsr = HexU64(u64::from(
+            mxcsr
+                | u32::from(invalid)
+                | (u32::from(denormal) << 1)
+                | (u32::from(overflow) << 3)
+                | (u32::from(underflow) << 4)
+                | (u32::from(precision) << 5),
+        ));
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("SUBPD m128 RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch(
+            "unmasked SUBPD m128 output state",
+        ));
+    }
+    let retired = fault.is_none();
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(retired)),
+        })
+    {
+        return Err(FormatError::CaseMismatch("unmasked SUBPD m128 retirement"));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "unmasked SUBPD m128 outcome/exception",
             ));
         }
     }

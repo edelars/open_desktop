@@ -532,6 +532,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                 sqrtps_controls: input.fixture.sqrtps_controls,
                 sqrtpd_controls: input.fixture.sqrtpd_controls,
                 subpd_controls: input.fixture.subpd_controls,
+                subpd_memory_rax_unmasked_controls: input
+                    .fixture
+                    .subpd_memory_rax_unmasked_controls,
                 mulpd_controls: input.fixture.mulpd_controls,
                 addpd_controls: input.fixture.addpd_controls,
                 addpd_memory_rax_unmasked_controls: input

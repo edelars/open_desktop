@@ -365,6 +365,42 @@ pub struct SubpdControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// SSE2 and SIMD exception delivery controls for unmasked SUBPD m128 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SubpdMemoryRaxUnmaskedControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy)]
+enum SubpdMemoryRaxExecutionProfile {
+    Masked(SubpdControls),
+    Unmasked(SubpdMemoryRaxUnmaskedControls),
+}
+
+impl SubpdMemoryRaxExecutionProfile {
+    const fn gates(self) -> (bool, bool, bool, bool) {
+        match self {
+            Self::Masked(c) => (c.sse2_available, c.cr0_em, c.cr0_ts, c.cr4_osfxsr),
+            Self::Unmasked(c) => (c.sse2_available, c.cr0_em, c.cr0_ts, c.cr4_osfxsr),
+        }
+    }
+
+    const fn is_unmasked(self) -> bool {
+        matches!(self, Self::Unmasked(_))
+    }
+
+    const fn osxmmexcpt(self) -> bool {
+        match self {
+            Self::Masked(_) => false,
+            Self::Unmasked(c) => c.cr4_osxmmexcpt,
+        }
+    }
+}
+
 /// Explicit SSE2 and SIMD exception-delivery controls for bounded MULPD.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MulpdControls {
@@ -1537,7 +1573,7 @@ struct ExecutionProfiles<'a> {
     sqrtps_registers: Option<SqrtpsControls>,
     sqrtpd_registers: Option<SqrtpdControls>,
     subpd_registers: Option<SubpdControls>,
-    subpd_memory_rax: Option<SubpdControls>,
+    subpd_memory_rax: Option<SubpdMemoryRaxExecutionProfile>,
     mulpd_memory_rax: Option<MulpdControls>,
     mulpd_registers: Option<MulpdControls>,
     addpd_registers: Option<AddpdControls>,
@@ -17047,6 +17083,7 @@ fn run_with_subpd_controls(
     config: RunConfig,
     controls: SubpdControls,
     memory_rax: bool,
+    memory_profile: Option<SubpdMemoryRaxExecutionProfile>,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
     run_configured(
@@ -17088,7 +17125,11 @@ fn run_with_subpd_controls(
             sqrtps_registers: None,
             sqrtpd_registers: None,
             subpd_registers: (!memory_rax).then_some(controls),
-            subpd_memory_rax: memory_rax.then_some(controls),
+            subpd_memory_rax: if memory_rax {
+                memory_profile.or(Some(SubpdMemoryRaxExecutionProfile::Masked(controls)))
+            } else {
+                None
+            },
             mulpd_memory_rax: None,
             mulpd_registers: None,
             addpd_registers: None,
@@ -17197,7 +17238,7 @@ pub fn run_with_subpd_register_controls(
     controls: SubpdControls,
     stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
-    run_with_subpd_controls(state, memory, config, controls, false, stop_requested)
+    run_with_subpd_controls(state, memory, config, controls, false, None, stop_requested)
 }
 
 /// Execute one exact Long64 SUBPD XMM0,m128 [RAX] form with explicit gates.
@@ -17208,7 +17249,40 @@ pub fn run_with_subpd_memory_rax_controls(
     controls: SubpdControls,
     stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
-    run_with_subpd_controls(state, memory, config, controls, true, stop_requested)
+    run_with_subpd_controls(
+        state,
+        memory,
+        config,
+        controls,
+        true,
+        Some(SubpdMemoryRaxExecutionProfile::Masked(controls)),
+        stop_requested,
+    )
+}
+
+/// Execute exact Long64 `66 0F 5C 00` SUBPD m128-at-RAX with unmasked IE/DE/PE delivery.
+pub fn run_with_subpd_memory_rax_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: SubpdMemoryRaxUnmaskedControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_subpd_controls(
+        state,
+        memory,
+        config,
+        SubpdControls {
+            sse2_available: controls.sse2_available,
+            cr0_em: controls.cr0_em,
+            cr0_ts: controls.cr0_ts,
+            cr4_osfxsr: controls.cr4_osfxsr,
+            cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+        },
+        true,
+        Some(SubpdMemoryRaxExecutionProfile::Unmasked(controls)),
+        stop_requested,
+    )
 }
 
 /// Execute one canonical Long64 register MULPD form with explicit gates.
@@ -22426,7 +22500,7 @@ fn step_configured(
             }));
         }
     }
-    if let Some(controls) = configured_subpd_memory_rax_controls {
+    if let Some(profile) = configured_subpd_memory_rax_controls {
         let is_canonical_memory_form = instruction.operation == Operation::SubpdMemoryRax
             && instruction.length == 4
             && instruction.opcode.map == OpcodeMap::Escape0f
@@ -22441,9 +22515,10 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         }
-        let fault_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        let (sse2_available, cr0_em, cr0_ts, cr4_osfxsr) = profile.gates();
+        let fault_vector = if !sse2_available || cr0_em || !cr4_osfxsr {
             Some(6)
-        } else if controls.cr0_ts {
+        } else if cr0_ts {
             Some(7)
         } else {
             None
@@ -27071,9 +27146,15 @@ fn step_configured(
         } else if configured_subpd_memory_rax_controls.is_some()
             && instruction.operation == Operation::SubpdMemoryRax
         {
+            let profile = configured_subpd_memory_rax_controls
+                .expect("SUBPD memory profile was checked above");
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
-                && sse.mxcsr & 0x1f80 == 0x1f80
+                && if profile.is_unmasked() {
+                    sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+                } else {
+                    sse.mxcsr & 0x1f80 == 0x1f80
+                }
         } else if configured_mulpd_memory_rax_controls.is_some()
             && instruction.operation == Operation::MulpdMemoryRax
         {
@@ -33149,64 +33230,178 @@ fn step_configured(
             }
             let mut source = [0u8; 16];
             memory.read(address, context, &mut source)?;
-            let (lhs_xmm, old_mxcsr) = {
-                let sse = state.sse.as_ref().expect("SUBPD memory state prevalidated");
-                (sse.xmm[0], sse.mxcsr)
-            };
-            let mut result = [0u8; 16];
-            let mut new_ie = false;
-            let mut new_de = false;
-            let mut new_oe = false;
-            let mut new_ue = false;
-            let mut new_pe = false;
-            let rounding = cvtss2si_rounding_mode(old_mxcsr);
-            for lane in 0..2 {
-                let offset = lane * 8;
-                let lhs = Binary64::from_bits(u64::from_le_bytes(
-                    lhs_xmm[offset..offset + 8]
-                        .try_into()
-                        .expect("SUBPD lhs lane"),
-                ));
-                let rhs = Binary64::from_bits(u64::from_le_bytes(
-                    source[offset..offset + 8]
-                        .try_into()
-                        .expect("SUBPD m128 lane"),
-                ));
-                let lhs_class = lhs.class();
-                let rhs_class = rhs.class();
-                let lhs_nan =
-                    matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
-                let rhs_nan =
-                    matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
-                if lhs_nan || rhs_nan {
-                    new_ie |= lhs_class == BinaryClass::SignalingNaN
-                        || rhs_class == BinaryClass::SignalingNaN;
-                } else if lhs_class == BinaryClass::Infinity
-                    && rhs_class == BinaryClass::Infinity
-                    && lhs.sign() == rhs.sign()
-                {
-                    // SUBPD computes lhs + (-rhs), so equal-signed infinities
-                    // are the invalid opposite-infinity case.
-                    new_ie = true;
-                } else {
-                    new_de |=
-                        lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal;
+            let profile = configured_subpd_memory_rax_controls
+                .expect("SUBPD memory profile was checked above");
+            if profile.is_unmasked() {
+                let (lhs_xmm, old_mxcsr) = {
+                    let sse = state.sse.as_ref().expect("SUBPD memory state prevalidated");
+                    (sse.xmm[0], sse.mxcsr)
+                };
+                let lhs = std::array::from_fn::<_, 2, _>(|lane| {
+                    u64::from_le_bytes(
+                        lhs_xmm[lane * 8..lane * 8 + 8]
+                            .try_into()
+                            .expect("SUBPD lhs lane"),
+                    )
+                });
+                let rhs = std::array::from_fn::<_, 2, _>(|lane| {
+                    u64::from_le_bytes(
+                        source[lane * 8..lane * 8 + 8]
+                            .try_into()
+                            .expect("SUBPD m128 lane"),
+                    )
+                });
+                let mut new_ie = false;
+                let mut new_de = false;
+                let mut result = [0u64; 2];
+                for lane in 0..2 {
+                    let lhs_class = Binary64::from_bits(lhs[lane]).class();
+                    let rhs_class = Binary64::from_bits(rhs[lane]).class();
+                    let lhs_nan =
+                        matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                    let rhs_nan =
+                        matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                    if lhs_nan || rhs_nan {
+                        let selected = if lhs_nan { lhs[lane] } else { rhs[lane] };
+                        let selected_class = if lhs_nan { lhs_class } else { rhs_class };
+                        result[lane] = if selected_class == BinaryClass::SignalingNaN {
+                            selected | (1u64 << 51)
+                        } else {
+                            selected
+                        };
+                        new_ie |= lhs_class == BinaryClass::SignalingNaN
+                            || rhs_class == BinaryClass::SignalingNaN;
+                    } else if lhs_class == BinaryClass::Infinity
+                        && rhs_class == BinaryClass::Infinity
+                        && ((lhs[lane] ^ rhs[lane]) >> 63) == 0
+                    {
+                        // SUBPD has an invalid operation when equal-signed
+                        // infinities become opposite-signed effective inputs.
+                        result[lane] = 0xfff8_0000_0000_0000;
+                        new_ie = true;
+                    } else {
+                        new_de |= lhs_class == BinaryClass::Subnormal
+                            || rhs_class == BinaryClass::Subnormal;
+                    }
                 }
-                let computed = Binary64::subtract_raw_result(lhs, rhs, rounding);
-                let raw = computed.value().to_bits();
-                new_oe |= computed.overflow();
-                new_ue |= computed.tiny_after_precision_rounding() && computed.inexact();
-                new_pe |= computed.inexact() || computed.overflow();
-                result[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
+                let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+                let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+                if unmasked_ie || unmasked_de {
+                    let sse = state.sse.as_mut().expect("SUBPD memory state prevalidated");
+                    sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: if profile.osxmmexcpt() { 19 } else { 6 },
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+
+                let rounding = cvtss2si_rounding_mode(old_mxcsr);
+                let mut new_oe = false;
+                let mut new_ue = false;
+                let mut new_pe = false;
+                for lane in 0..2 {
+                    let lhs_class = Binary64::from_bits(lhs[lane]).class();
+                    let rhs_class = Binary64::from_bits(rhs[lane]).class();
+                    let has_nan =
+                        matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN)
+                            || matches!(
+                                rhs_class,
+                                BinaryClass::QuietNaN | BinaryClass::SignalingNaN
+                            );
+                    let invalid_infinities = lhs_class == BinaryClass::Infinity
+                        && rhs_class == BinaryClass::Infinity
+                        && ((lhs[lane] ^ rhs[lane]) >> 63) == 0;
+                    if has_nan || invalid_infinities {
+                        continue;
+                    }
+                    let computed = Binary64::subtract_raw_result(
+                        Binary64::from_bits(lhs[lane]),
+                        Binary64::from_bits(rhs[lane]),
+                        rounding,
+                    );
+                    result[lane] = computed.value().to_bits();
+                    new_oe |= computed.overflow();
+                    new_ue |= computed.tiny_after_precision_rounding() && computed.inexact();
+                    new_pe |= computed.inexact() || computed.overflow();
+                }
+                let sse = state.sse.as_mut().expect("SUBPD memory state prevalidated");
+                sse.mxcsr = old_mxcsr
+                    | u32::from(new_ie)
+                    | (u32::from(new_de) << 1)
+                    | (u32::from(new_oe) << 3)
+                    | (u32::from(new_ue) << 4)
+                    | (u32::from(new_pe) << 5);
+                if new_pe && old_mxcsr & (1 << 12) == 0 {
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: if profile.osxmmexcpt() { 19 } else { 6 },
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+                for lane in 0..2 {
+                    sse.xmm[0][lane * 8..lane * 8 + 8].copy_from_slice(&result[lane].to_le_bytes());
+                }
+            } else {
+                let (lhs_xmm, old_mxcsr) = {
+                    let sse = state.sse.as_ref().expect("SUBPD memory state prevalidated");
+                    (sse.xmm[0], sse.mxcsr)
+                };
+                let mut result = [0u8; 16];
+                let mut new_ie = false;
+                let mut new_de = false;
+                let mut new_oe = false;
+                let mut new_ue = false;
+                let mut new_pe = false;
+                let rounding = cvtss2si_rounding_mode(old_mxcsr);
+                for lane in 0..2 {
+                    let offset = lane * 8;
+                    let lhs = Binary64::from_bits(u64::from_le_bytes(
+                        lhs_xmm[offset..offset + 8]
+                            .try_into()
+                            .expect("SUBPD lhs lane"),
+                    ));
+                    let rhs = Binary64::from_bits(u64::from_le_bytes(
+                        source[offset..offset + 8]
+                            .try_into()
+                            .expect("SUBPD m128 lane"),
+                    ));
+                    let lhs_class = lhs.class();
+                    let rhs_class = rhs.class();
+                    let lhs_nan =
+                        matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                    let rhs_nan =
+                        matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                    if lhs_nan || rhs_nan {
+                        new_ie |= lhs_class == BinaryClass::SignalingNaN
+                            || rhs_class == BinaryClass::SignalingNaN;
+                    } else if lhs_class == BinaryClass::Infinity
+                        && rhs_class == BinaryClass::Infinity
+                        && lhs.sign() == rhs.sign()
+                    {
+                        // SUBPD computes lhs + (-rhs), so equal-signed infinities
+                        // are the invalid opposite-infinity case.
+                        new_ie = true;
+                    } else {
+                        new_de |= lhs_class == BinaryClass::Subnormal
+                            || rhs_class == BinaryClass::Subnormal;
+                    }
+                    let computed = Binary64::subtract_raw_result(lhs, rhs, rounding);
+                    let raw = computed.value().to_bits();
+                    new_oe |= computed.overflow();
+                    new_ue |= computed.tiny_after_precision_rounding() && computed.inexact();
+                    new_pe |= computed.inexact() || computed.overflow();
+                    result[offset..offset + 8].copy_from_slice(&raw.to_le_bytes());
+                }
+                let sse = state.sse.as_mut().expect("SUBPD memory state prevalidated");
+                sse.xmm[0] = result;
+                sse.mxcsr = old_mxcsr
+                    | u32::from(new_ie)
+                    | (u32::from(new_de) << 1)
+                    | (u32::from(new_oe) << 3)
+                    | (u32::from(new_ue) << 4)
+                    | (u32::from(new_pe) << 5);
             }
-            let sse = state.sse.as_mut().expect("SUBPD memory state prevalidated");
-            sse.xmm[0] = result;
-            sse.mxcsr = old_mxcsr
-                | u32::from(new_ie)
-                | (u32::from(new_de) << 1)
-                | (u32::from(new_oe) << 3)
-                | (u32::from(new_ue) << 4)
-                | (u32::from(new_pe) << 5);
         }
         Operation::SubpdMemoryRax => {
             return Ok(StepOutcome::Unsupported {
@@ -174116,6 +174311,254 @@ mod cvtsi2ss_r64_memory_profile_tests {
         assert_eq!(state, before);
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
+    }
+
+    #[test]
+    fn subpd_memory_rax_unmasked_gates_cpl_alignment_and_read_rollback() {
+        use crate::memory::{AccessKind, PrivilegeLevel};
+
+        const CODE: [u8; 4] = [0x66, 0x0f, 0x5c, 0x00];
+        let controls = SubpdMemoryRaxUnmaskedControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let run_profile = |state: &mut LongModeState,
+                           memory: &mut Memory,
+                           controls: SubpdMemoryRaxUnmaskedControls,
+                           context: AccessContext| {
+            run_with_subpd_memory_rax_unmasked_controls(
+                state,
+                memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(state.rip + 4),
+                    context,
+                },
+                controls,
+                || false,
+            )
+        };
+        let state_for = |rip: u64, rax: u64| {
+            let mut state = LongModeState::default();
+            state.rip = rip;
+            state.gpr[Register::Rax as usize] = rax;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            state.sse.as_mut().unwrap().xmm[0][..8]
+                .copy_from_slice(&3.0f64.to_bits().to_le_bytes());
+            state.sse.as_mut().unwrap().xmm[0][8..]
+                .copy_from_slice(&6.0f64.to_bits().to_le_bytes());
+            state
+        };
+
+        // Fetch completion and exact-form checks precede SSE2/EM/OSFXSR #UD,
+        // which precedes TS #NM.
+        let mut truncated = state_for(0x7000, 0x2000);
+        let before = truncated.clone();
+        let mut memory = Memory::at(&CODE[..2], 0x7000);
+        assert!(matches!(
+            run_profile(
+                &mut truncated,
+                &mut memory,
+                SubpdMemoryRaxUnmaskedControls {
+                    sse2_available: false,
+                    ..controls
+                },
+                AccessContext::default()
+            )
+            .exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            })
+        ));
+        assert_eq!(truncated, before);
+        assert!(memory.accesses.is_empty());
+
+        let wrong_form = [0x66, 0x0f, 0x5c, 0x08];
+        let mut state = state_for(0x7050, 0x2000);
+        let before = state.clone();
+        let mut memory = Memory::at(&wrong_form, 0x7050);
+        assert!(matches!(
+            run_profile(
+                &mut state,
+                &mut memory,
+                SubpdMemoryRaxUnmaskedControls {
+                    sse2_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                AccessContext::default()
+            )
+            .exit,
+            RunExit::Unsupported { .. }
+        ));
+        assert_eq!(memory.fetches, [0x7050, 0x7051, 0x7052, 0x7053]);
+        assert!(memory.accesses.is_empty());
+        assert_eq!(state, before);
+
+        for (gates, vector) in [
+            (
+                SubpdMemoryRaxUnmaskedControls {
+                    sse2_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                SubpdMemoryRaxUnmaskedControls {
+                    cr0_em: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                SubpdMemoryRaxUnmaskedControls {
+                    cr4_osfxsr: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                SubpdMemoryRaxUnmaskedControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = state_for(0x7100, 0x2000);
+            let before = state.clone();
+            let mut memory = Memory::at(&CODE, 0x7100);
+            let result = run_profile(&mut state, &mut memory, gates, AccessContext::default());
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(memory.fetches, [0x7100, 0x7101, 0x7102, 0x7103]);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+
+        let mut state = state_for(0x0000_7fff_ffff_fffd, 0x2000);
+        let before = state.clone();
+        let mut memory = Memory::at(&CODE, state.rip);
+        let result = run_profile(
+            &mut state,
+            &mut memory,
+            SubpdMemoryRaxUnmaskedControls {
+                sse2_available: false,
+                ..controls
+            },
+            AccessContext::default(),
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        // Both AC values fault for mandatory 16-byte alignment before read.
+        for ac in [false, true] {
+            let mut state = state_for(0x7200, 0x2001);
+            state.rflags = u64::from(ac) << 18;
+            let before = state.clone();
+            let mut memory = Memory::at(&CODE, 0x7200);
+            assert_eq!(
+                run_profile(&mut state, &mut memory, controls, AccessContext::default()).exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                }),
+                "AC={ac}"
+            );
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+
+        // Canonical-span overflow and read errors preserve state; a valid
+        // memory operation performs one read16 at CPL0 through CPL3.
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = state_for(0x7300, 0x2000);
+            let mut memory = Memory::at(&CODE, 0x7300);
+            memory.data_base = 0x2000;
+            memory.bytes[..16].copy_from_slice(&[
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x40,
+            ]);
+            let mut context = AccessContext::default();
+            context.privilege = privilege;
+            let result = run_profile(&mut state, &mut memory, controls, context);
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, 0x7304);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 16)]);
+            assert_eq!(
+                u64::from_le_bytes(state.sse.as_ref().unwrap().xmm[0][..8].try_into().unwrap()),
+                0x4000_0000_0000_0000
+            );
+            assert_eq!(
+                u64::from_le_bytes(state.sse.as_ref().unwrap().xmm[0][8..].try_into().unwrap()),
+                0x4010_0000_0000_0000
+            );
+        }
+
+        for address in [0x0000_8000_0000_0000] {
+            let mut state = state_for(0x7400, address);
+            let before = state.clone();
+            let mut memory = Memory::at(&CODE, 0x7400);
+            memory.data_base = address;
+            assert_eq!(
+                run_profile(&mut state, &mut memory, controls, AccessContext::default()).exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                }),
+                "address={address:#x}"
+            );
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+
+        let mut state = state_for(0x7500, 0x2000);
+        let before = state.clone();
+        let mut memory = Memory::at(&CODE, 0x7500);
+        memory.data_base = 0x2000;
+        memory.error = Some(MemoryError::Unmapped {
+            address: 0x2000,
+            access: AccessKind::Read,
+        });
+        assert!(matches!(
+            run_profile(&mut state, &mut memory, controls, AccessContext::default()).exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                access: AccessKind::Read,
+                ..
+            })
+        ));
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 16)]);
+        assert_eq!(state, before);
     }
 
     #[test]

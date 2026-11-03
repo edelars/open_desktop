@@ -40832,7 +40832,7 @@ fn mulss_m32_memory_unmasked_literals_check_pre_and_post_event_priority() {
             match &mut snapshot_mut(&mut bad_exception).exception {
                 Observation::Available {
                     value: Some(exception),
-                } => exception.vector = 13,
+                } => exception.vector = if vector == Some(13) { 6 } else { 13 },
                 other => panic!("expected SIMD exception, got {other:?}"),
             }
             assert!(bad_exception.validate_for(&input).is_err());
@@ -44407,7 +44407,7 @@ fn subsd_m64_unmasked_literal_fixtures_validate_ie_de_pe_and_denials() {
             match &mut snapshot_mut(&mut bad_exception).exception {
                 Observation::Available {
                     value: Some(exception),
-                } => exception.vector = 13,
+                } => exception.vector = if vector == Some(13) { 6 } else { 13 },
                 other => panic!("expected exception snapshot, got {other:?}"),
             }
             assert!(bad_exception.validate_for(&input).is_err());
@@ -44964,7 +44964,11 @@ fn addpd_m128_unmasked_literal_fixtures_validate_state_schema_and_backend_denial
                 } => exception.vector = 13,
                 other => panic!("expected exception, got {other:?}"),
             }
-            assert!(bad_exception.validate_for(&loaded).is_err());
+            assert!(
+                bad_exception.validate_for(&loaded).is_err(),
+                "case {}",
+                fixture.case_id
+            );
         } else {
             let mut bad_result = result.clone();
             snapshot_mut(&mut bad_result)
@@ -45449,5 +45453,156 @@ fn sqrtsd_m64_unmasked_subnormal_ie_and_ac_span_priority_are_atomic() {
                 Observation::Available { value: HexU64(0) }
             );
         }
+    }
+}
+
+#[test]
+fn subpd_m128_unmasked_literal_fixtures_validate_state_schema_and_backend_denial() {
+    use od_testkit::v2::Profile;
+
+    let cases: [(&[u8], Option<u8>, bool); 5] = [
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38an_subpd_memory_unmasked_success.case.json"
+            ),
+            None,
+            false,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38an_subpd_memory_unmasked_ie_xm.case.json"
+            ),
+            Some(19),
+            false,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38an_subpd_memory_unmasked_de_ud.case.json"
+            ),
+            Some(6),
+            false,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38an_subpd_memory_unmasked_pe_xm.case.json"
+            ),
+            Some(19),
+            false,
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38an_subpd_memory_unmasked_noncanonical_fetch_precedes_ud.case.json"
+            ),
+            Some(13),
+            true,
+        ),
+    ];
+    for (source, vector, fetch_gp) in cases {
+        let fixture = Fixture::from_json(source).unwrap().fixture;
+        assert_eq!(fixture.profile, Profile::LongSubpdMemoryUnmaskedRaxV1);
+        let (loaded, result) = run(source, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+        let snapshot = snapshot(&result);
+        if let Some(vector) = vector {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            assert_eq!(count(&result), 0);
+            assert_eq!(snapshot.state.rip, fixture.initial_state.rip);
+            assert_eq!(
+                snapshot.state.sse.as_ref().unwrap().xmm[0],
+                fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+            );
+            let Observation::Available {
+                value: Some(exception),
+            } = &snapshot.exception
+            else {
+                panic!("missing SIMD exception")
+            };
+            assert_eq!(exception.vector, vector);
+            if fetch_gp {
+                assert_eq!(
+                    exception.error_code,
+                    Observation::Available { value: HexU64(0) }
+                );
+            } else {
+                assert!(matches!(
+                    exception.error_code,
+                    Observation::Unavailable { .. }
+                ));
+            }
+        } else {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+        }
+        for backend in ["jit", "native"] {
+            let (_, denied) = run(source, backend, 4);
+            assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        }
+        let mut bad_controls = result.clone();
+        snapshot_mut(&mut bad_controls)
+            .subpd_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = !fixture
+            .subpd_memory_rax_unmasked_controls
+            .unwrap()
+            .cr4_osxmmexcpt;
+        assert!(bad_controls.validate_for(&loaded).is_err());
+        if vector.is_some() {
+            let mut bad_status = result.clone();
+            snapshot_mut(&mut bad_status)
+                .state
+                .sse
+                .as_mut()
+                .unwrap()
+                .mxcsr = HexU64(snapshot.state.sse.as_ref().unwrap().mxcsr.get() ^ 1);
+            assert!(bad_status.validate_for(&loaded).is_err());
+            let mut bad_exception = result.clone();
+            match &mut snapshot_mut(&mut bad_exception).exception {
+                Observation::Available {
+                    value: Some(exception),
+                } => exception.vector = if vector == Some(13) { 6 } else { 13 },
+                other => panic!("expected exception, got {other:?}"),
+            }
+            assert!(
+                bad_exception.validate_for(&loaded).is_err(),
+                "case {}",
+                fixture.case_id
+            );
+        } else {
+            let mut bad_result = result.clone();
+            snapshot_mut(&mut bad_result)
+                .state
+                .sse
+                .as_mut()
+                .unwrap()
+                .xmm[0]
+                .replace_range(0..16, "000000000000f03f");
+            assert!(bad_result.validate_for(&loaded).is_err());
+        }
+    }
+
+    let source = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38an_subpd_memory_unmasked_success.case.json"
+    );
+    let mut missing = Fixture::from_json(source).unwrap().fixture;
+    missing.subpd_memory_rax_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut mixed = Fixture::from_json(source).unwrap().fixture;
+    mixed.subpd_controls = Some(od_testkit::v2::SubpdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(mixed.validate().is_err());
+    let mut writable = Fixture::from_json(source).unwrap().fixture;
+    writable.memory[1].permissions.write = true;
+    assert!(writable.validate().is_err());
+    for mxcsr in [0x1b80, 0x1780, 0x1fc0, 0x9f80, 0x0001_1f80] {
+        let mut invalid = Fixture::from_json(source).unwrap().fixture;
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.validate().is_err(), "MXCSR={mxcsr:#x}");
     }
 }
