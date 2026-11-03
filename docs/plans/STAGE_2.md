@@ -681,7 +681,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38af | Exact Long64 `SUBSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 22 raw operand vectors ×4 RC ×64 sticky histories ×16 IM/DM/ZM/PM masks ×2 OSXMMEXCPT =180,224 independent raw-u64 cases; four literal fixtures, precedence-aware status validation, pre/post suppression, one read8, AC/span/read rollback, result/control/backend tampering and #GP(0); S2-37dl/S2-37ap preserved; Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AF_SUBSD_MEMORY_UNMASKED.md) |
 | [x] | S2-38ag | Exact Long64 `MULSS XMM0,m32 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 13 original event vectors plus exact-tiny ×4 RC ×64 prior stickies ×16 IM/DM/ZM/PM ×2 OSXMMEXCPT =114,688 real interpreter executions checked by independent raw-u32 oracle; separate 106,496-case schema/result-validator matrix; three literal fixtures; direct gate/fetch/CPL/TS, AC, unaligned one-read, canonical-span/read rollback, status/result/control tampering and backend denial; masked S2-37dm/S2-37dk/S2-37do permissions preserved; od-isa 1,959, testkit 461, runner 138+561; workspace/fmt/Graphify/diff checks passed; Sol/high review clean; [report](../reports/S2_38AG_MULSS_MEMORY_UNMASKED.md); no physical x86 acceptance |
 | [x] | S2-38ah | Exact Long64 `MULSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 20 raw-u64 memory-RHS vectors ×4 RC ×64 sticky histories ×16 IM/DM/ZM/PM ×2 OSXMMEXCPT =163,840 real interpreter executions checked by independent oracle; exact/inexact tiny, DE→PE priority, signed NaNs, zero×infinity, overflow and preservation/backend cases; four literal fixtures; od-isa 1,960, testkit 459, runner 139+561; workspace/fmt/Graphify/diff checks passed; Sol/high review clean; [report](../reports/S2_38AH_MULSD_MEMORY_UNMASKED.md); no physical x86 acceptance |
-| [ ] | S2-38ai | Exact Long64 `DIVSS XMM0,m32 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37do masked memory, S2-37ay register semantics, S2-38ae unmasked memory/control pattern; independent raw-u32 actual-RHS oracle over full RC × prior sticky × IM/DM/ZM/PM × OSXMMEXCPT matrix; IE/ZE/DE priority, exact/inexact tiny, NaN suppression, zero/infinity cases, WPR boundaries and later-event suppression; direct gate/CPL/AC/span/read rollback, schema/tampering and backend denial; no physical x86 acceptance |
+| [x] | S2-38ai | Exact Long64 `DIVSS XMM0,m32 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | 27 event vectors × RC ×64 prior sticky ×16 IM/DM/ZM/PM × both OSXMMEXCPT = 221,184 actual interpreter runs validated against independent raw-u32 actual-memory-RHS oracle; IE/ZE/DE priority, signed SNaN in both positions, QNaN suppression, ZE-only zero cases, DE, exact/inexact ratios and tiny results, half-minsub, min-normal WPR boundary, overflow and pre-event suppression; direct gate/fetch/CPL/AC/span/read rollback and one-read probes; three literal fixtures, schema/result/status/control/exception tampering, S2-37do read-only regression and backend denial; focused direct/matrix tests and package/workspace checks, formatting, Graphify refresh and diff checks passed; one review finding fixed and follow-up review pending; [report](../reports/S2_38AI_DIVSS_MEMORY_UNMASKED.md); no physical x86 acceptance |
 | [ ] | S2-38aj | Exact Long64 `DIVSD XMM0,m64 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dp masked memory, S2-37ax register semantics, S2-38af unmasked memory/control pattern; independent raw-u64 actual-RHS oracle over full RC × prior sticky × IM/DM/ZM/PM × OSXMMEXCPT matrix; IE/ZE/DE priority, exact/inexact tiny, NaN suppression, zero/infinity cases, WPR boundaries and later-event suppression; direct gate/CPL/AC/span/read rollback, schema/tampering and backend denial; no physical x86 acceptance |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -18752,47 +18752,25 @@ physical x86 acceptance is claimed.
 
 #### S2-38ai — exact DIVSS memory form with unmasked exceptions
 
-Implement immutable schema-v2 interpreter-only profile
+Implemented immutable schema-v2 interpreter-only profile
 `s2-long-divss-memory-unmasked-rax-v1` for exact Long64 `F3 0F 5E 00`, SSE
-bit 25 and read-only m32 `[RAX]`; preserve masked-memory S2-37do and register
-S2-37ay. Use separate `divss_memory_rax_unmasked_controls`, one read4, budget
-one and stop RIP=entry+4. Require supported MXCSR bits `0xffbf`, reserved bits
-clear, DAZ=FTZ=0 and OM=UM=1; admit all RC, IM/DM/ZM/PM and prior sticky
-histories. Full four-byte fetch/exact-form precedes feature/CR0.EM/CR4.OSFXSR
-`#UD`, then CR0.TS `#NM`, at CPL0–3. AC=1 returns local Unsupported before
-span/read; AC=0 permits unaligned RAX. Check canonical48 `[RAX,RAX+3]`, then
-exactly one read4; faults preserve CPU, SSE/MXCSR, RIP and retirement.
+bit 25 and read-only m32 `[RAX]`. The separate controls echo, exact four-byte
+fetch and gate order, CPL0–3, AC-before-span/read, unaligned access, canonical
+span checks and atomic read rollback are covered by direct executor probes.
+The profile requires supported MXCSR bits, DAZ=FTZ=0, OM=UM=1 and admits every
+RC mode, incoming sticky history, and IM/DM/ZM/PM setting. It preserves masked
+S2-37do and register S2-37ay contracts.
 
-Divide original XMM0.low32 by the actual memory RHS using raw DIVSS semantics
-and an independent integer-only raw-u32 oracle. Preserve original NaN
-selection/quieting; any original SNaN or `0/0` / `∞/∞` raises IE, while QNaN
-alone does not. Classify IE before finite-nonzero divided by zero as ZE, then
-classify remaining subnormal inputs as DE. NaN suppresses same-lane ZE/DE;
-`∞/0` does not produce ZE. For an
-applicable unmasked IE/ZE/DE pre-event, commit only applicable new sticky bits
-and suppress later OE/UE/PE, result, XMM0, RIP and retirement. If those
-pre-events are masked, compute with RC, apply WPR tininess-after-rounding and
-process PE; an unmasked PE suppresses the whole destination/RIP/retirement.
-OM=UM=1 keeps OE/UE masked; prior sticky bits alone do not fault. Success
-preserves XMM0.high96, RFLAGS and unrelated state.
+The production executor consumes the actual m32 RHS in a single read and
+applies IE, ZE, DE, then PE delivery. A separate integer-only raw-u32 testkit
+oracle validates actual interpreter results. Its 221,184-run matrix spans 27
+event vectors × 4 RC × 64 prior sticky histories × 16 IM/DM/ZM/PM combinations
+× both OSXMMEXCPT values. Three literal fixtures cover IE, ZE and PE delivery;
+schema/result/status/control/exception tampering, backend denial and masked
+read-only permissions are checked. See the [standalone report](../reports/S2_38AI_DIVSS_MEMORY_UNMASKED.md).
 
-OSXMMEXCPT=1 delivers arithmetic exceptions as #XM vector 19; zero delivers
-SIMD-generated #UD vector 6. Neither carries an error code.
-
-The actual-interpreter matrix must span every RC, 64 prior sticky histories,
-all IM/DM/ZM/PM settings and both OSXMMEXCPT values, checking each result and
-status against the independent actual-memory-RHS oracle. Include both signed
-SNaN operand positions, QNaNs and NaN suppression of same-lane ZE/DE; `0/0`,
-`∞/∞`, finite/subnormal divided by signed zero (ZE only), `∞/zero` (no ZE),
-zero/subnormal, `∞/subnormal`, other DE inputs, exact and inexact ratios,
-`1/3`, exact tiny, half-minsub, inexact tiny, min-normal WPR boundaries,
-overflow, and cases where unmasked IE/ZE/DE suppress later PE/OE/UE while
-masked pre-events continue to unmasked PE. Verify full-state suppression,
-gate/fetch/CPL, AC and unaligned access, canonical/read rollback, one callback,
-strict read-only schema, literal fixtures, result/status/control/exception
-tampering, old masked-profile permissions and backend denial. Native/JIT/C
-ABI/generic/fragment routes and physical x86 acceptance remain closed.
-
+No physical x86 acceptance is claimed; native, JIT, C ABI, generic and fragment
+routes remain closed.
 #### S2-38aj — exact DIVSD memory form with unmasked exceptions
 
 Implement immutable schema-v2 interpreter-only profile

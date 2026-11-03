@@ -542,6 +542,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                 divsd_controls: input.fixture.divsd_controls,
                 divps_controls: input.fixture.divps_controls,
                 divss_controls: input.fixture.divss_controls,
+                divss_memory_rax_unmasked_controls: input
+                    .fixture
+                    .divss_memory_rax_unmasked_controls,
                 mulsd_controls: input.fixture.mulsd_controls,
                 mulsd_memory_rax_unmasked_controls: input
                     .fixture

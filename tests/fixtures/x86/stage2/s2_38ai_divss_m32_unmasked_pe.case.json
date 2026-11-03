@@ -1,0 +1,102 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_38ai_divss_m32_unmasked_pe",
+  "profile": "s2-long-divss-memory-unmasked-rax-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten literal unmasked legacy DIVSS XMM0,m32 [RAX]: 1.0 divided by memory 3.0; validates unmasked precision delivery and scalar preservation.",
+    "specification": "Intel 64 and IA-32 Architectures Software Developer’s Manual, Rev. 093, Vol. 2A DIVSS pp. 3-275–3-276; Vol. 2A §2.5.3 Table 2-20; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and 11.6.6; Vol. 3A §7.6.1 Table 7-8. The Type 3 exception note on Vol. 2A p. 3-276 is for VEX forms, not this legacy SSE encoding.",
+    "specification_version": "Intel SDM revision 093; project S2-38ai."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "f30f5e00",
+      "comparison_mask_hex": "ffffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000002001",
+      "length": 4,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "00004040",
+      "comparison_mask_hex": "ffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x00000000000008d5",
+  "expected_exit": "exception",
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000002001",
+      "0x0000000000000101",
+      "0x0000000000000102",
+      "0x0000000000000103",
+      "0x0000000000000104",
+      "0x0000000000000105",
+      "0x0000000000000106",
+      "0x0000000000000107",
+      "0x0000000000000108",
+      "0x0000000000000109",
+      "0x000000000000010a",
+      "0x000000000000010b",
+      "0x000000000000010c",
+      "0x000000000000010d",
+      "0x000000000000010e",
+      "0x000000000000010f"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000ad7",
+    "sse": {
+      "xmm": [
+        "0000803fefbeadde78563412a5a5c3c3",
+        "efbeaddecafef00d78563412deadbeef",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+      ],
+      "mxcsr": "0x0000000000000c00",
+      "diagnostic_mxcsr_mask": "0x000000000000ffbf"
+    }
+  },
+  "ucomiss_memory_rax_controls": null,
+  "cmpss_memory_rax_controls": null,
+  "comiss_memory_rax_controls": null,
+  "cmpsd_memory_rax_controls": null,
+  "cmppd_memory_rax_controls": null,
+  "minss_memory_rax_controls": null,
+  "divss_memory_rax_unmasked_controls": {
+    "sse_available": true,
+    "cr0_em": false,
+    "cr0_ts": false,
+    "cr4_osfxsr": true,
+    "cr4_osxmmexcpt": true
+  }
+}
