@@ -2556,8 +2556,10 @@ is claimed. See the
 
 ## S3-34do: bounded value-only reducer for one S3-34dn artifact
 
-**Status:** documentation plan only; implementation/review pending, execution
-deferred. No reducer or real artifact run is included.
+**Status:** reducer implementation and independent static Sol/high review
+passed; real-artifact execution and self-check execution are deferred. Runtime
+commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated. No
+real artifact was reduced and no acceptance gate was executed.
 
 The planned reducer consumes exactly one validated S3-34dn artifact for
 `67 89 04 24`. First replay the original saved input twice through the
@@ -2566,24 +2568,26 @@ without reducing or writing output. Search only after the original reproduces
 twice with deterministic observations and the exact recorded mismatch
 signature.
 
-Mutate only non-address GPR values and mapped fixture RAM bytes. Preserve
-source/profile, RIP, effective address, RSP, flags, seed/index, RAM layout, and
-the complete write callback (address, width/count, and bytes). Candidate order
-is deterministic and limited to at most 256 distinct candidates. Replay each
-from reset state twice. Accept a candidate only if those observations match
-between repeats, its comparator mismatch string exactly equals the original
-artifact's `mismatch` field, and the popcount of mutable GPR/RAM values is
-lower than the current accepted input. Select the accepted candidate with the
-lowest popcount and a fixed lexicographic tie-break. This bounded result is not a claim of global
-minimality. If no candidate is accepted, emit no reduced artifact.
+Mutate only non-address GPR values and mapped fixture RAM bytes. Keep
+source/profile, RIP, effective address, RSP, flags, seed/index, and RAM layout
+fixed. Preserve the callback protocol: one contiguous width-four write at the
+fixed address, with bytes matching candidate write data and resulting RAM.
+Enumerate candidates deterministically, with at most 256 candidate attempts.
+Replay each candidate twice per backend. Accept only when each backend's
+observations agree across repeats, the comparator mismatch string equals the
+original artifact's `mismatch` field and its structured mismatch signature is
+identical, and mutable GPR/RAM popcount is lower than the current best. The
+first passing candidate becomes the next best, and enumeration restarts from
+it. This deterministic greedy search does not claim a global minimum. If no
+candidate is accepted, emit no reduced artifact.
 
 Critical boundary: `classify_replay` compares full replay observations with
-the full observations stored in the original artifact, so it can validate the
-original reproduction but cannot validate modified candidates. Candidate
-acceptance requires a separate profile-specific comparator that checks
-repeat determinism, the exact stable mismatch signature, and preserved fields.
-Do not use the original-artifact classifier for candidates or create a generic
-replay/reducer framework.
+the full observations stored in the original artifact, so it validates the
+original reproduction only. Candidate acceptance uses a separate
+profile-specific ordinary-replay validator with candidate-specific recorded
+observations; it checks repeat determinism, exact stable signature, and
+preserved fields. Do not use `classify_replay` for candidates or create a
+generic replay/reducer framework.
 
 Create a reduced artifact with create-only semantics only after an accepted
 candidate has strictly lower mutable-value popcount. Preserve the original
@@ -2591,10 +2595,14 @@ artifact and refuse to overwrite an existing reduced artifact. The reducer
 self-check is a fail-closed acceptance gate using labeled synthetic data; no
 real S3-34dn artifact is part of that self-check or this plan.
 
-Target totals are +1 gate/step/self-test over S3-34dn's pinned 304 gates (294
-acceptance + 10 lifecycle), 322 local steps, and 137 self-test names: 305 gates
-(295 acceptance + 10 lifecycle), 323 steps, and 138 self-test names. These are
-targets pending implementation and static recount. ISSUE-028 and ISSUE-029
-remain open pending their execution acceptance. S3-34.2's artifact/replay
-subtask is implemented; its reducer remains pending. Stage 3 remains partial.
+Rust identities: reducer `reduce_saved_s3_34do_value_only_artifact`,
+self-check `s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature`.
+Harness gate `s3_34do_value_only_reducer_self_check`; fail-closed harness
+self-test `test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`.
+Totals are pinned at 305 gates (295 acceptance + 10 lifecycle), 323 steps, and
+138 self-test names. Static review passed; all remain unexecuted. No real
+S3-34dn artifact was reduced. ISSUE-028 and ISSUE-029 remain open pending their
+execution acceptance. S3-34.2 execution acceptance remains pending. No generic
+reducer framework, runtime API, dependency, or opcode is added. Stage 3 remains
+partial.
 See the [S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md).

@@ -424,7 +424,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34dl | Exact harness gates for S3-20ga | Harness `c2a3e8f` pins the JIT source/site, host checked-store and fail-closed self-test identities; independent Sol/high review passed. Totals 302 gates (292 acceptance + 10 lifecycle), 320 local steps, 135 self-test names are pinned/reviewed but not executed. |
 | [partial] | S3-34dm | Fixed-seed differential corpus for S3-20eg `67 89 04 24` | Corpus implementation `c7bb9c7` and harness `2fb1265` are integrated; S3-34.1/.3/.5 code/gates passed independent static Sol/high review. Pinned totals: 303 gates (293 acceptance + 10 lifecycle), 321 local steps, 136 self-test names; the S3-34dm behavior gate and harness self-test remain unexecuted. S3-34.2 persisted replay/reducer remains pending. ISSUE-028 remains open pending S3-20eg execution acceptance. См. [JIT testing reference](../testing/JIT.md#s3-34dm-fixed-seed-differential-corpus-for-s3-20eg) and [report](../reports/STAGE_3_S3-34dm_2026-11-02.md) |
 | [partial] | S3-34dn | Create-only mismatch artifact and validated replay for S3-34dm | Runtime commits `f858b7a`/`10447f0`/`ee2af23` and harness commits `89c5e28`/`13b7790` are integrated and passed independent static Sol/high review. The self-check now pins no-overwrite, invalid-version, and invalid-RIP assertions. Rust self-check and optional saved-artifact replay identities and harness gate are pinned. Totals remain 304 gates (294 acceptance + 10 lifecycle), 322 local steps, and 137 self-test names; nothing was executed. S3-34.2's mismatch-artifact/replay subtask is implemented; reducer remains pending. ISSUE-028 and ISSUE-029 remain open pending their respective execution acceptance. См. [JIT testing reference](../testing/JIT.md#s3-34dn-create-only-mismatch-artifact-and-validated-replay-for-s3-34dm) and [report](../reports/STAGE_3_S3-34dn_2026-11-03.md) |
-| [ ] | S3-34do | Bounded value-only reducer for one S3-34dn artifact | Documentation plan only; no reducer or real artifact run. Target delta +1 gate/step/self-test over 304/322/137: 305 gates (295 acceptance + 10 lifecycle), 323 steps, 138 self-test names; targets pending implementation and exact static diff. Candidate validation must not use `classify_replay` because it compares full original observations. ISSUE-028/029 remain open; Stage 3 partial. См. [JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact) and [report](../reports/STAGE_3_S3-34do_2026-11-03.md) |
+| [partial] | S3-34do | Bounded value-only reducer for one S3-34dn artifact | Runtime commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated and passed independent static Sol/high review. Reducer, reducer self-check, and harness identities are pinned. Totals: 305 gates (295 acceptance + 10 lifecycle), 323 steps, 138 self-test names; all remain unexecuted. No real S3-34dn artifact was reduced. S3-34.2 execution acceptance remains pending. ISSUE-028/029 remain open; Stage 3 partial. См. [JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact) and [report](../reports/STAGE_3_S3-34do_2026-11-03.md) |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
@@ -4674,8 +4674,7 @@ open until the S3-34dn Rust self-check and harness gate run successfully. See th
 
 #### S3-34do. Bounded value-only reducer for one S3-34dn artifact
 
-**Статус:** documentation plan only; implementation and independent static
-review pending; execution deferred. No reducer or real artifact run is included.
+**Статус реализации и независимого статического Sol/high review: PASS; реальный artifact run и self-check execution отложены.** Runtime commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated. The reducer, self-check, and harness gate passed independent static review. No real artifact was reduced and no acceptance gate was executed.
 
 Reduce one validated S3-34dn mismatch artifact for the exact profile
 `67 89 04 24`. First replay the original artifact twice from its saved state
@@ -4686,31 +4685,34 @@ observations and the exact recorded mismatch signature.
 
 Candidate edits are value-only and bounded to non-address GPR values and bytes
 already present in the mapped fixture RAM. Keep source/profile, RIP, effective
-address, RSP, flags, seed/index provenance, RAM address map/layout, and exact
-write-callback shape and contents unchanged. Do not remove instructions, alter
-source bytes, change mapping, or broaden profile admission.
+address, RSP, flags, seed/index provenance, and RAM address map/layout fixed.
+Preserve the callback protocol: exactly one contiguous width-four write at the
+fixed address, with callback bytes matching candidate write data and resulting
+guest RAM. Do not remove instructions, alter source bytes, change mapping, or
+broaden profile admission.
 
-Evaluate candidates in a deterministic order with a hard ceiling of 256
-distinct candidates per artifact. Each candidate must start from an independent
-copy of its saved state and be replayed deterministically. Candidate acceptance
-requires (a) observations that match between the candidate's two repeats,
-(b) an exact comparator mismatch string equal to the original artifact's
-`mismatch` field, and (c) a strictly lower popcount over the candidate's
-mutable GPR/RAM values than
-the current accepted input. Among accepted candidates choose the lowest such
-popcount; break ties by a fixed lexicographic serialization order. This bounded
-search does not claim global minimality. If the original was reproduced but no
-candidate passes all conditions, report no reduction and write no reduced
-artifact.
+Evaluate candidates in deterministic order with a hard ceiling of 256
+candidate attempts per artifact. Each candidate starts from an independent
+copy of the current best state and is replayed twice per backend. Candidate
+acceptance requires (a) observations that match between each backend's two
+repeats, (b) an exact comparator mismatch string equal to the original
+artifact's `mismatch` field and the same structured mismatch signature, and
+(c) a strictly lower popcount over mutable GPR/RAM values than the current
+accepted input. The first passing candidate in the deterministic sequence
+becomes the new best input; regenerate candidates from it and repeat until no
+candidate passes or the cap is reached. This deterministic greedy search does
+not claim a global minimum. If the original was reproduced but no candidate
+passes all conditions, report no reduction and write no reduced artifact.
 
 Critical validation boundary: existing `classify_replay` requires the full
 candidate observations to equal the artifact's recorded full observations.
 Those observations necessarily change when candidate state changes, so that
 function can establish only that the original artifact reproduces. It must not
-be used to accept reduced candidates. Candidate checks need a separate,
-profile-specific comparator that verifies deterministic repeated candidate
-observations and the exact stable mismatch signature while enforcing the
-preserved fields above. Do not turn this into a generic reducer/replay
+be used to accept reduced candidates. Candidate checks use a separate,
+profile-specific ordinary-replay validator with candidate-specific recorded
+observations. It verifies deterministic repeated candidate observations, the
+exact stable mismatch signature, and the preserved fields above. Do not use
+`classify_replay` for candidates or turn this into a generic reducer/replay
 framework.
 
 Write a profile-specific reduced artifact using create-only semantics only
@@ -4721,14 +4723,19 @@ gate using explicitly labeled synthetic data; it is not a real artifact run
 and does not establish runtime mismatch evidence. The real S3-34dn artifact
 must not be run or reduced as part of this documentation task.
 
-Target manifest delta is +1 gate, +1 local step, and +1 self-test name over
-the pinned S3-34dn totals of 304 gates (294 acceptance + 10 lifecycle), 322
-steps, and 137 self-test names: target 305 gates (295 acceptance + 10
-lifecycle), 323 steps, and 138 self-test names. These are planning targets;
-identities and exact counts require implementation and static diff. No runtime
-API, dependency, opcode, or generalized reducer framework is in scope. The
-S3-34.2 artifact/replay subtask is implemented; the reducer remains pending.
+The Rust reducer identity is `reduce_saved_s3_34do_value_only_artifact`; its
+self-check identity is
+`s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature`.
+Harness gate: `s3_34do_value_only_reducer_self_check`; fail-closed harness
+self-test: `test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`.
+The integrated manifest totals are pinned at 305 gates (295 acceptance + 10
+lifecycle), 323 steps, and 138 self-test names, but remain unexecuted. No
+runtime API, dependency, opcode, or generalized reducer framework is in scope.
+The reducer implementation and static review are complete; S3-34.2 execution
+acceptance remains pending.
 ISSUE-028 and ISSUE-029 remain open pending S3-20eg and S3-34dn execution
-acceptance respectively. Stage 3 remains partial. See the
+acceptance respectively. No Rust behavior gate, self-check, Python harness,
+build, formatting, Cargo, Mini, M1, or real-artifact reduction was run or is
+claimed. Stage 3 remains partial. See the
 [S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md) and the
 [JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact).

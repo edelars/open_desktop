@@ -753,18 +753,27 @@ S3-20eg execution acceptance; ISSUE-029 remains open pending the exact S3-34dn
 gate run. No behavior, runtime API, dependency, or opcode claim is added. See the
 [S3-34dn report](STAGE_3_S3-34dn_2026-11-03.md).
 
-S3-34do is a bounded plan for reducing one validated S3-34dn artifact by
-changing only non-address GPR values and mapped RAM bytes. It requires two
-stable replays of the original, exact mismatch-signature preservation,
-deterministic candidate evaluation capped at 256, strictly lower mutable-value
-popcount, preserved profile/address/RSP/flags/provenance/layout/callback, and
-create-only reduced output only after acceptance. Critical fence: the existing
-`classify_replay` compares full candidate observations with the original saved
-observations; it may validate the original artifact only. Candidate checks need
-a separate profile-specific comparator. This plan adds no generic framework,
-runtime API, dependency, or opcode, and no real artifact was run. Reducer
-implementation and review remain pending. Target totals are 305 gates (295
-acceptance + 10 lifecycle), 323 steps, and 138 self-test names, pending exact
-static diff; they are unexecuted targets. ISSUE-028/029 remain open pending
-execution acceptance. Stage 3 remains partial. See the
+S3-34do implements a bounded reducer for one validated S3-34dn artifact.
+Runtime commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` passed
+independent static Sol/high review. Rust reducer identity:
+`reduce_saved_s3_34do_value_only_artifact`; self-check identity:
+`s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature`;
+harness gate: `s3_34do_value_only_reducer_self_check`; fail-closed harness
+self-test: `test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`.
+Totals are pinned at 305 gates (295 acceptance + 10 lifecycle), 323 steps, and
+138 self-test names. None have been executed; no real artifact was reduced.
+
+The reducer requires the original artifact to reproduce twice and stops with
+`not_reproduced` without output otherwise. It makes deterministic value-only
+candidate attempts, capped at 256, and requires lower mutable-value popcount
+plus the exact stable mismatch signature. It preserves profile/address/RSP/
+flags/provenance/layout and the checked single width-four callback protocol,
+then writes a reduced artifact create-only after acceptance. Critical fence:
+`classify_replay` validates only the original artifact against its full saved
+observations; candidate validation uses a separate candidate-specific ordinary
+replay validator. The reducer self-check uses synthetic data only and was not
+executed. No real-artifact or runtime success claim follows. No generic
+framework, runtime API, dependency, or opcode is added. S3-34.2 execution
+acceptance remains pending; ISSUE-028/029 remain open pending execution
+acceptance. Stage 3 remains partial. See the
 [S3-34do report](STAGE_3_S3-34do_2026-11-03.md).
