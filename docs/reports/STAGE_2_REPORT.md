@@ -23605,3 +23605,37 @@ paths. Independent Sol/high review found no remaining issues. No physical x86
 acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38as--exact-cvtss2si-m32-memory-profile-with-unmasked-exceptions),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38as--cvtss2si-m32-memory-unmasked-profile),
 and [stage plan](../plans/STAGE_2.md#s2-38as--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax-with-unmasked-exceptions).
+
+## S2-38at — CVTSD2SI EAX, m64 memory unmasked exceptions
+
+Implemented exact Long64 `F2 0F 2D 00` (`CVTSD2SI EAX,qword ptr [RAX]`) as a
+separate immutable schema-v2 interpreter profile while preserving the masked
+S2-37cg profile. The independent integer-only raw-u64 oracle consumes the
+fixture's actual memory RHS. Its actual-interpreter matrix covers 35 vectors ×
+4 RC modes × 64 prior sticky histories × 4 IM/PM combinations × 2 OSXMMEXCPT
+delivery mappings: 71,680 cases, plus 32 focused DM/OM/UM/ZM/FTZ samples.
+Eight literal fixtures cover high old-RAX success and EAX zero-extension,
+masked IE/PE, unmasked IE/PE, an OSFXSR=0 `#UD`, TS `#NM`, and AC refusal.
+Direct ISA tests additionally exercise missing SSE2, CR0.EM, and OSFXSR gates.
+The high-address success fixture verifies that the source address comes from
+old RAX before the EAX write zero-extends the result.
+
+Direct/generated tests check four-byte instruction-fetch span `#GP` before
+gates, gate/AC precedence, canonical data span, exactly one read8, full
+read-error rollback, exception status versus destination/RIP/retirement,
+writable mapping rejection, strict schema and result/control tampering,
+masked-profile separation, and closed backend paths. The real
+`execute_x86_fragment` and `od_fragment_create` fragment/C ABI entrypoints are
+explicitly denied for this profile.
+
+Checks passed: focused ISA 1/1; od-testkit 461/461; runner schema/literal/backend
+suites 2/2; actual-interpreter matrix 1/1 (71,680 cases, about 28 seconds); all
+eight literal fixtures 1/1; host fragment/C ABI denial 1/1;
+`cargo check --workspace --all-targets --offline`, formatting, and diff checks.
+The full `od-runner` package suite was not run. The layout checker reported only
+the linked-worktree `.git` marker. Independent Sol/high review is clean; no
+physical x86 acceptance is claimed. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38at--exact-cvtsd2si-m64-memory-profile-with-unmasked-exceptions),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38at--cvtsd2si-m64-memory-unmasked-profile),
+[fixture format](../testing/TEST_CASE_FORMAT.md#s2-38at-cvtsd2si-m64-memory-unmasked-profile),
+and [stage plan](../plans/STAGE_2.md#s2-38at--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax-with-unmasked-exceptions).

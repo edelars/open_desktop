@@ -1810,7 +1810,7 @@ report](../reports/STAGE_2_REPORT.md#s2-38as--cvtss2si-eax-m32-memory-unmasked-e
 
 ## S2-38at CVTSD2SI m64 memory unmasked profile
 
-Reserve the separate immutable schema-v2 profile
+Implement the separate immutable schema-v2 profile
 `s2-long-cvtsd2si-r32-memory-unmasked-rax-v1` for exact Long64 bytes
 `f2 0f 2d 00`, one executable mapping, one read-only m64 mapping at the old
 RAX, budget one, and stop RIP `entry+4`. Preserve the existing masked
@@ -1824,30 +1824,40 @@ mask bits, and FTZ values. Cross all IM/PM combinations in the core oracle
 matrix and sample DM/OM/UM/ZM both ways to confirm they cause no conversion
 events and are preserved.
 
-Validation admits local AC=0 only. AC=1 is a valid negative case producing
-`Unsupported` before source read or CPU mutation. Capture old RAX, check the
-canonical48 m64 span, then read8 once. Model exact-instruction fetch, bounded
-SSE2/EM/OSFXSR/TS gates, span faults and read errors. Fetch/gate/span/read
-failures compare full state, including RAX/RIP/MXCSR/retirement. Successful
-EAX writes must zero-extend to RAX. Masked invalid results use `0x80000000`
-and set IE; invalid suppresses PE. A valid inexact result sets PE. Subnormals
-do not set DE; FTZ is irrelevant. An unmasked IE or PE records its MXCSR status
-then suppresses destination/RIP/retirement and delivers `#XM`19 or SIMD `#UD`6
-using OSXMMEXCPT. Compare full RAX on those events and event-specific MXCSR.
+The schema admits AC=1 negative cases; conversion requires local AC=0. Validate
+the canonical48 instruction-fetch span `[RIP,RIP+3]` before gates. Then fetch
+and recognize the exact instruction, apply SSE2/EM/OSFXSR `#UD` gates, and apply
+TS `#NM`. AC=1 returns local `Unsupported` only after those prerequisites pass,
+before data-span validation, read8, or CPU mutation. For AC=0, capture old RAX,
+check the canonical48 m64 span, then read8 once. Fetch/gate/span/read failures
+compare full state, including RAX/RIP/MXCSR/retirement. Successful EAX writes
+must zero-extend to RAX. Masked invalid results use `0x80000000` and set IE;
+invalid suppresses PE. A valid inexact result sets PE. Subnormals do not set DE;
+FTZ is irrelevant. An unmasked IE or PE records its MXCSR status then suppresses
+destination/RIP/retirement and delivers `#XM`19 or SIMD `#UD`6 using
+OSXMMEXCPT. Compare full RAX on those events and event-specific MXCSR.
 
-Require an independent integer-only raw-u64 memory-RHS oracle and actual
-interpreter coverage across vectors × 4 RC × 64 old sticky states × four IM/PM
-settings × two delivery modes. Include signed-i32 boundary neighbors and ties,
-infinities, QNaN/SNaN, signed zero, normal/subnormal values, exact valid
-`-2^31` and invalid sentinel alias, and an old-RAX destination-address case.
-Require literal success, IE, PE, fetch/gate/span/read and AC-refusal cases;
-check exact status, full-state rollback, control/result tampering, strict
-profile separation, and closed JIT/native/C ABI/generic/fragment routes.
-No implementation, fixture, or physical x86 acceptance is claimed by this
-pending contract. Intel SDM Rev. 093 sources: Vol. 2A `CVTSD2SI` pp. 3-232–3-233;
+The implemented independent integer-only raw-u64 memory-RHS oracle covers 35
+vectors × 4 RC × 64 old sticky states × four IM/PM settings × two delivery
+mappings in actual-interpreter runs (71,680 cases), plus 32 focused
+DM/OM/UM/ZM/FTZ samples. Vectors include signed-i32 boundary neighbors and
+ties, infinities, QNaN/SNaN, signed zero, normal/subnormal values, exact valid
+`-2^31` and invalid sentinel alias. Eight literal cases cover high old-RAX
+success/zero-extension, masked IE/PE, unmasked IE/PE, OSFXSR=0 `#UD`, TS `#NM`,
+and AC refusal. Direct ISA tests also cover missing SSE2, CR0.EM and OSFXSR
+gates. Generated/direct tests cover instruction-fetch span and gate priority;
+direct `GuestMemory` tests prove one read8 and read-error rollback. Strict
+schema/tamper/profile isolation and actual fragment/C ABI backend denial are
+checked. Focused ISA passed (1/1), od-testkit passed (461/461), runner
+schema/literal/backend suites passed (2/2), actual-interpreter matrix passed
+(1/1), host fragment/C ABI denial passed (1/1), and workspace check, formatting
+and diff checks passed. The full `od-runner` suite was not run; physical x86
+acceptance is not claimed. Intel SDM Rev. 093 sources: Vol. 2A `CVTSD2SI`
+pp. 3-232–3-233;
 Vol. 1 §§11.5.2.2 and 11.5.3.2; Vol. 3A §§4.1, 5.6–5.7, and Event 17 `#AC`.
-See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38at--exact-cvtsd2si-m64-memory-profile-with-unmasked-exceptions)
-for official PDF links.
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38at--exact-cvtsd2si-m64-memory-profile-with-unmasked-exceptions),
+[Stage 2 result](../reports/STAGE_2_REPORT.md#s2-38at--cvtsd2si-eax-m64-memory-unmasked-exceptions),
+and official PDF links.
 
 ## S2-38au CVTTSS2SI m32 memory unmasked profile
 

@@ -8939,22 +8939,25 @@ suite is incomplete, and physical x86 acceptance is not claimed. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38as--exact-cvtss2si-m32-memory-profile-with-unmasked-exceptions)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-38as--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax-with-unmasked-exceptions).
 
-### S2-38at — proposed CVTSD2SI m64 memory unmasked profile
+### S2-38at — CVTSD2SI m64 memory unmasked profile
 
-The pending contract reserves a distinct schema-v2 profile for exact
-`F2 0F 2D 00` (`CVTSD2SI EAX,qword ptr [RAX]`). It requires local AC=0,
-captures old RAX as the address, checks the canonical48 m64 span, and reads
-once before any destination write. The planned independent raw-u64 memory-RHS
-oracle crosses all RC modes, 64 prior sticky histories, four IM/PM settings,
-and both OSXMMEXCPT deliveries. Separate cases sample DM/OM/UM/ZM both ways
-and check that they neither generate an event nor change. It covers rounding before i32 range checking,
-invalid-indefinite versus valid `-2^31`, PE suppression for invalid, subnormal
-no-DE, FTZ irrelevance, zero-extension on success, event-specific MXCSR status,
-and full rollback for fetch/gate/span/read failures. AC=1 must return
-`Unsupported` without a source read. This section records intended coverage;
-no implementation or fixture result exists yet. See the
+Implemented exact `F2 0F 2D 00` (`CVTSD2SI EAX,qword ptr [RAX]`) as a distinct
+schema-v2 interpreter profile. Its independent raw-u64 memory-RHS oracle
+crosses 35 vectors × all RC modes × 64 old sticky histories × four IM/PM
+settings × both OSXMMEXCPT deliveries: 71,680 actual-interpreter cases, plus
+32 DM/OM/UM/ZM/FTZ samples. Eight literal fixtures cover high old-RAX success
+and zero-extension, masked IE/PE, unmasked IE/PE, OSFXSR=0 `#UD`, TS
+`#NM`, and AC refusal. The literal `#UD` case uses OSFXSR=0; direct ISA tests
+also cover missing SSE2, CR0.EM, and OSFXSR gates. Fetch-span and AC/gate
+collision precedence, writable
+mapping rejection, schema/result/control tampering, and profile separation
+have focused generated tests. Direct GuestMemory checks prove one read8 and
+full rollback on injected read errors; direct host tests deny the fragment and
+C ABI paths. The full `od-runner` suite was not run, and physical x86
+acceptance is not claimed. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38at--exact-cvtsd2si-m64-memory-profile-with-unmasked-exceptions)
-and [plan](../../../../docs/plans/STAGE_2.md#s2-38at--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax-with-unmasked-exceptions).
+and [plan](../../../../docs/plans/STAGE_2.md#s2-38at--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax-with-unmasked-exceptions),
+plus the [Stage 2 result](../../../../docs/reports/STAGE_2_REPORT.md#s2-38at--cvtsd2si-eax-m64-memory-unmasked-exceptions).
 
 ### S2-38au — proposed CVTTSS2SI m32 memory unmasked profile
 

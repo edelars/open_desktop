@@ -19127,7 +19127,7 @@ report](../reports/STAGE_2_REPORT.md#s2-38as--cvtss2si-eax-m32-memory-unmasked-e
 
 ## S2-38at — exact CVTSD2SI m64 memory profile with unmasked exceptions
 
-Reserve a separate immutable schema-v2 interpreter-only profile
+Implement a separate immutable schema-v2 interpreter-only profile
 `s2-long-cvtsd2si-r32-memory-unmasked-rax-v1` for exact legacy Long64 bytes
 `F2 0F 2D 00` (`CVTSD2SI EAX,qword ptr [RAX]`). Preserve masked profile
 S2-37cg unchanged. The profile-specific
@@ -19142,13 +19142,19 @@ Additionally sample DM/OM/UM/ZM both set and clear, proving they cannot cause
 conversion events and are preserved along with all unrelated supported MXCSR
 controls and old status except newly raised IE/PE.
 
-Admit local RFLAGS.AC=0 only. AC=1 produces local `Unsupported` before a data
-read or CPU mutation. For AC=0, capture the original RAX as the address,
-validate canonical48 `[RAX,RAX+7]`, and perform exactly one little-endian
-read8 before committing state. Fetch, gate, span, and read failures preserve
-full architectural state, including RAX, RIP, MXCSR and retirement. Apply the
-bounded S2-37cg instruction-fetch/SSE2/EM/OSFXSR/TS/CPL policy without claiming
-universal exception priority. No x87 state is accessed or modified.
+The schema admits AC=1 negative cases, while conversion requires local
+RFLAGS.AC=0. First validate the canonical48 four-byte instruction-fetch span
+`[RIP,RIP+3]`; a fetch-span `#GP` precedes feature gates. After exact-instruction
+fetch, apply the bounded SSE2/EM/OSFXSR `#UD` gates followed by TS `#NM`. AC=1
+produces local `Unsupported` only after fetch and prerequisite gates succeed,
+before checking the canonical data span, reading source data, or mutating CPU
+state. A failing fetch or gate keeps its earlier outcome when AC=1. For AC=0,
+capture the original RAX as the address, validate canonical48 `[RAX,RAX+7]`,
+and perform exactly one little-endian read8 before committing state. Fetch,
+gate, span, and read failures preserve full architectural state, including RAX,
+RIP, MXCSR and retirement. Apply the bounded S2-37cg CPL and canonical-memory
+policy without claiming universal exception priority. No x87 state is accessed
+or modified.
 
 Round the raw binary64 source using MXCSR.RC before checking signed-i32 range.
 Invalid input, including infinity or NaN, returns the integer-indefinite bit
@@ -19162,19 +19168,28 @@ SIMD-generated `#UD` vector 6 according to OSXMMEXCPT. Other incoming MXCSR
 status and supported controls remain unchanged.
 
 Acceptance requires an independent integer-only raw-u64 oracle that consumes
-the actual memory RHS. Exercise vectors × 4 RC × 64 prior sticky histories × 4
-IM/PM combinations × 2 OSXMMEXCPT delivery mappings in actual-interpreter
-coverage. Include exact and halfway values with neighbors around ±2^31,
+the actual memory RHS. The completed actual-interpreter matrix uses 35 vectors
+× 4 RC × 64 prior sticky histories × 4 IM/PM combinations × 2 OSXMMEXCPT
+delivery mappings (71,680 cases), plus 32 focused DM/OM/UM/ZM/FTZ samples.
+The vectors include exact and halfway values with neighbors around ±2^31,
 positive/negative infinity, QNaN, SNaN, signed zero, normal/subnormal values,
-and valid `-2^31` versus invalid-indefinite alias. Check old-RAX alias and
-zero-extension on success, one read8, full rollback on read errors, event
-status versus destination/RIP/retirement suppression, fetch/gates, strict
-schema, tampering, profile isolation and closed backends. Do not use host FP or
-production conversion helpers. Sources: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI`
+and valid `-2^31` versus invalid-indefinite alias. Eight literal fixtures cover
+success at a high old-RAX address and zero-extension, masked IE/PE, unmasked
+IE/PE, gate #NM/#UD, and AC refusal. Direct/generated tests check instruction
+fetch-span and gate precedence, one read8, full read-error rollback, event
+status versus destination/RIP/retirement suppression, strict schema, tampering,
+profile isolation, and fragment/C ABI backend denial. Do not use host FP or
+production conversion helpers. The focused ISA test passed (1/1), od-testkit
+passed (461/461), runner schema/literal/backend suites passed (2/2), actual
+interpreter matrix passed (1/1), host fragment/C ABI denial passed (1/1), and
+`cargo check --workspace --all-targets --offline`, formatting, and diff checks
+passed. The full `od-runner` suite was not run; physical x86 acceptance is not
+claimed. Sources: Intel SDM Rev. 093 Vol. 2A `CVTSD2SI`
 pp. 3-232–3-233 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1 §§11.5.2.2 and 11.5.3.2
 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §§4.1, 5.6–5.7, and Event 17 `#AC`
 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
-Contract status: pending implementation and independent review.
+Implementation and independent Sol/high review are complete for the bounded
+interpreter profile. See the [Stage 2 result](../reports/STAGE_2_REPORT.md#s2-38at--cvtsd2si-eax-m64-memory-unmasked-exceptions) for checks and limits.
 
 ## S2-38au — exact CVTTSS2SI m32 memory profile with unmasked exceptions
 
