@@ -60,9 +60,18 @@ the evidence and checked against the protocol:
   `[32,160)`, `[416,464)`, and byte padding.
 
 The testkit validator rejects malformed byte lengths, hashes, case ordering,
-missing repetitions, unexpected signals/exits, changed compared bytes, guard
-corruption, invalid image/RAX or guard addresses, bad mapping permissions,
-wrong INT3/RIP adjustment, and altered comparison ranges.
+missing repetitions, `not_run` evidence reported as passing, missing or
+contradictory FXSR/SSE CPUID facts, noncanonical or overlapping code/input/
+observation/image/guard spans, unexpected signals/exits, changed compared
+bytes, guard corruption, invalid image/RAX or guard addresses, bad mapping
+permissions, wrong INT3/RIP adjustment, MXCSR_MASK bytes that disagree with the
+raw image, and altered comparison ranges.
+
+Input addresses cover the four-byte MXCSR literal followed by the 256-byte XMM
+literal table. Evidence gives separate addresses for the 256-byte pre/post XMM
+observation arrays and the four-byte pre/post STMXCSR stores; the validator
+checks each complete span for canonicality and pairwise overlap with code,
+inputs, image, and guards.
 
 ## Verification status and limits
 

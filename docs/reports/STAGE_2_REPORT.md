@@ -23986,7 +23986,8 @@ changed compared bytes, missing repetitions, guard changes, malformed
 observations, and wrong stops.
 
 Validation on Darwin arm64: `cargo fmt --all -- --check`; `cargo test -p
-od-testkit --offline` (466 passed); `cargo check -p od-x86-runner --offline`;
+od-testkit --offline` (473 passed, including 12 FXSAVE64 evidence tests);
+`cargo check -p od-x86-runner --offline`;
 `cargo test -p od-x86-runner --offline` (14 passed); Graphify update; and direct
 clang ELF assembly/disassembly of the `global_asm!` source. Disassembly confirms
 `48 0f ae 40 40` at E followed by `cc` at E+5. The Linux x86_64 Rust target is
@@ -23997,6 +23998,9 @@ native_v2 test initializers. The worktree layout check reports only its known
 worktree metadata `.git` pointer as an unmapped root file.
 
 No oracle execution occurred on this host; physical and hardware observations
-remain `not_run`. Final Linux-target Rust build/disassembly, supported-host
-runtime validation, and independent code/ABI review remain outstanding. Parent
-S2-39 remains open.
+remain `not_run`. Final Linux-target Rust build/disassembly and supported-host
+runtime validation remain outstanding. Initial Sol/high review found validator
+bypasses for `not_run` pass status, CPUID FXSR/SSE, canonical/overlapping
+observation spans, and raw MXCSR_MASK consistency. This follow-up closes those
+and adds regression coverage; fresh independent code/ABI review remains
+outstanding. Parent S2-39 remains open.

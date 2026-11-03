@@ -114,7 +114,9 @@ pub struct Fxsave64Run {
     pub code_address: u64,
     pub input_address: u64,
     pub pre_observation_address: u64,
+    pub pre_mxcsr_address: u64,
     pub post_observation_address: u64,
+    pub post_mxcsr_address: u64,
     pub image_address: u64,
     pub left_guard_address: u64,
     pub right_guard_address: u64,
@@ -177,6 +179,19 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
     }
     if evidence.status != "not_run" && evidence.status != "observed" {
         errors.push("status must be not_run or observed".into());
+    }
+    if evidence.status == "not_run" {
+        errors.push("not_run evidence cannot pass comparison".into());
+    }
+    let raw_fxsr = evidence.environment.cpuid_leaf1_edx & (1 << 24) != 0;
+    let raw_sse = evidence.environment.cpuid_leaf1_edx & (1 << 25) != 0;
+    if evidence.environment.cpuid_fxsr != raw_fxsr || evidence.environment.cpuid_sse != raw_sse {
+        errors.push("CPUID FXSR/SSE booleans contradict raw leaf 1 EDX".into());
+    }
+    if evidence.status == "observed"
+        && (!evidence.environment.cpuid_fxsr || !evidence.environment.cpuid_sse)
+    {
+        errors.push("successful evidence requires CPUID FXSR and SSE support".into());
     }
     if evidence.instruction_bytes != INSTRUCTION || evidence.instruction_length != 5 {
         errors.push("instruction bytes/length do not match the exact S2-39d form".into());
@@ -289,36 +304,14 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
                 "{prefix}: image is misaligned or RAX does not target D"
             ));
         }
-        if !canonical48(run.image_address)
-            || !canonical48(run.image_address.saturating_add(543))
-            || !canonical48(run.code_address)
-            || !canonical48(run.input_address)
-        {
-            errors.push(format!(
-                "{prefix}: code/input/image span is not canonical48"
-            ));
-        }
         if run.input_address == 0
             || run.pre_observation_address == 0
+            || run.pre_mxcsr_address == 0
             || run.post_observation_address == 0
-            || run.pre_observation_address == run.post_observation_address
+            || run.post_mxcsr_address == 0
         {
             errors.push(format!(
                 "{prefix}: independent input/observation addresses are missing or aliased"
-            ));
-        }
-        let image_range = run.image_address..run.image_address.saturating_add(512);
-        let other_ranges = [
-            run.input_address..run.input_address.saturating_add(256),
-            run.pre_observation_address..run.pre_observation_address.saturating_add(256),
-            run.post_observation_address..run.post_observation_address.saturating_add(256),
-        ];
-        if other_ranges
-            .iter()
-            .any(|range| range.start < image_range.end && image_range.start < range.end)
-        {
-            errors.push(format!(
-                "{prefix}: input/observations overlap the saved image"
             ));
         }
         if run.left_guard_address.checked_add(32) != Some(run.image_address)
@@ -327,6 +320,37 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
             errors.push(format!(
                 "{prefix}: guard addresses do not bracket the 512-byte image"
             ));
+        }
+        let regions = [
+            (
+                "emitted code",
+                evidence.emitted_code_address,
+                evidence.emitted_bytes.len(),
+            ),
+            ("input literals", run.input_address, 260),
+            ("pre observations", run.pre_observation_address, 256),
+            ("pre MXCSR observation", run.pre_mxcsr_address, 4),
+            ("post observations", run.post_observation_address, 256),
+            ("post MXCSR observation", run.post_mxcsr_address, 4),
+            ("left guard", run.left_guard_address, 32),
+            ("image", run.image_address, 512),
+            ("right guard", run.right_guard_address, 32),
+        ];
+        for (name, start, length) in regions {
+            if !canonical_span(start, length) {
+                errors.push(format!(
+                    "{prefix}: {name} span is empty, wrapping or noncanonical"
+                ));
+            }
+        }
+        for left in 0..regions.len() {
+            for right in left + 1..regions.len() {
+                let (left_name, left_start, left_len) = regions[left];
+                let (right_name, right_start, right_len) = regions[right];
+                if spans_overlap(left_start, left_len, right_start, right_len) {
+                    errors.push(format!("{prefix}: {left_name} overlaps {right_name}"));
+                }
+            }
         }
         if !run.code_permissions.starts_with("r-x")
             || !run.input_permissions.starts_with("rw-")
@@ -473,7 +497,14 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
                 errors.push(format!("{prefix}: software tail [464,512) changed"));
             }
         }
-        // MXCSR_MASK is deliberately only required to be captured as four raw bytes.
+        if run.image.len() == 512
+            && run.mxcsr_mask_raw.len() == 4
+            && run.mxcsr_mask_raw.as_slice() != &run.image[28..32]
+        {
+            errors.push(format!(
+                "{prefix}: raw MXCSR_MASK disagrees with image bytes [28,32)"
+            ));
+        }
     }
     Fxsave64Comparison {
         passed: errors.is_empty(),
@@ -493,6 +524,23 @@ fn canonical48(address: u64) -> bool {
     let sign = (address >> 47) & 1;
     let upper = address >> 48;
     upper == if sign == 0 { 0 } else { 0xffff }
+}
+
+fn canonical_span(start: u64, length: usize) -> bool {
+    length > 0
+        && start
+            .checked_add(length as u64 - 1)
+            .is_some_and(|last| canonical48(start) && canonical48(last))
+}
+
+fn spans_overlap(left_start: u64, left_len: usize, right_start: u64, right_len: usize) -> bool {
+    let Some(left_end) = left_start.checked_add(left_len as u64) else {
+        return true;
+    };
+    let Some(right_end) = right_start.checked_add(right_len as u64) else {
+        return true;
+    };
+    left_start < right_end && right_start < left_end
 }
 
 #[cfg(test)]
@@ -518,7 +566,9 @@ mod tests {
                     code_address: 0x400000,
                     input_address: 0x500000,
                     pre_observation_address: 0x600000,
+                    pre_mxcsr_address: 0x600100,
                     post_observation_address: 0x700000,
+                    post_mxcsr_address: 0x700100,
                     image_address: d,
                     left_guard_address: d - 32,
                     right_guard_address: d + 512,
@@ -536,6 +586,7 @@ mod tests {
                     signal: None,
                     signal_code: Some(1),
                     initial_image: vec![case.image_canary(); 512],
+                    mxcsr_mask_raw: image[28..32].to_vec(),
                     image,
                     left_guard_before: vec![case.left_guard(); 32],
                     left_guard_after: vec![case.left_guard(); 32],
@@ -545,7 +596,6 @@ mod tests {
                     xmm_after: xmm,
                     mxcsr_before: case.mxcsr().to_vec(),
                     mxcsr_after: case.mxcsr().to_vec(),
-                    mxcsr_mask_raw: vec![0; 4],
                 }
             })
             .collect();
@@ -571,7 +621,7 @@ mod tests {
                 cpuid_fxsr: true,
                 cpuid_sse: true,
                 cpuid_leaf1_eax: 0,
-                cpuid_leaf1_edx: 0,
+                cpuid_leaf1_edx: (1 << 24) | (1 << 25),
                 os: "test".into(),
                 kernel: "test".into(),
                 virtualization: "unknown".into(),
@@ -650,5 +700,150 @@ mod tests {
         let errors = compare_fxsave64(&evidence).errors.join(" ");
         assert!(errors.contains("post XMM observations"));
         assert!(errors.contains("raw MXCSR_MASK"));
+    }
+
+    #[test]
+    fn not_run_evidence_never_passes() {
+        let mut evidence = valid_evidence();
+        evidence.status = "not_run".into();
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison
+                .errors
+                .iter()
+                .any(|error| error.contains("not_run"))
+        );
+    }
+
+    #[test]
+    fn rejects_missing_fxsr_or_sse_support() {
+        let mut evidence = valid_evidence();
+        evidence.environment.cpuid_fxsr = false;
+        evidence.environment.cpuid_sse = false;
+        evidence.environment.cpuid_leaf1_edx = 0;
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison
+                .errors
+                .iter()
+                .any(|error| error.contains("requires CPUID FXSR and SSE"))
+        );
+    }
+
+    #[test]
+    fn rejects_cpuid_flags_inconsistent_with_raw_leaf() {
+        let mut evidence = valid_evidence();
+        evidence.environment.cpuid_fxsr = false;
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison
+                .errors
+                .iter()
+                .any(|error| error.contains("contradict raw leaf 1 EDX"))
+        );
+    }
+
+    #[test]
+    fn rejects_aliased_input_and_observation_spans() {
+        let mut evidence = valid_evidence();
+        evidence.runs[0].pre_observation_address = evidence.runs[0].input_address;
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison
+                .errors
+                .iter()
+                .any(|error| error.contains("input literals overlaps pre observations"))
+        );
+
+        let mut evidence = valid_evidence();
+        evidence.runs[0].post_observation_address = evidence.runs[0].pre_observation_address;
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison
+                .errors
+                .iter()
+                .any(|error| error.contains("pre observations overlaps post observations"))
+        );
+
+        let mut evidence = valid_evidence();
+        evidence.runs[0].pre_mxcsr_address = evidence.runs[0].post_mxcsr_address;
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison.errors.iter().any(
+                |error| error.contains("pre MXCSR observation overlaps post MXCSR observation")
+            )
+        );
+
+        let mut evidence = valid_evidence();
+        evidence.runs[0].pre_observation_address = evidence.runs[0].left_guard_address;
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison
+                .errors
+                .iter()
+                .any(|error| error.contains("pre observations overlaps left guard"))
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_observation_span() {
+        let mut evidence = valid_evidence();
+        // Start is canonical48, but the complete 256-byte span crosses into
+        // the noncanonical hole.
+        evidence.runs[0].pre_observation_address = 0x0000_7fff_ffff_fff0;
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison
+                .errors
+                .iter()
+                .any(|error| error.contains("pre observations span"))
+        );
+    }
+
+    #[test]
+    fn rejects_noncanonical_input_and_mxcsr_observation_spans() {
+        let mut evidence = valid_evidence();
+        evidence.runs[0].input_address = 0x0000_7fff_ffff_fff0;
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison
+                .errors
+                .iter()
+                .any(|error| error.contains("input literals span"))
+        );
+
+        let mut evidence = valid_evidence();
+        evidence.runs[0].post_mxcsr_address = 0x0000_7fff_ffff_fffe;
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison
+                .errors
+                .iter()
+                .any(|error| error.contains("post MXCSR observation span"))
+        );
+    }
+
+    #[test]
+    fn rejects_mxcsr_mask_that_differs_from_raw_image() {
+        let mut evidence = valid_evidence();
+        evidence.runs[0].mxcsr_mask_raw[0] ^= 1;
+        let comparison = compare_fxsave64(&evidence);
+        assert!(!comparison.passed);
+        assert!(
+            comparison
+                .errors
+                .iter()
+                .any(|error| error.contains("MXCSR_MASK disagrees"))
+        );
     }
 }
