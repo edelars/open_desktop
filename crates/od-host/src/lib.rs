@@ -4709,7 +4709,7 @@ pub(crate) mod tests {
     // checks the entire mapping/backing range and version before entry, its
     // writes are checked slice copies with no unwind/callback, and it rejects
     // the executing store instruction through any alias. The only active-tail
-    // exception is an exact single-segment V3 immediate replacement validated
+    // exception is an exact V3 immediate replacement validated
     // against the complete artifact source and marked dirty before commit.
     unsafe impl TrackedExecutableCodeOwner for TrackedCodeFixture {
         fn preflight_code_store(
@@ -4890,12 +4890,34 @@ pub(crate) mod tests {
                             && &complete_region.source_bytes[..2] == &[0x48, 0xBA]
                             && &complete_region.source_bytes[10..13] == &[0x48, 0x89, 0x03]
                             && &complete_region.source_bytes[13..15] == &[0x48, 0xB9]
-                            && plan.segment_count == 1
-                            && plan.segments[0].is_some_and(|segment| {
-                                segment.backing == backing
-                                    && segment.offset == region_offset + 15
-                                    && segment.length == 8
-                            });
+                            && match plan.segment_count {
+                                1 => plan.segments[0].is_some_and(|segment| {
+                                    segment.backing == backing
+                                        && segment.offset == region_offset + 15
+                                        && segment.length == 8
+                                        && segment.source_offset == 0
+                                }),
+                                2 => {
+                                    let first = plan.segments[0];
+                                    let second = plan.segments[1];
+                                    matches!(
+                                        (first, second),
+                                        (Some(first), Some(second))
+                                            if first.backing == backing
+                                            && second.backing == backing
+                                            && first.offset == region_offset + 15
+                                            && first.source_offset == 0
+                                            && first.length > 0
+                                            && first.length < 8
+                                            && first.offset.checked_add(first.length)
+                                                == Some(second.offset)
+                                            && first.source_offset.checked_add(first.length)
+                                                == Some(second.source_offset)
+                                            && second.length == 8 - first.length
+                                    )
+                                }
+                                _ => false,
+                            };
                         if !exact_tail_immediate {
                             return Err(TrackedCodeStorePreflightError::ActiveSourceOverlap);
                         }
@@ -69814,8 +69836,8 @@ pub(crate) mod tests {
             run_case(target, stop_during_write);
         }
 
-        // A qword split across two adjacent mappings remains rejected even
-        // when the mappings alias contiguous offsets of the same backing.
+        // The exact immediate replacement may cross two adjacent mappings
+        // when both expose contiguous offsets of the same backing.
         let entry = 0x102A_u64;
         let old_immediate = 0xCAFE_BABE_1234_5678_u64;
         let mut split_program = vec![0x48, 0xBA];
@@ -69832,49 +69854,155 @@ pub(crate) mod tests {
             TrackedCodeFixture::new(&split_program[10..13], &[0x48, 0xB8, 1], &[0x48, 0xB8, 9]);
         split_owner.backings[0].bytes.resize(128, 0);
         split_owner.backings[0].bytes[42..65].copy_from_slice(&split_program);
-        split_owner.mappings[0].len = 60;
+        split_owner.mappings[0].len = 128;
         split_owner.mappings.push(TrackedMappingFixture {
-            start: 0x103C,
-            len: 64,
+            start: 0x6000,
+            len: 7,
             backing: 0,
-            backing_offset: 60,
+            backing_offset: 57,
             mapping: od_jit::translation::MappingId::new(TrackedCodeFixture::nz(30)),
+            mapping_version: od_jit::translation::MappingVersion::new(TrackedCodeFixture::nz(1)),
+            executable: true,
+            writable: true,
+        });
+        split_owner.mappings.push(TrackedMappingFixture {
+            start: 0x6007,
+            len: 57,
+            backing: 0,
+            backing_offset: 64,
+            mapping: od_jit::translation::MappingId::new(TrackedCodeFixture::nz(31)),
             mapping_version: od_jit::translation::MappingVersion::new(TrackedCodeFixture::nz(1)),
             executable: true,
             writable: true,
         });
         split_owner.active_source_rip = entry + 10;
         split_owner.active_source = (0, 52, 3);
-        let mut split_arena = PublishedArenaBackend::new(2).unwrap();
+        let mut split_arena = PublishedArenaBackend::new(3).unwrap();
         let split_active = split_arena.publish_active_code_block_v3(&compiled).unwrap();
+
+        let split_base_bytes = split_owner.backings[0].bytes.clone();
+        let split_base_version = split_owner.backings[0].version;
+        for (second_backing, second_offset, expected) in [
+            (0, 23, TrackedCodeStorePreflightError::OutOfRange),
+            (1, 0, TrackedCodeStorePreflightError::ActiveSourceOverlap),
+        ] {
+            let second = split_owner.mappings.last_mut().unwrap();
+            second.backing = second_backing;
+            second.backing_offset = second_offset;
+            let mut rejected_state = LongModeState {
+                rip: entry,
+                ..LongModeState::default()
+            };
+            rejected_state.gpr[0] = 0x8877_6655_4433_2211;
+            rejected_state.gpr[3] = 0x6000;
+            assert_eq!(
+                split_active.execute_tracked_v3(
+                    &mut rejected_state,
+                    &mut split_owner,
+                    AccessContext::default(),
+                    3,
+                    None,
+                    &AtomicU8::new(0),
+                    |_| panic!("rejected split mapping cannot notify"),
+                ),
+                Err(ActiveCodeExecutionErrorV3::Preflight(expected))
+            );
+            assert_eq!(split_owner.write_count, 0);
+            assert_eq!(split_owner.backings[0].bytes, split_base_bytes);
+            assert_eq!(split_owner.backings[0].version, split_base_version);
+        }
+        let second = split_owner.mappings.last_mut().unwrap();
+        second.backing = 0;
+        second.backing_offset = 64;
+
+        let mut split_cache = od_jit::dispatch::MultiEntryBlockCache::new(
+            2,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+            od_jit::dispatch::MAX_MULTI_ENTRY_CACHE_METADATA_BYTES,
+        )
+        .unwrap();
+        let mut old_tail_state = LongModeState {
+            rip: entry + 13,
+            ..LongModeState::default()
+        };
+        old_tail_state.gpr[2] = 0x1122_3344_5566_7788;
+        let (old_tail_report, stale_tail) = run_tracked_code_block_with_state(
+            &split_owner,
+            entry + 13,
+            old_tail_state,
+            &mut split_cache,
+            &mut split_arena,
+        );
+        assert_eq!(old_tail_report.retired_instructions, 1);
+        assert_eq!(stale_tail.gpr[1], old_immediate);
         let mut split_state = LongModeState {
             rip: entry,
             ..LongModeState::default()
         };
         split_state.gpr[0] = 0x8877_6655_4433_2211;
         split_state.gpr[1] = 0xA5A5_5A5A_F0F0_0F0F;
-        split_state.gpr[3] = entry + 15;
-        let before_split_bytes = split_owner.backings[0].bytes.clone();
-        let before_split_version = split_owner.backings[0].version;
-        assert_eq!(
-            split_active.execute_tracked_v3(
+        split_state.gpr[3] = 0x6000;
+        let split_stop = Arc::new(AtomicU8::new(0));
+        split_owner.request_stop_on_write = true;
+        split_owner.stop_byte = Some(split_stop.clone());
+        let mut split_notifications = Vec::new();
+        let mut split_invalidated = 0;
+        let split_result = split_active
+            .execute_tracked_v3(
                 &mut split_state,
                 &mut split_owner,
                 AccessContext::default(),
                 3,
                 None,
-                &AtomicU8::new(0),
-                |_| panic!("split tail destination cannot notify"),
-            ),
-            Err(ActiveCodeExecutionErrorV3::Preflight(
-                TrackedCodeStorePreflightError::ActiveSourceOverlap
-            ))
+                &split_stop,
+                |change| {
+                    split_notifications.push(change);
+                    split_invalidated += split_cache.invalidate(change);
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            split_result.exit,
+            ActiveCodeExecutionExitV3::CodeInvalidated
         );
-        assert_eq!(split_state.rip, entry + 10);
+        assert_eq!(split_result.remaining_budget, 1);
+        assert_eq!(split_result.retired_instructions, 2);
+        assert_eq!(split_state.rip, entry + 13);
         assert_eq!(split_state.gpr[2], 0x1122_3344_5566_7788);
-        assert_eq!(split_owner.backings[0].bytes, before_split_bytes);
-        assert_eq!(split_owner.backings[0].version, before_split_version);
-        assert_eq!(split_owner.write_count, 0);
+        assert_eq!(split_state.gpr[1], 0xA5A5_5A5A_F0F0_0F0F);
+        assert_eq!(split_owner.write_count, 1);
+        assert_eq!(split_stop.load(Ordering::Acquire), 1);
+        assert_eq!(
+            &split_owner.backings[0].bytes[57..65],
+            &0x8877_6655_4433_2211_u64.to_le_bytes()
+        );
+        assert_eq!(split_owner.backings[0].version.get(), 2);
+        assert_eq!(split_notifications.len(), 1);
+        assert_eq!(split_invalidated, 1);
+        assert_eq!(split_cache.resident_entries(), 0);
+        assert_eq!(
+            split_notifications[0],
+            od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing: TrackedCodeFixture::id(2),
+                current_version: od_jit::translation::BackingVersion::new(TrackedCodeFixture::nz(
+                    2
+                ),),
+            }
+        );
+        let (fresh_tail, after_tail) = run_tracked_code_block_with_state(
+            &split_owner,
+            entry + 13,
+            split_state,
+            &mut split_cache,
+            &mut split_arena,
+        );
+        assert_eq!(fresh_tail.retired_instructions, 1);
+        assert_eq!(after_tail.gpr[1], 0x8877_6655_4433_2211);
+        assert_eq!(after_tail.rip, entry + 23);
+        assert_eq!(
+            split_owner.write_count, 1,
+            "committed store is not replayed"
+        );
     }
 
     #[test]
