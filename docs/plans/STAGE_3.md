@@ -875,6 +875,37 @@ NOP, `0F 1F`, PAUSE and all other non-exact forms never enter fallback. This
 does not add production owner integration or general Stage 2 fallback; S3-16
 remains open.
 
+**S3-16n bounded-memory exact NOT RCX partial (static, unexecuted):**
+`run_with_nop_fallback{,_controlled}` now accepts the existing exact bare NOP
+and exact bare `48 F7 D1` (`NOT RCX`) at a strict dispatcher's `Unsupported`
+RIP. A shared exact-decoder check requires the three-byte W64 register form,
+RCX destination, no other prefix, and byte identity. The helper fetches only
+those three immutable code bytes and uses `od_isa::execute::step`; strict
+`run`, native admission, and all other unsupported forms remain unchanged.
+The existing total-budget invariant, STOP/event/stop-RIP checks, boundary
+priority, interpreter retirement, and actual RIP progress are reused. The
+executor returns before the helper, preserving the synchronous native mapping
+release boundary. A host fixture composes native pair → NOT RCX interpreter
+step → native pair and compares full CPU/RAM state and accounting with the
+interpreter at budgets 0..=5, stop-RIP boundaries before and after fallback,
+atomic STOP after the native prefix, and unsupported NOT RAX neighbor behavior.
+An od-jit regression preserves bare-NOP fallback when code ends at `u64::MAX`.
+
+Rust identities are
+`memory_dispatch::tests::not_rcx_fallback_is_exact_and_strict_run_stays_strict`,
+`memory_dispatch::tests::nop_fallback_handles_code_end_at_u64_max`, and
+`tests::bounded_memory_dispatch_not_rcx_fallback_composes_native_prefix_and_suffix`.
+Harness gates `s3_16_not_rcx_fallback`, `s3_16_nop_u64_max_regression`, and
+`s3_16_not_rcx_host_continuation` pin them, and
+`test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed` checks omission,
+zero-match evidence, and forged argv. Updated manifest totals are 308 Rust
+gates (298 acceptance + 10 lifecycle), 326 local steps, and 139 self-test
+names. The gate and self-check are encoded and statically reviewed but were not
+executed. No build, formatting, Cargo, Python harness, Mini, or M1 check is
+claimed. This remains a single fixture-bounded fallback form; S3-16 is still
+open, and production owner/MMU integration is not covered. See the
+[JIT testing reference](../testing/JIT.md#s3-16n-bounded-memory-exact-not-rcx-fallback).
+
 ### S3-17. Определить cache key и зависимости
 
 1. Записать minimum relevant context key по разделу 4.3; включить все реальные compile-time assumptions и версии code/mappings.
