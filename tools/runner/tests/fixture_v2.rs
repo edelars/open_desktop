@@ -204,6 +204,11 @@ const MAXSS_M32_MEMORY_UNMASKED_RAX: &[u8] = include_bytes!(
 );
 const ADDSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37di_addss_m32_halfway.case.json");
+const ADDSS_M32_UNMASKED: [&[u8]; 3] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ac_addss_unmasked_success.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ac_addss_unmasked_ie_xm.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ac_addss_unmasked_pe_ud.case.json"),
+];
 const SUBSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dk_subss_m32_halfway.case.json");
 const ADDSD_M64_MEMORY_RAX: &[u8] =
@@ -40294,6 +40299,110 @@ fn addss_m32_memory_literal_uses_memory_rhs_and_remains_backend_denied() {
         .unwrap()
         .sse_available = false;
     assert!(bad.validate().is_err());
+}
+
+#[test]
+fn addss_m32_unmasked_memory_literals_validate_atomic_exceptions_and_deny_backends() {
+    for bytes in ADDSS_M32_UNMASKED {
+        let loaded = Fixture::from_json(bytes).unwrap();
+        let fixture = loaded.fixture.clone();
+        assert_eq!(
+            fixture.profile,
+            od_testkit::v2::Profile::LongAddssMemoryRaxUnmaskedV1
+        );
+        let (input, result) = run(bytes, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert!(matches!(
+            &result.outcome,
+            Outcome::StopAddress {} | Outcome::Exception {}
+        ));
+        assert_eq!(
+            result.instructions_executed,
+            Observation::Available {
+                value: HexU64(u64::from(matches!(
+                    &result.outcome,
+                    Outcome::StopAddress {}
+                )))
+            }
+        );
+        assert!(matches!(
+            run(bytes, "jit", 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+        assert!(matches!(
+            run(bytes, "native", 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+
+        let mut bad = result.clone();
+        bad.backend = Backend::Jit;
+        assert!(bad.validate_for(&loaded).is_err());
+
+        let mut bad = result.clone();
+        if let Observation::Available { value } = &mut bad.snapshot {
+            value.addss_memory_rax_unmasked_controls = None;
+        }
+        assert!(bad.validate_for(&loaded).is_err());
+
+        let mut bad = result.clone();
+        if let Observation::Available { value } = &mut bad.snapshot {
+            value.state.rip = HexU64(0xdead);
+        }
+        assert!(bad.validate_for(&loaded).is_err());
+
+        let mut bad = result.clone();
+        if let Observation::Available { value } = &mut bad.snapshot {
+            value.state.sse.as_mut().unwrap().xmm[0] = "00".repeat(16);
+        }
+        assert!(bad.validate_for(&loaded).is_err());
+
+        let mut bad = result.clone();
+        bad.instructions_executed = Observation::Available { value: HexU64(2) };
+        assert!(bad.validate_for(&loaded).is_err());
+
+        if let Observation::Available { value } = &result.snapshot {
+            if let Some(sse) = &value.state.sse {
+                let mut bad = result.clone();
+                if let Observation::Available { value } = &mut bad.snapshot {
+                    value.state.sse.as_mut().unwrap().mxcsr = HexU64(sse.mxcsr.get() ^ 1);
+                }
+                assert!(bad.validate_for(&loaded).is_err());
+            }
+            if let Observation::Available {
+                value: Some(_exception),
+            } = &value.exception
+            {
+                let mut bad = result.clone();
+                if let Observation::Available { value } = &mut bad.snapshot {
+                    if let Observation::Available {
+                        value: Some(exception),
+                    } = &mut value.exception
+                    {
+                        exception.vector = if exception.vector == 6 { 19 } else { 6 };
+                    }
+                }
+                assert!(bad.validate_for(&loaded).is_err());
+            }
+        }
+
+        let mut bad_fixture = fixture.clone();
+        bad_fixture.addss_memory_rax_unmasked_controls = None;
+        assert!(bad_fixture.validate().is_err());
+        let mut bad_fixture = fixture.clone();
+        bad_fixture.addss_memory_rax_controls = Some(CmpssMemoryRaxControlSnapshot {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        });
+        assert!(bad_fixture.validate().is_err());
+        let mut bad_fixture = fixture.clone();
+        bad_fixture.memory[1].permissions.write = true;
+        assert!(bad_fixture.validate().is_err());
+        let mut bad_fixture = fixture;
+        bad_fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0b80);
+        assert!(bad_fixture.validate().is_err());
+    }
 }
 
 #[test]

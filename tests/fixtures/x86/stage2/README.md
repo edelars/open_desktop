@@ -8648,16 +8648,20 @@ and [stage plan](../../../../docs/plans/STAGE_2.md).
 
 ### S2-38ac ADDSS m32 memory unmasked exceptions
 
-The planned exact Long64 `F3 0F 58 00` profile requires SSE bit 25 and performs
-one read-only read4 from `[RAX]`. The independent raw-u32 oracle covers the
-established ADDSS operand/result classes across RC × 64 prior sticky histories
-× IM/DM/PM × OSXMMEXCPT. Fixtures and focused tests must distinguish pre-event
-IE/DE from post-event PE, verify signed NaN behavior and high96 preservation,
-and check complete destination/RIP/retirement suppression. Also cover fetch and
-SSE/TS priority at CPL0–3, AC/local rejection, unaligned reads with AC clear,
-canonical span/read rollback, one callback, read-only schema, tampering, and
-interpreter-only backend denial. S2-37di and S2-37bc stay separate; unmasked
-OE/UE and physical x86 acceptance are outside this profile.
+The exact Long64 `F3 0F 58 00` profile requires SSE bit 25 and performs one
+read-only read4 from `[RAX]`. Three literal fixtures cover success, unmasked IE
+to `#XM`, and unmasked PE to arithmetic `#UD`. The runner's independent raw-u32
+oracle executes eight ADDSS event classes × RC ×64 prior sticky histories ×
+all IM/DM/PM mask combinations × both OSXMMEXCPT mappings (32,768 cases).
+Focused ISA tests verify pre-event IE/DE status, post-event PE status, complete
+XMM/RIP/retirement suppression, high96 preservation, full-fetch/SSE/TS priority,
+AC-before-span refusal, #GP(0) span, unaligned access with AC clear, one read
+and rollback. Schema/result/control tampering and interpreter-only backend
+denial are checked. S2-37di/S2-37bc remain separate; unmasked OE/UE and
+physical x86 acceptance are outside this profile. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ac--exact-addss-memory-profile-with-unmasked-exceptions),
+[implementation report](../../../../docs/reports/S2_38AC_ADDSS_MEMORY_UNMASKED.md),
+and [stage plan](../../../../docs/plans/STAGE_2.md).
 
 ### S2-38ad ADDSD m64 memory unmasked exceptions
 

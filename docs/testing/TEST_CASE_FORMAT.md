@@ -1548,8 +1548,10 @@ supported MXCSR mask `0xffbf`, clear reserved bits, `DAZ=FTZ=0`, and `OM=UM=1`;
 all RC modes, IM/DM/ZM/PM masks, and prior sticky histories are admitted. Cover
 the scalar ADDSS operand/result classes with an independent binary32 oracle,
 including first-original NaN selection, signed QNaN/SNaN, opposite infinities,
-subnormal DE, rounding/cancellation, PE, and mixed pre/post events. Cross RC ×
-all 64 old sticky histories × IM/DM/PM × OSXMMEXCPT. Check pre-event IE/DE
+subnormal DE, rounding/cancellation, PE, and mixed pre/post events. The runner's
+independent binary32 oracle executes eight operand/event classes × RC × 64 old
+sticky histories × every IM/DM/PM mask combination × both OSXMMEXCPT mappings
+(32,768 executions). Check pre-event IE/DE
 status, post-event PE status, whole-XMM/RIP/retirement suppression, high96
 preservation on success, gate/fetch/CPL/AC ordering, unaligned access when AC
 is clear, canonical-span and read rollback, one callback, strict read-only

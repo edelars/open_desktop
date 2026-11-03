@@ -446,6 +446,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                     .collect(),
                 xorpd_prerequisites: input.fixture.xorpd_prerequisites,
                 addss_memory_rax_controls: input.fixture.addss_memory_rax_controls,
+                addss_memory_rax_unmasked_controls: input
+                    .fixture
+                    .addss_memory_rax_unmasked_controls,
                 addsd_memory_rax_controls: input.fixture.addsd_memory_rax_controls,
                 minss_invalid_controls: input.fixture.minss_invalid_controls,
                 maxss_unmasked_controls: input.fixture.maxss_unmasked_controls,
