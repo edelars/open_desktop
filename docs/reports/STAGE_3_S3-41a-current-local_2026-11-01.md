@@ -103,6 +103,7 @@ raises the bounded step timeout to 600 seconds, moves test fixture directories
 under ignored `work/stage3-harness/`, and preserves the primary failure when
 fingerprint comparison also fails. The focused regression passed 1/1, Python
 compilation and `git diff --check` passed, and independent review found no
-remaining issue. The full local selector was not rerun, so the accepted
-1 November run remains the latest successful full-local evidence; ISSUE-033
-stays open pending a complete current-run summary.
+remaining issue. A post-fix full-local rerun attempt exceeded the context
+tool's 240-second RPC window without a final summary. Its result is
+unconfirmed; the 1 November run remains the latest successful full-local
+evidence, and ISSUE-033 stays open pending a complete current-run summary.

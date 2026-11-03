@@ -4447,8 +4447,9 @@ evidence. Независимая проверка evidence/bindings прошла
 временный root-каталог, изменив fingerprint; каталог созданным тестом удалён,
 начальный fingerprint восстановлен. ISSUE-033 фиксирует причину и follow-up:
 timeout 600 секунд, временные fixture-каталоги в ignored `work/`, сохранение
-первичной причины ошибки. Focused regression passed 1/1, но full local selector
-после этих изменений не запускался; S3-41 остаётся открытым.
+первичной причины ошибки. Focused regression passed 1/1; post-fix full local
+selector attempt exceeded the 240-second context RPC window without a final
+summary, so its result remains unconfirmed and S3-41 stays open.
 
 ## 10. Матрица приёмки
 

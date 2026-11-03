@@ -529,7 +529,9 @@ test-generated directory was removed and the starting fingerprint restored.
 A follow-up raises that bounded timeout to 600 seconds, places test temporary
 directories under ignored `work/stage3-harness/`, and preserves the primary
 failure if fingerprint checking also fails. The focused regression passed 1/1,
-but no full local-suite rerun has confirmed the repair. See [ISSUE-033](../KNOWN_ISSUES.md#issue-033--stage-3-local-harness-self-tests-exceed-their-bounded-timeout).
+and a post-fix full-local rerun attempt exceeded the context tool's 240-second
+RPC window without a final summary. No full local-suite result confirms the
+repair. See [ISSUE-033](../KNOWN_ISSUES.md#issue-033--stage-3-local-harness-self-tests-exceed-their-bounded-timeout).
 
 ## Карта требований и границ
 
