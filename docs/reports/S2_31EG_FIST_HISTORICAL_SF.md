@@ -34,3 +34,16 @@ refreshed the graph to 12,270 nodes, 26,469 edges, and 379 communities. The
 initial implementation slice also passed `od-testkit` 455 tests and runner 131
 unit + 552 fixture tests; those suites were not rerun because this follow-up
 changes only ISA unit coverage and documentation.
+
+Independent Sol/high reviews found and closed two coverage issues: six source
+classes were first added to the neighboring SF=0 regression instead of this
+SF+IE matrix, and SF+IE write/span rollback was missing. The final matrix places
+all 13 accepted classes in the target SF+IE path; the adjacent SF=0 regression
+retains its original seven classes. The final re-review was clean, including
+the 20 rollback cases.
+
+Combined main verification after pairing with S2-38z: `od-isa` 1,947,
+`od-testkit` 455, `od-runner` 132 unit + 555 fixture tests; workspace offline
+check, fmt, layout and diff checks passed; Graphify 12,258 nodes, 26,599 edges,
+330 communities. Main commits are `b50d4ed`, `f79a196`, and `8ee7a45`;
+contract preparation is `4d53724`. No physical x86 acceptance is claimed.

@@ -57,3 +57,12 @@ whole-state validation. The completed matrix took 27.79 seconds.
 
 No physical x86 acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38z--exact-sqrtsd-memory-profile-with-unmasked-exceptions),
 [stage plan](../plans/STAGE_2.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38z-sqrtsd-m64-memory-unmasked-exceptions).
+
+The initial full implementation suites passed before Sol/high review fixes.
+After those fixes, the new gate/fetch/CPL and result-tampering tests passed
+individually and the independent review was clean. Combined main verification
+after integration with S2-31eg passed: `od-isa` 1,947, `od-testkit` 455,
+`od-runner` 132 unit + 555 fixture tests; workspace offline check, fmt, layout,
+and diff checks passed; Graphify 12,258 nodes, 26,599 edges, 330 communities.
+Main commits are `512f369`, `52af12f`, `926aab5`, and `91cb6f7`; paired
+contract preparation is `4d53724`.

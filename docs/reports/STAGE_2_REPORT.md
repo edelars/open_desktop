@@ -23070,3 +23070,47 @@ closed. ISSUE-019 and ISSUE-033 remain open; Stage 2 remains open. See the
 [S2-31ef standalone report](S2_31EF_FILD_HISTORICAL_SF.md),
 [S2-38y standalone report](S2_38Y_SQRTSS_MEMORY_UNMASKED.md),
 [CPU contract](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).
+
+
+<a id="main-integration-s2-31eg-s2-38z"></a>
+
+## Main integration: S2-31eg and S2-38z
+
+S2-31eg admits historical SF only with prior IE on the five exact bounded
+FIST/FISTP forms `DF 10`, `DF 18`, `DB 10`, `DB 18`, and `DF 38` at `[RAX]`.
+It preserves SF and all other sticky status bits, while C1 remains defined by
+the conversion result. The SF+IE matrix covers 13 accepted classes across all
+five forms, signs, 32 other sticky histories, FCW, TOP and prior C1 values:
+266,240 full-state and full-memory cases. Twenty SF+IE span/write rollback
+cases confirm atomicity and no premature FISTP pop. The adjacent SF=0 matrix
+remains at seven classes. Two Sol/high review rounds corrected class placement
+and added rollback; final review was clean.
+
+S2-38z adds immutable schema-v2 exact Long64 SQRTSD XMM0,m64 `[RAX]`
+(`F2 0F 51 00`) with SSE2 bit 26, one read-only read8, its own controls echo,
+and unmasked IE/DE/PE outcomes. Its independent raw-u64 oracle covers 65,536
+combinations and includes the exact minimum-subnormal root `2^-537` with DE
+without PE, both exception mappings, full-state suppression and high64
+preservation. Sol/high review found two coverage gaps, subsequently fixed:
+the unmasked API now has explicit gate/fetch/CPL0–3 checks with callback/state
+assertions, and validator tests reject result, MXCSR, retirement, vector and
+`#GP(0)` error-code tampering. Final independent review was clean. The first
+matrix harness was stopped after about two minutes because per-case CLI
+startup overhead; it had no assertion failures. The in-process matrix then
+passed in 27.79 seconds with the independent oracle retained.
+
+On combined main, `cargo fmt --all -- --check`, `python3
+tools/check_layout.py`, `git diff --check`, `cargo check --workspace
+--all-targets --offline`, `cargo test -p od-isa --offline --quiet` (1,947),
+`cargo test -p od-testkit --offline --quiet` (455), and `cargo test -p
+od-runner --offline --quiet` (132 unit + 555 fixture) passed. Graphify after
+integration: 12,258 nodes / 26,599 edges / 330 communities; labels were not
+refreshed without an LLM API key. No `od-x86-runner` or physical x86 acceptance
+was run. Both profiles remain interpreter-only; native/JIT stay closed.
+
+Main commits: S2-31eg `b50d4ed`, `f79a196`, `8ee7a45`; S2-38z `512f369`,
+`52af12f`, `926aab5`, `91cb6f7`; contract preparation `4d53724`. ISSUE-019
+and ISSUE-033 remain open; Stage 2 remains open. See the [S2-31eg report]
+(S2_31EG_FIST_HISTORICAL_SF.md), [S2-38z report]
+(S2_38Z_SQRTSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md),
+and [stage plan](../plans/STAGE_2.md).
