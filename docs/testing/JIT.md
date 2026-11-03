@@ -1558,9 +1558,11 @@ callback STOP and fault precedence, and same-artifact plus singleton retry at
 boundaries `A+3`/`A+6`, with no post-write replay. Malformed source/site
 metadata and unsupported neighbors remain rejected; the cached pair backend
 must reject this variant. Each individual store is all-or-nothing in private
-synchronous ordinary RAM; the pair is not transactional. These gates were
-added but not run in this task. Full S3-26, S3-27 and physical x86 acceptance
-remain open.
+synchronous ordinary RAM; the pair is not transactional. The four focused
+od-jit gates passed, followed by the full `od-jit` suite (397/397). The exact
+host lifecycle gate `tests::ir_two_store_pair_preserves_callbacks_faults_and_continuation`
+passed 1/1. Full Stage 3, Mini, physical-x86, S3-26/S3-27, and production
+owner/MMU acceptance remain open; Mini has not run and M1 remains deferred.
 
 ### S3-34dq Store→Store corpus, replay, and reducer coverage
 
@@ -1576,10 +1578,17 @@ The exact host corpus and testkit generator identities are
 `fixed_seed_s3_26f_store_store_corpus_matches_interpreter_twice_per_input` and
 `memory_corpus::tests::s3_26f_store_store_inputs_are_deterministic_unique_and_use_two_addresses`.
 The harness also retains the source/site, PC-map, and uncached continuation
-gates from S3-26f. Aggregate totals are 320 Rust gates, 338 local steps, and
-4,800 unique memory inputs. Independent Sol/high static review passed; these
-gates and the harness remain unexecuted. ISSUE-028 remains open pending runtime
-acceptance. See the
+gates from S3-26f. The three exact host corpus gates, exact testkit generator
+gate, and S3-26f fail-closed Python self-test passed 1/1. Current global
+manifest totals after S3-34dr are 324 Rust gates (306 acceptance + 18
+lifecycle), 342 local steps, 149 self-test names, and 18 source pins. The
+full `PYTHONPATH=tests/cpu python3 -m unittest test_stage3_harness` run timed
+out after 180 seconds without a final result and is not classified as failure.
+`graphify update .` after the fixture change timed out after 120 seconds; the
+refresh is unconfirmed. SSH to `senya@192.168.1.14:22` timed out before a
+remote command or test ran. Mini and physical-x86 acceptance remain pending;
+M1 remains deferred. Production owner/MMU and performance acceptance remain
+open, and ISSUE-028 stays open. See the
 [S3-34dq report](../reports/STAGE_3_S3-34dq_2026-11-03.md).
 
 ### S3-34dr Exact harness gates for the S3-18f Load→Load profile
