@@ -41,14 +41,14 @@ use od_isa::execute::{
     run_with_mulsd_memory_rax_controls, run_with_mulsd_register_controls,
     run_with_mulss_memory_rax_controls, run_with_mulss_register_controls,
     run_with_sqrtpd_memory_rax_controls, run_with_sqrtpd_register_controls,
-    run_with_sqrtps_memory_rax_controls, run_with_sqrtps_register_controls,
-    run_with_sqrtsd_memory_rax_controls, run_with_sqrtsd_memory_rax_unmasked_controls,
-    run_with_sqrtsd_register_controls, run_with_sqrtss_memory_rax_controls,
-    run_with_sqrtss_memory_rax_unmasked_controls, run_with_sqrtss_register_controls,
-    run_with_subpd_memory_rax_controls, run_with_subpd_register_controls,
-    run_with_subps_register_controls, run_with_subsd_memory_rax_controls,
-    run_with_subsd_register_controls, run_with_subss_memory_rax_controls,
-    run_with_subss_register_controls,
+    run_with_sqrtps_memory_rax_controls, run_with_sqrtps_memory_rax_unmasked_controls,
+    run_with_sqrtps_register_controls, run_with_sqrtsd_memory_rax_controls,
+    run_with_sqrtsd_memory_rax_unmasked_controls, run_with_sqrtsd_register_controls,
+    run_with_sqrtss_memory_rax_controls, run_with_sqrtss_memory_rax_unmasked_controls,
+    run_with_sqrtss_register_controls, run_with_subpd_memory_rax_controls,
+    run_with_subpd_register_controls, run_with_subps_register_controls,
+    run_with_subsd_memory_rax_controls, run_with_subsd_register_controls,
+    run_with_subss_memory_rax_controls, run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -557,6 +557,7 @@ fn expected_native_xorpd_oracle(
                 minpd_unmasked_controls: None,
                 minps_memory_rax_controls: None,
                 sqrtps_memory_rax_controls: None,
+                sqrtps_memory_rax_unmasked_controls: None,
                 rcpps_memory_rax_controls: None,
                 rcpss_memory_rax_controls: None,
                 rsqrtps_memory_rax_controls: None,
@@ -2908,6 +2909,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongSqrtpsMemoryRaxUnmaskedV1 {
+        let controls = loaded
+            .fixture
+            .sqrtps_memory_rax_unmasked_controls
+            .expect("validated unmasked SQRTPS m128 controls");
+        run_with_sqrtps_memory_rax_unmasked_controls(
+            &mut state,
+            memory,
+            config,
+            od_isa::execute::SqrtpsMemoryRaxUnmaskedControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongRcppsMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -4139,6 +4158,9 @@ fn execute_fixture_v2(
                 minpd_memory_rax_controls: loaded.fixture.minpd_memory_rax_controls,
                 minps_memory_rax_controls: loaded.fixture.minps_memory_rax_controls,
                 sqrtps_memory_rax_controls: loaded.fixture.sqrtps_memory_rax_controls,
+                sqrtps_memory_rax_unmasked_controls: loaded
+                    .fixture
+                    .sqrtps_memory_rax_unmasked_controls,
                 rcpps_memory_rax_controls: loaded.fixture.rcpps_memory_rax_controls,
                 rcpss_memory_rax_controls: loaded.fixture.rcpss_memory_rax_controls,
                 rsqrtps_memory_rax_controls: loaded.fixture.rsqrtps_memory_rax_controls,
@@ -5783,6 +5805,9 @@ mod tests {
                     minpd_memory_rax_controls: input.fixture.minpd_memory_rax_controls,
                     minps_memory_rax_controls: input.fixture.minps_memory_rax_controls,
                     sqrtps_memory_rax_controls: input.fixture.sqrtps_memory_rax_controls,
+                    sqrtps_memory_rax_unmasked_controls: input
+                        .fixture
+                        .sqrtps_memory_rax_unmasked_controls,
                     rcpps_memory_rax_controls: input.fixture.rcpps_memory_rax_controls,
                     rcpss_memory_rax_controls: input.fixture.rcpss_memory_rax_controls,
                     rsqrtps_memory_rax_controls: input.fixture.rsqrtps_memory_rax_controls,

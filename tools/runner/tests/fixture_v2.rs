@@ -88,6 +88,27 @@ const MINPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const SQRTPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dd_sqrtps_m128_memory_source_lanes_rounding.case.json"
 );
+const SQRTPS_M128_MEMORY_UNMASKED: [&[u8]; 7] = [
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38aa_sqrtps_m128_success.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aa_sqrtps_m128_ie_unmasked_os0.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aa_sqrtps_m128_ie_unmasked_os1.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aa_sqrtps_m128_de_unmasked_os0.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aa_sqrtps_m128_de_unmasked_os1.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aa_sqrtps_m128_pe_unmasked_os0.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aa_sqrtps_m128_pe_unmasked_os1.case.json"
+    ),
+];
 const RCPPS_M128_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dy_rcpps_m128_memory_rhs.case.json");
 const RCPSS_M32_MEMORY_RAX: &[u8] =
@@ -42348,6 +42369,72 @@ fn sqrtps_m128_memory_uses_memory_lanes_and_aggregates_masked_exceptions() {
     let mut wrong = base.clone();
     wrong.memory[0].initial_bytes_hex = "0f5101".into();
     assert!(wrong.validate().is_err());
+}
+
+#[test]
+fn sqrtps_m128_memory_unmasked_fixtures_and_controls_are_checked() {
+    use od_testkit::v2::Profile;
+    for fixture in SQRTPS_M128_MEMORY_UNMASKED {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            Profile::LongSqrtpsMemoryRaxUnmaskedV1
+        );
+        assert!(input.fixture.memory[1].permissions.read);
+        assert!(!input.fixture.memory[1].permissions.write);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert!(matches!(
+            run(fixture, "jit", 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+        assert!(matches!(
+            run(fixture, "native", 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+        let mut tampered = result.clone();
+        if let Observation::Available { value } = &mut tampered.snapshot {
+            value
+                .sqrtps_memory_rax_unmasked_controls
+                .as_mut()
+                .unwrap()
+                .cr0_ts = true;
+        }
+        assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
+    }
+    let (fault_input, fault_result) = run(SQRTPS_M128_MEMORY_UNMASKED[1], "interpreter", 0);
+    let mut bad_status = fault_result.clone();
+    if let Observation::Available { value } = &mut bad_status.snapshot {
+        value.state.sse.as_mut().unwrap().mxcsr.0 ^= 1;
+    }
+    assert!(od_testkit::v2::compare(&fault_input, &fault_result, &bad_status).is_err());
+    let mut bad_retirement = fault_result.clone();
+    bad_retirement.instructions_executed = Observation::Available { value: HexU64(1) };
+    assert!(od_testkit::v2::compare(&fault_input, &fault_result, &bad_retirement).is_err());
+    let mut bad_exception = fault_result.clone();
+    if let Observation::Available { value } = &mut bad_exception.snapshot {
+        if let Observation::Available {
+            value: Some(exception),
+        } = &mut value.exception
+        {
+            exception.vector = 19;
+        }
+    }
+    assert!(od_testkit::v2::compare(&fault_input, &fault_result, &bad_exception).is_err());
+    let mut input = Fixture::from_json(SQRTPS_M128_MEMORY_UNMASKED[0])
+        .unwrap()
+        .fixture;
+    input.sqrtps_memory_rax_unmasked_controls = None;
+    assert!(input.validate().is_err());
+    let mut writable = Fixture::from_json(SQRTPS_M128_MEMORY_UNMASKED[0])
+        .unwrap()
+        .fixture;
+    writable.memory[1].permissions.write = true;
+    assert!(writable.validate().is_err());
+    let mut wrong_encoding = Fixture::from_json(SQRTPS_M128_MEMORY_UNMASKED[0])
+        .unwrap()
+        .fixture;
+    wrong_encoding.memory[0].initial_bytes_hex = "0f5101".into();
+    assert!(wrong_encoding.validate().is_err());
 }
 
 #[test]

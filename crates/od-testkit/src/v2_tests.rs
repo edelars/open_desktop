@@ -548,6 +548,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                 minpd_memory_rax_controls: input.fixture.minpd_memory_rax_controls,
                 minps_memory_rax_controls: input.fixture.minps_memory_rax_controls,
                 sqrtps_memory_rax_controls: input.fixture.sqrtps_memory_rax_controls,
+                sqrtps_memory_rax_unmasked_controls: input
+                    .fixture
+                    .sqrtps_memory_rax_unmasked_controls,
                 rcpps_memory_rax_controls: input.fixture.rcpps_memory_rax_controls,
                 rcpss_memory_rax_controls: input.fixture.rcpss_memory_rax_controls,
                 rsqrtps_memory_rax_controls: input.fixture.rsqrtps_memory_rax_controls,
@@ -10846,4 +10849,80 @@ fn addss_profile_oracle_and_encoding_cover_scalar_boundaries() {
     assert_eq!(nan.0, 0x7fc0_0001);
     assert!(nan.1);
     assert!(!nan.2 && !nan.3 && !nan.4 && !nan.5);
+}
+
+#[test]
+fn independent_sqrtps_raw_oracle_covers_event_products_masks_and_rc_stickies() {
+    let categories = [
+        0x4080_0000u32, // exact neutral
+        0xbf80_0000,    // IE
+        0x0000_0002,    // DE only
+        0x4000_0000,    // PE only
+        0x0000_0001,    // DE + PE
+    ];
+    for product in 0u32..625 {
+        let mut value = product;
+        let mut lanes = [0u32; 4];
+        let mut expected_ie = false;
+        let mut expected_de = false;
+        let mut expected_pe = false;
+        for lane in &mut lanes {
+            let category = (value % 5) as usize;
+            *lane = categories[category];
+            expected_ie |= category == 1;
+            expected_de |= category == 2 || category == 4;
+            expected_pe |= category == 3 || category == 4;
+            value /= 5;
+        }
+        for masks in 0u32..8 {
+            let mxcsr = 0x1f80 & !(1 << 7) & !(1 << 8) & !(1 << 12)
+                | (u64::from(masks & 1) << 7)
+                | (u64::from((masks >> 1) & 1) << 8)
+                | (u64::from((masks >> 2) & 1) << 12);
+            let (_, ie, de, pe) = super::independent_sqrtps(lanes, mxcsr as u32);
+            assert_eq!((ie, de, pe), (expected_ie, expected_de, expected_pe));
+            let im = masks & 1 != 0;
+            let dm = masks & 2 != 0;
+            let pm = masks & 4 != 0;
+            let pre_unmasked = ie && !im || de && !dm;
+            for osxmmexcpt in [false, true] {
+                let vector = if pre_unmasked || !pre_unmasked && pe && !pm {
+                    Some(if osxmmexcpt { 19 } else { 6 })
+                } else {
+                    None
+                };
+                let expected_vector = if (expected_ie && !im) || (expected_de && !dm) {
+                    Some(if osxmmexcpt { 19 } else { 6 })
+                } else if expected_pe && !pm {
+                    Some(if osxmmexcpt { 19 } else { 6 })
+                } else {
+                    None
+                };
+                assert_eq!(vector, expected_vector, "product={product}, masks={masks}");
+                let committed = if pre_unmasked {
+                    u32::from(ie) | (u32::from(de) << 1)
+                } else {
+                    u32::from(ie) | (u32::from(de) << 1) | (u32::from(pe) << 5)
+                };
+                assert_eq!(
+                    committed & 0x23,
+                    committed,
+                    "product={product}, masks={masks}"
+                );
+                assert_eq!(vector.is_some(), pre_unmasked || pe && !pm);
+            }
+        }
+    }
+    for rc in 0u32..4 {
+        for sticky in 0u32..64 {
+            let mxcsr = 0x1f80 | (rc << 13) | sticky;
+            let (values, ie, de, pe) = super::independent_sqrtps(
+                [0x4000_0000, 0x4080_0000, 0x4110_0000, 0x4180_0000],
+                mxcsr,
+            );
+            assert_eq!(values[0], if rc == 2 { 0x3fb5_04f4 } else { 0x3fb5_04f3 });
+            assert!(!ie && !de && pe);
+            assert_eq!(sticky | (u32::from(pe) << 5), sticky | (1 << 5));
+        }
+    }
 }
