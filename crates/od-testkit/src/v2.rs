@@ -18116,7 +18116,9 @@ impl Fixture {
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-                        || x87.status_word.get() & 0x80c0 != 0
+                        || x87.status_word.get() & 0x8080 != 0
+                        || (x87.status_word.get() & 0x0040 != 0
+                            && x87.status_word.get() & 0x0001 == 0)
                 });
             let is_fxch_source_rejected = code_bytes.len() == 4
                 && code_bytes.starts_with("d9c")
