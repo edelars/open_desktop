@@ -211,13 +211,20 @@ enum MismatchField {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BackendPair {
+    ExpectedInterpreter,
+    ExpectedJit,
     InterpreterJit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct MismatchSignature {
+struct PairMismatch {
     pair: BackendPair,
     fields: Vec<MismatchField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MismatchSignature {
+    pairs: Vec<PairMismatch>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -703,32 +710,33 @@ fn validate_observation_protocol(
     Ok(())
 }
 
-fn signature_for_backend_pair(
+fn difference_for_pair(
     input: &DwordStoreCorpusInput,
-    interpreter: &Observation,
-    jit: &Observation,
-) -> Result<MismatchSignature, &'static str> {
-    validate_observation_protocol(input, interpreter)?;
-    validate_observation_protocol(input, jit)?;
-    if interpreter.state.gpr[4] != input.gpr[4] || jit.state.gpr[4] != input.gpr[4] {
+    pair: BackendPair,
+    left: &Observation,
+    right: &Observation,
+) -> Result<Option<PairMismatch>, &'static str> {
+    validate_observation_protocol(input, left)?;
+    validate_observation_protocol(input, right)?;
+    if left.state.gpr[4] != input.gpr[4] || right.state.gpr[4] != input.gpr[4] {
         return Err("unsupported-address-register-mismatch");
     }
-    let mut interpreter_aux = interpreter.state.clone();
-    let mut jit_aux = jit.state.clone();
-    interpreter_aux.gpr = [0; 16];
-    jit_aux.gpr = [0; 16];
-    if interpreter_aux != jit_aux {
+    let mut left_aux = left.state.clone();
+    let mut right_aux = right.state.clone();
+    left_aux.gpr = [0; 16];
+    right_aux.gpr = [0; 16];
+    if left_aux != right_aux {
         return Err("unsupported-non-gpr-cpu-mismatch");
     }
 
     let gpr_differences = (0..16)
-        .filter(|index| *index != 4 && interpreter.state.gpr[*index] != jit.state.gpr[*index])
+        .filter(|index| *index != 4 && left.state.gpr[*index] != right.state.gpr[*index])
         .map(MismatchField::Gpr)
         .collect::<Vec<_>>();
     let mut ram_differences = Vec::new();
-    for (address, interpreter_byte) in &interpreter.ram {
-        let jit_byte = jit.ram.get(address).ok_or("unsupported-ram-layout")?;
-        if interpreter_byte != jit_byte {
+    for (address, left_byte) in &left.ram {
+        let right_byte = right.ram.get(address).ok_or("unsupported-ram-layout")?;
+        if left_byte != right_byte {
             ram_differences.push(MismatchField::Ram(
                 ram_index_for_address(input, *address).ok_or("unsupported-ram-address")?,
             ));
@@ -743,12 +751,38 @@ fn signature_for_backend_pair(
         ram_differences
     };
     if fields.is_empty() {
-        return Err("no-interpreter-jit-value-mismatch");
+        return Ok(None);
     }
-    Ok(MismatchSignature {
-        pair: BackendPair::InterpreterJit,
+    Ok(Some(PairMismatch {
+        pair,
         fields,
-    })
+    }))
+}
+
+fn signature_for_observations(
+    input: &DwordStoreCorpusInput,
+    expected: &Observation,
+    interpreter: &Observation,
+    jit: &Observation,
+) -> Result<MismatchSignature, &'static str> {
+    let mut pairs = Vec::new();
+    for (pair, left, right) in [
+        (
+            BackendPair::ExpectedInterpreter,
+            expected,
+            interpreter,
+        ),
+        (BackendPair::ExpectedJit, expected, jit),
+        (BackendPair::InterpreterJit, interpreter, jit),
+    ] {
+        if let Some(difference) = difference_for_pair(input, pair, left, right)? {
+            pairs.push(difference);
+        }
+    }
+    if pairs.is_empty() {
+        return Err("no-supported-value-mismatch");
+    }
+    Ok(MismatchSignature { pairs })
 }
 
 fn stable_mismatch_signature(
@@ -761,8 +795,19 @@ fn stable_mismatch_signature(
     if runs.mismatch_first.is_none() || runs.mismatch_first != runs.mismatch_second {
         return Err("unstable-or-absent-comparator-mismatch");
     }
-    let first = signature_for_backend_pair(input, &runs.interpreter_first, &runs.jit_first)?;
-    let second = signature_for_backend_pair(input, &runs.interpreter_second, &runs.jit_second)?;
+    let expected = expected(input);
+    let first = signature_for_observations(
+        input,
+        &expected,
+        &runs.interpreter_first,
+        &runs.jit_first,
+    )?;
+    let second = signature_for_observations(
+        input,
+        &expected,
+        &runs.interpreter_second,
+        &runs.jit_second,
+    )?;
     if first != second {
         return Err("unstable-mismatch-signature");
     }
@@ -1368,8 +1413,16 @@ fn s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature() {
     assert_eq!(
         original_signature,
         MismatchSignature {
-            pair: BackendPair::InterpreterJit,
-            fields: vec![MismatchField::Gpr(1)],
+            pairs: vec![
+                PairMismatch {
+                    pair: BackendPair::ExpectedInterpreter,
+                    fields: vec![MismatchField::Gpr(1)],
+                },
+                PairMismatch {
+                    pair: BackendPair::InterpreterJit,
+                    fields: vec![MismatchField::Gpr(1)],
+                },
+            ],
         }
     );
 
@@ -1440,24 +1493,97 @@ fn s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature() {
         synthetic_ram_interpreter.ram[&first_store_address] ^ 1,
     );
     synthetic_ram_interpreter.callbacks[0].bytes[0] ^= 1;
-    let ram_signature = signature_for_backend_pair(
+    let ram_signature = signature_for_observations(
         &input,
+        &baseline,
         &synthetic_ram_interpreter,
         &baseline,
     )
     .expect("synthetic RAM byte mismatch has a mapped signature");
     assert_eq!(
-        ram_signature.fields,
-        vec![MismatchField::Ram(4)],
+        ram_signature.pairs,
+        vec![
+            PairMismatch {
+                pair: BackendPair::ExpectedInterpreter,
+                fields: vec![MismatchField::Ram(4)],
+            },
+            PairMismatch {
+                pair: BackendPair::InterpreterJit,
+                fields: vec![MismatchField::Ram(4)],
+            },
+        ],
         "address-zero store maps to the retained RAM slice, not discarded underflow bytes"
     );
 
     let mut synthetic_multi_class = synthetic_ram_interpreter.clone();
     synthetic_multi_class.state.gpr[1] ^= 1;
     assert_eq!(
-        signature_for_backend_pair(&input, &synthetic_multi_class, &baseline),
+        signature_for_observations(&input, &baseline, &synthetic_multi_class, &baseline),
         Err("multi-class-gpr-and-ram-mismatch")
     );
+
+    let mut shared_interpreter = baseline.clone();
+    shared_interpreter.state.gpr[0] ^= 1;
+    let mut shared_jit = baseline.clone();
+    shared_jit.state.gpr[0] ^= 1;
+    shared_jit.state.gpr[1] ^= 1;
+    let shared_runs = synthetic_replay_runs(&input, &shared_interpreter, &shared_jit);
+    let shared_signature = stable_mismatch_signature(&input, &shared_runs)
+        .expect("synthetic shared and pairwise GPR mismatch is supported");
+    assert_eq!(
+        shared_signature.pairs,
+        vec![
+            PairMismatch {
+                pair: BackendPair::ExpectedInterpreter,
+                fields: vec![MismatchField::Gpr(0)],
+            },
+            PairMismatch {
+                pair: BackendPair::ExpectedJit,
+                fields: vec![MismatchField::Gpr(0), MismatchField::Gpr(1)],
+            },
+            PairMismatch {
+                pair: BackendPair::InterpreterJit,
+                fields: vec![MismatchField::Gpr(1)],
+            },
+        ]
+    );
+    let mut common_mismatch_removed_jit = baseline.clone();
+    common_mismatch_removed_jit.state.gpr[1] ^= 1;
+    let removed_common_runs = synthetic_replay_runs(
+        &input,
+        &baseline,
+        &common_mismatch_removed_jit,
+    );
+    let removed_common_signature =
+        stable_mismatch_signature(&input, &removed_common_runs).unwrap();
+    assert_ne!(removed_common_signature, shared_signature);
+    assert_eq!(
+        removed_common_signature.pairs,
+        vec![
+            PairMismatch {
+                pair: BackendPair::ExpectedJit,
+                fields: vec![MismatchField::Gpr(1)],
+            },
+            PairMismatch {
+                pair: BackendPair::InterpreterJit,
+                fields: vec![MismatchField::Gpr(1)],
+            },
+        ],
+        "the pairwise GPR mismatch remains after the common expected/interpreter field disappears"
+    );
+    let removed_common_artifact = ReplayArtifact {
+        seed: S3_34DM_SEEDS[0],
+        index: 0,
+        input: input.clone(),
+        interpreter_observation: format!("{baseline:#?}"),
+        jit_observation: format!("{common_mismatch_removed_jit:#?}"),
+        mismatch: removed_common_runs.mismatch_first.clone().unwrap(),
+    };
+    assert!(!candidate_passes_ordinary_replay(
+        &removed_common_artifact,
+        &removed_common_runs,
+        &shared_signature,
+    ));
 
     let mut unstable_runs = original_runs;
     unstable_runs.interpreter_second.state.gpr[1] ^= 2;
