@@ -6096,6 +6096,29 @@ mod tests {
                 .matches_source_bytes(&source, MemorySiteOperationV2::Load));
         }
 
+        let addr32_sib_source = [0x67, 0x8b, 0x04, 0x0b];
+        let addr32_sib = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &addr32_sib_source).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert_eq!(
+            addr32_sib.site().operand().base,
+            AddressBase::Register(Register::Rbx)
+        );
+        assert_eq!(addr32_sib.site().operand().index, Some(Register::Rcx));
+        assert_eq!(addr32_sib.site().operand().scale, 1);
+        assert_eq!(addr32_sib.site().operand().displacement, 0);
+        assert_eq!(
+            addr32_sib.site().operand().address_size,
+            od_isa::OperandSize::Dword
+        );
+        assert_ne!(addr32_sib.site(), &site);
+        assert!(!site.matches_source_bytes(&addr32_sib_source, MemorySiteOperationV2::Load));
+        assert!(!addr32_sib
+            .site()
+            .matches_source_bytes(&source, MemorySiteOperationV2::Load));
+
         for neighbor in [
             &[0x67, 0x8b, 0x41, 0x00][..],
             &[0x67, 0x8b, 0x81, 0, 0, 0, 0][..],
@@ -6104,7 +6127,6 @@ mod tests {
             &[0x66, 0x67, 0x8b, 0x01][..],
             &[0x2e, 0x67, 0x8b, 0x01][..],
             &[0xf0, 0x67, 0x8b, 0x01][..],
-            &[0x67, 0x8b, 0x04, 0x0b][..],
             &[0x67, 0x8b, 0x04, 0x09][..],
             &[0x67, 0x8b, 0x09][..],
         ] {
