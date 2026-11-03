@@ -776,8 +776,12 @@ independent static Sol/high review. Rust reducer identity:
 `s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature`;
 harness gate: `s3_34do_value_only_reducer_self_check`; fail-closed harness
 self-test: `test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`.
-Totals are pinned at 305 gates (295 acceptance + 10 lifecycle), 323 steps, and
-138 self-test names. None have been executed; no real artifact was reduced.
+At the S3-34do integration revision, totals were pinned at 305 gates (295
+acceptance + 10 lifecycle), 323 steps, and 138 self-test names. The current
+manifest after S3-34dr has 324 gates (306 acceptance + 18 lifecycle), 342
+steps, 149 self-test names, and 18 source pins. The exact Rust synthetic
+self-check passed 1/1 and the pinned Python self-test exited 0; this did not
+run the full manifest. No real artifact was reduced.
 
 The reducer requires the original artifact to reproduce twice and stops with
 `not_reproduced` without output otherwise. It makes deterministic value-only
@@ -787,11 +791,13 @@ flags/provenance/layout and the checked single width-four callback protocol,
 then writes a reduced artifact create-only after acceptance. Critical fence:
 `classify_replay` validates only the original artifact against its full saved
 observations; candidate validation uses a separate candidate-specific ordinary
-replay validator. The reducer self-check uses synthetic data only and was not
-executed. No real-artifact or runtime success claim follows. No generic
-framework, runtime API, dependency, or opcode is added. S3-34.2 execution
-acceptance remains pending; ISSUE-028/029 remain open pending execution
-acceptance. Stage 3 remains partial. See the
+replay validator. The reducer self-check uses synthetic data only; it does not
+establish JIT parity or real-artifact replay. No real-artifact or runtime
+success claim follows. No generic framework, runtime API, dependency, or
+opcode is added. S3-34.2 execution acceptance remains pending. ISSUE-028 is
+resolved for the separate S3-20eg retry-assertion host gate; ISSUE-029 is
+resolved for the S3-34dn artifact-protection self-check only. Stage 3 remains
+partial. See the
 [S3-34do report](STAGE_3_S3-34do_2026-11-03.md).
 
 ## Current-revision acceptance status — `f1670fc`
@@ -827,9 +833,28 @@ the existing exact gates documented in the [JIT testing reference](../testing/JI
   fail-closed registry self-test is
   `test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`.
 
-ISSUE-028 and ISSUE-029 remain **OPEN** until their respective exact acceptance
-gates pass. Use the existing local harness invocation recorded above; this
-update adds no runner, gate, or manifest.
+At snapshot revision `f1670fc`, ISSUE-028 and ISSUE-029 were **OPEN** pending
+their exact acceptance gates. ISSUE-028 was subsequently resolved by the
+separate S3-20eg retry-assertion host gate; ISSUE-029 was resolved by the
+synthetic S3-34dn artifact-protection self-check. The historical gate
+inventory is unchanged.
+
+### Subsequent S3-34do synthetic self-check evidence — 2026-11-03
+
+The exact reducer self-check
+`s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature`
+passed 1/1, and pinned Python self-test
+`test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`
+exited 0. These gates use synthetic data only; no real S3-34dn artifact was
+replayed or reduced, and no JIT/interpreter parity or S3-34.2 runtime
+acceptance is established. ISSUE-028 is resolved for the separate S3-20eg
+retry-assertion host gate; ISSUE-029 is resolved for the S3-34dn artifact
+protection self-check only. The current manifest is 324 gates (306
+acceptance + 18 lifecycle), 342 steps, 149 self-test names, and 18 source
+pins; this exact run did not execute the full manifest. Mini was unavailable,
+M1 remains deferred, and physical-x86, production owner/MMU, performance, and
+broader Stage 3 acceptance remain open. Stage 3 remains partial; see the
+[S3-34do report](STAGE_3_S3-34do_2026-11-03.md).
 
 ### Layout acceptance
 

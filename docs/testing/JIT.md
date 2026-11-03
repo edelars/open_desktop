@@ -2768,9 +2768,10 @@ lifecycle), 342 local steps, and 149 self-test names. Static review passed.
 The exact Rust self-check and pinned Python self-test passed; both use
 synthetic observations and do not prove JIT/native parity or replay a real
 artifact. S3-34.2 artifact/replay/reducer implementation is present; full
-execution acceptance remains pending. ISSUE-028 stays open pending S3-20eg
-execution acceptance; ISSUE-029 is resolved for the artifact-protection
-self-check only. The Rust checks above are synthetic and do not count as a JIT
+execution acceptance remains pending. ISSUE-028 is resolved for the separate
+S3-20eg retry-assertion host gate; ISSUE-029 is resolved for this S3-34dn
+artifact-protection self-check only. Neither closure establishes general
+runtime acceptance. The Rust checks above are synthetic and do not count as a JIT
 runtime behavior gate. No saved-artifact replay, build, formatting, Mini test,
 or M1 acceptance is claimed. The Mini SSH attempt timed out before any remote
 command ran. See the
@@ -2778,10 +2779,10 @@ command ran. See the
 
 ## S3-34do: bounded value-only reducer for one S3-34dn artifact
 
-**Status:** reducer implementation and independent static Sol/high review
-passed; real-artifact execution and self-check execution are deferred. Runtime
+**Status:** reducer implementation, independent static Sol/high review, and
+synthetic self-check passed; real-artifact execution is deferred. Runtime
 commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated. No
-real artifact was reduced and no acceptance gate was executed.
+real artifact was reduced.
 
 The reducer consumes exactly one validated S3-34dn artifact for
 `67 89 04 24`. First replay the original saved input twice through the
@@ -2822,10 +2823,24 @@ self-check `s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_sign
 Harness gate `s3_34do_value_only_reducer_self_check`; fail-closed harness
 self-test `test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`.
 At the S3-34do integration revision, totals were pinned at 305 gates (295
-acceptance + 10 lifecycle), 323 steps, and 138 self-test names. Static review
-passed; these reducer gates remain unexecuted. No real S3-34dn artifact was reduced. ISSUE-028 remains open
-pending S3-20eg acceptance; ISSUE-029 is resolved for the S3-34dn
-artifact-protection self-check. S3-34.2 execution acceptance remains pending. No generic
-reducer framework, runtime API, dependency, or opcode is added. Stage 3 remains
-partial.
-See the [S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md).
+acceptance + 10 lifecycle), 323 steps, and 138 self-test names. The current
+manifest after S3-34dr contains 324 gates (306 acceptance + 18 lifecycle),
+342 steps, 149 self-test names, and 18 source pins; the exact checks below did
+not run the full manifest. Exact synthetic self-check evidence:
+
+```sh
+cargo test -p od-host --test stage3_dword_store_corpus s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature --offline -- --exact --test-threads=1
+PYTHONPATH=tests/cpu python3 -m unittest -v test_stage3_harness.Stage3HarnessValidationTests.test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed
+```
+
+The Rust gate passed 1/1 and the Python self-test exited 0. These checks
+exercise only the labeled synthetic self-check and fail-closed harness pin.
+No real S3-34dn artifact was replayed or reduced, and no JIT/interpreter
+parity or S3-34.2 runtime acceptance is established. ISSUE-028 is resolved
+for the separate S3-20eg retry-assertion host gate; ISSUE-029 is resolved for
+the S3-34dn artifact-protection self-check only. Neither closure establishes
+general runtime acceptance. Mini remains unavailable, M1
+is deferred, and physical-x86, production owner/MMU, performance, and broader
+Stage 3 acceptance remain open. No generic reducer framework, runtime API,
+dependency, or opcode is added. Stage 3 remains partial. See the
+[S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md).
