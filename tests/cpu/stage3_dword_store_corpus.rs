@@ -22,8 +22,10 @@ const SOURCE: [u8; 4] = [0x67, 0x89, 0x04, 0x24];
 const REPLAY_VERSION: u32 = 1;
 const REPLAY_PROFILE: &str = "S3-34dm-addr32-rsp-dword-store-v1";
 const REPLAY_ENV: &str = "OD_S3_34DN_REPLAY_ARTIFACT";
+const REDUCE_ENV: &str = "OD_S3_34DO_REDUCE_ARTIFACT";
 const REPLAY_RAM_LAYOUT: &str = "offsets:-4..=7;omit-address-underflow";
 const DEFINED_FLAGS_MASK: u64 = 0x8d5;
+const MAX_REDUCER_CANDIDATES: usize = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WriteCallback {
@@ -189,6 +191,56 @@ impl Drop for TemporaryArtifactDirectory {
 enum ReplayOutcome {
     NotReproduced,
     Reproduced,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReplayRuns {
+    interpreter_first: Observation,
+    interpreter_second: Observation,
+    jit_first: Observation,
+    jit_second: Observation,
+    mismatch_first: Option<String>,
+    mismatch_second: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MismatchField {
+    Gpr(usize),
+    Ram(usize),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackendPair {
+    InterpreterJit,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MismatchSignature {
+    pair: BackendPair,
+    fields: Vec<MismatchField>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ValueMutation {
+    ZeroGpr(usize),
+    ClearGprBit { index: usize, bit: u32 },
+    ZeroRam(usize),
+    ClearRamBit { index: usize, bit: u8 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ValueCandidate {
+    mutation: ValueMutation,
+    input: DwordStoreCorpusInput,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReductionReport {
+    outcome: &'static str,
+    attempts: usize,
+    observations: usize,
+    stop_reason: String,
+    reduced_artifact: Option<PathBuf>,
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -401,6 +453,20 @@ fn save_mismatch_artifact(artifact: &ReplayArtifact) -> std::io::Result<PathBuf>
     Ok(path)
 }
 
+fn save_reduced_artifact(artifact: &ReplayArtifact) -> std::io::Result<PathBuf> {
+    let run_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let run_dir = Path::new("work/stage-3/s3-34do")
+        .join(format!("run-{}-{run_id}", std::process::id()));
+    fs::create_dir_all(run_dir.parent().expect("run directory has a parent"))?;
+    fs::create_dir(&run_dir)?;
+    let path = run_dir.join("reduced.s3-34do");
+    write_mismatch_artifact(&path, artifact)?;
+    Ok(path)
+}
+
 fn initial_state(input: &DwordStoreCorpusInput) -> LongModeState {
     LongModeState {
         gpr: input.gpr,
@@ -547,31 +613,474 @@ fn classify_replay(
     }
 }
 
-fn replay_saved_artifact(path: &Path) -> Result<ReplayOutcome, String> {
-    let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    // Parsing validates the complete profile, input domain, and RAM layout/digest
-    // before compiling or publishing executable code.
-    let artifact = parse_replay_artifact(&contents).map_err(str::to_owned)?;
+fn run_replay_observations(input: &DwordStoreCorpusInput) -> Result<ReplayRuns, String> {
+    let expected = expected(input);
     let source_view = CodeView::new(ENTRY_RIP, &SOURCE)
         .map_err(|error| format!("invalid source view: {error:?}"))?;
     let compiled = compile_ir_memory_dword_store_block_v2(source_view, ENTRY_RIP)
     .map_err(|error| format!("compile failed: {error:?}"))?;
     let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled)
         .map_err(|error| format!("publication failed: {error:?}"))?;
-    let expected = expected(&artifact.input);
-    let interpreter_first = run_interpreter(&artifact.input);
-    let jit_first = run_jit(&published, &artifact.input);
-    let interpreter_second = run_interpreter(&artifact.input);
-    let jit_second = run_jit(&published, &artifact.input);
-    let mismatch = comparator_mismatch(&expected, &interpreter_first, &jit_first);
-    Ok(classify_replay(
-        &artifact,
-        &interpreter_first,
-        &interpreter_second,
-        &jit_first,
-        &jit_second,
-        mismatch.as_deref(),
-    ))
+    let interpreter_first = run_interpreter(input);
+    let jit_first = run_jit(&published, input);
+    let interpreter_second = run_interpreter(input);
+    let jit_second = run_jit(&published, input);
+    let mismatch_first = comparator_mismatch(&expected, &interpreter_first, &jit_first);
+    let mismatch_second = comparator_mismatch(&expected, &interpreter_second, &jit_second);
+    Ok(ReplayRuns {
+        interpreter_first,
+        interpreter_second,
+        jit_first,
+        jit_second,
+        mismatch_first,
+        mismatch_second,
+    })
+}
+
+fn replay_outcome(artifact: &ReplayArtifact, runs: &ReplayRuns) -> ReplayOutcome {
+    classify_replay(
+        artifact,
+        &runs.interpreter_first,
+        &runs.interpreter_second,
+        &runs.jit_first,
+        &runs.jit_second,
+        runs.mismatch_first.as_deref(),
+    )
+}
+
+fn replay_saved_artifact(path: &Path) -> Result<ReplayOutcome, String> {
+    let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    // Parsing validates the complete profile, input domain, and RAM layout/digest
+    // before compiling or publishing executable code.
+    let artifact = parse_replay_artifact(&contents).map_err(str::to_owned)?;
+    let runs = run_replay_observations(&artifact.input)?;
+    Ok(replay_outcome(&artifact, &runs))
+}
+
+fn mapped_ram_indices(input: &DwordStoreCorpusInput) -> Vec<usize> {
+    (-4_i64..=7)
+        .filter_map(|offset| {
+            u64::from(input.address)
+                .checked_add_signed(offset)
+                .map(|_| (offset + 4) as usize)
+        })
+        .collect()
+}
+
+fn ram_index_for_address(input: &DwordStoreCorpusInput, address: u64) -> Option<usize> {
+    (-4_i64..=7).find_map(|offset| {
+        u64::from(input.address)
+            .checked_add_signed(offset)
+            .filter(|mapped| *mapped == address)
+            .map(|_| (offset + 4) as usize)
+    })
+}
+
+fn validate_observation_protocol(
+    input: &DwordStoreCorpusInput,
+    observation: &Observation,
+) -> Result<(), &'static str> {
+    if observation.exit != "Complete" || observation.retired_instructions != 1 {
+        return Err("backend-error-or-nonterminal-exit");
+    }
+    if observation.callbacks.len() != 1
+        || observation.callbacks[0].address != u64::from(input.address)
+        || observation.callbacks[0].bytes.len() != 4
+    {
+        return Err("unsupported-callback-protocol");
+    }
+    if observation.ram.keys().copied().collect::<Vec<_>>()
+        != ram_layout(input).keys().copied().collect::<Vec<_>>()
+    {
+        return Err("unsupported-ram-layout");
+    }
+    for (offset, byte) in observation.callbacks[0].bytes.iter().copied().enumerate() {
+        let address = u64::from(input.address) + offset as u64;
+        if observation.ram.get(&address) != Some(&byte) {
+            return Err("callback-does-not-match-guest-ram");
+        }
+    }
+    Ok(())
+}
+
+fn signature_for_backend_pair(
+    input: &DwordStoreCorpusInput,
+    interpreter: &Observation,
+    jit: &Observation,
+) -> Result<MismatchSignature, &'static str> {
+    validate_observation_protocol(input, interpreter)?;
+    validate_observation_protocol(input, jit)?;
+    if interpreter.state.gpr[4] != input.gpr[4] || jit.state.gpr[4] != input.gpr[4] {
+        return Err("unsupported-address-register-mismatch");
+    }
+    let mut interpreter_aux = interpreter.state.clone();
+    let mut jit_aux = jit.state.clone();
+    interpreter_aux.gpr = [0; 16];
+    jit_aux.gpr = [0; 16];
+    if interpreter_aux != jit_aux {
+        return Err("unsupported-non-gpr-cpu-mismatch");
+    }
+
+    let gpr_differences = (0..16)
+        .filter(|index| *index != 4 && interpreter.state.gpr[*index] != jit.state.gpr[*index])
+        .map(MismatchField::Gpr)
+        .collect::<Vec<_>>();
+    let mut ram_differences = Vec::new();
+    for (address, interpreter_byte) in &interpreter.ram {
+        let jit_byte = jit.ram.get(address).ok_or("unsupported-ram-layout")?;
+        if interpreter_byte != jit_byte {
+            ram_differences.push(MismatchField::Ram(
+                ram_index_for_address(input, *address).ok_or("unsupported-ram-address")?,
+            ));
+        }
+    }
+    if !gpr_differences.is_empty() && !ram_differences.is_empty() {
+        return Err("multi-class-gpr-and-ram-mismatch");
+    }
+    let fields = if !gpr_differences.is_empty() {
+        gpr_differences
+    } else {
+        ram_differences
+    };
+    if fields.is_empty() {
+        return Err("no-interpreter-jit-value-mismatch");
+    }
+    Ok(MismatchSignature {
+        pair: BackendPair::InterpreterJit,
+        fields,
+    })
+}
+
+fn stable_mismatch_signature(
+    input: &DwordStoreCorpusInput,
+    runs: &ReplayRuns,
+) -> Result<MismatchSignature, &'static str> {
+    if runs.interpreter_first != runs.interpreter_second || runs.jit_first != runs.jit_second {
+        return Err("unstable-backend-observations");
+    }
+    if runs.mismatch_first.is_none() || runs.mismatch_first != runs.mismatch_second {
+        return Err("unstable-or-absent-comparator-mismatch");
+    }
+    let first = signature_for_backend_pair(input, &runs.interpreter_first, &runs.jit_first)?;
+    let second = signature_for_backend_pair(input, &runs.interpreter_second, &runs.jit_second)?;
+    if first != second {
+        return Err("unstable-mismatch-signature");
+    }
+    Ok(first)
+}
+
+fn candidate_passes_ordinary_replay(
+    artifact: &ReplayArtifact,
+    runs: &ReplayRuns,
+    required_signature: &MismatchSignature,
+) -> bool {
+    runs.interpreter_first == runs.interpreter_second
+        && runs.jit_first == runs.jit_second
+        && runs.mismatch_first.as_deref() == Some(artifact.mismatch.as_str())
+        && runs.mismatch_first == runs.mismatch_second
+        && format!("{:#?}", runs.interpreter_first) == artifact.interpreter_observation
+        && format!("{:#?}", runs.jit_first) == artifact.jit_observation
+        && matches!(
+            stable_mismatch_signature(&artifact.input, runs),
+            Ok(signature) if &signature == required_signature
+        )
+}
+
+fn mutable_value_popcount(input: &DwordStoreCorpusInput) -> u32 {
+    let register_bits = input
+        .gpr
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != 4)
+        .map(|(_, value)| value.count_ones())
+        .sum::<u32>();
+    register_bits
+        + mapped_ram_indices(input)
+            .into_iter()
+            .map(|index| u32::from(input.ram[index].count_ones()))
+            .sum::<u32>()
+}
+
+fn value_only_mutation_preserves_profile(
+    before: &DwordStoreCorpusInput,
+    after: &DwordStoreCorpusInput,
+) -> bool {
+    before.address == after.address
+        && before.gpr[4] == after.gpr[4]
+        && before.flags == after.flags
+        && (0..before.ram.len()).all(|index| {
+            mapped_ram_indices(before).contains(&index) || before.ram[index] == after.ram[index]
+        })
+}
+
+fn push_value_candidate(
+    candidates: &mut Vec<ValueCandidate>,
+    input: &DwordStoreCorpusInput,
+    mutation: ValueMutation,
+    limit: usize,
+) {
+    if candidates.len() >= limit {
+        return;
+    }
+    let mut candidate = input.clone();
+    match mutation {
+        ValueMutation::ZeroGpr(index) => candidate.gpr[index] = 0,
+        ValueMutation::ClearGprBit { index, bit } => candidate.gpr[index] &= !(1_u64 << bit),
+        ValueMutation::ZeroRam(index) => candidate.ram[index] = 0,
+        ValueMutation::ClearRamBit { index, bit } => candidate.ram[index] &= !(1_u8 << bit),
+    }
+    if candidate != *input && mutable_value_popcount(&candidate) < mutable_value_popcount(input) {
+        candidates.push(ValueCandidate {
+            mutation,
+            input: candidate,
+        });
+    }
+}
+
+fn value_candidates(input: &DwordStoreCorpusInput, limit: usize) -> Vec<ValueCandidate> {
+    let mut candidates = Vec::new();
+    for index in 0..16 {
+        if index != 4 && input.gpr[index] != 0 {
+            push_value_candidate(
+                &mut candidates,
+                input,
+                ValueMutation::ZeroGpr(index),
+                limit,
+            );
+        }
+        if candidates.len() >= limit {
+            return candidates;
+        }
+    }
+    let mapped_ram = mapped_ram_indices(input);
+    for index in &mapped_ram {
+        if input.ram[*index] != 0 {
+            push_value_candidate(
+                &mut candidates,
+                input,
+                ValueMutation::ZeroRam(*index),
+                limit,
+            );
+        }
+        if candidates.len() >= limit {
+            return candidates;
+        }
+    }
+    for index in 0..16 {
+        if index == 4 {
+            continue;
+        }
+        for bit in 0..64 {
+            if input.gpr[index] & (1_u64 << bit) != 0 {
+                push_value_candidate(
+                    &mut candidates,
+                    input,
+                    ValueMutation::ClearGprBit { index, bit },
+                    limit,
+                );
+            }
+            if candidates.len() >= limit {
+                return candidates;
+            }
+        }
+    }
+    for index in mapped_ram {
+        for bit in 0..8 {
+            if input.ram[index] & (1_u8 << bit) != 0 {
+                push_value_candidate(
+                    &mut candidates,
+                    input,
+                    ValueMutation::ClearRamBit { index, bit },
+                    limit,
+                );
+            }
+            if candidates.len() >= limit {
+                return candidates;
+            }
+        }
+    }
+    candidates
+}
+
+fn reduce_saved_artifact(path: &Path) -> Result<ReductionReport, String> {
+    let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    // The strict single-profile parser runs before any publication or execution.
+    let original = parse_replay_artifact(&contents).map_err(str::to_owned)?;
+    let original_runs = match run_replay_observations(&original.input) {
+        Ok(runs) => runs,
+        Err(_) => {
+            return Ok(ReductionReport {
+                outcome: "rejected",
+                attempts: 0,
+                observations: 0,
+                stop_reason: "original_backend_error".into(),
+                reduced_artifact: None,
+            });
+        }
+    };
+    let mut observations = 4;
+    if replay_outcome(&original, &original_runs) != ReplayOutcome::Reproduced {
+        return Ok(ReductionReport {
+            outcome: "not_reproduced",
+            attempts: 0,
+            observations,
+            stop_reason: "original_mismatch_not_reproduced_twice".into(),
+            reduced_artifact: None,
+        });
+    }
+    let original_signature = match stable_mismatch_signature(&original.input, &original_runs) {
+        Ok(signature) => signature,
+        Err(reason) => {
+            return Ok(ReductionReport {
+                outcome: "rejected",
+                attempts: 0,
+                observations,
+                stop_reason: reason.into(),
+                reduced_artifact: None,
+            });
+        }
+    };
+    let original_popcount = mutable_value_popcount(&original.input);
+    let mut best_artifact = original.clone();
+    let mut best_runs = original_runs;
+    let mut best_popcount = original_popcount;
+    let mut attempts = 0;
+    let mut stop_reason = String::from("no_signature_preserving_candidate");
+
+    'reduce: loop {
+        if attempts >= MAX_REDUCER_CANDIDATES {
+            stop_reason = "candidate_cap_reached".into();
+            break;
+        }
+        let candidates = value_candidates(
+            &best_artifact.input,
+            MAX_REDUCER_CANDIDATES - attempts,
+        );
+        if candidates.is_empty() {
+            stop_reason = "no_lower_popcount_candidate".into();
+            break;
+        }
+        let mut accepted = false;
+        for candidate in candidates {
+            if attempts >= MAX_REDUCER_CANDIDATES {
+                stop_reason = "candidate_cap_reached".into();
+                break 'reduce;
+            }
+            attempts += 1;
+            if !value_only_mutation_preserves_profile(&best_artifact.input, &candidate.input)
+                || mutable_value_popcount(&candidate.input) >= best_popcount
+            {
+                stop_reason = "candidate_changed_fixed_profile_or_did_not_reduce_values".into();
+                break 'reduce;
+            }
+            let candidate_runs = match run_replay_observations(&candidate.input) {
+                Ok(runs) => runs,
+                Err(_) => {
+                    stop_reason = "candidate_backend_error".into();
+                    break 'reduce;
+                }
+            };
+            observations += 4;
+            if candidate_runs.mismatch_first.as_deref() != Some(original.mismatch.as_str())
+                || !matches!(
+                    stable_mismatch_signature(&candidate.input, &candidate_runs),
+                    Ok(signature) if &signature == &original_signature
+                )
+            {
+                continue;
+            }
+            let candidate_mismatch = candidate_runs
+                .mismatch_first
+                .clone()
+                .expect("stable mismatch signature requires a mismatch");
+            let candidate_artifact = ReplayArtifact {
+                seed: original.seed,
+                index: original.index,
+                input: candidate.input,
+                interpreter_observation: format!("{:#?}", candidate_runs.interpreter_first),
+                jit_observation: format!("{:#?}", candidate_runs.jit_first),
+                mismatch: candidate_mismatch,
+            };
+            // Re-run through the ordinary artifact replay contract before this
+            // candidate can become the next best input or be persisted.
+            let verification_runs = match run_replay_observations(&candidate_artifact.input) {
+                Ok(runs) => runs,
+                Err(_) => {
+                    stop_reason = "candidate_verification_backend_error".into();
+                    break 'reduce;
+                }
+            };
+            observations += 4;
+            if !candidate_passes_ordinary_replay(
+                &candidate_artifact,
+                &verification_runs,
+                &original_signature,
+            ) {
+                continue;
+            }
+            best_popcount = mutable_value_popcount(&candidate_artifact.input);
+            best_artifact = candidate_artifact;
+            best_runs = verification_runs;
+            accepted = true;
+            break;
+        }
+        if accepted {
+            continue;
+        }
+        if attempts >= MAX_REDUCER_CANDIDATES {
+            stop_reason = "candidate_cap_reached".into();
+        }
+        break;
+    }
+
+    let reduced_artifact = if best_popcount < original_popcount {
+        // Keep this final guard adjacent to publication: persistence is allowed
+        // only after the ordinary repeat-and-observation replay just passed.
+        if !candidate_passes_ordinary_replay(
+            &best_artifact,
+            &best_runs,
+            &original_signature,
+        ) {
+            return Ok(ReductionReport {
+                outcome: "rejected",
+                attempts,
+                observations,
+                stop_reason: "final_candidate_failed_ordinary_replay".into(),
+                reduced_artifact: None,
+            });
+        }
+        Some(save_reduced_artifact(&best_artifact).map_err(|error| error.to_string())?)
+    } else {
+        None
+    };
+    Ok(ReductionReport {
+        outcome: if reduced_artifact.is_some() {
+            "reduced"
+        } else {
+            "reproduced_no_reduction"
+        },
+        attempts,
+        observations,
+        stop_reason,
+        reduced_artifact,
+    })
+}
+
+fn synthetic_replay_runs(
+    input: &DwordStoreCorpusInput,
+    interpreter: &Observation,
+    jit: &Observation,
+) -> ReplayRuns {
+    let expected = expected(input);
+    let mismatch = comparator_mismatch(&expected, interpreter, jit);
+    ReplayRuns {
+        interpreter_first: interpreter.clone(),
+        interpreter_second: interpreter.clone(),
+        jit_first: jit.clone(),
+        jit_second: jit.clone(),
+        mismatch_first: mismatch.clone(),
+        mismatch_second: mismatch,
+    }
 }
 
 fn assert_comparator_rejects_corruption(baseline: &Observation) {
@@ -807,4 +1316,153 @@ fn replay_saved_s3_34dn_mismatch_artifact() {
         }
         Err(error) => panic!("invalid S3-34dn replay artifact: {error}"),
     }
+}
+
+#[test]
+fn reduce_saved_s3_34do_value_only_artifact() {
+    let Some(path) = std::env::var_os(REDUCE_ENV).map(PathBuf::from) else {
+        eprintln!(
+            "S3-34do reducer: outcome=not_reproduced attempts=0 observations=0 stop_reason=no_artifact"
+        );
+        return;
+    };
+    if !path.is_file() {
+        eprintln!(
+            "S3-34do reducer: outcome=not_reproduced attempts=0 observations=0 stop_reason=artifact_absent"
+        );
+        return;
+    }
+    match reduce_saved_artifact(&path) {
+        Ok(report) => eprintln!(
+            "S3-34do reducer: outcome={} attempts={} observations={} stop_reason={} reduced_artifact={}",
+            report.outcome,
+            report.attempts,
+            report.observations,
+            report.stop_reason,
+            report
+                .reduced_artifact
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "none".into()),
+        ),
+        Err(error) => panic!("invalid S3-34do reducer input: {error}"),
+    }
+}
+
+#[test]
+fn s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature() {
+    // All observations below are synthetic values. This self-check does not run
+    // either backend or invoke the artifact reducer on a real mismatch.
+    let mut input = generate_s3_34dm_dword_store_input(S3_34DM_SEEDS[0], 0);
+    input.gpr = [0; 16];
+    input.gpr[4] = (0x1234_5678_u64 << 32) | u64::from(input.address);
+    input.gpr[0] = 0x0f;
+    input.ram = [0xff, 0xaa, 0xbb, 0xcc, 0x03, 0, 0, 0, 0, 0, 0, 0];
+    let baseline = expected(&input);
+    let mut synthetic_interpreter = baseline.clone();
+    synthetic_interpreter.state.gpr[1] ^= 1;
+    let synthetic_jit = baseline.clone();
+    let original_runs = synthetic_replay_runs(&input, &synthetic_interpreter, &synthetic_jit);
+    let original_signature = stable_mismatch_signature(&input, &original_runs)
+        .expect("synthetic one-GPR mismatch is supported");
+    assert_eq!(
+        original_signature,
+        MismatchSignature {
+            pair: BackendPair::InterpreterJit,
+            fields: vec![MismatchField::Gpr(1)],
+        }
+    );
+
+    let candidates = value_candidates(&input, MAX_REDUCER_CANDIDATES);
+    assert!(candidates.len() <= MAX_REDUCER_CANDIDATES);
+    assert_eq!(candidates, value_candidates(&input, MAX_REDUCER_CANDIDATES));
+    assert_eq!(candidates[0].mutation, ValueMutation::ZeroGpr(0));
+    assert!(candidates
+        .iter()
+        .any(|candidate| matches!(candidate.mutation, ValueMutation::ZeroRam(index) if index == 4)));
+    assert!(candidates
+        .iter()
+        .any(|candidate| matches!(candidate.mutation, ValueMutation::ClearGprBit { index: 0, .. })));
+    assert!(candidates
+        .iter()
+        .any(|candidate| matches!(candidate.mutation, ValueMutation::ClearRamBit { index: 4, .. })));
+    for candidate in &candidates {
+        assert!(value_only_mutation_preserves_profile(&input, &candidate.input));
+        assert_eq!(candidate.input.address, input.address);
+        assert_eq!(candidate.input.gpr[4], input.gpr[4]);
+        assert_eq!(candidate.input.flags, input.flags);
+        assert_eq!(&candidate.input.ram[..4], &input.ram[..4]);
+        assert!(mutable_value_popcount(&candidate.input) < mutable_value_popcount(&input));
+        match candidate.mutation {
+            ValueMutation::ZeroGpr(index) | ValueMutation::ClearGprBit { index, .. } => {
+                assert_ne!(index, 4, "RSP is immutable in the reducer");
+            }
+            ValueMutation::ZeroRam(index) | ValueMutation::ClearRamBit { index, .. } => {
+                assert!(mapped_ram_indices(&input).contains(&index));
+                assert!(index >= 4, "address-zero underflow bytes are unmapped");
+            }
+        }
+    }
+
+    let first = &candidates[0];
+    let candidate_expected = expected(&first.input);
+    let mut candidate_interpreter = candidate_expected.clone();
+    candidate_interpreter.state.gpr[1] ^= 1;
+    let candidate_jit = candidate_expected.clone();
+    let candidate_runs = synthetic_replay_runs(
+        &first.input,
+        &candidate_interpreter,
+        &candidate_jit,
+    );
+    assert_eq!(
+        stable_mismatch_signature(&first.input, &candidate_runs),
+        Ok(original_signature.clone()),
+        "the synthetic candidate preserves the exact pair and GPR index"
+    );
+    let candidate_artifact = ReplayArtifact {
+        seed: S3_34DM_SEEDS[0],
+        index: 0,
+        input: first.input.clone(),
+        interpreter_observation: format!("{candidate_interpreter:#?}"),
+        jit_observation: format!("{candidate_jit:#?}"),
+        mismatch: candidate_runs.mismatch_first.clone().unwrap(),
+    };
+    assert!(candidate_passes_ordinary_replay(
+        &candidate_artifact,
+        &candidate_runs,
+        &original_signature,
+    ));
+
+    let mut synthetic_ram_interpreter = baseline.clone();
+    let first_store_address = u64::from(input.address);
+    synthetic_ram_interpreter.ram.insert(
+        first_store_address,
+        synthetic_ram_interpreter.ram[&first_store_address] ^ 1,
+    );
+    synthetic_ram_interpreter.callbacks[0].bytes[0] ^= 1;
+    let ram_signature = signature_for_backend_pair(
+        &input,
+        &synthetic_ram_interpreter,
+        &baseline,
+    )
+    .expect("synthetic RAM byte mismatch has a mapped signature");
+    assert_eq!(
+        ram_signature.fields,
+        vec![MismatchField::Ram(4)],
+        "address-zero store maps to the retained RAM slice, not discarded underflow bytes"
+    );
+
+    let mut synthetic_multi_class = synthetic_ram_interpreter.clone();
+    synthetic_multi_class.state.gpr[1] ^= 1;
+    assert_eq!(
+        signature_for_backend_pair(&input, &synthetic_multi_class, &baseline),
+        Err("multi-class-gpr-and-ram-mismatch")
+    );
+
+    let mut unstable_runs = original_runs;
+    unstable_runs.interpreter_second.state.gpr[1] ^= 2;
+    assert_eq!(
+        stable_mismatch_signature(&input, &unstable_runs),
+        Err("unstable-backend-observations")
+    );
 }
