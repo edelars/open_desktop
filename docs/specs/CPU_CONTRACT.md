@@ -19165,3 +19165,141 @@ pp. 3-232–3-233 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol
 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §§4.1, 5.6–5.7, and Event 17 `#AC`
 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
 Contract status: pending implementation and independent review.
+
+## S2-38au — exact CVTTSS2SI m32 memory profile with unmasked exceptions
+
+Reserve a separate immutable schema-v2 interpreter-only profile
+`s2-long-cvttss2si-r32-memory-unmasked-rax-v1` for exact legacy Long64 bytes
+`F3 0F 2C 00` (`CVTTSS2SI EAX,dword ptr [RAX]`). Preserve masked profile S2-37ci
+unchanged. The profile-specific `cvttss2si_r32_memory_unmasked_controls` input and
+result echo contain exactly the immutable booleans `sse_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`, and `cr4_osxmmexcpt`; reject absent, unknown, cross-profile, or
+mismatched values. Require SSE CPUID bit 25. Require supported MXCSR mask `0xffbf`,
+reserved bits clear, and DAZ=0. Permit all exception-mask bits, all four RC modes, all
+64 prior status histories, and either FTZ value; FTZ is irrelevant to this conversion.
+The core oracle matrix crosses the four IM/PM combinations. Additionally sample
+DM/OM/UM/ZM both set and clear, proving they cannot cause conversion events and are
+preserved along with all unrelated supported MXCSR controls and old status except newly
+raised IE/PE.
+
+Apply the bounded S2-37ci instruction-fetch/SSE/EM/OSFXSR/TS/CPL policy: fetch and
+recognize the exact instruction before SSE/EM/OSFXSR `#UD`, then TS `#NM`. For
+otherwise valid profile controls, local AC=0 permits conversion; AC=1 produces local
+`Unsupported` only after fetch and those prerequisite gates succeed, before the
+canonical data-span check, data read, or CPU mutation. Thus AC=1 plus a fetch failure
+retains that fetch outcome; AC=1 plus a failing SSE/EM/OSFXSR gate gives `#UD`; AC=1
+plus TS gives `#NM` when preceding gates pass. With fetch/gates passing, AC=1 plus a
+noncanonical data span remains `Unsupported`. These are bounded collision rules, not a
+claim of universal exception priority. For AC=0, capture original RAX as the address,
+validate canonical48 `[RAX,RAX+3]`, and perform exactly one little-endian read4 before
+committing state. Fetch, gate, span, and read failures preserve full architectural
+state, including RAX, RIP, MXCSR and retirement. No x87 state is accessed or modified.
+
+Truncate the raw binary32 source toward zero regardless of MXCSR.RC before checking
+signed-i32 range. Invalid input, including infinity or NaN, returns the
+integer-indefinite bit pattern `0x80000000` when masked and raises IE; it does not also
+raise PE. Valid inexact conversion raises PE. Subnormal inputs do not raise DE and FTZ
+does not alter their conversion. The valid exact `-2^31` result aliases the
+invalid-indefinite bits but raises no IE. On unmasked IE or PE, suppress the EAX write
+(therefore preserve full RAX), RIP advancement and retirement; commit the event's MXCSR
+sticky status before delivering `#XM` vector 19 or SIMD-generated `#UD` vector 6
+according to OSXMMEXCPT. Old sticky bits alone do not cause a new event. Other incoming
+MXCSR status and supported controls, including RC, remain unchanged. Preserve XMM, x87,
+RFLAGS, non-destination GPRs and source memory.
+
+Acceptance requires an independent integer-only raw-u32 oracle that consumes the actual
+memory RHS. Exercise vectors × 4 RC × 64 prior sticky histories × 4 IM/PM combinations ×
+2 OSXMMEXCPT delivery mappings in actual-interpreter coverage, proving RC-independent
+results and new events. Include exact and fractional values (including halves),
+representable neighbors around ±2^31, positive/negative infinity, QNaN, SNaN, signed
+zero, normal/subnormal values, and valid `-2^31` versus invalid-indefinite alias. Use
+representable binary32 boundary neighbors; fractional tests near ±2^31 must not silently
+round to a different input. Check old-RAX alias and zero-extension on success, direct
+`GuestMemory` checks for one read4 and full rollback on injected read errors, event
+status versus destination/RIP/retirement suppression, fetch/gates, strict schema,
+tampering, profile isolation and closed backends. Do not use host FP or production
+conversion helpers. Sources: Intel SDM Rev. 093 Vol. 2A `CVTTSS2SI` pp. 3-255–3-256
+([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1 §§11.5.2.2 and
+11.5.3.2 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §§4.1,
+5.6–5.7, and Event 17 `#AC` ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+Contract status: pending implementation and independent review.
+
+The strict wire schema requires an exact-width readable m32 mapping and cannot encode an
+injected source-read failure. Prove read counts and runtime read-error rollback with
+direct `GuestMemory` acceptance; reject unreadable/short mappings at schema validation
+instead of treating those inputs as runtime fault fixtures. Include the AC=1 collisions
+above and aligned/unaligned AC=0 sources with both FTZ values.
+
+See the
+[plan](../plans/STAGE_2.md#s2-38au--exact-legacy-long64-cvttss2si-eaxdword-ptr-rax-with-unmasked-exceptions)
+and
+[fixture format](../testing/TEST_CASE_FORMAT.md#s2-38au-cvttss2si-m32-memory-unmasked-profile).
+
+## S2-38av — exact CVTTSD2SI m64 memory profile with unmasked exceptions
+
+Reserve a separate immutable schema-v2 interpreter-only profile
+`s2-long-cvttsd2si-r32-memory-unmasked-rax-v1` for exact legacy Long64 bytes
+`F2 0F 2C 00` (`CVTTSD2SI EAX,qword ptr [RAX]`). Preserve masked profile S2-37cj
+unchanged. The profile-specific `cvttsd2si_r32_memory_unmasked_controls` input and
+result echo contain exactly the immutable booleans `sse2_available`, `cr0_em`,
+`cr0_ts`, `cr4_osfxsr`, and `cr4_osxmmexcpt`; reject absent, unknown, cross-profile,
+or mismatched values. Require SSE2 CPUID bit 26. Require supported MXCSR mask `0xffbf`,
+reserved bits clear, and DAZ=0. Permit all exception-mask bits, all four RC modes, all
+64 prior status histories, and either FTZ value; FTZ is irrelevant to this conversion.
+The core oracle matrix crosses the four IM/PM combinations. Additionally sample
+DM/OM/UM/ZM both set and clear, proving they cannot cause conversion events and are
+preserved along with all unrelated supported MXCSR controls and old status except newly
+raised IE/PE.
+
+Apply the bounded S2-37cj instruction-fetch/SSE2/EM/OSFXSR/TS/CPL policy: fetch and
+recognize the exact instruction before SSE2/EM/OSFXSR `#UD`, then TS `#NM`. For
+otherwise valid profile controls, local AC=0 permits conversion; AC=1 produces local
+`Unsupported` only after fetch and those prerequisite gates succeed, before the
+canonical data-span check, data read, or CPU mutation. Thus AC=1 plus a fetch failure
+retains that fetch outcome; AC=1 plus a failing SSE2/EM/OSFXSR gate gives `#UD`; AC=1
+plus TS gives `#NM` when preceding gates pass. With fetch/gates passing, AC=1 plus a
+noncanonical data span remains `Unsupported`. These are bounded collision rules, not a
+claim of universal exception priority. For AC=0, capture original RAX as the address,
+validate canonical48 `[RAX,RAX+7]`, and perform exactly one little-endian read8 before
+committing state. Fetch, gate, span, and read failures preserve full architectural
+state, including RAX, RIP, MXCSR and retirement. No x87 state is accessed or modified.
+
+Truncate the raw binary64 source toward zero regardless of MXCSR.RC before checking
+signed-i32 range. Thus `-2147483648.75` and `2147483647.75` are valid with PE, while
+`-2147483649` and `2147483648` are invalid with IE only. Invalid input, including
+infinity or NaN, returns the integer-indefinite bit pattern `0x80000000` when masked and
+raises IE; it does not also raise PE. Valid inexact conversion raises PE. Subnormal
+inputs do not raise DE and FTZ does not alter their conversion. The valid exact `-2^31`
+result aliases the invalid-indefinite bits but raises no IE. On unmasked IE or PE,
+suppress the EAX write (therefore preserve full RAX), RIP advancement and retirement;
+commit the event's MXCSR sticky status before delivering `#XM` vector 19 or
+SIMD-generated `#UD` vector 6 according to OSXMMEXCPT. Old sticky bits alone do not
+cause a new event. Other incoming MXCSR status and supported controls, including RC,
+remain unchanged. Preserve XMM, x87, RFLAGS, non-destination GPRs and source memory.
+
+Acceptance requires an independent integer-only raw-u64 oracle that consumes the actual
+memory RHS. Exercise vectors × 4 RC × 64 prior sticky histories × 4 IM/PM combinations ×
+2 OSXMMEXCPT delivery mappings in actual-interpreter coverage, proving RC-independent
+results and new events. Include exact and fractional values (including halves),
+representable neighbors around ±2^31, positive/negative infinity, QNaN, SNaN, signed
+zero, normal/subnormal values, valid `-2^31` versus invalid-indefinite alias, and the
+two valid binary64 fractions outside the real-valued i32 interval stated above. Check
+old-RAX alias and zero-extension on success, aligned/unaligned AC=0 sources, both FTZ
+values, direct `GuestMemory` checks for one read8 and full rollback on injected read
+errors, event status versus destination/RIP/retirement suppression, fetch/gates, strict
+schema, tampering, profile isolation and closed backends. Do not use host FP or
+production conversion helpers. Sources: Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp.
+3-253–3-254 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1 §§11.5.2.2
+and 11.5.3.2 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §§4.1,
+5.6–5.7, and Event 17 `#AC` ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
+Contract status: pending implementation and independent review.
+
+The strict wire schema requires an exact-width readable m64 mapping and cannot encode an
+injected source-read failure. Prove read counts and runtime read-error rollback with
+direct `GuestMemory` acceptance; reject unreadable/short mappings at schema validation
+instead of treating those inputs as runtime fault fixtures. Include the AC=1 collisions
+above and aligned/unaligned AC=0 sources with both FTZ values.
+
+See the
+[plan](../plans/STAGE_2.md#s2-38av--exact-legacy-long64-cvttsd2si-eaxqword-ptr-rax-with-unmasked-exceptions)
+and
+[fixture format](../testing/TEST_CASE_FORMAT.md#s2-38av-cvttsd2si-m64-memory-unmasked-profile).
