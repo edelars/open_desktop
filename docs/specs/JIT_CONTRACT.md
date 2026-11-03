@@ -703,6 +703,13 @@ not an identified runtime defect; see [ISSUE-028](../KNOWN_ISSUES.md). No
 production owner/MMU, MMIO/SMC, physical-hardware, or performance behavior is
 established. See the [S3-20eg report](../reports/STAGE_3_S3-20eg_2026-11-02.md).
 
+Runtime follow-up `525e310` adds successful retry assertions after injected
+backend write errors and each entry STOP/budget guard. Independent Sol/high
+static review passed, but the changed test has not been executed. The
+retryability acceptance evidence therefore remains pending in
+[ISSUE-028](../KNOWN_ISSUES.md); these assertions do not change the store
+contract above.
+
 #### S3-20eh: exact address-size-32 ESP-base Dword load with signed disp8
 
 The typed-IR Dword-load path admits only the exact five-byte singleton

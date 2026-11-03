@@ -80,6 +80,12 @@ with harness `ac069ca`, exact JIT/host gates passed 1/1 and the cumulative
 Python Stage 3 harness passed 91/91 (including 34br). Full `od-host` was not
 run. See the [S3-20eg report](STAGE_3_S3-20eg_2026-11-02.md).
 
+Runtime follow-up commit `525e310` adds successful retry assertions after
+backend errors and entry STOP/budget guards. Sol/high static review passed,
+but those assertions have not been executed. Historical `od-jit`, exact-gate,
+and Python harness results above predate this follow-up. ISSUE-028 remains
+open awaiting execution acceptance; see the [S3-20eg report](STAGE_3_S3-20eg_2026-11-02.md).
+
 S3-20eh adds only the address-size-32 ESP-base dword load with signed disp8
 `67 8B 44 24 ib`. The effective address adds sign-extended disp8 to low32 RSP,
 wraps modulo 2^32, then zero-extends; a four-byte read remains contiguous
