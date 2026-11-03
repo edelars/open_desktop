@@ -80069,33 +80069,6 @@ pub(crate) mod tests {
         assert_eq!(second_fault_ram.writes.len(), 4);
         assert!(second_fault_ram.writes[1..].iter().all(|(address, _)| *address == 32));
 
-        let singleton_block = od_jit::memory_load_v2::compile_ir_memory_store_block_v2(
-            od_jit::block::CodeView::new(BASE + 3, &BYTES[3..]).unwrap(),
-            BASE + 3,
-        ).unwrap();
-        let singleton = PublishedCode::publish_ir_memory_store_v2(&singleton_block).unwrap();
-        // SAFETY: this fixture uses private synchronous RAM; each write is
-        // all-or-nothing, and the state/memory are exclusively borrowed for
-        // the duration of the singleton retry.
-        let retry = unsafe {
-            singleton.execute_ir_memory_store_v2(
-                &mut singleton_retry_state,
-                &mut singleton_retry_ram,
-                AccessContext::default(),
-                1,
-                None,
-                &stop,
-            )
-        }
-        .unwrap();
-        assert_eq!(retry.exit, MemoryOperationExecutionExitV2::Complete);
-        assert_eq!(retry.retired_instructions, 1);
-        assert_eq!(singleton_retry_state.rip, BASE + 6);
-        assert_eq!(singleton_retry_ram.writes.len(), 4);
-        assert!(singleton_retry_ram.writes[1..].iter().all(|(address, _)| *address == 32));
-        assert_eq!(u64::from_le_bytes(singleton_retry_ram.bytes[16..24].try_into().unwrap()), VALUE);
-        assert_eq!(u64::from_le_bytes(singleton_retry_ram.bytes[32..40].try_into().unwrap()), VALUE);
-
         let backend_error = MemoryError::Backend("second store backend failure".into());
         let mut backend_state = state();
         let mut backend_ram = ram();
@@ -80178,6 +80151,35 @@ pub(crate) mod tests {
             od_jit::memory_cache::CachedMemoryPairBackend::publish_memory_pair(&mut cached, &block),
             Err(CachedPublishedMemoryPairError::ArtifactProfileMismatch)
         ));
+
+        drop(published);
+        let singleton_block = od_jit::memory_load_v2::compile_ir_memory_store_block_v2(
+            od_jit::block::CodeView::new(BASE + 3, &BYTES[3..]).unwrap(),
+            BASE + 3,
+        )
+        .unwrap();
+        let singleton = PublishedCode::publish_ir_memory_store_v2(&singleton_block).unwrap();
+        // SAFETY: this fixture uses private synchronous RAM; each write is
+        // all-or-nothing, and the state/memory are exclusively borrowed for
+        // the duration of the singleton retry.
+        let retry = unsafe {
+            singleton.execute_ir_memory_store_v2(
+                &mut singleton_retry_state,
+                &mut singleton_retry_ram,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+            )
+        }
+        .unwrap();
+        assert_eq!(retry.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(retry.retired_instructions, 1);
+        assert_eq!(singleton_retry_state.rip, BASE + 6);
+        assert_eq!(singleton_retry_ram.writes.len(), 4);
+        assert!(singleton_retry_ram.writes[1..].iter().all(|(address, _)| *address == 32));
+        assert_eq!(u64::from_le_bytes(singleton_retry_ram.bytes[16..24].try_into().unwrap()), VALUE);
+        assert_eq!(u64::from_le_bytes(singleton_retry_ram.bytes[32..40].try_into().unwrap()), VALUE);
     }
 
     #[test]
