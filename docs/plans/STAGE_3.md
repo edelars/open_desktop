@@ -141,7 +141,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-12 | State points и PC maps | S3-11 |
 | [x] | S3-13 | Первый сквозной запуск одного блока | S3-07, S3-12 |
 | [x] | S3-14 | Тройное сравнение register-only | S3-13 |
-| [ ] | S3-15 | Dispatcher, budget и переходы | S3-14 |
+| [partial] | S3-15 | Dispatcher, budget и переходы | S3-14 |
 | [ ] | S3-16 | Interpreter fallback с прогрессом | S3-15; нужный S2 step |
 | [partial] | S3-16o | Fixed-seed native→NOT RCX fallback→native Store→Store corpus and exact gate | Adds eight bounded full-state/RAM/write-ledger cases across six budget and two stop-RIP boundaries plus callback STOP; no ISA expansion. Gate is pinned and reviewed but unexecuted; overall S3-16 remains open. См. [implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md) |
 | [ ] | S3-17 | Cache key и code dependencies | S3-04, S3-15 |
@@ -772,6 +772,15 @@ unadmitted target, runtime unsupported exit и zero progress. Native od-host
 integration test покрывает последовательные mappings и положительный
 self-loop на macOS ARM64.
 
+**Physical corpus gate, 3 ноября 2026 года:** Mini `192.168.1.39` прошёл
+тот же frozen Stage 1 corpus: 10 manual и 1,000 generated inputs с seed
+`0x5eedcafe`, corpus SHA-256
+`9356e916b2037a3f5a082e8366fe33bf4277ab00812489809bfc586210744d35`, два
+повтора. Все 2,020 fixture/repeat entries прошли на interpreter,
+`jit-dispatch` и native x86; pairwise и repeat differences равны нулю, source
+fingerprints совпали. Preflight: 613 passed, 0 failed. Durable summary:
+[S3-15 Mini physical run](../reports/data/stage3/s3-15-mini-physical-run-2026-11-03.json).
+
 Ограниченный checked-memory continuation добавлен отдельно в
 `od_jit::memory_dispatch::run` и `od_host::PublishedMemoryBlockExecutor`.
 Он работает только с двумя принятыми two-site artifact sequences и singleton
@@ -810,8 +819,9 @@ after publication and before native entry; the published register mapping is
 released before memory publication, and the checked-memory mapping before
 suffix compilation. Host evidence and limitations are recorded in the
 [S3-29e report](../reports/STAGE_3_S3-29e_2026-10-29.md). This remains a
-borrowed fixture/API slice; owner-backed code fetch and MMU/RAM integration,
-full S3-15 corpus/oracle gates and Mini/performance remain open.
+borrowed fixture/API slice; owner-backed code fetch and MMU/RAM integration
+remain open. The full S3-15 corpus/oracle gate and Mini physical run passed on
+2026-11-03; performance acceptance remains open.
 
 #### S3-15n. Production memory-owner integration prerequisites
 
