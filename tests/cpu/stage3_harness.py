@@ -1589,6 +1589,7 @@ PROCESS_SUITE_STEPS = (
     "process_fault_helper_signature",
     "process_fault_helper_entitlements",
     "process_control_race",
+    "process_control_v1_sessions",
     "process_isolation",
     "process_app_bundle",
     "process_bundle_verify",
@@ -1600,6 +1601,15 @@ PROCESS_SUITE_STEPS = (
     "process_generated_fault",
 )
 PROCESS_SUITE_NAME = "vmhost_process"
+PROCESS_SUCCESS_MARKERS = {
+    "control_race": "VMHost control smoke passed:",
+    "control_v1_sessions": (
+        "VMHost control V1 smoke passed: same-code sequential RUNs with fresh state and budgets"
+    ),
+    "isolation": "VMHost isolation smoke passed:",
+    "generated_fault": "VMHost terminated by SIGSEGV",
+    "app_bundle": "vmhost_app_bundle_status=passed",
+}
 ALL_SUITES = (*LOCAL_SUITE_NAMES, PROCESS_SUITE_NAME, *UNSELECTED_SUITES)
 ALL_STEPS = (*LOCAL_STEPS, *PROCESS_SUITE_STEPS)
 LOCAL_VMHOST_RESULT_LOOP = "48b8010000000000000075f4"
@@ -1638,6 +1648,7 @@ PROCESS_STEP_TIMEOUTS = {
     "process_fault_helper_signature": 120,
     "process_fault_helper_entitlements": 120,
     "process_control_race": 900,
+    "process_control_v1_sessions": 30,
     "process_isolation": 120,
     "process_generated_fault": 30,
     "process_app_bundle": 180,
@@ -1653,12 +1664,18 @@ PROCESS_SOURCE_PATHS = (
     "Cargo.toml",
     "crates/od-host/Cargo.toml",
     "crates/od-host/src/lib.rs",
+    "crates/od-host/src/session.rs",
+    "crates/od-host/src/session_abi_v1.rs",
     "include/open_desktop/host_abi.h",
+    "include/open_desktop/session_abi_v1.h",
+    "protocols/control/CONTROL_PROTOCOL_V1.md",
     "apps/vmhost/Sources/ControlFrame.swift",
     "apps/vmhost/Sources/main.swift",
+    "apps/vmhost/Sources/VMHostABI.h",
     "apps/macos/Sources/launcher.swift",
     "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     "tests/system/vmhost_control_race_smoke.py",
+    "tests/system/vmhost_control_v1_same_code_smoke.py",
     "tests/system/vmhost_isolation_smoke.py",
     "tests/system/vmhost_generated_fault_smoke.py",
     "tests/system/vmhost_generated_fault_helper.swift",
@@ -2247,7 +2264,7 @@ def vmhost_process_commands(
     swift_common = [
         "xcrun", "swiftc", "-module-cache-path", str(paths["swift_modules"]),
         "-parse-as-library", "-O", "-import-objc-header",
-        "include/open_desktop/host_abi.h", "apps/vmhost/Sources/ControlFrame.swift",
+        "apps/vmhost/Sources/VMHostABI.h", "apps/vmhost/Sources/ControlFrame.swift",
     ]
     link_args = ["-ldl", "-lpthread", "-lm", *frameworks]
     return {
@@ -2317,6 +2334,10 @@ def vmhost_process_commands(
             sys.executable, "tests/system/vmhost_control_race_smoke.py",
             str(paths["launcher"]), str(paths["vmhost"]), "--diagnostics-dir",
             str(run_root / "logs" / "process_control_race_children"),
+        ],
+        "process_control_v1_sessions": [
+            sys.executable, "tests/system/vmhost_control_v1_same_code_smoke.py",
+            str(paths["vmhost"]),
         ],
         "process_isolation": [
             sys.executable, "tests/system/vmhost_isolation_smoke.py",
@@ -3353,7 +3374,7 @@ def run_vmhost_process_suite(
                 raise HarnessError(
                     f"process command failed before semantic validation: {step.get('failure')}"
                 )
-            if step_name in {"process_control_race", "process_isolation",
+            if step_name in {"process_control_race", "process_control_v1_sessions", "process_isolation",
                              "process_generated_fault", "process_app_bundle"}:
                 if step_name == "process_control_race":
                     artifacts = collect_vmhost_process_artifacts(run_root)
@@ -3361,6 +3382,13 @@ def run_vmhost_process_suite(
                         artifacts, "launcher", "vmhost"
                     )
                     require_process_marker(step, "VMHost control smoke passed:", step_name)
+                elif step_name == "process_control_v1_sessions":
+                    step["binary_inputs"] = process_binary_inputs(artifacts, "vmhost")
+                    require_process_marker(
+                        step,
+                        PROCESS_SUCCESS_MARKERS["control_v1_sessions"],
+                        step_name,
+                    )
                 elif step_name == "process_isolation":
                     step["binary_inputs"] = process_binary_inputs(artifacts, "vmhost")
                     require_process_marker(step, "VMHost isolation smoke passed:", step_name)
@@ -3665,12 +3693,7 @@ def input_manifest() -> dict:
                 {"path": name, "sha256": sha256_file(ROOT / name)}
                 for name in PROCESS_SOURCE_PATHS
             ],
-            "success_markers": {
-                "control_race": "VMHost control smoke passed:",
-                "isolation": "VMHost isolation smoke passed:",
-                "generated_fault": "VMHost terminated by SIGSEGV",
-                "app_bundle": "vmhost_app_bundle_status=passed",
-            },
+            "success_markers": PROCESS_SUCCESS_MARKERS,
             "automatic_retry": False,
         },
         "local_vmhost_result_state": {
@@ -3738,6 +3761,8 @@ def validate_input_manifest_file(path: Path, expected_digest: str) -> dict:
         "rust_target_prefix": "aarch64-apple-darwin",
     }:
         raise HarnessError("VMHost process host requirement differs")
+    if process.get("success_markers") != PROCESS_SUCCESS_MARKERS:
+        raise HarnessError("VMHost process success markers differ from the pinned suite")
     if process.get("build_profile", {}).get("commands") != vmhost_process_command_manifest():
         raise HarnessError("VMHost process command manifest differs from the exact run profile")
     inputs = process.get("inputs")
@@ -4140,6 +4165,11 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
     if len(steps["process_generated_fault"]["child_diagnostics"]) != 2:
         raise HarnessError("generated-fault launcher stdout/stderr diagnostics are incomplete")
     require_process_marker(steps["process_control_race"], "VMHost control smoke passed:", "process_control_race")
+    require_process_marker(
+        steps["process_control_v1_sessions"],
+        PROCESS_SUCCESS_MARKERS["control_v1_sessions"],
+        "process_control_v1_sessions",
+    )
     require_process_marker(steps["process_isolation"], "VMHost isolation smoke passed:", "process_isolation")
     generated = generated_fault_observation(steps["process_generated_fault"])
     if steps["process_generated_fault"].get("process_observation") != generated:
@@ -4152,6 +4182,7 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
 
     expected_binary_inputs = {
         "process_control_race": process_binary_inputs(expected_artifacts, "launcher", "vmhost"),
+        "process_control_v1_sessions": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_isolation": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_generated_fault": process_binary_inputs(expected_artifacts, "launcher", "fault_helper"),
         "process_app_bundle": process_binary_inputs(expected_artifacts, "bundle_launcher", "bundle_vmhost"),

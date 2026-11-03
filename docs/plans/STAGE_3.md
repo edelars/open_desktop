@@ -436,6 +436,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38e | Bounded opt-in local Rust S0-09 session owner | Retains copied code/admission, bounded cache and one executable-memory lease across synchronous calls; no VMHost IPC RUN/session or production MMU integration. Four exact local gates are pinned but unexecuted. См. [implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md) and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
 | [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Adds ABI V1 create/begin/STOP/wait/destroy, fresh CLOEXEC notification descriptors and exact local lifecycle gates. Independent Sol/high static review passed; execution/build/fmt and harness self-check remain deferred. VMHost control V1 is implemented separately in S3-38g. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
 | [partial] | S3-38g | VMHost control V1 repeated same-code RUN transport | Adds explicit opt-in V1 selection, session ABI adapter, event-driven socket/completion loop, incremental bounded frame staging and a 16,416-byte output queue; V0 remains the default path. Full Sol/high static review passed. No build, test or runtime execution; acceptance gates remain open. См. [implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md) |
+| [partial] | S3-38h | Process-level V1 same-code repeated RUN smoke and exact process-harness gate | Pins two sequential RUNs on one VMHost with distinct CPU state/budget, full RESULT payloads, increasing IDs, ACK/RESULT order and idle EOF cleanup. Harness command/source identity is pinned; process execution and STOP/EOF-during-RUN races remain pending. См. [implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md) |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
@@ -4022,6 +4023,19 @@ results, STOP and completion races, monotonic/mismatched IDs, malformed and
 partial frames, EOF while idle/running, backpressure behavior, completion and
 descriptor/lease teardown, and unchanged V0 regressions on a supported macOS
 ARM host. See the [S3-38g implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md).
+
+#### S3-38h. Process-level repeated same-code RUN smoke
+
+The process smoke drives one built VMHost over a local socket pair using
+control V1. It sends the same two-instruction code in two increasing RUN IDs,
+with distinct CPU snapshots and budgets, and checks complete RESULT payloads,
+ACK-before-RESULT ordering, and clean EOF teardown while idle. The process
+command and its source dependencies are pinned in the Stage3 harness. The
+scenario is statically reviewed but has not been executed. It does not yet
+cover STOP during RUN, EOF during RUN, malformed/partial frames, or the broader
+V1 race and backpressure suite. Those runtime acceptance gates remain open;
+Mini checks remain deferred. See the
+[S3-38h implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md).
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 

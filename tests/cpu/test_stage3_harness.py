@@ -4465,6 +4465,33 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             self.assertEqual(set(harness.PROCESS_STEP_TIMEOUTS), set(harness.PROCESS_SUITE_STEPS))
             self.assertEqual(len(manifest_names), len(set(manifest_names)))
             self.assertEqual(set(manifest_names), set(harness.PROCESS_SUITE_STEPS))
+            v1_smoke = commands["process_control_v1_sessions"]
+            self.assertEqual(
+                v1_smoke,
+                [
+                    sys.executable,
+                    "tests/system/vmhost_control_v1_same_code_smoke.py",
+                    str(harness.vmhost_process_paths(run_root)["vmhost"]),
+                ],
+            )
+            self.assertIn(
+                "tests/system/vmhost_control_v1_same_code_smoke.py",
+                harness.PROCESS_SOURCE_PATHS,
+            )
+            self.assertIn("apps/vmhost/Sources/VMHostABI.h", harness.PROCESS_SOURCE_PATHS)
+            self.assertIn("include/open_desktop/session_abi_v1.h", harness.PROCESS_SOURCE_PATHS)
+            self.assertIn(
+                "apps/vmhost/Sources/VMHostABI.h",
+                commands["process_compile_vmhost"],
+            )
+            self.assertEqual(
+                harness.input_manifest()["vmhost_process"]["success_markers"],
+                harness.PROCESS_SUCCESS_MARKERS,
+            )
+            self.assertEqual(
+                harness.PROCESS_SUCCESS_MARKERS["control_v1_sessions"],
+                "VMHost control V1 smoke passed: same-code sequential RUNs with fresh state and budgets",
+            )
         finally:
             temporary.cleanup()
 
