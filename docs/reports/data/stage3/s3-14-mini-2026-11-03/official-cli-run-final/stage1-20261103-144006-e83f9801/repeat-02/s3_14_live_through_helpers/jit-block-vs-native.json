@@ -1,0 +1,1 @@
+{"case_id":"s3_14_live_through_helpers","input_sha256":"479ea8ccc52ca53e676989279cdd068ed76dcdde78a9e06deb98fecb3ef87998","left_backend":"jit_ir_block","right_backend":"native_x86","differences":[]}

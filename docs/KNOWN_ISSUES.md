@@ -95,10 +95,10 @@
 
 - **Дата обнаружения:** 2026-11-03.
 - **Компонент:** `tools/x86-runner` native V2 unit tests selected by the Stage 1 physical `jit-block` preflight.
-- **Статус:** открыта; причина 42 failures is not yet triaged. No confirmed runtime defect is claimed.
-- **Суть и последствия:** on Mini, `cargo test --offline -p od-testkit -p od-runner -p od-x86-runner` exited 101 with 571 passed and 42 failed overall; the final `od-x86-runner` test binary reported 70 passed/42 failed. The failures include native x87/profile admission expectations and other cases such as REP STOSB/RET; they are not all established as the five stale `od-isa` expectations in ISSUE-023. The official `stage1_oracle.py` flow therefore aborts before its managed fixture comparisons, even though both runner builds and a separate, explicitly supplementary S3-14 physical comparison succeeded.
-- **Основание:** the exact command, exit status, complete stdout/stderr, and all failed test names are preserved in [`S3-14 Mini evidence`](reports/data/stage3/s3-14-mini-2026-11-03/). The separate physical run is documented in the [S3-14 report](reports/STAGE_3_S3-14_2026-10-26.md); it does not turn the failed preflight into a pass.
-- **Следующий шаг:** triage each failing `native_v2` test against the current native profile contract; distinguish stale test expectations from implementation failures, fix confirmed causes, and rerun the exact package preflight on Mini before treating S3-14 as closed.
+- **Статус:** решена 2026-11-03; тестовые предположения были устаревшими, подтверждённого runtime-дефекта не найдено.
+- **Суть и результат:** initial Mini preflight exited 101 with 571 passed and 42 failed overall; `od-x86-runner` reported 70 passed/42 failed. Test-only corrections aligned fixture conversion with each declared profile, corrected FS-load budget and RET expectations, supplied readable code permissions for the native STOSB case, replaced stale fixture names, and made x87 rejection assertions distinguish the exact allowlist fallback. Runtime behavior was unchanged. The final exact preflight passed 613 tests with 0 failures, including 112/112 `od-x86-runner` tests. The official S3-14 CLI then completed its managed Mini comparison.
+- **Основание и проверка:** complete initial and final stdout/stderr, commands, and failed test names are preserved in [`S3-14 Mini evidence`](reports/data/stage3/s3-14-mini-2026-11-03/). The successful managed comparison and its limits are documented in the [S3-14 report](reports/STAGE_3_S3-14_2026-10-26.md).
+- **Следующий шаг:** нет по этой записи; более широкие Stage 3 и S3-21 physical gates остаются отдельными незавершёнными условиями.
 
 ### ISSUE-024 — checked memory lowering ограничен узкими V2 MOV slices
 

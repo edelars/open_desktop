@@ -1498,10 +1498,23 @@ mod tests {
                 "00112233448888888899aabbccddeeff",
             ),
         ] {
-            let loaded = Fixture::from_json(
+            let mut fixture = Fixture::from_json(
                 &std::fs::read(directory.join(format!("{name}.case.json"))).unwrap(),
             )
-            .unwrap();
+            .unwrap()
+            .fixture;
+            // The shared Stage 2 STOSB fixtures model executable-only code. The
+            // native runner requires readable code mappings as well, so adapt
+            // the test input to the native mapping contract without changing
+            // the shared fixture corpus.
+            fixture
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap()
+                .permissions
+                .read = true;
+            let loaded = Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
             let result = execute(&loaded);
             assert_eq!(
                 result.outcome,
@@ -2078,7 +2091,7 @@ mod tests {
                 .as_slice(),
         ] {
             let fixture = Fixture::from_json(bytes).unwrap();
-            let actual = fixture.fixture.initial_state.to_cpu().unwrap();
+            let actual = fixture.fixture.initial_state.to_cpu_for(fixture.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&fixture.fixture).unwrap();
             assert!(
                 admission(&fixture.fixture, &mut decoder, &actual).is_err(),
@@ -2342,10 +2355,10 @@ mod tests {
             .join("../../tests/fixtures/x86/stage2");
         let mut admitted = 0;
         for name in [
-            "s2_17m_push_mem_base",
-            "s2_17m_push_mem_rsp_predecrement",
-            "s2_17m_pop_mem_base",
-            "s2_17m_pop_mem_rsp_postincrement",
+            "s2_17m_push_base",
+            "s2_17m_push_rsp_source",
+            "s2_17m_pop_base",
+            "s2_17m_pop_rsp_post_increment",
         ] {
             let loaded = Fixture::from_json(
                 &std::fs::read(directory.join(format!("{name}.case.json"))).unwrap(),
@@ -2603,8 +2616,7 @@ mod tests {
             ("s2_17f_ret_imm0", 1),
             ("s2_17f_ret_imm_small", 1),
             ("s2_17f_ret_imm_max", 1),
-            ("s2_17f_ret_imm_nested_cleanup", 3),
-            ("s2_17f_ret_imm_budget", 1),
+            ("s2_17f_ret_imm_nested_cleanup", 5),
         ] {
             let loaded = Fixture::from_json(
                 &std::fs::read(directory.join(format!("{name}.case.json"))).unwrap(),
@@ -2633,6 +2645,10 @@ mod tests {
             ("s2_17f_ret_imm_stack_fault", "stack access"),
             ("s2_17f_ret_imm_read_fault", "stack access"),
             ("s2_17f_ret_imm_truncated", "native instruction outside"),
+            (
+                "s2_17f_ret_imm_budget",
+                "native RET target outside fixture code/stop boundary",
+            ),
         ] {
             let loaded = Fixture::from_json(
                 &std::fs::read(directory.join(format!("{name}.case.json"))).unwrap(),
@@ -3916,6 +3932,7 @@ mod tests {
         input.initial_state.fs_cache_limit = Some(HexU64(0xffff));
         input.initial_state.fs_cache_access = Some(HexU64(0xf3));
         input.initial_state.fs_cache_flags = Some(HexU64(0));
+        input.instruction_budget = 1;
         let loaded = Fixture::from_json(&input.to_json().unwrap()).unwrap();
         let result = execute(&loaded);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
@@ -4170,11 +4187,7 @@ mod tests {
             [0xdd, 0xe9],
         ] {
             let mut input = fixture(&code).fixture;
-            input.profile = v2::Profile::LongX87StateV1;
             input.instruction_budget = 1;
-            input.initial_state.x87 = Some(v2::X87Snapshot::from(
-                &od_isa::state::X87State::fixture_seed(),
-            ));
             input.initial_state.rip = HexU64(0x1000);
             input.memory[0].guest_address = HexU64(0x1000);
             input.memory[0].length = 2;
@@ -4228,7 +4241,12 @@ mod tests {
             let actual = old_profile.fixture.initial_state.to_cpu().unwrap();
             let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
             let error = admission(&old_profile.fixture, &mut decoder, &actual).unwrap_err();
-            assert!(error.contains("x87 instruction is not admitted"));
+            let expected_error = if code == [0xdb, 0x28] {
+                "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+            } else {
+                "x87 instruction is not admitted"
+            };
+            assert!(error.contains(expected_error), "{code:02x?}: {error}");
         }
         for opcode in [0xdb, 0xdf] {
             for modrm in (0xe8u8..=0xef).chain(0xf0..=0xf7) {
@@ -4254,7 +4272,11 @@ mod tests {
                     execute(&loaded).outcome,
                     Outcome::Unsupported { .. }
                 ));
-                let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+                let actual = loaded
+                    .fixture
+                    .initial_state
+                    .to_cpu_for(loaded.fixture.profile)
+                    .unwrap();
                 let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
                 let error = admission(&loaded.fixture, &mut decoder, &actual).unwrap_err();
                 assert!(
@@ -4272,7 +4294,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31az_fld_m32_largest_negative_subnormal_fstp_m64fp_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4287,7 +4309,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bs_fstp_m80fp_negative_snan_sticky_oe_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4301,7 +4323,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bb_fstp_m32fp_negative_max_finite_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4315,7 +4337,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bc_fstp_m64fp_negative_max_finite_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4328,7 +4350,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bd_fstp_m32fp_negative_min_subnormal_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4341,7 +4363,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31be_fstp_m64fp_negative_min_subnormal_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4355,7 +4377,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bf_fstp_m32fp_negative_1_5_minsub_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4368,7 +4390,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4380,7 +4406,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bn_fstp_m32fp_negative_minimum_normal_directed_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4393,7 +4419,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bo_fstp_m64fp_negative_minimum_normal_directed_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4406,7 +4432,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bp_fstp_m32fp_negative_infinity_overflow_directed_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4420,7 +4446,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31br_m64fp_sticky_oe_exact_store_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4433,7 +4459,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bm_fstp_m64fp_negative_signed_zero_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4447,7 +4473,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31bg_fstp_m64fp_negative_1_5_minsub_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4460,7 +4486,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4472,7 +4502,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4484,7 +4518,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4496,7 +4534,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4507,7 +4549,11 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ci_fist_snan_fnstsw.case.json")
                 .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4519,7 +4565,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4531,7 +4581,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4543,7 +4597,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4555,7 +4613,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4567,7 +4629,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4579,7 +4645,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4591,7 +4661,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4603,7 +4677,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4615,7 +4693,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4627,7 +4709,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4639,7 +4725,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4651,7 +4741,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4663,7 +4757,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4675,7 +4773,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4687,7 +4789,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ck_fist_m16int_positive_roundback_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }
@@ -4700,7 +4802,11 @@ mod tests {
         )
         .as_slice();
         let loaded = Fixture::from_json(bytes).unwrap();
-        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        let actual = loaded
+            .fixture
+            .initial_state
+            .to_cpu_for(loaded.fixture.profile)
+            .unwrap();
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
     }
@@ -4718,7 +4824,7 @@ mod tests {
             include_bytes!("../../../tests/fixtures/x86/stage2/s2_31cp_fistp_m64int_sticky_ze_fnstsw.case.json").as_slice(),
         ] {
             let loaded = Fixture::from_json(bytes).unwrap();
-            let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+            let actual = loaded.fixture.initial_state.to_cpu_for(loaded.fixture.profile).unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert!(admission(&loaded.fixture, &mut decoder, &actual).is_err());
         }

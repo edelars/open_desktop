@@ -1,0 +1,1719 @@
+{
+  "run_id": "stage1-20261103-144006-e83f9801",
+  "stage": "S3-14",
+  "suite": "register-only one-block triple comparison",
+  "status": "passed",
+  "started_utc": "2026-11-03T14:40:06Z",
+  "source_fingerprint": "7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+  "host": "192.168.1.39",
+  "user": "senya",
+  "remote_root": "/home/senya/projects/open_desktop-stage3-s3-14-preflight-final-20261103",
+  "engine": "jit-block",
+  "jit_backend": "jit_ir_block",
+  "evidence_scope": "physical_triple",
+  "physical_x86": "compared",
+  "repeats": 2,
+  "machines": {
+    "local": {
+      "host_os": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+      "host_arch": "arm64",
+      "cpu_model": "Apple M3 Max",
+      "kernel": "Darwin 192.168.1.100 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031 arm64",
+      "page_size": 16384,
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)"
+    },
+    "remote_rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "remote_cargo": "cargo 1.99.1 (5f94df478 2026-08-27)"
+  },
+  "fixtures": [
+    {
+      "repeat": 1,
+      "case_id": "s0_09_mov_imm64",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s0_09_mov_imm64.case.json",
+      "fixture_sha256": "45139dedf0d845010e5773fe4b776919ebb5c0af125680d0e27540dac732a5db",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s0_09_add_overflow",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s0_09_add_overflow.case.json",
+      "fixture_sha256": "12e43c2a15e5b41e868092fd9223c1e4ff888da49d6b39a1474ce8e362d2a729",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s0_09_cmp_jz",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s0_09_cmp_jz.case.json",
+      "fixture_sha256": "0828f14b6ef6035e1dffb812c79b3ec81c0d78aa86c2f7cc8a8aa422d96ca58b",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s1_06_add_signed_overflow",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_add_signed_overflow.case.json",
+      "fixture_sha256": "740d7bf6e9408a9db1dcab0f6d1a399b3200aac63d11ad3e51b6baa1f95c0d15",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s1_06_sub_borrow",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_sub_borrow.case.json",
+      "fixture_sha256": "994a3b4ad68580a9e3138fe4ce18e18d5f94647064afe06311de654bb19e6ad0",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s1_06_cmp_signed_boundary",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_cmp_signed_boundary.case.json",
+      "fixture_sha256": "a8a47e5f25bc1fd3493cc5432cc614e92365cc2c15f70fb37f40be5b7e86d6a5",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s1_06_jz_taken",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_jz_taken.case.json",
+      "fixture_sha256": "f7a04d7ab9cb67f3a475dfeb28d6b7ba1b032411048d898a80a2a05dc2e8889d",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s1_06_mov_preserves_flags",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_mov_preserves_flags.case.json",
+      "fixture_sha256": "01eb759e88337a61b6e1801ceda16903764263172eb10977316796ac65b0608c",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s3_14_jz_to_end_skips_tail",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jz_to_end_skips_tail.case.json",
+      "fixture_sha256": "8da5f28d8409ae63a1851862f416bc786a6db43606b227c9a52fff879cf4543d",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s3_14_jnz_to_end_skips_tail",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jnz_to_end_skips_tail.case.json",
+      "fixture_sha256": "cadf3cda3d7c536d6a0d8626b908215586ba6ef0b5d2c9421122cdaacb8d951c",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s3_14_jz_not_taken_backward_target",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jz_not_taken_backward_target.case.json",
+      "fixture_sha256": "0f0e9f1c81ecc671d642ba124934b0adb8f03b5a35413728445be1f834ff9760",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s3_14_jnz_not_taken_backward_target",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jnz_not_taken_backward_target.case.json",
+      "fixture_sha256": "97552173b206628db8001500d5a4553070090a4eaeec2c8e79d7dc00afbfbd33",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 1,
+      "case_id": "s3_14_live_through_helpers",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_live_through_helpers.case.json",
+      "fixture_sha256": "479ea8ccc52ca53e676989279cdd068ed76dcdde78a9e06deb98fecb3ef87998",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {}
+    },
+    {
+      "repeat": 2,
+      "case_id": "s0_09_mov_imm64",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s0_09_mov_imm64.case.json",
+      "fixture_sha256": "45139dedf0d845010e5773fe4b776919ebb5c0af125680d0e27540dac732a5db",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s0_09_add_overflow",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s0_09_add_overflow.case.json",
+      "fixture_sha256": "12e43c2a15e5b41e868092fd9223c1e4ff888da49d6b39a1474ce8e362d2a729",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s0_09_cmp_jz",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s0_09_cmp_jz.case.json",
+      "fixture_sha256": "0828f14b6ef6035e1dffb812c79b3ec81c0d78aa86c2f7cc8a8aa422d96ca58b",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s1_06_add_signed_overflow",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_add_signed_overflow.case.json",
+      "fixture_sha256": "740d7bf6e9408a9db1dcab0f6d1a399b3200aac63d11ad3e51b6baa1f95c0d15",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s1_06_sub_borrow",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_sub_borrow.case.json",
+      "fixture_sha256": "994a3b4ad68580a9e3138fe4ce18e18d5f94647064afe06311de654bb19e6ad0",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s1_06_cmp_signed_boundary",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_cmp_signed_boundary.case.json",
+      "fixture_sha256": "a8a47e5f25bc1fd3493cc5432cc614e92365cc2c15f70fb37f40be5b7e86d6a5",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s1_06_jz_taken",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_jz_taken.case.json",
+      "fixture_sha256": "f7a04d7ab9cb67f3a475dfeb28d6b7ba1b032411048d898a80a2a05dc2e8889d",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s1_06_mov_preserves_flags",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_mov_preserves_flags.case.json",
+      "fixture_sha256": "01eb759e88337a61b6e1801ceda16903764263172eb10977316796ac65b0608c",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s3_14_jz_to_end_skips_tail",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jz_to_end_skips_tail.case.json",
+      "fixture_sha256": "8da5f28d8409ae63a1851862f416bc786a6db43606b227c9a52fff879cf4543d",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s3_14_jnz_to_end_skips_tail",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jnz_to_end_skips_tail.case.json",
+      "fixture_sha256": "cadf3cda3d7c536d6a0d8626b908215586ba6ef0b5d2c9421122cdaacb8d951c",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s3_14_jz_not_taken_backward_target",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jz_not_taken_backward_target.case.json",
+      "fixture_sha256": "0f0e9f1c81ecc671d642ba124934b0adb8f03b5a35413728445be1f834ff9760",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s3_14_jnz_not_taken_backward_target",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jnz_not_taken_backward_target.case.json",
+      "fixture_sha256": "97552173b206628db8001500d5a4553070090a4eaeec2c8e79d7dc00afbfbd33",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    },
+    {
+      "repeat": 2,
+      "case_id": "s3_14_live_through_helpers",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_live_through_helpers.case.json",
+      "fixture_sha256": "479ea8ccc52ca53e676989279cdd068ed76dcdde78a9e06deb98fecb3ef87998",
+      "fixture_schema_version": 1,
+      "result_schema_version": 1,
+      "build": {
+        "local_interpreter": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "local_jit_block": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "aarch64-apple-darwin",
+          "profile": "debug",
+          "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+        },
+        "native_x86": {
+          "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+          "target": "x86_64-unknown-linux-gnu",
+          "profile": "debug",
+          "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+        }
+      },
+      "machines": {
+        "local_interpreter": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "local_jit_block": {
+          "host_os": "macos",
+          "host_arch": "aarch64",
+          "cpu_model": null,
+          "kernel": null,
+          "page_size": null
+        },
+        "native_x86": {
+          "host_os": "linux",
+          "host_arch": "x86_64",
+          "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+          "kernel": "7.0.0-38-generic",
+          "page_size": 4096
+        }
+      },
+      "differences": {
+        "interpreter_vs_jit_block": 0,
+        "interpreter_vs_native": 0,
+        "jit_block_vs_native": 0
+      },
+      "repeat_differences": {
+        "interpreter": 0,
+        "jit_block": 0,
+        "native_x86": 0
+      }
+    }
+  ],
+  "commands": [
+    {
+      "host": "senya@192.168.1.39",
+      "command": "cd /home/senya/projects/open_desktop-stage3-s3-14-preflight-final-20261103 && . \"$HOME/.cargo/env\" && cargo test --offline -p od-testkit -p od-runner -p od-x86-runner"
+    },
+    {
+      "host": "local",
+      "argv": [
+        "cargo",
+        "build",
+        "--offline",
+        "-p",
+        "od-runner"
+      ]
+    },
+    {
+      "host": "senya@192.168.1.39",
+      "command": "cd /home/senya/projects/open_desktop-stage3-s3-14-preflight-final-20261103 && . \"$HOME/.cargo/env\" && OPEN_DESKTOP_GIT_REVISION=sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e RUSTC_VERSION='rustc 1.99.1 (58cf8f9c3 2026-10-13)' cargo build --offline -p od-x86-runner"
+    },
+    {
+      "host": "local",
+      "argv": [
+        "scp",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures.tar.gz",
+        "senya@192.168.1.39:/home/senya/projects/open_desktop-stage3-s3-14-preflight-final-20261103/work/stage1-oracle/stage1-20261103-144006-e83f9801/fixtures.tar.gz"
+      ]
+    },
+    {
+      "host": "senya@192.168.1.39",
+      "command": "remote native batch for 13 fixtures"
+    },
+    {
+      "host": "senya@192.168.1.39",
+      "command": "remote native batch for 13 fixtures"
+    }
+  ],
+  "inputs": [
+    {
+      "case_id": "s0_09_mov_imm64",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s0_09_mov_imm64.case.json",
+      "fixture_sha256": "45139dedf0d845010e5773fe4b776919ebb5c0af125680d0e27540dac732a5db",
+      "seed": null
+    },
+    {
+      "case_id": "s0_09_add_overflow",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s0_09_add_overflow.case.json",
+      "fixture_sha256": "12e43c2a15e5b41e868092fd9223c1e4ff888da49d6b39a1474ce8e362d2a729",
+      "seed": null
+    },
+    {
+      "case_id": "s0_09_cmp_jz",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s0_09_cmp_jz.case.json",
+      "fixture_sha256": "0828f14b6ef6035e1dffb812c79b3ec81c0d78aa86c2f7cc8a8aa422d96ca58b",
+      "seed": null
+    },
+    {
+      "case_id": "s1_06_add_signed_overflow",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_add_signed_overflow.case.json",
+      "fixture_sha256": "740d7bf6e9408a9db1dcab0f6d1a399b3200aac63d11ad3e51b6baa1f95c0d15",
+      "seed": null
+    },
+    {
+      "case_id": "s1_06_sub_borrow",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_sub_borrow.case.json",
+      "fixture_sha256": "994a3b4ad68580a9e3138fe4ce18e18d5f94647064afe06311de654bb19e6ad0",
+      "seed": null
+    },
+    {
+      "case_id": "s1_06_cmp_signed_boundary",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_cmp_signed_boundary.case.json",
+      "fixture_sha256": "a8a47e5f25bc1fd3493cc5432cc614e92365cc2c15f70fb37f40be5b7e86d6a5",
+      "seed": null
+    },
+    {
+      "case_id": "s1_06_jz_taken",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_jz_taken.case.json",
+      "fixture_sha256": "f7a04d7ab9cb67f3a475dfeb28d6b7ba1b032411048d898a80a2a05dc2e8889d",
+      "seed": null
+    },
+    {
+      "case_id": "s1_06_mov_preserves_flags",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s1_06_mov_preserves_flags.case.json",
+      "fixture_sha256": "01eb759e88337a61b6e1801ceda16903764263172eb10977316796ac65b0608c",
+      "seed": null
+    },
+    {
+      "case_id": "s3_14_jz_to_end_skips_tail",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jz_to_end_skips_tail.case.json",
+      "fixture_sha256": "8da5f28d8409ae63a1851862f416bc786a6db43606b227c9a52fff879cf4543d",
+      "seed": null
+    },
+    {
+      "case_id": "s3_14_jnz_to_end_skips_tail",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jnz_to_end_skips_tail.case.json",
+      "fixture_sha256": "cadf3cda3d7c536d6a0d8626b908215586ba6ef0b5d2c9421122cdaacb8d951c",
+      "seed": null
+    },
+    {
+      "case_id": "s3_14_jz_not_taken_backward_target",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jz_not_taken_backward_target.case.json",
+      "fixture_sha256": "0f0e9f1c81ecc671d642ba124934b0adb8f03b5a35413728445be1f834ff9760",
+      "seed": null
+    },
+    {
+      "case_id": "s3_14_jnz_not_taken_backward_target",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_jnz_not_taken_backward_target.case.json",
+      "fixture_sha256": "97552173b206628db8001500d5a4553070090a4eaeec2c8e79d7dc00afbfbd33",
+      "seed": null
+    },
+    {
+      "case_id": "s3_14_live_through_helpers",
+      "fixture_path": "docs/reports/data/stage3/s3-14-mini-2026-11-03/official-cli-run-final/stage1-20261103-144006-e83f9801/fixtures/s3_14_live_through_helpers.case.json",
+      "fixture_sha256": "479ea8ccc52ca53e676989279cdd068ed76dcdde78a9e06deb98fecb3ef87998",
+      "seed": null
+    }
+  ],
+  "reproduce_argv": [
+    "/opt/homebrew/opt/python@3.15/bin/python3.15",
+    "tests/cpu/stage1_oracle.py",
+    "--host",
+    "192.168.1.39",
+    "--user",
+    "senya",
+    "--remote-root",
+    "/home/senya/projects/open_desktop-stage3-s3-14-preflight-final-20261103",
+    "--repeats",
+    "2",
+    "--engine",
+    "jit-block",
+    "--manifest",
+    "tests/cpu/manifests/stage3_s3_14_jit_block.json"
+  ],
+  "remote_test_preflight": {
+    "host": "senya@192.168.1.39",
+    "command": "cd /home/senya/projects/open_desktop-stage3-s3-14-preflight-final-20261103 && . \"$HOME/.cargo/env\" && cargo test --offline -p od-testkit -p od-runner -p od-x86-runner",
+    "exit_code": 0,
+    "stdout_path": "remote-test-preflight.stdout.log",
+    "stderr_path": "remote-test-preflight.stderr.log"
+  },
+  "remote_test_summary": [
+    "test result::tests::completed_result_requires_the_core_snapshot ... ok",
+    "test result::tests::ir_block_backend_uses_a_distinct_stable_result_tag ... ok",
+    "test result::tests::ir_dispatch_backend_uses_a_distinct_stable_result_tag ... ok",
+    "test result::tests::observations_reject_unknown_and_conflicting_fields ... ok",
+    "test result::tests::result_memory_is_bounded ... ok",
+    "test result::tests::result_must_match_exact_case_input ... ok",
+    "test result::tests::result_round_trip_keeps_unavailable_distinct_from_zero ... ok",
+    "test result: ok. 188 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s",
+    "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+    "test result: ok. 112 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.83s",
+    "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+  ],
+  "finished_utc": "2026-11-03T14:40:26Z"
+}

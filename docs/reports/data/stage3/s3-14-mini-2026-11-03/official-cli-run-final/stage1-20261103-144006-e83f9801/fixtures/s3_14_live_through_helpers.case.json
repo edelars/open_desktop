@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "case_id": "s3_14_live_through_helpers",
+  "profile": "s0_09_register_subset_v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "tests/fixtures/x86/stage3/s3_14_live_through_helpers.hex",
+    "specification": "docs/specs/CPU_CONTRACT.md",
+    "specification_version": "v0.1; Intel SDM 093; AMD APM 4.09"
+  },
+  "program": {
+    "bytes_hex": "4803c0482bd24803c3482bc9483bc37400",
+    "sha256": "4fe980f463d01c3fc413943b73860314d9c780c638acdc9bf50072290c89f778"
+  },
+  "initial_state": {
+    "rax": "0x8000000000000000",
+    "rcx": "0x0000000000000007",
+    "rdx": "0x0000000000000009",
+    "rbx": "0x0000000000000001",
+    "rip": "0x0000000000000000",
+    "rflags": "0x0000000000000002"
+  },
+  "instruction_budget": 16,
+  "wall_timeout_ms": 1000,
+  "comparison": {
+    "registers": [
+      "rax",
+      "rcx",
+      "rdx",
+      "rbx"
+    ],
+    "rip": true,
+    "rflags_mask": "0x00000000000008d5",
+    "memory": {
+      "status": "unsupported"
+    },
+    "exceptions": {
+      "status": "unsupported"
+    }
+  },
+  "expected_exit": "reached_code_end"
+}

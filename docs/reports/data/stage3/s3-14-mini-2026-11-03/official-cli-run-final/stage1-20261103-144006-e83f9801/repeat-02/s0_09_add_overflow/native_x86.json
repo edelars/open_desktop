@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "case_id": "s0_09_add_overflow",
+  "input_sha256": "12e43c2a15e5b41e868092fd9223c1e4ff888da49d6b39a1474ce8e362d2a729",
+  "profile": "s0_09_register_subset_v1",
+  "backend": "native_x86",
+  "status": "completed",
+  "expected_exit": "reached_code_end",
+  "exit_reason": {
+    "status": "available",
+    "value": "reached_code_end"
+  },
+  "instructions_executed": {
+    "status": "unavailable",
+    "reason": "native retired instruction count is not sampled"
+  },
+  "snapshot": {
+    "gpr": {
+      "status": "available",
+      "value": {
+        "rax": "0x0000000000000000",
+        "rcx": "0x0000000000000001",
+        "rdx": "0x0000000000000000",
+        "rbx": "0x0000000000000000"
+      }
+    },
+    "rip": {
+      "status": "available",
+      "value": "0x0000000000000003"
+    },
+    "rflags": {
+      "status": "available",
+      "value": "0x0000000000000057"
+    },
+    "memory": {
+      "status": "unavailable",
+      "reason": "S0-09 register-only profile does not capture memory"
+    },
+    "exception": {
+      "status": "unavailable",
+      "reason": "S0-09 profile does not capture exceptions"
+    }
+  },
+  "build": {
+    "revision": "sha256:7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+    "target": "x86_64-unknown-linux-gnu",
+    "profile": "debug",
+    "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  },
+  "machine": {
+    "host_os": "linux",
+    "host_arch": "x86_64",
+    "cpu_model": "Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz",
+    "kernel": "7.0.0-38-generic",
+    "page_size": 4096
+  }
+}

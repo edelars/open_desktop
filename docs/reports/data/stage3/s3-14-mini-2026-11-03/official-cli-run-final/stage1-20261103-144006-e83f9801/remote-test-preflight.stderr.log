@@ -1,0 +1,74 @@
+warning: associated function `one_instruction` is never used
+    --> crates/od-jit/src/block.rs:8584:19
+     |
+8571 | impl<'a> CodeMemory<'a> {
+     | ----------------------- associated function in this implementation
+...
+8584 |     pub(crate) fn one_instruction(code: CodeView<'a>, rip: u64) -> Option<Self> {
+     |                   ^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `od-jit` (lib) generated 1 warning
+warning: function `calibrate_operations` is never used
+   --> tools/runner/src/main.rs:407:4
+    |
+407 | fn calibrate_operations(
+    |    ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `time_decode_batch` is never used
+   --> tools/runner/src/main.rs:428:4
+    |
+428 | fn time_decode_batch(code: &[u8], operations: u64) -> Result<(Duration, ()), String> {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `time_translation_batch` is never used
+   --> tools/runner/src/main.rs:438:4
+    |
+438 | fn time_translation_batch(code: &[u8], operations: u64) -> Result<(Duration, ()), String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `time_interpreter_batch` is never used
+   --> tools/runner/src/main.rs:460:4
+    |
+460 | fn time_interpreter_batch(
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `print_summary` is never used
+   --> tools/runner/src/main.rs:499:4
+    |
+499 | fn print_summary(name: &str, values: &[u128]) {
+    |    ^^^^^^^^^^^^^
+
+warning: `od-runner` (bin "od-runner" test) generated 5 warnings
+warning: field `samples` is never read
+  --> tools/runner/src/main.rs:23:5
+   |
+17 | struct Config {
+   |        ------ field in this struct
+...
+23 |     samples: usize,
+   |     ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `calibrate_operations` is never used
+   --> tools/runner/src/main.rs:407:4
+    |
+407 | fn calibrate_operations(
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: `od-runner` (bin "od-runner") generated 6 warnings (4 duplicates)
+   Compiling od-x86-runner v0.1.0 (/home/senya/projects/open_desktop-stage3-s3-14-preflight-final-20261103/tools/x86-runner)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.09s
+     Running unittests src/main.rs (target/debug/deps/od_runner-995fb6bd0cb603fc)
+     Running tests/fixture_v1_jit_block.rs (target/debug/deps/fixture_v1_jit_block-3d1dd99404a2aed9)
+     Running tests/fixture_v1_jit_dispatch.rs (target/debug/deps/fixture_v1_jit_dispatch-84c225c7b2395ad3)
+     Running tests/fixture_v2.rs (target/debug/deps/fixture_v2-2c7e0d2b6d6f6869)
+     Running unittests src/lib.rs (target/debug/deps/od_testkit-f5745f70b7e792d3)
+     Running unittests src/lib.rs (target/debug/deps/od_x86_runner-58db03df262dc46e)
+     Running unittests src/main.rs (target/debug/deps/od_x86_runner-33e1cbda4eb9c675)
+   Doc-tests od_testkit
+   Doc-tests od_x86_runner
