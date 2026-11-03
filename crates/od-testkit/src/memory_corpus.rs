@@ -23,6 +23,15 @@ pub const MEMORY_CORPUS_SEQUENCES: [MemoryCorpusSequence; 3] = [
 ];
 pub const MEMORY_CORPUS_RAM_LEN: usize = 128;
 
+/// Fixed S3-26f corpus dimensions for the exact qword Store→Store profile.
+pub const S3_26F_SEEDS: [u64; 3] = [
+    0x5333_3236_4600_0001,
+    0x5333_3236_4600_0002,
+    0x5333_3236_4600_0003,
+];
+pub const S3_26F_CASES_PER_SEED: usize = 400;
+pub const S3_26F_SEQUENCE: MemoryCorpusSequence = MemoryCorpusSequence::StoreThenStore;
+
 /// Fixed S3-34dm corpus dimensions for the Address32 RSP-base Dword store.
 pub const S3_34DM_SEEDS: [u64; 3] = [
     0x5333_3444_4d00_0001,
@@ -38,6 +47,7 @@ pub enum MemoryCorpusSequence {
     StoreThenLoad,
     LoadThenStore,
     LoadThenLoad,
+    StoreThenStore,
 }
 
 impl MemoryCorpusSequence {
@@ -46,6 +56,7 @@ impl MemoryCorpusSequence {
             Self::StoreThenLoad => [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
             Self::LoadThenStore => [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02],
             Self::LoadThenLoad => [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b],
+            Self::StoreThenStore => [0x48, 0x89, 0x03, 0x48, 0x89, 0x02],
         }
     }
 }
@@ -88,9 +99,8 @@ impl Rng {
 /// Generate one input using the memory corpus's fixed seed/index algorithm.
 ///
 /// When `forced_sequence` is `None`, the same seed/index bit selects one of
-/// the original S3-34a sequences. A forced `LoadThenLoad` is supported for the
-/// later host corpus extension, while callers selecting the S3-34a benchmark
-/// subset should iterate only [`S3_34A_SEQUENCES`].
+/// the original S3-34a sequences. Callers selecting a frozen profile should
+/// force its sequence and iterate only that profile's seed/index dimensions.
 pub fn generate_memory_corpus_input(
     seed: u64,
     index: usize,
@@ -141,10 +151,14 @@ pub fn generate_memory_corpus_input(
     for value in &mut gpr {
         *value = rng.next();
     }
-    // All sequences use RBX for the first address. LoadThenStore alone uses RDX
-    // for its second address; LoadThenLoad reads the same RBX range twice.
+    // All sequences use RBX for the first address. LoadThenStore and
+    // StoreThenStore use RDX for their second address; LoadThenLoad reads the
+    // same RBX range twice.
     gpr[3] = first_address;
-    gpr[2] = if sequence == MemoryCorpusSequence::LoadThenStore {
+    gpr[2] = if matches!(
+        sequence,
+        MemoryCorpusSequence::LoadThenStore | MemoryCorpusSequence::StoreThenStore
+    ) {
         second_address
     } else {
         rng.next()
@@ -155,13 +169,22 @@ pub fn generate_memory_corpus_input(
         gpr,
         flags: rng.next() & 0x8d5,
         first_address,
-        second_address: if sequence == MemoryCorpusSequence::LoadThenStore {
+        second_address: if matches!(
+            sequence,
+            MemoryCorpusSequence::LoadThenStore | MemoryCorpusSequence::StoreThenStore
+        ) {
             second_address
         } else {
             first_address
         },
         ram,
     }
+}
+
+/// Generate one deterministic S3-26f input using the established two-address
+/// distribution and the profile's fixed seed/index algorithm.
+pub fn generate_s3_26f_store_store_input(seed: u64, index: usize) -> MemoryCorpusInput {
+    generate_memory_corpus_input(seed, index, Some(S3_26F_SEQUENCE))
 }
 
 /// Generate one deterministic S3-34dm input. Each seed/index pair selects a
@@ -201,8 +224,9 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        MEMORY_CORPUS_SEQUENCES, MemoryCorpusSequence, S3_34A_CASES_PER_SEED, S3_34A_SEEDS,
-        S3_34A_SEQUENCES, generate_memory_corpus_input,
+        MEMORY_CORPUS_SEQUENCES, MemoryCorpusSequence, S3_26F_CASES_PER_SEED, S3_26F_SEEDS,
+        S3_26F_SEQUENCE, S3_34A_CASES_PER_SEED, S3_34A_SEEDS, S3_34A_SEQUENCES,
+        generate_memory_corpus_input, generate_s3_26f_store_store_input,
     };
 
     #[test]
@@ -252,6 +276,32 @@ mod tests {
             crate::sha256_hex(&digest_bytes),
             "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540"
         );
+    }
+
+    #[test]
+    fn s3_26f_store_store_inputs_are_deterministic_unique_and_use_two_addresses() {
+        assert_eq!(S3_26F_SEQUENCE.bytes(), [0x48, 0x89, 0x03, 0x48, 0x89, 0x02]);
+        let mut unique = HashSet::new();
+        for seed in S3_26F_SEEDS {
+            for index in 0..S3_26F_CASES_PER_SEED {
+                let input = generate_s3_26f_store_store_input(seed, index);
+                assert_eq!(
+                    input,
+                    generate_s3_26f_store_store_input(seed, index)
+                );
+                assert!(unique.insert(input.clone()));
+                assert_eq!(input.sequence, S3_26F_SEQUENCE);
+                assert_eq!(
+                    input.sequence.bytes(),
+                    [0x48, 0x89, 0x03, 0x48, 0x89, 0x02]
+                );
+                assert_eq!(input.gpr[3], input.first_address);
+                assert_eq!(input.gpr[2], input.second_address);
+                assert!(input.first_address + 8 <= input.ram.len() as u64);
+                assert!(input.second_address + 8 <= input.ram.len() as u64);
+            }
+        }
+        assert_eq!(unique.len(), S3_26F_SEEDS.len() * S3_26F_CASES_PER_SEED);
     }
 
     #[test]

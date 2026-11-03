@@ -889,6 +889,9 @@ fn memory_profile(sequence: od_testkit::memory_corpus::MemoryCorpusSequence) -> 
         MemoryCorpusSequence::StoreThenLoad => MemoryPairProfile::StoreThenLoad,
         MemoryCorpusSequence::LoadThenStore => MemoryPairProfile::LoadThenStore,
         MemoryCorpusSequence::LoadThenLoad => unreachable!("third sequence is excluded"),
+        MemoryCorpusSequence::StoreThenStore => {
+            unreachable!("S3-26f is excluded from this benchmark")
+        }
     }
 }
 

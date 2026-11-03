@@ -15,7 +15,8 @@ use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory,
 use od_isa::{LongModeState, OperandSize};
 use od_testkit::memory_corpus::{
     MEMORY_CORPUS_RAM_LEN, MEMORY_CORPUS_SEQUENCES, MemoryCorpusInput, MemoryCorpusSequence,
-    S3_34A_CASES_PER_SEED, S3_34A_SEEDS, generate_memory_corpus_input,
+    S3_26F_CASES_PER_SEED, S3_26F_SEEDS, S3_26F_SEQUENCE, S3_34A_CASES_PER_SEED,
+    S3_34A_SEEDS, generate_memory_corpus_input, generate_s3_26f_store_store_input,
 };
 use serde::{Deserialize, Serialize};
 
@@ -26,9 +27,22 @@ const CASES_PER_SEED: usize = S3_34A_CASES_PER_SEED;
 const REPORT_VERSION: u32 = 1;
 const ENVELOPE_VERSION: u32 = 1;
 const CASE_PROFILE: &str = "s3-20j-two-site-qword-mov-v1";
+const S3_26F_CASE_PROFILE: &str = "s3-26f-two-site-qword-store-store-v1";
 const MAX_REDUCER_ATTEMPTS: usize = 512;
 const SEEDS: [u64; 3] = S3_34A_SEEDS;
-const SEQUENCES: [Sequence; 3] = MEMORY_CORPUS_SEQUENCES;
+const SEQUENCES: [Sequence; 3] = [
+    Sequence::StoreThenLoad,
+    Sequence::LoadThenStore,
+    Sequence::LoadThenLoad,
+];
+const REPLAY_SEQUENCES: [Sequence; 4] = [
+    Sequence::StoreThenLoad,
+    Sequence::LoadThenStore,
+    Sequence::LoadThenLoad,
+    S3_26F_SEQUENCE,
+];
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const S3_26F_CASES: usize = S3_26F_CASES_PER_SEED;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 static JIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -198,11 +212,20 @@ impl SequenceSiteOperation for Sequence {
     fn site_operation(self, site_index: u8) -> MemoryAccess {
         match (self, site_index) {
             (Self::StoreThenLoad, 0) | (Self::LoadThenStore, 1) => MemoryAccess::Write,
+            (Self::StoreThenStore, 0 | 1) => MemoryAccess::Write,
             (Self::StoreThenLoad, 1) | (Self::LoadThenStore, 0) | (Self::LoadThenLoad, 0 | 1) => {
                 MemoryAccess::Read
             }
             _ => unreachable!("validated memory site index"),
         }
+    }
+}
+
+fn profile_for_sequence(sequence: Sequence) -> &'static str {
+    if sequence == S3_26F_SEQUENCE {
+        S3_26F_CASE_PROFILE
+    } else {
+        CASE_PROFILE
     }
 }
 
@@ -365,7 +388,16 @@ impl GuestMemory for Ram {
 }
 
 fn generated_input(seed: u64, index: usize, forced_sequence: Option<Sequence>) -> CorpusInput {
-    generate_memory_corpus_input(seed, index, forced_sequence).into()
+    forced_sequence
+        .map(|sequence| {
+            if sequence == S3_26F_SEQUENCE {
+                generate_s3_26f_store_store_input(seed, index)
+            } else {
+                generate_memory_corpus_input(seed, index, Some(sequence))
+            }
+        })
+        .unwrap_or_else(|| generate_memory_corpus_input(seed, index, None))
+        .into()
 }
 
 impl From<MemoryCorpusInput> for CorpusInput {
@@ -390,7 +422,7 @@ impl CaseEnvelope {
     ) -> Self {
         Self {
             version: ENVELOPE_VERSION,
-            profile: CASE_PROFILE.into(),
+            profile: profile_for_sequence(input.sequence).into(),
             seed,
             case_id,
             sequence: input.sequence,
@@ -415,7 +447,7 @@ impl CaseEnvelope {
                 self.version
             ));
         }
-        if self.profile != CASE_PROFILE {
+        if self.profile != profile_for_sequence(self.sequence) {
             return Err(format!("unsupported replay profile {:?}", self.profile));
         }
         if self.source_bytes_hex != hex(&self.sequence.bytes()) {
@@ -435,7 +467,7 @@ impl CaseEnvelope {
         let first_address = self.initial_cpu.gpr[3];
         let second_address = match self.sequence {
             Sequence::StoreThenLoad | Sequence::LoadThenLoad => first_address,
-            Sequence::LoadThenStore => self.initial_cpu.gpr[2],
+            Sequence::LoadThenStore | Sequence::StoreThenStore => self.initial_cpu.gpr[2],
         };
         if self.first_address != first_address || self.second_address != second_address {
             return Err("recorded access addresses do not match the initial GPR snapshot".into());
@@ -1493,7 +1525,8 @@ fn reducer_units(sequence: Sequence) -> Vec<ReductionUnit> {
 }
 
 fn is_address_register(sequence: Sequence, index: usize) -> bool {
-    index == 3 || (sequence == Sequence::LoadThenStore && index == 2)
+    index == 3
+        || (matches!(sequence, Sequence::LoadThenStore | Sequence::StoreThenStore) && index == 2)
 }
 
 fn reduction_complexity(envelope: &CaseEnvelope) -> u32 {
@@ -1903,6 +1936,52 @@ fn fixed_seed_memory_corpus_matches_interpreter_twice_per_input() {
 
 #[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn fixed_seed_s3_26f_store_store_corpus_matches_interpreter_twice_per_input() {
+    let _guard = JIT_TEST_LOCK.lock().unwrap();
+    let source = S3_26F_SEQUENCE.bytes();
+    assert_eq!(source, [0x48, 0x89, 0x03, 0x48, 0x89, 0x02]);
+    let block = od_jit::memory_load_v2::compile_ir_memory_two_site_block_v2(
+        od_jit::block::CodeView::new(ENTRY_RIP, &source).unwrap(),
+        ENTRY_RIP,
+    )
+    .unwrap();
+    let published = PublishedCode::publish_ir_memory_two_site_v2(&block).unwrap();
+    let mut unique = HashSet::new();
+    let mut total = 0usize;
+    for seed in S3_26F_SEEDS {
+        for case_index in 0..S3_26F_CASES {
+            let input = generated_input(seed, case_index, Some(S3_26F_SEQUENCE));
+            assert!(
+                unique.insert(input.clone()),
+                "duplicate S3-26f input: seed={seed:#x} case={case_index}"
+            );
+            let envelope = CaseEnvelope::from_input(
+                &input,
+                seed,
+                case_index,
+                ReplayProtocol::successful_pair(),
+            );
+            assert_eq!(envelope.profile, S3_26F_CASE_PROFILE);
+            assert_eq!(envelope.source_bytes_hex, "488903488902");
+            total += 1;
+            for replay in 0..2 {
+                let stop = AtomicU8::new(0);
+                let native = native_run(&published, &input, 2, None, &stop, None);
+                let interpreter = interpreter_run(&input, 2, None, false, None);
+                assert_matches(seed, case_index * 2 + replay, &input, &native, &interpreter);
+                assert_eq!(native.status, "Complete", "seed={seed:#x} case={case_index}");
+                assert_eq!(native.retired, 2, "seed={seed:#x} case={case_index}");
+                assert_eq!(native.callbacks, ["write", "write"]);
+                assert_eq!(native.memory_accesses, expected_accesses(&input));
+            }
+        }
+    }
+    assert_eq!(total, 3 * 400);
+    assert_eq!(unique.len(), total);
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn capacity_one_memory_cache_matches_uncached_dispatch_for_frozen_profiles() {
     let _guard = JIT_TEST_LOCK.lock().unwrap();
     use od_jit::memory_cache::MemoryPairProfile;
@@ -1952,7 +2031,9 @@ fn capacity_one_memory_cache_matches_uncached_dispatch_for_frozen_profiles() {
         let (profile, context_generation) = match case.input.sequence {
             Sequence::StoreThenLoad => (MemoryPairProfile::StoreThenLoad, 1),
             Sequence::LoadThenStore => (MemoryPairProfile::LoadThenStore, 2),
-            Sequence::LoadThenLoad => panic!("S3-18e must not admit LoadThenLoad"),
+            Sequence::LoadThenLoad | Sequence::StoreThenStore => {
+                panic!("S3-18e must not admit this sequence")
+            }
         };
         for replay in 0..2 {
             let cached = cached_dispatch_run(
@@ -2582,6 +2663,7 @@ fn expected_order(sequence: Sequence) -> Vec<&'static str> {
         Sequence::StoreThenLoad => vec!["write", "read"],
         Sequence::LoadThenStore => vec!["read", "write"],
         Sequence::LoadThenLoad => vec!["read", "read"],
+        Sequence::StoreThenStore => vec!["write", "write"],
     }
 }
 
@@ -2590,7 +2672,9 @@ fn expected_accesses(input: &CorpusInput) -> Vec<String> {
         Sequence::StoreThenLoad | Sequence::LoadThenLoad => {
             [input.first_address, input.first_address]
         }
-        Sequence::LoadThenStore => [input.first_address, input.second_address],
+        Sequence::LoadThenStore | Sequence::StoreThenStore => {
+            [input.first_address, input.second_address]
+        }
     };
     expected_order(input.sequence)
         .into_iter()
@@ -2604,7 +2688,7 @@ fn expected_accesses(input: &CorpusInput) -> Vec<String> {
 fn named_fault_stop_budget_and_continuation_cases_are_separate() {
     let _guard = JIT_TEST_LOCK.lock().unwrap();
     let seed = 0x5343_3441_ffff_0001;
-    for sequence in SEQUENCES {
+    for sequence in REPLAY_SEQUENCES {
         let case_id = sequence as usize;
         let input = generated_input(seed, case_id, Some(sequence));
         let source = sequence.bytes();
@@ -2671,6 +2755,15 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
                     && native_fault.state.rip == ENTRY_RIP + u64::from(site_index) * 3,
                 "expected a precise architectural guest fault at the selected site",
             );
+            if sequence == S3_26F_SEQUENCE && site_index == 1 {
+                let mut expected_ram = input.ram;
+                let first = input.first_address as usize;
+                expected_ram[first..first + 8].copy_from_slice(&input.gpr[0].to_le_bytes());
+                assert_eq!(native_fault.ram, expected_ram);
+                assert_eq!(native_fault.callbacks, ["write", "write"]);
+                assert_eq!(native_fault.retired, 1);
+                assert_eq!(native_fault.state.rip, ENTRY_RIP + 3);
+            }
         }
 
         let requested = AtomicU8::new(1);
@@ -2722,6 +2815,13 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
                 && interp_budget.state.rip == ENTRY_RIP + 3,
             "expected one committed instruction before budget exhaustion",
         );
+        if sequence == S3_26F_SEQUENCE {
+            let mut expected_ram = input.ram;
+            let first = input.first_address as usize;
+            expected_ram[first..first + 8].copy_from_slice(&input.gpr[0].to_le_bytes());
+            assert_eq!(native_budget.ram, expected_ram);
+            assert_eq!(native_budget.callbacks, ["write"]);
+        }
 
         let native_continuation = native_continue(&published, &input, &native_budget);
         let interp_continuation = interpreter_continue(&input, &interp_budget);
@@ -2757,6 +2857,16 @@ fn named_fault_stop_budget_and_continuation_cases_are_separate() {
                 && native_continuation.memory_accesses == expected_accesses(&input),
             "expected continuation to retire the second instruction",
         );
+        if sequence == S3_26F_SEQUENCE {
+            assert_eq!(native_continuation.callbacks, ["write", "write"]);
+            assert_eq!(native_continuation.memory_accesses, expected_accesses(&input));
+            let mut expected_ram = input.ram;
+            expected_ram[input.first_address as usize..input.first_address as usize + 8]
+                .copy_from_slice(&input.gpr[0].to_le_bytes());
+            expected_ram[input.second_address as usize..input.second_address as usize + 8]
+                .copy_from_slice(&input.gpr[0].to_le_bytes());
+            assert_eq!(native_continuation.ram, expected_ram);
+        }
         drop(published);
     }
 }
@@ -2972,7 +3082,7 @@ fn phase_moving_test_probe(envelope: &CaseEnvelope) -> Result<ReducerRun, String
 #[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn bounded_reducer_is_deterministic_preserves_class_and_saves_report() {
-    for sequence in SEQUENCES {
+    for sequence in REPLAY_SEQUENCES {
         let original_text = reducer_fixture_report(sequence, 0xfeed_beef_0102_0304);
         let original = decode_replay_report(&original_text).unwrap();
         let first = reduce_report_text_with_test_corruption(&original_text, 12, true).unwrap();
@@ -3332,7 +3442,7 @@ fn mismatch_report_preserves_empty_first_and_mismatching_continuation_phases() {
 
 #[test]
 fn replay_envelope_round_trips_and_rejects_malformed_reports() {
-    for sequence in SEQUENCES {
+    for sequence in REPLAY_SEQUENCES {
         let input = generated_input(0x5343_3441_ffff_1000, sequence as usize, Some(sequence));
         let envelope = CaseEnvelope::from_input(
             &input,
@@ -3498,7 +3608,7 @@ fn replay_envelope_round_trips_and_rejects_malformed_reports() {
 fn replay_success_fault_stop_budget_and_continuation_for_all_sequences() {
     let seed = 0x5343_3441_ffff_2000;
     let mut saved_path = None;
-    for sequence in SEQUENCES {
+    for sequence in REPLAY_SEQUENCES {
         let case_id = sequence as usize;
         let input = generated_input(seed, case_id, Some(sequence));
         let fault_access = sequence.site_operation(0);
@@ -3709,7 +3819,7 @@ fn replay_success_fault_stop_budget_and_continuation_for_all_sequences() {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn saved_mismatch_report_replays_and_preserves_original_classes() {
     let seed = 0x5343_3441_ffff_0034;
-    for sequence in SEQUENCES {
+    for sequence in REPLAY_SEQUENCES {
         let case_id = sequence as usize;
         let input = generated_input(seed, case_id, Some(sequence));
         let envelope =

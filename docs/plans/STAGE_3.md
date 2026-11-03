@@ -427,6 +427,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34dn | Create-only mismatch artifact and validated replay for S3-34dm | Runtime commits `f858b7a`/`10447f0`/`ee2af23` and harness commits `89c5e28`/`13b7790` are integrated and passed independent static Sol/high review. The self-check now pins no-overwrite, invalid-version, and invalid-RIP assertions. Rust self-check and optional saved-artifact replay identities and harness gate are pinned. Historical totals for this slice: 304 gates (294 acceptance + 10 lifecycle), 322 local steps, 137 self-test names; nothing was executed. S3-34.2 replay/reducer implementation was subsequently completed by S3-34dn/do; execution acceptance remains pending. ISSUE-028 and ISSUE-029 remain open pending their respective execution acceptance. См. [JIT testing reference](../testing/JIT.md#s3-34dn-create-only-mismatch-artifact-and-validated-replay-for-s3-34dm) and [report](../reports/STAGE_3_S3-34dn_2026-11-03.md) |
 | [partial] | S3-34do | Bounded value-only reducer for one S3-34dn artifact | Runtime commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated and passed independent static Sol/high review. Reducer, reducer self-check, and harness identities are pinned. Totals: 305 gates (295 acceptance + 10 lifecycle), 323 steps, 138 self-test names; all remain unexecuted. No real S3-34dn artifact was reduced. S3-34.2 execution acceptance remains pending. ISSUE-028/029 remain open; Stage 3 partial. См. [JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact) and [report](../reports/STAGE_3_S3-34do_2026-11-03.md) |
 | [partial] | S3-34dp | Exact local harness gates for S3-38e session ownership | Four exact `od-host --lib` lifecycle identities and the fail-closed harness self-check are pinned, including the `session.rs` source fingerprint. Current totals: 312 gates (298 acceptance + 14 lifecycle), 330 local steps, 140 self-test names. Static review only; no harness or Rust gate execution. Mini/M1 remain deferred. См. [JIT testing reference](../testing/JIT.md#s3-38e-bounded-local-rust-session-owner) and [report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
+| [partial] | S3-34dq | Exact Store→Store fixed-seed corpus, replay/reducer coverage, and gates | Adds 1,200 unique exact `48 89 03 48 89 02` inputs, strict profile `s3-26f-two-site-qword-store-store-v1`, second-write fault/continuation no-replay evidence, and two exact corpus/generator gates. Totals 320 Rust gates, 338 local steps, 4,800 unique corpus inputs. Independent Sol/high review passed; execution remains deferred and ISSUE-028 stays open pending acceptance. См. [implementation report](../reports/STAGE_3_S3-34dq_2026-11-03.md) |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
@@ -4882,3 +4883,25 @@ The session owner itself is documented in the
 [S3-38e report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md); see the
 [focused harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md) and
 [JIT testing reference](../testing/JIT.md#s3-38e-bounded-local-rust-session-owner).
+
+#### S3-34dq. Exact Store→Store corpus, replay, and reducer coverage
+
+`od-testkit` now generates 1,200 fixed-seed inputs for the exact two-site
+sequence `48 89 03 48 89 02` (`MOV [RBX],RAX; MOV [RDX],RAX`). The host corpus
+compares native and interpreter executions, repeats each input, and covers
+second-write architectural faults and continuation while preserving the first
+committed write without replay. Saved cases use the distinct profile
+`s3-26f-two-site-qword-store-store-v1`; the envelope remains version 1, and
+existing memory profiles retain their validation and seeds. The three benchmark
+consumers explicitly exclude the new sequence; their profile lists, inputs,
+counts, defaults, and cached support remain unchanged.
+
+The harness pins the exact host corpus and testkit generator gates plus the
+existing S3-26f JIT/dispatcher gates. Its fail-closed self-check verifies test
+identities, source pins, commands, and missing/duplicate evidence. Totals are
+320 Rust gates (302 acceptance + 18 lifecycle), 338 local steps, and 4,800
+unique memory corpus inputs. Independent Sol/high static review passed. No
+Rust gate, harness, build, formatting, or Python execution was performed.
+ISSUE-028 remains open pending runtime acceptance; Mini and M1 checks remain
+deferred. See the [S3-34dq report](../reports/STAGE_3_S3-34dq_2026-11-03.md)
+and [JIT testing reference](../testing/JIT.md#s3-34dq-storestore-corpus-replay-and-reducer-coverage).

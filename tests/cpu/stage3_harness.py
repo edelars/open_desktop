@@ -24,12 +24,14 @@ SCHEMA_VERSION = 3
 GENERATED_COUNT = 1000
 GENERATED_SEED = "0x5eedcafe"
 REPEATS = 2
+MEMORY_CORPUS_UNIQUE_INPUTS = 4800
 RUN_ID_PATTERN = re.compile(r"stage3-\d{8}-\d{6}-[0-9a-f]{10}")
 S3_30P3_GATE_STEP = "s3_30p3_allocator_helper_clobber_values"
 S3_30P3_GATE_IDENTITY = "tests::allocated_register_and_spill_values_survive_helper_clobbers"
 
 MEMORY_REQUIRED_TESTS = {
     "fixed_seed_memory_corpus_matches_interpreter_twice_per_input",
+    "fixed_seed_s3_26f_store_store_corpus_matches_interpreter_twice_per_input",
     "reducer_preserves_load_pair_site_fault_boundary_and_mismatch_class",
     "named_fault_stop_budget_and_continuation_cases_are_separate",
     "comparator_rejects_corruption_and_serializes_named_diagnostics",
@@ -1440,6 +1442,14 @@ ADDITIONAL_TEST_GATES = (
         "memory_dispatch::tests::uncached_dispatch_selects_store_store_pair_and_resumes_at_second_site",
     ),
     (
+        "s3_26f_store_store_corpus_jit_interpreter", "local_acceptance", "od-host",
+        "fixed_seed_s3_26f_store_store_corpus_matches_interpreter_twice_per_input",
+    ),
+    (
+        "s3_26f_store_store_fixed_seed_generator", "local_acceptance", "od-testkit",
+        "memory_corpus::tests::s3_26f_store_store_inputs_are_deterministic_unique_and_use_two_addresses",
+    ),
+    (
         "s3_16_not_rcx_fallback", "local_acceptance", "od-jit",
         "memory_dispatch::tests::not_rcx_fallback_is_exact_and_strict_run_stays_strict",
     ),
@@ -1453,6 +1463,10 @@ ADDITIONAL_TEST_GATES = (
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {
+    (
+        "od-host",
+        "fixed_seed_s3_26f_store_store_corpus_matches_interpreter_twice_per_input",
+    ): ("--test", "memory_corpus"),
     (
         "od-host",
         "published_single_site_pc_maps_match_artifacts_outlive_them_and_republish",
@@ -1684,6 +1698,7 @@ PROCESS_SOURCE_PATHS = (
 )
 LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/tests/memory_corpus.rs",
+    "crates/od-testkit/src/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
     "crates/od-host/src/session_abi_v1.rs",
     "crates/od-host/src/session.rs",
@@ -3645,7 +3660,7 @@ def input_manifest() -> dict:
             "source": memory_path.relative_to(ROOT).as_posix(),
             "source_sha256": sha256_file(memory_path),
             "required_tests": sorted(MEMORY_REQUIRED_TESTS),
-            "expected_unique_inputs": 3600,
+            "expected_unique_inputs": MEMORY_CORPUS_UNIQUE_INPUTS,
             "replays_per_input": 2,
             "exact_gate": {
                 "test_identity": MEMORY_EXACT_GATE,
@@ -3747,7 +3762,7 @@ def validate_input_manifest_file(path: Path, expected_digest: str) -> dict:
         or memory.get("source") != "crates/od-host/tests/memory_corpus.rs"
         or memory.get("source_sha256") != sha256_file(ROOT / "crates/od-host/tests/memory_corpus.rs")
         or memory.get("required_tests") != sorted(MEMORY_REQUIRED_TESTS)
-        or memory.get("expected_unique_inputs") != 3600
+        or memory.get("expected_unique_inputs") != MEMORY_CORPUS_UNIQUE_INPUTS
         or memory.get("replays_per_input") != REPEATS
         or memory.get("exact_gate") != expected_memory_gate
     ):
@@ -4236,7 +4251,7 @@ def validate_final_summary(summary: dict, input_manifest_path: Path) -> None:
         memory_suite = suites.get("memory_corpus", {})
         if (
             memory_suite.get("status") != "passed"
-            or memory_suite.get("unique_inputs") != 3600
+            or memory_suite.get("unique_inputs") != MEMORY_CORPUS_UNIQUE_INPUTS
             or memory_suite.get("replays_per_input") != REPEATS
             or memory_suite.get("test_outcomes") != steps.get("memory_corpus", {}).get("test_outcomes")
             or memory_suite.get("s3_34h_exact_gate") != steps["memory_s3_34h_exact_gate"]
@@ -4473,7 +4488,7 @@ def main(argv: list[str] | None = None) -> int:
                     corpus_output, MEMORY_REQUIRED_TESTS, MEMORY_ALLOWED_IGNORED_TESTS
                 )
                 summary["steps"][name]["test_outcomes"] = outcomes
-                summary["steps"][name]["unique_inputs"] = 3600
+                summary["steps"][name]["unique_inputs"] = MEMORY_CORPUS_UNIQUE_INPUTS
                 summary["steps"][name]["replays_per_input"] = 2
                 summary["steps"][name]["allowed_ignored"] = sorted(MEMORY_ALLOWED_IGNORED_TESTS)
                 replace_json(summary_path, summary)
@@ -4535,7 +4550,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         summary["suites"]["memory_corpus"] = {
             "status": "passed",
-            "unique_inputs": 3600,
+            "unique_inputs": MEMORY_CORPUS_UNIQUE_INPUTS,
             "replays_per_input": 2,
             "test_outcomes": summary["steps"]["memory_corpus"]["test_outcomes"],
             "s3_34h_exact_gate": summary["steps"]["memory_s3_34h_exact_gate"],

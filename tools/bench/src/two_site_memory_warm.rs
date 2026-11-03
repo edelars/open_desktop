@@ -939,6 +939,7 @@ fn sequence_name(sequence: MemoryCorpusSequence) -> &'static str {
         MemoryCorpusSequence::StoreThenLoad => "store_then_load",
         MemoryCorpusSequence::LoadThenStore => "load_then_store",
         MemoryCorpusSequence::LoadThenLoad => "load_then_load_excluded",
+        MemoryCorpusSequence::StoreThenStore => "store_then_store_excluded",
     }
 }
 

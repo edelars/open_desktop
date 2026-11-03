@@ -868,7 +868,7 @@ pub(super) fn expected_memory_events(
                 width: 8,
             }),
         ],
-        MemoryCorpusSequence::LoadThenLoad => return None,
+        MemoryCorpusSequence::LoadThenLoad | MemoryCorpusSequence::StoreThenStore => return None,
     })
 }
 
@@ -879,7 +879,9 @@ fn count_sequences(cases: &[Case]) -> [usize; 2] {
         match case.input.sequence {
             MemoryCorpusSequence::StoreThenLoad => counts[0] += 1,
             MemoryCorpusSequence::LoadThenStore => counts[1] += 1,
-            MemoryCorpusSequence::LoadThenLoad => unreachable!("excluded S3-34a sequence"),
+            MemoryCorpusSequence::LoadThenLoad | MemoryCorpusSequence::StoreThenStore => {
+                unreachable!("excluded from the S3-34a benchmark")
+            }
         }
     }
     counts

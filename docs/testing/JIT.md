@@ -1538,6 +1538,26 @@ synchronous ordinary RAM; the pair is not transactional. These gates were
 added but not run in this task. Full S3-26, S3-27 and physical x86 acceptance
 remain open.
 
+### S3-34dq Store→Store corpus, replay, and reducer coverage
+
+The fixed-seed corpus adds 1,200 unique inputs for `48 89 03 48 89 02`, using
+the shared `MemoryCorpusSequence::StoreThenStore` representation. Each input
+is compared with the interpreter and repeated through the exact native
+two-site path. Second-write architectural fault and continuation observations
+must preserve the first committed write and must not replay it. Saved cases use
+the strict profile `s3-26f-two-site-qword-store-store-v1`; the existing
+version-1 envelope remains fail-closed for unknown profiles and sequence bytes.
+
+The exact host corpus and testkit generator identities are
+`fixed_seed_s3_26f_store_store_corpus_matches_interpreter_twice_per_input` and
+`memory_corpus::tests::s3_26f_store_store_inputs_are_deterministic_unique_and_use_two_addresses`.
+The harness also retains the source/site, PC-map, and uncached continuation
+gates from S3-26f. Aggregate totals are 320 Rust gates, 338 local steps, and
+4,800 unique memory inputs. Independent Sol/high static review passed; these
+gates and the harness remain unexecuted. ISSUE-028 remains open pending runtime
+acceptance. See the
+[S3-34dq report](../reports/STAGE_3_S3-34dq_2026-11-03.md).
+
 ### Bounded S3-27b next fetch after memory pair
 
 The native fixture runs either exact two-site pair through the generated entry,
