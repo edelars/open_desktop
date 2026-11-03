@@ -91,7 +91,7 @@ and each register changes between cases.
    may occur after live-state observations are secured. Retain the original
    bytes even when a comparator excludes fields.
 4. Independently establish successful progression from `E` to `E+5` and one
-   completion of the instruction under test. The future harness must record
+   completion of the instruction under test. The harness must record
    its exact stop/marker mechanism and raw observed RIP, and distinguish any
    marker/trap RIP adjustment from the expected instruction boundary. Setup,
    observations and marker instructions are outside that one-instruction
@@ -152,10 +152,12 @@ never average, discard or mask a disagreement. Record:
   hardware observation and comparison result. A local fixture pass or
   host-specific mask cannot substitute for missing hardware evidence.
 
-Current delivery is the protocol and its documentation/link checks only.
-Hardware and harness execution remain `not_run`; the future harness/admission
-requires separate implementation and independent review. It may feed the
-combined final Mac mini hardware substage only after those prerequisites.
+The dedicated S2-39k harness implementation is described in
+[S2_39K_FXSAVE64_ORACLE.md](S2_39K_FXSAVE64_ORACLE.md). This protocol remains
+normative for its cases and comparison rules; its hardware repetitions remain
+`not_run` until the harness is run on a supported Linux x86_64 host and the
+emitted-code/ABI review is complete. It may feed the combined final Mac mini
+hardware substage only after those prerequisites.
 See [CPU oracle boundaries](CPU_ORACLE.md), the
 [S2-40a matrix](../reports/STAGE_2_LINUX_PROFILE.md#s2-40a--матрица-требований-ubuntu-generic-amd64)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-39j-successful-cpl3-fxsave64-oracle-protocol).

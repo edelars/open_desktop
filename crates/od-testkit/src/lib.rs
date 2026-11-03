@@ -5,6 +5,7 @@
 pub mod case;
 pub mod compare;
 mod error;
+pub mod fxsave64;
 pub mod generate;
 mod hex_u64;
 pub mod memory;

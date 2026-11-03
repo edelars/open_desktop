@@ -24,6 +24,9 @@ const RESERVED_FLAG: u64 = 1 << 1;
 
 pub fn run_cli() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--fxsave64-oracle") {
+        return crate::fxsave64::run_cli(&args[1..]);
+    }
     if let Some(exit) = crate::native_v2::dispatch(&args) {
         return exit;
     }

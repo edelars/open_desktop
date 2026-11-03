@@ -85,10 +85,12 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 методика будущей проверки с открытыми harness/source-review prerequisites,
 не исполняемый harness, fixture или physical evidence.
 
-Ограниченный successful CPL3 FXSAVE64 oracle protocol S2-39j размещён в
-[docs/testing/S2_39J_FXSAVE64_ORACLE.md](testing/S2_39J_FXSAVE64_ORACLE.md);
-это методика будущей проверки exact S2-39d формы, без harness/native admission
-и physical evidence; hardware cases остаются `not_run`.
+Ограниченный successful CPL3 FXSAVE64 oracle метод S2-39j и отдельный Linux
+x86_64 harness S2-39k размещены в
+[docs/testing/S2_39J_FXSAVE64_ORACLE.md](testing/S2_39J_FXSAVE64_ORACLE.md) и
+[docs/testing/S2_39K_FXSAVE64_ORACLE.md](testing/S2_39K_FXSAVE64_ORACLE.md).
+Harness не меняет native fixture admission; physical hardware cases остаются
+`not_run` до запуска на поддерживаемом host.
 
 Не копировать одну реализацию в несколько этих мест. Например, disk parser — в `od-storage`, а `image-tool` лишь использует его; x86 interpreter — в `od-isa`, а `runner` управляет запуском.
 

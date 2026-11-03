@@ -709,6 +709,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39f | Exact FXSAVE64 `[RAX+0x40]` CR0.EM/TS `#NM` gates | S2-39d; other forms and physical acceptance remain open |
 | [x] | S2-39g | Exact FXRSTOR64 `[RBX+0x40]` CR0.EM/TS `#NM` gates | S2-39e/f; other forms and physical acceptance remain open |
 | [x] | S2-39h | Exact 33-byte S2-25c + FXSAVE64 composition, nine retirements, strict synthetic save image | S2-25c, S2-39d/f; interpreter only; hardware remains not_run |
+| [x] | S2-39j | Successful CPL3 FXSAVE64 oracle protocol | Independent protocol review and layout/link checks recorded; physical execution remains `not_run` |
+| [x] | S2-39k | Bounded executable CPL3 FXSAVE64 oracle | Linux-only isolated ptrace tracee + raw evidence validator; host tests and source assembly/disassembly passed; full Linux target build is blocked by the same pre-existing `native_v2` Snapshot initializer at base `115d66f`; physical run remains `not_run`; [report](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle) |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
@@ -8272,9 +8274,35 @@ retirements остаются. STOP, exhausted budget и truncated fetch не ч�
 literal XMM0–15/MXCSR cases, different image canaries, independent observations
 and byte-range comparison boundaries. It records host MXCSR_MASK without
 asserting synthetic target equality. Hardware cases/repeats are `not_run`;
-no executable harness, new fixture/profile or native admission is added.
+the executable harness is the follow-on S2-39k.
 EM/TS/OSFXSR gates, faults, x87 source cases and FXRSTOR remain outside this
 slice; parent S2-39 remains open. See [delivery report](../reports/STAGE_2_REPORT.md#s2-39j--successful-cpl3-fxsave64-oracle-protocol).
+
+#### S2-39k. Bounded executable CPL3 FXSAVE64 oracle
+
+The implementation must remain an isolated `od-x86-runner` mode plus reusable
+raw evidence/comparison in `od-testkit`; it must not alter the general
+`native_v2` admission list. Before execution, review the literal test/setup
+bytes and host ABI. One assembly-controlled region loads independently literal
+XMM/MXCSR inputs, captures pre-state, executes exactly `48 0F AE 40 40`, and
+captures post-state before any call. Preserve caller-visible XMM0–15 and MXCSR
+outside the measured region without FXRSTOR. A dedicated ptrace tracee places
+INT3 at E+5; the parent records raw RIP E+6 and the explicit one-byte marker
+adjustment, validates the trap source, then reads post-observations at a
+separate final stop or from explicitly shared result storage after normal
+exit. The completion observation is not a retirement counter.
+
+Evidence retains the full raw image, guards, independent observations,
+environment, hashes, addresses, permissions, affinity and exit/signal status.
+Compare only MXCSR `[24,28)`, XMM `[160,416)`, software tail `[464,512)`,
+guards, independent pre/post values and stop boundary. Record raw MXCSR_MASK;
+reserved/unused bytes and unspecified x87 fields remain excluded. Validate
+malformed data, incomplete A/B/A/B repetitions, changed compared bytes, guard
+corruption, unexpected signals and incorrect stop addresses. Do not add
+FXRSTOR, privileged gates/faults, general CPU semantics, production-profile
+admission, JIT or machine integration.
+
+Delivery status and verification limits are in the [S2-39k report](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle). The Linux x86_64 assembly/ptrace path requires target compilation and emitted-byte/disassembly inspection; a Darwin arm64 host cannot establish those checks or hardware acceptance.
 
 ### S2-40. Дополнительные обязательные расширения
 

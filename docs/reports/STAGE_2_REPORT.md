@@ -23962,3 +23962,41 @@ only `Unmapped root file: .git` (the worktree metadata pointer); after transfer,
 `python3 tools/check_layout.py` passed in the main worktree. Independent review
 of authored commit `30528e5` completed with no findings before transfer to
 `d028abd`; local S2-39d implementation evidence remains separate.
+
+## S2-39k — bounded CPL3 FXSAVE64 oracle
+
+Implemented a dedicated Linux x86_64 `--fxsave64-oracle` mode, separate from
+the `native_v2` fixture admission path, and a reusable independent
+`od-testkit::fxsave64` evidence validator/comparator. The runner uses fresh
+shared mappings for A/B/A/B; literal XMM0–15/MXCSR loads; full image and guard
+prefills; pre/post MOVDQU/STMXCSR observations; one global-assembly region;
+caller XMM/MXCSR preservation without FXRSTOR; and a ptraced tracee with INT3
+immediately at E+5. It validates SIGTRAP source and exact emitted bytes,
+captures raw RIP E+6 and records the one-byte normalization to E+5, then
+resumes the tracee to post-observations and normal exit. Raw JSON is saved below
+ignored `work/stage2/s2-39k-fxsave64/` only after successful capture.
+
+The validator checks evidence schema and hashes, literal sequence and raw
+emitted code, A/B/A/B order, addresses, permissions, guard brackets, RAX,
+raw/adjusted stop RIP, marker source, exit/signal status, all observation byte
+lengths, exact MXCSR/XMM/software-tail slices, canaries, and the explicit list
+of compared versus excluded ranges. Raw MXCSR_MASK is captured without
+normalization or synthetic-target equality. It rejects malformed records,
+changed compared bytes, missing repetitions, guard changes, malformed
+observations, and wrong stops.
+
+Validation on Darwin arm64: `cargo fmt --all -- --check`; `cargo test -p
+od-testkit --offline` (466 passed); `cargo check -p od-x86-runner --offline`;
+`cargo test -p od-x86-runner --offline` (14 passed); Graphify update; and direct
+clang ELF assembly/disassembly of the `global_asm!` source. Disassembly confirms
+`48 0f ae 40 40` at E followed by `cc` at E+5. The Linux x86_64 Rust target is
+installed, but its full runner check stops at an existing `native_v2.rs:533`
+Snapshot initializer missing the 142 newer fields. This reproduces unchanged
+at base `115d66f`; the `--all-targets` check also encounters existing incomplete
+native_v2 test initializers. The worktree layout check reports only its known
+worktree metadata `.git` pointer as an unmapped root file.
+
+No oracle execution occurred on this host; physical and hardware observations
+remain `not_run`. Final Linux-target Rust build/disassembly, supported-host
+runtime validation, and independent code/ABI review remain outstanding. Parent
+S2-39 remains open.
