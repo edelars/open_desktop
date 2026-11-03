@@ -1220,10 +1220,14 @@ The public session ABI values remain canonical in their C header. Two private
 typed inline accessors make the `UINT32_C`/`UINT64_C` constants available to
 Swift without duplicating values. The initial MOV fixture was rejected by
 bounded Session admission and was replaced with supported ADD instructions;
-no admission or runtime behavior was widened. `test_vmhost_process_manifest_covers_every_gate_once` passed. The full 39-step VMHost process suite, active STOP/EOF, malformed frames,
-backpressure, C-client linking/layout, and V0 regressions remain open. Graphify
-refresh timed out after 120 seconds; the documented Mini SSH endpoint timed
-out before remote tests; M1 is deferred. Stage 3 remains partial. See the
+no admission or runtime behavior was widened. `test_vmhost_process_manifest_covers_every_gate_once` passed. The full 39-step suite was attempted with
+`python3 tests/cpu/stage3_harness.py --suite vmhost-process`; the context-mode
+call timed out after 300 seconds with no suite summary and an empty captured
+log, so its result is unconfirmed (neither pass nor failure). Active STOP/EOF,
+malformed frames, backpressure, C-client linking/layout, and V0 regressions
+remain open. Graphify refresh timed out after 120 seconds; the documented Mini
+SSH endpoint timed out before remote tests; M1 is deferred. Stage 3 remains
+partial. See the
 [S3-38h report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md).
 
 ## S3-29a: bounded demand-driven flags correctness candidate

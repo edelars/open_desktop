@@ -4088,10 +4088,13 @@ self-test passed. Release build, Swift compile, ad-hoc runtime signature, strict
 signature verification and `allow-jit` entitlement verification passed. A
 private typed bridge resolves Swift import of the canonical public ABI macros;
 public ABI values and runtime behavior are unchanged. The full 39-step process
-suite, STOP during RUN, EOF during RUN, malformed/partial frames, broader V1
-race/backpressure suite, and unchanged V0 regressions remain open. The Graphify
-refresh timed out after 120 seconds and is unconfirmed. Mini SSH timed out before
-remote tests; M1 remains deferred. See the
+suite was attempted with `python3 tests/cpu/stage3_harness.py --suite
+vmhost-process`, but the context-mode tool call timed out after 300 seconds with
+no suite summary and an empty captured log; its outcome is unconfirmed (neither
+a pass nor a test failure). STOP during RUN, EOF during RUN, malformed/partial
+frames, broader V1 race/backpressure suite, and unchanged V0 regressions remain
+open. The Graphify refresh timed out after 120 seconds and is unconfirmed. Mini
+SSH timed out before remote tests; M1 remains deferred. See the
 [S3-38h implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md).
 
 #### S3-38i. Process-level STOP isolation and active-run EOF

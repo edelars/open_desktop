@@ -37,6 +37,11 @@ passed 1/1. `graphify update .` timed out after 120 seconds; graph refresh is
 unconfirmed. SSH to the documented Mini endpoint timed out before any remote
 commands/tests; M1 remains deferred by the user.
 
+The full `python3 tests/cpu/stage3_harness.py --suite vmhost-process` suite was
+also attempted. The context-mode tool call timed out after 300 seconds with no
+suite summary and an empty captured log; the outcome is unconfirmed, so this is
+neither a pass nor a test failure.
+
 ## Remaining acceptance
 
 The smoke currently covers repeated same-code RUN with fresh state/budget,
