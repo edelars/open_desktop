@@ -35765,7 +35765,7 @@ mod tests {
         drop(block);
 
         for displacement_byte in 2..source.len() {
-            let fetch_address = ENTRY + displacement_byte;
+            let fetch_address = ENTRY + displacement_byte as u64;
             for fetch_error in [
                 MemoryError::Unmapped {
                     address: fetch_address,
