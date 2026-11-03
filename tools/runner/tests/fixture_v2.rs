@@ -450,6 +450,30 @@ const CVTSD2SI_R32_UNMASKED_GATE_UD: &[u8] =
 const CVTSD2SI_R32_UNMASKED_AC_REFUSAL: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_38at_cvtsd2si_m64_i32_ac_refusal.case.json"
 );
+const CVTTSS2SI_R32_MEMORY_UNMASKED_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38au_cvttss2si_m32_i32_unmasked.case.json"
+);
+const CVTTSS2SI_R32_UNMASKED_MASKED_IE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38au_cvttss2si_m32_i32_masked_ie.case.json"
+);
+const CVTTSS2SI_R32_UNMASKED_MASKED_PE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38au_cvttss2si_m32_i32_masked_pe.case.json"
+);
+const CVTTSS2SI_R32_UNMASKED_UNMASKED_IE_XM: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38au_cvttss2si_m32_i32_unmasked_ie_xm.case.json"
+);
+const CVTTSS2SI_R32_UNMASKED_UNMASKED_PE_UD: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38au_cvttss2si_m32_i32_unmasked_pe_ud.case.json"
+);
+const CVTTSS2SI_R32_UNMASKED_GATE_NM: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38au_cvttss2si_m32_i32_gate_nm.case.json"
+);
+const CVTTSS2SI_R32_UNMASKED_GATE_UD: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38au_cvttss2si_m32_i32_gate_ud.case.json"
+);
+const CVTTSS2SI_R32_UNMASKED_AC_REFUSAL: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38au_cvttss2si_m32_i32_ac_refusal.case.json"
+);
 const CVTTSD2SI_R32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cj_cvttsd2si_m64_i32_rc_independence.case.json"
 );
@@ -37573,6 +37597,163 @@ fn cvtsd2si_m64_r32_unmasked_literal_fixtures_execute_against_profile_oracle() {
         assert_eq!(
             input.fixture.profile,
             od_testkit::v2::Profile::LongCvtsd2siR32MemoryUnmaskedRaxV1
+        );
+        if matches!(result.outcome, Outcome::Unsupported { .. }) {
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(0) }
+            );
+            let snapshot = snapshot(&result);
+            assert_eq!(snapshot.state, input.fixture.initial_state);
+            assert_eq!(
+                snapshot
+                    .memory
+                    .iter()
+                    .map(|region| region.bytes_hex.as_str())
+                    .collect::<Vec<_>>(),
+                input
+                    .fixture
+                    .memory
+                    .iter()
+                    .map(|region| region.initial_bytes_hex.as_str())
+                    .collect::<Vec<_>>()
+            );
+        } else {
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+}
+
+#[test]
+fn cvttss2si_m32_r32_unmasked_schema_result_and_backend_are_profile_locked() {
+    let fixture = Fixture::from_json(CVTTSS2SI_R32_MEMORY_UNMASKED_RAX)
+        .unwrap()
+        .fixture;
+    assert_eq!(
+        fixture.profile,
+        od_testkit::v2::Profile::LongCvttss2siR32MemoryUnmaskedRaxV1
+    );
+    let source = fixture.to_json().unwrap();
+    let (input, result) = run(&source, "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    for backend in ["jit", "native"] {
+        let (_, result) = run(&source, backend, 4);
+        assert!(
+            matches!(result.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+    }
+    let mut missing = fixture.clone();
+    missing.cvttss2si_r32_memory_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut foreign = fixture.clone();
+    foreign.cvttss2si_r32_memory_controls =
+        Some(od_testkit::v2::Cvttss2siR32MemoryControlSnapshot {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+        });
+    assert!(foreign.validate().is_err());
+    for mxcsr in [0x0040_1f80, 0x0000_1fc0] {
+        // reserved bit or forbidden DAZ
+        let mut malformed = fixture.clone();
+        malformed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(malformed.validate().is_err());
+        assert!(Fixture::from_json(&serde_json::to_vec(&malformed).unwrap()).is_err());
+    }
+    let mut wrong_bytes = fixture.clone();
+    wrong_bytes.memory[0].initial_bytes_hex = "f3482d00".into();
+    assert!(wrong_bytes.validate().is_err());
+    let mut wrong_profile = fixture.clone();
+    wrong_profile.profile = od_testkit::v2::Profile::LongCvttss2siR32MemoryRaxV1;
+    assert!(wrong_profile.validate().is_err());
+    let mut wrong_exit = fixture.clone();
+    wrong_exit.expected_exit = ExpectedExit::Exception;
+    assert!(wrong_exit.validate().is_err());
+    let mut writable_data = fixture.clone();
+    writable_data.memory[1].permissions.write = true;
+    assert!(writable_data.validate().is_err());
+    assert!(Fixture::from_json(&serde_json::to_vec(&writable_data).unwrap()).is_err());
+
+    let mut fetch_collision = fixture.clone();
+    fetch_collision.case_id = "s2_38au_noncanonical_fetch_precedes_ts_and_ac".into();
+    let fetch_rip = 0x0000_7fff_ffff_fffe;
+    fetch_collision.initial_state.rip = HexU64(fetch_rip);
+    fetch_collision.memory[0].guest_address = HexU64(fetch_rip);
+    fetch_collision.stop_rip = Some(HexU64(fetch_rip + 4));
+    fetch_collision.initial_state.rflags =
+        HexU64(fetch_collision.initial_state.rflags.get() | (1 << 18));
+    fetch_collision
+        .cvttss2si_r32_memory_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr0_ts = true;
+    fetch_collision.expected_exit = ExpectedExit::Exception;
+    let (_, fetch_result) = run(&fetch_collision.to_json().unwrap(), "interpreter", 0);
+    let fetch_snapshot = snapshot(&fetch_result);
+    let Observation::Available {
+        value: Some(fetch_exception),
+    } = &fetch_snapshot.exception
+    else {
+        panic!("noncanonical CVTTSS2SI instruction fetch must report #GP before TS and AC");
+    };
+    assert_eq!(fetch_exception.vector, 13);
+    assert_eq!(
+        fetch_exception.error_code,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert_eq!(
+        fetch_result.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert_eq!(fetch_snapshot.state, fetch_collision.initial_state);
+    assert_eq!(
+        fetch_snapshot
+            .memory
+            .iter()
+            .map(|region| region.bytes_hex.as_str())
+            .collect::<Vec<_>>(),
+        fetch_collision
+            .memory
+            .iter()
+            .map(|region| region.initial_bytes_hex.as_str())
+            .collect::<Vec<_>>()
+    );
+    let mut changed_control_result = result.clone();
+    let Observation::Available { value } = &mut changed_control_result.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value
+        .cvttss2si_r32_memory_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = true;
+    assert!(od_testkit::v2::compare(&input, &result, &changed_control_result).is_err());
+    let mut changed_state_result = result.clone();
+    let Observation::Available { value } = &mut changed_state_result.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.gpr[0] = HexU64(value.state.gpr[0].get() ^ 1);
+    assert!(od_testkit::v2::compare(&input, &result, &changed_state_result).is_err());
+}
+
+#[test]
+fn cvttss2si_m32_r32_unmasked_literal_fixtures_execute_against_profile_oracle() {
+    for (bytes, exit_code) in [
+        (CVTTSS2SI_R32_MEMORY_UNMASKED_RAX, 0),
+        (CVTTSS2SI_R32_UNMASKED_MASKED_IE, 0),
+        (CVTTSS2SI_R32_UNMASKED_MASKED_PE, 0),
+        (CVTTSS2SI_R32_UNMASKED_UNMASKED_IE_XM, 0),
+        (CVTTSS2SI_R32_UNMASKED_UNMASKED_PE_UD, 0),
+        (CVTTSS2SI_R32_UNMASKED_GATE_NM, 0),
+        (CVTTSS2SI_R32_UNMASKED_GATE_UD, 0),
+        (CVTTSS2SI_R32_UNMASKED_AC_REFUSAL, 4),
+    ] {
+        let (input, result) = run(bytes, "interpreter", exit_code);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongCvttss2siR32MemoryUnmaskedRaxV1
         );
         if matches!(result.outcome, Outcome::Unsupported { .. }) {
             assert_eq!(

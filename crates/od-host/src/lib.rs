@@ -681,4 +681,22 @@ mod tests {
         );
         assert!(handle.is_null());
     }
+
+    #[test]
+    fn cvttss2si_m32_r32_unmasked_remains_closed_to_fragment_and_c_abi_paths() {
+        use std::ffi::c_void;
+
+        let code = [0xf3, 0x0f, 0x2c, 0x00];
+        let mut state = od_isa::CpuState::default();
+        let before = state.clone();
+        assert!(execute_x86_fragment(&code, &mut state, 1).is_err());
+        assert_eq!(state, before);
+
+        let mut handle: *mut c_void = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { od_fragment_create(code.as_ptr(), code.len(), &mut handle) },
+            STATUS_INVALID_CODE
+        );
+        assert!(handle.is_null());
+    }
 }
