@@ -8594,8 +8594,11 @@ covers all 65,536 raw-u64/control combinations with an independent integer
 oracle. Focused checks cover exact positive-minimum-subnormal root `0x1` with
 DE/no PE, inexact `0x2`/`0x3`, negative-subnormal/SNaN terminal IE, full-state
 suppression, one-read ordering, CPL/gate/AC/span/read behavior, schema tampering,
-writable source refusal, and backend denial. A regression confirms MINSD still
-requires FTZ=0. The matrix passes in 27.79 seconds using direct in-process
+writable source refusal, and backend denial. Validator mutation checks reject
+XMM0 low64/high64, RIP, IE/DE/PE sticky flags, retirement, exception vector,
+and `#GP(0)` error-code changes. Gate checks exercise missing SSE2, EM, OSFXSR,
+TS priority, full/truncated fetch, no-data callbacks on refusal, and CPL0–3.
+A regression confirms MINSD still requires FTZ=0. The matrix passes in 27.79 seconds using direct in-process
 execution; an initial subprocess-per-case harness was stopped after roughly two
 minutes due to overhead and had reported no assertion failure. S2-37df masked
 memory and S2-37am register behavior are preserved. No physical x86 acceptance

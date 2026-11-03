@@ -31,7 +31,12 @@ cover min-subnormal exactness/inexactness, negative-subnormal and SNaN terminal
 IE, high64 preservation, one read8, CPL/gates, AC-before-span, `#GP(0)`, read
 failure rollback, control/schema tampering, read-only source enforcement,
 interpreter success and JIT/native denial. The MINSD FTZ=0 restriction has a
-regression check.
+regression check. Public-API regressions explicitly check missing SSE2, CR0.EM,
+and CR4.OSFXSR returning `#UD` before `#NM`, CR0.TS returning `#NM`, full fetch
+before those gates, truncated fetch denial, no data callbacks or state changes
+on gate failures, and successful CPL 0–3 execution. Validator mutations of
+XMM0 low64/high64, RIP, IE/DE/PE sticky bits, retirement, SIMD exception vector,
+and the `#GP(0)` error code are all rejected.
 
 The first attempt used the CLI subprocess helper for every generated case and
 was stopped after approximately two minutes because of process startup
@@ -43,9 +48,10 @@ whole-state validation. The completed matrix took 27.79 seconds.
 
 - `cargo fmt --all -- --check`: passed.
 - `cargo check --workspace --all-targets --offline`: passed.
-- `cargo test -p od-isa --offline`: 1,943 passed.
+- `cargo test -p od-isa --offline`: 1,944 passed after review regressions.
 - `cargo test -p od-testkit --offline`: 455 passed.
-- `cargo test -p od-runner --offline`: 132 unit tests and 552 fixture tests passed.
+- `cargo test -p od-runner --offline`: 132 unit tests and 553 fixture tests passed
+  after the validator tampering regression.
 - The matrix contains 65,536 cases and completed in 27.79 seconds; focused ISA
   callback test confirmed exactly one read8 and rollback behavior.
 
