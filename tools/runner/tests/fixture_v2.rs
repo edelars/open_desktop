@@ -37649,6 +37649,366 @@ fn cvtsd2si_m64_r32_unmasked_literal_fixtures_execute_against_profile_oracle() {
 }
 
 #[test]
+fn cvtps2dq_memory_unmasked_literals_and_backend_denial() {
+    use od_testkit::v2::{ExpectedExit, Fixture, Profile};
+
+    let fixtures: &[(&str, &[u8], u64, u64)] = &[
+        (
+            "exact int32 minimum",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_exact_int_min.case.json"
+            ),
+            0,
+            0,
+        ),
+        (
+            "masked invalid indefinite",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_masked_invalid_indefinite.case.json"
+            ),
+            1,
+            0,
+        ),
+        (
+            "masked PE success",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_masked_pe_success.case.json"
+            ),
+            0x20,
+            0,
+        ),
+        (
+            "fully masked mixed IE PE",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_mixed_fully_masked.case.json"
+            ),
+            0x21,
+            0,
+        ),
+        (
+            "unmasked IE #XM",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_ie_unmasked_xm.case.json"
+            ),
+            1,
+            0,
+        ),
+        (
+            "unmasked PE #XM",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_pe_unmasked_xm.case.json"
+            ),
+            0x20,
+            0,
+        ),
+        (
+            "IE suppresses PE",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_mixed_ie_first.case.json"
+            ),
+            1,
+            0,
+        ),
+        (
+            "IE suppresses PE with SIMD #UD",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_mixed_ie_first_simd_ud.case.json"
+            ),
+            1,
+            0,
+        ),
+        (
+            "PE with masked IE",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_mixed_pe_masked.case.json"
+            ),
+            0x21,
+            0,
+        ),
+        (
+            "PE with masked IE and SIMD #UD",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_mixed_pe_masked_simd_ud.case.json"
+            ),
+            0x21,
+            0,
+        ),
+        (
+            "old flags only",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_stale_flags_only.case.json"
+            ),
+            0x21,
+            0,
+        ),
+        (
+            "OSXMMEXCPT clear #UD",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_ie_unmasked_simd_ud.case.json"
+            ),
+            1,
+            0,
+        ),
+        (
+            "CR0.TS #NM",
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_gate_nm.case.json"),
+            0,
+            0,
+        ),
+        (
+            "SSE2 prerequisite #UD",
+            include_bytes!("../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_gate_ud.case.json"),
+            0,
+            0,
+        ),
+        (
+            "aligned AC=1",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_38aw_cvtps2dq_aligned_ac1.case.json"
+            ),
+            0,
+            0,
+        ),
+    ];
+    for (label, bytes, expected_sticky, _unused) in fixtures {
+        let (input, result) = run(bytes, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            Profile::LongCvtps2dqMemoryUnmaskedRaxV1,
+            "{label}"
+        );
+        od_testkit::v2::compare(&input, &result, &result)
+            .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+        let observed = snapshot(&result);
+        if input.fixture.expected_exit == ExpectedExit::Exception {
+            assert_eq!(result.outcome, Outcome::Exception {}, "{label}");
+            assert_eq!(
+                observed.state.sse.as_ref().unwrap().xmm[0],
+                input.fixture.initial_state.sse.as_ref().unwrap().xmm[0],
+                "event preserves XMM0: {label}"
+            );
+            assert_eq!(
+                observed.state.rip, input.fixture.initial_state.rip,
+                "event preserves RIP: {label}"
+            );
+            let Observation::Available {
+                value: Some(exception),
+            } = &observed.exception
+            else {
+                panic!("{label}: expected exception details");
+            };
+            let controls = input.fixture.cvtps2dq_m128_unmasked_controls.unwrap();
+            let expected_vector =
+                if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+                    6
+                } else if controls.cr0_ts {
+                    7
+                } else if controls.cr4_osxmmexcpt {
+                    19
+                } else {
+                    6
+                };
+            assert_eq!(exception.vector, expected_vector, "{label}");
+        } else {
+            assert_eq!(result.outcome, Outcome::StopAddress {}, "{label}");
+        }
+        assert_eq!(
+            observed.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+            *expected_sticky,
+            "sticky flags: {label}"
+        );
+    }
+
+    let base = Fixture::from_json(fixtures[0].1).unwrap().fixture;
+    let (_, exact_min_result) = run(fixtures[0].1, "interpreter", 0);
+    let (_, indefinite_result) = run(fixtures[1].1, "interpreter", 0);
+    let exact_min = od_testkit::v2::decode_bytes(
+        &snapshot(&exact_min_result).state.sse.as_ref().unwrap().xmm[0],
+    )
+    .unwrap();
+    let indefinite = od_testkit::v2::decode_bytes(
+        &snapshot(&indefinite_result).state.sse.as_ref().unwrap().xmm[0],
+    )
+    .unwrap();
+    assert_eq!(&exact_min[..4], &indefinite[..4]);
+    assert_eq!(
+        snapshot(&exact_min_result)
+            .state
+            .sse
+            .as_ref()
+            .unwrap()
+            .mxcsr
+            .get()
+            & 1,
+        0
+    );
+    assert_eq!(
+        snapshot(&indefinite_result)
+            .state
+            .sse
+            .as_ref()
+            .unwrap()
+            .mxcsr
+            .get()
+            & 1,
+        1
+    );
+    let mut missing = base.clone();
+    missing.cvtps2dq_m128_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut foreign = base.clone();
+    foreign.cvtps2dq_m128_controls = Some(od_testkit::v2::Cvttps2dqMemoryControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(foreign.validate().is_err());
+    assert_ne!(base.profile, Profile::LongCvtps2dqMemoryRaxV1);
+    assert_eq!(base.expected_exit, ExpectedExit::StopAddress);
+    let mut wrong_profile = base.clone();
+    wrong_profile.profile = Profile::LongCvtps2dqMemoryRaxV1;
+    assert!(wrong_profile.validate().is_err());
+    let mut wrong_encoding = base.clone();
+    wrong_encoding.memory[0].initial_bytes_hex = "660f5b01".into();
+    assert!(wrong_encoding.validate().is_err());
+    let mut writable_data = base.clone();
+    writable_data.memory[1].permissions.write = true;
+    assert!(writable_data.validate().is_err());
+    let mut wrong_exit = base.clone();
+    wrong_exit.expected_exit = ExpectedExit::Exception;
+    assert!(wrong_exit.validate().is_err());
+    let mut fetch_collision = base.clone();
+    let fetch_rip = 0x0000_7fff_ffff_fffd;
+    fetch_collision.initial_state.rip = HexU64(fetch_rip);
+    fetch_collision.memory[0].guest_address = HexU64(fetch_rip);
+    fetch_collision.stop_rip = Some(HexU64(fetch_rip + 4));
+    fetch_collision.expected_exit = ExpectedExit::Exception;
+    fetch_collision
+        .cvtps2dq_m128_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr0_ts = true;
+    let fetch_json = fetch_collision.to_json().unwrap();
+    let (fetch_input, fetch_result) = run(&fetch_json, "interpreter", 0);
+    od_testkit::v2::compare(&fetch_input, &fetch_result, &fetch_result).unwrap();
+    let Observation::Available {
+        value: Some(fetch_exception),
+    } = &snapshot(&fetch_result).exception
+    else {
+        panic!("expected instruction fetch span #GP");
+    };
+    assert_eq!(fetch_exception.vector, 13);
+    for mxcsr in [0x1f40u64, 0x0040_1f80] {
+        let mut invalid = base.clone();
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(fixtures[0].1, backend, 4);
+        assert!(
+            matches!(denied.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+        assert!(
+            matches!(denied.snapshot, Observation::Unavailable { .. }),
+            "{backend}"
+        );
+    }
+
+    let mut numeric = base.clone();
+    let vectors = [
+        [0x3f00_0000u32, 0x3f00_0001, 0xbf00_0000, 0xbf00_0001],
+        [0x3fc0_0000, 0x3fc0_0001, 0xbfc0_0000, 0xbfc0_0001],
+        [0x4020_0000, 0x4020_0001, 0xc020_0000, 0xc020_0001],
+        [0x4eff_ffff, 0x4f00_0000, 0x4f00_0001, 0xceff_ffff],
+        [0xcf00_0000, 0xcf00_0001, 0x0000_0000, 0x8000_0000],
+        [0x0000_0001, 0x8000_0001, 0x007f_ffff, 0x807f_ffff],
+        [0x7f80_0000, 0xff80_0000, 0x7fc0_0042, 0x7f80_0042],
+    ];
+    for (index, words) in vectors.into_iter().enumerate() {
+        for rc in 0..4u64 {
+            for ftz in [false, true] {
+                numeric.case_id = format!("s2_38aw_cvtps2dq_numeric_{index}_rc{rc}_ftz{ftz}");
+                numeric.initial_state.sse.as_mut().unwrap().mxcsr =
+                    HexU64(0x1f80 | (rc << 13) | (u64::from(ftz) << 15));
+                numeric.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(
+                    &words
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .collect::<Vec<_>>(),
+                );
+                let (input, result) = run(&numeric.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                let sse = snapshot(&result).state.sse.as_ref().unwrap();
+                let status = sse.mxcsr.get() as u32 & 0x3f;
+                assert_eq!(
+                    status & (1 << 1),
+                    0,
+                    "conversion must not raise DE: {index}/{rc}/{ftz}"
+                );
+                if index == 5 {
+                    assert_ne!(status & (1 << 5), 0, "subnormal conversions are inexact");
+                }
+            }
+        }
+    }
+    for auxiliary_masks in 0..16u64 {
+        for ftz in [false, true] {
+            numeric.case_id = format!("s2_38aw_cvtps2dq_aux_masks_{auxiliary_masks:x}_ftz{ftz}");
+            let cleared = ((auxiliary_masks & 1) << 8)
+                | (((auxiliary_masks >> 1) & 1) << 9)
+                | (((auxiliary_masks >> 2) & 1) << 10)
+                | (((auxiliary_masks >> 3) & 1) << 11);
+            numeric.initial_state.sse.as_mut().unwrap().mxcsr =
+                HexU64(0x1f80 & !cleared | (u64::from(ftz) << 15));
+            let subnormals = [1u32, 0x8000_0001, 0x007f_ffff, 0x807f_ffff];
+            numeric.memory[1].initial_bytes_hex = od_testkit::memory::encode_bytes(
+                &subnormals
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect::<Vec<_>>(),
+            );
+            let (input, result) = run(&numeric.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            let status = snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get();
+            assert_eq!(status & (1 << 1), 0, "DM mask sample must not trigger DE");
+            assert_ne!(status & (1 << 5), 0, "subnormal values must raise PE");
+        }
+    }
+
+    // Result echoes and architectural output remain independently validated.
+    let bytes = fixtures[4].1;
+    let (loaded, result) = run(bytes, "interpreter", 0);
+    let mut bad_controls = result.clone();
+    snapshot_mut(&mut bad_controls)
+        .cvtps2dq_m128_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = false;
+    assert!(bad_controls.validate_for(&loaded).is_err());
+    let mut bad_status = result.clone();
+    snapshot_mut(&mut bad_status)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .mxcsr = HexU64(0x1f00);
+    assert!(bad_status.validate_for(&loaded).is_err());
+    let mut bad_vector = result.clone();
+    if let Observation::Available {
+        value: Some(exception),
+    } = &mut snapshot_mut(&mut bad_vector).exception
+    {
+        exception.vector = 6;
+    } else {
+        panic!("expected unmasked IE event");
+    }
+    assert!(bad_vector.validate_for(&loaded).is_err());
+}
+
+#[test]
 fn cvttsd2si_m64_r32_unmasked_schema_result_and_backend_are_profile_locked() {
     let fixture = Fixture::from_json(CVTTSD2SI_R32_MEMORY_UNMASKED_RAX)
         .unwrap()
