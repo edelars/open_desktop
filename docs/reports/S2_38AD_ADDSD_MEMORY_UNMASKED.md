@@ -6,7 +6,7 @@ Added a distinct schema-v2 interpreter-only profile, `s2-long-addsd-memory-unmas
 
 The interpreter records IE/DE before PE. An unmasked new IE/DE event raises #XM(19), or SIMD #UD(6) without OSXMMEXCPT, before post-event PE processing. Otherwise the operation records masked exception flags, uses MXCSR rounding control, and delivers unmasked PE after the result. SIMD exceptions preserve XMM0 and RIP and do not retire; success updates only XMM0 low64 and preserves high64. API tests cover fetch/gate priority, local AC refusal before span/read, unaligned read with AC clear, canonical-span and read-failure rollback, and successful execution at CPL0–3. Existing masked ADDSD dispatch remains a separate profile variant and retains its controls.
 
-The independent testkit oracle validates complete result state and exceptions. A runner matrix covers 12 operand classes × 4 RC values × 64 old sticky histories × 8 IM/DM/PM patterns × 2 OSXMMEXCPT settings (49,152 cases). Four hand-authored fixtures cover success, IE/#XM, DE/#UD and PE/#XM. Tests also deny JIT/native backends and reject control echo, outcome/state, exception, retirement, permissions and MXCSR tampering.
+The independent testkit oracle validates complete result state and exceptions. A runner matrix covers 20 operand classes—including positive/negative QNaN and SNaN paired with a subnormal in both operand positions—× 4 RC values × 64 old sticky histories × 8 IM/DM/PM patterns × 2 OSXMMEXCPT settings (81,920 cases). The NaN/subnormal cross-product verifies that NaN handling suppresses DE independently of operand position and sign. Four hand-authored fixtures cover success, IE/#XM, DE/#UD and PE/#XM. Tests deny JIT/native backends and reject control echo, low/high XMM changes, MXCSR IE/DE/PE sticky-status changes, RIP, exception vector and #GP(0) error-code tampering, retirement, permissions and malformed MXCSR.
 
 ## Verification
 
@@ -14,13 +14,16 @@ The independent testkit oracle validates complete result state and exceptions. A
 - `cargo check -p od-testkit -p od-runner --all-targets --offline` — passed.
 - `cargo test -p od-isa addsd_memory_rax_unmasked --offline` — 2 passed.
 - `cargo test -p od-runner addsd_m64_unmasked_literal_fixtures_validate_ie_de_pe_and_denials --offline -- --nocapture` — 1 passed.
-- `cargo test -p od-runner addsd_unmasked_memory_covers_rounding_sticky_masks_and_operand_classes --offline -- --nocapture` — 1 passed; 49,152 executions, 21.54 s.
+- `cargo test -p od-runner addsd_unmasked_memory_covers_rounding_sticky_masks_and_operand_classes --offline -- --nocapture` — 1 passed; 81,920 executions, 34.81 s.
 - `cargo fmt --all -- --check` — passed.
 - `cargo check --workspace --all-targets --offline` — passed without warnings after removing the test-only unused `mut`.
 - `cargo test -p od-isa --offline -- --quiet` — 1,954 passed.
 - `cargo test --workspace --offline --quiet` — passed: od-host 10, od-isa 1,954, od-machine 9, od-runner binary 135, runner fixture integration 558, od-testkit 456, od-x86-runner library 8 and binary 6; other crates/doc-tests had no tests.
 - `graphify update .` — passed; graph regenerated to 12,402 nodes, 26,776 edges and 382 communities.
-- Independent Sol/high review is pending.
+
+## Review follow-up
+
+Sol/high review found two coverage gaps and no production-semantic defect. The matrix now includes signed QNaN/SNaN paired with a subnormal in both operand positions over every control combination; fixture tampering now covers low/high XMM, IE/DE/PE sticky status and #GP(0)'s error code. Focused fixture and matrix tests, formatting, affected-crate check and Graphify refresh passed after these additions. A new independent review of the follow-up commit is pending.
 
 ## Boundaries
 

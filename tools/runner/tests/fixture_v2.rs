@@ -43973,12 +43973,12 @@ fn addsd_m64_unmasked_literal_fixtures_validate_ie_de_pe_and_denials() {
     use od_testkit::v2::Profile;
 
     let cases = [
-        (ADDSD_M64_UNMASKED_SUCCESS, None, 0x1f80),
-        (ADDSD_M64_UNMASKED_IE_XM, Some(19), 0x1f01),
-        (ADDSD_M64_UNMASKED_DE_UD, Some(6), 0x1e82),
-        (ADDSD_M64_UNMASKED_PE_XM, Some(19), 0x0fa0),
+        (ADDSD_M64_UNMASKED_SUCCESS, None, 0x1f80, None),
+        (ADDSD_M64_UNMASKED_IE_XM, Some(19), 0x1f01, Some(1u64)),
+        (ADDSD_M64_UNMASKED_DE_UD, Some(6), 0x1e82, Some(1 << 1)),
+        (ADDSD_M64_UNMASKED_PE_XM, Some(19), 0x0fa0, Some(1 << 5)),
     ];
-    for (source, vector, expected_mxcsr) in cases {
+    for (source, vector, expected_mxcsr, sticky_bit) in cases {
         let fixture = Fixture::from_json(source).unwrap().fixture;
         assert_eq!(fixture.profile, Profile::LongAddsdMemoryRaxUnmaskedV1);
         let (input, result) = run(source, "interpreter", 0);
@@ -44034,6 +44034,30 @@ fn addsd_m64_unmasked_literal_fixtures_validate_ie_de_pe_and_denials() {
         let mut bad_rip = result.clone();
         snapshot_mut(&mut bad_rip).state.rip = HexU64(fixture.initial_state.rip.get() + 1);
         assert!(bad_rip.validate_for(&input).is_err());
+        if let Some(sticky_bit) = sticky_bit {
+            let mut bad_status = result.clone();
+            let sse = snapshot_mut(&mut bad_status).state.sse.as_mut().unwrap();
+            sse.mxcsr = HexU64(sse.mxcsr.get() ^ sticky_bit);
+            assert!(
+                bad_status.validate_for(&input).is_err(),
+                "MXCSR sticky bit {sticky_bit:#x}"
+            );
+        } else {
+            let mut bad_low64 = result.clone();
+            snapshot_mut(&mut bad_low64).state.sse.as_mut().unwrap().xmm[0]
+                .replace_range(0..16, "0000000000000000");
+            assert!(bad_low64.validate_for(&input).is_err());
+
+            let mut bad_high64 = result.clone();
+            snapshot_mut(&mut bad_high64)
+                .state
+                .sse
+                .as_mut()
+                .unwrap()
+                .xmm[0]
+                .replace_range(16..32, "eeeeeeeeeeeeeeee");
+            assert!(bad_high64.validate_for(&input).is_err());
+        }
         if vector.is_some() {
             let mut bad_exception = result.clone();
             match &mut snapshot_mut(&mut bad_exception).exception {
@@ -44048,6 +44072,36 @@ fn addsd_m64_unmasked_literal_fixtures_validate_ie_de_pe_and_denials() {
             assert!(bad_retirement.validate_for(&input).is_err());
         }
     }
+
+    let mut noncanonical = Fixture::from_json(ADDSD_M64_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    noncanonical.case_id = "s2_38ad_gp_zero_error_code_tamper".into();
+    noncanonical.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+    noncanonical.memory[1].guest_address = noncanonical.initial_state.gpr[0];
+    noncanonical.expected_exit = od_testkit::v2::ExpectedExit::Exception;
+    let (gp_input, gp) = run(&noncanonical.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&gp_input, &gp, &gp).unwrap();
+    let gp_snapshot = snapshot(&gp);
+    let Observation::Available {
+        value: Some(gp_exception),
+    } = &gp_snapshot.exception
+    else {
+        panic!("expected #GP(0)")
+    };
+    assert_eq!(gp_exception.vector, 13);
+    assert_eq!(
+        gp_exception.error_code,
+        Observation::Available { value: HexU64(0) }
+    );
+    let mut bad_gp_code = gp.clone();
+    match &mut snapshot_mut(&mut bad_gp_code).exception {
+        Observation::Available {
+            value: Some(exception),
+        } => exception.error_code = Observation::Available { value: HexU64(1) },
+        other => panic!("expected #GP exception snapshot, got {other:?}"),
+    }
+    assert!(bad_gp_code.validate_for(&gp_input).is_err());
 
     let mut missing = Fixture::from_json(ADDSD_M64_UNMASKED_SUCCESS)
         .unwrap()

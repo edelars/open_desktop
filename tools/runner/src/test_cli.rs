@@ -12721,7 +12721,7 @@ mod memory_instruction_matrix_tests {
         let base = Fixture::from_json(ADDSD_UNMASKED_MATRIX_BASE)
             .unwrap()
             .fixture;
-        let vectors: [(&str, u64, u64); 12] = [
+        let vectors: [(&str, u64, u64); 20] = [
             ("exact", 0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000),
             ("halfway", 0x3ff0_0000_0000_0000, 0x3ca0_0000_0000_0000),
             ("cancellation", 0x3ff0_0000_0000_0000, 0xbff0_0000_0000_0000),
@@ -12742,6 +12742,14 @@ mod memory_instruction_matrix_tests {
             ("infinity_subnormal", 0x7ff0_0000_0000_0000, 1),
             ("qnan_left", 0xfff8_1234_5678_9abc, 0x3ff0_0000_0000_0000),
             ("snan_right", 0x3ff0_0000_0000_0000, 0xfff0_1234_5678_9abc),
+            ("qnan_pos_subnormal_rhs", 0x7ff8_1234_5678_9abc, 1),
+            ("qnan_neg_subnormal_rhs", 0xfff8_1234_5678_9abc, 1),
+            ("snan_pos_subnormal_rhs", 0x7ff0_1234_5678_9abc, 1),
+            ("snan_neg_subnormal_rhs", 0xfff0_1234_5678_9abc, 1),
+            ("subnormal_lhs_qnan_pos", 1, 0x7ff8_1234_5678_9abc),
+            ("subnormal_lhs_qnan_neg", 1, 0xfff8_1234_5678_9abc),
+            ("subnormal_lhs_snan_pos", 1, 0x7ff0_1234_5678_9abc),
+            ("subnormal_lhs_snan_neg", 1, 0xfff0_1234_5678_9abc),
         ];
         let mut covered = 0usize;
         for (name, lhs, rhs) in vectors {
@@ -12860,7 +12868,7 @@ mod memory_instruction_matrix_tests {
                 }
             }
         }
-        assert_eq!(covered, 49_152);
+        assert_eq!(covered, 81_920);
     }
 
     #[test]
