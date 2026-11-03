@@ -186859,14 +186859,39 @@ mod cvtsi2ss_r64_memory_profile_tests {
                                 });
                                 let before = state.clone();
                                 let mut memory = Memory::at(&code, state.rip);
-                                let mut has_ie = false;
-                                let mut has_pe = false;
                                 for lane in 0..4 {
                                     let class = classes[lane];
                                     memory.bytes[lane * 4..lane * 4 + 4]
                                         .copy_from_slice(&class_bits[class].to_le_bytes());
-                                    has_ie |= class == 1;
-                                    has_pe |= class == 2;
+                                }
+                                let source_bytes = memory.bytes.clone();
+                                let mut has_ie = false;
+                                let mut has_pe = false;
+                                let mut expected_xmm0 = [0u8; 16];
+                                for lane in 0..4 {
+                                    let raw = u32::from_le_bytes(
+                                        memory.bytes[lane * 4..lane * 4 + 4].try_into().unwrap(),
+                                    );
+                                    let (converted, invalid, precision) = match raw {
+                                        0x3f80_0000 => (1, false, false),       // 1.0 -> 1 exactly
+                                        0x7fc0_0001 => (i32::MIN, true, false), // quiet NaN -> indefinite
+                                        0x3fc0_0000 => (
+                                            match rc {
+                                                0 | 2 => 2, // nearest-even or up
+                                                1 | 3 => 1, // down or toward-zero
+                                                _ => unreachable!(),
+                                            },
+                                            false,
+                                            true,
+                                        ), // 1.5 is inexact for every RC
+                                        _ => unreachable!(
+                                            "unexpected matrix source lane {raw:#010x}"
+                                        ),
+                                    };
+                                    has_ie |= invalid;
+                                    has_pe |= precision;
+                                    expected_xmm0[lane * 4..lane * 4 + 4]
+                                        .copy_from_slice(&converted.to_le_bytes());
                                 }
                                 let unmasked_ie = has_ie && !im;
                                 let unmasked_pe = has_pe && !pm;
@@ -186889,6 +186914,7 @@ mod cvtsi2ss_r64_memory_profile_tests {
                                     case_controls,
                                     || false,
                                 );
+                                let mut expected_state = before.clone();
                                 match expected_vector {
                                     Some(vector) => {
                                         assert!(
@@ -186905,40 +186931,21 @@ mod cvtsi2ss_r64_memory_profile_tests {
                                         } else {
                                             old_mxcsr | u32::from(has_ie) | (u32::from(has_pe) << 5)
                                         };
-                                        assert_eq!(
-                                            state.sse.as_ref().unwrap().mxcsr,
-                                            expected_flags
-                                        );
+                                        expected_state.sse.as_mut().unwrap().mxcsr = expected_flags;
                                     }
                                     None => {
                                         assert_eq!(result.exit, RunExit::StopAddress);
                                         assert_eq!(result.instructions_executed, 1);
-                                        assert_eq!(state.rip, before.rip + 4);
                                         let expected_flags = old_mxcsr
                                             | u32::from(has_ie)
                                             | (u32::from(has_pe) << 5);
-                                        assert_eq!(
-                                            state.sse.as_ref().unwrap().mxcsr,
-                                            expected_flags
-                                        );
-                                        let mut expected_xmm0 = [0u8; 16];
-                                        for lane in 0..4 {
-                                            let converted = match classes[lane] {
-                                                0 => 1,
-                                                1 => i32::MIN,
-                                                2 if rc == 0 || rc == 2 => 2,
-                                                2 => 1,
-                                                _ => unreachable!(),
-                                            };
-                                            expected_xmm0[lane * 4..lane * 4 + 4]
-                                                .copy_from_slice(&converted.to_le_bytes());
-                                        }
-                                        assert_eq!(
-                                            state.sse.as_ref().unwrap().xmm[0],
-                                            expected_xmm0
-                                        );
+                                        expected_state.sse.as_mut().unwrap().mxcsr = expected_flags;
+                                        expected_state.sse.as_mut().unwrap().xmm[0] = expected_xmm0;
+                                        expected_state.rip = before.rip + 4;
                                     }
                                 }
+                                assert_eq!(state, expected_state);
+                                assert_eq!(memory.bytes, source_bytes);
                                 assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 16)]);
                                 actual_cases += 1;
                             }
