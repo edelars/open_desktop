@@ -36211,6 +36211,9 @@ mod tests {
         let published = PublishedCode::publish_ir_memory_dword_store_v2(&block).unwrap();
         drop(block);
 
+        // Published IR artifacts own immutable source bytes and do not fetch
+        // guest instructions at runtime. Verify demand-decoder fetch failures
+        // independently through the interpreter path.
         for displacement_byte in (if address32 { 0 } else { 2 })..source.len() {
             let fetch_address = ENTRY + displacement_byte as u64;
             for fetch_error in [
@@ -36224,20 +36227,6 @@ mod tests {
                 let before = state.clone();
                 let mut ram = ram_at(0x0000_0001_0000_1000, 0x0000_0001_0000_1000);
                 ram.fetch_error = Some((fetch_address, fetch_error.clone()));
-                let mut native_state = before.clone();
-                let native_fetch = unsafe {
-                    published.execute_ir_memory_dword_store_v2(
-                        &mut native_state,
-                        &mut ram,
-                        AccessContext::default(),
-                        1,
-                        None,
-                        &AtomicU8::new(0),
-                    )
-                };
-                assert!(native_fetch.is_err());
-                assert_eq!(native_state, before);
-                assert!(ram.writes.is_empty());
                 assert_eq!(
                     od_isa::execute::step(&mut state, &mut ram, AccessContext::default()),
                     Err(fetch_error)
