@@ -442,7 +442,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Adds ABI V1 create/begin/STOP/wait/destroy and fresh CLOEXEC notification descriptors. Three exact macOS/ARM64 Rust lifecycle gates passed 1/1; pinned harness self-test exited 0. C-client linking/layout, pipe-failure injection, broader race ordering, VMHost integration and full S3-38 acceptance remain open. Mini SSH timed out before remote tests; M1 deferred. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
 | [partial] | S3-38g | VMHost control V1 repeated same-code RUN transport | Adds explicit opt-in V1 selection, session ABI adapter, event-driven socket/completion loop, incremental bounded frame staging and a 16,416-byte output queue; V0 remains the default path. Full Sol/high static review passed. No build, test or runtime execution was performed at the S3-38g integration revision; the later focused S3-38h process smoke passed. Broader V1 acceptance gates remain open. См. [implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md) |
 | [partial] | S3-38h | Process-level V1 same-code repeated RUN smoke and exact process-harness gate | Release od-host build, Swift VMHost compile, ad-hoc runtime signature/strict verification and `allow-jit` entitlement verification passed. The exact process smoke passed with two decoder-supported ADD RAX,RBX instructions, fresh state/budgets, increasing IDs, complete RESULT payloads, ACK/RESULT ordering and idle EOF teardown; manifest self-test passed. Current harness totals are 324 gates (306 acceptance + 18 lifecycle), 342 steps, 149 self-tests, 18 source pins. Full 39-step VMHost suite, C-client layout/link, pipe-failure, active STOP/EOF and framing acceptance remain open. Mini SSH timed out before remote tests; M1 deferred; Stage 3 partial. См. [implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md) |
-| [partial] | S3-38i | Process-level STOP isolation and EOF during active V1 RUN | Pins exact STOP_ACK→RESULT order, stopped result, fresh next invocation, and bounded clean teardown after active-run EOF. Static review passed; no process execution. См. [implementation report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md) |
+| [partial] | S3-38i | Process-level STOP isolation and EOF during active V1 RUN | Exact bounded smoke passed: STOP_ACK→RESULT ordering, stopped result, fresh same-code invocation, and clean teardown after active-run EOF. Descriptor/lease cleanup before exit, broader process suite, Mini/physical-x86 and full Stage 3 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md) |
 | [partial] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Pins fragmented HELLO/RUN, coalesced RUN admission with BUSY evidence, partial-frame EOF, and overlength rejection before body; INVALID_STATE batch closure remains uncovered. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
 | [partial] | S3-38k | Process-level immutable-code mismatch and RUN-ID high-watermark | Pins CODE_MISMATCH without rebinding, advances IDs on rejected RUNs, rejects reused IDs, and then runs the original code on a fresh higher ID. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md) |
 | [partial] | S3-38l | Process-level active STOP, rejected RUN/STOP IDs and RUN-ID high-watermark | Pins wrong-ID STOP, duplicate/decreasing IDs, BUSY ID consumption, exact STOP_ACK→RESULT order, stale retry rejection and a fresh successful RUN. Independent static reviews passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md) |
@@ -4102,12 +4102,17 @@ SSH timed out before remote tests; M1 remains deferred. See the
 The smoke runs the admitted `75 FE` loop with ZF clear, sends exact-ID STOP
 after RUN_ACK, and checks STOP_ACK before the terminal RESULT with STOP reason.
 It then runs the same code with ZF set and a one-instruction budget to prove a
-STOP request does not carry into the next invocation. A separate VMHost process
-closes the control socket after RUN_ACK and must exit cleanly within the bounded
-timeout. No positive retirement count is required after STOP. Independent
-Sol/high static review passed; no Python, build, or process execution was
-performed. Process termination does not prove descriptor or executable-lease
-cleanup before exit. See the
+STOP request does not carry into the next invocation. In a separate process
+case, the harness closes the control socket after RUN_ACK and VMHost must exit
+cleanly within the bounded timeout. No positive retirement count is required
+after STOP. Independent
+Sol/high static review passed. The exact smoke command
+`python3 tests/system/vmhost_control_v1_stop_eof_smoke.py /tmp/s3-38h-run/artifacts/od-vmhost-smoke`
+passed with marker `VMHost control V1 smoke passed: STOP isolation and bounded
+active-run EOF teardown`; the shared process-manifest self-test passed in
+S3-38h. Process termination does not prove descriptor or executable-lease
+cleanup before exit. Mini SSH timed out before remote tests; M1 remains deferred.
+See the
 [S3-38i report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md).
 
 #### S3-38j. Process-level framing and admission checks
