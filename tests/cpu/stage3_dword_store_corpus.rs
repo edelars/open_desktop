@@ -177,6 +177,14 @@ struct ReplayArtifact {
     mismatch: String,
 }
 
+struct TemporaryArtifactDirectory(PathBuf);
+
+impl Drop for TemporaryArtifactDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReplayOutcome {
     NotReproduced,
@@ -372,6 +380,13 @@ fn parse_replay_artifact(contents: &str) -> Result<ReplayArtifact, &'static str>
     })
 }
 
+fn write_mismatch_artifact(path: &Path, artifact: &ReplayArtifact) -> std::io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&path)?;
+    file.write_all(serialize_replay_artifact(artifact).as_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
 fn save_mismatch_artifact(artifact: &ReplayArtifact) -> std::io::Result<PathBuf> {
     let run_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -382,9 +397,7 @@ fn save_mismatch_artifact(artifact: &ReplayArtifact) -> std::io::Result<PathBuf>
     fs::create_dir_all(run_dir.parent().expect("run directory has a parent"))?;
     fs::create_dir(&run_dir)?;
     let path = run_dir.join("mismatch.s3-34dn");
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&path)?;
-    file.write_all(serialize_replay_artifact(artifact).as_bytes())?;
-    file.sync_all()?;
+    write_mismatch_artifact(&path, artifact)?;
     Ok(path)
 }
 
@@ -669,6 +682,36 @@ fn s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed() {
         Err("unsupported replay profile")
     );
 
+    let recompute_ram_digest = |contents: String| {
+        let digest_field = format!("ram_digest={:016x}", ram_digest(&artifact.input));
+        contents
+            .lines()
+            .map(|line| {
+                if line.starts_with("ram_digest=") {
+                    digest_field.as_str()
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+    let invalid_version = recompute_ram_digest(serialized.replace("version=1\n", "version=2\n"));
+    assert_eq!(
+        parse_replay_artifact(&invalid_version),
+        Err("unsupported artifact version")
+    );
+
+    let invalid_rip = recompute_ram_digest(serialized.replace(
+        &format!("rip={ENTRY_RIP:016x}"),
+        &format!("rip={:016x}", ENTRY_RIP + 1),
+    ));
+    assert_eq!(
+        parse_replay_artifact(&invalid_rip),
+        Err("source RIP does not match replay profile")
+    );
+
     let invalid_source = serialized.replace("source=67890424", "source=67890425");
     assert_eq!(
         parse_replay_artifact(&invalid_source),
@@ -697,6 +740,25 @@ fn s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed() {
         parse_replay_artifact(&invalid_layout),
         Err("RAM layout does not match the fixed profile")
     );
+
+    let temporary_path = std::env::temp_dir().join(format!(
+        "s3-34dn-self-check-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    ));
+    fs::create_dir(&temporary_path).expect("create isolated self-check directory");
+    let _cleanup = TemporaryArtifactDirectory(temporary_path.clone());
+    let sentinel_path = temporary_path.join("existing.s3-34dn");
+    let sentinel = b"preserve this existing artifact";
+    fs::write(&sentinel_path, sentinel).expect("precreate sentinel artifact");
+    let write_error = write_mismatch_artifact(&sentinel_path, &artifact)
+        .expect_err("create-only writer must reject an existing file");
+    let sentinel_after = fs::read(&sentinel_path).expect("read preserved sentinel artifact");
+    assert_eq!(write_error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(sentinel_after, sentinel);
 
     assert_eq!(
         classify_replay(
