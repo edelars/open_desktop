@@ -516,6 +516,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                 cmpps_controls: input.fixture.cmpps_controls,
                 comisd_ucomisd_controls: input.fixture.comisd_ucomisd_controls,
                 comisd_memory_rax_controls: input.fixture.comisd_memory_rax_controls,
+                comisd_memory_rax_invalid_controls: input
+                    .fixture
+                    .comisd_memory_rax_invalid_controls,
                 ucomisd_memory_rax_controls: input.fixture.ucomisd_memory_rax_controls,
                 comiss_memory_rax_controls: input.fixture.comiss_memory_rax_controls,
                 comiss_memory_invalid_rax_controls: input
