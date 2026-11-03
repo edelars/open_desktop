@@ -12685,4 +12685,117 @@ mod memory_instruction_matrix_tests {
         }
         assert_eq!(checks, 102_400);
     }
+
+    #[test]
+    fn sqrtpd_unmasked_signed_nan_lanes_obey_ie_masks_and_delivery() {
+        use od_testkit::v2::{Profile, SqrtpdMemoryRaxUnmaskedControlSnapshot};
+
+        let mut base = Fixture::from_json(SQRTPD_UNMASKED_MATRIX_BASE)
+            .unwrap()
+            .fixture;
+        base.profile = Profile::LongSqrtpdMemoryRaxUnmaskedV1;
+        base.sqrtpd_memory_rax_controls = None;
+        base.sqrtpd_memory_rax_unmasked_controls = Some(SqrtpdMemoryRaxUnmaskedControlSnapshot {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        });
+
+        let neutral = 0x3ff0_0000_0000_0000;
+        let qnan_pos = 0x7ff8_1234_5678_9abc;
+        let qnan_neg = 0xfff8_1234_5678_9abc;
+        let snan_pos = 0x7ff0_1234_5678_9abc;
+        let snan_neg = 0xfff0_1234_5678_9abc;
+        let vectors: [(&str, [u64; 2], bool); 10] = [
+            ("qnan_pos_lane0", [qnan_pos, neutral], false),
+            ("qnan_neg_lane0", [qnan_neg, neutral], false),
+            ("qnan_pos_lane1", [neutral, qnan_pos], false),
+            ("qnan_neg_lane1", [neutral, qnan_neg], false),
+            ("qnan_both_signed", [qnan_pos, qnan_neg], false),
+            ("snan_pos_lane0", [snan_pos, neutral], true),
+            ("snan_neg_lane0", [snan_neg, neutral], true),
+            ("snan_pos_lane1", [neutral, snan_pos], true),
+            ("snan_neg_lane1", [neutral, snan_neg], true),
+            ("snan_both_signed", [snan_pos, snan_neg], true),
+        ];
+        let mut checks = 0usize;
+        for (name, raw, is_snan) in vectors {
+            for im_masked in [false, true] {
+                for osxmmexcpt in [false, true] {
+                    let mut fixture = base.clone();
+                    fixture.case_id = format!(
+                        "s2_38ab_nan_{name}_im{}_os{}",
+                        u8::from(im_masked),
+                        u8::from(osxmmexcpt),
+                    );
+                    fixture.memory[1].initial_bytes_hex = raw
+                        .into_iter()
+                        .flat_map(u64::to_le_bytes)
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect();
+                    let mut mxcsr = 0x1f80u32;
+                    if !im_masked {
+                        mxcsr &= !(1 << 7);
+                    }
+                    fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(mxcsr));
+                    fixture
+                        .sqrtpd_memory_rax_unmasked_controls
+                        .as_mut()
+                        .unwrap()
+                        .cr4_osxmmexcpt = osxmmexcpt;
+                    let should_fault = is_snan && !im_masked;
+                    fixture.expected_exit = if should_fault {
+                        v2::ExpectedExit::Exception
+                    } else {
+                        v2::ExpectedExit::StopAddress
+                    };
+
+                    let loaded = Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
+                    let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                    let result = execute_fixture_v2(&loaded, &mut memory);
+                    result.validate_for(&loaded).unwrap_or_else(|error| {
+                        panic!("{name}, IM masked={im_masked}, OSXMMEXCPT={osxmmexcpt}: {error}")
+                    });
+                    assert_eq!(
+                        matches!(result.outcome, Outcome::Exception {}),
+                        should_fault,
+                        "{name}, IM masked={im_masked}, OSXMMEXCPT={osxmmexcpt}"
+                    );
+                    let Observation::Available { value: snapshot } = &result.snapshot else {
+                        panic!("missing SQRTPD snapshot")
+                    };
+                    let ie = snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 1 != 0;
+                    assert_eq!(ie, is_snan, "QNaN must not raise IE; SNaN must raise IE");
+                    if should_fault {
+                        assert_eq!(
+                            snapshot.state.sse.as_ref().unwrap().xmm[0],
+                            base.initial_state.sse.as_ref().unwrap().xmm[0],
+                            "unmasked SNaN must suppress the whole XMM destination"
+                        );
+                        assert_eq!(snapshot.state.rip, base.initial_state.rip);
+                        assert_eq!(
+                            result.instructions_executed,
+                            Observation::Available { value: HexU64(0) }
+                        );
+                        let Observation::Available {
+                            value: Some(exception),
+                        } = &snapshot.exception
+                        else {
+                            panic!("missing SNaN exception")
+                        };
+                        assert_eq!(exception.vector, if osxmmexcpt { 19 } else { 6 });
+                    } else {
+                        assert_eq!(
+                            result.instructions_executed,
+                            Observation::Available { value: HexU64(1) }
+                        );
+                    }
+                    checks += 1;
+                }
+            }
+        }
+        assert_eq!(checks, 40);
+    }
 }
