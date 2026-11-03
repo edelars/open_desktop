@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for Stage 3 harness evidence validation; no child suites run."""
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -4527,6 +4528,38 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 harness.PROCESS_SOURCE_PATHS,
             )
             vmhost_path = str(harness.vmhost_process_paths(run_root)["vmhost"])
+            code_mismatch_path = "tests/system/vmhost_control_v1_code_mismatch_smoke.py"
+            code_mismatch_step = "process_control_v1_code_mismatch"
+            code_mismatch_marker = (
+                "VMHost control V1 smoke passed: immutable-code mismatch rejection "
+                "preserves binding and RUN ID high-watermark"
+            )
+            self.assertEqual(
+                commands[code_mismatch_step],
+                [sys.executable, code_mismatch_path, vmhost_path],
+            )
+            self.assertIn(code_mismatch_path, harness.PROCESS_SOURCE_PATHS)
+            self.assertEqual(harness.PROCESS_STEP_TIMEOUTS[code_mismatch_step], 30)
+            self.assertEqual(
+                harness.PROCESS_SUCCESS_MARKERS["control_v1_code_mismatch"],
+                code_mismatch_marker,
+            )
+            code_mismatch_manifest = next(
+                entry for entry in manifest_commands if entry["step"] == code_mismatch_step
+            )
+            self.assertEqual(
+                code_mismatch_manifest["argv"],
+                [sys.executable, code_mismatch_path, "${RUN_ROOT}/artifacts/od-vmhost-smoke"],
+            )
+            manifest_inputs = harness.input_manifest()["vmhost_process"]["inputs"]
+            mismatch_source = {
+                "path": code_mismatch_path,
+                "sha256": harness.sha256_file(harness.ROOT / code_mismatch_path),
+            }
+            self.assertIn(
+                mismatch_source,
+                manifest_inputs,
+            )
             for step_name, script_path, marker_key, marker in (
                 (
                     "process_control_v1_frames",
@@ -4569,6 +4602,34 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             )
         finally:
             temporary.cleanup()
+
+    def test_vmhost_process_manifest_self_check_rejects_code_mismatch_drift(self):
+        process_script = "tests/system/vmhost_control_v1_code_mismatch_smoke.py"
+        for corruption in ("command", "source", "marker"):
+            with self.subTest(corruption=corruption), tempfile.TemporaryDirectory() as temporary:
+                manifest = copy.deepcopy(harness.input_manifest())
+                process = manifest["vmhost_process"]
+                if corruption == "command":
+                    command = next(
+                        item for item in process["build_profile"]["commands"]
+                        if item["step"] == "process_control_v1_code_mismatch"
+                    )
+                    command["argv"][1] = "tests/system/vmhost_control_v1_same_code_smoke.py"
+                elif corruption == "source":
+                    record = next(item for item in process["inputs"] if item["path"] == process_script)
+                    record["sha256"] = "0" * 64
+                else:
+                    process["success_markers"]["control_v1_code_mismatch"] += " forged"
+                manifest_path = Path(temporary) / "input_manifest.json"
+                raw = harness.canonical_json(manifest)
+                manifest_path.write_bytes(raw)
+                with self.assertRaisesRegex(
+                    harness.HarnessError,
+                    "VMHost process (command manifest|source inputs|success markers) differ(?:s)?",
+                ):
+                    harness.validate_input_manifest_file(
+                        manifest_path, harness.sha256_bytes(raw)
+                    )
 
     def test_generated_fault_smoke_cleans_child_group_on_success_and_failure(self):
         with tempfile.TemporaryDirectory() as temporary:

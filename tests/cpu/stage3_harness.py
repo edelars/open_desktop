@@ -1604,6 +1604,7 @@ PROCESS_SUITE_STEPS = (
     "process_fault_helper_entitlements",
     "process_control_race",
     "process_control_v1_sessions",
+    "process_control_v1_code_mismatch",
     "process_control_v1_frames",
     "process_control_v1_stop_eof",
     "process_isolation",
@@ -1621,6 +1622,10 @@ PROCESS_SUCCESS_MARKERS = {
     "control_race": "VMHost control smoke passed:",
     "control_v1_sessions": (
         "VMHost control V1 smoke passed: same-code sequential RUNs with fresh state and budgets"
+    ),
+    "control_v1_code_mismatch": (
+        "VMHost control V1 smoke passed: immutable-code mismatch rejection "
+        "preserves binding and RUN ID high-watermark"
     ),
     "control_v1_frames": (
         "VMHost control V1 smoke passed: fragmented/coalesced frames, bounded EOF teardown, oversized length"
@@ -1671,6 +1676,7 @@ PROCESS_STEP_TIMEOUTS = {
     "process_fault_helper_entitlements": 120,
     "process_control_race": 900,
     "process_control_v1_sessions": 30,
+    "process_control_v1_code_mismatch": 30,
     "process_control_v1_frames": 30,
     "process_control_v1_stop_eof": 30,
     "process_isolation": 120,
@@ -1700,6 +1706,7 @@ PROCESS_SOURCE_PATHS = (
     "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     "tests/system/vmhost_control_race_smoke.py",
     "tests/system/vmhost_control_v1_same_code_smoke.py",
+    "tests/system/vmhost_control_v1_code_mismatch_smoke.py",
     "tests/system/vmhost_control_v1_frames_smoke.py",
     "tests/system/vmhost_control_v1_stop_eof_smoke.py",
     "tests/system/vmhost_isolation_smoke.py",
@@ -2364,6 +2371,10 @@ def vmhost_process_commands(
         ],
         "process_control_v1_sessions": [
             sys.executable, "tests/system/vmhost_control_v1_same_code_smoke.py",
+            str(paths["vmhost"]),
+        ],
+        "process_control_v1_code_mismatch": [
+            sys.executable, "tests/system/vmhost_control_v1_code_mismatch_smoke.py",
             str(paths["vmhost"]),
         ],
         "process_control_v1_frames": [
@@ -3410,6 +3421,7 @@ def run_vmhost_process_suite(
                     f"process command failed before semantic validation: {step.get('failure')}"
                 )
             if step_name in {"process_control_race", "process_control_v1_sessions",
+                             "process_control_v1_code_mismatch",
                              "process_control_v1_frames", "process_control_v1_stop_eof",
                              "process_isolation", "process_generated_fault", "process_app_bundle"}:
                 if step_name == "process_control_race":
@@ -3423,6 +3435,13 @@ def run_vmhost_process_suite(
                     require_process_marker(
                         step,
                         PROCESS_SUCCESS_MARKERS["control_v1_sessions"],
+                        step_name,
+                    )
+                elif step_name == "process_control_v1_code_mismatch":
+                    step["binary_inputs"] = process_binary_inputs(artifacts, "vmhost")
+                    require_process_marker(
+                        step,
+                        PROCESS_SUCCESS_MARKERS["control_v1_code_mismatch"],
                         step_name,
                     )
                 elif step_name in {"process_control_v1_frames", "process_control_v1_stop_eof"}:
@@ -4219,6 +4238,11 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
         "process_control_v1_sessions",
     )
     require_process_marker(
+        steps["process_control_v1_code_mismatch"],
+        PROCESS_SUCCESS_MARKERS["control_v1_code_mismatch"],
+        "process_control_v1_code_mismatch",
+    )
+    require_process_marker(
         steps["process_control_v1_frames"],
         PROCESS_SUCCESS_MARKERS["control_v1_frames"],
         "process_control_v1_frames",
@@ -4241,6 +4265,7 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
     expected_binary_inputs = {
         "process_control_race": process_binary_inputs(expected_artifacts, "launcher", "vmhost"),
         "process_control_v1_sessions": process_binary_inputs(expected_artifacts, "vmhost"),
+        "process_control_v1_code_mismatch": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_frames": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_stop_eof": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_isolation": process_binary_inputs(expected_artifacts, "vmhost"),

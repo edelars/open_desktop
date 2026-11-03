@@ -440,6 +440,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38h | Process-level V1 same-code repeated RUN smoke and exact process-harness gate | Pins two sequential RUNs on one VMHost with distinct CPU state/budget, full RESULT payloads, increasing IDs, ACK/RESULT order and idle EOF cleanup. Process execution remains pending; S3-38i/j separately pin active STOP/EOF and framing gates. См. [implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md) |
 | [partial] | S3-38i | Process-level STOP isolation and EOF during active V1 RUN | Pins exact STOP_ACK→RESULT order, stopped result, fresh next invocation, and bounded clean teardown after active-run EOF. Static review passed; no process execution. См. [implementation report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md) |
 | [partial] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Pins fragmented HELLO/RUN, coalesced RUN admission with BUSY evidence, partial-frame EOF, and overlength rejection before body; INVALID_STATE batch closure remains uncovered. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
+| [partial] | S3-38k | Process-level immutable-code mismatch and RUN-ID high-watermark | Pins CODE_MISMATCH without rebinding, advances IDs on rejected RUNs, rejects reused IDs, and then runs the original code on a fresh higher ID. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md) |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
@@ -4065,6 +4066,19 @@ This process evidence does not claim the VMHost's internal buffer size. The
 two new harness steps and source identities are statically reviewed but
 unexecuted. See the
 [S3-38j report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md).
+
+#### S3-38k. Process-level immutable-code mismatch and request IDs
+
+After code A succeeds as RUN ID 1, the smoke sends different code B as ID 2
+and checks scope-1 `CODE_MISMATCH`. It retries ID 2 and checks
+`INVALID_REQUEST_ID`, then sends B as fresh ID 3 and checks another
+`CODE_MISMATCH` to prove the original binding remains. Reusing ID 3 is also
+rejected; ID 4 with code A succeeds using fresh CPU state. The process harness
+pins the exact command, 30-second timeout, source fingerprint, marker, and
+VMHost binary hash. Independent Sol/high review passed; no process execution
+was performed. INVALID_STATE batch closure and physical V1 acceptance remain
+open. See the
+[S3-38k report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md).
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
