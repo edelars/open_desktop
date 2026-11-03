@@ -36137,13 +36137,18 @@ mod tests {
             let contains_address = |start: u64, candidate: u64| {
                 (0..4_u64).any(|offset| start.wrapping_add(offset) == candidate)
             };
+            let before_guard = address.checked_sub(1);
+            let after_guard = address.checked_add(4);
+            let overlaps_observed_target = |candidate: u64| {
+                contains_address(address, candidate)
+                    || before_guard == Some(candidate)
+                    || after_guard == Some(candidate)
+            };
             let full64_address = rcx.wrapping_add_signed(displacement);
             if address32 && rcx != address {
                 for offset in 0..4_u64 {
                     let candidate = rcx.wrapping_add(offset);
-                    if !contains_address(address, candidate)
-                        && !contains_address(full64_address, candidate)
-                    {
+                    if !overlaps_observed_target(candidate) {
                         bytes.insert(candidate, 0xb0 + offset as u8);
                     }
                 }
@@ -36151,10 +36156,8 @@ mod tests {
             if address32 && full64_address != address {
                 for offset in 0..4_u64 {
                     let candidate = full64_address.wrapping_add(offset);
-                    if !contains_address(address, candidate)
-                        && !(address32
-                            && rcx != address
-                            && contains_address(rcx, candidate))
+                    if !overlaps_observed_target(candidate)
+                        && !(address32 && rcx != address && contains_address(rcx, candidate))
                     {
                         bytes.insert(candidate, 0xc0 + offset as u8);
                     }
@@ -36309,20 +36312,26 @@ mod tests {
             let contains_address = |start: u64, candidate: u64| {
                 (0..4_u64).any(|offset| start.wrapping_add(offset) == candidate)
             };
+            let before_guard = address.checked_sub(1);
+            let after_guard = address.checked_add(4);
+            let overlaps_observed_target = |candidate: u64| {
+                contains_address(address, candidate)
+                    || before_guard == Some(candidate)
+                    || after_guard == Some(candidate)
+            };
             let full64_address = rcx.wrapping_add_signed(displacement);
             for offset in 0..4_u64 {
                 let candidate = rcx.wrapping_add(offset);
                 if address32
                     && rcx != address
-                    && !contains_address(address, candidate)
-                    && !contains_address(full64_address, candidate)
+                    && !overlaps_observed_target(candidate)
                 {
                     assert_eq!(native_ram.bytes[&candidate], 0xb0 + offset as u8);
                 }
                 let full64_candidate = full64_address.wrapping_add(offset);
                 if address32
                     && full64_address != address
-                    && !contains_address(address, full64_candidate)
+                    && !overlaps_observed_target(full64_candidate)
                     && !(address32
                         && rcx != address
                         && contains_address(rcx, full64_candidate))
