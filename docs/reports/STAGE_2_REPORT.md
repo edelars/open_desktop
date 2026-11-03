@@ -23433,3 +23433,35 @@ integration resolution are recorded in the following commit. See
 [S2-38al](S2_38AL_ADDPD_MEMORY_UNMASKED.md), the
 [CPU contract](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).
 Stage 2 remains open.
+
+## S2-38am — SUBPS m128 memory unmasked exceptions (2026-11-03)
+
+Added exact Long64 `0F 5C 00` SUBPS XMM0,m128 `[RAX]` as an immutable schema-v2
+interpreter-only profile with separate unmasked controls. It preserves the
+masked-memory S2-37dr and register SUBPS profiles. The memory form requires SSE
+bit 25, one read-only m128 read, and 16-byte alignment regardless of AC. It
+fetches and checks the complete form before feature/control gates; noncanonical
+instruction fetch takes `#GP(0)` first. Original operands determine NaN
+selection before RHS sign inversion. SNaN and same-sign infinity subtraction
+raise IE; opposite signs produce valid infinity. IE/DE aggregate before masks,
+and either unmasked pre-events or PE suppress the whole destination and
+retirement at their respective stages.
+
+The independent raw-u32 oracle uses the actual memory RHS. The actual
+interpreter ran 41,472 representative event cases and 393,216 cross-lane,
+rounding, sticky-history and mask cases, for 434,688 comparisons. Six literal
+fixtures and direct fetch/gate/CPL/alignment/span/read rollback, schema,
+tampering and backend denial checks were also added. Package suites passed:
+od-isa 1,967; od-testkit 461; runner 152 unit plus 564 fixture tests. Workspace
+all-target check, formatting, diff check and Graphify refresh passed (12,642
+nodes / 27,363 edges / 350 communities). Layout checking reported only the
+linked-worktree `.git` file and two pre-existing missing manifest links in this
+report; it found no new layout issue. Independent Sol/high review completed
+cleanly, including fetch-span precedence, schema/result validation, and the
+full representative and boundary matrices. No physical x86 acceptance is
+claimed.
+
+See the [S2-38am report](S2_38AM_SUBPS_MEMORY_UNMASKED.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38am--exact-subps-memory-profile-with-unmasked-exceptions),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[stage plan](../plans/STAGE_2.md).

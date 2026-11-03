@@ -8675,6 +8675,25 @@ remain separate; no physical x86 acceptance is claimed. See the
 [implementation report](../../../../docs/reports/S2_38AK_ADDPS_MEMORY_UNMASKED.md),
 and [stage plan](../../../../docs/plans/STAGE_2.md).
 
+### S2-38am SUBPS m128 memory unmasked exceptions
+
+The immutable schema-v2 profile uses exact `0F 5C 00`, SSE bit 25, a read-only
+m128 `[RAX]`, one read16 and alignment16 regardless of AC. Six literal fixtures
+cover IE, DE, PE, IE suppressing PE in another lane, successful prior-sticky
+preservation, and noncanonical fetch precedence. The runner executes all
+`6^4 × 16 × 2` representative lane/mask/delivery cases (41,472), then 48
+cross-lane/boundary vectors across four RC modes, 64 prior sticky histories,
+16 masks and both delivery mappings (393,216). The integer-only raw-u32 oracle
+uses the actual memory RHS and covers original-source NaN selection, both
+infinity sign relationships, lane-local DE, exact tiny results, halfway and
+exponent-gap rounding, cancellation and overflow. Direct checks cover fetch,
+gate and CPL order, AC-clear/set alignment, canonical-span/read rollback,
+single-read behavior and denial of register-form admission. S2-37dr masked
+memory and register SUBPS behavior remain separate; no physical x86 acceptance
+is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38am--exact-subps-memory-profile-with-unmasked-exceptions),
+[implementation report](../../../../docs/reports/S2_38AM_SUBPS_MEMORY_UNMASKED.md),
+and [stage plan](../../../../docs/plans/STAGE_2.md).
+
 ### S2-38ab SQRTPD m128 memory unmasked exceptions
 
 The immutable schema-v2 interpreter-only profile uses exact `66 0F 51 00`,
