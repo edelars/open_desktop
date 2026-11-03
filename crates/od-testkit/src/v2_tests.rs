@@ -11381,12 +11381,22 @@ fn mulss_memory_unmasked_executor_matches_raw_u32_oracle_matrix() {
     ))
     .unwrap()
     .fixture;
-    // Four vectors make the full control/history product cover invalid priority,
-    // signed SNaN payloads in memory, denormal+tiny inexact, and exact tiny output.
+    // The runtime product mirrors every schema/oracle event vector, then adds
+    // an exact-tiny result so all arithmetic classes reach the interpreter.
     let operands = [
+        (0x7fc0_0001, 0x3f80_0000), // QNaN in destination.
+        (0x3f80_0000, 0xffc1_2345), // Signed QNaN in memory.
+        (0x7f80_0001, 0x3f80_0000), // SNaN in destination.
+        (0x3f80_0000, 0xff80_0001), // Signed SNaN in memory.
         (0x7fc0_0001, 0x0000_0001), // QNaN suppresses the subnormal operand's DE.
-        (0x3f80_0000, 0xff80_0001), // Signed SNaN in the memory source.
+        (0x0000_0000, 0xff80_0000), // Zero times negative infinity.
+        (0x8000_0000, 0xc040_0000), // Signed zero times negative finite.
+        (0x7f80_0000, 0xc000_0000), // Signed infinity product.
+        (0x4000_0000, 0x3f00_0000), // Exact product.
+        (0x3f8c_cccd, 0x3f8c_cccd), // Inexact product.
         (0x0000_0001, 0x3f00_0000), // Tiny inexact product with DE.
+        (0x7f7f_ffff, 0x4000_0000), // Overflow.
+        (0x007f_ffff, 0x3f80_0001), // WPR rounds to minimum normal.
         (0x0080_0000, 0x3f00_0000), // Exact tiny product: minimum normal * 0.5.
     ];
     let mut executions = 0usize;
@@ -11506,5 +11516,5 @@ fn mulss_memory_unmasked_executor_matches_raw_u32_oracle_matrix() {
             }
         }
     }
-    assert_eq!(executions, 4 * 4 * 64 * 16 * 2);
+    assert_eq!(executions, 14 * 4 * 64 * 16 * 2);
 }

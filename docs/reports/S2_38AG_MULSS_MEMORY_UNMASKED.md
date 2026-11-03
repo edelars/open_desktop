@@ -25,11 +25,14 @@ checked; only the new unmasked MULSS profile requires a read-only data mapping.
 
 ## Coverage
 
-- 32,768 actual interpreter executions, each checked against the independent
-  raw-u32 integer oracle: four operand vectors × 4 rounding modes × 64 incoming
-  sticky histories × 16 IM/DM/ZM/PM combinations × both OSXMMEXCPT settings.
-  These executions cover QNaN+subnormal IE/DE priority, a signed memory SNaN,
-  tiny inexact underflow, and an exact tiny result (`min-normal × 0.5`).
+- 114,688 actual interpreter executions, each checked against the independent
+  raw-u32 integer oracle: all 13 operand/event vectors plus an exact-tiny vector
+  × 4 rounding modes × 64 incoming sticky histories × 16 IM/DM/ZM/PM
+  combinations × both OSXMMEXCPT settings. Runtime vectors cover signed QNaN
+  and SNaN in both source positions, QNaN+subnormal IE/DE priority,
+  zero×infinity, signed zero/infinity, exact and inexact products, tiny inexact
+  underflow, overflow, WPR rounding to minimum-normal, and exact tiny output
+  (`min-normal × 0.5`).
 - A separate 106,496-case schema/result-validator matrix uses 13 independently
   computed oracle vectors across the same controls and histories. It covers
   signed QNaN/SNaN positions, zero×infinity, signed zero/infinity, exact and
@@ -43,11 +46,11 @@ checked; only the new unmasked MULSS profile requires a read-only data mapping.
   delivery, AC-before-address, unaligned read4, one callback, canonical and
   wrapping-span rejection, read-failure rollback, and IE/DE pre-event versus PE
   post-event suppression.
-- After review fixes, package suites passed: `od-isa` 1,959; `od-testkit` 461;
-  `od-runner` 138 unit and 561 fixture tests. The updated real executor matrix
-  completed in 2.74 seconds within `od-testkit`. Workspace all-target offline
-  check (before the test-only follow-up), formatting, Graphify refresh (12,460
-  nodes, 27,060 edges, 366 communities), and diff check passed.
+- After the matrix expansion, package suites passed: `od-isa` 1,959;
+  `od-testkit` 461; `od-runner` 138 unit and 561 fixture tests. The full
+  114,688-execution runtime matrix completed in 9.46 seconds. Workspace
+  all-target offline check, formatting, Graphify refresh (12,460 nodes, 27,060
+  edges, 366 communities), and diff check passed.
   `tools/check_layout.py` reported the isolated worktree `.git` marker
   and two pre-existing links from the aggregate Stage 2 report to absent
   `work/` oracle manifests.
