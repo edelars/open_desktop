@@ -195,6 +195,7 @@ SELF_TEST_NAMES = (
     "test_vmhost_codesign_commands_use_resolved_tool_path",
     "test_vmhost_process_manifest_covers_every_gate_once",
     "test_vmhost_process_manifest_self_check_rejects_code_mismatch_drift",
+    "test_vmhost_process_v1_isolation_gate_is_pinned_once_and_fails_closed",
     "test_vmhost_process_run_stop_id_gate_is_pinned_once_and_fails_closed",
     "test_vmhost_process_run_id_exhaustion_gate_is_pinned_once_and_fails_closed",
     "test_generated_fault_smoke_cleans_child_group_on_success_and_failure",
@@ -1644,6 +1645,7 @@ PROCESS_SUITE_STEPS = (
     "process_control_v1_stop_eof",
     "process_control_v1_run_stop_id",
     "process_control_v1_run_id_exhaustion",
+    "process_control_v1_isolation",
     "process_isolation",
     "process_app_bundle",
     "process_bundle_verify",
@@ -1676,6 +1678,10 @@ PROCESS_SUCCESS_MARKERS = {
     "control_v1_run_id_exhaustion": (
         "VMHost control V1 smoke passed: RUN-ID exhaustion does not wrap and "
         "fresh connection accepts ID 1"
+    ),
+    "control_v1_isolation": (
+        "VMHost control V1 isolation smoke passed: SIGSEGV stayed within helper A; "
+        "helper B completed exact STOP, fresh RUN, and idle EOF"
     ),
     "isolation": "VMHost isolation smoke passed:",
     "generated_fault": "VMHost terminated by SIGSEGV",
@@ -1725,6 +1731,7 @@ PROCESS_STEP_TIMEOUTS = {
     "process_control_v1_stop_eof": 30,
     "process_control_v1_run_stop_id": 30,
     "process_control_v1_run_id_exhaustion": 30,
+    "process_control_v1_isolation": 30,
     "process_isolation": 120,
     "process_generated_fault": 30,
     "process_app_bundle": 180,
@@ -1757,6 +1764,7 @@ PROCESS_SOURCE_PATHS = (
     "tests/system/vmhost_control_v1_stop_eof_smoke.py",
     "tests/system/vmhost_control_v1_run_stop_id_smoke.py",
     "tests/system/vmhost_control_v1_run_id_exhaustion_smoke.py",
+    "tests/system/vmhost_control_v1_isolation_smoke.py",
     "tests/system/vmhost_isolation_smoke.py",
     "tests/system/vmhost_generated_fault_smoke.py",
     "tests/system/vmhost_generated_fault_helper.swift",
@@ -2440,6 +2448,10 @@ def vmhost_process_commands(
         ],
         "process_control_v1_run_id_exhaustion": [
             sys.executable, "tests/system/vmhost_control_v1_run_id_exhaustion_smoke.py",
+            str(paths["vmhost"]),
+        ],
+        "process_control_v1_isolation": [
+            sys.executable, "tests/system/vmhost_control_v1_isolation_smoke.py",
             str(paths["vmhost"]),
         ],
         "process_isolation": [
@@ -3482,6 +3494,7 @@ def run_vmhost_process_suite(
                              "process_control_v1_frames", "process_control_v1_stop_eof",
                              "process_control_v1_run_stop_id",
                              "process_control_v1_run_id_exhaustion",
+                             "process_control_v1_isolation",
                              "process_isolation", "process_generated_fault", "process_app_bundle"}:
                 if step_name == "process_control_race":
                     artifacts = collect_vmhost_process_artifacts(run_root)
@@ -3505,7 +3518,8 @@ def run_vmhost_process_suite(
                     )
                 elif step_name in {"process_control_v1_frames", "process_control_v1_stop_eof",
                                    "process_control_v1_run_stop_id",
-                                   "process_control_v1_run_id_exhaustion"}:
+                                   "process_control_v1_run_id_exhaustion",
+                                   "process_control_v1_isolation"}:
                     step["binary_inputs"] = process_binary_inputs(artifacts, "vmhost")
                     marker_key = (
                         "control_v1_frames"
@@ -3514,6 +3528,8 @@ def run_vmhost_process_suite(
                         if step_name == "process_control_v1_stop_eof"
                         else "control_v1_run_stop_id"
                         if step_name == "process_control_v1_run_stop_id"
+                        else "control_v1_isolation"
+                        if step_name == "process_control_v1_isolation"
                         else "control_v1_run_id_exhaustion"
                     )
                     require_process_marker(
@@ -4327,6 +4343,11 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
         PROCESS_SUCCESS_MARKERS["control_v1_run_id_exhaustion"],
         "process_control_v1_run_id_exhaustion",
     )
+    require_process_marker(
+        steps["process_control_v1_isolation"],
+        PROCESS_SUCCESS_MARKERS["control_v1_isolation"],
+        "process_control_v1_isolation",
+    )
     require_process_marker(steps["process_isolation"], "VMHost isolation smoke passed:", "process_isolation")
     generated = generated_fault_observation(steps["process_generated_fault"])
     if steps["process_generated_fault"].get("process_observation") != generated:
@@ -4345,6 +4366,7 @@ def validate_vmhost_process_summary(summary: dict, manifest: dict, run_root: Pat
         "process_control_v1_stop_eof": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_run_stop_id": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_control_v1_run_id_exhaustion": process_binary_inputs(expected_artifacts, "vmhost"),
+        "process_control_v1_isolation": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_isolation": process_binary_inputs(expected_artifacts, "vmhost"),
         "process_generated_fault": process_binary_inputs(expected_artifacts, "launcher", "fault_helper"),
         "process_app_bundle": process_binary_inputs(expected_artifacts, "bundle_launcher", "bundle_vmhost"),

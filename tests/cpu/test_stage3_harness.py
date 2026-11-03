@@ -4934,6 +4934,70 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         finally:
             temporary.cleanup()
 
+    def test_vmhost_process_v1_isolation_gate_is_pinned_once_and_fails_closed(self):
+        step_name = "process_control_v1_isolation"
+        script_path = "tests/system/vmhost_control_v1_isolation_smoke.py"
+        marker = (
+            "VMHost control V1 isolation smoke passed: SIGSEGV stayed within helper A; "
+            "helper B completed exact STOP, fresh RUN, and idle EOF"
+        )
+        self_test_name = "test_vmhost_process_v1_isolation_gate_is_pinned_once_and_fails_closed"
+        self.assertEqual(harness.SELF_TEST_NAMES.count(self_test_name), 1)
+        self.assertIn(
+            f"__main__.Stage3HarnessValidationTests.{self_test_name}",
+            harness.SELF_TEST_IDENTITIES,
+        )
+        temporary, run_root = temporary_run_root()
+        try:
+            commands = harness.vmhost_process_commands(run_root)
+            vmhost_path = str(harness.vmhost_process_paths(run_root)["vmhost"])
+            self.assertEqual(harness.PROCESS_SUITE_STEPS.count(step_name), 1)
+            self.assertEqual(commands[step_name], [sys.executable, script_path, vmhost_path])
+            self.assertEqual(harness.PROCESS_STEP_TIMEOUTS[step_name], 30)
+            self.assertEqual(harness.PROCESS_SUCCESS_MARKERS["control_v1_isolation"], marker)
+            self.assertEqual(harness.PROCESS_SOURCE_PATHS.count(script_path), 1)
+            manifest = harness.input_manifest()["vmhost_process"]
+            source_record = {
+                "path": script_path,
+                "sha256": harness.sha256_file(harness.ROOT / script_path),
+            }
+            self.assertIn(source_record, manifest["inputs"])
+            command = next(
+                item for item in manifest["build_profile"]["commands"]
+                if item["step"] == step_name
+            )
+            self.assertEqual(
+                command["argv"],
+                [sys.executable, script_path, "${RUN_ROOT}/artifacts/od-vmhost-smoke"],
+            )
+
+            for corruption in ("command", "source", "marker"):
+                with self.subTest(corruption=corruption), tempfile.TemporaryDirectory() as directory:
+                    corrupted = copy.deepcopy(harness.input_manifest())
+                    process = corrupted["vmhost_process"]
+                    if corruption == "command":
+                        entry = next(
+                            item for item in process["build_profile"]["commands"]
+                            if item["step"] == step_name
+                        )
+                        entry["argv"][1] = "tests/system/vmhost_control_v1_same_code_smoke.py"
+                    elif corruption == "source":
+                        entry = next(
+                            item for item in process["inputs"] if item["path"] == script_path
+                        )
+                        entry["sha256"] = "0" * 64
+                    else:
+                        process["success_markers"]["control_v1_isolation"] += " forged"
+                    manifest_path = Path(directory) / "input_manifest.json"
+                    raw = harness.canonical_json(corrupted)
+                    manifest_path.write_bytes(raw)
+                    with self.assertRaises(harness.HarnessError):
+                        harness.validate_input_manifest_file(
+                            manifest_path, harness.sha256_bytes(raw)
+                        )
+        finally:
+            temporary.cleanup()
+
     def test_vmhost_process_run_id_exhaustion_gate_is_pinned_once_and_fails_closed(self):
         step_name = "process_control_v1_run_id_exhaustion"
         script_path = "tests/system/vmhost_control_v1_run_id_exhaustion_smoke.py"

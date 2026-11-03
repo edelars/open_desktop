@@ -449,6 +449,7 @@ Host PC map нужен для диагностики и восстановлен
 | [pass] | S3-38k | Process-level immutable-code mismatch and RUN-ID high-watermark | Focused ARM64 process smoke and both manifest checks pass; Mini SSH timed out before remote commands. Full process-suite and broader V1 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md) |
 | [pass] | S3-38l | Process-level active STOP, rejected RUN/STOP IDs and RUN-ID high-watermark | Focused ARM64 process smoke and fail-closed manifest test pass; Mini SSH timed out before remote commands. Full process-suite and broader V1 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md) |
 | [pass] | S3-38m | Process-level RUN-ID exhaustion and fresh-helper reset | Focused ARM64 process smoke and fail-closed manifest test pass using decoder-supported ADD; physical Mini and full process-suite acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38m_vmhost_v1_id_exhaustion_2026-11-03.md) |
+| [pass] | S3-38n | V1 process isolation after a helper SIGSEGV | Focused two-helper smoke passed: both admitted `JNZ -2` RUNs were active, SIGSEGV terminated only helper A, helper B returned exact-ID STOP_ACK before its full unchanged-state RESULT, then completed same-code fresh-state RUN and idle EOF. Exact process gate and fail-closed manifest self-check passed against a locally rebuilt and signed VMHost. The full process suite, physical Mini, and full Stage 3 remain open. См. [implementation report](../reports/STAGE_3_S3-38n_vmhost_v1_isolation_2026-11-03.md) |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
@@ -4249,6 +4250,28 @@ on ARM64 using the previously built VMHost; full process-suite acceptance is
 unconfirmed after an earlier timeout, and physical Mini acceptance was not
 run. The gate does not imply automatic reconnect or replay. See the
 [S3-38m report](../reports/STAGE_3_S3-38m_vmhost_v1_id_exhaustion_2026-11-03.md).
+
+#### S3-38n. V1 process isolation after a helper SIGSEGV
+
+The separate V1 smoke launches two independent VMHost helper processes. Each
+accepts a long-running admitted `75 FE` (`JNZ -2`) RUN with distinct GPR state.
+The harness sends SIGSEGV only to helper A and requires signal termination;
+helper B stays alive, accepts exact-ID STOP, and returns STOP_ACK before the
+full 64-byte RESULT with its own unchanged state. Helper B then accepts the
+same code under a new ID with ZF set and budget 1, returns a normal full result
+with fresh registers and one retired instruction, and exits cleanly after idle
+EOF. All socket and process waits are bounded, with kill/reap cleanup in a
+`finally` path. The existing V0 process-isolation gate remains separate.
+
+The exact process-suite step pins the smoke command, 30-second outer timeout,
+source hash, success marker, and rebuilt VMHost binary hash. Its dedicated
+fail-closed harness self-check verifies command/source/marker drift rejection.
+The focused smoke and that exact self-check passed on the current local
+macOS ARM64 source build; the full 40-step `--suite vmhost-process` was not run.
+This proves local process isolation for this admitted-code scenario only. It
+does not resolve ISSUE-027, validate generated-fault retry behavior, or close
+the broader V1, Mini, or Stage 3 gates. See the
+[S3-38n implementation report](../reports/STAGE_3_S3-38n_vmhost_v1_isolation_2026-11-03.md).
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
