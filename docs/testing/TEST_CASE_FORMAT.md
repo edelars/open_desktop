@@ -1379,10 +1379,10 @@ change the FILD status predicate or any adjacent FLD profile.
 The exact DB28 schema-v2 profile extends only its local status predicate:
 reject ES/B (`FSW & 0x8080 != 0`) and reject SF (`0x0040`) unless IE (`0x0001`)
 is already set. Preserve all six prior exception flags, raw ten-byte memory,
-one-read behavior, push-on-success, and rollback. The pre-read validator must
-reject SF-only without consulting memory and must not widen FILD or neighboring
-x87 profiles. Success preserves SF+IE and clears C1 according to the bounded
-FLD policy. Keep the existing 69,632 SF=0 state matrix as a regression while
+one-read behavior, push-on-success, and rollback. The pre-read validator must reject SF-only without consulting memory. At this
+historical slice, SF+IE was also rejected for FILD; S2-31ef supersedes only that
+FILD denial while leaving FLD/FST profiles unchanged. Success preserves SF+IE
+and clears C1 according to the bounded FLD policy. Keep the existing 69,632 SF=0 state matrix as a regression while
 adding the SF+IE matrix.
 
 ## S2-38u COMISS memory invalid-only profile
@@ -1464,7 +1464,30 @@ ISSUE-033 open; deny non-interpreter backends.
 Extend only exact bare `DF 00`, `DB 00`, and `DF 28` FILD profiles. PE is already
 admitted; newly admit historical IE/DE/ZE/OE/UE. Positive
 cases span 64 sticky histories × 8 TOP × 4 FCW × 2 prior C1 values for each
-width, with independent literal binary80 answers. Evidence must show all six
-sticky flags survive success, C1 clears, and SF (including SF+IE), ES or B
-rejects before reading. Retain the existing `DB 00` SF+IE negative case and
-prove read/span failure rollback and native/JIT denial.
+width, with independent literal binary80 answers. At this historical slice,
+SF including SF+IE, ES and B rejected before reading. S2-31ef supersedes that
+FILD SF+IE denial for all three widths; retain the SF-only/ES/B pre-read
+refusals, and use the old `DB 00` SF+IE negative fixture only as a historical
+record. Prove read/span failure rollback and native/JIT denial.
+
+
+## S2-31ef FILD historical SF with prior IE
+
+For exact `DF 00`, `DB 00`, `DF 28`, admit SF+IE but retain SF-only, ES and B
+pre-read refusals; preserve SF and all six sticky flags and clear C1 on success.
+Cover 30,720 complete states (three widths × five integer
+literals × 32 DE/ZE/OE/UE/PE histories with SF+IE × eight TOP × four FCW × two
+old C1 states), independent literal binary80 values, rollback, status composition,
+schema-v2 fixture validation and JIT/native denial. Treat S2-31ed/31ee's FILD
+SF+IE denial as historical; do not change adjacent FLD/FST gates.
+
+## S2-38y SQRTSS m32 memory with unmasked events
+
+Use a separate profile for exact `F3 0F 51 00`, SSE-only admission, m32 read at
+RAX and a raw-u32 integer sqrt oracle. The runner matrix spans 16 operand literals
+× 8 IM/DM/PM patterns × OSXMMEXCPT × four RC modes × 64 sticky histories.
+Exercise QNaN/SNaN and signed/positive subnormals, IE/DE/PE ordering, terminal
+unmasked suppression, high96 canaries, gate/read ordering and result/control/backend
+tampering. Literal fixtures demonstrate masked output plus unmasked IE, DE and PE
+under both `#XM` and arithmetic `#UD` paths. Preserve S2-37dg masked memory
+semantics and S2-37aj register semantics.

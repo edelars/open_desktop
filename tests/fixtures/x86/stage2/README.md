@@ -8447,8 +8447,9 @@ historical exception flags already set. The complete-state ISA matrix adds
 69,632 SF+IE combinations across DE/ZE/OE/UE/PE, raw classes, TOP, FCW and both
 C1 states while retaining the S2-31ec 69,632 SF=0 cases. SF-only, ES and B
 refusals are checked before read, including each ES/B bit over accepted SF+IE;
-read/span rollback, FILD's unchanged SF rejection, and FNSTSW/FNCLEX/retry are
-covered. Native/JIT remain closed. No physical x86 acceptance is claimed. See
+read/span rollback, FILD's then-current SF+IE rejection, and
+FNSTSW/FNCLEX/retry are covered. S2-31ef later supersedes that FILD-only
+rejection for SF+IE; SF-only remains rejected. Native/JIT remain closed. No physical x86 acceptance is claimed. See
 the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31ed--historical-sf-with-pre-existing-ie-for-raw-fld-m80fp),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ed), and
 [standalone report](../../../../docs/reports/S2_31ED_FLD_M80FP_HISTORICAL_SF.md).

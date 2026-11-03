@@ -331,7 +331,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ea | Admit historical SF only with pre-existing IE in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte store and post-write pop; native/JIT closed | 24,576 full-state SF+IE cases across accepted source/tag pairs, signs, FCWs, TOP, C1 and DE/ZE/OE/PE histories; raw SNaN/subnormal preservation, SF-only/ES/B and malformed gates, rollback/repeat/FNSTSW/FNCLEX/retry, schema and backend denial; integrated main suites: od-isa 1,925, testkit 455, runner 535, x86-runner 8+6; workspace/fmt/layout/diff pass, Graphify 12,023/26,124/317; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31eb | Admit historical IE and DE on exact bare DB 28 raw FLD m80fp [RAX]; retain existing raw classes, push behavior and native/JIT denial | 8,704 full-state cases across 34 raw class literals × TOP × FCW × IE/DE/PE; full LongModeState equality, read/span rollback with FSW 0x0423 and DB28/FNSTSW/FNCLEX composition; schema-v2 and backend denial; Sol/high clean; author checks: ISA 5, testkit 455, both runner regressions 1, fmt/workspace check/Graphify pass; no physical x86 acceptance |
 | [x] | S2-31ec | Admit historical ZE/OE/UE with IE/DE/PE only in exact bare DB 28 raw FLD m80fp [RAX]; preserve raw classes and push; native/JIT closed | 69,632 full-state cases (64 sticky histories × 34 raw literals × 8 TOP × 4 FCW); all-flags rollback from FSW 0x043f, SF/ES/B rejection, FNSTSW/FNCLEX/retry, schema and backend denial; od-isa 1,928, testkit 455, focused runner checks, workspace/fmt pass; clean Sol/high review after rollback coverage fix; Graphify after merge 12,065/26,206/328; no physical x86 acceptance |
-| [x] | S2-31ed | Admit historical SF only with pre-existing IE on exact bare DB 28 raw FLD m80fp [RAX]; preserve six other sticky flags and raw push; native/JIT closed | Add 69,632 full-state SF+IE cases (32 combinations of DE/ZE/OE/UE/PE × 34 raw literals × 8 TOP × 4 FCW × 2 C1) while retaining S2-31ec's 69,632 SF=0 cases; reject SF-only/ES/B before read, rollback at C1=0/1, FILD denial, FNSTSW/FNCLEX/retry, schema/backend denial; slice suites: od-isa 1,932, testkit 455, runner 130+540; after paired main integration see top-level counts and [main report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ed-s2-38w); sequential manual code review clean, Sol/high agent unavailable due thread limit; no physical x86 acceptance |
+| [x] | S2-31ed | Admit historical SF only with pre-existing IE on exact bare DB 28 raw FLD m80fp [RAX]; preserve six other sticky flags and raw push; native/JIT closed | Add 69,632 full-state SF+IE cases (32 combinations of DE/ZE/OE/UE/PE × 34 raw literals × 8 TOP × 4 FCW × 2 C1) while retaining S2-31ec's 69,632 SF=0 cases; reject SF-only/ES/B before read, rollback at C1=0/1, then-current FILD SF denial, FNSTSW/FNCLEX/retry, schema/backend denial; S2-31ef later supersedes only the FILD SF+IE denial; slice suites: od-isa 1,932, testkit 455, runner 130+540; after paired main integration see top-level counts and [main report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ed-s2-38w); sequential manual code review clean, Sol/high agent unavailable due thread limit; no physical x86 acceptance |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -666,8 +666,10 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38u | Exact Long64 COMISS XMM0,m32 [RAX], invalid-only unmasked-IE profile; post-read subnormal operands are Unsupported; interpreter-only | 1,024 NaN side/class × IM × OSXMMEXCPT × old-sticky cases; finite/infinity/zero relations, pre-read gates, AC/span/read rollback, schema/result/backend tampering and five fixtures; integrated main: ISA COMISS 9, testkit 455, runner 129+537, workspace/fmt pass; Graphify 12,054/26,189/366; clean Sol/high review; ISSUE-033 remains an audit; no physical x86 acceptance |
 | [x] | S2-38v | Exact Long64 UCOMISS XMM0,m32 [RAX], invalid-only unmasked-IE profile; post-read subnormal operands are Unsupported; separate immutable schema-v2 profile, interpreter-only | 1,024 NaN side/class × IM × OSXMMEXCPT × prior-sticky cases; QNaN+SNaN and QNaN+subnormal both sides; finite/infinity/signed-zero, prior-only IE; CPL0–3, fetch/form/gate/AC/span/read priority, read-only schema, result/backend tampering and six fixtures; integrated main: od-isa 1,931, testkit 455, runner 130+539, workspace/fmt pass, Graphify 12,087/26,255/358; clean Sol/high review; ISSUE-033 remains open; no physical x86 acceptance |
 | [x] | S2-38w | Exact Long64 COMISD XMM0,m64 [RAX], invalid-only unmasked-IE profile; post-read subnormal operands are Unsupported; separate immutable schema-v2 profile, interpreter-only | Raw binary64 oracle over both NaN sides/classes × IM × OSXMMEXCPT × 64 old sticky histories; QNaN+SNaN, prior-only IE, RC=0..3, finite/infinity/signed-zero and binary64 boundaries; CPL0–3, fetch/form/gate/AC/span/read priority, read-only schema, result/backend tampering and six fixtures; slice suites: od-isa 1,932, testkit 455, runner 130+540; after paired main integration see top-level counts and [main report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ed-s2-38w); sequential manual code review clean, Sol/high reviewer unavailable due thread limit; preserve S2-37co, ISSUE-033 remains open, no physical x86 acceptance |
-| [x] | S2-31ee | Admit historical IE/DE/ZE/OE/UE, retaining existing PE admission, only on exact bare FILD m16/m32/m64 memory forms; reject SF/ES/B; preserve all sticky flags; native/JIT closed | 12,288 full-state cases (64 sticky × 8 TOP × 4 FCW × 2 old C1 per width), literal binary80 oracle, no-read/rollback/FNSTSW/FNCLEX/retry/schema/backend checks; main: od-isa 1,937, testkit 455, runner 130+543, workspace/fmt/layout/diff pass, Graphify 12,150/26,369/366; clean Sol/high review; no physical x86 acceptance; [report](../reports/S2_31EE_FILD_HISTORICAL_STICKY_FLAGS.md) |
+| [x] | S2-31ee | At this historical slice, admit IE/DE/ZE/OE/UE while retaining existing PE admission on exact bare FILD m16/m32/m64; then reject SF/ES/B; S2-31ef later supersedes only the SF+IE denial; preserve all sticky flags; native/JIT closed | 12,288 full-state cases (64 sticky × 8 TOP × 4 FCW × 2 old C1 per width), literal binary80 oracle, no-read/rollback/FNSTSW/FNCLEX/retry/schema/backend checks; main: od-isa 1,937, testkit 455, runner 130+543, workspace/fmt/layout/diff pass, Graphify 12,150/26,369/366; clean Sol/high review; no physical x86 acceptance; [report](../reports/S2_31EE_FILD_HISTORICAL_STICKY_FLAGS.md) |
 | [x] | S2-38x | Exact Long64 UCOMISD XMM0,m64 [RAX], invalid-only memory profile; QNaN quiet, SNaN raises IE; post-read subnormal Unsupported; interpreter-only | 1,024 NaN side/class × IM × OSXMMEXCPT × prior-sticky cases; six fixtures, CPL0–3, finite/boundary and gate/read checks; main: od-isa 1,937, testkit 455, runner 130+543, workspace/fmt/layout/diff pass, Graphify 12,150/26,369/366; clean Sol/high review after fixing finite-greater fixture; preserve S2-37cp/S2-38w and ISSUE-033; no physical x86 acceptance; [report](../reports/S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md) |
+| [ ] | S2-31ef | Admit historical SF only with prior IE on exact bounded FILD m16/m32/m64; preserve SF and all six sticky flags, clear C1; native/JIT closed | 30,720 full-state cases; SF-only/ES/B no-read; retain S2-31ee SF=0 regression; rollback, FNSTSW/FNCLEX/retry, schema/backend denial |
+| [ ] | S2-38y | Exact Long64 SQRTSS XMM0,m32 [RAX], unmasked IE/DE/PE profile; interpreter-only | 65,536 raw-u32 cases over event masks, OSXMMEXCPT, RC and sticky histories; strict priority, complete-state suppression, independent oracle, fixtures and backend denial; preserve S2-37dg/S2-37aj |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -18335,8 +18337,9 @@ of IE/DE/ZE/OE/UE/PE. Preserve all historical flags and the raw source, clear
 C1, then apply the existing push/TOP transition. Keep shared FILD and every
 other x87 gate unchanged. Add 69,632 complete-state SF+IE cases and retain the
 69,632 S2-31ec SF=0 cases as a regression. Include SF-only/ES/B pre-read
-refusal, both C1 rollback histories, canonical-span/read failure, FILD SF
-denial, repeated FLD/FNSTSW/FNCLEX/retry, schema validation and backend denial.
+refusal, both C1 rollback histories, canonical-span/read failure, the then-current
+FILD SF+IE denial (superseded by S2-31ef; SF-only remains denied), repeated
+FLD/FNSTSW/FNCLEX/retry, schema validation and backend denial.
 The conditional SF=>IE boundary is local to this profile. Physical x86
 acceptance is not claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-31ed--historical-sf-with-pre-existing-ie-for-raw-fld-m80fp)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ed-historical-sf-with-prior-ie-on-raw-fld-m80fp).
@@ -18447,7 +18450,8 @@ Use literal expected binary80 results for each width over all 64 histories × 8
 TOP × 4 FCW × 2 old C1 states. Include zero, signs, extrema, SF/SF+IE/ES/B and
 invalid destination/environment no-read cases, fault/span rollback, unaligned
 read boundaries, repeated FILD/FNSTSW/FNCLEX/retry, fixtures and backend denial.
-Preserve the S2-31ed FILD SF+IE rejection. Normative sources are the Intel SDM
+The S2-31ed FILD SF+IE rejection is historical and is superseded by S2-31ef;
+retain SF-only rejection. Normative sources are the Intel SDM
 Rev. 093 Vol. 2A FILD entry and Vol. 1 §8.1.3.3, linked from the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-31ee--historical-sticky-flags-on-exact-bounded-fild-memory-forms).
 
@@ -18479,3 +18483,41 @@ side/class × IM × OSXMMEXCPT × prior-sticky combinations, QNaN+SNaN both
 orders, prior-only IE, all RC values, finite/infinity/zero/boundaries, CPL0–3,
 strict memory ordering and schema/control/result/backend tampering. ISSUE-033
 remains open; no physical x86 claim.
+
+
+#### S2-31ef — historical SF with prior IE on bounded FILD
+
+Extend only exact bare Long64 `DF 00`, `DB 00` and `DF 28`. Admit historical
+SF iff IE was already set, using local status gate `FSW & 0x8080 == 0 &&
+(SF == 0 || IE != 0)`. ES/B remain rejected; preserve SF and all six sticky
+flags, clear C1 after success, and retain the FCW allowlist, Empty push
+destination, source/read/commit behavior and native/JIT denial.
+This supersedes only the S2-31ed/31ee FILD SF+IE rejection; corresponding FLD
+contracts do not change. Replace the obsolete SF+IE-negative ISA test with a
+positive check and retain SF-only rejection. Keep the S2-31ee SF=0 regression.
+
+Add 30,720 complete-state cases (three widths × zero/+1/−1/signed extrema ×
+32 DE/ZE/OE/UE/PE histories with SF+IE × eight TOP × four FCW × both old C1).
+Use literal binary80 expectations, both C1 rollback histories, no-read ES/B/SF-only
+and gate refusals, exact read callbacks, unaligned access, FNSTSW/FNCLEX/retry,
+fixtures and backend denial. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-31ef--historical-sf-with-prior-ie-on-exact-bounded-fild-forms).
+
+#### S2-38y — unmasked exception outcomes for exact SQRTSS memory form
+
+Create separate strict schema-v2 interpreter-only profile
+`s2-long-sqrtss-memory-rax-unmasked-v1` for exact `F3 0F 51 00`, preserving
+S2-37dg and S2-37aj. Require SSE bit 25, but not SSE2, then enforce exact
+fetch/form, SSE/EM/OSFXSR/TS, MXCSR, AC, canonical span and one `read4` ordering.
+Use memory m32 only; preserve high96 and unrelated state. Apply the existing
+SQRTSS scalar event policy: SNaN and negative nonzero cause terminal IE; QNaN
+adds no IE; positive subnormal causes DE before computation; masked DE permits
+rounding and PE, unmasked DE suppresses PE; unmasked postcompute PE commits all
+applicable flags but suppresses destination/RIP/retirement. Map OSXMMEXCPT to
+`#XM`/arithmetic `#UD`.
+
+Cover 65,536 combinations (16 raw sources × eight IM/DM/PM mask patterns × two
+OSXMMEXCPT values × four RC modes × 64 old sticky histories), plus rounding
+neighbors and prior-only flags. Require an independent raw-u32 integer oracle,
+full-state checks, poisoned destinations, gate/fault priority and fixtures for
+masked results and IE/DE/PE under both exception mappings. Native/JIT/C ABI,
+generic/fragment stay closed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38y--exact-sqrtss-m32-memory-profile-with-unmasked-exceptions).

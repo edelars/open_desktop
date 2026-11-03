@@ -17990,7 +17990,8 @@ combination of DE/ZE/OE/UE/PE,
 cases). Reject SF-only, ES and B before the read callback, including SNaN
 memory; check complete rollback from `FSW=0x047f` and `0x067f`, injected read
 and canonical-span failures, source/raw preservation, FNSTSW/FNCLEX/retry,
-and FILD's unchanged rejection of historical SF. Retain the existing 69,632
+and the then-current FILD rejection of historical SF. S2-31ef supersedes this
+FILD-only denial for SF+IE; SF-only remains rejected. Retain the existing 69,632
 SF=0 cases as a regression matrix. Schema validation and backend denial remain
 required. Intel SDM Rev. 093
 Vol. 1 §8.1.3.4 describes the stack-fault sticky flag; §8.4 describes invalid
@@ -18064,8 +18065,9 @@ Use independent literal binary80 expectations for each width across all 64
 sticky histories, eight TOP values, four FCW values and both previous C1 values,
 including zero, signed values and width extrema. Check SF/SF+IE/ES/B and invalid
 destination/environment no-read behavior, range/read rollback, unaligned reads,
-repeated FILD/FNSTSW/FNCLEX/retry and schema/backend denial. Preserve the
-existing `DB 00` SF+IE denial case. Intel SDM Rev. 093 Vol. 2A FILD
+repeated FILD/FNSTSW/FNCLEX/retry and schema/backend denial. The `DB 00` SF+IE denial described by S2-31ee is historical; S2-31ef
+supersedes it across all three FILD widths while retaining SF-only rejection.
+Intel SDM Rev. 093 Vol. 2A FILD
 “Description/Operation/FPU Flags” pp. 3-342–3-343 defines the conversion and
 C1 behavior ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460));
 Vol. 1 §8.1.3.3 defines sticky exception flags
@@ -18111,3 +18113,80 @@ tampering and backend denial. Intel SDM Rev. 093 Vol. 2B UCOMISD pp. 4-733–
 Vol. 1 §§11.5.2.1–2 and 11.5.3
 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=284)).
 No physical x86 acceptance is claimed.
+
+
+## S2-31ef — historical SF with prior IE on exact bounded FILD forms
+
+Extend only exact bare Long64 `DF 00` (`FILD m16int [RAX]`), `DB 00`
+(`FILD m32int [RAX]`) and `DF 28` (`FILD m64int [RAX]`). Admit SF only when
+IE was already set before execution, using the local pre-read condition
+`FSW & 0x8080 == 0 && (FSW & 0x0040 == 0 || FSW & 0x0001 != 0)`. This permits
+all combinations of the other five sticky flags when SF+IE are set and keeps
+ES/B rejected. Preserve the FCW allowlist, Empty physical push destination,
+exact source-width read, integer-only binary80 conversion and commit-after-read;
+preserve SF plus all six sticky flags, clear C1, and apply the existing
+TOP/payload/tag/FIP/FDP/RIP transition. SF-only remains a pre-read refusal.
+Do not add stack-overflow, pending #MF, #NM or other instruction forms;
+native/JIT/C ABI/generic/fragment remain closed.
+
+This supersedes the earlier S2-31ed/S2-31ee local denial of FILD SF+IE only;
+those FLD/FST contracts and gates do not change. Replace the old
+`fild_rejects_historical_sf_even_with_ie_before_read` negative assertion with a
+positive SF+IE execution test, while retaining an SF-only negative test. Keep
+S2-31ee's SF=0 matrix as regression. The new complete-state matrix is 3 widths ×
+5 literals (zero, +1, −1, signed minimum, signed maximum) × 32 combinations of
+DE/ZE/OE/UE/PE with SF=IE=1 × 8 TOP × 4 FCW × 2 old C1 = 30,720 states.
+Cover both C1 values on span/read rollback, all sticky flags, callback widths,
+unaligned canaries, FILD/FNSTSW/FNCLEX/retry, schema-v2 fixtures and backend
+denial. Intel SDM Rev. 093 Vol. 2A FILD pp. 3-342–3-343 defines exact integer
+conversion and C1 behavior ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460));
+Vol. 1 §§8.1.3.3–8.1.3.4 define sticky exception and SF status
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211)).
+SF=>IE remains a local profile admission rule; no physical x86 acceptance is
+claimed.
+
+## S2-38y — exact SQRTSS m32 memory profile with unmasked exceptions
+
+Create separate immutable schema-v2 interpreter-only profile
+`s2-long-sqrtss-memory-rax-unmasked-v1` for exact Long64 legacy
+`F3 0F 51 00` (`SQRTSS XMM0,m32 [RAX]`), one executable mapping, one
+read-only four-byte memory mapping at RAX, budget one and stop RIP entry+4.
+Use an independent `sqrtss_memory_rax_unmasked_controls` echo; preserve masked
+S2-37dg and register S2-37aj unchanged. Require SSE bit 25 (not SSE2). Complete
+fetch and exact-form checks precede SSE/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS
+`#NM`. Require MXCSR supported bits `0xffbf`, reserved bits clear, DAZ=0;
+accept all RC values, FTZ, masks and old sticky histories. The operation reads
+only m32; prior XMM0.low32 and XMM1 do not affect the result. Success changes
+only XMM0.low32, applicable sticky flags, RIP+4 and one retirement; preserve
+high96, memory, RFLAGS and unrelated state. AC=1 is pre-read Unsupported;
+AC=0 permits unaligned access. Validate canonical48 `[RAX,RAX+3]` before one
+`read4`; span/read errors preserve the complete CPU snapshot.
+
+After one `read4`, source SNaN or negative nonzero numeric input (including
+negative subnormal and −infinity) is terminal IE only; QNaN follows the existing local
+SQRTSS NaN policy without new IE. Positive subnormal contributes precompute DE.
+If DM=0, commit DE then fault without computing or adding PE. If DE is masked,
+compute the raw binary32 square root using MXCSR.RC; inexact result adds PE.
+If PM=0, commit applicable DE|PE and fault atomically without changing the XMM
+destination, RIP or retirement. Any unmasked SIMD event selects `#XM` when
+CR4.OSXMMEXCPT=1, arithmetic `#UD` otherwise. Prior sticky bits alone do not
+fault. Preserve all old stickies by OR-committing only new flags. NaN payload
+behavior remains local and is not a hardware payload guarantee. Native/JIT/C ABI,
+generic and fragment routes remain closed.
+
+Use an independent integer-only raw-u32 oracle. Cover 16 operand encodings ×
+all 8 IM/DM/PM mask combinations × 2 OSXMMEXCPT × 4 RC × 64 prior sticky
+histories = 65,536 states. Include signed zeros/infinities, signed QNaN/SNaN,
+negative normal/subnormal, positive minimum/maximum subnormal, exact-square
+positive subnormal, 1, 2 and maximum finite, plus rounding-neighbor values.
+Check masked results, QNaN, invalid-vs-denormal exclusion, DM=0 suppression of
+PE, DM=1/PM=0 DE|PE flags, high96 canaries, poisoned XMM0.low32/XMM1, full-state
+suppression, fetch/gates/CPL0–3, AC/span/read ordering and callback count. Provide
+literal fixtures for masked results and for each IE/DE/PE event under both
+`#XM` and arithmetic `#UD`; validate controls, result/status/retirement
+tampering and interpreter-only backend denial. Intel SDM Rev. 093 Vol. 2B
+SQRTSS pp. 4-669–4-670 ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=677));
+Vol. 1 §§11.5.2.1–.2, 11.5.2.6 and 11.5.3.1–.3
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=284));
+Vol. 3A Table 7-8. Physical x86 acceptance is not claimed; ISSUE-033 is not
+changed.
