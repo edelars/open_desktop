@@ -8440,6 +8440,19 @@ acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRAC
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp),
 and [standalone report](../../../../docs/reports/S2_31EC_FLD_M80FP_HISTORICAL_FLAGS.md).
 
+### S2-31ed historical SF with prior IE on raw FLD m80fp
+
+The literal fixture adds a DB 28 raw SNaN load with SF+IE and the other five
+historical exception flags already set. The complete-state ISA matrix adds
+69,632 SF+IE combinations across DE/ZE/OE/UE/PE, raw classes, TOP, FCW and both
+C1 states while retaining the S2-31ec 69,632 SF=0 cases. SF-only, ES and B
+refusals are checked before read, including each ES/B bit over accepted SF+IE;
+read/span rollback, FILD's unchanged SF rejection, and FNSTSW/FNCLEX/retry are
+covered. Native/JIT remain closed. No physical x86 acceptance is claimed. See
+the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31ed--historical-sf-with-pre-existing-ie-for-raw-fld-m80fp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ed), and
+[standalone report](../../../../docs/reports/S2_31ED_FLD_M80FP_HISTORICAL_SF.md).
+
 <a id="s2-38u-comiss-memory-invalid-only-profile"></a>
 
 ### S2-38u COMISS memory invalid-only profile

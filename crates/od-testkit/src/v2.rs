@@ -18693,7 +18693,9 @@ impl Fixture {
                     let top = ((x87.status_word.get() >> 11) & 7) as u8;
                     let destination = top.wrapping_add(7) & 7;
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-                        || x87.status_word.get() & 0x80c0 != 0
+                        || x87.status_word.get() & 0x8080 != 0
+                        || (x87.status_word.get() & 0x0040 != 0
+                            && x87.status_word.get() & 0x0001 == 0)
                         || ((x87.tag_word.get() >> (u32::from(destination) * 2)) & 3) != 3
                 });
             let is_fld_m32_environment_rejected = code_bytes == "d900"

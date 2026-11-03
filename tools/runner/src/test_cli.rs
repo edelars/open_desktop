@@ -8442,21 +8442,40 @@ mod tests {
     }
 
     #[test]
-    fn fld_m80fp_all_six_historical_flags_are_schema_valid_and_preserved() {
-        let fixture = v2::Fixture::from_json(include_bytes!(
-            "../../../tests/fixtures/x86/stage2/s2_31ec_fld_m80fp_all_flags.case.json"
-        ))
-        .expect("all six historical x87 flags are admitted for DB28");
-        let mut memory = od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
-        let result = execute_fixture_v2(&fixture, &mut memory);
-        result.validate_for(&fixture).unwrap();
-        assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
-        let Observation::Available { value } = result.snapshot else {
-            panic!("FLD m80fp fixture must produce an observable state");
-        };
-        let x87 = value.state.x87.as_ref().unwrap();
-        assert_eq!(x87.status_word.get() & 0x003f, 0x003f);
-        assert_eq!(x87.registers[7], "0100000000000080ff7f");
+    fn fld_m80fp_historical_flags_are_schema_valid_and_preserved() {
+        for (bytes, expected_sticky_flags) in [
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31ec_fld_m80fp_all_flags.case.json"
+                )
+                .as_slice(),
+                0x003f,
+            ),
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_31ed_fld_m80fp_sf_ie.case.json"
+                )
+                .as_slice(),
+                0x007f,
+            ),
+        ] {
+            let fixture = v2::Fixture::from_json(bytes)
+                .expect("historical x87 flags admitted for exact DB28");
+            let mut memory =
+                od_testkit::memory::FlatMemory::from_fixture(&fixture.fixture).unwrap();
+            let result = execute_fixture_v2(&fixture, &mut memory);
+            result.validate_for(&fixture).unwrap();
+            assert!(matches!(result.outcome, v2::Outcome::StopAddress {}));
+            let Observation::Available { value } = result.snapshot else {
+                panic!("FLD m80fp fixture must produce an observable state");
+            };
+            let x87 = value.state.x87.as_ref().unwrap();
+            assert_eq!(
+                x87.status_word.get() & expected_sticky_flags,
+                expected_sticky_flags
+            );
+            assert_eq!(x87.registers[7], "0100000000000080ff7f");
+        }
     }
 
     #[test]
