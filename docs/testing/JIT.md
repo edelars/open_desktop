@@ -1108,6 +1108,21 @@ benefit nor production owner/MMU integration. See the
 [S3-18f implementation report](../reports/STAGE_3_S3-18f_2026-11-03.md) and
 [ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md).
 
+## S3-18g: retained Load→Load dependency-generation invalidation
+
+Run the exact ARM64 host gate
+`cargo test --offline -p od-host --lib tests::s3_18g_load_load_dependency_generation_republishes -- --exact --test-threads=1`.
+It changes only the caller-provided backing version between calls on the
+retained `LoadThenLoad` profile, checks replacement/publication counters and a
+resident entry, and compares full CPU state plus callback order with the
+interpreter using fresh backing values. A subsequent call with the same new
+dependency generation must hit and observe newly supplied state and backing
+values, again matching the interpreter. The harness gate and self-check pin
+this command, identity, and source/evidence validation. This remains a local
+cache-fixture acceptance only: no owner/MMU integration or performance claim;
+Mini and stage-wide checks remain pending. See the
+[S3-18g implementation report](../reports/STAGE_3_S3-18g_2026-11-03.md).
+
 ## S3-38b: cached eager NativeRegisterV1 fixture
 
 Run the three pinned `s3_38b_native_register_v1_*` gates in

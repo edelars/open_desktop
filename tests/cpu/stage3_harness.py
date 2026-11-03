@@ -59,6 +59,7 @@ SELF_TEST_NAMES = (
     "test_required_memory_test_must_be_present_and_non_ignored",
     "test_s3_34h_exact_gate_requires_exact_identity_and_argv",
     "test_s3_37e_memory_cache_gate_is_pinned_once_and_fail_closed",
+    "test_s3_18g_dependency_generation_gate_is_pinned_once_and_fail_closed",
     "test_allowed_environment_replay_tests_do_not_hide_unexpected_ignored_tests",
     "test_self_test_output_validator_rejects_zero_match_and_all_skipped",
     "test_stage1_child_fingerprint_and_both_builds_are_pinned",
@@ -1483,6 +1484,10 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34dr_retained_load_load_host_regression", "local_acceptance", "od-host",
         "tests::retained_load_load_pair_uses_fresh_reads_and_continues_after_second_read_fault",
+    ),
+    (
+        "s3_18g_load_load_dependency_generation_republishes", "local_acceptance", "od-host",
+        "tests::s3_18g_load_load_dependency_generation_republishes",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {

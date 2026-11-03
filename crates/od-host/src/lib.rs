@@ -80184,6 +80184,15 @@ pub(crate) mod tests {
 
     #[test]
     fn retained_load_load_pair_uses_fresh_reads_and_continues_after_second_read_fault() {
+        retained_load_load_pair_dependency_generation_case();
+    }
+
+    #[test]
+    fn s3_18g_load_load_dependency_generation_republishes() {
+        retained_load_load_pair_dependency_generation_case();
+    }
+
+    fn retained_load_load_pair_dependency_generation_case() {
         use od_isa::memory::{
             AccessContext, AccessKind, AccessOrigin, GuestMemory, InstructionMode, MemoryError,
             PrivilegeLevel,
@@ -80818,6 +80827,164 @@ pub(crate) mod tests {
         assert_eq!(
             counters_after_republish.successful_publications,
             counters_before_republish.successful_publications + 1
+        );
+
+        // Advancing only the caller-provided backing generation invalidates
+        // the resident mapping. The next invocation must publish a fresh
+        // entry, then reuse that entry with newly supplied state and RAM.
+        let next_identity = CodeIdentity {
+            backing_version: BackingVersion::new(NonZeroU64::new(2).unwrap()),
+            ..identity
+        };
+        let next_dependencies = [CodeDependencySpan {
+            start_rip: BASE,
+            end_rip: BASE + CODE.len() as u64,
+            identity: next_identity,
+        }];
+        let dependency_change_before = cache.counters();
+
+        let mut generation_state = od_isa::LongModeState {
+            rip: BASE,
+            rflags: 0x202,
+            ..Default::default()
+        };
+        generation_state.gpr[0] = 0x1111;
+        generation_state.gpr[1] = 0x2222;
+        generation_state.gpr[3] = 88;
+        generation_state.gpr[4] = 0x4444;
+        let mut generation_interpreter_state = generation_state.clone();
+        let new_backing_values = vec![0x1234, 0x5678];
+        let mut generation_ram = ReadRam {
+            values: new_backing_values.clone(),
+            ..Default::default()
+        };
+        let mut generation_interpreter_ram = ReadRam {
+            values: new_backing_values,
+            ..Default::default()
+        };
+        let generation_cached = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &next_dependencies,
+                &mut generation_state,
+                &mut generation_ram,
+                ring3,
+                2,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        }
+        .unwrap();
+        let generation_interpreted = od_isa::execute::run(
+            &mut generation_interpreter_state,
+            &mut generation_interpreter_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context: ring3,
+            },
+            || false,
+        );
+        assert_eq!(generation_cached.retired_instructions, 2);
+        assert_eq!(generation_interpreted.instructions_executed, 2);
+        assert_eq!(generation_state, generation_interpreter_state);
+        assert_eq!(
+            generation_ram.values,
+            generation_interpreter_ram.values
+        );
+        assert_eq!(generation_ram.reads, generation_interpreter_ram.reads);
+        assert_eq!(generation_ram.reads, vec![(88, ring3), (88, ring3)]);
+        assert_eq!(generation_state.gpr[0], 0x1234);
+        assert_eq!(generation_state.gpr[1], 0x5678);
+        assert_eq!(cache.resident_entries(), 1);
+        let generation_republished = cache.counters();
+        assert_eq!(generation_republished.hits, dependency_change_before.hits);
+        assert_eq!(
+            generation_republished.misses,
+            dependency_change_before.misses + 1
+        );
+        assert_eq!(
+            generation_republished.successful_compiles,
+            dependency_change_before.successful_compiles + 1
+        );
+        assert_eq!(
+            generation_republished.successful_publications,
+            dependency_change_before.successful_publications + 1
+        );
+        assert_eq!(
+            generation_republished.replacements,
+            dependency_change_before.replacements + 1
+        );
+
+        let mut generation_hit_state = od_isa::LongModeState {
+            rip: BASE,
+            rflags: 0x246,
+            ..Default::default()
+        };
+        generation_hit_state.gpr[0] = 0xaaaa;
+        generation_hit_state.gpr[1] = 0xbbbb;
+        generation_hit_state.gpr[3] = 96;
+        generation_hit_state.gpr[4] = 0xeeee;
+        let mut generation_hit_interpreter_state = generation_hit_state.clone();
+        let hit_backing_values = vec![0x9abc, 0xdef0];
+        let mut generation_hit_ram = ReadRam {
+            values: hit_backing_values.clone(),
+            ..Default::default()
+        };
+        let mut generation_hit_interpreter_ram = ReadRam {
+            values: hit_backing_values,
+            ..Default::default()
+        };
+        let generation_hit = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &next_dependencies,
+                &mut generation_hit_state,
+                &mut generation_hit_ram,
+                ring0,
+                2,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        }
+        .unwrap();
+        let generation_hit_interpreted = od_isa::execute::run(
+            &mut generation_hit_interpreter_state,
+            &mut generation_hit_interpreter_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context: ring0,
+            },
+            || false,
+        );
+        assert_eq!(generation_hit.retired_instructions, 2);
+        assert_eq!(generation_hit_interpreted.instructions_executed, 2);
+        assert_eq!(generation_hit_state, generation_hit_interpreter_state);
+        assert_eq!(
+            generation_hit_ram.values,
+            generation_hit_interpreter_ram.values
+        );
+        assert_eq!(
+            generation_hit_ram.reads,
+            generation_hit_interpreter_ram.reads
+        );
+        assert_eq!(generation_hit_ram.reads, vec![(96, ring0), (96, ring0)]);
+        assert_eq!(generation_hit_state.gpr[0], 0x9abc);
+        assert_eq!(generation_hit_state.gpr[1], 0xdef0);
+        assert_eq!(cache.counters().hits, generation_republished.hits + 1);
+        assert_eq!(cache.counters().misses, generation_republished.misses);
+        assert_eq!(
+            cache.counters().successful_publications,
+            generation_republished.successful_publications
         );
     }
 
