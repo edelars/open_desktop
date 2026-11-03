@@ -22938,3 +22938,37 @@ earlier mixed NaN/denormal COMISS profiles; Stage 2 remains open. See the
 [plan](../plans/STAGE_2.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38v-ucomiss-memory-invalid-only-profile),
 and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
+
+<a id="main-integration-s2-31ed-s2-38w"></a>
+
+## Main integration: S2-31ed and S2-38w
+
+S2-31ed extends only the exact DB28 raw FLD m80fp status gate: historical SF
+is admitted only with pre-existing IE, while ES/B stay rejected and the shared
+FILD gate remains unchanged. It adds 69,632 SF+IE full-state cases alongside
+the prior 69,632 SF=0 matrix, including C1 histories, read/span rollback,
+FNSTSW/FNCLEX/retry, schema checks and backend denial.
+
+S2-38w adds a separate strict schema-v2 invalid-only profile for exact COMISD
+XMM0,m64 `[RAX]`; S2-37co remains unchanged. The profile reads one read-only
+eight-byte operand, raises IE for either NaN class, and refuses any subnormal
+after the successful read without partial state changes. Unmasked IE commits
+only MXCSR.IE and produces `#XM` or arithmetic `#UD` according to OSXMMEXCPT.
+Six literal fixtures and an independent raw-u64 oracle cover 1,024 NaN side/
+class × mask × OSXMMEXCPT × old-sticky combinations, plus RC, QNaN+SNaN,
+finite boundaries, prior IE, subnormal refusal, CPL0–3, fault ordering,
+schema/result tampering and backend denial. ISSUE-033 remains open for earlier
+COMISS mixed-event profiles.
+
+After integration, main verification passed: `cargo fmt --all -- --check`,
+`python3 tools/check_layout.py`, workspace all-target offline check, od-isa
+1,933, od-testkit 455 and od-runner 130 unit + 541 fixture tests. Graphify
+reports 12,113 nodes, 26,303 edges and 387 communities. Contract preparation
+received Sol/high and Astra/high reviews. The implementation diffs received
+clean sequential parent review; an independent Sol/high code-review agent was
+unavailable because the thread agent limit was reached. `od-x86-runner` and
+physical x86 acceptance were not run. Both slices remain interpreter-only,
+with native/JIT closed. See the [S2-31ed standalone report](S2_31ED_FLD_M80FP_HISTORICAL_SF.md),
+[S2-38w standalone report](S2_38W_COMISD_MEMORY_INVALID_ONLY.md),
+[CPU contracts](../specs/CPU_CONTRACT.md#s2-31ed--historical-sf-with-pre-existing-ie-for-raw-fld-m80fp),
+[Stage 2 plan](../plans/STAGE_2.md), and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).

@@ -51,3 +51,14 @@ read-error behavior.
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38w--exact-comisd-memory-invalid-only-profile),
 [Stage 2 plan](../plans/STAGE_2.md), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38w-comisd-memory-invalid-only-profile).
+
+## Main integration
+
+Integrated on main as `a305d50` plus merge `3ee1999`. The paired S2-31ed/S2-38w
+main verification passed: od-isa 1,933, od-testkit 455, od-runner 130 unit +
+541 fixture tests, workspace all-target offline check, formatting and layout.
+Graphify after integration reports 12,113 nodes, 26,303 edges and 387
+communities. The parent sequential code review found no remaining blocking
+defects; a separate Sol/high reviewer could not be started because the agent
+thread limit was reached. S2-37co and ISSUE-033 remain unchanged/open, and no
+physical x86 acceptance is claimed.

@@ -40,3 +40,13 @@ the new positive fixture; backend tests retain interpreter-only admission.
 No physical x86 acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-31ed--historical-sf-with-pre-existing-ie-for-raw-fld-m80fp),
 [Stage 2 plan](../plans/STAGE_2.md#s2-31ed-historical-sf-with-pre-existing-ie-for-raw-fld-m80fp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ed-historical-sf-with-prior-ie-on-raw-fld-m80fp).
+
+## Main integration
+
+Integrated on main as `5588c8b` plus merge `630e57b`. The paired S2-31ed/S2-38w
+main verification passed: od-isa 1,933, od-testkit 455, od-runner 130 unit +
+541 fixture tests, workspace all-target offline check, formatting and layout.
+Graphify after integration reports 12,113 nodes, 26,303 edges and 387
+communities. The parent sequential code review found no remaining blocking
+defects; a separate Sol/high reviewer could not be started because the agent
+thread limit was reached. No physical x86 acceptance is claimed.
