@@ -570,6 +570,22 @@ the end of Stage 3; M1 regression is deferred by the user. See
 [S3-20fy](STAGE_3_S3-20fy_2026-11-02.md) and
 [S3-34dj](STAGE_3_S3-34dj_2026-11-02.md).
 
+## S3-20fz and S3-34dk planned status
+
+S3-20fz specifies the exact addr32 RCX-base Dword load with signed disp32
+(`67 8B 81 id`): wrapped low32 RCX plus signed i32 displacement, one
+contiguous checked four-byte read, zero-extension to RAX, preserved RCX/GPRs/
+RFLAGS, and successful boundary `A+7`. S3-34dk records the requested harness
+gate identities. Runtime, harness implementation, and independent review are
+pending; the plan and reports describe intended contracts, not completed
+behavior. Expected pins are 300 Rust gates (290 acceptance + 10 lifecycle),
+318 local steps, and 134 self-test names; these values are targets only.
+Behavior, build, formatting, Cargo, Python harness, and Mini checks remain
+deferred; M1 regression is deferred by the user. Stage 2 and production
+owner/MMU remain outside scope, and Stage 3 remains partial. See
+[S3-20fz](STAGE_3_S3-20fz_2026-11-02.md) and
+[S3-34dk](STAGE_3_S3-34dk_2026-11-02.md).
+
 ## Источники
 
 - [План Stage 3](../plans/STAGE_3.md) и [дорожная карта](../ROADMAP.md#этап-3-первый-jit-x86--arm64).
