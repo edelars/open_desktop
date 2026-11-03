@@ -2472,3 +2472,27 @@ acceptance plus 10 lifecycle), 320 local steps, and 135 self-test names; these
 totals are pinned and statically reviewed but not executed. No tests or other
 execution checks have been run for this slice. See the
 [S3-20ga report](../reports/STAGE_3_S3-20ga_2026-11-02.md).
+
+## S3-34dm: fixed-seed differential corpus for S3-20eg
+
+Planned Rust identity:
+`tests::fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input`.
+The planned harness gate is
+`s3_34dm_addr32_rsp_dword_store_fixed_seed_corpus`.
+
+The test covers only the existing exact singleton `67 89 04 24`. Three fixed
+seeds (`0x2034_d001`, `0x2034_d002`, `0x2034_d003`) drive a local SplitMix64
+stream to generate 400 unique initial CPU/RAM inputs each; assert uniqueness
+within and across seeds. Interpreter and JIT each execute every input twice
+from reset copies of the same pre-state. Acceptance compares full CPU and RAM
+state, `A+4`, one retired instruction, one contiguous width-four store
+callback, and surrounding canaries. Inputs include zero, unaligned, ordinary,
+and `0xffff_fffd` through `0xffff_ffff` starts; crossing-4-GiB bytes remain
+contiguous above the boundary. Fault/retry and callback STOP remain covered by
+the focused S3-20eg checks.
+
+Target totals are 303 Rust gates (293 acceptance and 10 lifecycle), 321 local
+steps, and 136 self-test names. Implementation/review are pending and all
+execution is deferred; these totals and the new acceptance gate are not
+verified. This adds no runtime behavior, persisted replay format, envelope,
+reducer API, or S3-34.2 work. See the [S3-34dm report](../reports/STAGE_3_S3-34dm_2026-11-02.md).

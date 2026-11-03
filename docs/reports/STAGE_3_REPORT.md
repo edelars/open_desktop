@@ -707,3 +707,17 @@ See [S3-20ga](STAGE_3_S3-20ga_2026-11-02.md) and
   [S3-38d RESULT-state transport](STAGE_3_S3-38d-local_2026-11-01.md) и
   [ISSUE-027 diagnostics](ISSUE_027_DIAGNOSTIC_2026-10-30.md).
 - [Открытые проблемы](../KNOWN_ISSUES.md).
+
+S3-34dm plans a deterministic differential corpus for the existing S3-20eg
+singleton store `67 89 04 24`: three fixed seeds and a local SplitMix64 stream
+produce 400 unique CPU/RAM inputs per seed,
+with two reset-state executions per backend and full CPU/RAM, `A+4`, retirement,
+single contiguous callback, and canary checks. Zero, unaligned, and 4-GiB
+crossing address classes are included. The planned Rust identity is
+`tests::fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input`;
+the harness gate is `s3_34dm_addr32_rsp_dword_store_fixed_seed_corpus`.
+Implementation and independent review are pending; execution is deferred.
+Target manifest totals are 303 gates (293 acceptance + 10 lifecycle), 321
+steps, and 136 self-test names; these are unverified targets. This plan adds
+no opcode/runtime semantics and does not start S3-34.2 persisted replay,
+envelope, or reducer work. See the [S3-34dm report](STAGE_3_S3-34dm_2026-11-02.md).

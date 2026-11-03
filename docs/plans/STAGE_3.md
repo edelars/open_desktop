@@ -4564,3 +4564,43 @@ Totals after S3-34dl are pinned and statically reviewed: 302 gates (292 acceptan
 #### S3-34dl. Exact harness gates for S3-20ga
 
 **Статус реализации и независимого статического Sol/high review: PASS; исполнение harness отложено.** Harness commit `c2a3e8f` закрепляет exact JIT source/site и host store identities для `67 89 81 id`, а также fail-closed self-test на Rust identity/argv, нулевой match и итоговое host evidence. Totals 302 gates (292 acceptance + 10 lifecycle), 320 steps и 135 self-test names pinned/reviewed, но не исполнены. Rust gates, Python harness, build, formatting, Cargo и Mini для этого среза не запускались. См. [S3-34dl report](../reports/STAGE_3_S3-34dl_2026-11-02.md) и [S3-20ga report](../reports/STAGE_3_S3-20ga_2026-11-02.md).
+
+#### S3-34dm. Fixed-seed differential corpus for S3-20eg
+
+**Статус реализации и независимого Sol/high review: pending; execution deferred.**
+
+Add one deterministic differential host test for the existing exact S3-20eg
+singleton `67 89 04 24` (`MOV [ESP],EAX`). It uses three fixed seeds
+(`0x2034_d001`, `0x2034_d002`, `0x2034_d003`) with a local SplitMix64
+stream to generate 400 unique initial CPU/RAM inputs per seed (1,200 total).
+The test verifies uniqueness within and across seeds. The generator is local;
+it does not introduce a persisted corpus, replay envelope, reducer API, or
+S3-34.2 work. Keep the source bytes and runtime semantics unchanged.
+
+For every input, run both interpreter and JIT twice from independently reset
+copies of the identical CPU and RAM pre-state. Compare complete CPU state,
+complete fixture RAM state, `RIP == A+4`, one retired instruction, exactly
+one contiguous four-byte store callback at `u64(RSP as u32)`, and unchanged
+canary bytes immediately around the target span. The callback must write the
+low 32 bits of RAX once, including when its four-byte span crosses 4 GiB.
+Require deterministic equality between both reset-state runs as well as
+interpreter/JIT parity. Inputs cover zero and unaligned starts, ordinary
+starts, and every start from `0xffff_fffd` through `0xffff_ffff`; use varied
+upper RSP bits, RAX payloads, and the remaining defined CPU state while
+keeping each generated input distinct. The transfer bytes after `0xffff_ffff`
+remain contiguous above 4 GiB.
+
+This corpus covers successful execution only. Fault/retry and callback STOP
+semantics remain in the existing focused S3-20eg checks; no additional fault
+or retry behavior is introduced. Runtime semantic contracts do not change.
+
+Planned Rust identity:
+`tests::fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input`.
+Planned fail-closed harness gate:
+`s3_34dm_addr32_rsp_dword_store_fixed_seed_corpus`. Target manifest totals are
+303 Rust gates (293 acceptance + 10 lifecycle), 321 local steps, and 136
+self-test names, up from 302/320/135. These counts are planned and unverified.
+Implementation and independent review are pending; execution, build,
+formatting, Cargo, Python harness, and Mini remain deferred. See the
+[S3-34dm report](../reports/STAGE_3_S3-34dm_2026-11-02.md) and the
+[JIT testing reference](../testing/JIT.md#s3-34dm-fixed-seed-differential-corpus-for-s3-20eg).
