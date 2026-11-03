@@ -7369,7 +7369,6 @@ mod tests {
             &[0x8b, 0x81][..],
             &[0x8b, 0x81, 0, 0, 0][..],
             &[0x8b, 0x81, 0, 0, 0, 0, 0x90][..],
-            &[0x67, 0x8b, 0x81, 0, 0, 0, 0][..],
             &[0x66, 0x8b, 0x81, 0, 0, 0, 0][..],
             &[0x48, 0x8b, 0x81, 0, 0, 0, 0][..],
             &[0x8b, 0x84, 0x01, 0, 0, 0, 0][..],
@@ -7383,6 +7382,16 @@ mod tests {
             )
             .is_err(), "admitted neighboring encoding {neighbor:02x?}");
         }
+
+        let addr32_rcx_disp32 = [0x67, 0x8b, 0x81, 0, 0, 0, 0];
+        let addr32_block = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &addr32_rcx_disp32).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert_ne!(addr32_block.site(), block.site());
+        assert!(!block.site().matches_source_bytes(&addr32_rcx_disp32, MemorySiteOperationV2::Load));
+        assert!(!addr32_block.site().matches_source_bytes(&source, MemorySiteOperationV2::Load));
 
         for (neighbor, expected_base) in [
             (&[0x8b, 0x01][..], Register::Rcx),
