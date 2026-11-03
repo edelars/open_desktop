@@ -18542,10 +18542,13 @@ rejecting SF-only, ES, B and existing unsupported FCW/state/tag cases before
 the write. Preserve historical SF and the six sticky flags; add current IE/PE
 as defined by conversion. Recompute C1 using the existing conversion result.
 FIST does not alter TOP; FISTP writes first and pops only after the write
-succeeds. Compare complete state and memory for all five forms over their
-existing accepted source classes/results, 32 non-SF/IE sticky histories,
-TOP, FCW and both starting C1 values; test rollback, FNSTSW/FNCLEX/retry,
-schema fixtures, tampering and backend denial. Do not modify FLD/FST gates.
+succeeds. The complete-state and memory success matrix covers 13 accepted
+source classes/results (zero, exact/inexact normal, fraction, subnormal,
+infinity, QNaN/SNaN, unnormal, pseudo-infinity, pseudo-QNaN/pseudo-SNaN, and
+finite out-of-range integer-indefinite), both signs, 32 other sticky histories,
+TOP, FCW and both starting C1 values: 266,240 cases. Test span/write rollback,
+FNSTSW/FNCLEX/retry, schema fixtures, tampering and backend denial. Do not
+modify FLD/FST gates. See the [implementation report](../reports/S2_31EG_FIST_HISTORICAL_SF.md).
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-31eg--historical-sf-with-prior-ie-on-bounded-integer-stores).
 
 #### S2-38z — unmasked outcomes for exact SQRTSD memory form

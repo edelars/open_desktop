@@ -104939,6 +104939,22 @@ mod tests {
             ("infinity", X87Tag::Special, 0x8000_0000_0000_0000, 0x7fff),
             ("qnan", X87Tag::Special, 0xc000_0000_0000_0001, 0x7fff),
             ("snan", X87Tag::Special, 0x8000_0000_0000_0001, 0x7fff),
+            ("subnormal", X87Tag::Special, 1, 0),
+            ("unnormal", X87Tag::Special, 0x4000_0000_0000_0000, 0x3fff),
+            ("pseudo_infinity", X87Tag::Special, 0, 0x7fff),
+            (
+                "pseudo_qnan",
+                X87Tag::Special,
+                0x4000_0000_0000_0001,
+                0x7fff,
+            ),
+            ("pseudo_snan", X87Tag::Special, 1, 0x7fff),
+            (
+                "finite_out_of_range",
+                X87Tag::Valid,
+                0x8000_0000_0000_0000,
+                0x4040,
+            ),
         ];
 
         for (form, width, pop) in forms {
@@ -104964,12 +104980,19 @@ mod tests {
                                 (true, 0x0b7f | 0x0f7f) => (-1, 0x0020, false),
                                 _ => unreachable!(),
                             },
-                            "fraction" => match (negative, control_word) {
+                            "fraction" | "subnormal" => match (negative, control_word) {
                                 (false, 0x0b7f) => (1, 0x0020, true),
                                 (true, 0x077f) => (-1, 0x0020, true),
                                 _ => (0, 0x0020, false),
                             },
-                            "infinity" | "qnan" | "snan" => (i64::MIN, 0x0001, false),
+                            "infinity"
+                            | "qnan"
+                            | "snan"
+                            | "unnormal"
+                            | "pseudo_infinity"
+                            | "pseudo_qnan"
+                            | "pseudo_snan"
+                            | "finite_out_of_range" => (i64::MIN, 0x0001, false),
                             _ => unreachable!(),
                         };
                         for top in 0..8_u8 {
@@ -105233,6 +105256,69 @@ mod tests {
                 assert_eq!(state, before);
                 assert!(memory.accesses.is_empty());
                 assert_eq!(memory.bytes, vec![0xa5; 24]);
+            }
+        }
+    }
+
+    #[test]
+    fn fist_fistp_historical_sf_ie_span_and_write_failures_preserve_full_state_and_memory() {
+        let forms: [(&[u8], usize); 5] = [
+            (&[0xdf, 0x10], 2),
+            (&[0xdf, 0x18], 2),
+            (&[0xdb, 0x10], 4),
+            (&[0xdb, 0x18], 4),
+            (&[0xdf, 0x38], 8),
+        ];
+
+        for (form, size) in forms {
+            for old_c1 in [false, true] {
+                for failure in ["span", "write"] {
+                    let address = if failure == "span" {
+                        0x0000_7fff_ffff_ffff
+                    } else {
+                        0x1003
+                    };
+                    let mut state = LongModeState::default();
+                    state.rip = 0x86b0;
+                    state.gpr[Register::Rax as usize] = address;
+                    let mut x87 = crate::state::X87State::fixture_seed();
+                    x87.control_word = 0x037f;
+                    x87.status_word = 0x4541 | if old_c1 { 0x0200 } else { 0 };
+                    for physical in 0..8_u8 {
+                        x87.registers[usize::from(physical)] = [physical.wrapping_add(0x39); 10];
+                        x87.set_tag(physical, X87Tag::Valid);
+                    }
+                    x87.registers[0] = binary80_normal(0x8000_0000_0000_0000, 0x3fff, false);
+                    state.x87 = Some(x87);
+                    let before = state.clone();
+                    let mut memory = Memory::at(form, state.rip);
+                    memory.bytes = vec![0xa5; 24];
+                    if failure == "write" {
+                        memory.deny_writes = true;
+                    }
+
+                    if failure == "span" {
+                        assert!(matches!(
+                            step(&mut state, &mut memory, AccessContext::default()),
+                            Ok(StepOutcome::Fault(ArchitecturalFault { vector: 13, .. }))
+                        ));
+                        assert!(memory.accesses.is_empty());
+                    } else {
+                        assert!(matches!(
+                            step(&mut state, &mut memory, AccessContext::default()),
+                            Err(MemoryError::PermissionDenied {
+                                access: AccessKind::Write,
+                                ..
+                            })
+                        ));
+                        assert_eq!(memory.accesses, vec![(AccessKind::Write, address, size)]);
+                    }
+                    assert_eq!(
+                        state, before,
+                        "form={form:02x?} C1={old_c1} failure={failure}"
+                    );
+                    assert_eq!(memory.bytes, vec![0xa5; 24]);
+                }
             }
         }
     }

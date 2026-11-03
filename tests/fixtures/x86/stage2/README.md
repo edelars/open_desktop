@@ -8571,12 +8571,15 @@ and [stage plan](../../../../docs/plans/STAGE_2.md).
 
 ### S2-31eg historical SF with prior IE on bounded integer stores
 
-Planned schema-v2 fixtures will cover exact bare bounded Long64 FIST/FISTP `DF 10`, `DF 18`,
+Schema-v2 fixtures cover exact bare bounded Long64 FIST/FISTP `DF 10`, `DF 18`,
 `DB 10`, `DB 18`, and `DF 38` at `[RAX]`. Admit prior SF only when IE is also
 set; preserve SF and the six sticky flags, and retain the conversion-defined
-C1 result. Include successful stores and FISTP pop behavior, SF-only/ES/B no-write
-refusal, rollback, FNSTSW/FNCLEX/retry, and JIT/native denial. Existing FLD/FST
-gates are unchanged. See the [S2-31eg CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31eg--historical-sf-with-prior-ie-on-bounded-integer-stores)
+C1 result. ISA coverage compares full state and memory across 13 accepted
+source classes in a 266,240-case matrix, plus 20 span/write rollback cases for
+all forms and both old C1 values. SF-only/ES/B remain no-write refusals; the
+FNSTSW/FNCLEX/retry sequence and JIT/native denial are covered. Existing FLD/FST
+gates are unchanged. See the [S2-31eg report](../../../../docs/reports/S2_31EG_FIST_HISTORICAL_SF.md),
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31eg--historical-sf-with-prior-ie-on-bounded-integer-stores),
 and [stage plan](../../../../docs/plans/STAGE_2.md).
 
 ### S2-38z SQRTSD m64 memory unmasked exceptions
