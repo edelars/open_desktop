@@ -613,6 +613,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-37dj | Local-only masked legacy Long64 ADDSD XMM0,m64 [RAX], exact F2 0F 58 00; SSE2 bit 26; memory RHS plus XMM0.low64 via Binary64::add_raw_result; AC=1 local refusal, AC=0 unaligned admission, one read8; strict masked MXCSR and backend closure | Isolated slice: od-isa 1,795; integrated main: 1,796; od-testkit 455; runner 113+491; od-x86-runner 8+4; workspace/layout/fmt, Graphify and independent Sol/high review clean; 1,792 independent-oracle runner executions; Linux native test and physical x86 acceptance unavailable |
 | [x] | S2-37dk | Local-only masked legacy Long64 SUBSS XMM0,m32 [RAX], exact F3 0F 5C 00; SSE bit 25; memory RHS with original-NaN selection before subtraction sign treatment; AC=1 local refusal, AC=0 unaligned admission, one read4; strict masked MXCSR and backend closure | Isolated slice: od-isa 1,798; od-testkit 455; runner 114+492; x86-runner 8+4; Graphify 11,279/24,237/347; integrated main: od-isa 1,802, testkit 455, runner 114+492, x86-runner 8+4; clean Sol/high review; layout reports only pre-existing `.git` mapping and historical manifest issues; no physical x86 acceptance |
 | [x] | S2-37dl | Local-only masked legacy Long64 SUBSD XMM0,m64 [RAX], exact F2 0F 5C 00; SSE2 bit 26; memory RHS with original-NaN selection before RHS sign treatment; AC=1 local refusal, AC=0 unaligned admission, one read8; strict masked MXCSR and backend closure | Isolated slice: od-isa 1,806; testkit 455; runner 115+493; x86-runner 8+4; 65,536 independent-oracle executions; clean Sol/high review; integrated main: od-isa 1,809, testkit 455, runner 115+493, x86-runner 8+4; Graphify 11,280/24,407/336; no physical x86 acceptance |
+| [x] | S2-37dm | Local-only masked legacy Long64 MULSS XMM0,m32 [RAX], exact F3 0F 59 00; SSE bit 25; actual memory RHS with existing raw multiply, WPR tininess-after-rounding and original-NaN behavior; AC=1 refusal, AC=0 unaligned admission, one read4; strict interpreter-only profile | Integrated main: od-isa 1,815, od-testkit 455, runner 116+494, x86-runner 8+4; independent Sol/high review clean; workspace/fmt/layout/diff and Graphify passed; no physical x86 acceptance |
 | [x] | S2-37dp | Masked-only legacy Long64 DIVSD XMM0,m64 [RAX], exact F2 0F 5E 00; SSE2 bit 26; actual memory RHS; all RC/sticky histories; AC-before-span/read; strict interpreter-only schema-v2 | Integrated main: od-isa 1,831, testkit 455, runner 118+496, x86-runner 8+4; 6,144 oracle cases; independent Sol/high review clean; workspace/fmt/layout/diff and Graphify 11,397/24,698/326 passed; no physical x86 acceptance |
 | [x] | S2-37dx | Masked-only legacy Long64 DIVPD XMM0,m128 `[RAX]`, exact `66 0F 5E 00`; SSE2 bit 26; two raw Binary64 lanes from memory RHS; aligned canonical one-read m128; full-fetch #UD/#NM order; strict MXCSR; unmasked/#XM and non-interpreter paths closed | Integrated main: od-isa 1,867; od-testkit 455; runner 120+510; x86-runner 8+4; 3,584 oracle runs; workspace check/fmt/layout/diff passed; Graphify 11,623/25,182/352; independent Sol/high review clean; no physical x86 acceptance |
 | [x] | S2-37dn | Local-only masked legacy Long64 MULSD XMM0,m64 [RAX], exact F2 0F 59 00; SSE2 bit 26; actual memory RHS, masked MXCSR with all RC/stickies, AC=1 refusal, one read8; strict interpreter-only profile | Integrated main: od-isa 1,821, testkit 455, runner 116+495, x86-runner 8+4; independent Sol/high review clean; 6,400 oracle cases; workspace/fmt/layout/diff and Graphify 11,339/24,564/343 passed; no physical x86 acceptance |
@@ -678,6 +679,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38ad | Exact Long64 ADDSD XMM0,m64 [RAX], unmasked IE/DE/PE profile; interpreter-only | 20 signed-NaN/subnormal and other vectors × 4 RC ×64 stickies ×8 IM/DM/PM masks ×2 OSXMMEXCPT =81,920 executions; four literal fixtures, result/control/exception/#GP tampering and backend denial; Sol/high review clean after NaN+DE/tampering fixes; preserve S2-37dj/S2-37bb; no physical x86 acceptance; [report](../reports/S2_38AD_ADDSD_MEMORY_UNMASKED.md) |
 | [x] | S2-38ae | Exact Long64 `SUBSS XMM0,m32 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 21 operand/event pairs × 4 RC ×64 sticky histories ×8 IM/DM/PM masks ×2 OSXMMEXCPT =86,016 raw-u32 memory-RHS oracle executions; five literal fixtures; one-read unaligned/canonical-span/read rollback, schema/result/backend checks; affected package suites, workspace check, Graphify and fmt pass; Sol/high review clean after permission regression fix; [report](../reports/S2_38AE_SUBSS_MEMORY_UNMASKED.md); preserve S2-37dk/S2-37aq; no physical x86 acceptance |
 | [x] | S2-38af | Exact Long64 `SUBSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 22 raw operand vectors ×4 RC ×64 sticky histories ×16 IM/DM/ZM/PM masks ×2 OSXMMEXCPT =180,224 independent raw-u64 cases; four literal fixtures, precedence-aware status validation, pre/post suppression, one read8, AC/span/read rollback, result/control/backend tampering and #GP(0); S2-37dl/S2-37ap preserved; Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AF_SUBSD_MEMORY_UNMASKED.md) |
+| [ ] | S2-38ag | Exact Long64 `MULSS XMM0,m32 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dm masked memory, S2-37au register semantics, and S2-38ae control/fault pattern; independent raw-u32 memory-RHS oracle over RC × 64 sticky histories × IM/DM/ZM/PM × OSXMMEXCPT; zero×infinity, signed NaNs, subnormal DE, WPR tininess, PE and preservation/backend checks; Sol/high review required; no physical x86 acceptance |
+| [ ] | S2-38ah | Exact Long64 `MULSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dn masked memory, S2-37at register semantics, and S2-38af control/fault pattern; independent raw-u64 memory-RHS oracle over RC × 64 sticky histories × IM/DM/ZM/PM × OSXMMEXCPT; zero×infinity, signed NaNs, subnormal DE, WPR tininess, PE and preservation/backend checks; Sol/high review required; no physical x86 acceptance |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -17923,7 +17926,7 @@ Implement strict interpreter-only schema-v2 profile `s2-long-mulss-memory-rax-v1
 
 Admit only MXCSR supported bits `0xffbf`, reserved bits clear, all six masks set, DAZ=FTZ=0; allow every RC and prior sticky history. AC=1 returns local Unsupported before span/read; AC=0 allows unaligned m32. Check checked `RAX+3` and canonical48 endpoints before exactly one read4; failures preserve state and retirement. Multiply old XMM0.low32 by actual memory RHS using `Binary32::multiply_raw_result`; reuse S2-37au WPR tininess-after-rounding and original-NaN behavior, preserve XMM0.high96/XMM1/unrelated state and merge IE/DE/OE/UE/PE. No new arithmetic helper or broad API. JIT/native/C ABI/generic/fragment/unmasked/#XM remain closed.
 
-The independent `independent_mulss` raw-u32 oracle receives memory RHS. Matrix: 25 operand pairs × four RC modes × 64 sticky histories (6,400 runs), with stop/snapshot/retirement assertions before oracle evaluation. Direct/schema coverage: MXCSR admission/runtime denial with no state commit/read/retirement, truncated-fetch precedence over #UD/#NM, gates/fetch, AC ordering, unaligned/canonical/overflow/read rollback, exact read, provenance/result tampering, backend denial and register/neighbor regressions. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dm--masked-only-long64-mulss-xmm0m32-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dm--mulss-xmm0m32-rax), [standalone report](../reports/S2_37DM_MULSS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dm--mulss-xmm0m32-rax). Intel SDM Rev. 093 Vol. 2B MULSS pp. 4-154–4-155; Vol. 2A §2.5.3/Table 2-20 p. 2-28; Vol. 1 §§11.5.2–11.5.3 and 11.6.6.
+The independent `independent_mulss` raw-u32 oracle receives memory RHS. Matrix: 25 operand pairs × four RC modes × 64 sticky histories (6,400 runs), with stop/snapshot/retirement assertions before oracle evaluation. Direct/schema coverage: MXCSR admission/runtime denial with no state commit/read/retirement, truncated-fetch precedence over #UD/#NM, gates/fetch, AC ordering, unaligned/canonical/overflow/read rollback, exact read, provenance/result tampering, backend denial and register/neighbor regressions. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dm--masked-only-long64-mulss-xmm0m32-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37dm--mulss-xmm0m32-rax), [standalone report](../reports/S2_37DM_MULSS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37dm--mulss-xmm0m32-rax). Intel SDM Rev. 093 Vol. 2B MULSS pp. 4-150–4-151; Vol. 2A §2.5.3/Table 2-20 p. 2-28; Vol. 1 §§11.5.2–11.5.3 and 11.6.6.
 
 Isolated S2-37dm validation: `od-isa` 1,811; `od-testkit` 455; runner 116 unit + 494 fixture; x86-runner 8 library + 4 binary; workspace all-target offline check, formatting, diff check and Graphify passed (11,344/24,413/362). After integration in main, full suites passed: `od-isa` 1,815, `od-testkit` 455, runner 116 unit + 494 fixture, and x86-runner 8 library + 4 binary; workspace all-target offline check, formatting, layout, diff check and Graphify AST refresh passed. Layout validation passes in main; isolated worktree reports its `.git` pointer and absent pre-existing disposable `work/stage*-oracle` link targets. Independent Sol/high review is clean; no physical x86 acceptance is claimed.
 
@@ -18694,3 +18697,39 @@ Verification and independent review status are recorded in the
 [standalone report](../reports/S2_38AF_SUBSD_MEMORY_UNMASKED.md). Physical x86
 acceptance is not claimed; unmasked OE/UE and generic, fragment, C ABI and JIT
 routes remain closed.
+
+#### S2-38ag — planned outcomes for exact MULSS memory form
+
+Implement a separate immutable schema-v2 interpreter-only profile for exact
+Long64 `F3 0F 59 00`, SSE bit 25 and read-only m32 `[RAX]`, one read4, budget
+one and stop RIP=entry+4. Preserve masked-memory S2-37dm and register S2-37au.
+Require `DAZ=FTZ=0`, reserved MXCSR bits clear and `OM=UM=1`, while admitting
+every RC, IM/DM/ZM/PM mask and previous sticky history. Use existing raw MULSS
+semantics and an independent integer-only raw-u32 oracle that consumes memory
+RHS. Preserve original-operand NaN priority and WPR tininess-after-rounding.
+Cover SNaN/QNaN in either position, NaN+subnormal, zero×infinity invalid,
+signed zero/infinity, exact/inexact products, overflow, tiny/underflow, and
+rounding to min-normal. Verify unmasked IE/DE pre-events suppress postcompute
+OE/UE/PE; masked pre-events followed by unmasked PE suppress the destination,
+RIP and retirement while committing applicable status. Include fetch/gate/CPL,
+AC-before-span/read, unaligned access when AC=0, canonical span/read rollback,
+read-only input, fixtures, result/control tampering and backend denial. Native/
+JIT/C ABI/generic/fragment and physical x86 acceptance remain closed.
+
+#### S2-38ah — planned outcomes for exact MULSD memory form
+
+Implement a separate immutable schema-v2 interpreter-only profile for exact
+Long64 `F2 0F 59 00`, SSE2 bit 26 and read-only m64 `[RAX]`, one read8, budget
+one and stop RIP=entry+4. Preserve masked-memory S2-37dn and register S2-37at.
+Require `DAZ=FTZ=0`, reserved MXCSR bits clear and `OM=UM=1`, while admitting
+every RC, IM/DM/ZM/PM mask and previous sticky history. Use existing raw MULSD
+semantics and an independent integer-only raw-u64 oracle that consumes memory
+RHS. Preserve original-operand NaN priority and WPR tininess-after-rounding.
+Cover SNaN/QNaN in either position, NaN+subnormal, zero×infinity invalid,
+signed zero/infinity, exact/inexact products, overflow, tiny/underflow, and
+rounding to min-normal. Verify unmasked IE/DE pre-events suppress postcompute
+OE/UE/PE; masked pre-events followed by unmasked PE suppress the destination,
+RIP and retirement while committing applicable status. Include fetch/gate/CPL,
+AC-before-span/read, unaligned access when AC=0, canonical span/read rollback,
+read-only input, fixtures, result/control tampering and backend denial. Native/
+JIT/C ABI/generic/fragment and physical x86 acceptance remain closed.

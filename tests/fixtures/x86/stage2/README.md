@@ -8172,7 +8172,7 @@ The literal fixture `s2_37dl_subsd_m64_halfway.case.json` encodes `F2 0F 5C 00`:
 
 The literal fixture `s2_37dm_mulss_m32_memory_rax.case.json` encodes exact legacy `F3 0F 59 00`; XMM0.low32 is 2.0 and unaligned memory at RAX supplies 0.5. XMM0.high96 and poisoned XMM1 are canaries; memory is unchanged. The local interpreter-only schema requires Long64/SSE, complete fetch before #UD/#NM gates, and MXCSR supported mask `0xffbf`, reserved bits clear, all exception masks set, DAZ=FTZ=0. All RC modes and prior sticky histories are allowed. AC=1 refuses before span/read; AC=0 admits unaligned m32. Checked `RAX+3` and canonical48 endpoints precede exactly one read4, with rollback on read failure.
 
-The independent raw-u32 `independent_mulss` oracle receives the actual memory RHS. Runner coverage crosses 25 raw operand pairs × 4 RC modes × 64 prior sticky histories (6,400 executions), asserting StopAddress, snapshot and retirement=1 before oracle comparison. Direct/schema tests cover runtime MXCSR denial with no state commit/read/retirement, truncated-fetch precedence over #UD/#NM, gates, AC/address order, read rollback, provenance/result tampering, backend denial, and register/neighbor regressions. JIT/native/C ABI/generic/fragment and unmasked/#XM paths remain closed; no physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B MULSS pp. 4-154–4-155; Vol. 2A §2.5.3/Table 2-20 p. 2-28; Vol. 1 §§11.5.2–11.5.3 and 11.6.6. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37dm--masked-only-legacy-long64-mulss-xmm0m32-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dm--masked-only-long64-mulss-xmm0m32-rax), [shared report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37dm--mulss-xmm0m32-rax), and [standalone report](../../../../docs/reports/S2_37DM_MULSS_MEMORY.md).
+The independent raw-u32 `independent_mulss` oracle receives the actual memory RHS. Runner coverage crosses 25 raw operand pairs × 4 RC modes × 64 prior sticky histories (6,400 executions), asserting StopAddress, snapshot and retirement=1 before oracle comparison. Direct/schema tests cover runtime MXCSR denial with no state commit/read/retirement, truncated-fetch precedence over #UD/#NM, gates, AC/address order, read rollback, provenance/result tampering, backend denial, and register/neighbor regressions. JIT/native/C ABI/generic/fragment and unmasked/#XM paths remain closed; no physical x86 acceptance is claimed. Sources: Intel SDM Rev. 093 Vol. 2B MULSS pp. 4-150–4-151; Vol. 2A §2.5.3/Table 2-20 p. 2-28; Vol. 1 §§11.5.2–11.5.3 and 11.6.6. See the [plan](../../../../docs/plans/STAGE_2.md#s2-37dm--masked-only-legacy-long64-mulss-xmm0m32-rax), [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-37dm--masked-only-long64-mulss-xmm0m32-rax), [shared report](../../../../docs/reports/STAGE_2_REPORT.md#s2-37dm--mulss-xmm0m32-rax), and [standalone report](../../../../docs/reports/S2_37DM_MULSS_MEMORY.md).
 
 ### S2-37dn — MULSD XMM0,m64 [RAX]
 
@@ -8711,3 +8711,31 @@ and high64 preservation. Focused tests cover gate order, AC-before-read,
 canonical span/read rollback, read-only schema, literal result/control/error
 code tampering and JIT/native denial. Keep S2-37dl/S2-37ap separate; unmasked
 OE/UE and physical x86 acceptance are outside this profile.
+
+### S2-38ag MULSS m32 memory unmasked exceptions
+
+Exact Long64 `F3 0F 59 00`, SSE bit 25, and one read-only read4 from `[RAX]`.
+The independent raw-u32 oracle uses the memory RHS and covers signed SNaN/QNaN
+in both operands, NaN+subnormal, zero×infinity, signed zero/infinity,
+exact/inexact products, overflow, tiny results and WPR rounding. Cross RC × 64
+prior sticky histories × IM/DM/ZM/PM × OSXMMEXCPT. Verify pre-event IE/DE,
+post-event PE, atomic XMM0/RIP/retirement suppression, high96 preservation, and
+literal success/exception fixtures. Also cover exact fetch/gate/CPL/AC order,
+unaligned access with AC clear, canonical span/read rollback, one callback,
+read-only schema, result/control tampering and interpreter-only backend denial.
+Keep S2-37dm/S2-37au separate; native/JIT/C ABI/generic/fragment and physical
+x86 acceptance remain outside this profile.
+
+### S2-38ah MULSD m64 memory unmasked exceptions
+
+Exact Long64 `F2 0F 59 00`, SSE2 bit 26, and one read-only read8 from `[RAX]`.
+The independent raw-u64 oracle uses the memory RHS and covers signed SNaN/QNaN
+in both operands, NaN+subnormal, zero×infinity, signed zero/infinity,
+exact/inexact products, overflow, tiny results and WPR rounding. Cross RC × 64
+prior sticky histories × IM/DM/ZM/PM × OSXMMEXCPT. Verify pre-event IE/DE,
+post-event PE, atomic XMM0/RIP/retirement suppression, high64 preservation, and
+literal success/exception fixtures. Also cover exact fetch/gate/CPL/AC order,
+unaligned access with AC clear, canonical span/read rollback, one callback,
+read-only schema, result/control tampering and interpreter-only backend denial.
+Keep S2-37dn/S2-37at separate; native/JIT/C ABI/generic/fragment and physical
+x86 acceptance remain outside this profile.

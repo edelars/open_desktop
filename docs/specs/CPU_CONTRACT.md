@@ -18514,3 +18514,85 @@ C ABI/generic/fragment paths remain closed. Sources: Intel SDM Rev. 093 Vol. 2B
 SUBSD p. 4-693, Vol. 2A §2.5.3/Table 2-20 (Type 3), Vol. 1 §§4.9.1.4–.6 and
 11.5.2–11.5.3, and Vol. 3A Event 19/Table 7-8. No physical x86 acceptance is
 claimed.
+
+## S2-38ag — exact MULSS memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-mulss-memory-unmasked-rax-v1` for exact Long64 legacy `F3 0F 59 00`
+(`MULSS XMM0,m32 [RAX]`), separate `mulss_memory_rax_unmasked_controls`, one
+executable mapping, one read-only m32 mapping, budget one and stop RIP=entry+4.
+Require SSE bit 25; preserve masked-memory S2-37dm and register S2-37au. Complete
+fetch and exact-form checks precede SSE/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS
+`#NM` at CPL0–3. Require MXCSR supported mask `0xffbf`, reserved bits clear,
+DAZ=FTZ=0 and OM=UM=1; permit all RC, IM/DM/ZM/PM and prior sticky flags. AC=1
+returns local Unsupported before span/read; AC=0 permits unaligned RAX. Validate
+canonical48 `[RAX,RAX+3]`, then exactly one read4. A span/read fault preserves
+full CPU state, memory and retirement.
+
+Compute old XMM0.low32 multiplied by the actual memory RHS using existing raw
+MULSS semantics and an independent integer-only raw-u32 oracle. Preserve
+original operands for NaN priority and S2-37au WPR tininess-after-rounding.
+SNaN and zero×infinity contribute IE; QNaN alone does not. NaNs suppress DE;
+non-NaN subnormal operands contribute precompute DE. If new IE/DE is unmasked,
+commit all applicable generated pre-event IE/DE flags and suppress computation,
+postcompute OE/UE/PE, XMM0, RIP and retirement. Otherwise compute with MXCSR.RC,
+apply WPR overflow/underflow and handle PE; OM/UM remain masked. An unmasked PE
+commits applicable status while suppressing the whole destination, RIP and
+retirement. OSXMMEXCPT selects `#XM` or SIMD-generated arithmetic `#UD`; prior
+sticky bits alone do not fault. Success changes only XMM0.low32, applicable
+MXCSR status, RIP and retirement; preserve XMM0.high96, RFLAGS and unrelated
+state.
+
+Cover RC × 64 prior sticky histories × IM/DM/ZM/PM × both OSXMMEXCPT mappings
+across SNaN/QNaN in both operand positions, NaN+subnormal, zero×infinity,
+signed zero/infinity, exact/inexact products, overflow, exact/inexact tiny
+results, rounding to min-normal, and cases where unmasked IE/DE suppresses
+later PE/OE/UE versus masked pre-events followed by unmasked PE. Verify
+whole-state suppression, gates/fetch/CPL, AC and unaligned memory, canonical
+span/read rollback, one callback, strict read-only schema, literal fixtures,
+XMM/MXCSR/RIP/retirement/exception tampering and backend denial. Sources: Intel
+SDM Rev. 093 Vol. 2B MULSS pp. 4-150–4-151, Vol. 2A §2.5.3/Table 2-20, Vol. 1
+§§4.9.1.4–.6, 11.5.2–11.5.3 and 11.6.6, and Vol. 3A Event 19/Table 7-8.
+Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance remain
+closed.
+
+## S2-38ah — exact MULSD memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-mulsd-memory-unmasked-rax-v1` for exact Long64 legacy `F2 0F 59 00`
+(`MULSD XMM0,m64 [RAX]`), separate `mulsd_memory_rax_unmasked_controls`, one
+executable mapping, one read-only m64 mapping, budget one and stop RIP=entry+4.
+Require SSE2 bit 26; preserve masked-memory S2-37dn and register S2-37at. Complete
+fetch and exact-form checks precede SSE2/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS
+`#NM` at CPL0–3. Require MXCSR supported mask `0xffbf`, reserved bits clear,
+DAZ=FTZ=0 and OM=UM=1; permit all RC, IM/DM/ZM/PM and prior sticky flags. AC=1
+returns local Unsupported before span/read; AC=0 permits unaligned RAX. Validate
+canonical48 `[RAX,RAX+7]`, then exactly one read8. A span/read fault preserves
+full CPU state, memory and retirement.
+
+Compute old XMM0.low64 multiplied by the actual memory RHS using existing raw
+MULSD semantics and an independent integer-only raw-u64 oracle. Preserve
+original operands for NaN priority and S2-37at WPR tininess-after-rounding.
+SNaN and zero×infinity contribute IE; QNaN alone does not. NaNs suppress DE;
+non-NaN subnormal operands contribute precompute DE. If new IE/DE is unmasked,
+commit all applicable generated pre-event IE/DE flags and suppress computation,
+postcompute OE/UE/PE, XMM0, RIP and retirement. Otherwise compute with MXCSR.RC,
+apply WPR overflow/underflow and handle PE; OM/UM remain masked. An unmasked PE
+commits applicable status while suppressing the whole destination, RIP and
+retirement. OSXMMEXCPT selects `#XM` or SIMD-generated arithmetic `#UD`; prior
+sticky bits alone do not fault. Success changes only XMM0.low64, applicable
+MXCSR status, RIP and retirement; preserve XMM0.high64, RFLAGS and unrelated
+state.
+
+Cover RC × 64 prior sticky histories × IM/DM/ZM/PM × both OSXMMEXCPT mappings
+across SNaN/QNaN in both operand positions, NaN+subnormal, zero×infinity,
+signed zero/infinity, exact/inexact products, overflow, exact/inexact tiny
+results, rounding to min-normal, and cases where unmasked IE/DE suppresses
+later PE/OE/UE versus masked pre-events followed by unmasked PE. Verify
+whole-state suppression, gates/fetch/CPL, AC and unaligned memory, canonical
+span/read rollback, one callback, strict read-only schema, literal fixtures,
+XMM/MXCSR/RIP/retirement/exception tampering and backend denial. Sources: Intel
+SDM Rev. 093 Vol. 2B MULSD pp. 4-148–4-149, Vol. 2A §2.5.3/Table 2-20, Vol. 1
+§§4.9.1.4–.6, 11.5.2–11.5.3 and 11.6.6, and Vol. 3A Event 19/Table 7-8.
+Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance remain
+closed.

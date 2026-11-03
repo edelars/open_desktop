@@ -1592,6 +1592,38 @@ one-read rollback, strict read-only schema, literal fixtures, tampering and
 backend denial. Preserve S2-37dk/S2-37aq. Unmasked OE/UE and native/JIT/C ABI/
 generic/fragment and physical x86 acceptance remain outside this profile.
 
+## S2-38ag MULSS m32 memory unmasked exceptions
+
+Exact Long64 `F3 0F 59 00`; read-only m32 `[RAX]`, SSE bit 25, and interpreter
+only. Require MXCSR supported mask `0xffbf`, reserved bits clear, DAZ=FTZ=0 and
+OM=UM=1; admit every RC, IM/DM/ZM/PM and old sticky history. Expected values and
+events come from an independent raw-u32 integer oracle using memory RHS, not
+production multiply helpers or host floating point. Cover SNaN/QNaN in either
+operand position, NaN+subnormal, zero×infinity, signed zero/infinity,
+exact/inexact multiplication, overflow, tiny results and rounding to
+min-normal. Cross RC × 64 prior sticky histories × IM/DM/ZM/PM × OSXMMEXCPT.
+Check IE/DE pre-event priority, later OE/UE/PE suppression, unmasked PE atomic
+suppression, high96 preservation, and literal success/exception fixtures. Also
+cover full fetch/gates/CPL/AC order, unaligned access when AC is clear,
+canonical span and one-read rollback, strict read-only admission, tampering and
+interpreter-only backend denial. Keep S2-37dm/S2-37au unchanged.
+
+## S2-38ah MULSD m64 memory unmasked exceptions
+
+Exact Long64 `F2 0F 59 00`; read-only m64 `[RAX]`, SSE2 bit 26, and interpreter
+only. Require MXCSR supported mask `0xffbf`, reserved bits clear, DAZ=FTZ=0 and
+OM=UM=1; admit every RC, IM/DM/ZM/PM and old sticky history. Expected values and
+events come from an independent raw-u64 integer oracle using memory RHS, not
+production multiply helpers or host floating point. Cover SNaN/QNaN in either
+operand position, NaN+subnormal, zero×infinity, signed zero/infinity,
+exact/inexact multiplication, overflow, tiny results and rounding to
+min-normal. Cross RC × 64 prior sticky histories × IM/DM/ZM/PM × OSXMMEXCPT.
+Check IE/DE pre-event priority, later OE/UE/PE suppression, unmasked PE atomic
+suppression, high64 preservation, and literal success/exception fixtures. Also
+cover full fetch/gates/CPL/AC order, unaligned access when AC is clear,
+canonical span and one-read rollback, strict read-only admission, tampering and
+interpreter-only backend denial. Keep S2-37dn/S2-37at unchanged.
+
 ## S2-38af SUBSD m64 memory unmasked exceptions
 
 The exact Long64 `F2 0F 5C 00` profile reads one read-only m64 from `[RAX]`,
