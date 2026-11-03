@@ -747,8 +747,8 @@ also reports `not_reproduced` when no artifact is supplied, which is not replay
 evidence. Its synthetic mismatch self-check is labeled and does not establish
 runtime behavior. It covers serialization/classification, selected
 profile/source/address/layout/digest rejection, create-only/no-overwrite, and
-invalid-version/RIP rejection. The bounded artifact/replay subtask of S3-34.2
-is implemented; the reducer remains pending. ISSUE-028 remains open until
+invalid-version/RIP rejection. S3-34do subsequently implemented the reducer;
+S3-34.2 execution acceptance remains pending. ISSUE-028 remains open until
 S3-20eg execution acceptance; ISSUE-029 remains open pending the exact S3-34dn
 gate run. No behavior, runtime API, dependency, or opcode claim is added. See the
 [S3-34dn report](STAGE_3_S3-34dn_2026-11-03.md).
@@ -777,3 +777,69 @@ framework, runtime API, dependency, or opcode is added. S3-34.2 execution
 acceptance remains pending; ISSUE-028/029 remain open pending execution
 acceptance. Stage 3 remains partial. See the
 [S3-34do report](STAGE_3_S3-34do_2026-11-03.md).
+
+## Current-revision acceptance status — `f5d2b70`
+
+### Earlier successful evidence
+
+The accepted S3-41a full-local run `stage3-20261101-190932-58293bb642` records
+120 passed, 0 failed, and 33 `not_run` at source revision
+`020f79d74566ad6abdc8d2fa4ad8d6e0bfaf65ea`. The earlier S3-34br exact JIT/host
+gates passed 1/1 and its cumulative Python validation module passed 91/91 at
+integrated revision `8052314`. These are successful results for their recorded
+source revisions; the S3-34br result predates the ISSUE-028 retry assertions,
+and neither run includes the later S3-34dn/do changes.
+
+### Required correctness acceptance
+
+At `f5d2b70`, the gate inventory is statically checked and pinned at 305 gates
+(295 acceptance + 10 lifecycle), 323 local steps, and 138 self-test names.
+These gates and self-tests have not been executed against this revision. Run
+the existing exact gates documented in the [JIT testing reference](../testing/JIT.md):
+
+- ISSUE-028 host gate: `s3_34br_host_addr32_rsp_dword_store_zero_extended_esp`;
+  its fail-closed harness self-test is
+  `test_s3_34br_addr32_rsp_dword_store_gates_are_pinned_and_fail_closed`.
+- ISSUE-029/S3-34dn artifact-schema self-check:
+  `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed`, pinned by
+  harness gate `s3_34dn_replay_artifact_self_check`; the harness's fail-closed
+  registry self-test is
+  `test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed`.
+- S3-34do reducer self-check:
+  `s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature`,
+  pinned by harness gate `s3_34do_value_only_reducer_self_check`; the harness's
+  fail-closed registry self-test is
+  `test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`.
+
+ISSUE-028 and ISSUE-029 remain **OPEN** until their respective exact acceptance
+gates pass. Use the existing local harness invocation recorded above; this
+update adds no runner, gate, or manifest.
+
+### Optional real-artifact replay or reduction
+
+Replay (`OD_S3_34DN_REPLAY_ARTIFACT`) and reduction
+(`OD_S3_34DO_REDUCE_ARTIFACT`) are optional diagnostics for an actual saved
+mismatch artifact. Their real-artifact runs were not performed. An absent
+artifact or a `not_reproduced` outcome caused by no supplied artifact is not a
+successful replay or reduction and does not satisfy the required correctness
+gates. The profile-specific behavior and existing commands remain documented
+in the [S3-34dn](../testing/JIT.md#s3-34dn-create-only-mismatch-artifact-and-validated-replay-for-s3-34dm)
+and [S3-34do](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact)
+JIT sections.
+
+### Hardware acceptance
+
+Mac mini/physical-x86 acceptance remains deferred to the end of Stage 3. Local
+ARM64 fixture and harness evidence does not replace that gate.
+
+### Performance measurements
+
+Performance remains a separate acceptance area; no performance result for
+`f5d2b70` is claimed. Use the existing cold/warm measurement procedures in
+[BENCHMARKS.md](../testing/BENCHMARKS.md); this update introduces no new
+benchmark command or manifest.
+
+Stage 3 remains partial. Stage 2 and production owner/MMU integration remain
+outside this fixture evidence. Do not repeat the ISSUE-027 VMHost process suite
+without a new diagnostic basis; its existing status and procedure remain in
+[ISSUE-027](../KNOWN_ISSUES.md).

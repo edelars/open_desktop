@@ -2496,8 +2496,10 @@ contiguous above the boundary. Fault/retry and callback STOP remain covered by
 the focused S3-20eg checks.
 
 Pinned totals are 303 Rust gates (293 acceptance and 10 lifecycle), 321 local
-steps, and 136 self-test names; they have not been executed. S3-34.2 persisted
-replay/reducer remains pending. ISSUE-028 remains open pending S3-20eg
+steps, and 136 self-test names; they have not been executed. At this S3-34dm
+cut, S3-34.2 persisted replay/reducer implementation was pending; it was
+subsequently delivered in S3-34dn/do, with execution acceptance still pending.
+ISSUE-028 remains open pending S3-20eg
 execution acceptance; this review does not close it. This adds no runtime
 semantics, persisted replay format, envelope, or reducer API. See the
 [S3-34dm report](../reports/STAGE_3_S3-34dm_2026-11-02.md).
@@ -2537,7 +2539,8 @@ layout, digest, version, and RIP, plus create-only/no-overwrite behavior by
 preserving a pre-existing sentinel file. It does not run either backend.
 Synthetic data is not runtime mismatch evidence. The slice
 adds no runtime API, dependency, opcode, generic replay framework, or reducer.
-The S3-34.2 reducer remains pending.
+S3-34do subsequently implemented the reducer; S3-34.2 execution acceptance
+remains pending.
 
 Rust identities:
 `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed` and the
@@ -2546,8 +2549,8 @@ optional `replay_saved_s3_34dn_mismatch_artifact`. Harness gate:
 `test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed`.
 Pinned totals remain 304 gates (294 acceptance + 10 lifecycle), 322 local steps,
 and 137 self-test names. Static review passed; these gates and self-checks
-remain unexecuted. The artifact/replay subtask of S3-34.2 is implemented, but
-the reducer remains pending. ISSUE-028 stays open pending S3-20eg execution
+remain unexecuted. S3-34.2 artifact/replay/reducer implementation is now
+present; execution acceptance remains pending. ISSUE-028 stays open pending S3-20eg execution
 acceptance. ISSUE-029 remains open only pending execution of the exact S3-34dn
 Rust self-check and harness gate. No Rust behavior gate, Python
 harness/self-check, build, formatting, Cargo, Mini, or M1 acceptance was run or
@@ -2561,7 +2564,7 @@ passed; real-artifact execution and self-check execution are deferred. Runtime
 commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated. No
 real artifact was reduced and no acceptance gate was executed.
 
-The planned reducer consumes exactly one validated S3-34dn artifact for
+The reducer consumes exactly one validated S3-34dn artifact for
 `67 89 04 24`. First replay the original saved input twice through the
 existing original-artifact classifier. If it reports `not_reproduced`, stop
 without reducing or writing output. Search only after the original reproduces
