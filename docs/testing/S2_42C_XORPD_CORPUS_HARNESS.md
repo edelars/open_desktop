@@ -36,7 +36,10 @@ runner twice. Each run records its result JSON, process status, stderr, build
 fingerprint, compiler, machine metadata and fixture digest. Existing result
 comparison checks the fixture outcome and full state, including XMM0–15, MXCSR,
 integer state, retirement and stopping RIP. Each backend's two results must
-match. Native unavailability, a timeout, missing or malformed output, a
+match. The remote native batch flushes one JSON-lines record per fixture, and
+the local harness saves each case's output and process status as it arrives.
+If a later case times out, earlier native results remain available beside the
+partial command logs. Native unavailability, a timeout, missing or malformed output, a
 nonzero result, or any mismatch fails the command; the run manifest and any
 partial command/result logs remain available under `work/stage2-oracle/`.
 

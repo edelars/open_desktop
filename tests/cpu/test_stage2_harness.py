@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +42,24 @@ class Stage2HarnessTests(unittest.TestCase):
             value["case_id"] = case_id
         path.write_text(json.dumps(value))
         return path
+
+    def result(self, fixture, digest="a" * 64, backend="native_x86", revision="sha256:test",
+               compiler="rustc test", profile=None):
+        profile = profile or fixture["profile"]
+        state = {"mode": "long64", "gpr": ["0x0"] * 16,
+                 "rip": "0x100003", "rflags": "0x2"}
+        if profile == oracle.XORPD_PROFILE:
+            state["sse"] = {"xmm": ["00" * 16 for _ in range(16)], "mxcsr": "0x1f80"}
+        return {"schema_version": 2, "case_id": fixture["case_id"], "input_sha256": digest,
+                "profile": profile, "backend": backend,
+                "outcome": {"kind": fixture["expected_exit"]},
+                "instructions_executed": {"status": "available", "value": "0x1"},
+                "build": {"revision": revision, "compiler": compiler,
+                          "target": "x86_64-linux", "profile": "debug"},
+                "machine": {"host_os": "linux", "host_arch": "x86_64"},
+                "snapshot": {"status": "available", "value": {"state": state,
+                    "rflags_defined": "0x0", "exception": {"status": "available", "value": None},
+                    "memory": fixture["memory"]}}}
 
     def test_exact_json_is_frozen_before_execution_and_remains_bound_to_digest(self):
         path = self.case()
@@ -184,6 +203,106 @@ class Stage2HarnessTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             oracle.main(["--suite", "xorpd-native-corpus", "some.case.json"])
 
+    def _run_mock_xorpd_suite(self, malformed_native_snapshot=False):
+        fingerprint = "f" * 64
+        interpreter_calls, batch_calls = [], []
+
+        def prepare(_corpus_root, output):
+            fixtures_dir = output / "fixtures"
+            fixtures_dir.mkdir()
+            cases = []
+            for sequence in range(2):
+                fixture = json.loads(self.raw)
+                fixture["case_id"] = f"s2_42a_xorpd_simulated_{sequence}"
+                fixture["profile"] = oracle.XORPD_PROFILE
+                fixture["seed"] = f"0x{oracle.XORPD_SEEDS[0]:016x}"
+                fixture["initial_state"]["sse"] = {"xmm": [f"{sequence:02x}" * 16 for _ in range(16)],
+                                                    "mxcsr": "0x1f80"}
+                path = fixtures_dir / f"{fixture['case_id']}.case.json"
+                raw = json.dumps(fixture).encode()
+                path.write_bytes(raw)
+                cases.append((path, fixture, hashlib.sha256(raw).hexdigest()))
+            return cases, {"corpus_digest": "a" * 64}, "b" * 64
+
+        def native_batch(_target, _remote_root, _runner, _fixture_dir, cases, output_dir, *, process_runner):
+            batch_calls.append(output_dir.name)
+            results = {}
+            for index, (path, fixture, digest) in enumerate(cases):
+                result = self.result(fixture, digest, "native_x86", f"sha256:{fingerprint}",
+                                    "rustc remote", oracle.XORPD_PROFILE)
+                if malformed_native_snapshot and not batch_calls[:-1] and index == 0:
+                    result["snapshot"]["value"] = None
+                case_dir = output_dir / fixture["case_id"]
+                case_dir.mkdir()
+                (case_dir / "native_x86.json").write_text(json.dumps(result))
+                (case_dir / "native_x86.stderr.log").write_text("")
+                (case_dir / "native_x86.process.json").write_text(json.dumps({"returncode": 0}))
+                results[path.name] = result
+            return results
+
+        def compare_results(_runner, _left, _right, fixture_path, _report_path, _env, **_kwargs):
+            fixture = json.loads(Path(fixture_path).read_text())
+            return {"schema_version": 2, "case_id": fixture["case_id"],
+                    "input_sha256": hashlib.sha256(Path(fixture_path).read_bytes()).hexdigest(),
+                    "matches": True, "differences": []}
+
+        def run(argv, **_kwargs):
+            if argv[0] == "ssh":
+                command = argv[-1]
+                if "python3 -c" in command:
+                    return subprocess.CompletedProcess(argv, 0, fingerprint + "\n", "")
+                if "rustc --version" in command:
+                    return subprocess.CompletedProcess(argv, 0, "rustc remote\n", "")
+                if "cargo --version" in command:
+                    return subprocess.CompletedProcess(argv, 0, "cargo remote\n", "")
+                if command == "uname -a":
+                    return subprocess.CompletedProcess(argv, 0, "Linux test\n", "")
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if argv[0] == "scp" or argv[0] == "cargo":
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if "--verify-native-xorpd-corpus" in argv:
+                return subprocess.CompletedProcess(argv, 0, "verified 1024 cases\n", "")
+            if "--fixture" in argv:
+                fixture_path = Path(argv[argv.index("--fixture") + 1])
+                fixture = json.loads(fixture_path.read_text())
+                digest = hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+                interpreter_calls.append(fixture["case_id"])
+                result = self.result(fixture, digest, "interpreter", f"sha256:{fingerprint}",
+                                     "rustc local", oracle.XORPD_PROFILE)
+                return subprocess.CompletedProcess(argv, 0, json.dumps(result), "")
+            raise AssertionError(f"unexpected command: {argv}")
+
+        with patch.object(oracle, "prepare_xorpd_corpus", side_effect=prepare), \
+             patch.object(oracle, "run_remote_xorpd_batch", side_effect=native_batch), \
+             patch.object(previous, "compare", side_effect=compare_results), \
+             patch.object(previous, "source_fingerprint", return_value=fingerprint), \
+             patch.object(previous, "local_machine", return_value={"rustc": "rustc local", "cargo": "cargo local"}), \
+             patch.object(previous, "run", side_effect=run), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            status = oracle.main(["--suite", "xorpd-native-corpus", "--host", "test-host",
+                                  "--output-root", "work/stage2-oracle"])
+        manifests = list((self.root / "work/stage2-oracle").glob("*/manifest.json"))
+        self.assertEqual(len(manifests), 1)
+        return status, json.loads(manifests[0].read_text()), interpreter_calls, batch_calls
+
+    def test_xorpd_suite_orchestrates_two_interpreter_and_native_repeats(self):
+        status, manifest, interpreter_calls, batch_calls = self._run_mock_xorpd_suite()
+        self.assertEqual(status, 0, manifest)
+        self.assertEqual(manifest["status"], "passed")
+        self.assertEqual(manifest["corpus_manifest"]["physical_native"], "executed_and_matched")
+        self.assertEqual(batch_calls, ["repeat-01", "repeat-02"])
+        self.assertEqual(len(interpreter_calls), 4)
+        self.assertEqual(len(manifest["fixtures"]), 4)
+        self.assertEqual([row["repeat"] for row in manifest["fixtures"]], [1, 1, 2, 2])
+        self.assertEqual([row["stable_repeat"] for row in manifest["fixtures"]], [False, False, True, True])
+
+    def test_xorpd_malformed_nested_native_result_fails_run_manifest_cleanly(self):
+        status, manifest, _, _ = self._run_mock_xorpd_suite(malformed_native_snapshot=True)
+        self.assertEqual(status, 1)
+        self.assertEqual(manifest["status"], "failed")
+        self.assertEqual(manifest["corpus_manifest"]["physical_native"], "failed")
+        self.assertIn("snapshot value must be an object", manifest["error"])
+
     def test_failed_process_evidence_preserves_output_returncode_and_only_build_environment(self):
         manifest = {"commands": []}
         evidence = oracle.Evidence(self.output, manifest)
@@ -212,6 +331,32 @@ class Stage2HarnessTests(unittest.TestCase):
         self.assertEqual((self.output / record["stdout"]).read_text(), "partial out")
         self.assertEqual((self.output / record["stderr"]).read_text(), "partial err")
 
+    def test_xorpd_native_timeout_keeps_each_completed_case_result_and_status(self):
+        first, second = self.case("native-input", "first.case.json", "first"), self.case(
+            "native-input", "second.case.json", "second")
+        prepared = self.output / "prepared"
+        prepared.mkdir()
+        cases = oracle.prepare_cases([str(first), str(second)], prepared)
+        first_record = json.dumps({"filename": cases[0][0].name, "returncode": 0,
+            "stdout": '{"case_id":"first"}', "stderr": "first stderr"}, separators=(",", ":"))
+        evidence = oracle.Evidence(self.output, {"commands": []})
+        repeat = self.output / "repeat-01"
+        repeat.mkdir()
+        script = ("import json,sys,time; "
+                  f"print({json.dumps(first_record)}, flush=True); "
+                  "print('timed out on second case', file=sys.stderr, flush=True); time.sleep(2)")
+        with patch.object(previous, "ssh_argv", return_value=[sys.executable, "-c", script]):
+            with self.assertRaisesRegex(oracle.Stage2Error, "timed out"):
+                oracle.run_remote_xorpd_batch("host", "/repo", "native-runner", "fixtures", cases,
+                                              repeat, process_runner=evidence.run, timeout=0.1)
+        first_dir = repeat / "first"
+        self.assertEqual((first_dir / "native_x86.json").read_text(), '{"case_id":"first"}')
+        self.assertEqual((first_dir / "native_x86.stderr.log").read_text(), "first stderr")
+        self.assertEqual(json.loads((first_dir / "native_x86.process.json").read_text()), {"returncode": 0})
+        self.assertFalse((repeat / "second" / "native_x86.json").exists())
+        command = json.loads((self.output / "manifest.json").read_text())["commands"][0]
+        self.assertIn(first_record, (self.output / command["stdout"]).read_text())
+
     def test_missing_or_failed_native_output_is_not_skipped_and_raw_batch_is_preserved(self):
         path = self.case()
         cases = oracle.prepare_cases([str(path)], self.output)
@@ -238,12 +383,7 @@ class Stage2HarnessTests(unittest.TestCase):
         fixture = json.loads(self.raw)
         # Deliberately partial dictionaries test admission only. They are never
         # presented as CPU results or successful acceptance evidence.
-        result = {"schema_version": 2, "case_id": fixture["case_id"], "input_sha256": "a" * 64,
-                  "profile": oracle.PROFILE, "backend": "native_x86", "outcome": {"kind": "stop_address"},
-                  "build": {"revision": "sha256:test", "compiler": "rustc test", "target": "x86_64-linux", "profile": "debug"},
-                  "machine": {"host_os": "linux", "host_arch": "x86_64"},
-                  "snapshot": {"status": "available", "value": {"state": {"mode": "long64", "gpr": [0] * 16},
-                      "exception": {"status": "available"}, "memory": fixture["memory"]}}}
+        result = self.result(fixture)
         for field, value in [("schema_version", 1), ("case_id", "different"), ("input_sha256", "b" * 64),
                              ("profile", "wrong"), ("backend", "interpreter"),
                              ("outcome", {"kind": "unsupported"}), ("build", {"revision": "old"}),
@@ -256,19 +396,21 @@ class Stage2HarnessTests(unittest.TestCase):
     def test_xorpd_result_requires_native_profile_and_complete_snapshot_admission(self):
         fixture = json.loads(self.raw)
         fixture["profile"] = oracle.XORPD_PROFILE
-        result = {"schema_version": 2, "case_id": fixture["case_id"], "input_sha256": "a" * 64,
-                  "profile": oracle.XORPD_PROFILE, "backend": "native_x86",
-                  "outcome": {"kind": fixture["expected_exit"]},
-                  "build": {"revision": "sha256:test", "compiler": "rustc test",
-                            "target": "x86_64-linux", "profile": "debug"},
-                  "machine": {"host_os": "linux", "host_arch": "x86_64"},
-                  "snapshot": {"status": "available", "value": {"state": {"mode": "long64", "gpr": [0] * 16},
-                      "exception": {"status": "available"}, "memory": fixture["memory"]}}}
+        result = self.result(fixture, profile=oracle.XORPD_PROFILE)
         oracle.validate_result(result, fixture, "a" * 64, "native_x86", "sha256:test", "rustc test",
                                "native result", oracle.XORPD_PROFILE)
         with self.assertRaisesRegex(oracle.Stage2Error, "invalid profile"):
             oracle.validate_result(result, fixture, "a" * 64, "native_x86", "sha256:test", "rustc test",
                                    "native result")
+
+    def test_nested_null_snapshot_is_a_harness_error_not_an_attribute_error(self):
+        fixture = json.loads(self.raw)
+        fixture["profile"] = oracle.XORPD_PROFILE
+        result = self.result(fixture, profile=oracle.XORPD_PROFILE)
+        result["snapshot"]["value"] = None
+        with self.assertRaisesRegex(oracle.Stage2Error, "snapshot value must be an object"):
+            oracle.validate_result(result, fixture, "a" * 64, "native_x86", "sha256:test", "rustc test",
+                                   "native result", oracle.XORPD_PROFILE)
 
     def test_comparison_requires_positive_match_and_exact_case_binding(self):
         fixture = json.loads(self.raw)

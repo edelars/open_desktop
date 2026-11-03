@@ -8,10 +8,13 @@ import hashlib
 import json
 import os
 import posixpath
+import queue
 import re
 import shlex
+import subprocess
 import sys
 import tarfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -193,21 +196,41 @@ def validate_result(result: dict, fixture: dict, digest: str, backend: str,
         raise Stage2Error(f"{label}: build fingerprint or compiler does not match the recorded build")
     if not build.get("target") or not build.get("profile"):
         raise Stage2Error(f"{label}: missing build target/profile")
-    if backend == "native_x86":
-        machine = result.get("machine", {})
-        if machine.get("host_os") != "linux" or machine.get("host_arch") != "x86_64":
-            raise Stage2Error(f"{label}: physical oracle must report Linux x86_64")
-    observed = result.get("snapshot", {})
+    machine = result.get("machine")
+    if not isinstance(machine, dict) or not machine.get("host_os") or not machine.get("host_arch"):
+        raise Stage2Error(f"{label}: machine provenance is unavailable")
+    if backend == "native_x86" and (machine.get("host_os") != "linux" or machine.get("host_arch") != "x86_64"):
+        raise Stage2Error(f"{label}: physical oracle must report Linux x86_64")
+    observed = result.get("snapshot")
     if not isinstance(observed, dict) or observed.get("status") != "available":
         raise Stage2Error(f"{label}: full architectural snapshot unavailable")
-    snapshot = observed.get("value", {})
-    state = snapshot.get("state", {})
-    if state.get("mode") != "long64" or len(state.get("gpr", [])) != 16:
+    snapshot = observed.get("value")
+    if not isinstance(snapshot, dict):
+        raise Stage2Error(f"{label}: snapshot value must be an object")
+    state = snapshot.get("state")
+    if (not isinstance(state, dict) or state.get("mode") != "long64"
+            or not isinstance(state.get("gpr"), list) or len(state["gpr"]) != 16
+            or not isinstance(state.get("rip"), str) or not isinstance(state.get("rflags"), str)):
         raise Stage2Error(f"{label}: full long-mode GPR set unavailable")
-    if snapshot.get("exception", {}).get("status") != "available":
+    exception = snapshot.get("exception")
+    if not isinstance(exception, dict) or exception.get("status") != "available":
         raise Stage2Error(f"{label}: exception observation unavailable")
-    if len(snapshot.get("memory", [])) != len(fixture["memory"]):
+    memory = snapshot.get("memory")
+    if not isinstance(memory, list) or len(memory) != len(fixture["memory"]):
         raise Stage2Error(f"{label}: incomplete memory snapshot")
+    flags = snapshot.get("rflags_defined")
+    count = result.get("instructions_executed")
+    if (not isinstance(flags, str) or not isinstance(count, dict)
+            or count.get("status") not in ("available", "unavailable")):
+        raise Stage2Error(f"{label}: flags-definedness or retirement observation is missing")
+    if profile == XORPD_PROFILE:
+        sse = state.get("sse")
+        if (not isinstance(sse, dict) or not isinstance(sse.get("xmm"), list)
+                or len(sse["xmm"]) != 16
+                or any(not isinstance(reg, str) or not re.fullmatch(r"[0-9a-f]{32}", reg)
+                       for reg in sse["xmm"])
+                or not isinstance(sse.get("mxcsr"), str)):
+            raise Stage2Error(f"{label}: full XMM0–15/MXCSR state is unavailable")
     # The existing Rust comparator subsequently enforces all strict schema,
     # layout, flags-definedness, exact-value and expected-exit constraints.
 
@@ -228,7 +251,60 @@ class Evidence:
     def save(self):
         (self.directory / "manifest.json").write_text(json.dumps(self.manifest, indent=2) + "\n")
 
-    def run(self, argv, **kwargs):
+    @staticmethod
+    def _stream_process(argv, *, cwd, env, timeout, stdout_consumer):
+        events = queue.Queue()
+        stdout_parts, stderr_parts = [], []
+        try:
+            process = subprocess.Popen(argv, cwd=cwd, env=env, text=True, bufsize=1,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as error:
+            raise Stage2Error(f"could not run {argv[0]}: {error}") from error
+
+        def read_lines(name, stream):
+            try:
+                for line in iter(stream.readline, ""):
+                    events.put((name, line, line.endswith("\n")))
+            finally:
+                events.put((name, None, True))
+
+        readers = [threading.Thread(target=read_lines, args=(name, stream), daemon=True)
+                   for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))]
+        for reader in readers:
+            reader.start()
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        ended, timed_out = set(), False
+        while len(ended) < 2:
+            wait = None if timed_out or deadline is None else max(0.0, deadline - time.monotonic())
+            try:
+                name, line, complete = events.get(timeout=wait)
+            except queue.Empty:
+                timed_out = True
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                continue
+            if line is None:
+                ended.add(name)
+                continue
+            if name == "stdout":
+                stdout_parts.append(line)
+                stdout_consumer(line.rstrip("\r\n"), complete)
+            else:
+                stderr_parts.append(line)
+        process.wait()
+        for reader in readers:
+            reader.join()
+        process.stdout.close()
+        process.stderr.close()
+        stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
+        if timed_out:
+            expired = subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr)
+            raise Stage2Error(f"could not run {argv[0]}: timed out after {timeout}s") from expired
+        return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+    def run(self, argv, *, stdout_consumer=None, **kwargs):
         index = len(self.manifest["commands"]) + 1
         prefix = self.directory / "commands" / f"{index:04d}"
         record = {"argv": argv, "cwd": str(kwargs.get("cwd", oracle.ROOT)),
@@ -241,10 +317,19 @@ class Evidence:
         self.manifest["commands"].append(record)
         self.save()
         stdout = stderr = ""
+        completed = False
         try:
-            process = oracle.run(argv, **kwargs)
+            if stdout_consumer is None:
+                process = oracle.run(argv, **kwargs)
+            else:
+                process = self._stream_process(argv, cwd=kwargs.pop("cwd", oracle.ROOT),
+                    env=kwargs.pop("env", None), timeout=kwargs.pop("timeout", 60.0),
+                    stdout_consumer=stdout_consumer)
+                if kwargs:
+                    raise Stage2Error(f"unsupported streaming process options: {sorted(kwargs)}")
             stdout, stderr = process.stdout, process.stderr
             record["returncode"] = process.returncode
+            completed = True
             return process
         except Stage2Error as error:
             cause = error.__cause__
@@ -269,6 +354,71 @@ def compare(evidence: Evidence, runner: Path, left: Path, right: Path,
                             process_runner=evidence.run)
     validate_comparison(report, fixture, digest)
     return report
+
+
+def run_remote_xorpd_batch(target: str, remote_root: str, runner: str, fixture_dir: str,
+                           cases: list[tuple[Path, dict, str]], output_dir: Path,
+                           *, process_runner, timeout: float = 1800.0) -> dict[str, dict]:
+    """Run native cases as flushed JSON lines so timeout evidence is case-granular."""
+    batch_code = """import json,os,subprocess,sys
+runner,fixture_dir=sys.argv[1:3]
+for name in sorted(os.listdir(fixture_dir)):
+ if not name.endswith('.case.json'): continue
+ path=os.path.join(fixture_dir,name)
+ p=subprocess.run([runner,'--fixture',path,'--json'],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+ print(json.dumps({'filename':name,'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr},separators=(',',':')),flush=True)
+"""
+    argv = ["python3", "-c", batch_code, runner, fixture_dir]
+    remote_command = f"cd {shlex.quote(remote_root)} && {shlex.join(argv)}"
+    expected = {path.name: (path, fixture, digest) for path, fixture, digest in cases}
+    parsed, seen, errors = {}, set(), []
+
+    def consume(line, complete):
+        if not complete:
+            errors.append("truncated native batch record")
+            return
+        try:
+            record = read_json(line)
+        except (Stage2Error, ValueError) as error:
+            errors.append(f"malformed native batch line: {error}")
+            return
+        name = record.get("filename") if isinstance(record, dict) else None
+        if not isinstance(name, str) or name not in expected or name in seen:
+            errors.append(f"unexpected or duplicate native batch case: {name!r}")
+            return
+        seen.add(name)
+        _, fixture, _ = expected[name]
+        case_dir = output_dir / fixture["case_id"]
+        case_dir.mkdir(exist_ok=True)
+        stdout = record.get("stdout")
+        stderr = record.get("stderr")
+        returncode = record.get("returncode")
+        result_path = case_dir / "native_x86.json"
+        result_path.write_text(stdout if isinstance(stdout, str) else "")
+        (case_dir / "native_x86.stderr.log").write_text(stderr if isinstance(stderr, str) else "")
+        (case_dir / "native_x86.process.json").write_text(json.dumps({"returncode": returncode}))
+        if not isinstance(stdout, str) or not isinstance(stderr, str):
+            errors.append(f"{name}: native batch record omitted stdout or stderr")
+            return
+        if type(returncode) is not int or returncode != 0:
+            errors.append(f"{name}: native execution exit {returncode}")
+            return
+        try:
+            parsed[name] = oracle.parse_result(stdout, result_path)
+        except Stage2Error as error:
+            errors.append(f"{name}: malformed native result: {error}")
+
+    process = process_runner(oracle.ssh_argv(target, remote_command), timeout=timeout,
+                             stdout_consumer=consume)
+    (output_dir / "native-batch.stdout.jsonl").write_text(process.stdout)
+    (output_dir / "native-batch.stderr.log").write_text(process.stderr)
+    oracle.require_success(process, "remote native batch")
+    if errors:
+        raise Stage2Error("remote native execution failed: " + "; ".join(errors))
+    if seen != set(expected):
+        missing = sorted(set(expected) - seen)
+        raise Stage2Error("remote native batch omitted cases: " + ", ".join(missing[:8]))
+    return parsed
 
 
 def legacy_evidence(path: Path, fingerprint: str) -> dict:
@@ -413,7 +563,8 @@ def main(argv=None) -> int:
             if args.suite == "xorpd-native-corpus":
                 manifest["corpus_manifest"]["physical_native"] = "running"
                 evidence.save()
-            natives = oracle.run_remote_batch(target, args.remote_root, remote_runner, remote_fixtures,
+            batch_runner = run_remote_xorpd_batch if args.suite == "xorpd-native-corpus" else oracle.run_remote_batch
+            natives = batch_runner(target, args.remote_root, remote_runner, remote_fixtures,
                 cases, repeat_dir, process_runner=evidence.run)
             for path, fixture, digest in cases:
                 manifest["active_case"] = {"case_id": fixture["case_id"], "repeat": repeat}
