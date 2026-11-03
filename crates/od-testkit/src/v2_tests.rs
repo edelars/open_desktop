@@ -5884,7 +5884,7 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         .unwrap()
         .control_word = HexU64(0x037f);
 
-    for historical_status in [0x0001_u64, 0x0002, 0x0003, 0x0021, 0x0022, 0x0023] {
+    for historical_status in 0..=0x003f_u64 {
         let mut rejected_with_admitted_history = admitted_status_probe.clone();
         rejected_with_admitted_history
             .initial_state
@@ -5894,10 +5894,10 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             .status_word = HexU64(0x4500 | historical_status);
         assert!(
             rejected_with_admitted_history.validate().is_err(),
-            "DB28 must admit historical IE/DE/PE status {historical_status:04x}"
+            "DB28 must admit historical exception flags {historical_status:04x}"
         );
     }
-    for rejected_status in [0x0004_u64, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+    for rejected_status in [0x0040_u64, 0x007f, 0x0080, 0x00bf, 0x8000, 0x803f] {
         let mut rejected_environment = admitted_status_probe.clone();
         rejected_environment
             .initial_state
