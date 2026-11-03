@@ -18447,6 +18447,17 @@ impl Fixture {
                         })
                     })
                 });
+            let is_fld_m80_environment_rejected = code_bytes == "db28"
+                && self.stop_rip.is_none()
+                && self.expected_exit == ExpectedExit::Unsupported
+                && self.instruction_budget == 1
+                && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let top = ((x87.status_word.get() >> 11) & 7) as u8;
+                    let destination = top.wrapping_add(7) & 7;
+                    !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
+                        || x87.status_word.get() & 0x80dc != 0
+                        || ((x87.tag_word.get() >> (u32::from(destination) * 2)) & 3) != 3
+                });
             let is_fld_m32_environment_rejected = code_bytes == "d900"
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
@@ -18942,6 +18953,7 @@ impl Fixture {
                     || is_fist_word_tag_rejected
                     || is_fist_word_environment_rejected
                     || is_fld_m80_pseudo_infinity_rejected
+                    || is_fld_m80_environment_rejected
                     || is_fld_m32_environment_rejected
                     || is_fld_m64_environment_rejected
                     || is_fcom_source_rejected

@@ -1168,6 +1168,10 @@ const FLD_M80_SNAN: &[u8] =
 const FLD_M80_PSEUDO_DENORMAL: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_31ad_fld_m80fp_pseudo_denormal.case.json"
 );
+const FLD_M80_IE_DE_PE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31eb_fld_m80fp_ie_de_pe.case.json");
+const FLD_M80_ES_REJECTED: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_31eb_fld_m80fp_es_rejected.case.json");
 const FSTP_M80_QNAN: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_31ar_fstp_m80fp_qnan.case.json");
 const FSTP_M80_NEGATIVE_INDEFINITE_FNSTSW: &[u8] = include_bytes!(
@@ -13043,7 +13047,12 @@ fn v2_jit_denies_m80_infinity_load_without_interpreter_fallback() {
 
 #[test]
 fn v2_jit_denies_m80_special_loads_without_interpreter_fallback() {
-    for fixture in [FLD_M80_QNAN, FLD_M80_SNAN, FLD_M80_PSEUDO_DENORMAL] {
+    for fixture in [
+        FLD_M80_QNAN,
+        FLD_M80_SNAN,
+        FLD_M80_PSEUDO_DENORMAL,
+        FLD_M80_IE_DE_PE,
+    ] {
         let (_, result) = run(fixture, "jit", 4);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
@@ -13051,6 +13060,39 @@ fn v2_jit_denies_m80_special_loads_without_interpreter_fallback() {
             result.instructions_executed,
             Observation::Unavailable { .. }
         ));
+    }
+}
+
+#[test]
+fn v2_interpreter_preserves_historical_ie_de_and_pe_for_raw_fld_m80() {
+    let (input, result) = run(FLD_M80_IE_DE_PE, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    let observed = snapshot(&result);
+    let expected_raw = &input.fixture.memory[1].initial_bytes_hex[..20];
+    assert_eq!(
+        observed.state.x87.as_ref().unwrap().registers[7],
+        expected_raw
+    );
+    assert_eq!(
+        observed.state.x87.as_ref().unwrap().status_word.get() & 0x23,
+        0x23
+    );
+    result.validate_for(&input).unwrap();
+}
+
+#[test]
+fn v2_native_and_jit_deny_fld_m80_historical_status_profile() {
+    for backend in ["native", "jit"] {
+        for fixture in [FLD_M80_IE_DE_PE, FLD_M80_ES_REJECTED] {
+            let (_, result) = run(fixture, backend, 4);
+            assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+            assert!(matches!(
+                result.instructions_executed,
+                Observation::Unavailable { .. }
+            ));
+        }
     }
 }
 
