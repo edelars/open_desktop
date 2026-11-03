@@ -5861,6 +5861,52 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     invalid_fld_m80.stop_rip = None;
     invalid_fld_m80.expected_exit = ExpectedExit::Unsupported;
     assert!(Fixture::from_json(&invalid_fld_m80.to_json().unwrap()).is_ok());
+    let mut admitted_status_probe = invalid_fld_m80.clone();
+    admitted_status_probe
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "operand")
+        .unwrap()
+        .initial_bytes_hex = "0000000000000080ff3f000000000000".into();
+    admitted_status_probe
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .tag_word = HexU64(0xdbe4);
+    admitted_status_probe
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap()
+        .control_word = HexU64(0x037f);
+
+    for historical_status in [0x0001_u64, 0x0002, 0x0003, 0x0021, 0x0022, 0x0023] {
+        let mut rejected_with_admitted_history = admitted_status_probe.clone();
+        rejected_with_admitted_history
+            .initial_state
+            .x87
+            .as_mut()
+            .unwrap()
+            .status_word = HexU64(0x4500 | historical_status);
+        assert!(
+            rejected_with_admitted_history.validate().is_err(),
+            "DB28 must admit historical IE/DE/PE status {historical_status:04x}"
+        );
+    }
+    for rejected_status in [0x0004_u64, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+        let mut rejected_environment = admitted_status_probe.clone();
+        rejected_environment
+            .initial_state
+            .x87
+            .as_mut()
+            .unwrap()
+            .status_word = HexU64(rejected_status);
+        assert!(
+            Fixture::from_json(&rejected_environment.to_json().unwrap()).is_ok(),
+            "DB28 must permit Unsupported for status gate {rejected_status:04x}"
+        );
+    }
 
     for raw in [
         "00000000000000800000",
@@ -5883,6 +5929,14 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
         "ffffffffffffffbfffff",
     ] {
         let mut not_the_supported_rejection_class = invalid_fld_m80.clone();
+        let x87 = not_the_supported_rejection_class
+            .initial_state
+            .x87
+            .as_mut()
+            .unwrap();
+        x87.control_word = HexU64(0x037f);
+        x87.status_word = HexU64(0x4500);
+        x87.tag_word = HexU64(0xdbe4);
         not_the_supported_rejection_class
             .memory
             .iter_mut()
@@ -5899,6 +5953,14 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
     // The pseudo-infinity binary80 schema gate must safely decline offsets whose doubled
     // byte index fits usize but leaves no room for the twenty-character slice.
     let mut overflowing_schema_offset = invalid_fld_m80.clone();
+    let x87 = overflowing_schema_offset
+        .initial_state
+        .x87
+        .as_mut()
+        .unwrap();
+    x87.control_word = HexU64(0x037f);
+    x87.status_word = HexU64(0x4500);
+    x87.tag_word = HexU64(0xdbe4);
     overflowing_schema_offset.initial_state.gpr[0] = HexU64(
         overflowing_schema_offset.memory[0]
             .guest_address
