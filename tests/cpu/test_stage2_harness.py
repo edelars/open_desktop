@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -356,6 +357,17 @@ class Stage2HarnessTests(unittest.TestCase):
         self.assertFalse((repeat / "second" / "native_x86.json").exists())
         command = json.loads((self.output / "manifest.json").read_text())["commands"][0]
         self.assertIn(first_record, (self.output / command["stdout"]).read_text())
+
+    def test_stream_timeout_applies_after_child_closes_both_pipes(self):
+        evidence = oracle.Evidence(self.output, {"commands": []})
+        script = "import os,time; os.close(1); os.close(2); time.sleep(2)"
+        started = time.monotonic()
+        with self.assertRaisesRegex(oracle.Stage2Error, "timed out"):
+            evidence.run([sys.executable, "-c", script], timeout=0.05,
+                         stdout_consumer=lambda _line, _complete: None)
+        self.assertLess(time.monotonic() - started, 1.0)
+        manifest = json.loads((self.output / "manifest.json").read_text())
+        self.assertIsNone(manifest["commands"][0]["returncode"])
 
     def test_missing_or_failed_native_output_is_not_skipped_and_raw_batch_is_preserved(self):
         path = self.case()

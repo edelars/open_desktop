@@ -255,6 +255,7 @@ class Evidence:
     def _stream_process(argv, *, cwd, env, timeout, stdout_consumer):
         events = queue.Queue()
         stdout_parts, stderr_parts = [], []
+        started_at = time.monotonic()
         try:
             process = subprocess.Popen(argv, cwd=cwd, env=env, text=True, bufsize=1,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -272,19 +273,29 @@ class Evidence:
                    for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))]
         for reader in readers:
             reader.start()
-        deadline = time.monotonic() + timeout if timeout is not None else None
+        deadline = started_at + timeout if timeout is not None else None
         ended, timed_out = set(), False
-        while len(ended) < 2:
-            wait = None if timed_out or deadline is None else max(0.0, deadline - time.monotonic())
-            try:
-                name, line, complete = events.get(timeout=wait)
-            except queue.Empty:
-                timed_out = True
+
+        def terminate_for_timeout():
+            nonlocal timed_out
+            timed_out = True
+            if process.poll() is None:
                 try:
                     process.kill()
                 except ProcessLookupError:
                     pass
+
+        while len(ended) < 2:
+            if deadline is not None and time.monotonic() >= deadline and process.poll() is None:
+                terminate_for_timeout()
+            wait = None if timed_out or deadline is None else max(0.0, deadline - time.monotonic())
+            try:
+                name, line, complete = events.get(timeout=wait)
+            except queue.Empty:
+                terminate_for_timeout()
                 continue
+            if deadline is not None and time.monotonic() >= deadline and process.poll() is None:
+                terminate_for_timeout()
             if line is None:
                 ended.add(name)
                 continue
@@ -293,9 +304,25 @@ class Evidence:
                 stdout_consumer(line.rstrip("\r\n"), complete)
             else:
                 stderr_parts.append(line)
-        process.wait()
+        if deadline is None:
+            process.wait()
+        else:
+            remaining = max(0.0, deadline - time.monotonic())
+            try:
+                process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                terminate_for_timeout()
+        if timed_out:
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                terminate_for_timeout()
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired as error:
+                    raise Stage2Error(f"could not reap timed-out process {argv[0]}") from error
         for reader in readers:
-            reader.join()
+            reader.join(timeout=1.0)
         process.stdout.close()
         process.stderr.close()
         stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
