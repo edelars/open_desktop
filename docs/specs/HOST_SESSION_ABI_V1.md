@@ -1,11 +1,11 @@
 # Opt-in host session ABI v1
 
-**Status:** normative design for S3-38f, 2026-11-03. This document and the
-[public header](../../include/open_desktop/session_abi_v1.h) define a contract;
-they do not provide exported symbols, an implementation or runtime acceptance.
-The header is the sole source of C declarations and numeric constants. Swift
-must import it rather than redeclare layouts. Implementations belong in
-`crates/od-host/`; VMHost transport remains in `apps/vmhost/Sources/`.
+**Status:** normative contract; bounded Rust proxy implementation added for
+S3-38f, 2026-11-03. The header is the sole source of C declarations and numeric
+constants. Swift must import it rather than redeclare layouts. The exported
+Rust runtime symbols are in `crates/od-host/src/session_abi_v1.rs`; target ABI,
+runtime and harness gates remain unexecuted. VMHost transport remains in
+`apps/vmhost/Sources/` and is outside this slice.
 
 This contract implements the ownership boundary selected by
 [ADR-0005](../decisions/ADR-0005-persistent-same-code-session.md), with the
@@ -285,12 +285,12 @@ only as an indication that completion has won; wait/drain is still required.
 No terminal delivery is promised after transport loss. No failed or uncertain
 RUN may be retried on a new worker or after reconnect.
 
-This is a header/specification-only change. Static architecture review
-(Astra/high) and independent final review (Sol/high) passed without outstanding
-findings. Local Markdown link targets and whitespace were checked. These are
-contract-only checks; no runtime checks, builds, tests, Python, Mini or M1
-results are claimed. Implementation acceptance still
-requires the lifecycle/failure/isolation gates in ADR-0005, including correct
-publication reuse, owner-thread identity, output immutability on failure,
-early/stale/racing STOP, completion/EOF ordering, descriptor/lease release and
-unchanged v0 regressions. Performance choices require separate measurements.
+The bounded Rust proxy implementation is in `crates/od-host/src/session_abi_v1.rs`;
+VMHost transport integration is a later slice. The exact local lifecycle gates
+and Stage3 harness self-check are pinned but unexecuted. No runtime checks,
+builds, tests, Python, Mini or M1 results are claimed. Implementation acceptance
+still requires the lifecycle/failure/isolation gates in ADR-0005, including
+correct publication reuse, owner-thread identity, output immutability on
+failure, early/stale/racing STOP, completion/EOF ordering, descriptor/lease
+release and unchanged v0 regressions. Performance choices require separate
+measurements. See the [S3-38f report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md).

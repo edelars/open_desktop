@@ -1,6 +1,7 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
 pub mod session;
+mod session_abi_v1;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::ptr::NonNull;

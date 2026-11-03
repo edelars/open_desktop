@@ -7,8 +7,9 @@
 extern "C" {
 #endif
 
-/* Opt-in design contract; declarations do not imply runtime availability.
- * See docs/specs/HOST_SESSION_ABI_V1.md. This does not extend host_abi.h. */
+/* Opt-in ABI contract. Runtime implementation is bounded to one macOS ARM64
+ * S0-09 session; target acceptance remains unverified. This does not extend
+ * host_abi.h. See docs/specs/HOST_SESSION_ABI_V1.md. */
 #define OD_SESSION_ABI_VERSION_V1 UINT32_C(0x00010000)
 #define OD_SESSION_CAP_S0_09_SAME_CODE_V1 UINT64_C(1)
 #define OD_SESSION_MAX_CODE_BYTES_V1 4096

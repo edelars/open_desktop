@@ -67,6 +67,7 @@ SELF_TEST_NAMES = (
     "test_s3_34n_native_register_corpus_gates_are_pinned_once",
     "test_s3_34p_cached_native_register_trace_gates_are_pinned_once",
     "test_s3_34q_retained_hit_reducer_gate_is_pinned_once",
+    "test_s3_38f_session_proxy_gates_are_pinned_once_and_fail_closed",
     "test_s3_34r_cross_thread_idle_handle_gate_is_pinned_once_and_fail_closed",
     "test_s3_34s_memory_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_34t_register_event_gates_are_pinned_once_and_fail_closed",
@@ -210,6 +211,18 @@ LIFECYCLE_TESTS = (
 )
 
 ADDITIONAL_TEST_GATES = (
+    (
+        "s3_38f_session_abi_create_preflight", "local_lifecycle", "od-host",
+        "session_abi_v1::tests::s3_38f_abi_create_preflight_runs_before_map_jit_lease",
+    ),
+    (
+        "s3_38f_session_proxy_stop_ids_destroy", "local_lifecycle", "od-host",
+        "session_abi_v1::tests::s3_38f_proxy_stop_request_ids_and_destroy_busy_are_exact",
+    ),
+    (
+        "s3_38f_session_proxy_fresh_state_lease", "local_lifecycle", "od-host",
+        "session_abi_v1::tests::s3_38f_proxy_reuses_code_with_fresh_state_and_exclusive_lease",
+    ),
     (
         "s3_27d_direct_memory_v2_pc_map", "local_acceptance", "od-jit",
         "memory_load_v2::tests::ir_checked_load_uses_distinct_v2_artifact_and_pc_map",
@@ -1655,6 +1668,7 @@ PROCESS_SOURCE_PATHS = (
 LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/tests/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
+    "crates/od-host/src/session_abi_v1.rs",
     "crates/od-host/src/session.rs",
     "crates/od-host/src/tests/native_register_v1_corpus.rs",
     "tests/cpu/stage3_dword_store_corpus.rs",

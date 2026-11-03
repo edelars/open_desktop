@@ -434,6 +434,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38a | Register-only S0-09 V0 C ABI through run-local eager block dispatcher | Immutable fragment, per-call arena/cache, C ABI lifecycle and local VMHost process regressions; full cache/request ownership and all S3-38 gates remain open |
 | [partial] | S3-38c | Sequential cross-thread V0 handle lifecycle | One idle handle called sequentially from two host threads, second-handle interleaving, pre-run STOP and per-call mapping release; persistent cache and full S3-38 remain open |
 | [partial] | S3-38e | Bounded opt-in local Rust S0-09 session owner | Retains copied code/admission, bounded cache and one executable-memory lease across synchronous calls; no VMHost IPC RUN/session or production MMU integration. Four exact local gates are pinned but unexecuted. См. [implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md) and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
+| [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Adds ABI V1 create/begin/STOP/wait/destroy, fresh CLOEXEC notification descriptors and exact local lifecycle gates. Independent Sol/high static review passed; execution/build/fmt and harness self-check remain deferred. VMHost control V1 and event loop remain the next slice. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
@@ -3982,6 +3983,24 @@ owner, and explicit invalid-entry errors without retry. S3-34dp pins them and
 they remain unexecuted. No performance claim follows. See the
 [S3-38e implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md)
 and [S3-34dp harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md).
+
+#### S3-38f. Rust C ABI proxy for the persistent S0-09 session
+
+Implement the additive `od_session_*_v1` ABI from the public header. One opaque
+proxy owns one dedicated Rust OS thread; that thread alone constructs, executes
+and drops the already thread-affine `Session`. Preserve the `od_fragment_*`
+V0 ABI and lifecycle. Creation performs the first-entry preflight before the
+owner acquires MAP_JIT. Each accepted RUN copies its request, consumes a
+monotonic ID, validates immutable code and RIP, creates a fresh CLOEXEC pipe,
+and gives the owner one request. STOP is invocation-local; the owner publishes
+the terminal result before notifying, and wait consumes it once after signal
+completion. Destroy is BUSY until the accepted invocation is consumed.
+
+The code-only slice adds three exact Rust lifecycle identities and a fail-closed
+Stage3 harness self-check. It does not connect the proxy to VMHost or implement
+the control V1 event loop. The Rust gates and harness self-check are pinned but
+unexecuted under the current deferred-execution instruction. See the
+[S3-38f report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md).
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 

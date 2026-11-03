@@ -1144,6 +1144,25 @@ the harness and Rust gates were not run. Mini/M1 remain deferred. See the
 [implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md)
 and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md).
 
+## S3-38f: Rust session ABI proxy
+
+The additive `od_session_*_v1` symbols are implemented in `od-host` as a
+dedicated-thread proxy for one immutable S0-09 `Session`. The owner thread keeps
+the `!Send`/`!Sync` session and MAP_JIT lease; begin copies each accepted
+request, creates a fresh CLOEXEC completion pipe, and queues at most one RUN.
+The proxy applies monotonic request IDs, invocation-local STOP, one-shot wait
+consumption, output preservation on errors, and BUSY destruction while a run
+remains unconsumed. Legacy `od_fragment_*` remains unchanged.
+
+The exact lifecycle gates are `session_abi_v1::tests::s3_38f_abi_create_preflight_runs_before_map_jit_lease`, `session_abi_v1::tests::s3_38f_proxy_stop_request_ids_and_destroy_busy_are_exact`, and `session_abi_v1::tests::s3_38f_proxy_reuses_code_with_fresh_state_and_exclusive_lease`. The
+`test_s3_38f_session_proxy_gates_are_pinned_once_and_fail_closed` harness
+self-check pins identities, commands, source fingerprint and missing/forged
+evidence rejection. Current expected totals are 318 Rust gates (300 acceptance
++ 18 lifecycle), 336 local steps and 142 self-test names. No Rust, harness,
+build, formatter, layout, Mini or M1 check was executed in this author slice.
+VMHost control V1 and its event loop remain outside this bounded runtime/ABI
+slice. See the [S3-38f report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md).
+
 ## S3-29a: bounded demand-driven flags correctness candidate
 
 Run `cargo test -p od-jit --lib demand_flags_candidate --offline` and

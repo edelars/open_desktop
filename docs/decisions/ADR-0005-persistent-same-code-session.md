@@ -1,7 +1,7 @@
 # ADR-0005: Opt-in persistent same-code VMHost session
 
 - **Date:** 2026-11-03.
-- **Status:** accepted design boundary for the proposed S3-38f slice; not implemented or runtime-validated.
+- **Status:** accepted design boundary; the bounded Rust ABI proxy is implemented, but runtime and VMHost integration remain unvalidated.
 - **Related documents:** [architecture](../ARCHITECTURE.md#6-граница-swift--rust), [project layout](../PROJECT_LAYOUT.md), [Stage 3 plan](../plans/STAGE_3.md), [S3-38e session owner](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md), [completion ADR-0003](ADR-0003-event-driven-vmhost-completion.md), [control v0](../../protocols/control/CONTROL_PROTOCOL_V0.md), [host ABI v0](../specs/HOST_ABI_V0.md).
 
 ## Question
