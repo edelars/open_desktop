@@ -1365,6 +1365,15 @@ must preserve one-read and no-commit-on-failure semantics. The S2-31eb
 Unsupported predicate must share the production status/class envelope without
 changing FILD or adjacent FLD profiles.
 
+## S2-31ec historical ZE/OE/UE on raw FLD m80fp
+
+The existing schema-v2 exact DB28 raw-FLD profile widens only its local
+historical status predicate to `FSW & 0x80c0 == 0`. Expected snapshots retain
+all six prior exception flags; validation rejects SF/ES/B, malformed
+FCW/source/tag state and any profile-control leakage. Preserve the existing
+one-read, raw ten-byte result, rollback and push-on-success contracts. Do not
+change the FILD status predicate or any adjacent FLD profile.
+
 ## S2-38u COMISS memory invalid-only profile
 
 The strict profile identifies exact `0F 2F 00`, one four-byte data read, SSE
@@ -1378,6 +1387,24 @@ retirement, exception metadata and control echoes. Reject cross-profile
 controls, malformed code, tampered results, and JIT/native backend labels.
 Subnormal and NaN mixed-status behavior remains excluded and is tracked in
 [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
+
+## S2-38v UCOMISS memory invalid-only profile
+
+Use a separate immutable profile `s2-long-ucomiss-memory-invalid-rax-v1`
+for exact `0F 2E 00`, one code region, one read-only four-byte data region at
+RAX, budget 1 and stop RIP entry+3. It has an independent
+`ucomiss_memory_invalid_rax_controls` control echo including SSE, CR0.EM,
+CR0.TS, CR4.OSFXSR and CR4.OSXMMEXCPT inputs. Keep the S2-37cr
+`ucomiss_memory_rax_controls` fields and behavior unchanged. Validate actual
+memory bytes with an independent raw-bit oracle. The new profile rejects
+subnormals after a successful read as atomic Unsupported, including
+NaN/subnormal mixtures; QNaN is unordered without new IE, SNaN raises IE.
+Cover IM × OSXMMEXCPT × prior sticky histories, finite/infinity/signed-zero
+relations, prior IE alone, exception results, state suppression,
+schema/result/control/backend tampering and JIT/native denial. Mixed
+NaN/subnormal processing is excluded under
+[ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
+Direct ISA execution tests exercise CPL0–3; fixtures remain Ring0.
 
 ## S2-37dw MULPD m128 memory profile
 

@@ -17842,6 +17842,32 @@ not claimed; broader behavior remains under ISSUE-019. See the [standalone
 report](../reports/S2_31EB_FLD_M80FP_HISTORICAL_IE_DE.md) and [shared
 integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31eb).
 
+## S2-31ec — historical ZE/OE/UE for raw FLD m80fp
+
+Extend only the exact bare Long64 `DB 28` (`FLD m80fp [RAX]`) profile. Its
+local x87 status gate changes from `FSW & 0x80dc == 0` to
+`FSW & 0x80c0 == 0`, admitting any combination of the six historical exception
+flags IE/DE/ZE/OE/UE/PE while continuing to reject SF, ES and B. Keep the
+existing FCW whitelist (`0x037f`, `0x077f`, `0x0b7f`, `0x0f7f`), empty
+destination requirement, selector and segment checks, accepted raw binary80
+classes/tags, exact source bytes, one `read10`, rollback and push-on-success
+behavior. This admits pre-existing sticky flags only; it does not generate
+new ZE/OE/UE. The shared FILD status gate and native/JIT/C ABI/generic/fragment
+routes remain unchanged and closed.
+
+Verification should compare complete state over all 64 historical sticky-flag
+combinations, 34 accepted raw class literals, 8 TOP values and 4 FCWs
+(69,632 cases), including memory and read/span rollback. Reject SF/ES/B and
+malformed source/tag/control states; cover repeated FLD/FNSTSW/FNCLEX/retry,
+schema validation and backend denial. Intel SDM Rev. 093 Vol. 1 §8.1.3.3
+defines the six sticky exception flags and ES/B relationship. Vol. 2A FLD
+states that #IA for an SNaN and #D for a denormal do not occur for the
+double-extended FLD m80fp source, so this slice preserves raw source classes
+without generating those exceptions. Sources: [Vol. 1 §8.1.3.3](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211),
+[Vol. 2A FLD m80fp](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470).
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp),
+[S2-31eb base contract](#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp).
+
 ## S2-38u — exact COMISS memory invalid-only profile
 
 The strict schema-v2 interpreter-only profile admits exact Long64 legacy
@@ -17880,3 +17906,42 @@ workspace all-target offline check and formatting. Sol/high review is clean.
 ISSUE-033 remains an audit of existing mixed NaN/denormal profiles; no
 physical x86 acceptance is claimed. See the [main integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-38u)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38u-comiss-memory-invalid-only-profile).
+
+## S2-38v — exact UCOMISS memory invalid-only profile
+
+Create a separate strict schema-v2 interpreter-only profile for exact Long64
+legacy `0F 2E 00` (`UCOMISS XMM0,m32 [RAX]`), three-byte fetch, budget one and
+stop RIP entry+3. Keep S2-37cr immutable. Require SSE bit 25; full fetch and
+exact-form rejection precede feature/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS
+`#NM`. Require MXCSR supported bits `0xffbf`, reserved bits clear, DAZ=FTZ=0,
+DM/ZM/OM/UM/PM set; IM, RC and prior sticky status may vary. AC=1 is an
+Unsupported pre-read refusal; AC=0 permits unaligned access. Validate
+canonical48 `[RAX,RAX+3]` before exactly one `read4`; span/read failures leave
+state unchanged. Cover CPL0–3 in direct ISA tests.
+
+After successful read, any subnormal in XMM0.low32 or memory m32 is an atomic
+Unsupported result without MXCSR, RFLAGS, RIP or retirement changes, including
+when paired with a NaN. For admitted values, ordered comparisons set CF/ZF/PF
+to `0`, CF, ZF or CF|PF|ZF for greater, less, equal or unordered; clear
+OF/SF/AF and preserve other RFLAGS. QNaN is unordered without new IE; SNaN in
+either operand raises IE, including QNaN+SNaN. Masked IE commits the sticky IE
+and comparison flags. Unmasked IE commits sticky IE, raises `#XM` or arithmetic
+`#UD` per OSXMMEXCPT, and suppresses RFLAGS, RIP and retirement. Prior sticky
+IE alone does not fault. Preserve other MXCSR stickies and all unrelated CPU
+state. Native/JIT/C ABI/generic/fragment routes remain closed. Mixed
+NaN/subnormal handling is outside this slice; ISSUE-033 remains open.
+
+Use an independent raw-bit oracle over actual memory bytes. Cover QNaN/SNaN
+on either side, QNaN+SNaN, IM × OSXMMEXCPT × all 64 prior sticky-status
+histories, finite/infinity/signed-zero relations, prior-only IE, and
+subnormal+NaN refusal. Verify exact fetch/form, prerequisite and AC/span/read
+priority, callback counts, exception metadata, full-state suppression,
+schema/control/result tampering and backend denial. Intel SDM Rev. 093 Vol. 2B
+UCOMISS pp. 4-735–4-736 distinguishes QNaN (no invalid) from SNaN (invalid),
+defines comparison flags, and states that EFLAGS is not updated on unmasked
+SIMD exceptions. Sources: [Vol. 2B UCOMISS](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=743),
+[Vol. 1 §§4.9.2 and 11.5.2.2/11.5.3](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=112).
+See the [Stage 2 plan](../plans/STAGE_2.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
+[S2-37cr base contract](#s2-37cr--bounded-long64-ucomiss-xmm0dword-ptr-rax-m32-memory-profile),
+[S2-38u base profile](#s2-38u--exact-comiss-memory-invalid-only-profile),
+[ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).

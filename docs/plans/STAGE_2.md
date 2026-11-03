@@ -330,6 +330,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dz | Admit historical SF only with pre-existing IE in exact bare D9 10/D9 18/DD 10/DD 18 bounded FST/FSTP m32/m64 stores; preserve conversion and atomic write/commit; native/JIT closed | 73,728-case full-state SF+IE matrix over nine sources; SF-only SNaN, ES/B and source/tag/control refusals, rollback, repeated store/FNSTSW/FNCLEX/retry; four success fixtures plus Unsupported and JIT/native denial; integrated main suites: od-isa 1,923, testkit 455, runner 532, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,985/26,039/340; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31ea | Admit historical SF only with pre-existing IE in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte store and post-write pop; native/JIT closed | 24,576 full-state SF+IE cases across accepted source/tag pairs, signs, FCWs, TOP, C1 and DE/ZE/OE/PE histories; raw SNaN/subnormal preservation, SF-only/ES/B and malformed gates, rollback/repeat/FNSTSW/FNCLEX/retry, schema and backend denial; integrated main suites: od-isa 1,925, testkit 455, runner 535, x86-runner 8+6; workspace/fmt/layout/diff pass, Graphify 12,023/26,124/317; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31eb | Admit historical IE and DE on exact bare DB 28 raw FLD m80fp [RAX]; retain existing raw classes, push behavior and native/JIT denial | 8,704 full-state cases across 34 raw class literals × TOP × FCW × IE/DE/PE; full LongModeState equality, read/span rollback with FSW 0x0423 and DB28/FNSTSW/FNCLEX composition; schema-v2 and backend denial; Sol/high clean; author checks: ISA 5, testkit 455, both runner regressions 1, fmt/workspace check/Graphify pass; no physical x86 acceptance |
+| [ ] | S2-31ec | Admit historical ZE/OE/UE with IE/DE/PE only in exact bare DB 28 raw FLD m80fp [RAX]; preserve raw classes and push; native/JIT closed | S2-31eb gate widens locally from `0x80dc` to `0x80c0`; admit all six historical exception flags, reject SF/ES/B; do not change shared FILD gate |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -662,6 +663,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38s | Exact Long64 `MINPS XMM0,m128 [RAX]` memory profile with packed unmasked IM/DM lane events; strict schema-v2 and interpreter-only | S2-37dc masked memory, S2-38k packed register policy, S2-38q/r memory/backend patterns; 2,048 lane-event/mask cases, three literal fixtures, memory-RHS oracle, #GP(0) misalignment/noncanonical cases, SSE-only gate, tampering/backend denial; integrated main suites: od-isa 1,923, testkit 455, runner 532, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,985/26,039/340; clean Sol/high review after oracle fix; no physical x86 acceptance |
 | [x] | S2-38t | Exact Long64 MAXPS XMM0,m128 [RAX] memory profile with packed unmasked IM/DM lane events; strict schema-v2 and interpreter-only | 2,316 fixtures: 2,048 lane-event/mask + 256 RC/sticky + 12 special/priority cases; memory-RHS oracle, #GP(0) alignment/span and gate-fault priority, callback/result tampering; integrated main suites: od-isa 1,925, testkit 455, runner 535, x86-runner 8+6; workspace/fmt/layout/diff pass, Graphify 12,023/26,124/317; clean Sol/high review after correcting oracle priority and source citation; no physical x86 acceptance |
 | [x] | S2-38u | Exact Long64 COMISS XMM0,m32 [RAX], invalid-only unmasked-IE profile; post-read subnormal operands are Unsupported; interpreter-only | 1,024 NaN side/class × IM × OSXMMEXCPT × old-sticky cases; finite/infinity/zero relations, pre-read gates, AC/span/read rollback, schema/result/backend tampering and five fixtures; integrated main: ISA COMISS 9, testkit 455, runner 129+537, workspace/fmt pass; Graphify 12,054/26,189/366; clean Sol/high review; ISSUE-033 remains an audit; no physical x86 acceptance |
+| [ ] | S2-38v | Exact Long64 UCOMISS XMM0,m32 [RAX], invalid-only unmasked-IE profile; post-read subnormal operands are Unsupported; separate immutable schema-v2 profile, interpreter-only | S2-37cr memory UCOMISS + S2-38u invalid-only controls; CPL0–3, QNaN does not raise IE, SNaN does, any subnormal refuses post-read; do not modify S2-37cr behavior |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -18292,6 +18294,25 @@ integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31eb),
 [standalone report](../reports/S2_31EB_FLD_M80FP_HISTORICAL_IE_DE.md), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31eb-historical-ie-de-on-raw-fld-m80fp).
 
+#### S2-31ec — historical ZE/OE/UE for raw FLD m80fp
+
+Extend the exact bare Long64 `DB 28` (`FLD m80fp [RAX]`) profile after S2-31eb.
+Widen only its local status predicate from `FSW & 0x80dc == 0` to
+`FSW & 0x80c0 == 0`, admitting historical IE/DE/ZE/OE/UE/PE in any combination
+and continuing to reject SF/ES/B. Retain the FCW whitelist, Empty destination,
+selectors/segments, accepted raw classes/tags, ten raw bytes, one `read10`, and
+atomic read-then-push. Do not change the shared FILD predicate or generate new
+exceptions from the raw m80fp source. Native/JIT stay closed.
+
+Use 64 sticky-flag histories × 34 accepted raw literals × 8 TOP values × 4
+FCWs (69,632 complete-state cases). Cover SF/ES/B and malformed source/tag/
+control rejection, span/read rollback, callback count, repeated
+FLD/FNSTSW/FNCLEX/retry, schema and backend denial. Source: Intel SDM Rev. 093
+Vol. 1 §8.1.3.3 and Vol. 2A FLD m80fp pp. 3-352–3-353 ([Vol. 1 PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211),
+[Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp),
+[S2-31eb base contract](../specs/CPU_CONTRACT.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp).
+
 #### S2-38u — exact COMISS memory invalid-only profile
 
 Add a strict schema-v2 interpreter-only profile for exact Long64 legacy
@@ -18337,3 +18358,38 @@ mixed NaN/denormal profile audit remains open under ISSUE-033. See the [main
 integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-38u),
 [standalone report](../reports/S2_38U_COMISS_MEMORY_INVALID_ONLY.md), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38u-comiss-memory-invalid-only-profile).
+
+#### S2-38v — exact UCOMISS memory invalid-only profile
+
+Create a separate immutable strict schema-v2 interpreter-only profile for
+exact Long64 legacy `0F 2E 00` (`UCOMISS XMM0,m32 [RAX]`), three-byte fetch,
+budget one and stop RIP entry+3. Preserve S2-37cr. Require SSE bit 25; full
+fetch and exact-form rejection precede feature/CR0.EM/CR4.OSFXSR `#UD`, then
+CR0.TS `#NM`. MXCSR must have supported bits `0xffbf`, DAZ=FTZ=0 and
+DM/ZM/OM/UM/PM=1; IM, RC and old sticky flags may vary. AC=1 is pre-read
+Unsupported; AC=0 permits unaligned data. Canonical48 span `[RAX,RAX+3]`
+precedes one `read4`; span/read faults commit no state. Exercise CPL0–3 in
+direct ISA tests.
+
+After a successful read, a subnormal in either operand yields atomic
+Unsupported, even if another operand is NaN. For admitted operands, preserve
+raw binary32 comparisons and COMISS-style flags. QNaN is unordered without a
+new IE; SNaN in either position raises IE, including QNaN+SNaN. Masked IE
+commits sticky IE and comparison flags. Unmasked IE commits IE and raises
+`#XM` or arithmetic `#UD` per OSXMMEXCPT without changing RFLAGS/RIP or
+retiring. Prior sticky IE alone does not fault. Preserve other stickies and
+unrelated state. Do not include mixed NaN/subnormal semantics; ISSUE-033 stays
+open. Keep native/JIT/C ABI/generic/fragment execution closed.
+
+Use an independent integer/raw-bit oracle over memory bytes. Cover both NaN
+classes/sides, QNaN+SNaN, IM × OSXMMEXCPT × 64 old sticky histories,
+finite/infinity/signed-zero relations, prior-only IE, and subnormal+NaN
+refusals; include fetch/gate/AC/span/read ordering, callback counts, exception
+metadata, state suppression, schema/control/result tampering, backend denial
+and literal fixtures. Source: Intel SDM Rev. 093 Vol. 2B UCOMISS pp. 4-735–
+4-736 ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=743)); Vol. 1 §§4.9.2, 11.5.2.2 and
+11.5.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=112)). See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
+[S2-37cr base](../specs/CPU_CONTRACT.md#s2-37cr--bounded-long64-ucomiss-xmm0dword-ptr-rax-m32-memory-profile),
+[S2-38u base](../specs/CPU_CONTRACT.md#s2-38u--exact-comiss-memory-invalid-only-profile),
+[ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
