@@ -23974,7 +23974,15 @@ caller XMM/MXCSR preservation without FXRSTOR; and a ptraced tracee with INT3
 immediately at E+5. It validates SIGTRAP source and exact emitted bytes,
 captures raw RIP E+6 and records the one-byte normalization to E+5, then
 resumes the tracee to post-observations and normal exit. Raw JSON is saved below
-ignored `work/stage2/s2-39k-fxsave64/` only after successful capture.
+ignored `work/stage2/s2-39k-fxsave64/`. Prerequisite failures before the first
+instruction-region attempt remain `not_run`; attempted execution failures are
+`rejected` and retain available current-run image, guard, and observation data,
+the raw wait status and its decoded signal/exit, and any completed prior
+repetitions. A verified INT3 marker snapshot remains separate from a later
+stop snapshot; failed CONT/wait or GETREGS/GETSIGINFO reads do not reuse fields
+from an earlier stop. Child affinity or PTRACE_TRACEME exits before entry are
+recorded as setup-level `not_run`; if earlier repetitions completed, the
+overall incomplete run is `rejected` and those repetitions remain present.
 
 The validator checks evidence schema and hashes, literal sequence and raw
 emitted code, A/B/A/B order, addresses, permissions, guard brackets, RAX,
@@ -23986,13 +23994,16 @@ changed compared bytes, missing repetitions, guard changes, malformed
 observations, and wrong stops.
 
 Validation on Darwin arm64: `cargo fmt --all -- --check`; `cargo test -p
-od-testkit --offline` (473 passed, including 12 FXSAVE64 evidence tests);
+od-testkit --offline` (476 passed, including 15 FXSAVE64 evidence tests);
 `cargo check -p od-x86-runner --offline`;
 `cargo test -p od-x86-runner --offline` (14 passed); Graphify update; direct
 clang ELF assembly/disassembly of the `global_asm!` source; and
 `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
 --offline`. The Linux target `cargo check` passes for all targets after the ISSUE-029 fix;
-it type-checks but does not link the final runner binary. A current compiler
+it type-checks but does not link the final runner binary. A subsequent Linux-target
+`cargo build` reached linking but failed because Darwin `cc` invoked Apple `ld`,
+which rejects GNU flags (`--as-needed`, `-Bstatic`, `--gc-sections`, `-z`); no
+Linux runner ELF was produced. A current compiler
 raw-pointer lint in the S2-39k setup was satisfied with an explicit mutable
 reference to the existing XMM input array field. The two
 `native_v2.rs` schema-v2 literals now explicitly initialize the 142 optional
@@ -24003,8 +24014,11 @@ metadata `.git` pointer as an unmapped root file.
 
 No final linked Linux oracle binary inspection, Linux runtime, ptrace oracle
 execution, or physical/hardware observation occurred on this host; each remains
-`not_run`. Initial Sol/high review found
+`not_run`. Testkit regressions round-trip completed plus partial rejected
+evidence, verify pre-entry setup classification, exercise cleared snapshots
+when register/siginfo reads or a new wait fail, and reject inconsistent raw
+wait/exit/signal data. Fresh Sol/high review of the final code and protocol
+found no remaining findings. Initial Sol/high review found
 validator bypasses for `not_run` pass status, CPUID FXSR/SSE,
 canonical/overlapping observation spans, and raw MXCSR_MASK consistency. This
-follow-up closes those and adds regression coverage; fresh independent
-code/ABI review remains outstanding. Parent S2-39 remains open.
+follow-up closes those and adds regression coverage. Parent S2-39 remains open.
