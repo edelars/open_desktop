@@ -9027,3 +9027,50 @@ were not run. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38av--exact-cvttsd2si-m64-memory-profile-with-unmasked-exceptions)
 and
 [plan](../../../../docs/plans/STAGE_2.md#s2-38av--exact-legacy-long64-cvttsd2si-eaxqword-ptr-rax-with-unmasked-exceptions).
+
+
+## S2-38aw — proposed CVTPS2DQ m128 memory unmasked profile
+
+Pending profile `s2-long-cvtps2dq-memory-unmasked-rax-v1` reserves exact
+`66 0f 5b 00` (`CVTPS2DQ XMM0,m128 [RAX]`) with separate immutable
+`cvtps2dq_m128_unmasked_controls`. No fixtures or execution evidence are added by
+this contract. Preserve S2-37bv masked fixtures and their digests.
+
+Planned literals cover exact success with an INT32_MIN lane, masked IE/PE,
+mixed-lane IE-before-PE behavior under IM/PM combinations, both SIMD delivery
+mappings, old-flags-only success, gates and aligned AC=1 success. Use a differing
+XMM0 canary and a read-only 16-byte memory RHS. Round lanes by MXCSR.RC; IM=0 with
+any IE suppresses new PE from other lanes without clearing old PE and preserves
+all XMM0/RIP/retirement. A separate raw-u32 actual-interpreter oracle must cover
+81 ordered lane classes ×4 RC×64 sticky×4 IM/PM×2 deliveries =165,888 planned
+cases plus numerical/control vectors. These counts are acceptance targets.
+
+Packed m128 operands require 16-byte alignment: 15 offsets ×4 CPL×2 AC produce
+120 `#GP(0)` cases, while aligned AC0/1 are admitted. Fetch/span/alignment and
+gate collisions belong to generated runner/direct ISA checks where needed;
+read counts and injected read-error rollback require direct GuestMemory tests.
+Unreadable/short mappings are rejected by the schema. Native/JIT/generic/fragment/
+C ABI denial must exercise real entrypoints. Provenance: Intel SDM Rev. 093
+Vol. 2A CVTPS2DQ pp. 3-225–3-227, Vol. 1 §§11.5.2.1–2, 11.5.3.1–3/Table 14-21,
+Vol. 3A §16.1.3/Table 16-1. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38aw--exact-cvtps2dq-m128-memory-profile-with-unmasked-exceptions),
+[fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38aw-cvtps2dq-m128-memory-unmasked-profile)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-38aw--exact-legacy-long64-cvtps2dq-xmm0-m128-rax-with-unmasked-exceptions).
+
+## S2-38ax — proposed CVTTPS2DQ m128 memory unmasked profile
+
+Pending profile `s2-long-cvttps2dq-memory-unmasked-rax-v1` reserves exact
+`f3 0f 5b 00` with separate `cvttps2dq_m128_unmasked_controls`. Preserve S2-37bu
+masked fixtures. The packed memory/alignment, IE-before-PE, all-lane suppression,
+165,888-case matrix and literal/generated/direct boundaries described for
+[S2-38aw](#s2-38aw--proposed-cvtps2dq-m128-memory-unmasked-profile) apply, with one
+arithmetic difference: truncate every lane TowardZero independently of MXCSR.RC.
+Require identical result/new-event behavior across RC, both IE/PE lane orders,
+all supported mask/FTZ samples and aligned AC0/1. No scalar AC-refusal rule applies.
+
+No implementation, fixture or physical x86 evidence is claimed. Use Intel SDM
+Rev. 093 Vol. 2A **CVTTPS2DQ pp. 3-249–3-251** in each future fixture provenance,
+with the shared Vol. 1/3A sources above. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ax--exact-cvttps2dq-m128-memory-profile-with-unmasked-exceptions),
+[fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38ax-cvttps2dq-m128-memory-unmasked-profile)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-38ax--exact-legacy-long64-cvttps2dq-xmm0-m128-rax-with-unmasked-exceptions).

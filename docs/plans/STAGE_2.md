@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-На базовом main `334eaef` последний завершённый срез — S2-38ar DIVPD: точный legacy m128 memory-профиль с unmasked исключениями, immutable schema-v2 controls, actual-memory-RHS oracle и interpreter-only dispatch. Сводные результаты затронутых suites, workspace check, fmt, Graphify и независимого Sol/high review зафиксированы в [отчёте этапа](../reports/STAGE_2_REPORT.md#main-integration-s2-38aq-and-s2-38ar). Полный workspace test suite, `od-x86-runner` и физический x86 не запускались; native/JIT/C ABI/generic/fragment пути остаются закрыты. ISSUE-019 остаётся открытым для более широкого x87/native acceptance, ISSUE-025 — для RCPSS/RCPPS tiny-result threshold, ISSUE-033 — для аудита прежних mixed NaN/denormal COMISS-профилей; Этап 2 остаётся открытым. Предыдущие срезы и отдельные результаты описаны в [отчёте](../reports/STAGE_2_REPORT.md).
+Последний завершённый локальный CPU-срез — S2-38av CVTTSD2SI: точный legacy m64→r32 memory-профиль с TowardZero независимо от RC и unmasked IE/PE (implementation `ad4fa37`, документация `cb79f5b`). Результаты независимого raw-u64 actual-memory oracle, focused ISA/runner/host checks, полного od-testkit, workspace check, fmt, Graphify и Sol/high review зафиксированы в [отчёте этапа](../reports/STAGE_2_REPORT.md#s2-38av--cvttsd2si-eax-m64-memory-unmasked-exceptions). Полный od-runner/workspace test suite, `od-x86-runner` и физический x86 для этого среза не запускались; native/JIT/C ABI/generic/fragment пути остаются закрыты. Следующие S2-38aw/ax ниже заданы только pending-контрактами. ISSUE-019 остаётся открытым для более широкого x87/native acceptance, ISSUE-025 — для RCPSS/RCPPS tiny-result threshold, ISSUE-033 — для аудита прежних mixed NaN/denormal COMISS-профилей; Этап 2 остаётся открытым. Предыдущие срезы и отдельные результаты описаны в [отчёте](../reports/STAGE_2_REPORT.md).
 
 Предыдущий завершённый срез S2-37dd — exact legacy SQRTPS XMM0,m128 `[RAX]` (`0F 51 00`): SSE bit 25, полный fetch, обязательное 16-byte alignment при AC=0/1, canonical48 span и ровно один read16. Результат строится только по четырём memory lanes; masked-only admission допускает все RC и прежние sticky flags, а binary32 integer sqrt агрегирует IE|DE|PE. Focused ISA 3/3; od-isa 1736, od-testkit 454, runner 112 unit + 485 fixture; workspace all-target check, fmt/layout/Graphify и независимый Sol/high review прошли. Первый полный workspace test исчерпал место (`No space left on device`); после очистки только disposable target relevant component suites прошли. Физическая x86-проверка не заявляется. Interpreter-only; native/JIT/C ABI/generic/fragment и unmasked/#XM path закрыты.
 
@@ -695,6 +695,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38at | Exact Long64 `CVTSD2SI EAX,qword ptr [RAX]`, unmasked IE/PE m64→r32 memory profile; separate immutable schema-v2, interpreter-only | Independent raw-u64 memory-RHS oracle: 35 vectors × 4 RC × 64 sticky histories × 4 IM/PM × 2 OSXMMEXCPT = 71,680 actual-interpreter cases, plus 32 DM/OM/UM/ZM/FTZ samples; eight literal fixtures; fetch-span/gate/AC precedence, writable-map rejection, old-RAX high-address zero-extension, one-read/read rollback, strict schema/tamper/profile isolation, and real fragment/C ABI denial; targeted ISA 1, od-testkit 461, runner focused suites 2+1, host denial 1; workspace check/fmt/diff passed; full od-runner suite not run; clean independent Sol/high review; no physical x86 acceptance; [report](../reports/STAGE_2_REPORT.md#s2-38at--cvtsd2si-eax-m64-memory-unmasked-exceptions) |
 | [x] | S2-38au | Exact Long64 `CVTTSS2SI EAX,dword ptr [RAX]`, TowardZero independent of RC; unmasked IE/PE m32→r32 memory profile; separate immutable schema-v2, interpreter-only | 53,248 actual-interpreter oracle cases +64 DM/OM/UM/ZM/FTZ samples; eight literals; direct fetch/gate/AC/span/read rollback and real generic/fragment/C ABI denials; od-testkit 461; workspace/fmt/diff passed; independent Sol/high review clean; full od-runner suite not run; no physical x86 acceptance; [report](../reports/STAGE_2_REPORT.md#s2-38au--cvttss2si-eax-m32-memory-unmasked-exceptions) |
 | [x] | S2-38av | Exact Long64 `CVTTSD2SI EAX,qword ptr [RAX]`, TowardZero independent of RC; unmasked IE/PE m64→r32 memory profile; separate immutable schema-v2, interpreter-only | Independent raw-u64 actual-memory oracle: 33 vectors × 4 RC × 64 sticky histories × four IM/PM combinations × both OSXMMEXCPT deliveries = 67,584 cases, plus 32 focused samples; eight literals; direct fetch/gate/AC/span/read rollback, old-RAX/zero-extension, real fragment/C ABI denial; od-testkit 461, runner focused tests, workspace/fmt/diff passed; Sol/high review clean; full od-runner suite not run; no physical x86 acceptance; [report](../reports/STAGE_2_REPORT.md#s2-38av--cvttsd2si-eax-m64-memory-unmasked-exceptions) |
+| [ ] | S2-38aw | Exact Long64 `CVTPS2DQ XMM0,m128 [RAX]`, RC-based packed f32→i32, unmasked IE/PE; separate immutable interpreter-only profile | S2-37bv masked memory + S2-37af register unmasked; pending contract, 81 lane-class distributions × 4 RC × 64 sticky × 4 IM/PM × 2 delivery = 165,888 planned interpreter cases; alignment/CPL/AC, packed IE-before-PE, schema/backend isolation; [contract](#s2-38aw--exact-legacy-long64-cvtps2dq-xmm0-m128-rax-with-unmasked-exceptions) |
+| [ ] | S2-38ax | Exact Long64 `CVTTPS2DQ XMM0,m128 [RAX]`, TowardZero independent of RC, unmasked IE/PE; separate immutable interpreter-only profile | S2-37bu masked memory + S2-37ag register unmasked; pending contract, same 165,888-case product plus RC-invariance/numeric checks; [contract](#s2-38ax--exact-legacy-long64-cvttps2dq-xmm0-m128-rax-with-unmasked-exceptions) |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -19512,3 +19514,100 @@ See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38av--exact-cvttsd2si-m64-memory-profile-with-unmasked-exceptions)
 and
 [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38av-cvttsd2si-m64-memory-unmasked-profile).
+
+
+## S2-38aw — exact legacy Long64 CVTPS2DQ XMM0, m128 [RAX] with unmasked exceptions
+
+Bases: completed masked-memory S2-37bv and register-unmasked S2-37af. This is a
+pending bounded interpreter slice, not completion of parent S2-38 or physical x86
+acceptance. Reserve profile `s2-long-cvtps2dq-memory-unmasked-rax-v1` and immutable
+`cvtps2dq_m128_unmasked_controls` input/result echo: `sse2_available`, `cr0_em`,
+`cr0_ts`, `cr4_osfxsr`, `cr4_osxmmexcpt`. Preserve the masked profile wire shape,
+digest and wrapper. Admit only exact Long64 `66 0F 5B 00`, budget one, stop RIP
+entry+4, and the source memory at RAX; no additional opcode/addressing forms.
+
+Apply the established packed-memory policy: fetch the complete instruction and
+check canonical48 `[RIP,RIP+3]` before prerequisite SSE2/EM/OSFXSR `#UD`, then TS
+`#NM`. After successful gates, check canonical48 `[RAX,RAX+15]`, then 16-byte
+alignment, then perform one read16. Misalignment is `#GP(0)` for every CPL0–3 and
+AC0/1. Aligned AC=0 and AC=1 are both admitted. RAX is preserved. Fetch/gate/span/
+alignment/read failures preserve the entire CPU state; direct tests must prove no
+data callback before successful admission and full rollback on injected read error.
+
+Each of the four raw binary32 lanes rounds using MXCSR.RC before signed-i32 range
+checking. A masked invalid lane yields `0x80000000` and IE; valid exact `-2^31` has
+the same bits without IE. Valid inexact lanes contribute PE; invalid lanes do not.
+If any new IE is unmasked, commit new IE only, preserve prior PE and all old sticky
+bits, suppress new PE from other lanes, and preserve the complete XMM0/RIP/retirement.
+If IE is masked, collect PE from valid inexact lanes even when another lane is
+invalid. An unmasked PE then commits the new IE/PE status but suppresses the whole
+destination and retirement. Deliver `#XM`19 or SIMD `#UD`6 via OSXMMEXCPT; old flags
+alone do not trigger an event. With no new unmasked event, write all four result
+lanes atomically, advance RIP by four and retire once. Preserve other architectural
+state and source memory. DAZ=0, supported MXCSR mask `0xffbf`, reserved bits clear;
+all exception-mask bits, all RC/sticky values and both FTZ values are admitted.
+Subnormal conversions do not raise DE; FTZ has no effect.
+
+Acceptance requires an independent integer-only raw-u32 oracle reading actual
+memory RHS, with an XMM0 canary different from those bytes. Cross all 81 ordered
+`{exact, IE, PE}^4` lane distributions with four RC values, 64 old sticky histories,
+four IM/PM settings and both deliveries: **165,888 planned actual-interpreter
+cases**. The 81 classes comprise 1 exact, 15 IE-only, 15 PE-only and 50 mixed cases.
+Use exact/invalid/inexact representatives (`3f800000`, `7fc00042`, `3fc00000`) and
+separate numeric vectors: ties and neighbors around ±0.5, ±1.5/±2.5, all six
+representable signed-i32 boundary encodings `4effffff`, `4f000000`, `4f000001`,
+`ceffffff`, `cf000000`, `cf000001`, signed zeros, normals/subnormals, infinities and
+QNaN/SNaN. These six boundary encodings are integral; do not invent fractional
+binary32 inputs near ±2^31. Explicitly compare `[IE, PE, exact, exact]` and
+`[PE, IE, exact, exact]`, including old PE preservation and both delivery mappings.
+Sample DM/OM/UM/ZM both ways and both FTZ values, proving no extra conversion event.
+
+Require all 15 misalignment offsets × four CPL values × AC0/1 (120 cases), aligned
+AC0/1 × CPL0–3 success/event cases, canonical endpoints and checked-add overflow,
+last-valid instruction RIP `0x00007ffffffffffc` and first-crossing `...fffd`, and
+fault collisions with prerequisite gates. Direct GuestMemory tests prove one
+read16 on success/IE/PE, zero reads on admission failures, and injected read-error
+rollback. Literals cover schema-expressible success, IE/PE, mixed-lane priority,
+stale-flags-only success, gate faults and aligned AC=1. Fetch/span/alignment cases
+may use generated runner/direct tests; unreadable/short mappings are schema
+rejections, not injected read-error fixtures. Test strict controls/result tampering,
+masked/profile cross-denial and real generic/native/JIT/fragment/C ABI entrypoints.
+Keep production semantics in od-isa and the independent oracle in testkit/runner.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTPS2DQ pp. 3-225–3-227; Vol. 1 §§11.5.2.1–2,
+11.5.3.1–3 and Table 14-21; Vol. 3A §16.1.3/Table 16-1. Official PDF links and
+normative details: [CPU contract](../specs/CPU_CONTRACT.md#s2-38aw--exact-cvtps2dq-m128-memory-profile-with-unmasked-exceptions).
+Wire/fixture constraints: [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38aw-cvtps2dq-m128-memory-unmasked-profile).
+Status: pending implementation, fixtures, execution evidence and independent review.
+
+## S2-38ax — exact legacy Long64 CVTTPS2DQ XMM0, m128 [RAX] with unmasked exceptions
+
+Bases: completed masked-memory S2-37bu and register-unmasked S2-37ag. Reserve the
+separate immutable profile `s2-long-cvttps2dq-memory-unmasked-rax-v1`, exact bytes
+`F3 0F 5B 00`, and `cvttps2dq_m128_unmasked_controls` input/result echo containing
+exactly `sse2_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`, `cr4_osxmmexcpt`.
+Preserve the existing masked profile wire shape, digest and wrapper.
+
+The [S2-38aw packed memory, MXCSR, exception-commit and isolation requirements](#s2-38aw--exact-legacy-long64-cvtps2dq-xmm0-m128-rax-with-unmasked-exceptions)
+apply with one arithmetic change: every lane uses **TowardZero independently of
+MXCSR.RC**, then checks the signed-i32 range. Preserve RC. Both results and newly
+raised flags/events must be identical across all four RC settings, including
+fractional values, ties and subnormals. Unmasked IE from any lane still suppresses
+new PE from other lanes; masked IE does not suppress their PE. The whole XMM0,
+RIP and retirement are preserved on either unmasked event.
+
+The separate raw-u32 memory-RHS oracle must exercise the same **165,888 planned
+actual-interpreter class-product cases** and additional numeric/control cases,
+including both orders of IE/PE lanes and exact `-2^31` versus indefinite. Do not
+reuse the production conversion helper or host FP. Retain all 120 CPL×AC
+misalignment cases with `#GP(0)`, aligned AC0/1 admission, one read16, direct
+read-error rollback, complete fetch/gate/span precedence and real backend-denial
+checks. Scalar AC refusal does not apply to this packed m128 profile. Literal
+fixtures and generated/direct tests follow the same expressibility boundaries;
+provenance must cite CVTTPS2DQ, not CVTPS2DQ or a scalar conversion instruction.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; the same Vol. 1/3A
+exception and alignment sections. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ax--exact-cvttps2dq-m128-memory-profile-with-unmasked-exceptions)
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ax-cvttps2dq-m128-memory-unmasked-profile).
+Status: pending implementation, fixtures, execution evidence and independent review.

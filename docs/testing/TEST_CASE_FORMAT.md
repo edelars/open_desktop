@@ -1978,3 +1978,84 @@ exactly one read8 on a successful data access, no data callback on fetch/gate/AC
 refusal, and full RAX/RIP/MXCSR/retirement rollback on injected read errors. Unreadable
 or short mappings remain schema-rejection cases. Cover the AC=1 collisions above,
 aligned/unaligned AC=0 sources, and both FTZ values.
+
+
+## S2-38aw CVTPS2DQ m128 memory unmasked profile
+
+Reserve immutable schema-v2 profile `s2-long-cvtps2dq-memory-unmasked-rax-v1` for
+Long64 exact code `66 0f 5b 00`, one executable mapping, one read-only 16-byte data
+mapping at RAX, budget one and stop RIP entry+4. Keep the existing masked
+`s2-long-cvtps2dq-memory-rax-v1` shape/digest unchanged. The required
+`cvtps2dq_m128_unmasked_controls` input and result echo contain exactly five
+booleans: `sse2_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`, `cr4_osxmmexcpt`.
+Reject missing/unknown/cross-profile controls, writable/unreadable/short data
+mappings and mismatched result echoes. Require MXCSR mask `0xffbf`, reserved bits
+clear and DAZ=0; admit all RC/status/exception-mask bits and FTZ0/1.
+
+The input expected-exit validator and result oracle must model canonical48 fetch
+span `[RIP,RIP+3]` before SSE2/EM/OSFXSR `#UD`, then TS `#NM`, before data span
+`[RAX,RAX+15]`, 16-byte alignment and one read16. Misalignment gives `#GP(0)` at
+every CPL/AC; aligned AC=0 and AC=1 are valid. Check span overflow before access.
+Fetch/gate/span/alignment/read failures compare the entire unchanged CPU state
+and source memory. Successful conversion writes all XMM0 lanes and retires once;
+RAX remains unchanged. XMM0 initial canaries must differ from the memory RHS.
+
+The independent integer-only raw-u32 memory oracle rounds each lane using RC,
+then checks i32 range. Masked invalid yields `0x80000000` with IE; exact `-2^31`
+raises no IE. Aggregate invalid before valid-inexact PE across lanes. IM=0 with
+any new IE commits only IE, preserves old PE and suppresses the entire XMM0/RIP/
+retirement update. With IE masked, valid inexact lanes add PE even if another
+lane is invalid; PM=0 then produces an event with the accumulated IE/PE status.
+OSXMMEXCPT selects `#XM`19 or SIMD `#UD`6. Old flags alone do not fault; subnormals
+raise no DE and FTZ is irrelevant. Compare event-specific MXCSR and full XMM0.
+
+Require all 81 ordered `{exact, IE, PE}^4` distributions ×4 RC×64 sticky×4 IM/PM×2
+deliveries = 165,888 planned actual-interpreter cases. Add representable binary32
+i32 neighbors, ties, NaNs, infinities, zeros, normals/subnormals and both IE/PE
+lane orders. Separate samples exercise every DM/OM/UM/ZM bit both ways and FTZ0/1.
+Literals cover schema-expressible exact success (including valid INT32_MIN),
+masked IE/PE, mixed IM=0 suppression, mixed IM=1/PM=0, mixed fully masked, both
+event deliveries, stale-flags-only success, prerequisite `#UD/#NM` and aligned
+AC=1 success. Fetch/span/alignment/collision cases can use generated runner and
+direct ISA tests; do not require literal cases a strict mapping cannot express.
+
+Direct GuestMemory tests prove one read16 on success and IE/PE events, no callback
+before admitted access, and full rollback on injected read errors. Include all
+15 nonzero alignment offsets ×CPL0–3×AC0/1 (120 faults), aligned AC0/1 at every
+CPL, canonical data endpoints/overflow and fetch RIP `...fffc`/`...fffd` with gate
+collisions. An unreadable or short mapping is a schema error, not a runtime
+injected-read fixture. Controls/result/memory/status tampering and masked/profile
+cross-denial must fail. Test real native/JIT/generic/fragment/C ABI entrypoints.
+
+Status: pending implementation, fixtures and independent review; no execution or
+physical acceptance evidence is claimed. Provenance: Intel SDM Rev. 093 Vol. 2A
+CVTPS2DQ pp. 3-225–3-227; the exception/alignment sources and official PDF links
+are in the [CPU contract](../specs/CPU_CONTRACT.md#s2-38aw--exact-cvtps2dq-m128-memory-profile-with-unmasked-exceptions).
+See the [plan](../plans/STAGE_2.md#s2-38aw--exact-legacy-long64-cvtps2dq-xmm0-m128-rax-with-unmasked-exceptions).
+
+## S2-38ax CVTTPS2DQ m128 memory unmasked profile
+
+Reserve distinct profile `s2-long-cvttps2dq-memory-unmasked-rax-v1` for exact Long64
+`f3 0f 5b 00`, one executable mapping and one read-only m128 mapping at RAX,
+budget one and stop RIP entry+4. Preserve masked
+`s2-long-cvttps2dq-memory-rax-v1`. Require a separate immutable
+`cvttps2dq_m128_unmasked_controls` input/result echo with `sse2_available`,
+`cr0_em`, `cr0_ts`, `cr4_osfxsr`, `cr4_osxmmexcpt`; do not accept the CVTPS2DQ
+control field in this profile.
+
+The [S2-38aw schema, memory, packed exception and acceptance rules](#s2-38aw-cvtps2dq-m128-memory-unmasked-profile)
+apply, with **TowardZero for every lane regardless of RC**. Preserve RC and
+prove invariant result/new-event behavior across all four RC settings. Keep
+unmasked IE-before-PE aggregation and complete XMM0 suppression; preserve old
+sticky flags. Aligned AC=1 is admitted; misalignment remains `#GP(0)` regardless
+of CPL/AC. Use a separate independent raw-u32 memory oracle, the full 165,888-case
+class product, numeric boundaries/ties/subnormals, both IE/PE permutations,
+unrelated masks/FTZ samples, 120 misalignment cases and direct read-count/rollback
+coverage. Literals versus generated/direct tests follow the expressibility
+boundary above. All native/JIT/generic/fragment/C ABI routes remain closed.
+
+Status: pending implementation, fixtures and independent review. Provenance:
+Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; use those instruction pages
+rather than scalar CVTTSS2SI/CVTTSD2SI or RC-based CVTPS2DQ references. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ax--exact-cvttps2dq-m128-memory-profile-with-unmasked-exceptions)
+and [plan](../plans/STAGE_2.md#s2-38ax--exact-legacy-long64-cvttps2dq-xmm0-m128-rax-with-unmasked-exceptions).
