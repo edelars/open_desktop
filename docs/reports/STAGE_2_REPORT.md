@@ -23521,3 +23521,56 @@ On combined main, `cargo test -p od-isa -p od-testkit -p od-runner --offline
 also passed. Graphify contains 12,681 nodes / 29,485 edges / 327 communities.
 The independent merged-integration review found no lost dispatch, schema,
 validator, fixture or rounding checks. Physical x86 acceptance was not run.
+
+## S2-38aq — DIVPS m128 memory unmasked exceptions
+
+Implemented exact Long64 `0F 5E 00` DIVPS XMM0,m128 `[RAX]` as a separate
+immutable schema-v2 interpreter profile with SSE bit 25 and an independent
+raw-u32 rational oracle using the actual memory RHS. Per-lane IE→ZE→DE
+priority is applied before cross-lane OR; any original SNaN raises IE,
+including when a QNaN is selected as the result, while QNaN suppresses
+same-lane lower-priority ZE/DE. Eleven literal fixtures cover NaN/invalid,
+ZE, inexact tiny, gates, alignment and fetch/data-span faults. The independent
+actual-interpreter runner product covers 73,728 event/boundary control cases
+plus three directed signed SNaN/QNaN cases. A separate 73,728-case ISA control
+matrix is documented independently and does not supply oracle expectations.
+Full package suites passed: od-isa 1,973; runner unit 160; `fixture_v2` 568;
+od-testkit 461. Sol/high review independently reran the oracle product and
+found no remaining issue. No physical x86 acceptance is claimed. See the
+[S2-38aq report](S2_38AQ_DIVPS_MEMORY_UNMASKED.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38aq--exact-divps-memory-profile-with-unmasked-exceptions),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[stage plan](../plans/STAGE_2.md#s2-38aq--exact-divps-memory-form-with-unmasked-exceptions).
+
+## S2-38ar — DIVPD m128 memory unmasked exceptions
+
+Implemented exact Long64 `66 0F 5E 00` DIVPD XMM0,m128 `[RAX]` as a separate
+immutable schema-v2 interpreter profile with SSE2 bit 26 and an independent
+raw-u64 rational oracle using the actual memory RHS. The validator applies
+IE→ZE→DE per lane, then aggregates surviving events across lanes; any original
+SNaN raises IE. The fetch span checks inclusive `RIP+3`: `...fffc` remains
+canonical and reaches gate delivery, while `...fffd` faults with `#GP(0)`
+before gates. Eight literal fixtures (success plus seven event/gate/fetch
+cases) cover arithmetic events, WPR UE+PE and fetch/gate precedence.
+Independent actual-interpreter matrices total 90,112
+comparisons: event/history controls, eight quotient boundaries, directed
+minimum-normal rounding and the WPR half-minsub tie. The tie asserts UE+PE for
+every RC, with RN/RU producing minimum normal and RD/RZ max-subnormal. Full
+package suites passed: od-isa 1,972; runner unit 159; `fixture_v2` 570;
+od-testkit 461. Independent review passed the endpoint and all-RC checks. No
+physical x86 acceptance is claimed. See the
+[S2-38ar report](S2_38AR_DIVPD_MEMORY_UNMASKED.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ar--exact-divpd-memory-profile-with-unmasked-exceptions),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[stage plan](../plans/STAGE_2.md#s2-38ar--exact-divpd-memory-form-with-unmasked-exceptions).
+
+## Main integration: S2-38aq and S2-38ar
+
+On combined main, `cargo test -p od-isa -p od-testkit -p od-runner --offline
+--no-fail-fast --quiet` passed: od-isa 1,974; od-runner unit 160;
+`fixture_v2` 571; od-testkit 461. `cargo check --workspace --all-targets
+--offline`, `cargo fmt --all -- --check`, `git diff --check`,
+`python3 tools/check_layout.py`, and Graphify update also passed. The graph has
+12,731 nodes / 29,614 edges / 411 communities. Independent Sol/high review
+confirmed both separate profile paths, rational oracles, DIVPS lane
+aggregation and DIVPD fetch precedence. Physical x86 acceptance was not run.

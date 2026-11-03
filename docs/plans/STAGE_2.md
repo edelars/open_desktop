@@ -689,9 +689,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38an | Exact Long64 `SUBPD XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dv masked memory, S2-38af scalar subtraction and S2-38al packed event aggregation; independent actual-memory-RHS raw-u64 oracle; original-source NaN priority before RHS sign transform; lane-local DE and cross-lane IE/DE pre-event priority; four-byte noncanonical fetch `#GP(0)` precedes disabled SSE2; 16-byte `#GP(0)` regardless AC; 1,152 representative event + 393,216 RC/sticky/boundary cases; five literals; od-isa 1,967, testkit 461, runner 148+565; workspace check/fmt/Graphify passed; independent Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AN_SUBPD_MEMORY_UNMASKED.md) |
 | [x] | S2-38ao | Exact Long64 `MULPS XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37ds masked memory, S2-37as register multiplication/WPR, S2-38ag scalar multiplication and S2-38ak packed aggregation; independent raw-u32 memory-RHS oracle; include inexact-tiny UE+PE, rounding-to-min-normal and cross-lane event suppression; no physical x86 acceptance |
 | [x] | S2-38ap | Exact Long64 `MULPD XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dw masked memory, S2-37ar register multiplication/WPR, S2-38ah scalar multiplication and S2-38al packed aggregation; independent raw-u64 memory-RHS oracle; inexact-tiny UE+PE, rounding-to-min-normal and cross-lane event suppression; 1,568 event + 393,216 boundary/history cases; six literals; full suites/workspace/fmt/diff passed; clean independent Sol/high review; no physical x86 acceptance |
-| [x] | S2-38aq | Exact Long64 `DIVPS XMM0,m128 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | Prerequisites: S2-37dt masked DIVPS memory, S2-38ai DIVSS unmasked divide semantics, S2-38ak packed-event aggregation, S2-38ao MULPS WPR/memory-profile controls. Exact `0F 5E 00`, SSE bit 25; independent raw-u32 rational oracle consumes actual memory RHS. Eleven literals; actual-interpreter product 73,728 independent-oracle comparisons plus three directed SNaN/QNaN cases; separate 73,728 direct ISA control cases. Full affected suites/workspace/fmt/diff passed; clean independent Sol/high review; no physical x86 acceptance. |
 | [x] | S2-38aq | Exact Long64 `DIVPS XMM0,m128 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | Prerequisites: S2-37dt masked DIVPS memory, S2-38ai DIVSS unmasked divide semantics, S2-38ak packed-event aggregation, S2-38ao MULPS WPR/memory-profile controls. Exact `0F 5E 00`, SSE bit 25; independent raw-u32 rational oracle consumes actual memory RHS. Eleven literals; actual-interpreter product 73,728 independent-oracle comparisons plus three directed SNaN/QNaN cases; separate 73,728 direct ISA control cases. Full affected suites/workspace/fmt/diff passed; clean independent Sol/high review; no physical x86 acceptance; [report](../reports/S2_38AQ_DIVPS_MEMORY_UNMASKED.md) |
-| [x] | S2-38ar | Exact Long64 `DIVPD XMM0,m128 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dx masked memory, S2-38aj DIVSD semantics, S2-38al aggregation, S2-38ap WPR controls; independent raw-u64 actual-memory-RHS rational oracle; lane-local IE→ZE→DE then cross-lane OR, any-SNaN IE, QNaN suppression; 8,192 event +65,536 boundary +2×8,192 directed/min-normal WPR-tie =90,112 interpreter comparisons; seven literals including fffc/fffd fetch/gate precedence; suites: od-isa 1,972, runner 159+570 fixtures, od-testkit 461; workspace/fmt/diff pass; independent Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AR_DIVPD_MEMORY_UNMASKED.md) |
+| [x] | S2-38ar | Exact Long64 `DIVPD XMM0,m128 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dx masked memory, S2-38aj DIVSD semantics, S2-38al aggregation, S2-38ap WPR controls; independent raw-u64 actual-memory-RHS rational oracle; lane-local IE→ZE→DE then cross-lane OR, any-SNaN IE, QNaN suppression; 8,192 event +65,536 boundary +2×8,192 directed/min-normal WPR-tie =90,112 interpreter comparisons; eight literals (success plus seven event/gate/fetch cases) including fffc/fffd fetch/gate precedence; suites: od-isa 1,972, runner 159+570 fixtures, od-testkit 461; workspace/fmt/diff pass; independent Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AR_DIVPD_MEMORY_UNMASKED.md) |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -7413,8 +7412,8 @@ inventory.
 | CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | S2-37ag register; S2-37bu exact `[RAX]` memory profile |
 | CVTTPS2PI | `NP 0F 2C /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-252 | S2-37bh, exact masked `0F 2C C1` register-source; S2-37bo, exact masked `[RAX]` memory profile |
 | CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253 | S2-37ae bounded register forms; S2-37cj exact `F2 0F 2C 00` m64 `[RAX]`→EAX memory form |
-| DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | S2-37av register and S2-37dx masked-memory profiles; S2-38ar unmasked memory profile pending (OM=UM=1; full unmasked OE/UE remains outside this profile) |
-| DIVPS | `NP 0F 5E /r` | SSE | XMM, m128; 4×f32 | 3-270 | S2-37aw register and S2-37dt masked-memory profiles; S2-38aq unmasked memory profile pending (OM=UM=1; full unmasked OE/UE remains outside this profile) |
+| DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | S2-37av register and S2-37dx masked-memory profiles; S2-38ar unmasked memory profile complete (OM=UM=1; full unmasked OE/UE remains outside this profile) |
+| DIVPS | `NP 0F 5E /r` | SSE | XMM, m128; 4×f32 | 3-270 | S2-37aw register and S2-37dt masked-memory profiles; S2-38aq unmasked memory profile complete (OM=UM=1; full unmasked OE/UE remains outside this profile) |
 | DIVSD | `F2 0F 5E /r` | SSE2 | XMM, m64; low f64 | 3-273 | S2-37ax bounded register-only; memory and complete unmasked OE/UE missing |
 | DIVSS | `F3 0F 5E /r` | SSE | XMM, m32; low f32 | 3-275 | S2-37ay bounded register-only; memory and full unmasked OE/UE missing |
 | MAXPD | `66 0F 5F /r` | SSE2 | XMM, m128; 2×f64 | 4-5–4-7 | S2-37l register form; S2-37cz exact `66 0F 5F 00` aligned m128 `[RAX]` memory profile |
@@ -19199,9 +19198,9 @@ formatting and diff checks pass. Independent Sol/high review is clean.
 Status: complete for host-side interpreter scope; physical x86 acceptance
 remains open.
 
-#### S2-38ar — exact DIVPD memory form with unmasked exceptions (pending)
+#### S2-38ar — exact DIVPD memory form with unmasked exceptions
 
-Prepare immutable schema-v2 interpreter-only profile
+Implemented immutable schema-v2 interpreter-only profile
 `s2-long-divpd-memory-unmasked-rax-v1` for exact Long64 `66 0F 5E 00`
 (`DIVPD XMM0,m128 [RAX]`), with separate
 `divpd_memory_rax_unmasked_controls`, SSE2 bit 26, one executable mapping,
@@ -19244,7 +19243,6 @@ Vol. 2A DIVPD pp. 3-267–3-269, §2.5.2/Table 2-19 p. 2-27; Vol. 1
 §§4.9.1–4.9.3, §4.9.1.5/Table 4-12, §11.5.2.3–.6 and §§11.5.3.1–.3;
 Vol. 3A Event 19/Table 7-8.
 See the
-[contract](../specs/CPU_CONTRACT.md#s2-38ar--exact-divpd-memory-profile-with-unmasked-exceptions-pending)
-and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ar-divpd-m128-memory-unmasked-exceptions-pending).
-Status: pending implementation, fixtures, focused checks and independent
-review.
+[contract](../specs/CPU_CONTRACT.md#s2-38ar--exact-divpd-memory-profile-with-unmasked-exceptions)
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ar-divpd-m128-memory-unmasked-exceptions).
+Status: complete for the bounded interpreter profile; independent Sol/high review clean; no physical x86 acceptance.

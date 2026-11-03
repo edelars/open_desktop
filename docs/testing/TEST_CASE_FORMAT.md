@@ -1723,7 +1723,7 @@ are ORed across lanes. JIT/native and all other closed backends reject the
 profile without result snapshots. See the S2-38aq report for boundary
 witnesses and validation results.
 
-## S2-38ar DIVPD m128 memory unmasked exceptions (pending)
+## S2-38ar DIVPD m128 memory unmasked exceptions
 
 Define a separate immutable schema-v2 profile
 `s2-long-divpd-memory-unmasked-rax-v1`; do not extend or mutate masked
@@ -1745,5 +1745,5 @@ OSXMMEXCPT delivery routes and the same fetch/gate/alignment/span/read
 rollback contract as S2-38aq. Require literal success, event and access
 failure fixtures, quotient-specific same-lane NaN suppression and cross-lane
 pre-event cases in the oracle matrix. JIT/native and other closed backends
-reject the profile without snapshots. Status: pending; no fixture or runtime
-support is claimed.
+reject the profile without snapshots. Status: complete for the bounded
+host-side interpreter profile; no physical x86 acceptance is claimed.
