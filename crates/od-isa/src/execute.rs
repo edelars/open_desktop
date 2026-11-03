@@ -850,6 +850,42 @@ pub struct SqrtsdMemoryRaxControls {
     pub cr4_osfxsr: bool,
 }
 
+/// SSE2 and SIMD-exception delivery controls for unmasked SQRTSD m64 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SqrtsdMemoryRaxUnmaskedControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy)]
+enum SqrtsdMemoryRaxExecutionProfile {
+    Masked(SqrtsdMemoryRaxControls),
+    Unmasked(SqrtsdMemoryRaxUnmaskedControls),
+}
+
+impl SqrtsdMemoryRaxExecutionProfile {
+    const fn gates(self) -> (bool, bool, bool, bool) {
+        match self {
+            Self::Masked(c) => (c.sse2_available, c.cr0_em, c.cr0_ts, c.cr4_osfxsr),
+            Self::Unmasked(c) => (c.sse2_available, c.cr0_em, c.cr0_ts, c.cr4_osfxsr),
+        }
+    }
+
+    const fn is_unmasked(self) -> bool {
+        matches!(self, Self::Unmasked(_))
+    }
+
+    const fn osxmmexcpt(self) -> bool {
+        match self {
+            Self::Masked(_) => false,
+            Self::Unmasked(c) => c.cr4_osxmmexcpt,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MaxpsMemoryRaxControls {
     pub sse_available: bool,
@@ -1290,7 +1326,7 @@ struct ExecutionProfiles<'a> {
     rcpps_memory_rax: Option<SqrtpsMemoryRaxControls>,
     rcpss_memory_rax: Option<RcpssMemoryRaxControls>,
     sqrtpd_memory_rax: Option<SqrtpdMemoryRaxControls>,
-    sqrtsd_memory_rax: Option<SqrtsdMemoryRaxControls>,
+    sqrtsd_memory_rax: Option<SqrtsdMemoryRaxExecutionProfile>,
     maxpd_memory_rax: Option<MaxpdMemoryRaxControls>,
     maxpd_memory_unmasked_rax: Option<MaxpdMemoryUnmaskedRaxControls>,
     maxps_memory_rax: Option<MaxpsMemoryRaxControls>,
@@ -12377,6 +12413,38 @@ pub fn run_with_sqrtsd_memory_rax_controls(
     memory: &mut impl GuestMemory,
     config: RunConfig,
     controls: SqrtsdMemoryRaxControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_sqrtsd_memory_rax_profile(
+        state,
+        memory,
+        config,
+        SqrtsdMemoryRaxExecutionProfile::Masked(controls),
+        stop_requested,
+    )
+}
+
+pub fn run_with_sqrtsd_memory_rax_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: SqrtsdMemoryRaxUnmaskedControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_sqrtsd_memory_rax_profile(
+        state,
+        memory,
+        config,
+        SqrtsdMemoryRaxExecutionProfile::Unmasked(controls),
+        stop_requested,
+    )
+}
+
+fn run_with_sqrtsd_memory_rax_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: SqrtsdMemoryRaxExecutionProfile,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
     run_configured(
@@ -12466,7 +12534,7 @@ pub fn run_with_sqrtsd_memory_rax_controls(
             rcpps_memory_rax: None,
             rcpss_memory_rax: None,
             sqrtpd_memory_rax: None,
-            sqrtsd_memory_rax: Some(controls),
+            sqrtsd_memory_rax: Some(profile),
             maxpd_memory_rax: None,
             maxpd_memory_unmasked_rax: None,
             maxps_memory_rax: None,
@@ -23857,7 +23925,7 @@ fn step_configured(
             });
         }
     }
-    if let Some(controls) = configured_sqrtsd_memory_rax_controls {
+    if let Some(profile) = configured_sqrtsd_memory_rax_controls {
         let is_canonical_memory_form = matches!(
             instruction.operation,
             Operation::SqrtsdMemoryRax
@@ -23875,9 +23943,10 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         }
-        let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        let (sse2_available, cr0_em, cr0_ts, cr4_osfxsr) = profile.gates();
+        let gate = if !sse2_available || cr0_em || !cr4_osfxsr {
             Some(6)
-        } else if controls.cr0_ts {
+        } else if cr0_ts {
             Some(7)
         } else {
             None
@@ -23894,10 +23963,11 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         };
-        if sse.mxcsr & !0xffbf != 0
-            || sse.mxcsr & ((1 << 6) | (1 << 15)) != 0
-            || sse.mxcsr & 0x1f80 != 0x1f80
-        {
+        let mxcsr_invalid = sse.mxcsr & !0xffbf != 0
+            || sse.mxcsr & (1 << 6) != 0
+            || (!profile.is_unmasked()
+                && (sse.mxcsr & (1 << 15) != 0 || sse.mxcsr & 0x1f80 != 0x1f80));
+        if mxcsr_invalid {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -26332,6 +26402,11 @@ fn step_configured(
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
                 && sse.mxcsr & 0x1f80 == 0x1f80
+        } else if configured_sqrtsd_memory_rax_controls
+            .is_some_and(SqrtsdMemoryRaxExecutionProfile::is_unmasked)
+            && instruction.operation == Operation::SqrtsdMemoryRax
+        {
+            sse.mxcsr & !0x0000_ffbf == 0 && sse.mxcsr & (1 << 6) == 0
         } else if configured_sqrtsd_memory_rax_controls.is_some()
             && instruction.operation == Operation::SqrtsdMemoryRax
         {
@@ -37314,11 +37389,40 @@ fn step_configured(
                         BinaryClass::QuietNaN | BinaryClass::SignalingNaN
                     ));
             let denormal = !invalid && input.class() == BinaryClass::Subnormal;
-            let precision = result.inexact();
+            let profile =
+                configured_sqrtsd_memory_rax_controls.expect("SQRTSD memory profile prevalidated");
+            let precision = if profile.is_unmasked() {
+                !invalid && result.inexact()
+            } else {
+                result.inexact()
+            };
             let sse = state
                 .sse
                 .as_mut()
                 .expect("SQRTSD memory state prevalidated");
+            if profile.is_unmasked() {
+                let masks = (old_mxcsr >> 7) & 0x3f;
+                let unmasked_invalid = invalid && masks & 1 == 0;
+                let unmasked_denormal = denormal && masks & 2 == 0;
+                let unmasked_precision = precision && masks & 32 == 0;
+                if unmasked_invalid || unmasked_denormal || unmasked_precision {
+                    let committed_flags = if unmasked_invalid {
+                        1
+                    } else if unmasked_denormal {
+                        1 << 1
+                    } else {
+                        u32::from(invalid)
+                            | (u32::from(denormal) << 1)
+                            | (u32::from(precision) << 5)
+                    };
+                    sse.mxcsr = old_mxcsr | committed_flags;
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: if profile.osxmmexcpt() { 19 } else { 6 },
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+            }
             sse.xmm[0][..8].copy_from_slice(&value.to_le_bytes());
             sse.mxcsr = old_mxcsr
                 | u32::from(invalid)
@@ -172887,6 +172991,150 @@ mod cvtsi2ss_r64_memory_profile_tests {
         assert_eq!(state, before);
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
+    }
+
+    #[test]
+    fn sqrtsd_memory_rax_unmasked_orders_ie_de_pe_and_reads_once() {
+        let code = [0xf2, 0x0f, 0x51, 0x00];
+        let controls = SqrtsdMemoryRaxUnmaskedControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for (name, raw, mxcsr, expected_vector, expected_flags) in [
+            ("exact_min_subnormal", 1u64, 0x1f80, None, 0x02),
+            ("unmasked_de", 1, 0x1e80, Some(19), 0x02),
+            ("unmasked_pe", 2, 0x0f80, Some(19), 0x22),
+            (
+                "terminal_negative_subnormal_ie",
+                0x8000_0000_0000_0001,
+                0x1f00,
+                Some(19),
+                0x01,
+            ),
+        ] {
+            let mut memory = Memory::at(&code, 0x4000);
+            memory.bytes[1..9].copy_from_slice(&raw.to_le_bytes());
+            let mut state = LongModeState::default();
+            state.rip = 0x4000;
+            state.gpr[Register::Rax as usize] = memory.data_base + 1;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            state.sse.as_mut().unwrap().xmm[0][8..]
+                .copy_from_slice(&[0xde, 0xad, 0xbe, 0xef, 0x12, 0x34, 0x56, 0x78]);
+            let before = state.clone();
+            let result = run_with_sqrtsd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x4004),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                memory.accesses,
+                [(AccessKind::Read, memory.data_base + 1, 8)],
+                "{name}"
+            );
+            assert_eq!(
+                state.sse.as_ref().unwrap().mxcsr,
+                mxcsr | expected_flags,
+                "{name}"
+            );
+            if let Some(vector) = expected_vector {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector,
+                        error_code: None,
+                        linear_address: None,
+                    }),
+                    "{name}"
+                );
+                assert_eq!(result.instructions_executed, 0, "{name}");
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[0],
+                    before.sse.as_ref().unwrap().xmm[0],
+                    "{name}"
+                );
+                assert_eq!(state.rip, before.rip, "{name}");
+            } else {
+                assert_eq!(result.exit, RunExit::StopAddress, "{name}");
+                assert_eq!(result.instructions_executed, 1, "{name}");
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[0][..8],
+                    0x1e60_0000_0000_0000u64.to_le_bytes(),
+                    "min positive subnormal sqrt is exact"
+                );
+                assert_eq!(
+                    &state.sse.as_ref().unwrap().xmm[0][8..],
+                    &before.sse.as_ref().unwrap().xmm[0][8..]
+                );
+            }
+        }
+
+        let mut ac_memory = Memory::at(&code, 0x4100);
+        let mut ac_state = LongModeState::default();
+        ac_state.rip = 0x4100;
+        ac_state.gpr[Register::Rax as usize] = 0x0000_8000_0000_0000;
+        ac_state.rflags |= 1 << 18;
+        ac_state.sse = Some(SseState {
+            xmm: [[0x33; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let ac_before = ac_state.clone();
+        let refused = run_with_sqrtsd_memory_rax_unmasked_controls(
+            &mut ac_state,
+            &mut ac_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x4104),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(refused.exit, RunExit::Unsupported { opcode: 0x51 });
+        assert_eq!(ac_state, ac_before);
+        assert!(ac_memory.accesses.is_empty());
+
+        let mut failed = Memory::at(&code, 0x4200);
+        failed.error = Some(MemoryError::Unmapped {
+            address: failed.data_base + 1,
+            access: AccessKind::Read,
+        });
+        let mut state = LongModeState::default();
+        state.rip = 0x4200;
+        state.gpr[Register::Rax as usize] = failed.data_base + 1;
+        state.sse = Some(SseState {
+            xmm: [[0x6c; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run_with_sqrtsd_memory_rax_unmasked_controls(
+            &mut state,
+            &mut failed,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x4204),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert_eq!(
+            failed.accesses,
+            [(AccessKind::Read, failed.data_base + 1, 8)]
+        );
     }
 
     #[test]

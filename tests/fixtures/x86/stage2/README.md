@@ -8585,13 +8585,20 @@ and [stage plan](../../../../docs/plans/STAGE_2.md).
 
 ### S2-38z SQRTSD m64 memory unmasked exceptions
 
-The planned immutable schema-v2 profile `s2-long-sqrtsd-memory-rax-unmasked-v1`
-uses exact `F2 0F 51 00`, SSE2 bit 26, one read-only m64 mapping at `[RAX]`,
-and its own `sqrtsd_memory_rax_unmasked_controls` echo. Planned fixtures will
-cover masked success and IE/DE/PE under both `#XM` and arithmetic `#UD`; planned runner
-tests will cover the 65,536-case raw-u64 oracle matrix, exact positive-minimum-subnormal root,
-negative-subnormal/SNaN terminal IE, full-state suppression, high64 preservation,
-one-read ordering, schema tampering and backend refusal. Keep S2-37df masked
-memory and S2-37am register behavior unchanged. No physical x86 acceptance is
-claimed. See the [S2-38z CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38z--exact-sqrtsd-memory-profile-with-unmasked-exceptions)
+The immutable schema-v2 interpreter-only profile
+`s2-long-sqrtsd-memory-rax-unmasked-v1` uses exact `F2 0F 51 00`, SSE2 bit 26,
+one read-only m64 mapping at `[RAX]`, and its own
+`sqrtsd_memory_rax_unmasked_controls` echo. Seven fixtures cover masked success
+and unmasked IE/DE/PE under both `#XM` and arithmetic `#UD`. The runner matrix
+covers all 65,536 raw-u64/control combinations with an independent integer
+oracle. Focused checks cover exact positive-minimum-subnormal root `0x1` with
+DE/no PE, inexact `0x2`/`0x3`, negative-subnormal/SNaN terminal IE, full-state
+suppression, one-read ordering, CPL/gate/AC/span/read behavior, schema tampering,
+writable source refusal, and backend denial. A regression confirms MINSD still
+requires FTZ=0. The matrix passes in 27.79 seconds using direct in-process
+execution; an initial subprocess-per-case harness was stopped after roughly two
+minutes due to overhead and had reported no assertion failure. S2-37df masked
+memory and S2-37am register behavior are preserved. No physical x86 acceptance
+is claimed. See the [S2-38z CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38z--exact-sqrtsd-memory-profile-with-unmasked-exceptions),
+[implementation report](../../../../docs/reports/S2_38Z_SQRTSD_MEMORY_UNMASKED.md),
 and [stage plan](../../../../docs/plans/STAGE_2.md).
