@@ -397,7 +397,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
 
     def test_self_test_output_validator_rejects_zero_match_and_all_skipped(self):
         count = len(harness.SELF_TEST_NAMES)
-        self.assertEqual(count, 142)
+        self.assertEqual(count, 148)
         def output(status):
             rows = [
                 f"{name} (__main__.Stage3HarnessValidationTests.{name}) ... {status}"
@@ -1590,7 +1590,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "test_s3_38e_session_lifecycle_gates_are_pinned_once_and_fail_closed",
             harness.SELF_TEST_NAMES,
         )
-        self.assertEqual(len(harness.SELF_TEST_NAMES), 147)
+        self.assertEqual(len(harness.SELF_TEST_NAMES), 148)
         self.assertEqual(
             [gate for gate in harness.ADDITIONAL_TEST_GATES if gate[0].startswith("s3_38e_")],
             list(expected),
@@ -2302,8 +2302,8 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "__main__.Stage3HarnessValidationTests.test_s3_16o_store_store_not_rcx_mixed_corpus_gate_is_pinned_once_and_fail_closed",
             harness.SELF_TEST_IDENTITIES,
         )
-        self.assertEqual(len(harness.SELF_TEST_NAMES), 147)
-        self.assertEqual(len(harness.SELF_TEST_IDENTITIES), 147)
+        self.assertEqual(len(harness.SELF_TEST_NAMES), 148)
+        self.assertEqual(len(harness.SELF_TEST_IDENTITIES), 148)
 
         manifest = harness.rust_test_gate_manifest()
         self.assertEqual(
@@ -4758,6 +4758,67 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                         entry["sha256"] = "0" * 64
                     else:
                         process["success_markers"]["control_v1_run_stop_id"] += " forged"
+                    manifest_path = Path(directory) / "input_manifest.json"
+                    raw = harness.canonical_json(corrupted)
+                    manifest_path.write_bytes(raw)
+                    with self.assertRaises(harness.HarnessError):
+                        harness.validate_input_manifest_file(
+                            manifest_path, harness.sha256_bytes(raw)
+                        )
+        finally:
+            temporary.cleanup()
+
+    def test_vmhost_process_run_id_exhaustion_gate_is_pinned_once_and_fails_closed(self):
+        step_name = "process_control_v1_run_id_exhaustion"
+        script_path = "tests/system/vmhost_control_v1_run_id_exhaustion_smoke.py"
+        marker = (
+            "VMHost control V1 smoke passed: RUN-ID exhaustion does not wrap and "
+            "fresh connection accepts ID 1"
+        )
+        self_test_name = "test_vmhost_process_run_id_exhaustion_gate_is_pinned_once_and_fails_closed"
+        self.assertEqual(harness.SELF_TEST_NAMES.count(self_test_name), 1)
+        self.assertIn(
+            f"__main__.Stage3HarnessValidationTests.{self_test_name}",
+            harness.SELF_TEST_IDENTITIES,
+        )
+        temporary, run_root = temporary_run_root()
+        try:
+            commands = harness.vmhost_process_commands(run_root)
+            vmhost_path = str(harness.vmhost_process_paths(run_root)["vmhost"])
+            self.assertEqual(harness.PROCESS_SUITE_STEPS.count(step_name), 1)
+            self.assertEqual(
+                commands[step_name], [sys.executable, script_path, vmhost_path]
+            )
+            self.assertEqual(harness.PROCESS_STEP_TIMEOUTS[step_name], 30)
+            self.assertEqual(harness.PROCESS_SUCCESS_MARKERS["control_v1_run_id_exhaustion"], marker)
+            self.assertEqual(harness.PROCESS_SOURCE_PATHS.count(script_path), 1)
+            manifest = harness.input_manifest()["vmhost_process"]
+            source_record = {
+                "path": script_path,
+                "sha256": harness.sha256_file(harness.ROOT / script_path),
+            }
+            self.assertIn(source_record, manifest["inputs"])
+            command = next(item for item in manifest["build_profile"]["commands"]
+                           if item["step"] == step_name)
+            self.assertEqual(
+                command["argv"],
+                [sys.executable, script_path, "${RUN_ROOT}/artifacts/od-vmhost-smoke"],
+            )
+
+            for corruption in ("command", "source", "marker"):
+                with self.subTest(corruption=corruption), tempfile.TemporaryDirectory() as directory:
+                    corrupted = copy.deepcopy(harness.input_manifest())
+                    process = corrupted["vmhost_process"]
+                    if corruption == "command":
+                        entry = next(item for item in process["build_profile"]["commands"]
+                                     if item["step"] == step_name)
+                        entry["argv"][1] = "tests/system/vmhost_control_v1_same_code_smoke.py"
+                    elif corruption == "source":
+                        entry = next(item for item in process["inputs"]
+                                     if item["path"] == script_path)
+                        entry["sha256"] = "0" * 64
+                    else:
+                        process["success_markers"]["control_v1_run_id_exhaustion"] += " forged"
                     manifest_path = Path(directory) / "input_manifest.json"
                     raw = harness.canonical_json(corrupted)
                     manifest_path.write_bytes(raw)
@@ -13997,7 +14058,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed",
             harness.SELF_TEST_NAMES,
         )
-        self.assertEqual(len(harness.SELF_TEST_NAMES), 147)
+        self.assertEqual(len(harness.SELF_TEST_NAMES), 148)
         self.assertEqual(
             [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34do_")],
             list(expected),
@@ -14107,7 +14168,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             "test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed",
             harness.SELF_TEST_NAMES,
         )
-        self.assertEqual(len(harness.SELF_TEST_NAMES), 147)
+        self.assertEqual(len(harness.SELF_TEST_NAMES), 148)
         self.assertEqual(
             [gate for gate in harness.RUST_TEST_GATES if gate[0].startswith("s3_34dn_")],
             list(expected),

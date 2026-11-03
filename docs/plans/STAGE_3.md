@@ -445,6 +445,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Pins fragmented HELLO/RUN, coalesced RUN admission with BUSY evidence, partial-frame EOF, and overlength rejection before body; INVALID_STATE batch closure remains uncovered. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
 | [partial] | S3-38k | Process-level immutable-code mismatch and RUN-ID high-watermark | Pins CODE_MISMATCH without rebinding, advances IDs on rejected RUNs, rejects reused IDs, and then runs the original code on a fresh higher ID. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md) |
 | [partial] | S3-38l | Process-level active STOP, rejected RUN/STOP IDs and RUN-ID high-watermark | Pins wrong-ID STOP, duplicate/decreasing IDs, BUSY ID consumption, exact STOP_ACK→RESULT order, stale retry rejection and a fresh successful RUN. Independent static reviews passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md) |
+| [partial] | S3-38m | Process-level RUN-ID exhaustion and fresh-helper reset | Pins max `u32` ID acceptance, duplicate-max and wrapped-ID rejection on the exhausted helper, then ID 1 acceptance by a newly launched helper/socket. Independent static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38m_vmhost_v1_id_exhaustion_2026-11-03.md) |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
@@ -4133,6 +4134,18 @@ binary hash. Two independent Sol/high static reviews passed; no process or
 other runtime execution was performed. INVALID_STATE batch closure and broader
 V1 acceptance remain open. See the
 [S3-38l report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md).
+
+#### S3-38m. Process-level RUN-ID exhaustion and fresh helper
+
+The smoke accepts a one-instruction RUN at ID `0xffffffff` and verifies exact
+ACK/RESULT frames. It then rejects a repeated maximum ID and ID 1 with exact
+scope-1 `INVALID_REQUEST_ID`, demonstrating no wrap on the exhausted helper.
+After clean idle EOF and helper exit, a newly launched helper/socket accepts
+ID 1 with exact fresh state. The harness pins the command, 30-second timeout,
+source fingerprint, marker, VMHost binary hash, and fail-closed self-check.
+Independent Sol/high static review passed; the smoke/runtime was not executed.
+The gate does not imply automatic reconnect or replay. See the
+[S3-38m report](../reports/STAGE_3_S3-38m_vmhost_v1_id_exhaustion_2026-11-03.md).
 
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
