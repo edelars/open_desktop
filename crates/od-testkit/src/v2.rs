@@ -672,6 +672,8 @@ pub enum Profile {
     LongAddpsMemoryRaxUnmaskedV1,
     #[serde(rename = "s2-long-subps-memory-unmasked-rax-v1")]
     LongSubpsMemoryRaxUnmaskedV1,
+    #[serde(rename = "s2-long-mulps-memory-unmasked-rax-v1")]
+    LongMulpsMemoryRaxUnmaskedV1,
     #[serde(rename = "s2-long-addps-memory-rax-v1")]
     LongAddpsMemoryRaxV1,
     #[serde(rename = "s2-long-subps-memory-rax-v1")]
@@ -1592,6 +1594,7 @@ impl IntegerState {
                     | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                     | Profile::LongAddpsMemoryRaxUnmaskedV1
                     | Profile::LongSubpsMemoryRaxUnmaskedV1
+                    | Profile::LongMulpsMemoryRaxUnmaskedV1
                     | Profile::LongRcppsMemoryRaxV1
                     | Profile::LongRcpssMemoryRaxV1
                     | Profile::LongRsqrtpsMemoryRaxV1
@@ -1746,6 +1749,7 @@ impl IntegerState {
                     | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                     | Profile::LongAddpsMemoryRaxUnmaskedV1
                     | Profile::LongSubpsMemoryRaxUnmaskedV1
+                    | Profile::LongMulpsMemoryRaxUnmaskedV1
                     | Profile::LongRcppsMemoryRaxV1
                     | Profile::LongRcpssMemoryRaxV1
                     | Profile::LongRsqrtpsMemoryRaxV1
@@ -2041,6 +2045,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -2352,6 +2357,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -3053,6 +3059,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -3356,6 +3363,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -3664,6 +3672,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -3980,6 +3989,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -4436,6 +4446,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -4516,6 +4527,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -4857,6 +4869,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -5171,6 +5184,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -5443,6 +5457,7 @@ impl IntegerState {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -5924,6 +5939,8 @@ pub struct Fixture {
     pub addps_memory_rax_unmasked_controls: Option<AddpsMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subps_memory_rax_unmasked_controls: Option<SubpsMemoryRaxUnmaskedControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mulps_memory_rax_unmasked_controls: Option<MulpsMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtss_memory_rax_controls: Option<SqrtssMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6475,6 +6492,7 @@ pub type RsqrtssMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 pub type AddpsMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 pub type AddpsMemoryRaxUnmaskedControlSnapshot = SqrtpsMemoryRaxUnmaskedControlSnapshot;
 pub type SubpsMemoryRaxUnmaskedControlSnapshot = SqrtpsMemoryRaxUnmaskedControlSnapshot;
+pub type MulpsMemoryRaxUnmaskedControlSnapshot = SqrtpsMemoryRaxUnmaskedControlSnapshot;
 pub type SqrtssMemoryRaxControlSnapshot = CmpssMemoryRaxControlSnapshot;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -14241,6 +14259,106 @@ impl Fixture {
                 "only valid for unmasked SUBPS m128 profile",
             ));
         }
+        if self.profile == Profile::LongMulpsMemoryRaxUnmaskedV1 {
+            if self.mulps_controls.is_some() {
+                return Err(invalid(
+                    "mulps_controls",
+                    "masked controls are not valid for unmasked MULPS m128 profile",
+                ));
+            }
+            let controls = self.mulps_memory_rax_unmasked_controls.ok_or_else(|| {
+                invalid(
+                    "mulps_memory_rax_unmasked_controls",
+                    "required by unmasked MULPS m128 profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by unmasked MULPS m128 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by unmasked MULPS m128 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if code.guest_address.get() != start
+                || code.length != 3
+                || !code.permissions.execute
+                || decode_bytes(&code.initial_bytes_hex)? != [0x0f, 0x59, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 16
+                || !data.permissions.read
+                || data.permissions.write
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(3)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "unmasked MULPS m128 requires exact 0F 59 00, one executable code mapping, one read-only m128 mapping, budget 1, and stop RIP entry+3",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by unmasked MULPS m128 profile"))?
+                .mxcsr
+                .get() as u32;
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "unmasked MULPS m128 requires supported MXCSR bits, DAZ=FTZ=0, and OM=UM=1",
+                ));
+            }
+            let gate = !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let last = source.checked_add(15);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let fetch_last = start.checked_add(2);
+            let fetch_fault = fetch_last.is_none_or(|end| !canonical(start) || !canonical(end));
+            let span = last.is_none_or(|last| !canonical(source) || !canonical(last));
+            let lhs_bytes = decode_bytes(&self.initial_state.sse.as_ref().unwrap().xmm[0])?;
+            let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+            let lhs = std::array::from_fn::<_, 4, _>(|i| {
+                u32::from_le_bytes(lhs_bytes[i * 4..i * 4 + 4].try_into().unwrap())
+            });
+            let rhs = std::array::from_fn::<_, 4, _>(|i| {
+                u32::from_le_bytes(rhs_bytes[i * 4..i * 4 + 4].try_into().unwrap())
+            });
+            let (_, ie, de, _, _, pe) = independent_mulps(lhs, rhs, mxcsr);
+            let masks = (mxcsr >> 7) & 0x3f;
+            let pre_unmasked = ie && masks & 1 == 0 || de && masks & 2 == 0;
+            let arithmetic_fault = pre_unmasked || (!pre_unmasked && pe && masks & (1 << 5) == 0);
+            let expected =
+                if fetch_fault || gate || nm || source & 0xf != 0 || span || arithmetic_fault {
+                    ExpectedExit::Exception
+                } else {
+                    ExpectedExit::StopAddress
+                };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect unmasked MULPS gates, mandatory alignment, canonical span, and SIMD exceptions",
+                ));
+            }
+        } else if self.mulps_memory_rax_unmasked_controls.is_some() {
+            return Err(invalid(
+                "mulps_memory_rax_unmasked_controls",
+                "only valid for unmasked MULPS m128 profile",
+            ));
+        }
         if self.profile == Profile::LongAddpsMemoryRaxUnmaskedV1 {
             if self.addps_memory_rax_controls.is_some() {
                 return Err(invalid(
@@ -19486,6 +19604,10 @@ impl Fixture {
                     .ok()
                     .filter(|bytes| bytes == &[0x0f, 0x59, 0x00])
                     .map(|_| 3),
+                Profile::LongMulpsMemoryRaxUnmaskedV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0x0f, 0x59, 0x00])
+                    .map(|_| 3),
                 Profile::LongSqrtsdMemoryRaxV1 | Profile::LongSqrtsdMemoryRaxUnmaskedV1 => {
                     decode_bytes(&code_bytes)
                         .ok()
@@ -21647,6 +21769,7 @@ impl Fixture {
             addps_memory_rax_controls: None,
             addps_memory_rax_unmasked_controls: None,
             subps_memory_rax_unmasked_controls: None,
+            mulps_memory_rax_unmasked_controls: None,
             sqrtss_memory_rax_controls: None,
             sqrtss_memory_rax_unmasked_controls: None,
             sqrtpd_memory_rax_controls: None,
@@ -21949,6 +22072,8 @@ pub struct Snapshot {
     pub addps_memory_rax_unmasked_controls: Option<AddpsMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subps_memory_rax_unmasked_controls: Option<SubpsMemoryRaxUnmaskedControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mulps_memory_rax_unmasked_controls: Option<MulpsMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtss_memory_rax_controls: Option<SqrtssMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -23905,6 +24030,19 @@ impl RunResult {
                         "only valid for S2-38am profile",
                     ));
                 }
+                if self.profile == Profile::LongMulpsMemoryRaxUnmaskedV1 {
+                    if snapshot.mulps_memory_rax_unmasked_controls.is_none() {
+                        return Err(invalid(
+                            "snapshot.mulps_memory_rax_unmasked_controls",
+                            "required by S2-38ao profile",
+                        ));
+                    }
+                } else if snapshot.mulps_memory_rax_unmasked_controls.is_some() {
+                    return Err(invalid(
+                        "snapshot.mulps_memory_rax_unmasked_controls",
+                        "only valid for S2-38ao profile",
+                    ));
+                }
 
                 if self.profile == Profile::LongAddsdMemoryRaxUnmaskedV1 {
                     if snapshot.addsd_memory_rax_unmasked_controls.is_none() {
@@ -24026,6 +24164,7 @@ impl RunResult {
                 | Profile::LongSqrtpsMemoryRaxUnmaskedV1
                 | Profile::LongAddpsMemoryRaxUnmaskedV1
                 | Profile::LongSubpsMemoryRaxUnmaskedV1
+                | Profile::LongMulpsMemoryRaxUnmaskedV1
                 | Profile::LongRcppsMemoryRaxV1
                 | Profile::LongRcpssMemoryRaxV1
                 | Profile::LongRsqrtpsMemoryRaxV1
@@ -24987,6 +25126,8 @@ impl RunResult {
                 validate_mulps_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongMulpsMemoryRaxV1 {
                 validate_mulps_memory_rax_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongMulpsMemoryRaxUnmaskedV1 {
+                validate_mulps_memory_rax_unmasked_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongSubpsRegistersV1 {
                 validate_subps_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongSubpsMemoryRaxV1 {
@@ -25986,6 +26127,28 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongSubpsMemoryRaxUnmaskedV1 {
                 validate_subps_memory_rax_unmasked_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.mulps_memory_rax_unmasked_controls,
+                value.mulps_memory_rax_unmasked_controls,
+            ) {
+                (Profile::LongMulpsMemoryRaxUnmaskedV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongMulpsMemoryRaxUnmaskedV1, _, _) => {
+                    return Err(FormatError::CaseMismatch(
+                        "mulps_memory_rax_unmasked_controls",
+                    ));
+                }
+                (_, None, None) => {}
+                _ => {
+                    return Err(FormatError::CaseMismatch(
+                        "mulps_memory_rax_unmasked_controls",
+                    ));
+                }
+            }
+            if loaded.fixture.profile == Profile::LongMulpsMemoryRaxUnmaskedV1 {
+                validate_mulps_memory_rax_unmasked_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -49325,6 +49488,168 @@ fn validate_subps_memory_rax_unmasked_result(
         _ => {
             return Err(FormatError::CaseMismatch(
                 "SUBPS m128 unmasked outcome/exception",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_mulps_memory_rax_unmasked_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .mulps_memory_rax_unmasked_controls
+        .ok_or(FormatError::CaseMismatch(
+            "mulps_memory_rax_unmasked_controls",
+        ))?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|r| r.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|r| r.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0x0f, 0x59, 0x00] {
+        return Err(FormatError::CaseMismatch("MULPS m128 unmasked encoding"));
+    }
+    let lhs_bytes = decode_bytes(&initial_sse.xmm[0])?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let lhs = std::array::from_fn::<_, 4, _>(|lane| {
+        u32::from_le_bytes(lhs_bytes[lane * 4..lane * 4 + 4].try_into().unwrap())
+    });
+    let rhs = std::array::from_fn::<_, 4, _>(|lane| {
+        u32::from_le_bytes(rhs_bytes[lane * 4..lane * 4 + 4].try_into().unwrap())
+    });
+    let mxcsr = initial_sse.mxcsr.get() as u32;
+    let (values, ie, de, oe, ue, pe) = independent_mulps(lhs, rhs, mxcsr);
+    let masks = (mxcsr >> 7) & 0x3f;
+    let pre_unmasked = ie && masks & 1 == 0 || de && masks & 2 == 0;
+    let post_unmasked = !pre_unmasked && pe && masks & (1 << 5) == 0;
+    let source = fixture.initial_state.gpr[0].get();
+    let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let aligned = source & 0xf == 0;
+    let last = source.checked_add(15);
+    let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+    let code_start = fixture.initial_state.rip.get();
+    let code_last = code_start.checked_add(2);
+    let fetch_fault = code_last.is_none_or(|end| !canonical(code_start) || !canonical(end));
+    let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let arithmetic_fault = pre_unmasked || post_unmasked;
+    let fault = if fetch_fault {
+        Some(13)
+    } else {
+        gate.or_else(|| (!aligned || span_fault).then_some(13))
+            .or_else(|| arithmetic_fault.then_some(if controls.cr4_osxmmexcpt { 19 } else { 6 }))
+    };
+    if !matches!(
+        (fault, fixture.expected_exit),
+        (Some(_), ExpectedExit::Exception) | (None, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch(
+            "MULPS m128 unmasked expected exit",
+        ));
+    }
+    let arithmetic_reached = !fetch_fault && gate.is_none() && aligned && !span_fault;
+    let mut expected = fixture.initial_state.clone();
+    let generated = u32::from(ie)
+        | (u32::from(de) << 1)
+        | (u32::from(oe) << 3)
+        | (u32::from(ue) << 4)
+        | (u32::from(pe) << 5);
+    let expected_mxcsr = if arithmetic_reached {
+        if pre_unmasked {
+            mxcsr | u32::from(ie) | (u32::from(de) << 1)
+        } else if post_unmasked || fault.is_none() {
+            mxcsr | generated
+        } else {
+            mxcsr
+        }
+    } else {
+        mxcsr
+    };
+    let sse = expected
+        .sse
+        .as_mut()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    sse.mxcsr = HexU64(u64::from(expected_mxcsr));
+    if fault.is_none() {
+        let mut bytes = Vec::with_capacity(16);
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        sse.xmm[0] = crate::memory::encode_bytes(&bytes);
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(3)
+                .ok_or(FormatError::CaseMismatch("MULPS m128 RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch(
+            "MULPS m128 unmasked output state",
+        ));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none())),
+        })
+    {
+        return Err(FormatError::CaseMismatch("MULPS m128 unmasked retirement"));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "MULPS m128 unmasked outcome/exception",
             ));
         }
     }

@@ -23465,3 +23465,18 @@ See the [S2-38am report](S2_38AM_SUBPS_MEMORY_UNMASKED.md),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38am--exact-subps-memory-profile-with-unmasked-exceptions),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md), and
 [stage plan](../plans/STAGE_2.md).
+
+## S2-38ao — MULPS m128 memory unmasked exceptions
+
+Implemented exact Long64 `0F 59 00` with dedicated schema-v2 controls and an
+independent raw-u32 oracle using the actual memory RHS. The 76,832-case
+lane-class/mask/delivery matrix and 73,728-case boundary/history/cross-lane
+matrix exercise 150,560 interpreter executions. A normal p=24 midpoint checks
+RN/RU and RD/RZ results directly. Six immutable fixtures,
+fetch/gate/CPL/alignment/span/read rollback checks, malformed-MXCSR admission,
+schema/result tampering and interpreter-only backend denial are covered. These
+host-side checks do not claim physical x86 acceptance. See the
+[S2-38ao report](S2_38AO_MULPS_MEMORY_UNMASKED.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ao--exact-mulps-memory-profile-with-unmasked-exceptions),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md), and
+[stage plan](../plans/STAGE_2.md#s2-38ao--exact-mulps-memory-form-with-unmasked-exceptions).

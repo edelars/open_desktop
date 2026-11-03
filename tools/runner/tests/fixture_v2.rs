@@ -188,6 +188,24 @@ const DIVPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const MULPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37ds_mulps_m128_memory_source_and_destination_lanes.case.json"
 );
+const MULPS_M128_UNMASKED_SUCCESS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ao_mulps_m128_success_prior_ie.case.json"
+);
+const MULPS_M128_UNMASKED_IE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ao_mulps_m128_ie_unmasked_xm.case.json"
+);
+const MULPS_M128_UNMASKED_DE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ao_mulps_m128_de_unmasked_xm.case.json"
+);
+const MULPS_M128_UNMASKED_PE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ao_mulps_m128_pe_unmasked_xm.case.json"
+);
+const MULPS_M128_UNMASKED_UE_PE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ao_mulps_m128_masked_ue_pe_rounds_to_min_normal.case.json"
+);
+const MULPS_M128_UNMASKED_FETCH: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ao_mulps_m128_noncanonical_fetch_precedes_gate.case.json"
+);
 const SQRTPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37de_sqrtpd_m128_memory_source_lanes_rounding.case.json"
 );
@@ -45751,5 +45769,40 @@ fn mulpd_m128_unmasked_literal_fixtures_validate_state_schema_and_backend_denial
             .fixture;
         invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
         assert!(invalid.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+}
+
+#[test]
+fn mulps_m128_unmasked_cli_executes_literals_and_denies_closed_backends() {
+    use od_testkit::v2::{ExpectedExit, Outcome};
+
+    let fixtures = [
+        MULPS_M128_UNMASKED_SUCCESS,
+        MULPS_M128_UNMASKED_IE,
+        MULPS_M128_UNMASKED_DE,
+        MULPS_M128_UNMASKED_PE,
+        MULPS_M128_UNMASKED_UE_PE,
+        MULPS_M128_UNMASKED_FETCH,
+    ];
+    for bytes in fixtures {
+        let (input, result) = run(bytes, "interpreter", 0);
+        result
+            .validate_for(&input)
+            .expect("S2-38ao interpreter result validates against its literal fixture");
+        assert_eq!(
+            matches!(result.outcome, Outcome::Exception {}),
+            input.fixture.expected_exit == ExpectedExit::Exception,
+            "{}",
+            input.fixture.case_id
+        );
+        for engine in ["jit", "native"] {
+            let (_, denied) = run(bytes, engine, 4);
+            assert!(
+                matches!(denied.outcome, Outcome::Unsupported { .. }),
+                "S2-38ao {engine} backend remains closed for {}",
+                input.fixture.case_id
+            );
+            assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        }
     }
 }

@@ -593,6 +593,16 @@ pub struct MulpsControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// SSE and SIMD exception-delivery controls for unmasked MULPS m128 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MulpsMemoryRaxUnmaskedControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit SSE and SIMD exception-delivery controls for bounded SUBPS.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SubpsControls {
@@ -1629,6 +1639,7 @@ struct ExecutionProfiles<'a> {
     mulsd_registers: Option<MulsdControls>,
     mulss_registers: Option<MulssControls>,
     mulps_registers: Option<MulpsControls>,
+    mulps_memory_rax_unmasked: Option<MulpsMemoryRaxUnmaskedControls>,
     subps_registers: Option<SubpsControls>,
     subsd_registers: Option<SubsdControls>,
     subss_registers: Option<SubssControls>,
@@ -2534,6 +2545,7 @@ pub fn run_with_maxss_unmasked_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -2682,6 +2694,7 @@ pub fn run_with_minsd_unmasked_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -2830,6 +2843,7 @@ pub fn run_with_maxsd_unmasked_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -2978,6 +2992,7 @@ pub fn run_with_minpd_unmasked_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -3126,6 +3141,7 @@ pub fn run_with_minps_unmasked_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -3274,6 +3290,7 @@ pub fn run_with_maxps_unmasked_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -3422,6 +3439,7 @@ pub fn run_with_maxpd_unmasked_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -3570,6 +3588,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -3718,6 +3737,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -3866,6 +3886,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -4014,6 +4035,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -4162,6 +4184,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -4310,6 +4333,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -4458,6 +4482,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -4606,6 +4631,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -4754,6 +4780,7 @@ pub fn run_with_cvtss2si_registers_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -4902,6 +4929,7 @@ pub fn run_with_cvttss2si_registers_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -5049,6 +5077,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -5197,6 +5226,7 @@ pub fn run_with_cvtsd2si_r32_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -5345,6 +5375,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -5495,6 +5526,7 @@ pub fn run_with_cvttsd2si_r32_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -5647,6 +5679,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -5795,6 +5828,7 @@ pub fn run_with_cvtss2si_r32_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -5943,6 +5977,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -6091,6 +6126,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -6239,6 +6275,7 @@ pub fn run_with_cvttss2si_r32_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -6388,6 +6425,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -6536,6 +6574,7 @@ pub fn run_with_cvtdq2pd_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -6684,6 +6723,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -6831,6 +6871,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -6979,6 +7020,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -7127,6 +7169,7 @@ pub fn run_with_cvtdq2ps_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -7275,6 +7318,7 @@ pub fn run_with_cvtps2dq_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -7423,6 +7467,7 @@ pub fn run_with_cvttps2dq_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -7571,6 +7616,7 @@ pub fn run_with_cvtps2dq_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -7719,6 +7765,7 @@ pub fn run_with_cvttps2dq_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -7867,6 +7914,7 @@ pub fn run_with_cvttpd2dq_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -8015,6 +8063,7 @@ pub fn run_with_cvtpd2dq_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -8163,6 +8212,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -8311,6 +8361,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -8459,6 +8510,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -8607,6 +8659,7 @@ pub fn run_with_cvtss2sd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -8755,6 +8808,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -8939,6 +8993,7 @@ fn run_with_cvtpi2ps_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -9254,6 +9309,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -9402,6 +9458,7 @@ pub fn run_with_cvtps2pd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -9550,6 +9607,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -9698,6 +9756,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -9845,6 +9904,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -9993,6 +10053,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -10199,6 +10260,7 @@ fn run_with_cmpss_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -10347,6 +10409,7 @@ pub fn run_with_cmpsd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -10495,6 +10558,7 @@ pub fn run_with_cmppd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -10642,6 +10706,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -10789,6 +10854,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -10959,6 +11025,7 @@ fn run_with_minsd_memory_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -11107,6 +11174,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -11277,6 +11345,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -11442,6 +11511,7 @@ fn run_with_minpd_memory_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -11625,6 +11695,7 @@ fn run_with_minps_memory_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -11778,6 +11849,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -11926,6 +11998,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -12073,6 +12146,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -12214,6 +12288,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -12361,6 +12436,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -12547,6 +12623,7 @@ fn run_with_sqrtps_memory_rax_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -12694,6 +12771,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -12868,6 +12946,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -13047,6 +13126,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -13229,6 +13309,7 @@ fn run_with_maxpd_memory_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -13415,6 +13496,7 @@ fn run_with_maxps_memory_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -13619,6 +13701,7 @@ fn run_minss_memory_rax_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -13809,6 +13892,7 @@ fn run_maxss_memory_rax_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -13956,6 +14040,7 @@ pub fn run_with_cmpps_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -14104,6 +14189,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -14305,6 +14391,7 @@ pub fn run_with_efer_rdmsr_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -14662,6 +14749,7 @@ pub fn run_with_cr0_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -14811,6 +14899,7 @@ pub fn run_with_cr4_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -15194,6 +15283,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -15527,6 +15617,7 @@ pub fn step_with_cr0_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -15918,6 +16009,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -16066,6 +16158,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -16438,6 +16531,7 @@ fn run_with_comparison_memory_rax_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -16588,6 +16682,7 @@ pub fn run_with_sqrtss_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -16736,6 +16831,7 @@ pub fn run_with_sqrtsd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -16884,6 +16980,7 @@ pub fn run_with_sqrtps_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -17032,6 +17129,7 @@ pub fn run_with_sqrtpd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -17185,6 +17283,7 @@ fn run_with_subpd_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -17388,6 +17487,7 @@ pub fn run_with_mulpd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -17539,6 +17639,7 @@ fn run_with_addpd_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -17720,6 +17821,7 @@ fn run_with_mulpd_memory_rax_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -17923,6 +18025,7 @@ pub fn run_with_addsd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -18071,6 +18174,7 @@ pub fn run_with_divpd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -18219,6 +18323,7 @@ pub fn run_with_divpd_memory_rax_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -18367,6 +18472,7 @@ pub fn run_with_addss_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -18549,6 +18655,7 @@ fn run_with_addss_memory_rax_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -18730,6 +18837,7 @@ fn run_with_addsd_memory_rax_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -18914,6 +19022,7 @@ fn run_with_addps_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -19062,6 +19171,7 @@ pub fn run_with_divsd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -19210,6 +19320,7 @@ pub fn run_with_divps_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -19358,6 +19469,7 @@ pub fn run_with_divss_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -19506,6 +19618,7 @@ pub fn run_with_mulsd_register_controls(
             mulsd_registers: Some(controls),
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -19654,6 +19767,7 @@ pub fn run_with_mulss_register_controls(
             mulsd_registers: None,
             mulss_registers: Some(controls),
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -19743,6 +19857,42 @@ pub fn run_with_mulps_register_controls(
     controls: MulpsControls,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
+    run_with_mulps_profile(state, memory, config, controls, None, &mut stop_requested)
+}
+
+/// Execute exact Long64 `0F 59 00` MULPS XMM0,m128 with unmasked exceptions.
+pub fn run_with_mulps_memory_rax_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: MulpsMemoryRaxUnmaskedControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    let gates = MulpsControls {
+        sse_available: controls.sse_available,
+        cr0_em: controls.cr0_em,
+        cr0_ts: controls.cr0_ts,
+        cr4_osfxsr: controls.cr4_osfxsr,
+        cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+    };
+    run_with_mulps_profile(
+        state,
+        memory,
+        config,
+        gates,
+        Some(controls),
+        &mut stop_requested,
+    )
+}
+
+fn run_with_mulps_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: MulpsControls,
+    mulps_memory_rax_unmasked: Option<MulpsMemoryRaxUnmaskedControls>,
+    mut stop_requested: &mut impl FnMut() -> bool,
+) -> RunResult {
     run_configured(
         state,
         memory,
@@ -19802,6 +19952,7 @@ pub fn run_with_mulps_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: Some(controls),
+            mulps_memory_rax_unmasked,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -19950,6 +20101,7 @@ pub fn run_with_subsd_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: Some(controls),
             subss_registers: None,
@@ -20098,6 +20250,7 @@ pub fn run_with_subss_register_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: Some(controls),
@@ -20246,6 +20399,7 @@ fn run_with_scalar_float_memory_rax_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -20637,6 +20791,7 @@ fn run_with_subps_profile(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: Some(controls),
             subps_memory_rax_unmasked,
             subsd_registers: None,
@@ -20784,6 +20939,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             mulsd_registers: None,
             mulss_registers: None,
             mulps_registers: None,
+            mulps_memory_rax_unmasked: None,
             subps_registers: None,
             subsd_registers: None,
             subss_registers: None,
@@ -21099,6 +21255,7 @@ fn step_configured(
         mulsd_registers: configured_mulsd_register_controls,
         mulss_registers: configured_mulss_register_controls,
         mulps_registers: configured_mulps_register_controls,
+        mulps_memory_rax_unmasked: configured_mulps_memory_rax_unmasked_controls,
         subps_registers: configured_subps_register_controls,
         subsd_registers: configured_subsd_register_controls,
         subss_registers: configured_subss_register_controls,
@@ -23277,7 +23434,9 @@ fn step_configured(
                             Some(0x40 | (u8::from(destination >= 8) << 2) | u8::from(source >= 8))
                         } else { None }
         );
-        if !is_canonical_register_form && !is_canonical_memory_form {
+        if !is_canonical_register_form && !is_canonical_memory_form
+            || configured_mulps_memory_rax_unmasked_controls.is_some() && !is_canonical_memory_form
+        {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -26877,6 +27036,7 @@ fn step_configured(
             | Operation::SubpdMemoryRax
             | Operation::MulpdRegister { .. }
             | Operation::MulpdMemoryRax
+            | Operation::MulpsMemoryRax
             | Operation::AddpdRegister { .. }
             | Operation::AddpdMemoryRax
             | Operation::AddsdRegister { .. }
@@ -26955,6 +27115,7 @@ fn step_configured(
             | Operation::SubpdMemoryRax
             | Operation::MulpdRegister { .. }
             | Operation::MulpdMemoryRax
+            | Operation::MulpsMemoryRax
             | Operation::AddpdRegister { .. }
             | Operation::AddpdMemoryRax
             | Operation::AddsdRegister { .. }
@@ -27343,6 +27504,12 @@ fn step_configured(
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & (1 << 6) == 0
                 && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+        } else if configured_mulps_memory_rax_unmasked_controls.is_some()
+            && instruction.operation == Operation::MulpsMemoryRax
+        {
+            sse.mxcsr & !0x0000_ffbf == 0
+                && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
+                && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
         } else if configured_mulps_register_controls.is_some()
             && matches!(
                 instruction.operation,
@@ -27352,7 +27519,11 @@ fn step_configured(
             if instruction.operation == Operation::MulpsMemoryRax {
                 sse.mxcsr & !0x0000_ffbf == 0
                     && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
-                    && sse.mxcsr & 0x1f80 == 0x1f80
+                    && if configured_mulps_memory_rax_unmasked_controls.is_some() {
+                        sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+                    } else {
+                        sse.mxcsr & 0x1f80 == 0x1f80
+                    }
             } else {
                 sse.mxcsr & !0x0000_ffbf == 0
                     && sse.mxcsr & (1 << 6) == 0
@@ -35957,6 +36128,50 @@ fn step_configured(
                 (sse.xmm[0], sse.mxcsr)
             };
             let rounding = cvtss2si_rounding_mode(old_mxcsr);
+            if let Some(controls) = configured_mulps_memory_rax_unmasked_controls {
+                let mut new_ie = false;
+                let mut new_de = false;
+                for lane in 0..4 {
+                    let offset = lane * 4;
+                    let lhs = Binary32::from_bits(u32::from_le_bytes(
+                        lhs_xmm[offset..offset + 4].try_into().unwrap(),
+                    ));
+                    let rhs = Binary32::from_bits(u32::from_le_bytes(
+                        source[offset..offset + 4].try_into().unwrap(),
+                    ));
+                    let lhs_class = lhs.class();
+                    let rhs_class = rhs.class();
+                    let lhs_nan =
+                        matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                    let rhs_nan =
+                        matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                    if lhs_nan || rhs_nan {
+                        new_ie |= lhs_class == BinaryClass::SignalingNaN
+                            || rhs_class == BinaryClass::SignalingNaN;
+                        continue;
+                    }
+                    let invalid_product = (lhs_class == BinaryClass::Infinity
+                        && rhs_class == BinaryClass::Zero)
+                        || (lhs_class == BinaryClass::Zero && rhs_class == BinaryClass::Infinity);
+                    if invalid_product {
+                        new_ie = true;
+                    } else {
+                        new_de |= lhs_class == BinaryClass::Subnormal
+                            || rhs_class == BinaryClass::Subnormal;
+                    }
+                }
+                let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+                let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+                if unmasked_ie || unmasked_de {
+                    let sse = state.sse.as_mut().expect("MULPS state prevalidated");
+                    sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+            }
             let mut result = [0u8; 16];
             let mut new_ie = false;
             let mut new_de = false;
@@ -36004,13 +36219,22 @@ fn step_configured(
                 result[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
             }
             let sse = state.sse.as_mut().expect("MULPS memory state prevalidated");
-            sse.xmm[0] = result;
             sse.mxcsr = old_mxcsr
                 | u32::from(new_ie)
                 | (u32::from(new_de) << 1)
                 | (u32::from(new_oe) << 3)
                 | (u32::from(new_ue) << 4)
                 | (u32::from(new_pe) << 5);
+            if let Some(controls) = configured_mulps_memory_rax_unmasked_controls {
+                if new_pe && old_mxcsr & (1 << 12) == 0 {
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+            }
+            sse.xmm[0] = result;
         }
         Operation::MulpsMemoryRax => {
             return Ok(StepOutcome::Unsupported {
@@ -181155,6 +181379,338 @@ mod cvtsi2ss_r64_memory_profile_tests {
         memory.error_kind = Some(AccessKind::Read);
         memory.error = Some(MemoryError::Backend(
             "injected SUBPS m128 read failure".into(),
+        ));
+        let mut state = LongModeState::default();
+        state.rip = 0x3030;
+        state.gpr[Register::Rax as usize] = memory.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f00,
+        });
+        let before = state.clone();
+        let result = run(&mut state, &mut memory, good);
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
+    }
+
+    #[test]
+    fn mulps_memory_rax_unmasked_gates_alignment_span_and_read_rollback() {
+        let code = [0x0f, 0x59, 0x00];
+        let good = MulpsMemoryRaxUnmaskedControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let run = |state: &mut LongModeState, memory: &mut Memory, controls| {
+            run_with_mulps_memory_rax_unmasked_controls(
+                state,
+                memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(state.rip + 3),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            )
+        };
+        for (controls, vector) in [
+            (
+                MulpsMemoryRaxUnmaskedControls {
+                    sse_available: false,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                MulpsMemoryRaxUnmaskedControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                MulpsMemoryRaxUnmaskedControls {
+                    cr4_osfxsr: false,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                MulpsMemoryRaxUnmaskedControls {
+                    cr0_ts: true,
+                    ..good
+                },
+                7,
+            ),
+        ] {
+            let mut memory = Memory::at(&code, 0x3000);
+            let mut state = LongModeState::default();
+            state.rip = 0x3000;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(&mut state, &mut memory, controls);
+            assert!(
+                matches!(result.exit, RunExit::Fault(ArchitecturalFault { vector: found, .. }) if found == vector)
+            );
+            assert_eq!(state, before);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(memory.fetches, [0x3000, 0x3001, 0x3002]);
+            assert!(memory.accesses.is_empty());
+        }
+        for (privilege, cpl) in [
+            (PrivilegeLevel::Ring0, 0u64),
+            (PrivilegeLevel::Ring1, 1),
+            (PrivilegeLevel::Ring2, 2),
+            (PrivilegeLevel::Ring3, 3),
+        ] {
+            for (controls, vector) in [
+                (
+                    MulpsMemoryRaxUnmaskedControls {
+                        sse_available: false,
+                        cr0_ts: true,
+                        ..good
+                    },
+                    6,
+                ),
+                (
+                    MulpsMemoryRaxUnmaskedControls {
+                        cr0_ts: true,
+                        ..good
+                    },
+                    7,
+                ),
+            ] {
+                let mut memory = Memory::at(&code, 0x3008 + u64::from(cpl) * 8);
+                let mut state = LongModeState::default();
+                state.rip = 0x3008 + u64::from(cpl) * 8;
+                state.gpr[Register::Rax as usize] = memory.data_base;
+                state.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let rip = state.rip;
+                let result = run_with_mulps_memory_rax_unmasked_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(rip + 3),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    controls,
+                    || false,
+                );
+                assert!(
+                    matches!(
+                        result.exit,
+                        RunExit::Fault(ArchitecturalFault { vector: found, .. }) if found == vector
+                    ),
+                    "CPL{cpl}, expected vector {vector}: {:?}",
+                    result.exit
+                );
+                assert_eq!(state, before, "CPL{cpl}");
+                assert_eq!(memory.fetches.len(), 3, "CPL{cpl}");
+                assert!(memory.accesses.is_empty(), "CPL{cpl}");
+            }
+        }
+        let mut noncanonical_fetch = Memory::at(&code, 0x0000_7fff_ffff_ffff);
+        let mut state = LongModeState::default();
+        state.rip = 0x0000_7fff_ffff_ffff;
+        state.gpr[Register::Rax as usize] = noncanonical_fetch.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut noncanonical_fetch,
+            MulpsMemoryRaxUnmaskedControls {
+                sse_available: false,
+                cr0_em: true,
+                cr0_ts: true,
+                cr4_osfxsr: false,
+                ..good
+            },
+        );
+        assert!(matches!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                ..
+            })
+        ));
+        assert_eq!(state, before);
+        assert!(noncanonical_fetch.accesses.is_empty());
+        let mut truncated = Memory::at(&code[..2], 0x3004);
+        let mut state = LongModeState::default();
+        state.rip = 0x3004;
+        state.gpr[Register::Rax as usize] = truncated.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut truncated,
+            MulpsMemoryRaxUnmaskedControls {
+                sse_available: false,
+                cr0_ts: true,
+                ..good
+            },
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert!(truncated.accesses.is_empty());
+        let mut fetch_error = Memory::at(&code, 0x3006);
+        fetch_error.fetch_error = Some((
+            0x3007,
+            MemoryError::Backend("injected MULPS instruction-fetch failure".into()),
+        ));
+        let mut state = LongModeState::default();
+        state.rip = 0x3006;
+        state.gpr[Register::Rax as usize] = fetch_error.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f00,
+        });
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut fetch_error,
+            MulpsMemoryRaxUnmaskedControls {
+                sse_available: false,
+                cr0_ts: true,
+                ..good
+            },
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert!(fetch_error.accesses.is_empty());
+        let mut wrong_form = Memory::at(&[0x0f, 0x59, 0x08], 0x300c);
+        let mut state = LongModeState::default();
+        state.rip = 0x300c;
+        state.gpr[Register::Rax as usize] = wrong_form.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut wrong_form,
+            MulpsMemoryRaxUnmaskedControls {
+                sse_available: false,
+                cr0_ts: true,
+                ..good
+            },
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x59 });
+        assert_eq!(state, before);
+        assert!(wrong_form.accesses.is_empty());
+        let mut register_form = Memory::at(&[0x0f, 0x59, 0xc1], 0x3014);
+        let mut state = LongModeState::default();
+        state.rip = 0x3014;
+        state.gpr[Register::Rax as usize] = register_form.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run(&mut state, &mut register_form, good);
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x59 });
+        assert_eq!(state, before);
+        assert!(register_form.accesses.is_empty());
+        for mxcsr in [0x1f80 & !(1 << 10), 0x1f80 & !(1 << 11), 0x1f80 | (1 << 16)] {
+            let mut memory = Memory::at(&code, 0x3018);
+            let mut state = LongModeState::default();
+            state.rip = 0x3018;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            let result = run(&mut state, &mut memory, good);
+            assert_eq!(
+                result.exit,
+                RunExit::Unsupported { opcode: 0x59 },
+                "MXCSR {mxcsr:#x}"
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for ac in [false, true] {
+            let mut memory = Memory::at(&code, 0x3010);
+            let mut state = LongModeState::default();
+            state.rip = 0x3010;
+            state.gpr[Register::Rax as usize] = memory.data_base + 1;
+            state.rflags = u64::from(ac) << 18;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(&mut state, &mut memory, good);
+            assert!(matches!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    ..
+                })
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for address in [0x0000_8000_0000_0000] {
+            let mut memory = Memory::at(&code, 0x3020);
+            let mut state = LongModeState::default();
+            state.rip = 0x3020;
+            state.gpr[Register::Rax as usize] = address;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(&mut state, &mut memory, good);
+            assert!(
+                matches!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        ..
+                    })
+                ),
+                "address={address:#x} exit={:?}",
+                result.exit
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut memory = Memory::at(&code, 0x3030);
+        memory.error_kind = Some(AccessKind::Read);
+        memory.error = Some(MemoryError::Backend(
+            "injected MULPS m128 read failure".into(),
         ));
         let mut state = LongModeState::default();
         state.rip = 0x3030;

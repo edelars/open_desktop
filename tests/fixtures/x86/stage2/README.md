@@ -8868,3 +8868,23 @@ denied. These are host-side interpreter checks, not physical x86 acceptance. See
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ap--exact-mulpd-memory-profile-with-unmasked-exceptions),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38ap--exact-mulpd-memory-form-with-unmasked-exceptions),
 and [report](../../../../docs/reports/S2_38AP_MULPD_MEMORY_UNMASKED.md).
+
+### S2-38ao — MULPS m128 memory unmasked exceptions
+
+Six handwritten literals cover exact `0F 59 00`: successful packed
+multiplication with prior sticky IE, unmasked IE/DE/PE, masked UE+PE rounding
+to minimum normal, and a noncanonical fetch span that preempts disabled SSE
+with `#GP(0)`. The immutable schema-v2 profile uses separate unmasked controls
+and an independent integer-only raw-u32 oracle with the actual memory RHS. A
+76,832-case seven-class event/mask/delivery matrix and 73,728 rounding,
+sticky-history and cross-lane cases cover 150,560 interpreter comparisons.
+Vectors include inexact tiny results, overflow, signed zero, NaN priority and
+lane permutations, pre-event suppression across lanes, and masked DE followed
+by unmasked PE. A normal p=24 halfway product checks RN/RU and RD/RZ outputs
+directly. Direct checks cover exact fetch/gate/CPL order, malformed
+MXCSR, mandatory alignment, canonical span/read rollback, schema/result
+tampering and interpreter-only backend denial. These are host-side checks, not
+physical x86 acceptance. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ao--exact-mulps-memory-profile-with-unmasked-exceptions),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38ao--exact-mulps-memory-form-with-unmasked-exceptions),
+and [report](../../../../docs/reports/S2_38AO_MULPS_MEMORY_UNMASKED.md).

@@ -566,6 +566,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                     .fixture
                     .mulss_memory_rax_unmasked_controls,
                 mulps_controls: input.fixture.mulps_controls,
+                mulps_memory_rax_unmasked_controls: input
+                    .fixture
+                    .mulps_memory_rax_unmasked_controls,
                 subps_controls: input.fixture.subps_controls,
                 subsd_controls: input.fixture.subsd_controls,
                 subsd_memory_rax_unmasked_controls: input
