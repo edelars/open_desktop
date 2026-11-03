@@ -25,12 +25,17 @@ checked; only the new unmasked MULSS profile requires a read-only data mapping.
 
 ## Coverage
 
-- 106,496 independent oracle/result validations: 13 operand/event vectors × 4
-  rounding modes × 64 incoming sticky histories × 16 IM/DM/ZM/PM combinations ×
-  both OSXMMEXCPT settings. Vectors cover signed QNaN/SNaN positions,
-  QNaN+subnormal priority, zero×infinity, signed zero/infinity, exact and
+- 32,768 actual interpreter executions, each checked against the independent
+  raw-u32 integer oracle: four operand vectors × 4 rounding modes × 64 incoming
+  sticky histories × 16 IM/DM/ZM/PM combinations × both OSXMMEXCPT settings.
+  These executions cover QNaN+subnormal IE/DE priority, a signed memory SNaN,
+  tiny inexact underflow, and an exact tiny result (`min-normal × 0.5`).
+- A separate 106,496-case schema/result-validator matrix uses 13 independently
+  computed oracle vectors across the same controls and histories. It covers
+  signed QNaN/SNaN positions, zero×infinity, signed zero/infinity, exact and
   inexact products, tiny inexact results, overflow, and WPR rounding to
-  minimum-normal.
+  minimum-normal. This validates schema admission and result tamper checks; it
+  does not count as interpreter execution coverage.
 - Three handwritten literal fixtures exercise unmasked IE, unmasked PE, and
   WPR rounding to minimum-normal. Runner checks include control/state/status/
   exception/retirement tampering and JIT/native denial.
@@ -38,10 +43,12 @@ checked; only the new unmasked MULSS profile requires a read-only data mapping.
   delivery, AC-before-address, unaligned read4, one callback, canonical and
   wrapping-span rejection, read-failure rollback, and IE/DE pre-event versus PE
   post-event suppression.
-- Package suites passed: `od-isa` 1,959; `od-testkit` 460; `od-runner` 138
-  unit and 561 fixture tests. Workspace all-target offline check, formatting,
-  Graphify refresh (12,459 nodes, 27,056 edges, 376 communities), and diff check
-  passed. `tools/check_layout.py` reported the isolated worktree `.git` marker
+- After review fixes, package suites passed: `od-isa` 1,959; `od-testkit` 461;
+  `od-runner` 138 unit and 561 fixture tests. The updated real executor matrix
+  completed in 2.74 seconds within `od-testkit`. Workspace all-target offline
+  check (before the test-only follow-up), formatting, Graphify refresh (12,460
+  nodes, 27,060 edges, 366 communities), and diff check passed.
+  `tools/check_layout.py` reported the isolated worktree `.git` marker
   and two pre-existing links from the aggregate Stage 2 report to absent
   `work/` oracle manifests.
 

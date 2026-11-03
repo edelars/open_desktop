@@ -11239,7 +11239,7 @@ fn subsd_memory_write_permission_preserves_masked_admission_only() {
 }
 
 #[test]
-fn mulss_memory_unmasked_raw_u32_oracle_matrix() {
+fn mulss_memory_unmasked_schema_oracle_matrix() {
     let seed = Fixture::from_json(include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_38ag_mulss_memory_unmasked_wpr_min_normal.case.json"
     ))
@@ -11365,4 +11365,146 @@ fn mulss_memory_unmasked_raw_u32_oracle_matrix() {
         }
     }
     assert_eq!(comparisons, 13 * 4 * 64 * 16 * 2);
+}
+
+#[test]
+fn mulss_memory_unmasked_executor_matches_raw_u32_oracle_matrix() {
+    use crate::memory::FlatMemory;
+    use od_isa::execute::{
+        MulssMemoryRaxUnmaskedControls, RunConfig, RunExit,
+        run_with_mulss_memory_rax_unmasked_controls,
+    };
+    use od_isa::memory::AccessContext;
+
+    let seed = Fixture::from_json(include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38ag_mulss_memory_unmasked_wpr_min_normal.case.json"
+    ))
+    .unwrap()
+    .fixture;
+    // Four vectors make the full control/history product cover invalid priority,
+    // signed SNaN payloads in memory, denormal+tiny inexact, and exact tiny output.
+    let operands = [
+        (0x7fc0_0001, 0x0000_0001), // QNaN suppresses the subnormal operand's DE.
+        (0x3f80_0000, 0xff80_0001), // Signed SNaN in the memory source.
+        (0x0000_0001, 0x3f00_0000), // Tiny inexact product with DE.
+        (0x0080_0000, 0x3f00_0000), // Exact tiny product: minimum normal * 0.5.
+    ];
+    let mut executions = 0usize;
+    for (vector_index, (lhs, rhs)) in operands.into_iter().enumerate() {
+        for rc in 0..4u32 {
+            for sticky in 0..64u32 {
+                for masks in 0..16u32 {
+                    for osxmmexcpt in [false, true] {
+                        let mask_bits = ((masks & 1) << 7)
+                            | (((masks >> 1) & 1) << 8)
+                            | (((masks >> 2) & 1) << 9)
+                            | (((masks >> 3) & 1) << 12)
+                            | (1 << 10)
+                            | (1 << 11);
+                        let mxcsr = (rc << 13) | sticky | mask_bits;
+                        let (expected_value, ie, de, oe, ue, pe) =
+                            independent_mulss(lhs, rhs, mxcsr);
+                        let status = mxcsr
+                            | u32::from(ie)
+                            | (u32::from(de) << 1)
+                            | (u32::from(oe) << 3)
+                            | (u32::from(ue) << 4)
+                            | (u32::from(pe) << 5);
+                        let pre = (ie && mxcsr & (1 << 7) == 0) || (de && mxcsr & (1 << 8) == 0);
+                        let post = !pre && pe && mxcsr & (1 << 12) == 0;
+
+                        let mut fixture = seed.clone();
+                        fixture.case_id = format!(
+                            "s2_38ag_executor_{vector_index}_{rc}_{sticky}_{masks}_{osxmmexcpt}"
+                        );
+                        fixture.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(
+                            0..8,
+                            &lhs.to_le_bytes()
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>(),
+                        );
+                        fixture.memory[1].initial_bytes_hex = rhs
+                            .to_le_bytes()
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect();
+                        fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                            HexU64(u64::from(mxcsr));
+                        fixture
+                            .mulss_memory_rax_unmasked_controls
+                            .as_mut()
+                            .unwrap()
+                            .cr4_osxmmexcpt = osxmmexcpt;
+                        fixture.expected_exit = if pre || post {
+                            ExpectedExit::Exception
+                        } else {
+                            ExpectedExit::StopAddress
+                        };
+                        fixture.validate().unwrap_or_else(|error| {
+                            panic!("vector={vector_index} RC={rc} sticky={sticky:#x} masks={masks:#x} OSXMMEXCPT={osxmmexcpt}: {error:?}")
+                        });
+
+                        let mut state = fixture.initial_state.to_cpu_for(fixture.profile).unwrap();
+                        state.sse = Some(
+                            fixture
+                                .initial_state
+                                .sse
+                                .as_ref()
+                                .unwrap()
+                                .to_cpu()
+                                .unwrap(),
+                        );
+                        let original_xmm0 = state.sse.as_ref().unwrap().xmm[0];
+                        let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+                        let controls = MulssMemoryRaxUnmaskedControls {
+                            sse_available: true,
+                            cr0_em: false,
+                            cr0_ts: false,
+                            cr4_osfxsr: true,
+                            cr4_osxmmexcpt: osxmmexcpt,
+                        };
+                        let result = run_with_mulss_memory_rax_unmasked_controls(
+                            &mut state,
+                            &mut memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: Some(fixture.stop_rip.unwrap().get()),
+                                context: AccessContext::default(),
+                            },
+                            controls,
+                            || false,
+                        );
+
+                        let expected_fault = pre || post;
+                        if expected_fault {
+                            assert!(
+                                matches!(&result.exit, RunExit::Fault(fault)
+                                    if fault.vector == if osxmmexcpt { 19 } else { 6 }),
+                                "vector={vector_index} RC={rc} sticky={sticky:#x} masks={masks:#x} OSXMMEXCPT={osxmmexcpt}: {:?}",
+                                result.exit
+                            );
+                            assert_eq!(result.instructions_executed, 0);
+                            assert_eq!(state.rip, fixture.initial_state.rip.get());
+                            assert_eq!(state.sse.as_ref().unwrap().xmm[0], original_xmm0);
+                        } else {
+                            assert_eq!(result.exit, RunExit::StopAddress);
+                            assert_eq!(result.instructions_executed, 1);
+                            assert_eq!(state.rip, fixture.stop_rip.unwrap().get());
+                            assert_eq!(
+                                u32::from_le_bytes(
+                                    state.sse.as_ref().unwrap().xmm[0][..4].try_into().unwrap()
+                                ),
+                                expected_value,
+                                "vector={vector_index} RC={rc} sticky={sticky:#x} masks={masks:#x} OSXMMEXCPT={osxmmexcpt}"
+                            );
+                        }
+                        assert_eq!(state.sse.as_ref().unwrap().mxcsr, status);
+                        executions += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(executions, 4 * 4 * 64 * 16 * 2);
 }
