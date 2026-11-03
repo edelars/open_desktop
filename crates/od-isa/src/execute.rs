@@ -819,6 +819,16 @@ pub struct AddssMemoryRaxUnmaskedControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// SSE and SIMD-exception delivery controls for unmasked ADDPS m128 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AddpsMemoryRaxUnmaskedControls {
+    pub sse_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 #[derive(Clone, Copy)]
 enum AddssMemoryRaxExecutionProfile {
     Masked(AddssMemoryRaxControls),
@@ -1491,6 +1501,7 @@ struct ExecutionProfiles<'a> {
     addss_registers: Option<AddssControls>,
     addss_memory_rax: Option<AddssMemoryRaxExecutionProfile>,
     addps_registers: Option<AddpsControls>,
+    addps_memory_rax_unmasked: Option<AddpsMemoryRaxUnmaskedControls>,
     divpd_registers: Option<DivpdControls>,
     divpd_memory_rax: Option<DivpdControls>,
     divsd_registers: Option<DivsdControls>,
@@ -2394,6 +2405,7 @@ pub fn run_with_maxss_unmasked_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -2540,6 +2552,7 @@ pub fn run_with_minsd_unmasked_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -2686,6 +2699,7 @@ pub fn run_with_maxsd_unmasked_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -2832,6 +2846,7 @@ pub fn run_with_minpd_unmasked_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -2978,6 +2993,7 @@ pub fn run_with_minps_unmasked_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -3124,6 +3140,7 @@ pub fn run_with_maxps_unmasked_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -3270,6 +3287,7 @@ pub fn run_with_maxpd_unmasked_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -3416,6 +3434,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -3562,6 +3581,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -3708,6 +3728,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -3854,6 +3875,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -4000,6 +4022,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -4146,6 +4169,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -4292,6 +4316,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -4438,6 +4463,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -4584,6 +4610,7 @@ pub fn run_with_cvtss2si_registers_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -4730,6 +4757,7 @@ pub fn run_with_cvttss2si_registers_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -4875,6 +4903,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -5021,6 +5050,7 @@ pub fn run_with_cvtsd2si_r32_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -5167,6 +5197,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -5315,6 +5346,7 @@ pub fn run_with_cvttsd2si_r32_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -5465,6 +5497,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -5611,6 +5644,7 @@ pub fn run_with_cvtss2si_r32_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -5757,6 +5791,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -5903,6 +5938,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -6049,6 +6085,7 @@ pub fn run_with_cvttss2si_r32_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -6196,6 +6233,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -6342,6 +6380,7 @@ pub fn run_with_cvtdq2pd_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -6488,6 +6527,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -6633,6 +6673,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -6779,6 +6820,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -6925,6 +6967,7 @@ pub fn run_with_cvtdq2ps_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -7071,6 +7114,7 @@ pub fn run_with_cvtps2dq_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -7217,6 +7261,7 @@ pub fn run_with_cvttps2dq_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -7363,6 +7408,7 @@ pub fn run_with_cvtps2dq_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -7509,6 +7555,7 @@ pub fn run_with_cvttps2dq_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -7655,6 +7702,7 @@ pub fn run_with_cvttpd2dq_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -7801,6 +7849,7 @@ pub fn run_with_cvtpd2dq_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -7947,6 +7996,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -8093,6 +8143,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -8239,6 +8290,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -8385,6 +8437,7 @@ pub fn run_with_cvtss2sd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -8531,6 +8584,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -8713,6 +8767,7 @@ fn run_with_cvtpi2ps_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -9026,6 +9081,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -9172,6 +9228,7 @@ pub fn run_with_cvtps2pd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -9318,6 +9375,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -9464,6 +9522,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -9609,6 +9668,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -9755,6 +9815,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -9959,6 +10020,7 @@ fn run_with_cmpss_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -10105,6 +10167,7 @@ pub fn run_with_cmpsd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -10251,6 +10314,7 @@ pub fn run_with_cmppd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -10396,6 +10460,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -10541,6 +10606,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -10709,6 +10775,7 @@ fn run_with_minsd_memory_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -10855,6 +10922,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -11023,6 +11091,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -11186,6 +11255,7 @@ fn run_with_minpd_memory_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -11367,6 +11437,7 @@ fn run_with_minps_memory_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -11518,6 +11589,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -11664,6 +11736,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -11809,6 +11882,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -11948,6 +12022,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -12093,6 +12168,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -12277,6 +12353,7 @@ fn run_with_sqrtps_memory_rax_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -12422,6 +12499,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -12594,6 +12672,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -12771,6 +12850,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -12951,6 +13031,7 @@ fn run_with_maxpd_memory_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -13135,6 +13216,7 @@ fn run_with_maxps_memory_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -13337,6 +13419,7 @@ fn run_minss_memory_rax_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -13525,6 +13608,7 @@ fn run_maxss_memory_rax_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -13670,6 +13754,7 @@ pub fn run_with_cmpps_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -13816,6 +13901,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -14015,6 +14101,7 @@ pub fn run_with_efer_rdmsr_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -14370,6 +14457,7 @@ pub fn run_with_cr0_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -14517,6 +14605,7 @@ pub fn run_with_cr4_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -14898,6 +14987,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -15229,6 +15319,7 @@ pub fn step_with_cr0_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -15618,6 +15709,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -15764,6 +15856,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -16134,6 +16227,7 @@ fn run_with_comparison_memory_rax_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -16282,6 +16376,7 @@ pub fn run_with_sqrtss_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -16428,6 +16523,7 @@ pub fn run_with_sqrtsd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -16574,6 +16670,7 @@ pub fn run_with_sqrtps_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -16720,6 +16817,7 @@ pub fn run_with_sqrtpd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -16866,6 +16964,7 @@ fn run_with_subpd_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -17034,6 +17133,7 @@ pub fn run_with_mulpd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -17180,6 +17280,7 @@ fn run_with_addpd_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -17326,6 +17427,7 @@ pub fn run_with_mulpd_memory_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -17494,6 +17596,7 @@ pub fn run_with_addsd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -17640,6 +17743,7 @@ pub fn run_with_divpd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: Some(controls),
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -17786,6 +17890,7 @@ pub fn run_with_divpd_memory_rax_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: Some(controls),
             divsd_registers: None,
@@ -17932,6 +18037,7 @@ pub fn run_with_addss_register_controls(
             addss_registers: Some(controls),
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -18112,6 +18218,7 @@ fn run_with_addss_memory_rax_profile(
             addss_registers: None,
             addss_memory_rax: Some(profile),
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -18291,6 +18398,7 @@ fn run_with_addsd_memory_rax_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -18388,6 +18496,42 @@ pub fn run_with_addps_register_controls(
     controls: AddpsControls,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
+    run_with_addps_profile(state, memory, config, controls, None, &mut stop_requested)
+}
+
+/// Execute exact Long64 `0F 58 00` ADDPS XMM0,m128 with unmasked exception delivery.
+pub fn run_with_addps_memory_rax_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: AddpsMemoryRaxUnmaskedControls,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    let gates = AddpsControls {
+        sse_available: controls.sse_available,
+        cr0_em: controls.cr0_em,
+        cr0_ts: controls.cr0_ts,
+        cr4_osfxsr: controls.cr4_osfxsr,
+        cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+    };
+    run_with_addps_profile(
+        state,
+        memory,
+        config,
+        gates,
+        Some(controls),
+        &mut stop_requested,
+    )
+}
+
+fn run_with_addps_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: AddpsControls,
+    addps_memory_rax_unmasked: Option<AddpsMemoryRaxUnmaskedControls>,
+    mut stop_requested: &mut impl FnMut() -> bool,
+) -> RunResult {
     run_configured(
         state,
         memory,
@@ -18437,6 +18581,7 @@ pub fn run_with_addps_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: Some(controls),
+            addps_memory_rax_unmasked,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -18583,6 +18728,7 @@ pub fn run_with_divsd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: Some(controls),
@@ -18729,6 +18875,7 @@ pub fn run_with_divps_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -18875,6 +19022,7 @@ pub fn run_with_divss_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -19021,6 +19169,7 @@ pub fn run_with_mulsd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -19167,6 +19316,7 @@ pub fn run_with_mulss_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -19313,6 +19463,7 @@ pub fn run_with_mulps_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -19459,6 +19610,7 @@ pub fn run_with_subsd_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -19605,6 +19757,7 @@ pub fn run_with_subss_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -19751,6 +19904,7 @@ fn run_with_scalar_float_memory_rax_profile(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -20105,6 +20259,7 @@ pub fn run_with_subps_register_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -20249,6 +20404,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             addss_registers: None,
             addss_memory_rax: None,
             addps_registers: None,
+            addps_memory_rax_unmasked: None,
             divpd_registers: None,
             divpd_memory_rax: None,
             divsd_registers: None,
@@ -20562,6 +20718,7 @@ fn step_configured(
         addss_registers: configured_addss_register_controls,
         addss_memory_rax: configured_addss_memory_rax_controls,
         addps_registers: configured_addps_register_controls,
+        addps_memory_rax_unmasked: configured_addps_memory_rax_unmasked_controls,
         divpd_registers: configured_divpd_register_controls,
         divpd_memory_rax: _,
         divsd_registers: configured_divsd_register_controls,
@@ -22375,7 +22532,40 @@ fn step_configured(
         }
     }
 
-    if let Some(controls) = configured_addps_register_controls {
+    if configured_addps_memory_rax_unmasked_controls.is_some() {
+        let controls = configured_addps_memory_rax_unmasked_controls.unwrap();
+        let admitted = instruction.operation == Operation::AddpsMemoryRax
+            && instruction.length == 3
+            && instruction.opcode.map == OpcodeMap::Escape0f
+            && instruction.opcode.byte == 0x58
+            && instruction.prefixes.group1.is_none()
+            && instruction.prefixes.segment.is_none()
+            && !instruction.prefixes.operand_override
+            && !instruction.prefixes.address_override
+            && instruction.prefixes.rex.is_none();
+        if !admitted {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+            Some(6)
+        } else if controls.cr0_ts {
+            Some(7)
+        } else {
+            None
+        };
+        if let Some(vector) = gate {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+    }
+    if let Some(controls) = configured_addps_register_controls
+        .filter(|_| configured_addps_memory_rax_unmasked_controls.is_none())
+    {
         let is_canonical_register_form = matches!(
             instruction.operation,
             Operation::AddpsRegister { destination, source }
@@ -26694,9 +26884,15 @@ fn step_configured(
             )
         {
             if matches!(instruction.operation, Operation::AddpsMemoryRax) {
-                sse.mxcsr & !0x0000_ffbf == 0
-                    && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
-                    && sse.mxcsr & 0x1f80 == 0x1f80
+                if configured_addps_memory_rax_unmasked_controls.is_some() {
+                    sse.mxcsr & !0x0000_ffbf == 0
+                        && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
+                        && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+                } else {
+                    sse.mxcsr & !0x0000_ffbf == 0
+                        && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
+                        && sse.mxcsr & 0x1f80 == 0x1f80
+                }
             } else {
                 sse.mxcsr & !0x0000_ffbf == 0
                     && sse.mxcsr & (1 << 6) == 0
@@ -33532,58 +33728,144 @@ fn step_configured(
                 let sse = state.sse.as_ref().expect("ADDPS memory state prevalidated");
                 (sse.xmm[0], sse.mxcsr)
             };
-            let mut result = [0u8; 16];
-            let mut new_ie = false;
-            let mut new_de = false;
-            let mut new_oe = false;
-            let mut new_ue = false;
-            let mut new_pe = false;
-            let rounding = cvtss2si_rounding_mode(old_mxcsr);
-            for lane in 0..4 {
-                let offset = lane * 4;
-                let lhs = Binary32::from_bits(u32::from_le_bytes(
-                    lhs_xmm[offset..offset + 4]
-                        .try_into()
-                        .expect("ADDPS lhs lane"),
-                ));
-                let rhs = Binary32::from_bits(u32::from_le_bytes(
-                    source[offset..offset + 4]
-                        .try_into()
-                        .expect("ADDPS m128 lane"),
-                ));
-                let lhs_class = lhs.class();
-                let rhs_class = rhs.class();
-                let lhs_nan =
-                    matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
-                let rhs_nan =
-                    matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
-                if lhs_nan || rhs_nan {
-                    new_ie |= lhs_class == BinaryClass::SignalingNaN
-                        || rhs_class == BinaryClass::SignalingNaN;
-                } else if lhs_class == BinaryClass::Infinity
-                    && rhs_class == BinaryClass::Infinity
-                    && lhs.sign() != rhs.sign()
-                {
-                    new_ie = true;
-                } else {
-                    new_de |=
-                        lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal;
+            if let Some(controls) = configured_addps_memory_rax_unmasked_controls {
+                let mut new_ie = false;
+                let mut new_de = false;
+                for lane in 0..4 {
+                    let offset = lane * 4;
+                    let lhs = Binary32::from_bits(u32::from_le_bytes(
+                        lhs_xmm[offset..offset + 4]
+                            .try_into()
+                            .expect("ADDPS lhs lane"),
+                    ));
+                    let rhs = Binary32::from_bits(u32::from_le_bytes(
+                        source[offset..offset + 4]
+                            .try_into()
+                            .expect("ADDPS m128 lane"),
+                    ));
+                    let lhs_class = lhs.class();
+                    let rhs_class = rhs.class();
+                    let lhs_nan =
+                        matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                    let rhs_nan =
+                        matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                    if lhs_nan || rhs_nan {
+                        new_ie |= lhs_class == BinaryClass::SignalingNaN
+                            || rhs_class == BinaryClass::SignalingNaN;
+                    } else if lhs_class == BinaryClass::Infinity
+                        && rhs_class == BinaryClass::Infinity
+                        && lhs.sign() != rhs.sign()
+                    {
+                        new_ie = true;
+                    } else {
+                        new_de |= lhs_class == BinaryClass::Subnormal
+                            || rhs_class == BinaryClass::Subnormal;
+                    }
                 }
-                let computed = Binary32::add_raw_result(lhs, rhs, rounding);
-                let raw = computed.value().to_bits();
-                new_oe |= computed.overflow();
-                new_ue |= computed.tiny_after_precision_rounding() && computed.inexact();
-                new_pe |= computed.inexact() || computed.overflow();
-                result[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
+                let pre_unmasked =
+                    (new_ie && old_mxcsr & (1 << 7) == 0) || (new_de && old_mxcsr & (1 << 8) == 0);
+                let sse = state.sse.as_mut().expect("ADDPS memory state prevalidated");
+                if pre_unmasked {
+                    sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+                let rounding = cvtss2si_rounding_mode(old_mxcsr);
+                let mut result = [0u8; 16];
+                let mut new_oe = false;
+                let mut new_ue = false;
+                let mut new_pe = false;
+                for lane in 0..4 {
+                    let offset = lane * 4;
+                    let lhs = Binary32::from_bits(u32::from_le_bytes(
+                        lhs_xmm[offset..offset + 4]
+                            .try_into()
+                            .expect("ADDPS lhs lane"),
+                    ));
+                    let rhs = Binary32::from_bits(u32::from_le_bytes(
+                        source[offset..offset + 4]
+                            .try_into()
+                            .expect("ADDPS m128 lane"),
+                    ));
+                    let computed = Binary32::add_raw_result(lhs, rhs, rounding);
+                    new_oe |= computed.overflow();
+                    new_ue |= computed.tiny_after_precision_rounding() && computed.inexact();
+                    new_pe |= computed.inexact() || computed.overflow();
+                    result[offset..offset + 4]
+                        .copy_from_slice(&computed.value().to_bits().to_le_bytes());
+                }
+                let unmasked_pe = new_pe && old_mxcsr & (1 << 12) == 0;
+                sse.mxcsr = old_mxcsr
+                    | u32::from(new_ie)
+                    | (u32::from(new_de) << 1)
+                    | (u32::from(new_oe) << 3)
+                    | (u32::from(new_ue) << 4)
+                    | (u32::from(new_pe) << 5);
+                if unmasked_pe {
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+                sse.xmm[0] = result;
+            } else {
+                let mut result = [0u8; 16];
+                let mut new_ie = false;
+                let mut new_de = false;
+                let mut new_oe = false;
+                let mut new_ue = false;
+                let mut new_pe = false;
+                let rounding = cvtss2si_rounding_mode(old_mxcsr);
+                for lane in 0..4 {
+                    let offset = lane * 4;
+                    let lhs = Binary32::from_bits(u32::from_le_bytes(
+                        lhs_xmm[offset..offset + 4]
+                            .try_into()
+                            .expect("ADDPS lhs lane"),
+                    ));
+                    let rhs = Binary32::from_bits(u32::from_le_bytes(
+                        source[offset..offset + 4]
+                            .try_into()
+                            .expect("ADDPS m128 lane"),
+                    ));
+                    let lhs_class = lhs.class();
+                    let rhs_class = rhs.class();
+                    let lhs_nan =
+                        matches!(lhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                    let rhs_nan =
+                        matches!(rhs_class, BinaryClass::QuietNaN | BinaryClass::SignalingNaN);
+                    if lhs_nan || rhs_nan {
+                        new_ie |= lhs_class == BinaryClass::SignalingNaN
+                            || rhs_class == BinaryClass::SignalingNaN;
+                    } else if lhs_class == BinaryClass::Infinity
+                        && rhs_class == BinaryClass::Infinity
+                        && lhs.sign() != rhs.sign()
+                    {
+                        new_ie = true;
+                    } else {
+                        new_de |= lhs_class == BinaryClass::Subnormal
+                            || rhs_class == BinaryClass::Subnormal;
+                    }
+                    let computed = Binary32::add_raw_result(lhs, rhs, rounding);
+                    let raw = computed.value().to_bits();
+                    new_oe |= computed.overflow();
+                    new_ue |= computed.tiny_after_precision_rounding() && computed.inexact();
+                    new_pe |= computed.inexact() || computed.overflow();
+                    result[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
+                }
+                let sse = state.sse.as_mut().expect("ADDPS memory state prevalidated");
+                sse.xmm[0] = result;
+                sse.mxcsr = old_mxcsr
+                    | u32::from(new_ie)
+                    | (u32::from(new_de) << 1)
+                    | (u32::from(new_oe) << 3)
+                    | (u32::from(new_ue) << 4)
+                    | (u32::from(new_pe) << 5);
             }
-            let sse = state.sse.as_mut().expect("ADDPS memory state prevalidated");
-            sse.xmm[0] = result;
-            sse.mxcsr = old_mxcsr
-                | u32::from(new_ie)
-                | (u32::from(new_de) << 1)
-                | (u32::from(new_oe) << 3)
-                | (u32::from(new_ue) << 4)
-                | (u32::from(new_pe) << 5);
         }
         Operation::AddpsMemoryRax => {
             return Ok(StepOutcome::Unsupported {
@@ -180899,5 +181181,320 @@ mod cvtsi2ss_r64_memory_profile_tests {
             before.sse.as_ref().unwrap().xmm[0]
         );
         assert_eq!(state.rip, before.rip);
+    }
+
+    #[test]
+    fn addps_memory_rax_unmasked_gates_alignment_span_and_read_rollback() {
+        let code = [0x0f, 0x58, 0x00];
+        let good = AddpsMemoryRaxUnmaskedControls {
+            sse_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let run = |state: &mut LongModeState, memory: &mut Memory, controls| {
+            run_with_addps_memory_rax_unmasked_controls(
+                state,
+                memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(state.rip + 3),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            )
+        };
+        for (controls, vector) in [
+            (
+                AddpsMemoryRaxUnmaskedControls {
+                    sse_available: false,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                AddpsMemoryRaxUnmaskedControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                AddpsMemoryRaxUnmaskedControls {
+                    cr4_osfxsr: false,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                AddpsMemoryRaxUnmaskedControls {
+                    cr0_ts: true,
+                    ..good
+                },
+                7,
+            ),
+        ] {
+            let mut memory = Memory::at(&code, 0x3000);
+            let mut state = LongModeState::default();
+            state.rip = 0x3000;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(&mut state, &mut memory, controls);
+            assert!(
+                matches!(result.exit, RunExit::Fault(ArchitecturalFault { vector: found, .. }) if found == vector)
+            );
+            assert_eq!(state, before);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(memory.fetches, [0x3000, 0x3001, 0x3002]);
+            assert!(memory.accesses.is_empty());
+        }
+        for (privilege, cpl) in [
+            (PrivilegeLevel::Ring0, 0u64),
+            (PrivilegeLevel::Ring1, 1),
+            (PrivilegeLevel::Ring2, 2),
+            (PrivilegeLevel::Ring3, 3),
+        ] {
+            for (controls, vector) in [
+                (
+                    AddpsMemoryRaxUnmaskedControls {
+                        sse_available: false,
+                        cr0_ts: true,
+                        ..good
+                    },
+                    6,
+                ),
+                (
+                    AddpsMemoryRaxUnmaskedControls {
+                        cr0_ts: true,
+                        ..good
+                    },
+                    7,
+                ),
+            ] {
+                let mut memory = Memory::at(&code, 0x3008 + u64::from(cpl) * 8);
+                let mut state = LongModeState::default();
+                state.rip = 0x3008 + u64::from(cpl) * 8;
+                state.gpr[Register::Rax as usize] = memory.data_base;
+                state.sse = Some(SseState {
+                    xmm: [[0x5a; 16]; 16],
+                    mxcsr: 0x1f80,
+                });
+                let before = state.clone();
+                let rip = state.rip;
+                let result = run_with_addps_memory_rax_unmasked_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(rip + 3),
+                        context: AccessContext {
+                            privilege,
+                            ..AccessContext::default()
+                        },
+                    },
+                    controls,
+                    || false,
+                );
+                assert!(
+                    matches!(
+                        result.exit,
+                        RunExit::Fault(ArchitecturalFault { vector: found, .. }) if found == vector
+                    ),
+                    "CPL{cpl}, expected vector {vector}: {:?}",
+                    result.exit
+                );
+                assert_eq!(state, before, "CPL{cpl}");
+                assert_eq!(memory.fetches.len(), 3, "CPL{cpl}");
+                assert!(memory.accesses.is_empty(), "CPL{cpl}");
+            }
+        }
+        let mut noncanonical_fetch = Memory::at(&code, 0x0000_7fff_ffff_ffff);
+        let mut state = LongModeState::default();
+        state.rip = 0x0000_7fff_ffff_ffff;
+        state.gpr[Register::Rax as usize] = noncanonical_fetch.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut noncanonical_fetch,
+            AddpsMemoryRaxUnmaskedControls {
+                sse_available: false,
+                cr0_em: true,
+                cr0_ts: true,
+                cr4_osfxsr: false,
+                ..good
+            },
+        );
+        assert!(matches!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                ..
+            })
+        ));
+        assert_eq!(state, before);
+        assert!(noncanonical_fetch.accesses.is_empty());
+        let mut truncated = Memory::at(&code[..2], 0x3004);
+        let mut state = LongModeState::default();
+        state.rip = 0x3004;
+        state.gpr[Register::Rax as usize] = truncated.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut truncated,
+            AddpsMemoryRaxUnmaskedControls {
+                sse_available: false,
+                cr0_ts: true,
+                ..good
+            },
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert!(truncated.accesses.is_empty());
+        let mut fetch_error = Memory::at(&code, 0x3006);
+        fetch_error.fetch_error = Some((
+            0x3007,
+            MemoryError::Backend("injected ADDPS instruction-fetch failure".into()),
+        ));
+        let mut state = LongModeState::default();
+        state.rip = 0x3006;
+        state.gpr[Register::Rax as usize] = fetch_error.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f00,
+        });
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut fetch_error,
+            AddpsMemoryRaxUnmaskedControls {
+                sse_available: false,
+                cr0_ts: true,
+                ..good
+            },
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert!(fetch_error.accesses.is_empty());
+        let mut wrong_form = Memory::at(&[0x0f, 0x58, 0x08], 0x300c);
+        let mut state = LongModeState::default();
+        state.rip = 0x300c;
+        state.gpr[Register::Rax as usize] = wrong_form.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let result = run(
+            &mut state,
+            &mut wrong_form,
+            AddpsMemoryRaxUnmaskedControls {
+                sse_available: false,
+                cr0_ts: true,
+                ..good
+            },
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x58 });
+        assert_eq!(state, before);
+        assert!(wrong_form.accesses.is_empty());
+        for mxcsr in [0x1f80 & !(1 << 10), 0x1f80 & !(1 << 11), 0x1f80 | (1 << 16)] {
+            let mut memory = Memory::at(&code, 0x3018);
+            let mut state = LongModeState::default();
+            state.rip = 0x3018;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            let result = run(&mut state, &mut memory, good);
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x58 });
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for ac in [false, true] {
+            let mut memory = Memory::at(&code, 0x3010);
+            let mut state = LongModeState::default();
+            state.rip = 0x3010;
+            state.gpr[Register::Rax as usize] = memory.data_base + 1;
+            state.rflags = u64::from(ac) << 18;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(&mut state, &mut memory, good);
+            assert!(matches!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    ..
+                })
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        for address in [0x0000_8000_0000_0000] {
+            let mut memory = Memory::at(&code, 0x3020);
+            let mut state = LongModeState::default();
+            state.rip = 0x3020;
+            state.gpr[Register::Rax as usize] = address;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run(&mut state, &mut memory, good);
+            assert!(
+                matches!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        ..
+                    })
+                ),
+                "address={address:#x} exit={:?}",
+                result.exit
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut memory = Memory::at(&code, 0x3030);
+        memory.error_kind = Some(AccessKind::Read);
+        memory.error = Some(MemoryError::Backend(
+            "injected ADDPS m128 read failure".into(),
+        ));
+        let mut state = LongModeState::default();
+        state.rip = 0x3030;
+        state.gpr[Register::Rax as usize] = memory.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f00,
+        });
+        let before = state.clone();
+        let result = run(&mut state, &mut memory, good);
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(state, before);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
     }
 }

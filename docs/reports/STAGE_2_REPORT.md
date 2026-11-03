@@ -23350,3 +23350,22 @@ See [S2-38ai](S2_38AI_DIVSS_MEMORY_UNMASKED.md),
 [S2-38aj](S2_38AJ_DIVSD_MEMORY_UNMASKED.md), the
 [CPU contract](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).
 Stage 2 remains open.
+
+## S2-38ak — ADDPS m128 memory unmasked exceptions (2026-11-03)
+
+Added exact Long64 `0F 58 00` ADDPS XMM0,m128 `[RAX]` as a separate immutable
+schema-v2 interpreter-only profile. It preserves S2-37dq masked memory and
+S2-37ba register behavior. Fetch/form and SSE/EM/OSFXSR/TS gates precede
+alignment, canonical-span checks and one read16; noncanonical fetch spans fault
+`#GP(0)` before gates. IE/DE aggregate across lanes before PE, and either
+unmasked stage suppresses the entire XMM0/RIP/retirement commit. OSXMMEXCPT
+selects `#XM` or arithmetic `#UD`. Six literal fixtures and an independent raw-
+u32 oracle use the actual memory RHS; JIT/native/C ABI/generic/fragment routes
+remain closed.
+
+Actual interpreter coverage includes all 41,472 four-lane representative ×
+IM/DM/ZM/PM × OSXMMEXCPT cases, plus 376,832 cross-lane/boundary cases across
+RC, all 64 sticky histories, masks and both delivery mappings. Full package
+results, workspace/layout checks, graph update and independent review are in
+the [S2-38ak implementation report](S2_38AK_ADDPS_MEMORY_UNMASKED.md). No
+physical x86 acceptance is claimed.

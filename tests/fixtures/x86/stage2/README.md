@@ -8653,6 +8653,28 @@ physical x86 acceptance is claimed. See the [CPU contract](../../../../docs/spec
 [implementation report](../../../../docs/reports/S2_38AA_SQRTPS_MEMORY_UNMASKED.md),
 and [stage plan](../../../../docs/plans/STAGE_2.md).
 
+### S2-38ak ADDPS m128 memory unmasked exceptions
+
+The immutable schema-v2 profile uses exact `0F 58 00`, SSE bit 25, read-only
+m128 `[RAX]`, one read16 and alignment16 regardless of AC. Six handwritten
+fixtures cover successful prior-sticky preservation, unmasked IE/DE/PE delivery,
+both `#XM` and arithmetic `#UD`, IE suppressing a PE from another lane, and a
+noncanonical fetch span taking `#GP(0)` precedence over disabled SSE/CR gates. The
+runner executes the full `6^4 × 16 × 2` lane representative/mask/delivery matrix
+(41,472 cases), then 46 cross-lane and boundary vectors across all RC modes,
+64 prior sticky histories, masks and delivery mappings (376,832 cases). The
+vectors include QNaN-only and QNaN/subnormal interactions plus opposite
+infinities with a separate denormal lane. Its
+independent raw-u32 oracle reads the actual memory RHS. Coverage includes all
+lane permutations, signed SNaN/QNaN positions, exact tiny results, cancellation,
+halfway and exponent-gap rounding, and overflow. Focused checks cover gate order,
+AC-clear/set alignment faults, noncanonical spans, one-read16 rollback, and
+interpreter-only dispatch. S2-37dq masked memory and S2-37ba register profiles
+remain separate; no physical x86 acceptance is claimed. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ak--exact-addps-memory-profile-with-unmasked-exceptions),
+[implementation report](../../../../docs/reports/S2_38AK_ADDPS_MEMORY_UNMASKED.md),
+and [stage plan](../../../../docs/plans/STAGE_2.md).
+
 ### S2-38ab SQRTPD m128 memory unmasked exceptions
 
 The immutable schema-v2 interpreter-only profile uses exact `66 0F 51 00`,
