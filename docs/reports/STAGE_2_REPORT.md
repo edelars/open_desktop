@@ -22827,3 +22827,30 @@ broader x87/native behavior, ISSUE-025 remains open for the unrelated RCPSS/
 RCPPS tiny-result threshold, and Stage 2 remains open. See [S2-31ea](S2_31EA_FSTP_M80FP_HISTORICAL_SF.md),
 [S2-38t](S2_38T_MAXPS_MEMORY_UNMASKED.md), the [CPU contract](../specs/CPU_CONTRACT.md#s2-31ea--historical-sf-with-pre-existing-ie-for-raw-fstp-m80fp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38t-maxps-m128-unmasked-invalid-and-denormal).
+
+<a id="main-integration-s2-31eb"></a>
+
+## Main integration: S2-31eb
+
+S2-31eb adds historical IE and DE admission only to exact bare `DB 28`
+`FLD m80fp [RAX]`, with local status gate `0x80dc`; the shared FILD gate
+`0x80df` is unchanged. It preserves raw ten-byte input and existing accepted
+binary80 class/tag behavior, performs one read, and commits the existing push
+state only after successful access. Native/JIT remain closed.
+
+The ISA matrix checks 34 accepted raw literals × 8 TOP values × 4 FCWs × 8
+IE/DE/PE histories (8,704 complete `LongModeState` comparisons). Rollback
+starts with `FSW=0x0423`; repeated FLD/FNSTSW/FNCLEX/retry, strict schema-v2
+status refusal, two literal fixtures and backend denial are covered.
+Independent Sol/high review is clean. Author checks passed: od-isa FLD 5,
+od-testkit 455, two runner regressions 1 each, formatting and workspace
+all-target offline check. The combined full-suite batch on main timed out at
+the tool RPC after 300 seconds before returning per-command results; no full
+main-suite result is claimed. Graphify reports 12,040 nodes, 26,149 edges and
+315 communities; labels were
+not refreshed without an LLM API key. No physical x86 acceptance is claimed;
+broader x87/native behavior remains open under ISSUE-019 and Stage 2 remains
+open. See the [standalone report](S2_31EB_FLD_M80FP_HISTORICAL_IE_DE.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp),
+[plan](../plans/STAGE_2.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31eb-historical-ie-de-on-raw-fld-m80fp).

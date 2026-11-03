@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последняя интегрированная пара — S2-31ea (historical SF+IE для raw FSTP m80fp) и S2-38t (unmasked MAXPS m128). Совместная проверка main прошла: od-isa 1,925; od-testkit 455; runner 535 fixtures; od-x86-runner 8 library + 6 binary; workspace all-target offline check, fmt, diff и layout. Graphify: 12,023 nodes / 26,124 edges / 317 communities; community labels не обновлялись без настроенного LLM API key. Независимые Sol/high reviews обоих срезов clean. ISSUE-019 остаётся открытым для более широкого x87/native acceptance, ISSUE-025 — для RCPSS/RCPPS tiny-result threshold; физическая x86-проверка не выполнялась, Этап 2 остаётся открытым. Полная сводка — в [отчёте](../reports/STAGE_2_REPORT.md#main-integration-s2-31ea-s2-38t); более ранние срезы описаны там и в соответствующих standalone reports.
+Последняя интегрированная пара — S2-31ea (historical SF+IE для raw FSTP m80fp) и S2-38t (unmasked MAXPS m128). Совместная проверка этой пары прошла: od-isa 1,925; od-testkit 455; runner 535 fixtures; od-x86-runner 8 library + 6 binary; workspace all-target offline check, fmt, diff и layout. Затем отдельно интегрирован S2-31eb; его 8,704 full-state cases, целевые тесты и workspace check приведены в [отчёте](../reports/STAGE_2_REPORT.md#main-integration-s2-31eb). Graphify после S2-31eb: 12,040 nodes / 26,149 edges / 315 communities; community labels не обновлялись без настроенного LLM API key. Независимые Sol/high reviews S2-31ea/S2-38t и S2-31eb clean. ISSUE-019 остаётся открытым для более широкого x87/native acceptance, ISSUE-025 — для RCPSS/RCPPS tiny-result threshold; физическая x86-проверка не выполнялась, Этап 2 остаётся открытым. Полная сводка — в [отчёте](../reports/STAGE_2_REPORT.md#main-integration-s2-31ea-s2-38t); более ранние срезы описаны там и в соответствующих standalone reports.
 
 Предыдущий завершённый срез S2-37dd — exact legacy SQRTPS XMM0,m128 `[RAX]` (`0F 51 00`): SSE bit 25, полный fetch, обязательное 16-byte alignment при AC=0/1, canonical48 span и ровно один read16. Результат строится только по четырём memory lanes; masked-only admission допускает все RC и прежние sticky flags, а binary32 integer sqrt агрегирует IE|DE|PE. Focused ISA 3/3; od-isa 1736, od-testkit 454, runner 112 unit + 485 fixture; workspace all-target check, fmt/layout/Graphify и независимый Sol/high review прошли. Первый полный workspace test исчерпал место (`No space left on device`); после очистки только disposable target relevant component suites прошли. Физическая x86-проверка не заявляется. Interpreter-only; native/JIT/C ABI/generic/fragment и unmasked/#XM path закрыты.
 
@@ -329,7 +329,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dy | Admit historical ZE only in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte source and post-write pop; native/JIT closed | ZE plus all 32 other sticky histories across accepted classes/signs/FCWs/TOP/C1; raw SNaN bytes, malformed ZE-set preflight rejects, rollback/repeat/FNSTSW/FNCLEX, schema and backend denial; integrated main suites: od-isa 1,915, testkit 455, runner 125+528, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,947/25,946/383; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31dz | Admit historical SF only with pre-existing IE in exact bare D9 10/D9 18/DD 10/DD 18 bounded FST/FSTP m32/m64 stores; preserve conversion and atomic write/commit; native/JIT closed | 73,728-case full-state SF+IE matrix over nine sources; SF-only SNaN, ES/B and source/tag/control refusals, rollback, repeated store/FNSTSW/FNCLEX/retry; four success fixtures plus Unsupported and JIT/native denial; integrated main suites: od-isa 1,923, testkit 455, runner 532, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,985/26,039/340; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31ea | Admit historical SF only with pre-existing IE in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte store and post-write pop; native/JIT closed | 24,576 full-state SF+IE cases across accepted source/tag pairs, signs, FCWs, TOP, C1 and DE/ZE/OE/PE histories; raw SNaN/subnormal preservation, SF-only/ES/B and malformed gates, rollback/repeat/FNSTSW/FNCLEX/retry, schema and backend denial; integrated main suites: od-isa 1,925, testkit 455, runner 535, x86-runner 8+6; workspace/fmt/layout/diff pass, Graphify 12,023/26,124/317; clean Sol/high review; no physical x86 acceptance |
-| [ ] | S2-31eb | Admit historical IE and DE on exact bare DB 28 raw FLD m80fp [RAX]; retain existing raw classes, push behavior and native/JIT denial | S2-31ad accepted classes/gates; separate DB28 gate mask `0x80dc`; preserve one-read/rollback contract |
+| [x] | S2-31eb | Admit historical IE and DE on exact bare DB 28 raw FLD m80fp [RAX]; retain existing raw classes, push behavior and native/JIT denial | 8,704 full-state cases across 34 raw class literals × TOP × FCW × IE/DE/PE; full LongModeState equality, read/span rollback with FSW 0x0423 and DB28/FNSTSW/FNCLEX composition; schema-v2 and backend denial; Sol/high clean; author checks: ISA 5, testkit 455, both runner regressions 1, fmt/workspace check/Graphify pass; no physical x86 acceptance |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -18281,6 +18281,16 @@ SDM Rev. 093 Vol. 2A FLD m80fp pp. 3-352–3-353 ([official PDF](https://cdrdv2-
 Vol. 1 §8.1.3.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211)).
 No physical x86 acceptance is claimed; broader x87/native behavior remains
 open under ISSUE-019. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp).
+Integrated on main as `0917b48` plus merge `d7d188d`. Sol/high review is clean.
+The targeted author checks passed: od-isa FLD 5, od-testkit 455, each of two
+runner regressions 1, formatting and workspace all-target offline check.
+The combined full-suite batch on main timed out at the tool RPC after 300
+seconds before returning per-command results; no full main-suite result is
+claimed. Graphify after integration: 12,040 nodes / 26,149 edges / 315
+communities. See the [shared
+integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31eb),
+[standalone report](../reports/S2_31EB_FLD_M80FP_HISTORICAL_IE_DE.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31eb-historical-ie-de-on-raw-fld-m80fp).
 
 #### S2-38u — exact COMISS memory invalid-only profile
 

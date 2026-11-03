@@ -8411,3 +8411,17 @@ sticky writes. Literal fixtures, schema/result tampering and backend denial are
 included. No physical x86 acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38t--exact-maxps-memory-unmasked-imdm),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38t--exact-long64-maxps-xmm0m128-rax-with-unmasked-imdm-exits),
 and [standalone report](../../../../docs/reports/S2_38T_MAXPS_MEMORY_UNMASKED.md).
+
+<a id="s2-31eb-historical-ie-de-on-raw-fld-m80fp"></a>
+
+### S2-31eb historical IE and DE on raw FLD m80fp
+
+The two literal fixtures cover an accepted DB 28 raw load with IE+DE+PE and
+an ES-set pre-read refusal. ISA coverage expands all 34 admitted binary80 raw
+class literals across 8 TOPs, 4 FCWs, and 8 IE/DE/PE histories, comparing the
+complete CPU state and surrounding memory; rollback tests start with all three
+historical flags set. The repeated DB28/FNSTSW/FNCLEX/DB28 sequence checks
+status observation, clearing, and retry. The slice is interpreter-only; no
+physical x86 acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp),
+and [standalone report](../../../../docs/reports/S2_31EB_FLD_M80FP_HISTORICAL_IE_DE.md).

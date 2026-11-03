@@ -17832,6 +17832,15 @@ open under ISSUE-019. Sources: Intel SDM Rev. 093 Vol. 2A FLD m80fp
 pp. 3-352–3-353 ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470));
 Vol. 1 §8.1.3.3 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211)).
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp).
+Implementation evidence: the full accepted-class × TOP × FCW × IE/DE/PE
+matrix contains 8,704 cases and compares complete `LongModeState`. Address-span
+and read-failure rollback begin with FSW `0x0423`; composition covers raw FLD,
+FNSTSW, FNCLEX, and retry. Targeted verification passed: od-isa FLD 5,
+od-testkit 455, two runner regressions 1 each, formatting and workspace
+all-target offline check. Sol/high review is clean. Physical x86 acceptance is
+not claimed; broader behavior remains under ISSUE-019. See the [standalone
+report](../reports/S2_31EB_FLD_M80FP_HISTORICAL_IE_DE.md) and [shared
+integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31eb).
 
 ## S2-38u — exact COMISS memory invalid-only profile
 
