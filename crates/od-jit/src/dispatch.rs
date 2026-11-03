@@ -75,8 +75,11 @@ pub enum CodeInvalidation {
     },
 }
 
-fn entry_matches_invalidation<H>(entry: &CachedEntry<H>, change: CodeInvalidation) -> bool {
-    entry.key.dependencies().iter().any(|span| match change {
+pub(crate) fn dependencies_match_invalidation(
+    dependencies: &[crate::translation::CodeDependencySpan],
+    change: CodeInvalidation,
+) -> bool {
+    dependencies.iter().any(|span| match change {
         CodeInvalidation::BackingContentChanged {
             backing,
             current_version,
@@ -104,6 +107,10 @@ fn entry_matches_invalidation<H>(entry: &CachedEntry<H>, change: CodeInvalidatio
                 && span.identity.executable != executable
         }
     })
+}
+
+fn entry_matches_invalidation<H>(entry: &CachedEntry<H>, change: CodeInvalidation) -> bool {
+    dependencies_match_invalidation(entry.key.dependencies(), change)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

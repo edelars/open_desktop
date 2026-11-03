@@ -54,6 +54,12 @@ forward targets остаются unresolved. `BasicBlock.guest_ranges` фикс�
 но не code identity или version: tracking принадлежит S3-17, cache invalidation
 — S3-23.
 
+S3-23b connects the same `CodeInvalidation` dependency matcher to the
+capacity-one `MemoryPairCache`. Notifications drop matching inactive entries
+between completed calls; the caller supplies the updated dependency snapshot
+to the next lookup. This remains a fixture contract and does not add owner or
+MMU integration.
+
 S3-05 добавил `lowering::lower`, который строит и verifier-checks typed IR из
 decoder records для принятых S0-09 MOV imm64, ADD/SUB/CMP reg64 и JZ/JNZ.
 Lowering сохраняет RIP boundaries, читает оба арифметических источника до

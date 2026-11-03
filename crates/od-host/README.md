@@ -27,6 +27,12 @@ multi-block cached-backend contract; `od-jit::dispatch::MultiEntryBlockCache`
 performance evidence; concurrency/global write-protection contract не
 расширен.
 
+S3-23b's exact ARM64 acceptance test invalidates an inactive cached memory
+pair after return and successfully publishes it again with the owner's updated
+dependency snapshot and fresh CPU/RAM inputs. Success under the existing
+single-live MAP_JIT rule confirms the previous mapping was dropped before the
+new publication. This is fixture-only between-call behavior.
+
 Локальная проверка S3-07 выполнена на macOS 26.7.1 ARM64, Xcode/macOS SDK 27.0:
 `od-host` unit tests, подписанный ad-hoc VMHost smoke с Hardened Runtime и
 `com.apple.security.cs.allow-jit`, и запуск JIT fragment через launcher. SDK

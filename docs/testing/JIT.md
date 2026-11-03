@@ -2894,3 +2894,31 @@ is deferred, and physical-x86, production owner/MMU, performance, and broader
 Stage 3 acceptance remain open. No generic reducer framework, runtime API,
 dependency, or opcode is added. Stage 3 remains partial. See the
 [S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md).
+
+## S3-23b: MemoryPairCache invalidation between synchronous calls
+
+`MemoryPairCache::invalidate` reuses the shared `CodeInvalidation` dependency
+matcher. Matching backing-version, mapping replacement/removal, and
+execute-permission notifications drop the inactive resident published handle;
+unrelated notifications preserve it. Backing identity matching includes
+mapping aliases. The next call must supply the owner's updated dependency
+snapshot.
+
+Focused checks on local macOS ARM64:
+
+```sh
+cargo test -p od-jit --offline memory_cache::tests
+cargo test --offline -p od-host --lib tests::memory_pair_cache_invalidation_drops_mapping_before_republish -- --exact --test-threads=1
+PYTHONPATH=tests/cpu python3 -m unittest -v test_stage3_harness.Stage3HarnessValidationTests.test_s3_23_memory_pair_invalidation_gate_is_pinned_once_and_fail_closed
+```
+
+Results: 11 `od-jit` memory-cache tests passed; the exact host gate and
+fail-closed harness self-test each passed 1/1. The host test successfully
+republished under the single-live `MAP_JIT` rule after invalidation and used a
+new dependency version, `LongModeState`, and RAM fixture. Current harness pins
+are 326 Rust gates (308 acceptance and 18 lifecycle), 344 local steps, 151
+self-test names, and 18 local Rust source pins. This is a between-call fixture
+slice only: it does not integrate `od-machine`, production MMU/writers, active
+SMC retirement, or SMP reclamation. Static independent review and broader
+Stage 3/Mini checks remain separate gates. See the
+[S3-23b report](../reports/STAGE_3_S3-23b_2026-11-03.md).

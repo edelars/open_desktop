@@ -14,6 +14,7 @@ use od_isa::{
 
 use crate::{
     block::CodeView,
+    dispatch::{CodeInvalidation, dependencies_match_invalidation},
     memory_dispatch::{BoundedMemoryExit, BoundedMemoryResult, MemoryBlockExit, MemoryBlockReport},
     memory_load_v2::{
         IrMemoryTwoSiteBlockV2, MemoryLoadCompileErrorV2, compile_ir_memory_two_site_block_v2,
@@ -377,6 +378,21 @@ impl<H> MemoryPairCache<H> {
 
     pub fn clear(&mut self) {
         self.entry = None;
+    }
+
+    /// Drop the inactive resident entry when an owner notification changes
+    /// one of its code dependencies. Call only between completed calls to
+    /// `run`; mutable borrowing prevents invalidating a handle during use.
+    pub fn invalidate(&mut self, change: CodeInvalidation) -> usize {
+        let matches = self.entry.as_ref().is_some_and(|entry| {
+            dependencies_match_invalidation(&entry.key.dependencies, change)
+        });
+        if matches {
+            self.clear();
+            1
+        } else {
+            0
+        }
     }
 
     fn add_counter(counter: &mut u64) -> Result<(), MemoryCacheError> {
@@ -801,6 +817,24 @@ mod tests {
         }
     }
 
+    fn identity_in(
+        address_space: u64,
+        mapping: u64,
+        mapping_version: u64,
+        backing: u64,
+        backing_version: u64,
+        executable: bool,
+    ) -> CodeIdentity {
+        CodeIdentity {
+            address_space: AddressSpaceId::new(NonZeroU64::new(address_space).unwrap()),
+            mapping: MappingId::new(NonZeroU64::new(mapping).unwrap()),
+            mapping_version: MappingVersion::new(NonZeroU64::new(mapping_version).unwrap()),
+            backing: BackingId::new(NonZeroU64::new(backing).unwrap()),
+            backing_version: BackingVersion::new(NonZeroU64::new(backing_version).unwrap()),
+            executable,
+        }
+    }
+
     fn key(
         profile: MemoryPairProfile,
         generation: u64,
@@ -894,6 +928,116 @@ mod tests {
             self.executes += 1;
             Err("unexpected mock execution")
         }
+    }
+
+    #[test]
+    fn owner_notifications_drop_only_matching_resident_dependencies() {
+        let notifications = [
+            CodeInvalidation::BackingContentChanged {
+                backing: BackingId::new(NonZeroU64::new(1).unwrap()),
+                current_version: BackingVersion::new(NonZeroU64::new(2).unwrap()),
+            },
+            CodeInvalidation::MappingReplaced {
+                address_space: AddressSpaceId::new(NonZeroU64::new(1).unwrap()),
+                mapping: MappingId::new(NonZeroU64::new(1).unwrap()),
+                current_version: MappingVersion::new(NonZeroU64::new(2).unwrap()),
+            },
+            CodeInvalidation::MappingRemoved {
+                address_space: AddressSpaceId::new(NonZeroU64::new(1).unwrap()),
+                mapping: MappingId::new(NonZeroU64::new(1).unwrap()),
+            },
+            CodeInvalidation::ExecutePermissionChanged {
+                address_space: AddressSpaceId::new(NonZeroU64::new(1).unwrap()),
+                mapping: MappingId::new(NonZeroU64::new(1).unwrap()),
+                executable: false,
+            },
+        ];
+
+        for notification in notifications {
+            let (resident, code) = key_with_identity(
+                MemoryPairProfile::LoadThenLoad,
+                1,
+                BASE,
+                identity_in(1, 1, 1, 1, 1, true),
+            );
+            let mut cache = MemoryPairCache::new();
+            let mut backend = MockBackend::default();
+            cache.ensure_entry(resident, code, &mut backend).unwrap();
+            assert_eq!(backend.live.get(), 1);
+            assert_eq!(cache.invalidate(notification), 1);
+            assert_eq!(cache.resident_entries(), 0);
+            assert_eq!(backend.live.get(), 0, "notification must drop handle");
+        }
+
+        let alias_identity = identity_in(1, 99, 1, 1, 1, true);
+        let (resident, code) = key_with_identity(
+            MemoryPairProfile::LoadThenLoad,
+            1,
+            BASE,
+            alias_identity,
+        );
+        let mut cache = MemoryPairCache::new();
+        let mut backend = MockBackend::default();
+        cache.ensure_entry(resident, code, &mut backend).unwrap();
+        assert_eq!(
+            cache.invalidate(CodeInvalidation::BackingContentChanged {
+                backing: BackingId::new(NonZeroU64::new(1).unwrap()),
+                current_version: BackingVersion::new(NonZeroU64::new(2).unwrap()),
+            }),
+            1,
+            "backing invalidation follows aliases"
+        );
+        assert_eq!(backend.live.get(), 0);
+
+        let (resident, code) = key_with_identity(
+            MemoryPairProfile::LoadThenLoad,
+            1,
+            BASE,
+            identity_in(1, 1, 1, 1, 1, true),
+        );
+        cache.ensure_entry(resident, code, &mut backend).unwrap();
+        assert_eq!(
+            cache.invalidate(CodeInvalidation::BackingContentChanged {
+                backing: BackingId::new(NonZeroU64::new(2).unwrap()),
+                current_version: BackingVersion::new(NonZeroU64::new(2).unwrap()),
+            }),
+            0,
+            "unrelated backing keeps the resident mapping"
+        );
+        assert_eq!(cache.resident_entries(), 1);
+        assert_eq!(backend.live.get(), 1);
+    }
+
+    #[test]
+    fn invalidated_entry_can_be_recompiled_from_new_dependency_snapshot() {
+        let profile = MemoryPairProfile::LoadThenLoad;
+        let (resident, code) = key_with_identity(
+            profile,
+            1,
+            BASE,
+            identity_in(1, 1, 1, 1, 1, true),
+        );
+        let (updated, updated_code) = key_with_identity(
+            profile,
+            1,
+            BASE,
+            identity_in(1, 1, 1, 1, 2, true),
+        );
+        let mut cache = MemoryPairCache::new();
+        let mut backend = MockBackend::default();
+        cache.ensure_entry(resident, code, &mut backend).unwrap();
+        assert_eq!(
+            cache.invalidate(CodeInvalidation::BackingContentChanged {
+                backing: BackingId::new(NonZeroU64::new(1).unwrap()),
+                current_version: BackingVersion::new(NonZeroU64::new(2).unwrap()),
+            }),
+            1
+        );
+        assert_eq!(backend.live.get(), 0);
+        cache.ensure_entry(updated, updated_code, &mut backend).unwrap();
+        assert_eq!(backend.publishes, 2);
+        assert_eq!(backend.live.get(), 1);
+        assert_eq!(cache.resident_entries(), 1);
     }
 
     struct UnusedMemory;

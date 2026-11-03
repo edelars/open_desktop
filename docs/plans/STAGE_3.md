@@ -290,6 +290,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-22 | Смена execution/mapping context | S3-18, S3-21 |
 | [partial] | S3-22a | Bounded S0_09 fixture context generation/profile in translation keys and cached dispatch | Current synchronous compile/publish holds a caller-owned frozen snapshot; production owner lease and revalidation for any future async/unfrozen compilation remain open |
 | [partial] | S3-23a | Fixture owner notifications для изменения backing/mapping и cache invalidation между sync dispatch calls | Только неактивные entries; current synchronous caller holds frozen snapshot; production owner/writers and future async/unfrozen candidate commit remain open |
+| [partial] | S3-23b | Shared `CodeInvalidation` path for capacity-one `MemoryPairCache` | Fixture notifications between calls only; host ARM64 proves MAP_JIT release before republish; production owner/MMU and active SMC remain open |
 | [partial] | S3-23c | Fixture-only V2 generated store to a different tracked executable backing | One vCPU/fixed RAM; active-source overlap rejected; no active-code retirement or production MMU |
 | [partial] | S3-23d | Shared fixture write transaction for interpreter MOV, V2 store, and control writes | Interpreter and control adapters commit between calls; production MMU/DMA/MMIO/SMP remain open |
 | [partial] | S3-23e | Region-scoped executable-write notification and redispatch | Separate store entry invalidates cached prefix/tail and aliases before next lookup; no active native tail or S3-24 claim |
@@ -2332,6 +2333,30 @@ reclamation resident handles/code/metadata. Owner mutation, racing publication,
 interpreter/JIT/control writes, production MMU, DMA/device notifications и
 active self-modifying code остаются вне среза и требуют последующей интеграции.
 Результат: [S3-23a report](../reports/STAGE_3_S3-23a_2026-10-27.md).
+
+#### S3-23b. Memory-pair fixture cache invalidation
+
+`MemoryPairCache` now consumes the existing `CodeInvalidation` contract through
+the same dependency matcher as the register-only single/multi-entry caches.
+Backing-version changes follow backing identity across mapping aliases;
+mapping replacement/removal and execute-permission changes use the existing
+address-space/mapping semantics. A matching notification drops the one
+inactive resident handle and returns the cache to empty. The caller supplies a
+fresh dependency snapshot on the next `run`; `MemoryPairCache` does not own or
+query the fixture owner.
+
+Focused `od-jit` tests cover all notification variants, unrelated backing,
+alias matching, handle drop, and republishing from an updated dependency
+snapshot. The local macOS ARM64 `od-host` acceptance gate runs the published
+two-site memory block, notifies invalidation after return, then republishes
+successfully with a changed dependency version, fresh CPU state and fresh RAM.
+The successful second publication proves the prior single-live MAP_JIT mapping
+was released before republish.
+
+This remains between-call fixture behavior. It adds no machine ownership,
+production MMU/writer wiring, active SMC retirement, concurrency protocol, or
+general memory/cache policy. S3-23, S3-24, and S3-25 remain open. See
+[S3-23b report](../reports/STAGE_3_S3-23b_2026-11-03.md).
 
 #### S3-23c. Generated V2 store в другой executable backing — fixture partial
 

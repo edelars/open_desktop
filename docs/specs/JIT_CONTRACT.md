@@ -3407,6 +3407,29 @@ compilation or a production owner permits such mutation. Active/self-modifying
 code retirement remains separate S3-24 lifecycle work. No physical Mac mini
 check was run; see [S3-23a report](../reports/STAGE_3_S3-23a_2026-10-27.md).
 
+### S3-23b: memory-pair fixture cache invalidation
+
+`MemoryPairCache::invalidate` accepts the existing `CodeInvalidation` owner
+notification and uses the same dependency matcher as the register-only
+single-entry and multi-entry caches. A matching inactive resident is removed
+and its published handle is dropped. Backing-content changes match by backing
+identity/version across aliases; mapping replacement/removal and
+execute-permission changes match by address-space and mapping identity.
+The notification API is callable only between synchronous calls because it
+requires mutable access to the cache. After invalidation, the caller provides
+the updated dependency snapshot to the next lookup.
+
+Local tests cover each notification variant, unrelated backing preservation,
+backing-alias matching, drop, and replacement. An exact macOS ARM64 `od-host`
+acceptance test publishes and executes the memory pair, invalidates it after
+return, then publishes again from a changed dependency version with fresh CPU
+state and fresh RAM. Successful republish verifies that the old single-live
+MAP_JIT mapping was released first.
+
+This connects no production owner or MMU and provides no active SMC retirement,
+concurrency, DMA, or device-writer behavior. S3-23, S3-24, and S3-25 remain
+open. See the [S3-23b report](../reports/STAGE_3_S3-23b_2026-11-03.md).
+
 ### S3-23c: tracked executable-code store fixture partial
 
 The bounded host arena can reserve a typed compiler-issued V2 store slot next

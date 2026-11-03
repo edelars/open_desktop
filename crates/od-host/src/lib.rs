@@ -80192,6 +80192,113 @@ pub(crate) mod tests {
         retained_load_load_pair_dependency_generation_case();
     }
 
+    #[test]
+    fn memory_pair_cache_invalidation_drops_mapping_before_republish() {
+        use od_jit::dispatch::CodeInvalidation;
+        use od_jit::memory_cache::{
+            MemoryExecutionContextGeneration, MemoryPairCache, MemoryPairProfile,
+        };
+        use od_jit::translation::{
+            AddressSpaceId, BackingVersion, CodeDependencySpan, CodeIdentity, MappingVersion,
+        };
+
+        const BASE: u64 = 0x1000;
+        const DATA: u64 = 0x2000;
+        const CODE: [u8; 6] = [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b];
+        let _guard = jit_test_lock();
+        let context = MemoryExecutionContextGeneration::from_u64(1).unwrap();
+        let code = CodeView::new(BASE, &CODE).unwrap();
+        let identity = |backing_version| CodeIdentity {
+            address_space: AddressSpaceId::new(TrackedCodeFixture::nz(1)),
+            mapping: od_jit::translation::MappingId::new(TrackedCodeFixture::nz(10)),
+            mapping_version: MappingVersion::new(TrackedCodeFixture::nz(1)),
+            backing: TrackedCodeFixture::id(2),
+            backing_version: BackingVersion::new(TrackedCodeFixture::nz(backing_version)),
+            executable: true,
+        };
+        let dependencies = |backing_version| {
+            [CodeDependencySpan {
+                start_rip: BASE,
+                end_rip: BASE + CODE.len() as u64,
+                identity: identity(backing_version),
+            }]
+        };
+        let mut cache: MemoryPairCache<PublishedMemoryPairHandle> = MemoryPairCache::new();
+        let mut backend = CachedPublishedMemoryPairBackend;
+        let stop = AtomicU8::new(0);
+        let mut first_ram = TrackedCodeFixture::new(&CODE, &[], &[]);
+        first_ram.backings[1].bytes[..8].copy_from_slice(&0x1111_u64.to_le_bytes());
+        let mut first_state = od_isa::LongModeState {
+            rip: BASE,
+            ..Default::default()
+        };
+        first_state.gpr[3] = DATA;
+        // SAFETY: this fixture uses private synchronous RAM, immutable code,
+        // and no concurrent observer; notification follows the returned call.
+        let first = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context,
+                code,
+                &dependencies(1),
+                &mut first_state,
+                &mut first_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        }
+        .unwrap();
+        assert_eq!(first.retired_instructions, 2);
+        assert_eq!(first_state.gpr[0], 0x1111);
+        assert_eq!(first_state.gpr[1], 0x1111);
+        assert_eq!(cache.resident_entries(), 1);
+
+        assert_eq!(
+            cache.invalidate(CodeInvalidation::BackingContentChanged {
+                backing: TrackedCodeFixture::id(2),
+                current_version: BackingVersion::new(TrackedCodeFixture::nz(2)),
+            }),
+            1
+        );
+        assert_eq!(cache.resident_entries(), 0);
+
+        let mut fresh_ram = TrackedCodeFixture::new(&CODE, &[], &[]);
+        fresh_ram.backings[0].version = BackingVersion::new(TrackedCodeFixture::nz(2));
+        fresh_ram.backings[1].bytes[..8].copy_from_slice(&0x3333_u64.to_le_bytes());
+        let mut fresh_state = od_isa::LongModeState {
+            rip: BASE,
+            ..Default::default()
+        };
+        fresh_state.gpr[3] = DATA;
+        let republished = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context,
+                code,
+                &dependencies(2),
+                &mut fresh_state,
+                &mut fresh_ram,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        }
+        .unwrap();
+        assert_eq!(republished.retired_instructions, 2);
+        assert_eq!(fresh_state.gpr[0], 0x3333);
+        assert_eq!(fresh_state.gpr[1], 0x3333);
+        assert_eq!(cache.counters().successful_publications, 2);
+        assert_eq!(cache.counters().misses, 2);
+        assert_eq!(cache.resident_entries(), 1);
+    }
+
     fn retained_load_load_pair_dependency_generation_case() {
         use od_isa::memory::{
             AccessContext, AccessKind, AccessOrigin, GuestMemory, InstructionMode, MemoryError,

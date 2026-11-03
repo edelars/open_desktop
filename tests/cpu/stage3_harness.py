@@ -59,6 +59,7 @@ SELF_TEST_NAMES = (
     "test_required_memory_test_must_be_present_and_non_ignored",
     "test_s3_34h_exact_gate_requires_exact_identity_and_argv",
     "test_s3_37e_memory_cache_gate_is_pinned_once_and_fail_closed",
+    "test_s3_23_memory_pair_invalidation_gate_is_pinned_once_and_fail_closed",
     "test_s3_18g_dependency_generation_gate_is_pinned_once_and_fail_closed",
     "test_allowed_environment_replay_tests_do_not_hide_unexpected_ignored_tests",
     "test_self_test_output_validator_rejects_zero_match_and_all_skipped",
@@ -663,6 +664,12 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_37e_memory_cache_lifecycle_republishes", "local_acceptance", "od-host",
         "capacity_one_memory_cache_republishes_after_fault_and_backend_error",
+    ),
+    (
+        "s3_23_memory_pair_cache_invalidation_republishes",
+        "local_acceptance",
+        "od-host",
+        "tests::memory_pair_cache_invalidation_drops_mapping_before_republish",
     ),
     (
         "s3_34y_ir_dword_alias_store_admission_provenance", "local_acceptance", "od-jit",
