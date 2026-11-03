@@ -1085,16 +1085,23 @@ publication, exact second-read fault state and remaining budget, continuation
 at `A+3` without replay, and internal-RIP rejection. Its separate pre-entry
 event case returns `EventPending` with zero reads and zero retirement; an event
 raised during the pair does not interrupt its two reads, and code-end wins at
-`A+6`. The profile and retained publisher accept only exact
-`48 8B 03 48 8B 0B`; `StoreThenStore` remains rejected.
+`A+6`. A follow-up branch injects a host backend error on the second read of a
+resident hit and checks the first-load commit, host-error classification,
+default backend error metadata, cache eviction, and one fresh republish with
+new CPU/RAM bindings. The exact host regression passed 1/1 after this addition,
+and the existing S3-34dr fail-closed Python self-test passed. The final
+Graphify update timed out after 120 seconds; Stage 3/Mini acceptance remains
+pending and M1 remains deferred. The profile and retained publisher accept
+only exact `48 8B 03 48 8B 0B`; `StoreThenStore` remains rejected.
 
 The ISSUE-030 parser error and ISSUE-031 compile blocker are repaired; ISSUE-032
 is resolved. `cargo check -p od-jit -p od-host --all-targets --offline` passed,
 the full `od-jit` suite passed 397/397, and the exact S3-18f host regression
-passed. Stage 3 remains partial pending Mini and stage-wide acceptance; Mini
-has not run and the M1 regression remains deferred. This cache option is
-experimental; these checks establish neither a performance benefit nor
-production owner/MMU integration. See the
+passed 1/1 after the backend-error follow-up. The existing S3-34dr fail-closed
+self-test also passed. Stage 3 remains partial pending Mini and stage-wide
+acceptance. Mini has not run; the M1 regression remains deferred.
+This cache option is experimental; these checks establish neither a performance
+benefit nor production owner/MMU integration. See the
 [S3-18f implementation report](../reports/STAGE_3_S3-18f_2026-11-03.md) and
 [ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md).
 

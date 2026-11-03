@@ -80206,6 +80206,7 @@ pub(crate) mod tests {
             values: Vec<u64>,
             reads: Vec<(u64, AccessContext)>,
             fail_read_at: Option<usize>,
+            backend_error_at: Option<usize>,
             stop_after_read: Option<(usize, std::sync::Arc<AtomicU8>)>,
             event_after_read: Option<(usize, std::sync::Arc<AtomicBool>)>,
         }
@@ -80236,6 +80237,9 @@ pub(crate) mod tests {
                             linear_address: Some(address),
                         },
                     ));
+                }
+                if self.backend_error_at == Some(index) {
+                    return Err(MemoryError::Backend("injected read backend failure".into()));
                 }
                 if out.len() != 8 {
                     return Err(MemoryError::Unmapped {
@@ -80676,6 +80680,145 @@ pub(crate) mod tests {
         assert_eq!(cache.counters().successful_compiles, 1);
         assert_eq!(cache.counters().successful_publications, 1);
         assert_eq!(cache.resident_entries(), 1);
+
+        // A backend failure on the second read is a host error. The first
+        // load remains committed, and the suspect retained mapping is evicted.
+        let mut backend_error_state = od_isa::LongModeState {
+            rip: BASE,
+            rflags: 0x202,
+            ..Default::default()
+        };
+        backend_error_state.gpr[1] = 0xdddd;
+        backend_error_state.gpr[3] = 72;
+        backend_error_state.gpr[4] = 0xeeee;
+        let backend_error_before = backend_error_state.clone();
+        let mut backend_error_ram = ReadRam {
+            values: vec![0x9999],
+            backend_error_at: Some(1),
+            ..Default::default()
+        };
+        let backend_error = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &dependencies,
+                &mut backend_error_state,
+                &mut backend_error_ram,
+                ring0,
+                2,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        };
+        assert!(matches!(
+            backend_error,
+            Err(od_jit::memory_cache::MemoryPairCacheRunError::Backend(
+                CachedPublishedMemoryPairError::Execute(
+                    MemoryOperationExecutionErrorV2::MemoryError(
+                        MemoryOperationMemoryErrorV2 {
+                            kind: od_jit::memory_bridge::MEMORY_ERROR_BACKEND,
+                            address: 0,
+                            length: 0,
+                        }
+                    )
+                )
+            ))
+        ));
+        let mut expected_backend_error_state = backend_error_before;
+        expected_backend_error_state.rip = BASE + 3;
+        expected_backend_error_state.gpr[0] = 0x9999;
+        assert_eq!(backend_error_state, expected_backend_error_state);
+        assert_eq!(backend_error_ram.reads, vec![(72, ring0), (72, ring0)]);
+        assert_eq!(cache.resident_entries(), 0);
+        assert_eq!(cache.counters().hits, 6);
+        assert_eq!(cache.counters().misses, 1);
+        assert_eq!(cache.counters().successful_compiles, 1);
+        assert_eq!(cache.counters().successful_publications, 1);
+
+        // Resume only the uncommitted second instruction in the interpreter.
+        let mut continuation_state = backend_error_state.clone();
+        let mut continuation_ram = ReadRam {
+            values: vec![0xaaaa],
+            ..Default::default()
+        };
+        let continuation = od_isa::execute::run(
+            &mut continuation_state,
+            &mut continuation_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: ring0,
+            },
+            || false,
+        );
+        assert_eq!(continuation.instructions_executed, 1);
+        assert_eq!(continuation_state.rip, BASE + 6);
+        assert_eq!(continuation_state.gpr[0], 0x9999);
+        assert_eq!(continuation_state.gpr[1], 0xaaaa);
+        assert_eq!(continuation_state.gpr[3], 72);
+        assert_eq!(continuation_state.gpr[4], 0xeeee);
+        assert_eq!(continuation_state.rflags, 0x202);
+        assert_eq!(continuation_ram.reads, vec![(72, ring0)]);
+        assert_eq!(cache.resident_entries(), 0);
+
+        // The next invocation recompiles and republishes once, using fresh
+        // CPU/RAM bindings after the interpreter resumes the second site.
+        let counters_before_republish = cache.counters();
+        let mut republished_state = od_isa::LongModeState {
+            rip: BASE,
+            rflags: 0x246,
+            ..Default::default()
+        };
+        republished_state.gpr[1] = 0xaaaa;
+        republished_state.gpr[3] = 80;
+        republished_state.gpr[4] = 0xbbbb;
+        let mut republished_ram = ReadRam {
+            values: vec![0xcafe, 0xbeef],
+            ..Default::default()
+        };
+        let republished = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &dependencies,
+                &mut republished_state,
+                &mut republished_ram,
+                ring3,
+                2,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        }
+        .unwrap();
+        assert_eq!(republished.retired_instructions, 2);
+        assert_eq!(republished_state.rip, BASE + 6);
+        assert_eq!(republished_state.gpr[0], 0xcafe);
+        assert_eq!(republished_state.gpr[1], 0xbeef);
+        assert_eq!(republished_state.gpr[3], 80);
+        assert_eq!(republished_state.gpr[4], 0xbbbb);
+        assert_eq!(republished_state.rflags, 0x246);
+        assert_eq!(republished_ram.reads, vec![(80, ring3), (80, ring3)]);
+        assert_eq!(cache.resident_entries(), 1);
+        let counters_after_republish = cache.counters();
+        assert_eq!(counters_after_republish.hits, counters_before_republish.hits);
+        assert_eq!(
+            counters_after_republish.misses,
+            counters_before_republish.misses + 1
+        );
+        assert_eq!(
+            counters_after_republish.successful_compiles,
+            counters_before_republish.successful_compiles + 1
+        );
+        assert_eq!(
+            counters_after_republish.successful_publications,
+            counters_before_republish.successful_publications + 1
+        );
     }
 
     #[test]
