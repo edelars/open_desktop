@@ -2501,3 +2501,38 @@ replay/reducer remains pending. ISSUE-028 remains open pending S3-20eg
 execution acceptance; this review does not close it. This adds no runtime
 semantics, persisted replay format, envelope, or reducer API. See the
 [S3-34dm report](../reports/STAGE_3_S3-34dm_2026-11-02.md).
+
+## S3-34dn: create-only mismatch artifact and validated replay for S3-34dm
+
+**Status:** documentation plan only; implementation and independent static
+review are pending, and execution is deferred.
+
+The planned diagnostic is restricted to the existing S3-34dm exact profile
+`67 89 04 24`. It creates one full mismatch artifact only after a
+deterministic interpreter/JIT differential mismatch, and creation is
+create-only. Capture the full initial CPU state, RAM bytes and layout,
+instruction address/RIP, exact source/profile identity, S3-34dm seed and case
+index as provenance, both repeated backend observations, and mismatch details.
+
+Before replay, validate artifact schema/version, profile/source, RIP
+relationship, CPU/RAM layout and lengths, and a digest covering the saved
+input and observations. Replay the saved CPU/RAM state directly; seed and case
+index do not regenerate it. Execute interpreter and JIT twice from separate
+reset copies. Return `reproduced` only if the recorded mismatch identity
+recurs. Return `not_reproduced` for a valid artifact whose mismatch does not
+recur; this is diagnostic evidence, not a passing regression. Reject invalid
+artifacts with a distinct validation error.
+
+Self-checks are based on explicitly labeled synthetic mismatch input and
+cover create-only behavior, round-trip/replay, repeat determinism, and
+fail-closed field/digest mutations. They do not constitute runtime mismatch
+evidence. This plan adds no runtime API, dependency, opcode, generic replay
+framework, or reducer. Broader S3-34.2 replay/reducer work remains pending.
+
+Target manifest totals are 304 gates (294 acceptance + 10 lifecycle), 322
+local steps, and 137 self-test names, exactly +1 each over S3-34dm's current
+303/321/136 totals. These are targets only; identity and static recount remain
+pending. ISSUE-028 stays open pending S3-20eg execution acceptance. No Rust
+behavior gate, Python harness, build, formatting, Cargo, Mini, or M1 acceptance
+is claimed for this documentation-only update. See the
+[S3-34dn report](../reports/STAGE_3_S3-34dn_2026-11-03.md).
