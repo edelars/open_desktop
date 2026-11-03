@@ -2687,7 +2687,12 @@ Harness gate:
 
 Corpus commit `c7bb9c7` and harness commit `2fb1265` are integrated. The
 S3-34.1/.3/.5 implementation and gates passed independent static Sol/high
-review; the Rust behavior gate and Python harness self-test remain unexecuted.
+review. Exact local corpus command passed 1/1:
+`cargo test -p od-host --test stage3_dword_store_corpus fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input --offline -- --exact --test-threads=1`.
+The fail-closed Python harness self-test exited 0:
+`PYTHONPATH=tests/cpu python3 -m unittest -v test_stage3_harness.Stage3HarnessValidationTests.test_s3_34dm_addr32_rsp_dword_store_corpus_gate_is_pinned_and_fail_closed`.
+The Rust result is bounded local macOS/aarch64 acceptance for 1,200 unique
+initial states twice per backend against the interpreter.
 
 The test covers only the existing exact singleton `67 89 04 24`. Three fixed
 seeds (`0x2034_d001`, `0x2034_d002`, `0x2034_d003`) drive a local SplitMix64
@@ -2700,13 +2705,16 @@ and `0xffff_fffd` through `0xffff_ffff` starts; crossing-4-GiB bytes remain
 contiguous above the boundary. Fault/retry and callback STOP remain covered by
 the focused S3-20eg checks.
 
-Pinned totals are 303 Rust gates (293 acceptance and 10 lifecycle), 321 local
-steps, and 136 self-test names; they have not been executed. At this S3-34dm
-cut, S3-34.2 persisted replay/reducer implementation was pending; it was
-subsequently delivered in S3-34dn/do, with execution acceptance still pending.
-ISSUE-028 remains open pending S3-20eg
-execution acceptance; this review does not close it. This adds no runtime
-semantics, persisted replay format, envelope, or reducer API. See the
+At the S3-34dm cut, pinned totals were 303 gates (293 acceptance and 10
+lifecycle), 321 local steps, and 136 self-test names. The current manifest
+after S3-34dr reports 324 gates (306 acceptance and 18 lifecycle), 342 steps,
+149 self-test names, and 18 source pins; neither count implies a full harness
+run. S3-34.2 runtime/replay acceptance remains pending after the S3-34dn/do
+implementation. ISSUE-028 was resolved separately; its closure is recorded in
+[the issue registry](../KNOWN_ISSUES.md). Physical x86/Mini, full Stage 3,
+production owner/MMU, and performance acceptance remain open; M1 remains
+deferred. This adds no runtime semantics, persisted replay format, envelope,
+or reducer API. See the
 [S3-34dm report](../reports/STAGE_3_S3-34dm_2026-11-02.md).
 
 ## S3-34dn: create-only mismatch artifact and validated replay for S3-34dm

@@ -727,12 +727,18 @@ crossing address classes are included. The Rust identity is
 `tests::fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input`;
 the harness gate is `s3_34dm_addr32_rsp_dword_store_fixed_seed_corpus`.
 Corpus commit `c7bb9c7` and harness commit `2fb1265` are integrated; S3-34.1,
-S3-34.3, and S3-34.5 passed independent static Sol/high review. No Rust
-behavior gate or Python harness self-test has been executed. Pinned totals are
-303 gates (293 acceptance + 10 lifecycle), 321 steps, and 136 self-test names;
-execution remains pending. S3-34.2 persisted replay/reducer remains pending, and
-ISSUE-028 remains open until S3-20eg execution acceptance. No opcode/runtime
-semantics were added. See the [S3-34dm report](STAGE_3_S3-34dm_2026-11-02.md).
+S3-34.3, and S3-34.5 passed independent static Sol/high review. The exact
+`od-host` corpus gate passed 1/1 and the fail-closed Python harness self-test
+exited 0. The local macOS/aarch64 run covers 1,200 unique initial states twice
+per backend against the interpreter. At the S3-34dm cut, pinned totals were
+303 gates (293 acceptance + 10 lifecycle), 321 steps, and 136 self-test names.
+The current manifest after S3-34dr reports 324 gates (306 acceptance + 18
+lifecycle), 342 steps, 149 self-test names, and 18 source pins; the full
+manifest was not run. S3-34.2 broader execution acceptance remains pending.
+ISSUE-028 was resolved separately. Physical x86/Mini, full Stage 3,
+production owner/MMU and performance acceptance remain open; M1 is deferred.
+No opcode/runtime semantics were added. See the
+[S3-34dm report](STAGE_3_S3-34dm_2026-11-02.md).
 
 S3-34dn implements one create-only mismatch artifact and validated replay for
 the same exact S3-34dm profile. Runtime commits `f858b7a`/`10447f0`/`ee2af23`

@@ -426,7 +426,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34dk | Exact harness gates for S3-20fz | Harness commit `2de1cab` pins the exact JIT/host identities and fail-closed self-test; independent static review passed. Manifest totals are pinned at 300 gates (290 acceptance + 10 lifecycle), 318 local steps, 134 self-test names; execution remains pending. |
 | [partial] | S3-20ga | Address32 RCX-base Dword store signed disp32 `67 89 81 id` | Seven-byte exact store; starting EA is `zero_extend((low32(RCX) + signed_i32_disp32) mod 2^32)`, one checked contiguous write4 of low32 RAX, preserved GPR/RFLAGS and `A+7`. Runtime `b7b361b` integrated and passed independent Sol/high review. No tests/build/fmt/Cargo/Python checks run; see bounded report. |
 | [partial] | S3-34dl | Exact harness gates for S3-20ga | Harness `c2a3e8f` pins the JIT source/site, host checked-store and fail-closed self-test identities; independent Sol/high review passed. Totals 302 gates (292 acceptance + 10 lifecycle), 320 local steps, 135 self-test names are pinned/reviewed but not executed. |
-| [partial] | S3-34dm | Fixed-seed differential corpus for S3-20eg `67 89 04 24` | Corpus implementation `c7bb9c7` and harness `2fb1265` are integrated; S3-34.1/.3/.5 code/gates passed independent static Sol/high review. Historical pinned totals: 303 gates (293 acceptance + 10 lifecycle), 321 local steps, 136 self-test names; this slice's behavior gate and harness self-test remain unexecuted. S3-34.2 implementation was subsequently added by S3-34dn/do; execution acceptance remains pending. ISSUE-028 remains open pending S3-20eg execution acceptance. См. [JIT testing reference](../testing/JIT.md#s3-34dm-fixed-seed-differential-corpus-for-s3-20eg) and [report](../reports/STAGE_3_S3-34dm_2026-11-02.md) |
+| [partial] | S3-34dm | Fixed-seed differential corpus for S3-20eg `67 89 04 24` | Corpus `c7bb9c7` and harness `2fb1265` are integrated; S3-34.1/.3/.5 passed independent static Sol/high review. Exact local corpus gate passed 1/1 and the fail-closed Python harness self-test exited 0. S3-34dm pinned totals: 303 gates (293 acceptance + 10 lifecycle), 321 local steps, 136 self-test names; current manifest after S3-34dr: 324 gates (306 acceptance + 18 lifecycle), 342 steps, 149 self-tests, 18 sources. These counts do not imply a full harness run. S3-34.2 runtime/replay acceptance remains pending. ISSUE-028 was resolved separately. Physical x86/Mini, full Stage 3, owner/MMU, and performance acceptance remain open; M1 is deferred. См. [JIT testing reference](../testing/JIT.md#s3-34dm-fixed-seed-differential-corpus-for-s3-20eg) and [report](../reports/STAGE_3_S3-34dm_2026-11-02.md) |
 | [partial] | S3-34dn | Create-only mismatch artifact and validated replay for S3-34dm | Runtime commits `f858b7a`/`10447f0`/`ee2af23` and harness commits `89c5e28`/`13b7790` are integrated and passed independent static Sol/high review. Rust artifact-protection self-check and pinned Python self-test passed; they use synthetic observations and do not prove JIT/native parity or real-artifact replay. Historical totals for this slice: 304 gates (294 acceptance + 10 lifecycle), 322 local steps, 137 self-test names; current manifest after S3-34dr is 324 gates (306 acceptance + 18 lifecycle), 342 local steps, 149 self-test names. S3-34.2 runtime/replay acceptance remains pending. ISSUE-028 remains open; ISSUE-029 is resolved for this self-check only. См. [JIT testing reference](../testing/JIT.md#s3-34dn-create-only-mismatch-artifact-and-validated-replay-for-s3-34dm) and [report](../reports/STAGE_3_S3-34dn_2026-11-03.md) |
 | [partial] | S3-34do | Bounded value-only reducer for one S3-34dn artifact | Runtime commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated and passed independent static Sol/high review. Reducer, reducer self-check, and harness identities are pinned. Historical totals: 305 gates (295 acceptance + 10 lifecycle), 323 steps, 138 self-test names; current manifest after S3-34dr is 324 gates (306 acceptance + 18 lifecycle), 342 steps, 149 self-test names. Reducer gates remain unexecuted, and no real S3-34dn artifact was reduced. S3-34.2 execution acceptance remains pending. ISSUE-028 remains open; ISSUE-029 is resolved for the S3-34dn artifact-protection self-check. Stage 3 partial. См. [JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact) and [report](../reports/STAGE_3_S3-34do_2026-11-03.md) |
 | [partial] | S3-34dp | Exact local harness gates for S3-38e session ownership | Four exact `od-host --lib` lifecycle identities and the fail-closed harness self-check are pinned, including the `session.rs` source fingerprint. Current totals: 312 gates (298 acceptance + 14 lifecycle), 330 local steps, 140 self-test names. Static review only; no harness or Rust gate execution. Mini/M1 remain deferred. См. [JIT testing reference](../testing/JIT.md#s3-38e-bounded-local-rust-session-owner) and [report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
@@ -4801,11 +4801,13 @@ Totals after S3-34dl are pinned and statically reviewed: 302 gates (292 acceptan
 
 #### S3-34dm. Fixed-seed differential corpus for S3-20eg
 
-**Статус реализации и независимого Sol/high review: PASS; исполнение отложено.**
+**Статус реализации и независимого Sol/high review: PASS; bounded local corpus acceptance: PASS.**
 
 Corpus implementation commit `c7bb9c7` and harness commit `2fb1265` are
 integrated. The S3-34.1/.3/.5 implementation and gates passed independent
-static Sol/high review. No behavior gate has been executed.
+static Sol/high review. The exact od-host corpus gate passed 1/1 and the
+fail-closed Python harness self-test exited 0. This is local macOS/aarch64
+acceptance only.
 
 Add one deterministic differential host test for the existing exact S3-20eg
 singleton `67 89 04 24` (`MOV [ESP],EAX`). It uses three fixed seeds
@@ -4835,15 +4837,28 @@ or retry behavior is introduced. Runtime semantic contracts do not change.
 Rust identity:
 `tests::fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input`.
 Fail-closed harness gate:
-`s3_34dm_addr32_rsp_dword_store_fixed_seed_corpus`. Target manifest totals are
-303 Rust gates (293 acceptance + 10 lifecycle), 321 local steps, and 136
-self-test names. These totals are pinned and statically reviewed, not executed.
-The Rust behavior gate and Python harness self-test were not run; build, formatting,
-Cargo, Python harness execution, and Mini remain deferred. At this historical
-S3-34dm cut, S3-34.2 persisted replay/reducer implementation remained pending;
-it was subsequently implemented in S3-34dn/do, with execution acceptance
-still pending. ISSUE-028 remains open until S3-20eg
-execution acceptance; this review and the corpus gate do not close it. See the
+`s3_34dm_addr32_rsp_dword_store_fixed_seed_corpus`.
+
+Exact commands and outcomes:
+
+- `cargo test -p od-host --test stage3_dword_store_corpus fixed_seed_addr32_rsp_dword_store_corpus_matches_interpreter_twice_per_input --offline -- --exact --test-threads=1` — passed 1/1.
+- `PYTHONPATH=tests/cpu python3 -m unittest -v test_stage3_harness.Stage3HarnessValidationTests.test_s3_34dm_addr32_rsp_dword_store_corpus_gate_is_pinned_and_fail_closed` — exited 0.
+
+The Rust gate exercised the 1,200 unique initial states twice per backend
+against the interpreter. This is bounded local macOS/aarch64 corpus acceptance;
+it is not physical-x86 or Mini evidence and does not complete Stage 3. At the
+S3-34dm cut the pinned totals were 303 gates (293 acceptance + 10 lifecycle),
+321 local steps, and 136 self-test names. The current manifest after S3-34dr
+reports 324 gates (306 acceptance + 18 lifecycle), 342 steps, 149 self-test
+names, and 18 source pins; this exact run did not execute the full manifest.
+Build, formatting, full harness execution, Mini, and physical-x86 acceptance
+remain open. Production owner/MMU integration and performance acceptance are
+outside this slice; M1 remains deferred.
+
+S3-34.2 runtime/replay and reducer implementation was added in S3-34dn/do,
+while broader execution acceptance remains pending. ISSUE-028 was resolved
+separately; its closure is recorded in [the issue registry](../KNOWN_ISSUES.md)
+and is not attributed to this corpus result. See the
 [S3-34dm report](../reports/STAGE_3_S3-34dm_2026-11-02.md) and the
 [JIT testing reference](../testing/JIT.md#s3-34dm-fixed-seed-differential-corpus-for-s3-20eg).
 
