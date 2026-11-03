@@ -916,7 +916,8 @@ pub fn compile_ir_memory_load_block_v2(
 /// Compile exact unprefixed `8B 03` (`MOV EAX,[RBX]`), `8B 00`
 /// (`MOV EAX,[RAX]`), `8B 01` (`MOV EAX,[RCX]`),
 /// `8B 43 ib` (`MOV EAX,[RBX+disp8]`), `8B 83 id`
-/// (`MOV EAX,[RBX+disp32]`), `8B 40 ib` (`MOV EAX,[RAX+disp8]`),
+/// (`MOV EAX,[RBX+disp32]`), `8B 81 id` (`MOV EAX,[RCX+disp32]`),
+/// `8B 40 ib` (`MOV EAX,[RAX+disp8]`),
 /// `8B 05 id` (`MOV EAX,[RIP+disp32]`), or
 /// `67 8B 03` (`MOV EAX,[EBX]`) or `67 8B 43 ib`
 /// (`MOV EAX,[EBX+disp8]`) or `67 8B 83 id`
@@ -1021,6 +1022,7 @@ fn checked_dword_load_metadata_v2(
         && !(bytes.len() == 3 && bytes[..2] == [0x8b, 0x40])
         && !(bytes.len() == 3 && bytes[..2] == [0x8b, 0x41])
         && !(bytes.len() == 6 && bytes[..2] == [0x8b, 0x80])
+        && !(bytes.len() == 6 && bytes[..2] == [0x8b, 0x81])
         && !(bytes.len() == 6 && bytes[..2] == [0x8b, 0x83])
         && !(bytes.len() == 6 && bytes[..2] == [0x8b, 0x85])
         && !(bytes.len() == 6 && bytes[..2] == [0x8b, 0x05])
@@ -6014,7 +6016,6 @@ mod tests {
             .matches_source_bytes(&source, MemorySiteOperationV2::Load));
 
         for neighbor in [
-            &[0x8b, 0x81, 0x00, 0, 0, 0][..],
             &[0x67, 0x8b, 0x01][..],
             &[0x66, 0x8b, 0x01][..],
             &[0x48, 0x8b, 0x01][..],
@@ -6144,7 +6145,6 @@ mod tests {
             &[0x67, 0x8b, 0x41, 0x80][..],
             &[0x66, 0x8b, 0x41, 0x80][..],
             &[0x48, 0x8b, 0x41, 0x80][..],
-            &[0x8b, 0x81, 0x80, 0, 0, 0][..],
             &[0x8b, 0x44, 0x01, 0x80][..],
             &[0x8b, 0x49, 0x80][..],
             &[0x89, 0x41, 0x80][..],
@@ -6869,6 +6869,167 @@ mod tests {
     }
 
     #[test]
+    fn ir_dword_rcx_disp32_load_binds_all_source_bytes_to_its_site() {
+        let entry = 0x8190;
+        let displacements = [
+            i32::MIN,
+            i32::MAX,
+            -129,
+            -128,
+            -1,
+            0,
+            1,
+            127,
+            128,
+            0x0102_0304,
+            -0x0102_0304,
+        ];
+        let mut sites = Vec::with_capacity(displacements.len());
+        for displacement in displacements {
+            let mut source = [0x8b, 0x81, 0, 0, 0, 0];
+            source[2..].copy_from_slice(&displacement.to_le_bytes());
+            let block = compile_ir_memory_dword_load_block_v2(
+                CodeView::new(entry, &source).unwrap(),
+                entry,
+            )
+            .unwrap_or_else(|error| panic!("disp32 {displacement}: {error:?}"));
+            assert_eq!(block.source_bytes(), source);
+            assert_eq!(block.site().destination(), Some(0));
+            assert_eq!(block.site().source(), None);
+            assert_eq!(block.site().operand().base, AddressBase::Register(Register::Rcx));
+            assert_eq!(block.site().operand().index, None);
+            assert_eq!(block.site().operand().scale, 1);
+            assert_eq!(block.site().operand().displacement, i64::from(displacement));
+            assert_eq!(block.site().operand().address_size, od_isa::OperandSize::Qword);
+            assert_eq!(block.site().operand().size, od_isa::OperandSize::Dword);
+            assert_eq!(block.site().next_rip(), entry + 6);
+            assert!(block.site().has_supported_profile());
+            assert!(block.site().matches_source_bytes(&source, MemorySiteOperationV2::Load));
+            assert_eq!(block.pc_map().instruction_count(), 1);
+            assert_eq!(
+                block.pc_map().boundaries()[0].rip,
+                crate::statepoints::GuestRipBoundary::Fixed(entry + 6)
+            );
+            assert!(matches_dword_pc_map_contract(
+                block.pc_map(),
+                entry,
+                entry + 6,
+                0,
+                1,
+                crate::statepoints::StatePhase::HelperCall,
+                MemorySiteOperationV2::Load,
+            ));
+
+            for byte_index in 0..4 {
+                let mut changed = source;
+                changed[byte_index + 2] ^= 1;
+                assert!(!block.site().matches_source_bytes(&changed, MemorySiteOperationV2::Load));
+                let changed_block = compile_ir_memory_dword_load_block_v2(
+                    CodeView::new(entry, &changed).unwrap(),
+                    entry,
+                )
+                .unwrap();
+                assert_ne!(block.site(), changed_block.site());
+            }
+            sites.push(*block.site());
+        }
+        assert_eq!(sites.len(), displacements.len());
+        for pair in sites.windows(2) {
+            assert_ne!(pair[0], pair[1]);
+        }
+
+        let source = [0x8b, 0x81, 0, 0, 0, 0];
+        let block = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &source).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let mut forged = *block.site();
+        forged.source = Some(1);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.destination = Some(1);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.operand.base = AddressBase::Register(Register::Rax);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.operand.index = Some(Register::Rax);
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.operand.scale = 2;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.operand.displacement = 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.operand.size = od_isa::OperandSize::Qword;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.operand.address_size = od_isa::OperandSize::Dword;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.instruction_index = 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.guest_rip += 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+        let mut forged = *block.site();
+        forged.next_rip += 1;
+        assert!(!forged.matches_source_bytes(&source, MemorySiteOperationV2::Load));
+
+        for neighbor in [
+            &[0x8b, 0x81][..],
+            &[0x8b, 0x81, 0, 0, 0][..],
+            &[0x8b, 0x81, 0, 0, 0, 0, 0x90][..],
+            &[0x67, 0x8b, 0x81, 0, 0, 0, 0][..],
+            &[0x66, 0x8b, 0x81, 0, 0, 0, 0][..],
+            &[0x48, 0x8b, 0x81, 0, 0, 0, 0][..],
+            &[0x8b, 0x84, 0x01, 0, 0, 0, 0][..],
+            &[0x8b, 0x89, 0, 0, 0, 0][..],
+            &[0x89, 0x81, 0, 0, 0, 0][..],
+        ] {
+            assert!(!block.site().matches_source_bytes(neighbor, MemorySiteOperationV2::Load));
+            assert!(compile_ir_memory_dword_load_block_v2(
+                CodeView::new(entry, neighbor).unwrap(),
+                entry,
+            )
+            .is_err(), "admitted neighboring encoding {neighbor:02x?}");
+        }
+
+        for (neighbor, expected_base) in [
+            (&[0x8b, 0x01, 0, 0, 0, 0][..], Register::Rcx),
+            (&[0x8b, 0x80, 0, 0, 0, 0][..], Register::Rax),
+        ] {
+            let neighbor_block = compile_ir_memory_dword_load_block_v2(
+                CodeView::new(entry, neighbor).unwrap(),
+                entry,
+            )
+            .unwrap();
+            assert_eq!(neighbor_block.site().operand().base, AddressBase::Register(expected_base));
+            assert_ne!(neighbor_block.site(), block.site());
+            assert!(!neighbor_block.site().matches_source_bytes(&source, MemorySiteOperationV2::Load));
+            assert!(!block.site().matches_source_bytes(neighbor, MemorySiteOperationV2::Load));
+        }
+
+        let rcx_disp8 = [0x8b, 0x41, 0x80];
+        let rcx_disp32_plus_128 = [0x8b, 0x81, 0x80, 0, 0, 0];
+        let disp8_block = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &rcx_disp8).unwrap(),
+            entry,
+        )
+        .unwrap();
+        let disp32_block = compile_ir_memory_dword_load_block_v2(
+            CodeView::new(entry, &rcx_disp32_plus_128).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert_ne!(disp8_block.site(), disp32_block.site());
+        assert!(!disp8_block.site().matches_source_bytes(&rcx_disp32_plus_128, MemorySiteOperationV2::Load));
+        assert!(!disp32_block.site().matches_source_bytes(&rcx_disp8, MemorySiteOperationV2::Load));
+    }
+
+    #[test]
     fn ir_dword_rax_disp32_load_binds_signed_source_bytes_to_its_site() {
         let entry = 0x81d0;
         let displacements = [i32::MIN, -1, 0, 1, i32::MAX];
@@ -6933,7 +7094,6 @@ mod tests {
         for neighbor in [
             &[0x8b, 0x80, 0, 0, 0][..],
             &[0x8b, 0x80, 0, 0, 0, 0, 0x90][..],
-            &[0x8b, 0x81, 0, 0, 0, 0][..],
             &[0x8b, 0x84, 0x00, 0, 0, 0, 0][..],
             &[0x8b, 0x88, 0, 0, 0, 0][..],
             &[0x48, 0x8b, 0x80, 0, 0, 0, 0][..],

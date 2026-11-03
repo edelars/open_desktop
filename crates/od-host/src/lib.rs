@@ -17527,6 +17527,32 @@ mod tests {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn s3_20ft_rcx_disp32_dword_load_uses_full_rcx_and_signed_displacement() {
+        for displacement in [
+            i32::MIN,
+            i32::MAX,
+            -129,
+            -128,
+            -4,
+            -1,
+            0,
+            1,
+            127,
+            128,
+            0x0102_0304,
+            -0x0102_0304,
+        ] {
+            exercise_s3_dword_alias_load_with_disp32(
+                0x81,
+                od_isa::Register::Rcx,
+                1,
+                displacement,
+            );
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn exercise_s3_dword_alias_load_base(
         instruction_base: u8,
         base_register: od_isa::Register,
@@ -17547,19 +17573,54 @@ mod tests {
         base_gpr_index: usize,
         disp8: Option<i8>,
     ) {
+        exercise_s3_dword_alias_load_with_encoded_disp(
+            instruction_base,
+            base_register,
+            base_gpr_index,
+            disp8.map(|displacement| vec![displacement as u8]),
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn exercise_s3_dword_alias_load_with_disp32(
+        instruction_base: u8,
+        base_register: od_isa::Register,
+        base_gpr_index: usize,
+        displacement: i32,
+    ) {
+        exercise_s3_dword_alias_load_with_encoded_disp(
+            instruction_base,
+            base_register,
+            base_gpr_index,
+            Some(displacement.to_le_bytes().to_vec()),
+        );
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn exercise_s3_dword_alias_load_with_encoded_disp(
+        instruction_base: u8,
+        base_register: od_isa::Register,
+        base_gpr_index: usize,
+        displacement_bytes: Option<Vec<u8>>,
+    ) {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
         use std::collections::BTreeMap;
         use std::sync::Arc;
 
         const ENTRY: u64 = 0x9d80;
         const ADDRESS: u64 = 0x1_0000_0fff;
-        let displacement = disp8.map(i64::from).unwrap_or(0);
-        let next_rip = ENTRY + if disp8.is_some() { 3 } else { 2 };
+        let displacement = match displacement_bytes.as_deref() {
+            None => 0,
+            Some([disp8]) => i64::from(*disp8 as i8),
+            Some([a, b, c, d]) => i64::from(i32::from_le_bytes([*a, *b, *c, *d])),
+            Some(_) => unreachable!("disp32 fixture uses one or four encoded bytes"),
+        };
+        let next_rip = ENTRY + 2 + displacement_bytes.as_ref().map_or(0, |bytes| bytes.len() as u64);
         let base_for_address = |address: u64| address.wrapping_sub_signed(displacement);
         let original_base = base_for_address(ADDRESS);
         let mut source = vec![0x8b, instruction_base];
-        if let Some(displacement) = disp8 {
-            source.push(displacement as u8);
+        if let Some(displacement) = &displacement_bytes {
+            source.extend_from_slice(displacement);
         }
         #[derive(Clone, Debug)]
         struct AliasRam {
@@ -17567,7 +17628,7 @@ mod tests {
             reads: Vec<(u64, usize)>,
             read_error: Option<MemoryError>,
             instruction_base: u8,
-            instruction_displacement: Option<u8>,
+            instruction_displacement: Option<Vec<u8>>,
             stop_on_read: Option<Arc<AtomicU8>>,
         }
         impl PartialEq for AliasRam {
@@ -17590,8 +17651,11 @@ mod tests {
                 match address {
                     ENTRY => Ok(0x8b),
                     address if address == ENTRY + 1 => Ok(self.instruction_base),
-                    address if address == ENTRY + 2 => self
+                    address if (ENTRY + 2..ENTRY + 6).contains(&address) => self
                         .instruction_displacement
+                        .as_ref()
+                        .and_then(|bytes| bytes.get((address - (ENTRY + 2)) as usize))
+                        .copied()
                         .ok_or(MemoryError::Unmapped {
                             address,
                             access: AccessKind::Fetch,
@@ -17706,13 +17770,47 @@ mod tests {
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&block).unwrap();
         let stop = AtomicU8::new(0);
 
+        if displacement_bytes.as_ref().is_some_and(|bytes| bytes.len() == 4) {
+            let encoded = displacement_bytes.as_ref().unwrap();
+            for missing_byte in 0..4 {
+                let mut ram = AliasRam {
+                    bytes: BTreeMap::new(),
+                    reads: Vec::new(),
+                    read_error: None,
+                    instruction_base,
+                    instruction_displacement: Some(encoded[..missing_byte].to_vec()),
+                    stop_on_read: None,
+                };
+                let mut state = od_isa::LongModeState {
+                    rip: ENTRY,
+                    ..Default::default()
+                };
+                state.gpr[base_gpr_index] = original_base;
+                let before = state.clone();
+                assert_eq!(
+                    od_isa::execute::step(
+                        &mut state,
+                        &mut ram,
+                        AccessContext::default(),
+                    ),
+                    Err(MemoryError::Unmapped {
+                        address: ENTRY + 2 + missing_byte as u64,
+                        access: AccessKind::Fetch,
+                    }),
+                    "missing disp32 byte {missing_byte} must propagate as a fetch error"
+                );
+                assert_eq!(state, before);
+                assert!(ram.reads.is_empty());
+            }
+        }
+
         for value in [0_u32, 0x8000_0000, 0xffff_ffff] {
             let mut ram = AliasRam {
                 bytes: BTreeMap::new(),
                 reads: Vec::new(),
                 read_error: None,
                 instruction_base,
-                instruction_displacement: disp8.map(|value| value as u8),
+                instruction_displacement: displacement_bytes.clone(),
                 stop_on_read: None,
             };
             let low32_decoy = u64::from(
@@ -17773,7 +17871,7 @@ mod tests {
                 reads: Vec::new(),
                 read_error: None,
                 instruction_base,
-                instruction_displacement: disp8.map(|value| value as u8),
+                instruction_displacement: displacement_bytes.clone(),
                 stop_on_read: None,
             };
             for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
@@ -17810,7 +17908,7 @@ mod tests {
                 reads: Vec::new(),
                 read_error: None,
                 instruction_base,
-                instruction_displacement: disp8.map(|value| value as u8),
+                instruction_displacement: displacement_bytes.clone(),
                 stop_on_read: None,
             };
             for (offset, byte) in 0x6a5b_4c3d_u32.to_le_bytes().into_iter().enumerate() {
@@ -17859,7 +17957,7 @@ mod tests {
                 reads: Vec::new(),
                 read_error: None,
                 instruction_base,
-                instruction_displacement: disp8.map(|value| value as u8),
+                instruction_displacement: displacement_bytes.clone(),
                 stop_on_read: None,
             };
             for (offset, byte) in 0x1029_3847_u32.to_le_bytes().into_iter().enumerate() {
@@ -17920,7 +18018,7 @@ mod tests {
                 reads: Vec::new(),
                 read_error: None,
                 instruction_base,
-                instruction_displacement: disp8.map(|value| value as u8),
+                instruction_displacement: displacement_bytes.clone(),
                 stop_on_read: None,
             };
             for (offset, byte) in 0xcafe_f00d_u32.to_le_bytes().into_iter().enumerate() {
@@ -17974,7 +18072,7 @@ mod tests {
             reads: Vec::new(),
             read_error: None,
             instruction_base,
-            instruction_displacement: disp8.map(|value| value as u8),
+            instruction_displacement: displacement_bytes.clone(),
             stop_on_read: None,
         };
         for (offset, byte) in 0x7654_3210_u32.to_le_bytes().into_iter().enumerate() {
@@ -18026,7 +18124,7 @@ mod tests {
             reads: Vec::new(),
             read_error: Some(fault.clone()),
             instruction_base,
-            instruction_displacement: disp8.map(|value| value as u8),
+            instruction_displacement: displacement_bytes.clone(),
             stop_on_read: None,
         };
         let mut state = od_isa::LongModeState {
@@ -18088,7 +18186,7 @@ mod tests {
             reads: Vec::new(),
             read_error: Some(backend_error),
             instruction_base,
-            instruction_displacement: disp8.map(|value| value as u8),
+            instruction_displacement: displacement_bytes.clone(),
             stop_on_read: None,
         };
         state = before.clone();
@@ -18147,7 +18245,7 @@ mod tests {
                 reads: Vec::new(),
                 read_error: None,
                 instruction_base,
-                instruction_displacement: disp8.map(|value| value as u8),
+                instruction_displacement: displacement_bytes.clone(),
                 stop_on_read: None,
             };
             let result = published
@@ -18180,7 +18278,7 @@ mod tests {
             reads: Vec::new(),
             read_error: None,
             instruction_base,
-            instruction_displacement: disp8.map(|value| value as u8),
+            instruction_displacement: displacement_bytes.clone(),
             stop_on_read: None,
         };
         let overflow = published.execute_ir_memory_dword_load_v2(
@@ -18216,7 +18314,7 @@ mod tests {
             reads: Vec::new(),
             read_error: None,
             instruction_base,
-            instruction_displacement: disp8.map(|value| value as u8),
+            instruction_displacement: displacement_bytes.clone(),
             stop_on_read: Some(callback_stop.clone()),
         };
         for (offset, byte) in 0xa5a5_5a5a_u32.to_le_bytes().into_iter().enumerate() {
