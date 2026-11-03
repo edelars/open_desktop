@@ -23127,8 +23127,11 @@ gate/fetch/CPL, AC-independent alignment, rollback, tampering and backend
 denial. The focused suites passed: od-isa 1,948, od-testkit 455, and runner
 unit tests 133; workspace check and formatting passed. The full runner fixture
 suite was stopped after its unit suite completed, while the focused S2-38ab
-fixture test passed. Isolated commit: `4907bba`. Independent Sol/high review
-and main integration remain pending. No native/JIT or physical x86 acceptance
-is claimed. See [S2-38ab implementation report](S2_38AB_SQRTPD_MEMORY_UNMASKED.md),
+fixture test passed. A follow-up review fix adds 40 signed-QNaN/SNaN cases
+covering both lanes, IM mask states and both OSXMMEXCPT mappings; the focused
+test passes. Implementation commit: `4907bba`; review-fix commit: see the
+isolated task history. Independent re-review and main integration remain
+pending. No native/JIT or physical x86 acceptance is claimed. See
+[S2-38ab implementation report](S2_38AB_SQRTPD_MEMORY_UNMASKED.md),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions),
 and [stage plan](../plans/STAGE_2.md).

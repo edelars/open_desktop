@@ -8631,7 +8631,11 @@ Three literal fixtures cover masked success (`s2_38ab_sqrtpd_unmasked_success`),
 unmasked IE `#XM`, and unmasked PE arithmetic `#UD`. The runner's independent
 raw-u64 oracle covers 25 two-lane event-category products × all IM/DM/PM and
 OSXMMEXCPT combinations × all RC modes × 64 old sticky histories (102,400
-cases). It checks mixed-lane pre-event aggregation and whole-XMM suppression.
+cases), plus 40 signed-NaN cases for ±QNaN/±SNaN in either or both lanes, with
+IM masked/unmasked and both OSXMMEXCPT values. These confirm QNaN does not set
+IE, SNaN sets terminal IE, and an unmasked SNaN suppresses the whole XMM
+destination while selecting `#XM` or arithmetic `#UD`. The matrix checks
+mixed-lane pre-event aggregation and whole-XMM suppression.
 The exact positive minimum subnormal `0x1` has root `2^-537` and DE only;
 `0x2`/`0x3` produce DE+PE. Focused tests cover gate/fetch/CPL, alignment with
 AC clear/set, canonical span, one-read/rollback, result/status/retirement/

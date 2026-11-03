@@ -21,10 +21,14 @@ XMM0, RIP and retirement count.
 The independent integer-only raw-u64 oracle and in-process runner matrix cover
 25 lane-event products (neutral, IE, DE-only, PE-only and DE+PE on both lanes),
 8 IM/DM/PM patterns, both OSXMMEXCPT values, 4 RC modes and 64 prior sticky
-histories: 102,400 cases. The matrix completed in 45.01 seconds. A pinned
-oracle assertion confirms `sqrt(0x1) = 2^-537` exactly with DE only; operands
-`0x2` and `0x3` produce DE+PE. Mixed-lane IE+DE+PE cases verify packed
-pre-event aggregation and whole-XMM suppression.
+histories: 102,400 cases. The matrix completed in 45.01 seconds. An additional
+40 signed-NaN cases cover ±QNaN and ±SNaN in either or both lanes with IM
+masked/unmasked and both OSXMMEXCPT values. They verify QNaN never raises IE,
+SNaN raises terminal IE, and unmasked SNaN suppresses the whole XMM destination
+with the selected exception mapping. A pinned oracle assertion confirms
+`sqrt(0x1) = 2^-537` exactly with DE only; operands `0x2` and `0x3` produce
+DE+PE. Mixed-lane IE+DE+PE cases verify packed pre-event aggregation and
+whole-XMM suppression.
 
 Three fixtures cover success, unmasked IE via `#XM`, and unmasked PE via
 arithmetic `#UD`. Focused executor checks cover feature/control gate priority,
@@ -42,18 +46,21 @@ profiles remain separate.
 - `cargo test -p od-isa --offline` — 1,948 passed.
 - `cargo test -p od-testkit --offline` — 455 passed.
 - `cargo test -p od-runner --offline` unit suite — 133 passed, including the
-  102,400-case matrix.
+  102,400-case matrix; the additional focused NaN test passed separately (40
+  cases).
 - Focused SQRTPD fixture test — passed. The full 556-test runner fixture suite
   was started but stopped after the unit suite completed; the three S2-38ab
   fixtures and their tampering/backend checks passed in the focused test.
 - `git diff --check` — passed before the implementation commit.
-- `graphify update .` — passed (12,338 nodes / 26,626 edges / 378 communities).
+- `graphify update .` — passed after implementation and review-fix updates
+  (12,339 nodes / 26,629 edges / 330 communities).
 - `python3 tools/check_layout.py` — did not pass in this isolated worktree:
   the linked `.git` marker is an unmapped root entry, and two existing
   `STAGE_2_REPORT.md` links point to work manifests absent from this checkout.
   No project layout was changed in this slice.
 
-The implementation is committed in isolated worktree commit `4907bba`.
-Independent Sol/high review is pending in the integrating task. Native/JIT,
+The implementation is committed in isolated worktree commit `4907bba`; the
+signed-NaN review fix is `fc7d0a2`. Independent Sol/high re-review is pending
+in the integrating task. Native/JIT,
 C ABI, generic/fragment execution and physical x86 acceptance remain closed;
 no physical-hardware run is claimed.

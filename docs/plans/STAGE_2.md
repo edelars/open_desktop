@@ -18595,7 +18595,10 @@ one read16. It aggregates both lanes' IE/DE before mask handling, suppresses PE
 when an unmasked pre-event occurs, and preserves XMM/RIP/retirement on faults.
 The independent raw-u64 oracle matrix passes all 102,400 combinations: 25
 two-lane event products × 8 mask patterns × 2 OSXMMEXCPT values × 4 RC modes ×
-64 old sticky histories. The exact `0x1` root is `2^-537` with DE only;
+64 old sticky histories. An additional 40 cases cover ±QNaN and ±SNaN in either
+or both lanes with IM masked/unmasked and both OSXMMEXCPT values; QNaNs do not
+set IE, while SNaNs raise terminal IE and suppress the whole XMM destination
+when unmasked. The exact `0x1` root is `2^-537` with DE only;
 `0x2`/`0x3` yield DE+PE. Three literal fixtures cover success, IE `#XM` and PE
 arithmetic `#UD`; focused checks cover gates, truncated fetch, CPL0–3,
 AC-independent alignment, canonical faults, rollback, tampering and backend
@@ -18604,7 +18607,8 @@ denial. S2-37de masked memory and S2-37al register profiles remain separate.
 Verification in the isolated worktree: `cargo fmt --all -- --check`,
 `cargo check --workspace --all-targets --offline`, `cargo test -p od-isa
 --offline` (1,948 passed), `cargo test -p od-testkit --offline` (455 passed),
-the runner's 133 unit tests (including the 102,400-case matrix), and the
+the runner's 133 unit tests (including the 102,400-case matrix and a separately
+run 40-case signed-NaN matrix), and the
 focused SQRTPD fixture test passed. A full runner fixture-suite attempt was
 stopped after the unit suite completed; the focused three-fixture test passed.
 Independent Sol/high review is pending after integration. This profile remains
