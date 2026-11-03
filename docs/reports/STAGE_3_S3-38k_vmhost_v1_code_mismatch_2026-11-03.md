@@ -1,6 +1,6 @@
 # Stage 3 S3-38k: immutable-code mismatch and RUN-ID high-watermark
 
-Status: partial; process smoke and exact harness gate are implemented.
+Status: focused process acceptance passed; broader V1 acceptance remains open.
 
 ## Scope
 
@@ -16,13 +16,20 @@ VMHost binary hash, success marker, and a 30-second outer timeout.
 
 ## Review and execution
 
-Independent Sol/high static review passed for the smoke and harness integration.
-No Python, test, build, formatting, Mini, or M1 execution was performed. The
-process suite now has 37 pinned steps, all still unexecuted.
+Independent Sol/high review passed after correcting the supported instruction
+fixtures and RAX expectations. The focused process smoke passed on the current
+ARM64 host against the previously built, signed VMHost binary, with the exact
+success marker. Both focused harness manifest tests passed (2/2). The full
+process suite contains 39 steps and remains unverified; an earlier suite
+invocation timed out at the tool boundary without a summary, so its result is
+unknown.
+
+An SSH availability check for the Mini (`senya@192.168.1.14:22`) timed out
+before any remote command ran. M1 regression remains deferred. No build or
+formatting check was needed for this fixture-only change.
 
 ## Remaining acceptance
 
-The process gate remains unexecuted. INVALID_STATE batch closure, broader
-completion/backpressure/cleanup checks, unchanged V0 regressions, and supported
-macOS ARM runtime acceptance remain open. This report makes no performance or
-runtime claim.
+INVALID_STATE batch closure, broader completion/backpressure/cleanup checks,
+unchanged V0 regressions, full process-suite execution, and physical Mini
+acceptance remain open. This report makes no performance claim.

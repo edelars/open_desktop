@@ -105,8 +105,8 @@ def stop_vmhost(process):
 
 def check_code_mismatch(vmhost):
     process, channel = launch_vmhost(vmhost)
-    original_code = bytes.fromhex("4889c1")  # mov rcx, rax
-    different_code = bytes.fromhex("4889d1")  # mov rcx, rdx; same length
+    original_code = bytes.fromhex("4803c3")  # add rax, rbx
+    different_code = bytes.fromhex("482bc3")  # sub rax, rbx; same length
     try:
         channel.sendall(frame(HELLO, 0))
         expect_frame(channel, (READY, 0, struct.pack("<II", 1, 0)), "V1 READY")
@@ -118,7 +118,7 @@ def check_code_mismatch(vmhost):
             1,
             (0x11, 0x22, 0x33, 0x44),
             0x202,
-            expected_result((0x11, 0x11, 0x33, 0x44), 3, 0x202, 0, 1),
+            expected_result((0x55, 0x22, 0x33, 0x44), 3, 0x206, 0, 1),
         )
 
         mismatch_error = struct.pack(
@@ -175,7 +175,7 @@ def check_code_mismatch(vmhost):
             1,
             (0xA1, 0xA2, 0xA3, 0xA4),
             0x246,
-            expected_result((0xA1, 0xA1, 0xA3, 0xA4), 3, 0x246, 0, 1),
+            expected_result((0x145, 0xA2, 0xA3, 0xA4), 3, 0x202, 0, 1),
         )
 
         # EOF between frames while idle is the protocol's normal teardown path.
