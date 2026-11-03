@@ -348,6 +348,8 @@ pub enum Profile {
     LongDivpdRegistersV1,
     #[serde(rename = "s2-long-divpd-memory-rax-v1")]
     LongDivpdMemoryRaxV1,
+    #[serde(rename = "s2-long-divpd-memory-unmasked-rax-v1")]
+    LongDivpdMemoryUnmaskedRaxV1,
     #[serde(rename = "s2-long-divsd-registers-v1")]
     LongDivsdRegistersV1,
     #[serde(rename = "s2-long-divsd-memory-rax-v1")]
@@ -1681,6 +1683,7 @@ impl IntegerState {
                     | Profile::LongAddpsRegistersV1
                     | Profile::LongDivpdRegistersV1
                     | Profile::LongDivpdMemoryRaxV1
+                    | Profile::LongDivpdMemoryUnmaskedRaxV1
                     | Profile::LongDivsdRegistersV1
                     | Profile::LongDivpsRegistersV1
                     | Profile::LongDivssRegistersV1
@@ -2024,6 +2027,7 @@ impl IntegerState {
                 | Profile::LongAddpsRegistersV1
                 | Profile::LongDivpdRegistersV1
                 | Profile::LongDivpdMemoryRaxV1
+                | Profile::LongDivpdMemoryUnmaskedRaxV1
                 | Profile::LongDivsdRegistersV1
                 | Profile::LongDivpsRegistersV1
                 | Profile::LongDivssRegistersV1
@@ -2502,6 +2506,7 @@ impl IntegerState {
                 | Profile::LongMovupdMemRipV1
                 | Profile::LongMovupdMemSibV1
                 | Profile::LongDivpdMemoryRaxV1
+                | Profile::LongDivpdMemoryUnmaskedRaxV1
         ) {
             state.sse.as_ref().map(SseSnapshot::from)
         } else {
@@ -2914,6 +2919,7 @@ impl IntegerState {
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
                 | Profile::LongDivpdMemoryRaxV1
+                | Profile::LongDivpdMemoryUnmaskedRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxUnmaskedV1
@@ -3222,6 +3228,7 @@ impl IntegerState {
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
                 | Profile::LongDivpdMemoryRaxV1
+                | Profile::LongDivpdMemoryUnmaskedRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
                 | Profile::LongSubssMemoryRaxUnmaskedV1
@@ -3527,6 +3534,7 @@ impl IntegerState {
                 | Profile::LongDivsdMemoryRaxV1
                 | Profile::LongDivpsMemoryRaxV1
                 | Profile::LongDivpdMemoryRaxV1
+                | Profile::LongDivpdMemoryUnmaskedRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxUnmaskedV1
@@ -3842,6 +3850,7 @@ impl IntegerState {
                 | Profile::LongMulssMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongDivpdMemoryRaxV1
+                | Profile::LongDivpdMemoryUnmaskedRaxV1
                 | Profile::LongSubsdMemoryRaxV1
                 | Profile::LongSubsdMemoryRaxUnmaskedV1
                 | Profile::LongMulsdMemoryRaxUnmaskedV1
@@ -5328,7 +5337,8 @@ impl IntegerState {
                 | Profile::LongMovupdMemBaseV1
                 | Profile::LongMovupdMemRipV1
                 | Profile::LongMovupdMemSibV1
-                | Profile::LongDivpdMemoryRaxV1,
+                | Profile::LongDivpdMemoryRaxV1
+                | Profile::LongDivpdMemoryUnmaskedRaxV1,
                 Some(sse),
             ) => sse.validate()?,
             (
@@ -5601,7 +5611,8 @@ impl IntegerState {
                 | Profile::LongMovupdMemBaseV1
                 | Profile::LongMovupdMemRipV1
                 | Profile::LongMovupdMemSibV1
-                | Profile::LongDivpdMemoryRaxV1,
+                | Profile::LongDivpdMemoryRaxV1
+                | Profile::LongDivpdMemoryUnmaskedRaxV1,
                 None,
             ) => {
                 return Err(invalid("state.sse", "required by this profile"));
@@ -5798,6 +5809,9 @@ pub struct Fixture {
     pub addps_controls: Option<AddpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub divpd_controls: Option<DivpdControlSnapshot>,
+    /// Immutable controls required only by S2-38ar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divpd_memory_rax_unmasked_controls: Option<DivpdMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub divsd_controls: Option<DivpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6603,6 +6617,16 @@ pub struct SubpdMemoryRaxUnmaskedControlSnapshot {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct MulpdMemoryRaxUnmaskedControlSnapshot {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DivpdMemoryRaxUnmaskedControlSnapshot {
     pub sse2_available: bool,
     pub cr0_em: bool,
     pub cr0_ts: bool,
@@ -10430,6 +10454,113 @@ impl Fixture {
                     "must reflect DIVPD m128 gates, 16-byte alignment and canonical span",
                 ));
             }
+        }
+        if self.profile == Profile::LongDivpdMemoryUnmaskedRaxV1 {
+            if self.divpd_controls.is_some() {
+                return Err(invalid(
+                    "divpd_controls",
+                    "masked controls cannot be combined with unmasked DIVPD m128 profile",
+                ));
+            }
+            let controls = self.divpd_memory_rax_unmasked_controls.ok_or_else(|| {
+                invalid(
+                    "divpd_memory_rax_unmasked_controls",
+                    "required by unmasked DIVPD m128 profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "code")
+                .ok_or_else(|| invalid("memory.code", "required by DIVPD m128 profile"))?;
+            let data = self
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .ok_or_else(|| invalid("memory.data", "required by DIVPD m128 profile"))?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if decode_bytes(&code.initial_bytes_hex)? != [0x66, 0x0f, 0x5e, 0x00]
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 16
+                || !data.permissions.read
+                || data.permissions.write
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "unmasked DIVPD m128 requires exact 66 0F 5E 00, read-only source, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by DIVPD m128 profile"))?
+                .mxcsr
+                .get() as u32;
+            if mxcsr & !0xffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "unmasked DIVPD requires supported MXCSR bits, DAZ=FTZ=0, OM=UM=1",
+                ));
+            }
+            let gate = !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let last = source.checked_add(15);
+            let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+            let fetch_end = start.checked_add(3);
+            let fetch_fault = fetch_end.is_none_or(|end| !canonical(start) || !canonical(end));
+            let address_fault =
+                source & 0xf != 0 || last.is_none_or(|end| !canonical(source) || !canonical(end));
+            let sse = self
+                .initial_state
+                .sse
+                .as_ref()
+                .expect("SSE presence checked");
+            let lhs_bytes = decode_bytes(&sse.xmm[0])?;
+            let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+            let lhs = std::array::from_fn(|i| {
+                u64::from_le_bytes(lhs_bytes[i * 8..i * 8 + 8].try_into().unwrap())
+            });
+            let rhs = std::array::from_fn(|i| {
+                u64::from_le_bytes(rhs_bytes[i * 8..i * 8 + 8].try_into().unwrap())
+            });
+            let (_, ie, de, ze, _, _, pe) = independent_divpd(lhs, rhs, mxcsr);
+            let pre_unmasked = (ie && mxcsr & (1 << 7) == 0)
+                || (ze && mxcsr & (1 << 9) == 0)
+                || (de && mxcsr & (1 << 8) == 0);
+            let post_unmasked = !pre_unmasked && pe && mxcsr & (1 << 12) == 0;
+            let expected =
+                if fetch_fault || gate || nm || address_fault || pre_unmasked || post_unmasked {
+                    ExpectedExit::Exception
+                } else {
+                    ExpectedExit::StopAddress
+                };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect DIVPD m128 gates, alignment, canonical span, and unmasked exceptions",
+                ));
+            }
+        } else if self.divpd_memory_rax_unmasked_controls.is_some() {
+            return Err(invalid(
+                "divpd_memory_rax_unmasked_controls",
+                "only valid for unmasked DIVPD m128 profile",
+            ));
         }
         if self.profile == Profile::LongDivsdRegistersV1 {
             let _ = self
@@ -19413,10 +19544,12 @@ impl Fixture {
                 Profile::LongDivpdRegistersV1 => {
                     divpd_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
-                Profile::LongDivpdMemoryRaxV1 => decode_bytes(&code_bytes)
-                    .ok()
-                    .filter(|bytes| bytes == &[0x66, 0x0f, 0x5e, 0x00])
-                    .map(|_| 4),
+                Profile::LongDivpdMemoryRaxV1 | Profile::LongDivpdMemoryUnmaskedRaxV1 => {
+                    decode_bytes(&code_bytes)
+                        .ok()
+                        .filter(|bytes| bytes == &[0x66, 0x0f, 0x5e, 0x00])
+                        .map(|_| 4)
+                }
                 Profile::LongDivpsRegistersV1 => {
                     divps_register_encoding(&code_bytes).map(|(_, _, length)| length)
                 }
@@ -21697,6 +21830,7 @@ impl Fixture {
             addss_controls: None,
             addps_controls: None,
             divpd_controls: None,
+            divpd_memory_rax_unmasked_controls: None,
             divsd_controls: None,
             divps_controls: None,
             divss_controls: None,
@@ -21943,6 +22077,8 @@ pub struct Snapshot {
     pub addps_controls: Option<AddpsControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub divpd_controls: Option<DivpdControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divpd_memory_rax_unmasked_controls: Option<DivpdMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub divsd_controls: Option<DivpdControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -22661,6 +22797,19 @@ impl RunResult {
             return Err(invalid(
                 "snapshot.addpd_controls",
                 "only valid for the ADDPD profile",
+            ));
+        }
+        if self.profile == Profile::LongDivpdMemoryUnmaskedRaxV1 {
+            if snapshot.divpd_memory_rax_unmasked_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.divpd_memory_rax_unmasked_controls",
+                    "required by unmasked DIVPD m128 profile",
+                ));
+            }
+        } else if snapshot.divpd_memory_rax_unmasked_controls.is_some() {
+            return Err(invalid(
+                "snapshot.divpd_memory_rax_unmasked_controls",
+                "only valid for unmasked DIVPD m128 profile",
             ));
         }
         if self.profile == Profile::LongAddpdMemoryUnmaskedRaxV1 {
@@ -24179,6 +24328,7 @@ impl RunResult {
                 | Profile::LongMulpdMemoryRaxV1
                 | Profile::LongMulpdMemoryUnmaskedRaxV1
                 | Profile::LongDivpdMemoryRaxV1
+                | Profile::LongDivpdMemoryUnmaskedRaxV1
                 | Profile::LongComissMemoryInvalidRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
@@ -24822,6 +24972,25 @@ impl RunResult {
             }
             match (
                 loaded.fixture.profile,
+                loaded.fixture.divpd_memory_rax_unmasked_controls,
+                value.divpd_memory_rax_unmasked_controls,
+            ) {
+                (Profile::LongDivpdMemoryUnmaskedRaxV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongDivpdMemoryUnmaskedRaxV1, _, _) => {
+                    return Err(FormatError::CaseMismatch(
+                        "divpd_memory_rax_unmasked_controls",
+                    ));
+                }
+                (_, None, None) => {}
+                _ => {
+                    return Err(FormatError::CaseMismatch(
+                        "divpd_memory_rax_unmasked_controls",
+                    ));
+                }
+            }
+            match (
+                loaded.fixture.profile,
                 loaded.fixture.divsd_controls,
                 value.divsd_controls,
             ) {
@@ -25100,6 +25269,8 @@ impl RunResult {
                 validate_divpd_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongDivpdMemoryRaxV1 {
                 validate_divpd_memory_rax_result(loaded, self, value)?;
+            } else if loaded.fixture.profile == Profile::LongDivpdMemoryUnmaskedRaxV1 {
+                validate_divpd_memory_rax_unmasked_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongDivsdRegistersV1 {
                 validate_divsd_registers_result(loaded, self, value)?;
             } else if loaded.fixture.profile == Profile::LongDivssRegistersV1 {
@@ -34757,6 +34928,189 @@ fn validate_divpd_memory_rax_result(
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
         _ => return Err(FormatError::CaseMismatch("DIVPD m128 outcome/exception")),
+    }
+    Ok(())
+}
+
+fn validate_divpd_memory_rax_unmasked_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .divpd_memory_rax_unmasked_controls
+        .ok_or(FormatError::CaseMismatch(
+            "divpd_memory_rax_unmasked_controls",
+        ))?;
+    let sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|r| r.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|r| r.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0x66, 0x0f, 0x5e, 0x00]
+        || !data.permissions.read
+        || data.permissions.write
+        || data.permissions.execute
+    {
+        return Err(FormatError::CaseMismatch(
+            "unmasked DIVPD m128 encoding/source",
+        ));
+    }
+    let lhs_bytes = decode_bytes(&sse.xmm[0])?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let lhs = std::array::from_fn(|i| {
+        u64::from_le_bytes(lhs_bytes[i * 8..i * 8 + 8].try_into().unwrap())
+    });
+    let rhs = std::array::from_fn(|i| {
+        u64::from_le_bytes(rhs_bytes[i * 8..i * 8 + 8].try_into().unwrap())
+    });
+    let mxcsr = sse.mxcsr.get() as u32;
+    let (values, ie, de, ze, oe, ue, pe) = independent_divpd(lhs, rhs, mxcsr);
+    let pre = (ie && mxcsr & (1 << 7) == 0)
+        || (ze && mxcsr & (1 << 9) == 0)
+        || (de && mxcsr & (1 << 8) == 0);
+    let unmasked_post_pe = !pre && pe && mxcsr & (1 << 12) == 0;
+    let source = fixture.initial_state.gpr[0].get();
+    let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let rip = fixture.initial_state.rip.get();
+    let fetch_end = rip.checked_add(3);
+    let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+    let fetch_fault = fetch_end.is_none_or(|end| !canonical(rip) || !canonical(end));
+    let aligned = source & 0xf == 0;
+    let last = source.checked_add(15);
+    let memory_fault = !aligned || last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let simd = if !fetch_fault && gate.is_none() && !memory_fault && (pre || unmasked_post_pe) {
+        Some(if controls.cr4_osxmmexcpt { 19 } else { 6 })
+    } else {
+        None
+    };
+    let fault = fetch_fault
+        .then_some(13)
+        .or(gate)
+        .or_else(|| memory_fault.then_some(13))
+        .or(simd);
+    let expected_exit = if fault.is_some() {
+        ExpectedExit::Exception
+    } else {
+        ExpectedExit::StopAddress
+    };
+    if fixture.expected_exit != expected_exit {
+        return Err(FormatError::CaseMismatch(
+            "unmasked DIVPD m128 expected exit",
+        ));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if let Some(_) = simd {
+        let flags = if pre {
+            u32::from(ie) | (u32::from(de) << 1) | (u32::from(ze) << 2)
+        } else {
+            u32::from(ie)
+                | (u32::from(de) << 1)
+                | (u32::from(ze) << 2)
+                | (u32::from(oe) << 3)
+                | (u32::from(ue) << 4)
+                | (u32::from(pe) << 5)
+        };
+        expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?
+            .mxcsr = HexU64(u64::from(mxcsr | flags));
+    } else if fault.is_none() {
+        let sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        let mut bytes = [0u8; 16];
+        for (i, value) in values.into_iter().enumerate() {
+            bytes[i * 8..i * 8 + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        sse.xmm[0] = crate::memory::encode_bytes(&bytes);
+        sse.mxcsr = HexU64(u64::from(
+            mxcsr
+                | u32::from(ie)
+                | (u32::from(de) << 1)
+                | (u32::from(ze) << 2)
+                | (u32::from(oe) << 3)
+                | (u32::from(ue) << 4)
+                | (u32::from(pe) << 5),
+        ));
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(4)
+                .ok_or(FormatError::CaseMismatch("DIVPD m128 RIP overflow"))?,
+        );
+    }
+    let expected_memory = fixture
+        .memory
+        .iter()
+        .map(|r| MemoryRegionSnapshot {
+            region_id: r.region_id.clone(),
+            guest_address: r.guest_address,
+            bytes_hex: r.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != expected_memory
+    {
+        return Err(FormatError::CaseMismatch(
+            "unmasked DIVPD m128 state/memory",
+        ));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none())),
+        })
+    {
+        return Err(FormatError::CaseMismatch(
+            "unmasked DIVPD m128 retirement count",
+        ));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "unmasked DIVPD m128 outcome/exception",
+            ));
+        }
     }
     Ok(())
 }

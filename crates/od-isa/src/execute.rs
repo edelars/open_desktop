@@ -533,6 +533,42 @@ pub struct DivpdControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// SSE2 and SIMD exception-delivery controls for unmasked DIVPD m128 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DivpdMemoryRaxUnmaskedControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy)]
+enum DivpdMemoryRaxExecutionProfile {
+    Masked(DivpdControls),
+    Unmasked(DivpdMemoryRaxUnmaskedControls),
+}
+
+impl DivpdMemoryRaxExecutionProfile {
+    const fn gates(self) -> (bool, bool, bool, bool) {
+        match self {
+            Self::Masked(c) => (c.sse2_available, c.cr0_em, c.cr0_ts, c.cr4_osfxsr),
+            Self::Unmasked(c) => (c.sse2_available, c.cr0_em, c.cr0_ts, c.cr4_osfxsr),
+        }
+    }
+
+    const fn is_unmasked(self) -> bool {
+        matches!(self, Self::Unmasked(_))
+    }
+
+    const fn osxmmexcpt(self) -> bool {
+        match self {
+            Self::Masked(_) => false,
+            Self::Unmasked(c) => c.cr4_osxmmexcpt,
+        }
+    }
+}
+
 /// Explicit SSE2 and SIMD exception-delivery controls for bounded DIVSD.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DivsdControls {
@@ -1632,7 +1668,7 @@ struct ExecutionProfiles<'a> {
     addps_memory_rax_unmasked: Option<AddpsMemoryRaxUnmaskedControls>,
     subps_memory_rax_unmasked: Option<SubpsMemoryRaxUnmaskedControls>,
     divpd_registers: Option<DivpdControls>,
-    divpd_memory_rax: Option<DivpdControls>,
+    divpd_memory_rax: Option<DivpdMemoryRaxExecutionProfile>,
     divsd_registers: Option<DivsdControls>,
     divps_registers: Option<DivpsControls>,
     divss_registers: Option<DivssControls>,
@@ -18262,6 +18298,39 @@ pub fn run_with_divpd_memory_rax_controls(
     memory: &mut impl GuestMemory,
     config: RunConfig,
     controls: DivpdControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_divpd_memory_rax_profile(
+        state,
+        memory,
+        config,
+        DivpdMemoryRaxExecutionProfile::Masked(controls),
+        stop_requested,
+    )
+}
+
+/// Execute exact Long64 `66 0F 5E 00` DIVPD m128-at-RAX with unmasked events.
+pub fn run_with_divpd_memory_rax_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: DivpdMemoryRaxUnmaskedControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_divpd_memory_rax_profile(
+        state,
+        memory,
+        config,
+        DivpdMemoryRaxExecutionProfile::Unmasked(controls),
+        stop_requested,
+    )
+}
+
+fn run_with_divpd_memory_rax_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: DivpdMemoryRaxExecutionProfile,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
     run_configured(
@@ -18316,7 +18385,7 @@ pub fn run_with_divpd_memory_rax_controls(
             addps_memory_rax_unmasked: None,
             subps_memory_rax_unmasked: None,
             divpd_registers: None,
-            divpd_memory_rax: Some(controls),
+            divpd_memory_rax: Some(profile),
             divsd_registers: None,
             divps_registers: None,
             divss_registers: None,
@@ -21202,7 +21271,8 @@ fn step_configured(
     profiles: ExecutionProfiles<'_>,
     runtime: StepRuntime<'_, '_, '_>,
 ) -> Result<StepOutcome, MemoryError> {
-    let divpd_memory_enabled = profiles.divpd_memory_rax.is_some();
+    let divpd_memory_profile = profiles.divpd_memory_rax;
+    let divpd_memory_enabled = divpd_memory_profile.is_some();
     let ExecutionProfiles {
         cpuid: cpuid_profile,
         msr: msr_profile,
@@ -23183,10 +23253,11 @@ fn step_configured(
             }));
         }
     }
-    if let Some(controls) = profiles
+    if let Some(profile) = profiles
         .divpd_memory_rax
         .filter(|_| instruction.operation == Operation::DivpdMemoryRax)
     {
+        let (sse2_available, cr0_em, cr0_ts, cr4_osfxsr) = profile.gates();
         let exact = instruction.length == 4
             && instruction.opcode.map == OpcodeMap::Escape0f
             && instruction.opcode.byte == 0x5e
@@ -23200,9 +23271,19 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         }
-        let vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        let fetch_end = state
+            .rip
+            .checked_add(u64::from(instruction.length.saturating_sub(1)));
+        if fetch_end.is_none_or(|end| !long_decode::canonical(end)) {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        let vector = if !sse2_available || cr0_em || !cr4_osfxsr {
             Some(6)
-        } else if controls.cr0_ts {
+        } else if cr0_ts {
             Some(7)
         } else {
             None
@@ -27461,10 +27542,16 @@ fn step_configured(
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & (1 << 6) == 0
                 && sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
-        } else if divpd_memory_enabled && instruction.operation == Operation::DivpdMemoryRax {
+        } else if let Some(profile) =
+            divpd_memory_profile.filter(|_| instruction.operation == Operation::DivpdMemoryRax)
+        {
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
-                && sse.mxcsr & 0x1f80 == 0x1f80
+                && if profile.is_unmasked() {
+                    sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+                } else {
+                    sse.mxcsr & 0x1f80 == 0x1f80
+                }
         } else if configured_divsd_register_controls.is_some()
             && matches!(instruction.operation, Operation::DivsdRegister { .. })
         {
@@ -34697,6 +34784,7 @@ fn step_configured(
             sse.xmm[usize::from(destination)] = result;
         }
         Operation::DivpdMemoryRax if divpd_memory_enabled => {
+            let profile = divpd_memory_profile.expect("DIVPD memory profile");
             let address = state.gpr[Register::Rax as usize];
             if address & 0xf != 0 {
                 return Ok(StepOutcome::Fault(ArchitecturalFault {
@@ -34757,6 +34845,22 @@ fn step_configured(
                 }
                 new_de |= ac == BinaryClass::Subnormal || bc == BinaryClass::Subnormal;
             }
+            let unmasked_pre_event = profile.is_unmasked()
+                && (new_ie && old_mxcsr & (1 << 7) == 0
+                    || new_ze && old_mxcsr & (1 << 9) == 0
+                    || new_de && old_mxcsr & (1 << 8) == 0);
+            if unmasked_pre_event {
+                let sse = state.sse.as_mut().expect("DIVPD memory state prevalidated");
+                sse.mxcsr = old_mxcsr
+                    | u32::from(new_ie)
+                    | (u32::from(new_de) << 1)
+                    | (u32::from(new_ze) << 2);
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if profile.osxmmexcpt() { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
             let rounding = cvtss2si_rounding_mode(old_mxcsr);
             let mut result = [0u8; 16];
             let mut new_oe = false;
@@ -34775,7 +34879,6 @@ fn step_configured(
                 result[lane * 8..lane * 8 + 8].copy_from_slice(&raw.to_le_bytes());
             }
             let sse = state.sse.as_mut().expect("DIVPD memory state prevalidated");
-            sse.xmm[0] = result;
             sse.mxcsr = old_mxcsr
                 | u32::from(new_ie)
                 | (u32::from(new_de) << 1)
@@ -34783,6 +34886,14 @@ fn step_configured(
                 | (u32::from(new_oe) << 3)
                 | (u32::from(new_ue) << 4)
                 | (u32::from(new_pe) << 5);
+            if profile.is_unmasked() && new_pe && old_mxcsr & (1 << 12) == 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if profile.osxmmexcpt() { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            sse.xmm[0] = result;
         }
         Operation::DivpdMemoryRax => {
             return Ok(StepOutcome::Unsupported {
@@ -162558,6 +162669,323 @@ mod swapgs_profile_tests {
         );
         assert_eq!(state, before);
         assert_eq!(memory.accesses, [(AccessKind::Read, endpoint, 16)]);
+    }
+
+    #[test]
+    fn divpd_memory_rax_unmasked_aggregates_pre_events_and_suppresses_destination() {
+        use crate::memory::AccessKind;
+        const CODE: [u8; 4] = [0x66, 0x0f, 0x5e, 0x00];
+        let controls = DivpdMemoryRaxUnmaskedControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let run = |state: &mut LongModeState, memory: &mut Memory, context: AccessContext| {
+            run_with_divpd_memory_rax_unmasked_controls(
+                state,
+                memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(state.rip + 4),
+                    context,
+                },
+                controls,
+                || false,
+            )
+        };
+        for (gate_controls, vector) in [
+            (
+                DivpdMemoryRaxUnmaskedControls {
+                    sse2_available: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                DivpdMemoryRaxUnmaskedControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                DivpdMemoryRaxUnmaskedControls {
+                    cr4_osfxsr: false,
+                    cr0_ts: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                DivpdMemoryRaxUnmaskedControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x6f00;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&CODE, state.rip);
+            let result = run_with_divpd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x6f04),
+                    context: AccessContext::default(),
+                },
+                gate_controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None
+                })
+            );
+            assert_eq!(memory.fetches, [0x6f00, 0x6f01, 0x6f02, 0x6f03]);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+
+        // A noncanonical complete fetch span outranks feature gates.
+        let mut state = LongModeState::default();
+        state.rip = 0x0000_7fff_ffff_ffff;
+        state.gpr[Register::Rax as usize] = 0x2000;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let faulting_rip = state.rip;
+        let mut memory = Memory::at(&CODE, state.rip);
+        memory.fetch_error = Some((
+            state.rip + 1,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0),
+                linear_address: Some(state.rip + 1),
+            }),
+        ));
+        let result = run_with_divpd_memory_rax_unmasked_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(faulting_rip + 4),
+                context: AccessContext::default(),
+            },
+            DivpdMemoryRaxUnmaskedControls {
+                sse2_available: false,
+                cr0_ts: true,
+                ..controls
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = LongModeState::default();
+        state.rip = 0x7000;
+        state.gpr[Register::Rax as usize] = 0x2000;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80 & !(1 << 7),
+        });
+        state.sse.as_mut().unwrap().xmm[0][..8].copy_from_slice(&0u64.to_le_bytes());
+        state.sse.as_mut().unwrap().xmm[0][8..]
+            .copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+        let old_xmm = state.sse.as_ref().unwrap().xmm[0];
+        let old_rip = state.rip;
+        let mut memory = Memory::at(&CODE, state.rip);
+        memory.data_base = 0x2000;
+        memory.bytes[..8].copy_from_slice(&0u64.to_le_bytes()); // 0/0 => IE
+        memory.bytes[8..16].copy_from_slice(&0u64.to_le_bytes()); // 1/0 => ZE
+        let result = run(&mut state, &mut memory, AccessContext::default());
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(state.sse.as_ref().unwrap().mxcsr, (0x1f80 & !(1 << 7)) | 5);
+        assert_eq!(state.sse.as_ref().unwrap().xmm[0], old_xmm);
+        assert_eq!(state.rip, old_rip);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 16)]);
+
+        // PE delivery commits sticky flags but preserves the full destination.
+        state.rip = 0x7100;
+        state.sse.as_mut().unwrap().mxcsr = 0x1f80 & !(1 << 12);
+        state.sse.as_mut().unwrap().xmm[0][..8]
+            .copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+        state.sse.as_mut().unwrap().xmm[0][8..]
+            .copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+        let old_xmm = state.sse.as_ref().unwrap().xmm[0];
+        let mut memory = Memory::at(&CODE, state.rip);
+        memory.data_base = 0x2000;
+        memory.bytes[..8].copy_from_slice(&0x4008_0000_0000_0000u64.to_le_bytes()); // 1/3 => PE
+        memory.bytes[8..16].copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+        let result = run(&mut state, &mut memory, AccessContext::default());
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 19,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(
+            state.sse.as_ref().unwrap().mxcsr,
+            (0x1f80 & !(1 << 12)) | (1 << 5)
+        );
+        assert_eq!(state.sse.as_ref().unwrap().xmm[0], old_xmm);
+        assert_eq!(state.rip, 0x7100);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 16)]);
+
+        // The exact four-byte legacy form faults when its inclusive end is
+        // noncanonical, before the disabled SSE2 and CR0.TS gates.
+        let mut state = LongModeState::default();
+        state.rip = 0x0000_7fff_ffff_fffd;
+        state.gpr[Register::Rax as usize] = 0x2000;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&CODE, state.rip);
+        let result = run_with_divpd_memory_rax_unmasked_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x0000_8000_0000_0001),
+                context: AccessContext::default(),
+            },
+            DivpdMemoryRaxUnmaskedControls {
+                sse2_available: false,
+                cr0_ts: true,
+                ..controls
+            },
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            memory.fetches,
+            [
+                0x0000_7fff_ffff_fffd,
+                0x0000_7fff_ffff_fffe,
+                0x0000_7fff_ffff_ffff,
+            ]
+        );
+        assert!(memory.accesses.is_empty());
+
+        // CPL0–3 share the same one-read memory behavior and arithmetic path.
+        for privilege in [
+            crate::memory::PrivilegeLevel::Ring0,
+            crate::memory::PrivilegeLevel::Ring1,
+            crate::memory::PrivilegeLevel::Ring2,
+            crate::memory::PrivilegeLevel::Ring3,
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x7200;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let mut memory = Memory::at(&CODE, state.rip);
+            memory.data_base = 0x2000;
+            memory.bytes[..8].copy_from_slice(&0x4000_0000_0000_0000u64.to_le_bytes());
+            memory.bytes[8..16].copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+            let mut context = AccessContext::default();
+            context.privilege = privilege;
+            let result = run(&mut state, &mut memory, context);
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 16)]);
+        }
+
+        // Mandatory alignment and canonical-span checks happen before the
+        // memory callback and are independent of AC.
+        for (address, ac) in [
+            (0x2008, false),
+            (0x2008, true),
+            (0x0000_8000_0000_0000, false),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x7300;
+            state.gpr[Register::Rax as usize] = address;
+            state.rflags = 2 | (u64::from(ac) << 18);
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&CODE, state.rip);
+            let result = run(&mut state, &mut memory, AccessContext::default());
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        // A memory backend read error preserves architectural state and records
+        // the one required 16-byte callback.
+        let mut state = LongModeState::default();
+        state.rip = 0x7400;
+        state.gpr[Register::Rax as usize] = 0x2000;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&CODE, state.rip);
+        memory.error = Some(MemoryError::Backend("injected DIVPD read failure".into()));
+        memory.error_kind = Some(AccessKind::Read);
+        assert_eq!(
+            run(&mut state, &mut memory, AccessContext::default()).exit,
+            RunExit::MemoryError(MemoryError::Backend("injected DIVPD read failure".into()))
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 16)]);
     }
 
     #[test]

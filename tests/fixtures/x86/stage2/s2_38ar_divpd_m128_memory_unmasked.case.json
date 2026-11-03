@@ -1,0 +1,102 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_38ar_divpd_m128_unmasked_memory",
+  "profile": "s2-long-divpd-memory-unmasked-rax-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten literal Long64 DIVPD m128 profile for pre-event and precision unmask delivery with actual memory RHS.",
+    "specification": "Intel SDM Rev. 093 Vol. 2A DIVPD pp. 3-267\u20133-269; Vol. 2A legacy SSE instruction rows in Table 2-19; Vol. 1 \u00a7\u00a74.9.1.4\u2013.6, 11.5.2\u201311.5.3; Vol. 3A Event 19/Table 7-8; Intel Floating-Point Reference Sheet v2.13.",
+    "specification_version": "Intel SDM revision 093; project S2-38ar."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "660f5e00",
+      "comparison_mask_hex": "ffffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000002000",
+      "length": 16,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": false
+      },
+      "initial_bytes_hex": "00000000000008400000000000001040",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000000",
+  "expected_exit": "stop_address",
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000002000",
+      "0x0000000000000101",
+      "0x0000000000000102",
+      "0x0000000000000103",
+      "0x0000000000000104",
+      "0x0000000000000105",
+      "0x0000000000000106",
+      "0x0000000000000107",
+      "0x0000000000000108",
+      "0x0000000000000109",
+      "0x000000000000010a",
+      "0x000000000000010b",
+      "0x000000000000010c",
+      "0x000000000000010d",
+      "0x000000000000010e",
+      "0x000000000000010f"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000002",
+    "sse": {
+      "xmm": [
+        "000000000000f03f0000000000000040",
+        "00000000000000000000000000000000",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+      ],
+      "mxcsr": "0x0000000000001f80",
+      "diagnostic_mxcsr_mask": "0x000000000000ffbf"
+    }
+  },
+  "ucomiss_memory_rax_controls": null,
+  "cmpss_memory_rax_controls": null,
+  "comiss_memory_rax_controls": null,
+  "cmpsd_memory_rax_controls": null,
+  "cmppd_memory_rax_controls": null,
+  "subpd_controls": null,
+  "divpd_memory_rax_unmasked_controls": {
+    "sse2_available": true,
+    "cr0_em": false,
+    "cr0_ts": false,
+    "cr4_osfxsr": true,
+    "cr4_osxmmexcpt": true
+  }
+}

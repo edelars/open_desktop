@@ -185,6 +185,24 @@ const DIVPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const DIVPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dx_divpd_m128_memory_source_and_destination_lanes.case.json"
 );
+const DIVPD_M128_MEMORY_UNMASKED_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ar_divpd_m128_memory_unmasked.case.json"
+);
+const DIVPD_M128_UNMASKED_EVENTS: &[&[u8]] = &[
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ar_divpd_m128_unmasked_ie.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ar_divpd_m128_unmasked_ze.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ar_divpd_m128_unmasked_de.case.json"),
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ar_divpd_m128_unmasked_pe.case.json"),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38ar_divpd_m128_unmasked_ue_pe.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38ar_divpd_m128_unmasked_sse2_gate.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38ar_divpd_m128_unmasked_fetch_span_gp.case.json"
+    ),
+];
 const MULPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37ds_mulps_m128_memory_source_and_destination_lanes.case.json"
 );
@@ -20042,7 +20060,6 @@ fn cvttps2dq_m128_raw_bits_truncate_flags_alignment_and_fail_closed() {
             expected_xmm = Some(actual);
         }
     }
-
     // At Ring0, both aligned AC inputs reach the same successful profile.
     for ac in [false, true] {
         let mut fixture = base.clone();
@@ -29231,7 +29248,7 @@ fn cmpss_m32_memory_covers_predicates_nan_priority_and_denies_other_backends() {
             let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
             od_testkit::v2::compare(&input, &result, &result).unwrap();
             let snapshot = match &result.snapshot {
-                Observation::Available { value } => value,
+                Observation::Available { value } => value.clone(),
                 other => panic!("unexpected CMPSS snapshot: {other:?}"),
             };
             let nan = (left & 0x7f80_0000 == 0x7f80_0000 && left & 0x007f_ffff != 0)
@@ -38589,7 +38606,7 @@ fn cmpsd_m64_memory_covers_predicates_nan_priority_and_denials() {
             let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
             od_testkit::v2::compare(&input, &result, &result).unwrap();
             let snapshot = match &result.snapshot {
-                Observation::Available { value } => value,
+                Observation::Available { value } => value.clone(),
                 other => panic!("unexpected CMPSD priority snapshot: {other:?}"),
             };
             let is_nan = |bits: u64| {
@@ -43741,6 +43758,543 @@ fn divpd_m128_memory_uses_memory_rhs_independent_oracle_and_strict_profile() {
         invalid_span.expected_exit = ExpectedExit::Exception;
         let (input, result) = run(&invalid_span.to_json().unwrap(), "interpreter", 0);
         od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+}
+
+#[test]
+fn divpd_m128_unmasked_memory_commits_events_atomically_and_keeps_lane_precedence() {
+    use od_testkit::v2::{DivpdMemoryRaxUnmaskedControlSnapshot, Profile};
+    let base = Fixture::from_json(DIVPD_M128_MEMORY_UNMASKED_RAX)
+        .unwrap()
+        .fixture;
+    assert_eq!(base.profile, Profile::LongDivpdMemoryUnmaskedRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "660f5e00");
+    for fixture in DIVPD_M128_UNMASKED_EVENTS {
+        let (input, result) = run(fixture, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+    }
+    let fetch_case = DIVPD_M128_UNMASKED_EVENTS.last().unwrap();
+    let (fetch_input, mut wrong_fetch_vector) = run(fetch_case, "interpreter", 0);
+    if let Observation::Available { value } = &mut wrong_fetch_vector.snapshot {
+        if let Observation::Available {
+            value: Some(exception),
+        } = &mut value.exception
+        {
+            exception.vector = 6;
+        }
+    }
+    assert!(
+        od_testkit::v2::compare(&fetch_input, &wrong_fetch_vector, &wrong_fetch_vector).is_err()
+    );
+    let mut last_canonical = base.clone();
+    let last_canonical_rip = 0x0000_7fff_ffff_fffc;
+    last_canonical.case_id = "s2_38ar_last_canonical_fetch_byte_reaches_gate".into();
+    last_canonical.initial_state.rip = HexU64(last_canonical_rip);
+    last_canonical.memory[0].guest_address = HexU64(last_canonical_rip);
+    last_canonical.stop_rip = Some(HexU64(last_canonical_rip + 4));
+    let gate_controls = last_canonical
+        .divpd_memory_rax_unmasked_controls
+        .as_mut()
+        .unwrap();
+    gate_controls.sse2_available = false;
+    gate_controls.cr0_ts = true;
+    last_canonical.expected_exit = ExpectedExit::Exception;
+    let (input, result) = run(&last_canonical.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let gate_snapshot = match &result.snapshot {
+        Observation::Available { value } => value,
+        _ => panic!("missing snapshot"),
+    };
+    assert!(matches!(
+        gate_snapshot.exception,
+        Observation::Available { value: Some(ref exception) } if exception.vector == 6
+    ));
+    let (input, good) = run(DIVPD_M128_MEMORY_UNMASKED_RAX, "interpreter", 0);
+    od_testkit::v2::compare(&input, &good, &good).unwrap();
+    let mut forged = good.clone();
+    forged.backend = od_testkit::result::Backend::Jit;
+    assert!(forged.validate_for(&input).is_err());
+    forged.backend = od_testkit::result::Backend::NativeX86;
+    assert!(forged.validate_for(&input).is_err());
+    for backend in ["jit", "native"] {
+        assert!(matches!(
+            run(DIVPD_M128_MEMORY_UNMASKED_RAX, backend, 4).1.outcome,
+            Outcome::Unsupported { .. }
+        ));
+    }
+
+    let raw = |bytes: &mut String, at: usize, value: u64| {
+        let s = value
+            .to_le_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        bytes.replace_range(at..at + 16, &s);
+    };
+    let run_pair =
+        |name: &str, lhs0: u64, rhs0: u64, lhs1: u64, rhs1: u64, mxcsr: u64, fault: bool| {
+            let mut case = base.clone();
+            case.case_id = format!("s2_38ar_{name}");
+            raw(
+                &mut case.initial_state.sse.as_mut().unwrap().xmm[0],
+                0,
+                lhs0,
+            );
+            raw(
+                &mut case.initial_state.sse.as_mut().unwrap().xmm[0],
+                16,
+                lhs1,
+            );
+            raw(&mut case.memory[1].initial_bytes_hex, 0, rhs0);
+            raw(&mut case.memory[1].initial_bytes_hex, 16, rhs1);
+            case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+            case.expected_exit = if fault {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+            let snapshot = match &result.snapshot {
+                Observation::Available { value } => value.clone(),
+                _ => panic!("missing snapshot"),
+            };
+            let expected_retired = if fault { 0 } else { 1 };
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available {
+                    value: HexU64(expected_retired)
+                }
+            );
+            (case, result, snapshot)
+        };
+    // IE in lane 0 plus ZE in lane 1: aggregate both pre-flags before the mask check.
+    let (case, result, snap) = run_pair(
+        "cross_lane_ie_ze",
+        0,
+        0,
+        0x3ff0000000000000,
+        0,
+        0x1f00,
+        true,
+    );
+    assert_eq!(result.outcome, Outcome::Exception {});
+    assert_eq!(snap.state.sse.as_ref().unwrap().mxcsr.get(), 0x1f04 | 1);
+    assert_eq!(
+        snap.state.sse.as_ref().unwrap().xmm[0],
+        case.initial_state.sse.as_ref().unwrap().xmm[0]
+    );
+    assert_eq!(snap.state.rip, case.initial_state.rip);
+    // Cross-lane IE+DE and ZE+DE both preserve all applicable aggregate flags.
+    let (_, _, snap) = run_pair(
+        "cross_lane_ie_de",
+        0,
+        0,
+        1,
+        0x3ff0000000000000,
+        0x1f00,
+        true,
+    );
+    assert_eq!(snap.state.sse.as_ref().unwrap().mxcsr.get() & 7, 3);
+    let (_, _, snap) = run_pair(
+        "cross_lane_ze_de",
+        0x3ff0000000000000,
+        0,
+        1,
+        0x3ff0000000000000,
+        0x1d80,
+        true,
+    );
+    assert_eq!(snap.state.sse.as_ref().unwrap().mxcsr.get() & 7, 6);
+    // SNaN signals IE while QNaN selection and the same-lane zero denominator suppress ZE.
+    let (_, _, snap) = run_pair(
+        "snan_qnan_precedence",
+        0x7ff0000000000001,
+        0,
+        0x3ff0000000000000,
+        0x3ff0000000000000,
+        0x1f00,
+        true,
+    );
+    assert_eq!(snap.state.sse.as_ref().unwrap().mxcsr.get() & 7, 1);
+    // Masked pre-events still reach an unmasked PE; sticky IE and PE commit atomically.
+    let (case, _, snap) = run_pair(
+        "masked_ie_unmasked_pe",
+        0,
+        0,
+        0x3ff0000000000000,
+        0x4008000000000000,
+        0x0f80,
+        true,
+    );
+    assert_eq!(snap.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f, 0x21);
+    assert_eq!(
+        snap.state.sse.as_ref().unwrap().xmm[0],
+        case.initial_state.sse.as_ref().unwrap().xmm[0]
+    );
+    // All rounding, prior-sticky, exception-mask and delivery combinations
+    // use the actual memory RHS. Only a newly generated PE may fault.
+    for rc in 0..4u64 {
+        for sticky in 0..64u64 {
+            for mask_bits in 0..16u64 {
+                for osxmmexcpt in [false, true] {
+                    let mut case = base.clone();
+                    case.case_id =
+                        format!("s2_38ar_rc{rc}_sticky{sticky}_masks{mask_bits}_osxmm{osxmmexcpt}");
+                    raw(
+                        &mut case.initial_state.sse.as_mut().unwrap().xmm[0],
+                        0,
+                        0x3ff0000000000000,
+                    );
+                    raw(
+                        &mut case.initial_state.sse.as_mut().unwrap().xmm[0],
+                        16,
+                        0x3ff0000000000000,
+                    );
+                    raw(&mut case.memory[1].initial_bytes_hex, 0, 0x4008000000000000);
+                    raw(
+                        &mut case.memory[1].initial_bytes_hex,
+                        16,
+                        0x3ff0000000000000,
+                    );
+                    let mask = ((mask_bits & 1) << 7)
+                        | (((mask_bits >> 1) & 1) << 8)
+                        | (((mask_bits >> 2) & 1) << 9)
+                        | (((mask_bits >> 3) & 1) << 12);
+                    case.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x0c00 | (rc << 13) | sticky | mask);
+                    case.divpd_memory_rax_unmasked_controls
+                        .as_mut()
+                        .unwrap()
+                        .cr4_osxmmexcpt = osxmmexcpt;
+                    let pe_masked = mask & (1 << 12) != 0;
+                    case.expected_exit = if pe_masked {
+                        ExpectedExit::StopAddress
+                    } else {
+                        ExpectedExit::Exception
+                    };
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    assert_eq!(
+                        result.instructions_executed,
+                        Observation::Available {
+                            value: HexU64(u64::from(pe_masked))
+                        }
+                    );
+                }
+            }
+        }
+    }
+    // Quotient boundaries and exceptional classes each cover the full
+    // RC/sticky/mask/delivery product independently of the inexact 1/3 case.
+    let boundaries = [
+        (
+            "exact_subnormal",
+            0x0010000000000000,
+            0x4000000000000000,
+            false,
+            false,
+        ),
+        (
+            "inexact_tiny",
+            0x0010000000000000,
+            0x4008000000000000,
+            false,
+            true,
+        ),
+        (
+            "round_min_normal",
+            0x0010000000000000,
+            0x3ff0000000000001,
+            false,
+            true,
+        ),
+        (
+            "half_minsub",
+            0x0010000000000000,
+            0x4340000000000000,
+            false,
+            true,
+        ),
+        (
+            "overflow_pe",
+            0x7fefffffffffffff,
+            0x0010000000000000,
+            false,
+            true,
+        ),
+        (
+            "large_gap",
+            0x3ff0000000000001,
+            0x5fefffffffffffff,
+            false,
+            true,
+        ),
+        ("infinity_zero_no_ze", 0x7ff0000000000000, 0, false, false),
+        ("finite_zero_ze", 0x3ff0000000000000, 0, true, false),
+    ];
+    for (name, numerator, denominator, ze, pe) in boundaries {
+        for rc in 0..4u64 {
+            for sticky in 0..64u64 {
+                for mask_bits in 0..16u64 {
+                    for osxmmexcpt in [false, true] {
+                        let mut case = base.clone();
+                        case.case_id = format!(
+                            "s2_38ar_{name}_rc{rc}_sticky{sticky}_mask{mask_bits}_osxmm{osxmmexcpt}"
+                        );
+                        raw(
+                            &mut case.initial_state.sse.as_mut().unwrap().xmm[0],
+                            0,
+                            numerator,
+                        );
+                        raw(
+                            &mut case.initial_state.sse.as_mut().unwrap().xmm[0],
+                            16,
+                            0x3ff0000000000000,
+                        );
+                        raw(&mut case.memory[1].initial_bytes_hex, 0, denominator);
+                        raw(
+                            &mut case.memory[1].initial_bytes_hex,
+                            16,
+                            0x3ff0000000000000,
+                        );
+                        let mask = ((mask_bits & 1) << 7)
+                            | (((mask_bits >> 1) & 1) << 8)
+                            | (((mask_bits >> 2) & 1) << 9)
+                            | (((mask_bits >> 3) & 1) << 12);
+                        case.initial_state.sse.as_mut().unwrap().mxcsr =
+                            HexU64(0x0c00 | (rc << 13) | sticky | mask);
+                        case.divpd_memory_rax_unmasked_controls
+                            .as_mut()
+                            .unwrap()
+                            .cr4_osxmmexcpt = osxmmexcpt;
+                        let pre_unmasked = ze && mask & (1 << 9) == 0;
+                        let post_unmasked = !pre_unmasked && pe && mask & (1 << 12) == 0;
+                        let fault = pre_unmasked || post_unmasked;
+                        case.expected_exit = if fault {
+                            ExpectedExit::Exception
+                        } else {
+                            ExpectedExit::StopAddress
+                        };
+                        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                        od_testkit::v2::compare(&input, &result, &result).unwrap();
+                        assert_eq!(
+                            result.instructions_executed,
+                            Observation::Available {
+                                value: HexU64(u64::from(!fault))
+                            }
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Malformed immutable controls and pre-event result tampering are rejected.
+    let mut missing = base.clone();
+    missing.divpd_memory_rax_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut unknown_json: serde_json::Value =
+        serde_json::from_slice(&base.to_json().unwrap()).unwrap();
+    unknown_json["divpd_memory_rax_unmasked_controls"]["unexpected"] = serde_json::json!(true);
+    assert!(Fixture::from_json(&serde_json::to_vec(&unknown_json).unwrap()).is_err());
+    let (input, mut forged_result) = run(DIVPD_M128_MEMORY_UNMASKED_RAX, "interpreter", 0);
+    if let Observation::Available { value } = &mut forged_result.snapshot {
+        value.divpd_memory_rax_unmasked_controls = None;
+    }
+    assert!(od_testkit::v2::compare(&input, &forged_result, &forged_result).is_err());
+    let mut gate = base.clone();
+    gate.divpd_memory_rax_unmasked_controls = Some(DivpdMemoryRaxUnmaskedControlSnapshot {
+        sse2_available: false,
+        cr0_em: false,
+        cr0_ts: true,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    gate.expected_exit = ExpectedExit::Exception;
+    let (input, result) = run(&gate.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+}
+
+#[test]
+fn divpd_m128_unmasked_rounds_rational_witness_across_min_normal_for_all_rc() {
+    let base = Fixture::from_json(DIVPD_M128_MEMORY_UNMASKED_RAX)
+        .unwrap()
+        .fixture;
+    let write_lane = |target: &mut String, offset: usize, raw: u64| {
+        let bytes = raw
+            .to_le_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        target.replace_range(offset..offset + 16, &bytes);
+    };
+    // The exact rational is just below the max-subnormal/min-normal midpoint.
+    // RN/RD/RZ choose max-subnormal; RU chooses min-normal.
+    for rc in 0..4u64 {
+        for sticky in 0..64u64 {
+            for masks in 0..16u64 {
+                for osxmmexcpt in [false, true] {
+                    let mut case = base.clone();
+                    case.case_id = format!(
+                        "s2_38ar_round_min_normal_rc{rc}_sticky{sticky}_mask{masks}_osxmm{osxmmexcpt}"
+                    );
+                    write_lane(
+                        &mut case.initial_state.sse.as_mut().unwrap().xmm[0],
+                        0,
+                        0x000fffffffffffff,
+                    );
+                    write_lane(
+                        &mut case.initial_state.sse.as_mut().unwrap().xmm[0],
+                        16,
+                        0x3ff0000000000000,
+                    );
+                    write_lane(&mut case.memory[1].initial_bytes_hex, 0, 0x3fefffffffffffff);
+                    write_lane(
+                        &mut case.memory[1].initial_bytes_hex,
+                        16,
+                        0x3ff0000000000000,
+                    );
+                    let mask = (masks & 1) << 7
+                        | ((masks >> 1) & 1) << 8
+                        | ((masks >> 2) & 1) << 9
+                        | ((masks >> 3) & 1) << 12;
+                    case.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x0c00 | (rc << 13) | sticky | mask);
+                    case.divpd_memory_rax_unmasked_controls
+                        .as_mut()
+                        .unwrap()
+                        .cr4_osxmmexcpt = osxmmexcpt;
+                    let de_masked = mask & (1 << 8) != 0;
+                    let pe_masked = mask & (1 << 12) != 0;
+                    let fault = !de_masked || !pe_masked;
+                    case.expected_exit = if fault {
+                        ExpectedExit::Exception
+                    } else {
+                        ExpectedExit::StopAddress
+                    };
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    assert_eq!(
+                        result.instructions_executed,
+                        Observation::Available {
+                            value: HexU64(u64::from(!fault))
+                        }
+                    );
+                    if de_masked && pe_masked {
+                        let snapshot = match &result.snapshot {
+                            Observation::Available { value } => value,
+                            _ => panic!("missing snapshot"),
+                        };
+                        let expected_lane = if rc == 2 {
+                            "0000000000001000"
+                        } else {
+                            "ffffffffffff0f00"
+                        };
+                        assert_eq!(
+                            &snapshot.state.sse.as_ref().unwrap().xmm[0][..16],
+                            expected_lane,
+                            "RC={rc}"
+                        );
+                        assert_eq!(
+                            snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x22,
+                            0x22
+                        ); // DE + PE
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn divpd_m128_unmasked_wpr_half_minsub_tie_has_rc_specific_ue_pe() {
+    let base = Fixture::from_json(DIVPD_M128_MEMORY_UNMASKED_RAX)
+        .unwrap()
+        .fixture;
+    let write_lane = |target: &mut String, offset: usize, raw: u64| {
+        let bytes = raw
+            .to_le_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        target.replace_range(offset..offset + 16, &bytes);
+    };
+    // Exact rational: (2 - 2^-52) / 2^1023 = min-normal - half-minsub.
+    // RN/RU round up to min-normal; RD/RZ round down to max-subnormal.
+    for rc in 0..4u64 {
+        for sticky in 0..64u64 {
+            for masks in 0..16u64 {
+                for osxmmexcpt in [false, true] {
+                    let mut case = base.clone();
+                    case.case_id = format!(
+                        "s2_38ar_wpr_half_minsub_tie_rc{rc}_sticky{sticky}_mask{masks}_osxmm{osxmmexcpt}"
+                    );
+                    write_lane(
+                        &mut case.initial_state.sse.as_mut().unwrap().xmm[0],
+                        0,
+                        0x3fffffffffffffff,
+                    );
+                    write_lane(
+                        &mut case.initial_state.sse.as_mut().unwrap().xmm[0],
+                        16,
+                        0x3ff0000000000000,
+                    );
+                    write_lane(&mut case.memory[1].initial_bytes_hex, 0, 0x7fe0000000000000);
+                    write_lane(
+                        &mut case.memory[1].initial_bytes_hex,
+                        16,
+                        0x3ff0000000000000,
+                    );
+                    let mask = (masks & 1) << 7
+                        | ((masks >> 1) & 1) << 8
+                        | ((masks >> 2) & 1) << 9
+                        | ((masks >> 3) & 1) << 12;
+                    let mxcsr = 0x0c00 | (rc << 13) | sticky | mask;
+                    case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+                    case.divpd_memory_rax_unmasked_controls
+                        .as_mut()
+                        .unwrap()
+                        .cr4_osxmmexcpt = osxmmexcpt;
+                    let pe_masked = mask & (1 << 12) != 0;
+                    case.expected_exit = if pe_masked {
+                        ExpectedExit::StopAddress
+                    } else {
+                        ExpectedExit::Exception
+                    };
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    assert_eq!(
+                        result.instructions_executed,
+                        Observation::Available {
+                            value: HexU64(u64::from(pe_masked))
+                        }
+                    );
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        _ => panic!("missing snapshot"),
+                    };
+                    let flags = (1 << 5) | (1 << 4);
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+                        mxcsr | flags,
+                        "RC={rc}"
+                    );
+                    if pe_masked {
+                        let expected_lane = if rc == 0 || rc == 2 {
+                            "0000000000001000"
+                        } else {
+                            "ffffffffffff0f00"
+                        };
+                        assert_eq!(
+                            &snapshot.state.sse.as_ref().unwrap().xmm[0][..16],
+                            expected_lane,
+                            "RC={rc}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
