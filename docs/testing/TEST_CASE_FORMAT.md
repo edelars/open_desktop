@@ -2068,3 +2068,99 @@ Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; use those instruction pa
 rather than scalar CVTTSS2SI/CVTTSD2SI or RC-based CVTPS2DQ references. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ax--exact-cvttps2dq-m128-memory-profile-with-unmasked-exceptions)
 and [plan](../plans/STAGE_2.md#s2-38ax--exact-legacy-long64-cvttps2dq-xmm0-m128-rax-with-unmasked-exceptions).
+
+## S2-38ay CVTPD2DQ m128 memory unmasked profile
+
+Pending schema/implementation contract. Reserve distinct interpreter-only
+`s2-long-cvtpd2dq-memory-unmasked-rax-v1` for exact Long64 `f2 0f e6 00`,
+one executable mapping, one read-only exact-width 16-byte mapping at RAX,
+budget one and stop RIP entry+4. Require `cvtpd2dq_m128_unmasked_controls`
+in input and result with exactly `sse2_available`, `cr0_em`, `cr0_ts`,
+`cr4_osfxsr`, `cr4_osxmmexcpt`. Reject absent/unknown/cross-profile controls,
+changed echoes and writable/unreadable/short source mappings. Preserve masked
+`s2-long-cvtpd2dq-memory-rax-v1` admission, wire shape and digest.
+
+Apply the [CPU contract](../specs/CPU_CONTRACT.md#s2-38ay--exact-cvtpd2dq-m128-memory-profile-with-unmasked-exceptions):
+MXCSR.RC rounding before signed-i32 range checking; two i32 results in low64 and zero
+high64 only on successful completion. A SIMD event preserves all128/RIP/
+retirement while committing the permitted MXCSR status. Model unmasked IE
+before new PE across lanes and preserve old sticky flags. Input expected-exit
+validation and result oracle both enforce full canonical48 fetch before gates,
+then full canonical48 source span, alignment and one read16. Misalignment is
+`#GP(0)` at every CPL/AC; aligned AC0/1 is valid. Admit supported MXCSR mask
+`0xffbf`, DAZ=0, all masks/RC/status and FTZ0/1; no DE for subnormal conversion.
+
+Required literal fixtures cover exact success including valid INT32_MIN,
+masked IE/PE, unmasked IE and PE with both deliveries, both mixed lane orders,
+IM=0 new-PE suppression, IM=1/PM=0 IE|PE, fully masked mixed results,
+stale-flags-only success, prerequisite `#UD/#NM` and aligned AC=1 success.
+Use nonzero high64 XMM0 canaries different from the memory RHS. Generated
+runner cases add raw-u64 numeric boundaries, real fractions near ±2^31,
+ties/subnormals/NaNs and DM/OM/UM/ZM/FTZ samples. These are not literal files.
+The independent integer-only memory-RHS oracle must run all nine ordered
+`{exact, IE, PE}^2` classes ×4 RC ×64 sticky ×4 IM/PM ×2 deliveries = 18,432
+actual-interpreter cases; every case compares complete CPU state and source
+bytes, including high64. No production helper or host FP may define the oracle.
+
+Fetch/span/alignment/collision cases may use generated runner or direct ISA
+tests where strict literal mappings cannot express them. All 15 nonzero offsets
+×4 CPL ×2 AC = 120 misaligned `#GP(0)` cases are distinct from aligned AC0/1
+admission checks. Direct GuestMemory tests prove exactly one read16 for success
+and IE/PE events, no callback before admission and full injected-read-error
+rollback. Unreadable/short mappings are schema rejections, not runtime read-error
+fixtures. Tampered controls, full destination, event/status, retirement and
+source bytes must fail validation. Check masked/profile cross-denial and actual
+generic/native/JIT/host fragment/C ABI rejection, not only invalid CLI names.
+
+Provenance: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ pp. 3-214–3-217; exact shared
+exception/alignment pages and official links are in the CPU contract. This
+section reserves acceptance requirements; it does not claim fixtures or passing
+execution. See the [plan](../plans/STAGE_2.md#s2-38ay--exact-legacy-long64-cvtpd2dq-xmm0-m128-rax-with-unmasked-exceptions).
+
+## S2-38az CVTTPD2DQ m128 memory unmasked profile
+
+Pending schema/implementation contract. Reserve distinct interpreter-only
+`s2-long-cvttpd2dq-memory-unmasked-rax-v1` for exact Long64 `66 0f e6 00`,
+one executable mapping, one read-only exact-width 16-byte mapping at RAX,
+budget one and stop RIP entry+4. Require `cvttpd2dq_m128_unmasked_controls`
+in input and result with exactly `sse2_available`, `cr0_em`, `cr0_ts`,
+`cr4_osfxsr`, `cr4_osxmmexcpt`. Reject absent/unknown/cross-profile controls,
+changed echoes and writable/unreadable/short source mappings. Preserve masked
+`s2-long-cvttpd2dq-memory-rax-v1` admission, wire shape and digest.
+
+Apply the [CPU contract](../specs/CPU_CONTRACT.md#s2-38az--exact-cvttpd2dq-m128-memory-profile-with-unmasked-exceptions):
+TowardZero before signed-i32 range checking, independently of MXCSR.RC; two i32 results in low64 and zero
+high64 only on successful completion. A SIMD event preserves all128/RIP/
+retirement while committing the permitted MXCSR status. Model unmasked IE
+before new PE across lanes and preserve old sticky flags. Input expected-exit
+validation and result oracle both enforce full canonical48 fetch before gates,
+then full canonical48 source span, alignment and one read16. Misalignment is
+`#GP(0)` at every CPL/AC; aligned AC0/1 is valid. Admit supported MXCSR mask
+`0xffbf`, DAZ=0, all masks/RC/status and FTZ0/1; no DE for subnormal conversion.
+
+Required literal fixtures cover exact success including valid INT32_MIN,
+masked IE/PE, unmasked IE and PE with both deliveries, both mixed lane orders,
+IM=0 new-PE suppression, IM=1/PM=0 IE|PE, fully masked mixed results,
+stale-flags-only success, prerequisite `#UD/#NM` and aligned AC=1 success.
+Use nonzero high64 XMM0 canaries different from the memory RHS. Generated
+runner cases add raw-u64 numeric boundaries, real fractions near ±2^31,
+ties/subnormals/NaNs and DM/OM/UM/ZM/FTZ samples. These are not literal files.
+The independent integer-only memory-RHS oracle must run all nine ordered
+`{exact, IE, PE}^2` classes ×4 RC ×64 sticky ×4 IM/PM ×2 deliveries = 18,432
+actual-interpreter cases; every case compares complete CPU state and source
+bytes, including high64. No production helper or host FP may define the oracle.
+
+Fetch/span/alignment/collision cases may use generated runner or direct ISA
+tests where strict literal mappings cannot express them. All 15 nonzero offsets
+×4 CPL ×2 AC = 120 misaligned `#GP(0)` cases are distinct from aligned AC0/1
+admission checks. Direct GuestMemory tests prove exactly one read16 for success
+and IE/PE events, no callback before admission and full injected-read-error
+rollback. Unreadable/short mappings are schema rejections, not runtime read-error
+fixtures. Tampered controls, full destination, event/status, retirement and
+source bytes must fail validation. Check masked/profile cross-denial and actual
+generic/native/JIT/host fragment/C ABI rejection, not only invalid CLI names.
+
+Provenance: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247; exact shared
+exception/alignment pages and official links are in the CPU contract. This
+section reserves acceptance requirements; it does not claim fixtures or passing
+execution. See the [plan](../plans/STAGE_2.md#s2-38az--exact-legacy-long64-cvttpd2dq-xmm0-m128-rax-with-unmasked-exceptions).

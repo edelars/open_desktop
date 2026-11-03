@@ -19445,3 +19445,128 @@ in `640a9f0`. Executed evidence is recorded in the
 [stage report](../reports/STAGE_2_REPORT.md#s2-38ax--cvttps2dq-xmm0-m128-memory-unmasked-exceptions). See the
 [plan](../plans/STAGE_2.md#s2-38ax--exact-legacy-long64-cvttps2dq-xmm0-m128-rax-with-unmasked-exceptions)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ax-cvttps2dq-m128-memory-unmasked-profile).
+
+## S2-38ay — exact CVTPD2DQ m128 memory profile with unmasked exceptions
+
+Pending contract only; implementation, executable evidence and physical x86
+acceptance remain open. Build on masked-memory S2-37bx and register-unmasked
+S2-37ah. Reserve interpreter-only schema-v2 profile
+`s2-long-cvtpd2dq-memory-unmasked-rax-v1` for exact legacy Long64 `F2 0F E6 00`
+(`CVTPD2DQ XMM0,m128 [RAX]`), budget one and stop RIP entry+4. The separate
+`cvtpd2dq_m128_unmasked_controls` input/result echo contains exactly five
+immutable booleans: `sse2_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`,
+`cr4_osxmmexcpt`. Reject missing/unknown/cross-profile/tampered controls.
+Use the established private `Masked`/`Unmasked` execution-profile split and a
+separate unmasked public wrapper; preserve the existing masked wrapper,
+IM=PM=1 admission, wire shape, digest and fixtures. No public generic numeric
+policy, new addressing form, CPUID advertisement, MMU or JIT capability is added.
+
+Fetch and recognize all four bytes, checking canonical48 `[RIP,RIP+3]` with
+checked addition, before SSE2 bit 26/EM/OSFXSR `#UD`, then TS `#NM`. After these
+bounded prerequisite gates, check the complete canonical48 `[RAX,RAX+15]` with
+checked addition, then 16-byte alignment, then perform exactly one read16.
+Misalignment produces `#GP(0)` at every CPL0–3 and AC0/1; aligned AC=0 and AC=1
+are both admitted. No data callback precedes successful admission. These are
+inherited local collision rules, not a universal exception-priority claim.
+Fetch/gate/span/alignment/read failures preserve the whole CPU state, including
+MXCSR, XMM0, RIP and retirement. RAX and source memory remain unchanged.
+
+Interpret the source as two little-endian raw binary64 lanes. Round each using
+MXCSR.RC before checking signed-i32 range. NaN, infinity and rounded out-of-range
+values contribute IE only and, when masked, yield indefinite `0x80000000`.
+Exact `-2^31` has the same result bits without IE. Valid inexact lanes contribute
+PE; invalid lanes do not contribute PE. Supported MXCSR mask is `0xffbf`,
+reserved bits clear, DAZ=0; all exception masks, four RC values, all 64 prior
+sticky histories and FTZ0/1 are admitted. Nonzero subnormals contribute PE, never
+DE; their integer result follows RC. FTZ is irrelevant. x87 is neither gated nor
+modified.
+
+| New lane conditions / masks | New status, ORed into old MXCSR | Commit |
+|---|---|---|
+| Any IE, IM=0 (either PM) | IE only; suppress new PE from the other lane | Preserve all 128 XMM0 bits, RIP and retirement; deliver SIMD event |
+| IE masked, any PE, PM=0 | IE if present, plus PE | Preserve all 128 XMM0 bits, RIP and retirement; deliver SIMD event |
+| No new unmasked IE/PE | Aggregate lane IE/PE, if any | Write two i32 results in low64, **zero high64**, advance RIP by four and retire once |
+
+Preserve every old sticky flag, including old PE when new PE is suppressed.
+Old flags alone do not trigger an event, but a newly encountered condition may
+fault even if its status bit was already set. OSXMMEXCPT chooses `#XM`19 or
+SIMD-generated `#UD`6. An event commits only the allowed MXCSR status; high64
+zeroing must not occur before successful completion. Preserve other GPRs/XMM
+registers, RFLAGS, x87 state and source bytes on success and events.
+
+Acceptance requires an independent integer-only raw-u64 oracle reading the
+actual memory RHS, with no host FP or production conversion helper. Use an
+XMM0 canary distinct from source bytes and with nonzero high64. Run all nine
+ordered `{exact, IE, PE}^2` lane distributions ×4 RC ×64 old sticky histories
+×4 IM/PM combinations ×2 delivery mappings = **18,432 actual-interpreter cases
+per profile**. The nine classes split into 1 exact, 3 IE-only, 3 PE-only and
+2 mixed. Every matrix iteration must compare the entire `LongModeState` and
+all 16 source bytes, including high64 zeroing versus full destination rollback.
+Representative lanes may use `3ff0000000000000` (exact 1), `7ff8000000000042`
+(QNaN/IE) and `3ff8000000000000` (1.5/PE). Both `[IE, PE]` and `[PE, IE]`
+orders must prove unmasked IE suppression, masked IE|PE aggregation, unmasked
+PE destination suppression, old PE preservation and both deliveries.
+
+Additional generated numeric/control cases cover signed zeros, normals, signed
+subnormals, infinities, QNaN/SNaN, ties and neighbors around ±0.5/±1.5/±2.5,
+exact INT32_MIN/MAX and raw-u64 neighbors around both i32 limits. Binary64
+fractions at the limits are real representable inputs: `+2147483647.75`
+(`41dffffffff00000`) yields IE for nearest/up and INT32_MAX+PE for down/zero;
+`-2147483648.75` (`c1e0000000180000`) yields IE for nearest/down and
+INT32_MIN+PE for up/zero. Also cover `+2147483647.5` (`41dfffffffe00000`),
+`-2147483648.5` (`c1e0000000100000`), and raw neighbors of `+2147483648`
+and `-2147483649`; nearest-even on the negative half tie yields valid
+INT32_MIN+PE. These are extra vectors, not part of the class-product count.
+Sample DM/OM/UM/ZM each both ways and FTZ0/1, proving no additional event.
+
+Require 15 nonzero alignment offsets ×4 CPL ×2 AC = 120 `#GP(0)` cases with no
+data callback, plus separate aligned AC0/1 ×CPL0–3 success/event checks.
+Exercise canonical endpoints, checked-add overflow, last-valid instruction RIP
+`0x00007ffffffffffc`, first-crossing `0x00007ffffffffffd`, and gate/data-fault
+collisions. Direct GuestMemory tests must prove exactly one read16 on success
+and IE/PE events, no early data read, and full CPU/memory rollback on an injected
+read error. STOP and zero-budget paths preserve state without memory callbacks.
+Strict schema/result checks reject tampered controls, destination high64,
+status, event, retirement or source memory and prove masked/profile cross-denial.
+Exercise actual generic, native, JIT, host fragment and C ABI entrypoints;
+unknown CLI engine strings alone do not establish backend denial.
+
+Sources verified against Intel SDM Rev. 093: Vol. 2A CVTPD2DQ pp. 3-214–3-217
+(legacy operation p. 3-216), [official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199);
+Vol. 1 §§11.5.2.1–2 (pp. 11-14–11-15), §§11.5.3.1–3 (pp. 11-17–11-18),
+Table 14-21 (p. 14-33), [official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436);
+Vol. 3A §16.1.3/Table 16-1 (pp. 16-2–16-3),
+[official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190).
+The VEX Type 2 exception table is not the legacy SSE alignment contract.
+See the [plan](../plans/STAGE_2.md#s2-38ay--exact-legacy-long64-cvtpd2dq-xmm0-m128-rax-with-unmasked-exceptions)
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ay-cvtpd2dq-m128-memory-unmasked-profile).
+
+## S2-38az — exact CVTTPD2DQ m128 memory profile with unmasked exceptions
+
+Pending contract only. Build on masked-memory S2-37bw and register-unmasked
+S2-37ai. Reserve separate profile `s2-long-cvttpd2dq-memory-unmasked-rax-v1`
+for exact legacy Long64 `66 0F E6 00` (`CVTTPD2DQ XMM0,m128 [RAX]`) and
+`cvttpd2dq_m128_unmasked_controls` with the same five immutable booleans.
+Preserve the existing masked wrapper/admission/wire/digest and keep its private
+`Masked`/`Unmasked` policy separate from the CVTPD2DQ profile.
+
+All [S2-38ay admission, state, event, alignment and acceptance rules](#s2-38ay--exact-cvtpd2dq-m128-memory-profile-with-unmasked-exceptions)
+apply, except that each binary64 lane uses **TowardZero regardless of MXCSR.RC**
+before range checking. Preserve RC and prove identical result and new-event
+behavior across all four RC settings. Both signed boundary fractions above
+truncate to valid integers with PE; exact INT32_MIN still has no IE. A nonzero
+subnormal truncates to zero with PE and no DE. Success writes low64 and zeroes
+high64; any unmasked IE/PE preserves all128. Unmasked IE still suppresses new
+PE across lanes; masked IE permits PE aggregation, and old flags remain intact.
+
+Require its own independent raw-u64 memory-RHS 18,432-case actual-interpreter
+matrix, complete CPU/memory comparison per case, both mixed lane permutations,
+additional numeric/control samples and strict tampering/route-denial tests.
+The same 120 misalignment cases, aligned AC0/1 acceptance, exactly one read16,
+full fetch/gate/span precedence and direct injected-read rollback apply.
+
+Sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247 (legacy operation
+p. 3-246), [official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199);
+shared Vol. 1/3A sections and exact pages are listed above. See the
+[plan](../plans/STAGE_2.md#s2-38az--exact-legacy-long64-cvttpd2dq-xmm0-m128-rax-with-unmasked-exceptions)
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38az-cvttpd2dq-m128-memory-unmasked-profile).

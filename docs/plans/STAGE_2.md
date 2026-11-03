@@ -697,6 +697,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38av | Exact Long64 `CVTTSD2SI EAX,qword ptr [RAX]`, TowardZero independent of RC; unmasked IE/PE m64→r32 memory profile; separate immutable schema-v2, interpreter-only | Independent raw-u64 actual-memory oracle: 33 vectors × 4 RC × 64 sticky histories × four IM/PM combinations × both OSXMMEXCPT deliveries = 67,584 cases, plus 32 focused samples; eight literals; direct fetch/gate/AC/span/read rollback, old-RAX/zero-extension, real fragment/C ABI denial; od-testkit 461, runner focused tests, workspace/fmt/diff passed; Sol/high review clean; full od-runner suite not run; no physical x86 acceptance; [report](../reports/STAGE_2_REPORT.md#s2-38av--cvttsd2si-eax-m64-memory-unmasked-exceptions) |
 | [x] | S2-38aw | Exact Long64 `CVTPS2DQ XMM0,m128 [RAX]`, RC-based packed f32→i32, unmasked IE/PE; separate immutable interpreter-only profile | 81 lane-class distributions × 4 RC × 64 sticky × 4 IM/PM × 2 delivery = 165,888 actual-interpreter cases; 15 literals, numeric/control and direct alignment/read/rollback coverage; route denial; od-isa 1,989, od-testkit 461; focused checks and workspace/fmt/diff passed; corrected full-state matrix awaits fresh Sol/high review; full od-runner suite not run; no physical x86 acceptance; [report](../reports/STAGE_2_REPORT.md#s2-38aw--cvtps2dq-xmm0-m128-memory-unmasked-exceptions) |
 | [x] | S2-38ax | Exact Long64 `CVTTPS2DQ XMM0,m128 [RAX]`, TowardZero independent of RC, unmasked IE/PE; separate immutable interpreter-only profile | 81 lane-class distributions × 4 RC × 64 sticky × 4 IM/PM × 2 delivery = 165,888 actual-interpreter cases with full-state/source-memory comparison per case; 15 literals, generated/direct numeric/control, 120 misalignment/CPL/AC combinations (#GP/no-read), aligned AC0/1, one read16/read-error rollback, masked regression and route denials; od-isa 1,993, od-testkit 461; focused checks and workspace/fmt/diff passed; full od-runner suite not run; no physical x86 acceptance; [report](../reports/STAGE_2_REPORT.md#s2-38ax--cvttps2dq-xmm0-m128-memory-unmasked-exceptions) |
+| [ ] | S2-38ay | Exact Long64 `CVTPD2DQ XMM0,m128 [RAX]`, RC rounding, unmasked IE/PE; separate interpreter-only contract | S2-37bx, S2-37ah; pending implementation and 18,432-case full-state/memory oracle acceptance |
+| [ ] | S2-38az | Exact Long64 `CVTTPD2DQ XMM0,m128 [RAX]`, TowardZero independent of RC, unmasked IE/PE; separate interpreter-only contract | S2-37bw, S2-37ai; pending implementation and 18,432-case full-state/memory oracle acceptance |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -19612,3 +19614,75 @@ exception and alignment sections. See the
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ax-cvttps2dq-m128-memory-unmasked-profile).
 Status: implementation and fixtures are complete in `13404fc`, with the full-state
 matrix assertion fix in `640a9f0`; the result report records the executed checks.
+
+## S2-38ay — exact legacy Long64 CVTPD2DQ XMM0, m128 [RAX] with unmasked exceptions
+
+Pending implementation; bases are masked-memory S2-37bx and register-unmasked
+S2-37ah. Reserve `s2-long-cvtpd2dq-memory-unmasked-rax-v1`, exact `F2 0F E6 00`,
+and separate immutable `cvtpd2dq_m128_unmasked_controls` with five booleans
+`sse2_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`, `cr4_osxmmexcpt`.
+Use the private `Masked`/`Unmasked` pattern without changing the masked wrapper,
+admission, digest or fixtures. This remains a bounded interpreter-only slice.
+
+Two raw binary64 memory lanes use MXCSR.RC rounding before signed-i32 range checking.
+Success writes two i32 lanes in low64, zeroes high64 and retires once; any SIMD
+event preserves the entire old XMM0, RIP and retirement. Unmasked IE suppresses
+new PE across lanes, masked IE permits IE|PE aggregation, unmasked PE suppresses
+the vector write, and prior sticky flags are preserved. The complete canonical48
+four-byte fetch precedes SSE2/EM/OSFXSR `#UD`, then TS `#NM`, then canonical48
+`[RAX,RAX+15]`, 16-byte alignment and one read16. All misalignments give `#GP(0)`
+regardless of CPL/AC; aligned AC0/1 are admitted. MXCSR mask `0xffbf`, DAZ=0,
+all supported masks/RC/status and FTZ0/1; subnormals give PE without DE.
+
+Acceptance requires nine ordered lane classes ×4 RC ×64 sticky ×4 IM/PM
+×2 deliveries = **18,432 actual-interpreter cases**, each comparing full CPU
+state and source memory to an independent raw-u64 memory-RHS oracle. Add both
+IE/PE permutations, representable binary64 i32-limit fractions and ties, all
+120 offset×CPL×AC alignment faults, aligned AC0/1 checks, read16/error rollback,
+fetch/span/gate collisions, controls/result tampering, preserved masked fixtures
+and actual generic/native/JIT/fragment/C ABI denials. Literal fixtures cover
+schema-expressible outcomes; generated runner/direct cases cover additional
+numeric/fault matrices, while injected read errors require direct GuestMemory.
+No acceptance run or physical x86 result is claimed by this contract.
+
+Normative details and verified sources: Intel SDM Rev. 093 Vol. 2A CVTPD2DQ
+pp. 3-214–3-217, Vol. 1 §§11.5.2.1–2, 11.5.3.1–3/Table 14-21, Vol. 3A
+§16.1.3/Table 16-1 in the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ay--exact-cvtpd2dq-m128-memory-profile-with-unmasked-exceptions). See the
+[fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ay-cvtpd2dq-m128-memory-unmasked-profile).
+
+## S2-38az — exact legacy Long64 CVTTPD2DQ XMM0, m128 [RAX] with unmasked exceptions
+
+Pending implementation; bases are masked-memory S2-37bw and register-unmasked
+S2-37ai. Reserve `s2-long-cvttpd2dq-memory-unmasked-rax-v1`, exact `66 0F E6 00`,
+and separate immutable `cvttpd2dq_m128_unmasked_controls` with five booleans
+`sse2_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`, `cr4_osxmmexcpt`.
+Use the private `Masked`/`Unmasked` pattern without changing the masked wrapper,
+admission, digest or fixtures. This remains a bounded interpreter-only slice.
+
+Two raw binary64 memory lanes use TowardZero before signed-i32 range checking, independently of MXCSR.RC.
+Success writes two i32 lanes in low64, zeroes high64 and retires once; any SIMD
+event preserves the entire old XMM0, RIP and retirement. Unmasked IE suppresses
+new PE across lanes, masked IE permits IE|PE aggregation, unmasked PE suppresses
+the vector write, and prior sticky flags are preserved. The complete canonical48
+four-byte fetch precedes SSE2/EM/OSFXSR `#UD`, then TS `#NM`, then canonical48
+`[RAX,RAX+15]`, 16-byte alignment and one read16. All misalignments give `#GP(0)`
+regardless of CPL/AC; aligned AC0/1 are admitted. MXCSR mask `0xffbf`, DAZ=0,
+all supported masks/RC/status and FTZ0/1; subnormals give PE without DE.
+
+Acceptance requires nine ordered lane classes ×4 RC ×64 sticky ×4 IM/PM
+×2 deliveries = **18,432 actual-interpreter cases**, each comparing full CPU
+state and source memory to an independent raw-u64 memory-RHS oracle. Add both
+IE/PE permutations, representable binary64 i32-limit fractions and ties, all
+120 offset×CPL×AC alignment faults, aligned AC0/1 checks, read16/error rollback,
+fetch/span/gate collisions, controls/result tampering, preserved masked fixtures
+and actual generic/native/JIT/fragment/C ABI denials. Literal fixtures cover
+schema-expressible outcomes; generated runner/direct cases cover additional
+numeric/fault matrices, while injected read errors require direct GuestMemory.
+No acceptance run or physical x86 result is claimed by this contract.
+
+Normative details and verified sources: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ
+pp. 3-244–3-247, Vol. 1 §§11.5.2.1–2, 11.5.3.1–3/Table 14-21, Vol. 3A
+§16.1.3/Table 16-1 in the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38az--exact-cvttpd2dq-m128-memory-profile-with-unmasked-exceptions). See the
+[fixture format](../testing/TEST_CASE_FORMAT.md#s2-38az-cvttpd2dq-m128-memory-unmasked-profile).
