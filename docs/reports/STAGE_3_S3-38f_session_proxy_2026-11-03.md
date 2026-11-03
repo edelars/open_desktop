@@ -1,7 +1,7 @@
 # S3-38f: persistent session C ABI proxy
 
-**Status:** bounded code-only implementation slice; exact runtime and harness
-gates are added but remain unexecuted.
+**Status:** bounded local Rust proxy acceptance passed; full S3-38 and Stage 3
+acceptance remain open.
 
 ## Implemented boundary
 
@@ -46,11 +46,14 @@ The macOS ARM64 unit gates are pinned in the Stage3 harness:
   rejection, missing/zero-match evidence rejection and argv rejection.
 
 Independent Sol/high static review passed with no remaining concrete findings.
-No Cargo command, Rust test, formatter, Python harness/self-check, build,
-layout check, Mini or M1 run was executed for this slice. The gate behavior,
-ABI linking/layout on the target toolchain, pipe-failure injection and runtime
-race ordering therefore remain unverified. These deferred checks are not
-acceptance evidence.
+All three exact macOS/ARM64 Rust lifecycle gates passed 1/1, and
+`test_s3_38f_session_proxy_gates_are_pinned_once_and_fail_closed` exited 0.
+These results cover the existing Rust proxy tests and pinned harness identity;
+they do not establish C-client linking/layout on the target toolchain,
+pipe-failure injection, or broader runtime race ordering. The complete Stage 3
+harness was not run. The documented Mini endpoint `senya@192.168.1.14:22`
+timed out before any remote command or test ran; M1 remains deferred by the
+user. These checks do not establish physical-x86 or full-stage acceptance.
 
 ## Scope that remains
 

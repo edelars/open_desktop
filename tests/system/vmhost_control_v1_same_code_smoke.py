@@ -90,13 +90,13 @@ def run_once(channel, request_id, code, budget, registers, rflags, expected):
 
 def check_repeated_same_code(vmhost):
     process, channel = launch_vmhost(vmhost)
-    code = bytes.fromhex("4889c1 4889da")
+    code = bytes.fromhex("4803c3 4803c3")
     try:
         channel.sendall(frame(HELLO, 0))
         expect_frame(channel, (READY, 0, struct.pack("<II", 1, 0)), "V1 READY")
 
-        # One MOV retires before the first invocation's distinct one-instruction
-        # budget expires; the second invocation executes both MOVs to code end.
+        # One ADD retires before the first invocation's distinct one-instruction
+        # budget expires; the second invocation executes both ADDs to code end.
         run_once(
             channel,
             1,
@@ -104,7 +104,7 @@ def check_repeated_same_code(vmhost):
             1,
             (0x11, 0x22, 0x33, 0x44),
             0x202,
-            expected_result((0x11, 0x11, 0x33, 0x44), 3, 0x202, 1, 1),
+            expected_result((0x55, 0x22, 0x33, 0x44), 3, 0x206, 1, 1),
         )
         run_once(
             channel,
@@ -113,7 +113,7 @@ def check_repeated_same_code(vmhost):
             2,
             (0xA1, 0xA2, 0xA3, 0xA4),
             0x246,
-            expected_result((0xA1, 0xA1, 0xA4, 0xA4), 6, 0x246, 0, 2),
+            expected_result((0x1E9, 0xA2, 0xA3, 0xA4), 6, 0x202, 0, 2),
         )
 
         # EOF between frames while idle is the protocol's normal teardown path.

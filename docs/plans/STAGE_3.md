@@ -439,9 +439,9 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38a | Register-only S0-09 V0 C ABI through run-local eager block dispatcher | Immutable fragment, per-call arena/cache, C ABI lifecycle and local VMHost process regressions; full cache/request ownership and all S3-38 gates remain open |
 | [partial] | S3-38c | Sequential cross-thread V0 handle lifecycle | One idle handle called sequentially from two host threads, second-handle interleaving, pre-run STOP and per-call mapping release; persistent cache and full S3-38 remain open |
 | [partial] | S3-38e | Bounded opt-in local Rust S0-09 session owner | Retains copied code/admission, bounded cache and one executable-memory lease across synchronous calls; no VMHost IPC RUN/session or production MMU integration. Four exact macOS/ARM64 local lifecycle gates passed 1/1 each; the pinned harness self-test exited 0. Full Stage 3 harness and physical x86/Mini acceptance remain open; M1 deferred. См. [implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md) and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
-| [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Adds ABI V1 create/begin/STOP/wait/destroy, fresh CLOEXEC notification descriptors and exact local lifecycle gates. Independent Sol/high static review passed; execution/build/fmt and harness self-check remain deferred. VMHost control V1 is implemented separately in S3-38g. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
-| [partial] | S3-38g | VMHost control V1 repeated same-code RUN transport | Adds explicit opt-in V1 selection, session ABI adapter, event-driven socket/completion loop, incremental bounded frame staging and a 16,416-byte output queue; V0 remains the default path. Full Sol/high static review passed. No build, test or runtime execution; acceptance gates remain open. См. [implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md) |
-| [partial] | S3-38h | Process-level V1 same-code repeated RUN smoke and exact process-harness gate | Pins two sequential RUNs on one VMHost with distinct CPU state/budget, full RESULT payloads, increasing IDs, ACK/RESULT order and idle EOF cleanup. Process execution remains pending; S3-38i/j separately pin active STOP/EOF and framing gates. См. [implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md) |
+| [partial] | S3-38f | Rust C ABI proxy owning one S0-09 Session on a dedicated OS thread | Adds ABI V1 create/begin/STOP/wait/destroy and fresh CLOEXEC notification descriptors. Three exact macOS/ARM64 Rust lifecycle gates passed 1/1; pinned harness self-test exited 0. C-client linking/layout, pipe-failure injection, broader race ordering, VMHost integration and full S3-38 acceptance remain open. Mini SSH timed out before remote tests; M1 deferred. См. [implementation report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md) |
+| [partial] | S3-38g | VMHost control V1 repeated same-code RUN transport | Adds explicit opt-in V1 selection, session ABI adapter, event-driven socket/completion loop, incremental bounded frame staging and a 16,416-byte output queue; V0 remains the default path. Full Sol/high static review passed. No build, test or runtime execution was performed at the S3-38g integration revision; the later focused S3-38h process smoke passed. Broader V1 acceptance gates remain open. См. [implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md) |
+| [partial] | S3-38h | Process-level V1 same-code repeated RUN smoke and exact process-harness gate | Release od-host build, Swift VMHost compile, ad-hoc runtime signature/strict verification and `allow-jit` entitlement verification passed. The exact process smoke passed with two decoder-supported ADD RAX,RBX instructions, fresh state/budgets, increasing IDs, complete RESULT payloads, ACK/RESULT ordering and idle EOF teardown; manifest self-test passed. Current harness totals are 324 gates (306 acceptance + 18 lifecycle), 342 steps, 149 self-tests, 18 source pins. Full 39-step VMHost suite, C-client layout/link, pipe-failure, active STOP/EOF and framing acceptance remain open. Mini SSH timed out before remote tests; M1 deferred; Stage 3 partial. См. [implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md) |
 | [partial] | S3-38i | Process-level STOP isolation and EOF during active V1 RUN | Pins exact STOP_ACK→RESULT order, stopped result, fresh next invocation, and bounded clean teardown after active-run EOF. Static review passed; no process execution. См. [implementation report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md) |
 | [partial] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Pins fragmented HELLO/RUN, coalesced RUN admission with BUSY evidence, partial-frame EOF, and overlength rejection before body; INVALID_STATE batch closure remains uncovered. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
 | [partial] | S3-38k | Process-level immutable-code mismatch and RUN-ID high-watermark | Pins CODE_MISMATCH without rebinding, advances IDs on rejected RUNs, rejects reused IDs, and then runs the original code on a fresh higher ID. Static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md) |
@@ -4046,10 +4046,12 @@ and gives the owner one request. STOP is invocation-local; the owner publishes
 the terminal result before notifying, and wait consumes it once after signal
 completion. Destroy is BUSY until the accepted invocation is consumed.
 
-The code-only slice adds three exact Rust lifecycle identities and a fail-closed
-Stage3 harness self-check. It does not connect the proxy to VMHost or implement
-the control V1 event loop. The Rust gates and harness self-check are pinned but
-unexecuted under the current deferred-execution instruction. See the
+The code slice adds three exact Rust lifecycle identities and a fail-closed
+Stage3 harness self-check. Each exact Rust gate passed 1/1, and the Python
+self-check exited 0. This validates only the local Rust proxy; it does not
+connect the proxy to VMHost or implement the control V1 event loop. C-client
+linking/layout, pipe-failure injection, physical-x86/Mini and full S3-38
+acceptance remain open. See the
 [S3-38f report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md).
 
 #### S3-38g. VMHost control V1 repeated same-code RUN transport
@@ -4066,23 +4068,30 @@ the separate version-0 path.
 Independent Sol/high static review passed after corrections for STOP status,
 socket backpressure, `INVALID_STATE` admission closure, completion teardown,
 and input staging bounds. No Swift build, test, signing, or runtime execution
-was performed. S3-38g remains partial pending repeated same-code state/budget
-results, STOP and completion races, monotonic/mismatched IDs, malformed and
-partial frames, EOF while idle/running, backpressure behavior, completion and
-descriptor/lease teardown, and unchanged V0 regressions on a supported macOS
-ARM host. See the [S3-38g implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md).
+was performed at the S3-38g integration revision. The later S3-38h process
+smoke built and signed VMHost and passed same-code state/budget execution. S3-38g
+remains partial pending STOP and completion races, monotonic/mismatched IDs,
+malformed and partial frames, EOF while idle/running, backpressure behavior,
+completion and descriptor/lease teardown, and unchanged V0 regressions on a
+supported macOS ARM host. See the [S3-38g implementation report](../reports/STAGE_3_S3-38g_vmhost_v1_transport_2026-11-03.md).
 
 #### S3-38h. Process-level repeated same-code RUN smoke
 
 The process smoke drives one built VMHost over a local socket pair using
-control V1. It sends the same two-instruction code in two increasing RUN IDs,
-with distinct CPU snapshots and budgets, and checks complete RESULT payloads,
-ACK-before-RESULT ordering, and clean EOF teardown while idle. The process
-command and its source dependencies are pinned in the Stage3 harness. The
-scenario is statically reviewed but has not been executed. It does not yet
-cover STOP during RUN, EOF during RUN, malformed/partial frames, or the broader
-V1 race and backpressure suite. Those runtime acceptance gates remain open;
-Mini checks remain deferred. See the
+control V1. It sends `48 03 C3 48 03 C3` (two ADD RAX,RBX instructions) in two
+increasing RUN IDs with distinct CPU snapshots and budgets. The smoke verifies
+RAX `0x55`/RFLAGS `0x206` after the budget-one first run and RAX `0x1E9`/RFLAGS
+`0x202` after the budget-two second run, full RESULT payloads, ACK-before-RESULT
+ordering, and clean EOF teardown while idle. The process command and its source
+dependencies are pinned in the Stage3 harness; the exact smoke and manifest
+self-test passed. Release build, Swift compile, ad-hoc runtime signature, strict
+signature verification and `allow-jit` entitlement verification passed. A
+private typed bridge resolves Swift import of the canonical public ABI macros;
+public ABI values and runtime behavior are unchanged. The full 39-step process
+suite, STOP during RUN, EOF during RUN, malformed/partial frames, broader V1
+race/backpressure suite, and unchanged V0 regressions remain open. The Graphify
+refresh timed out after 120 seconds and is unconfirmed. Mini SSH timed out before
+remote tests; M1 remains deferred. See the
 [S3-38h implementation report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md).
 
 #### S3-38i. Process-level STOP isolation and active-run EOF

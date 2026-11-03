@@ -158,8 +158,8 @@ struct VmHostSmoke {
                                socklen_t(MemoryLayout<Int32>.size)) == 0 else {
             throw VmHostError.channelFailure
         }
-        guard od_session_abi_version() == OD_SESSION_ABI_VERSION_V1,
-              (od_session_abi_capabilities() & OD_SESSION_CAP_S0_09_SAME_CODE_V1) != 0 else {
+        guard od_session_abi_version() == vmhost_session_abi_version_v1(),
+              (od_session_abi_capabilities() & vmhost_session_required_capabilities_v1()) != 0 else {
             throw VmHostError.sessionAbiUnavailable
         }
 

@@ -1192,14 +1192,39 @@ The proxy applies monotonic request IDs, invocation-local STOP, one-shot wait
 consumption, output preservation on errors, and BUSY destruction while a run
 remains unconsumed. Legacy `od_fragment_*` remains unchanged.
 
-The exact lifecycle gates are `session_abi_v1::tests::s3_38f_abi_create_preflight_runs_before_map_jit_lease`, `session_abi_v1::tests::s3_38f_proxy_stop_request_ids_and_destroy_busy_are_exact`, and `session_abi_v1::tests::s3_38f_proxy_reuses_code_with_fresh_state_and_exclusive_lease`. The
+The exact lifecycle gates are `session_abi_v1::tests::s3_38f_abi_create_preflight_runs_before_map_jit_lease`, `session_abi_v1::tests::s3_38f_proxy_stop_request_ids_and_destroy_busy_are_exact`, and `session_abi_v1::tests::s3_38f_proxy_reuses_code_with_fresh_state_and_exclusive_lease`. All three passed 1/1. The
 `test_s3_38f_session_proxy_gates_are_pinned_once_and_fail_closed` harness
-self-check pins identities, commands, source fingerprint and missing/forged
-evidence rejection. Current expected totals are 318 Rust gates (300 acceptance
-+ 18 lifecycle), 336 local steps and 142 self-test names. No Rust, harness,
-build, formatter, layout, Mini or M1 check was executed in this author slice.
-VMHost control V1 and its event loop remain outside this bounded runtime/ABI
-slice. See the [S3-38f report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md).
+self-check exited 0 and pins identities, commands, source fingerprint and
+missing/forged evidence rejection. Current expected totals are 324 Rust gates
+(306 acceptance and 18 lifecycle), 342 local steps, 149 self-test names, and
+18 source pins. The full Stage 3 harness, C-client linking/layout,
+pipe-failure injection and VMHost integration remain unverified. The documented
+Mini endpoint timed out before remote tests; M1 is deferred. See the
+[S3-38f report](../reports/STAGE_3_S3-38f_session_proxy_2026-11-03.md).
+
+## S3-38h: bounded VMHost Control V1 repeated RUN process smoke
+
+The exact process smoke and process-manifest self-test passed. The validated
+preparation path built `od-host` in release mode, compiled the Swift VMHost
+through the private bridging header, signed the smoke executable with ad-hoc
+Hardened Runtime, and verified the signature and
+`com.apple.security.cs.allow-jit` entitlement. The
+V1 process receives two sequential RUNs with the same supported code
+`48 03 C3 48 03 C3` (ADD RAX,RBX twice) but fresh CPU state and budgets. The
+budget-one result is RAX `0x55`, RFLAGS `0x206`, RIP `A+3`, retired 1; the
+budget-two result is RAX `0x1E9`, RFLAGS `0x202`, RIP `A+6`, retired 2. The
+smoke also pins increasing request IDs, exact full RESULT payloads,
+ACK-before-RESULT ordering, and successful idle-EOF teardown.
+
+The public session ABI values remain canonical in their C header. Two private
+typed inline accessors make the `UINT32_C`/`UINT64_C` constants available to
+Swift without duplicating values. The initial MOV fixture was rejected by
+bounded Session admission and was replaced with supported ADD instructions;
+no admission or runtime behavior was widened. `test_vmhost_process_manifest_covers_every_gate_once` passed. The full 39-step VMHost process suite, active STOP/EOF, malformed frames,
+backpressure, C-client linking/layout, and V0 regressions remain open. Graphify
+refresh timed out after 120 seconds; the documented Mini SSH endpoint timed
+out before remote tests; M1 is deferred. Stage 3 remains partial. See the
+[S3-38h report](../reports/STAGE_3_S3-38h_vmhost_v1_process_2026-11-03.md).
 
 ## S3-29a: bounded demand-driven flags correctness candidate
 
