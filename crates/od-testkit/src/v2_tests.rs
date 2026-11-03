@@ -499,6 +499,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                 mulps_controls: input.fixture.mulps_controls,
                 subps_controls: input.fixture.subps_controls,
                 subsd_controls: input.fixture.subsd_controls,
+                subsd_memory_rax_unmasked_controls: input
+                    .fixture
+                    .subsd_memory_rax_unmasked_controls,
                 subss_controls: input.fixture.subss_controls,
                 cvtss2sd_controls: input.fixture.cvtss2sd_controls,
                 cvtsd2ss_controls: input.fixture.cvtsd2ss_controls,
@@ -10951,6 +10954,212 @@ fn independent_sqrtps_raw_oracle_covers_event_products_masks_and_rc_stickies() {
                     let fault = signaling && !im;
                     let vector = fault.then_some(if osxmmexcpt { 19 } else { 6 });
                     assert_eq!(vector.is_some(), signaling && !im);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn subsd_m64_unmasked_matrix_matches_independent_raw_u64_oracle() {
+    use od_isa::execute::{
+        RunConfig, RunExit, SubsdMemoryRaxUnmaskedControls,
+        run_with_subsd_memory_rax_unmasked_controls,
+    };
+    use od_isa::memory::{AccessContext, AccessKind, ArchitecturalFault, GuestMemory, MemoryError};
+    use od_isa::{LongModeState, Register};
+
+    struct MatrixMemory {
+        rhs: [u8; 8],
+        reads: usize,
+    }
+    impl GuestMemory for MatrixMemory {
+        fn fetch(&mut self, address: u64, _context: AccessContext) -> Result<u8, MemoryError> {
+            const CODE: [u8; 4] = [0xf2, 0x0f, 0x5c, 0x00];
+            CODE.get(address.checked_sub(0x1000_0000).unwrap_or(u64::MAX) as usize)
+                .copied()
+                .ok_or(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Fetch,
+                })
+        }
+        fn read(
+            &mut self,
+            address: u64,
+            _context: AccessContext,
+            destination: &mut [u8],
+        ) -> Result<(), MemoryError> {
+            if address != 0x2001 || destination.len() != 8 {
+                return Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                });
+            }
+            destination.copy_from_slice(&self.rhs);
+            self.reads += 1;
+            Ok(())
+        }
+        fn write(
+            &mut self,
+            address: u64,
+            _context: AccessContext,
+            _source: &[u8],
+        ) -> Result<(), MemoryError> {
+            Err(MemoryError::PermissionDenied {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+        fn atomic_exchange_integer(
+            &mut self,
+            address: u64,
+            _context: AccessContext,
+            _size: od_isa::OperandSize,
+            _replacement: u64,
+        ) -> Result<u64, MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })
+        }
+        fn atomic_fetch_add_integer(
+            &mut self,
+            address: u64,
+            _context: AccessContext,
+            _size: od_isa::OperandSize,
+            _addend: u64,
+        ) -> Result<u64, MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })
+        }
+        fn atomic_compare_exchange_integer(
+            &mut self,
+            address: u64,
+            _context: AccessContext,
+            _size: od_isa::OperandSize,
+            _expected: u64,
+            _replacement: u64,
+        ) -> Result<u64, MemoryError> {
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })
+        }
+        fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
+            Ok(())
+        }
+    }
+
+    let vectors: [(u64, u64); 22] = [
+        (0x4008_0000_0000_0000, 0x3ff0_0000_0000_0000),
+        (0x3ff0_0000_0000_0000, 0x3fb9_9999_9999_999a),
+        (0x3ff0_0000_0000_0000, 0x3ca0_0000_0000_0000),
+        (0x0000_0000_0000_0000, 0x8000_0000_0000_0000),
+        (0x0000_0000_0000_0001, 0x3ff0_0000_0000_0000),
+        (0x3ff0_0000_0000_0000, 0x0000_0000_0000_0001),
+        (0x7ff8_0000_0000_1234, 0x0000_0000_0000_0001),
+        (0xfff0_0000_0000_0001, 0x0000_0000_0000_0001),
+        (0x7ff8_0000_0000_1234, 0xfff0_0000_0000_0001),
+        (0xfff8_0000_0000_1234, 0x3ff0_0000_0000_0000),
+        (0x3ff0_0000_0000_0000, 0x7ff8_0000_0000_1234),
+        (0x3ff0_0000_0000_0000, 0xfff8_0000_0000_1234),
+        (0x7ff0_0000_0000_0001, 0x3ff0_0000_0000_0000),
+        (0x3ff0_0000_0000_0000, 0x7ff0_0000_0000_0001),
+        (0x3ff0_0000_0000_0000, 0xfff0_0000_0000_0001),
+        (0xfff0_0000_0000_0001, 0x7ff8_0000_0000_1234),
+        (0x7ff0_0000_0000_0000, 0x7ff0_0000_0000_0000),
+        (0x7ff0_0000_0000_0000, 0xfff0_0000_0000_0000),
+        (0xfff0_0000_0000_0000, 0x3ff0_0000_0000_0000),
+        (0x3ff0_0000_0000_0000, 0x7ff0_0000_0000_0000),
+        (0x7fe0_0000_0000_0000, 0xff7f_ffff_ffff_ffff),
+        (0x0000_0000_0000_0001, 0x0000_0000_0000_0000),
+    ];
+    for (lhs, rhs) in vectors {
+        for rc in 0..4u32 {
+            for sticky in 0..64u32 {
+                for masks in 0..16u32 {
+                    for osxmmexcpt in [false, true] {
+                        let sticky_bits =
+                            (0..6).fold(0u32, |bits, bit| bits | (((sticky >> bit) & 1) << bit));
+                        let mut mxcsr = 0x1f80 | sticky_bits | (rc << 13);
+                        for (selector, bit) in [(1, 7), (2, 8), (4, 9), (8, 12)] {
+                            if masks & selector == 0 {
+                                mxcsr &= !(1 << bit);
+                            }
+                        }
+                        let (expected_low, ie, de, oe, ue, pe) = independent_subsd(lhs, rhs, mxcsr);
+                        let pre_unmasked =
+                            (ie && mxcsr & (1 << 7) == 0) || (de && mxcsr & (1 << 8) == 0);
+                        let post_unmasked = !pre_unmasked && pe && mxcsr & (1 << 12) == 0;
+                        let fault = pre_unmasked || post_unmasked;
+                        let expected_mxcsr = mxcsr
+                            | u32::from(ie)
+                            | (u32::from(de) << 1)
+                            | (u32::from(oe) << 3)
+                            | (u32::from(ue) << 4)
+                            | (u32::from(pe) << 5);
+
+                        let mut state = LongModeState::default();
+                        state.rip = 0x1000_0000;
+                        state.gpr[Register::Rax as usize] = 0x2001;
+                        state.rflags = (1 << 1) | (1 << 11);
+                        state.sse = Some(od_isa::state::SseState {
+                            xmm: [[0x5a; 16]; 16],
+                            mxcsr,
+                        });
+                        state.sse.as_mut().unwrap().xmm[0][..8].copy_from_slice(&lhs.to_le_bytes());
+                        let before_xmm = state.sse.as_ref().unwrap().xmm[0];
+                        let mut memory = MatrixMemory {
+                            rhs: rhs.to_le_bytes(),
+                            reads: 0,
+                        };
+                        let result = run_with_subsd_memory_rax_unmasked_controls(
+                            &mut state,
+                            &mut memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: Some(0x1000_0004),
+                                context: AccessContext::default(),
+                            },
+                            SubsdMemoryRaxUnmaskedControls {
+                                sse2_available: true,
+                                cr0_em: false,
+                                cr0_ts: false,
+                                cr4_osfxsr: true,
+                                cr4_osxmmexcpt: osxmmexcpt,
+                            },
+                            || false,
+                        );
+                        if fault {
+                            assert_eq!(
+                                result.exit,
+                                RunExit::Fault(ArchitecturalFault {
+                                    vector: if osxmmexcpt { 19 } else { 6 },
+                                    error_code: None,
+                                    linear_address: None,
+                                })
+                            );
+                            assert_eq!(result.instructions_executed, 0);
+                            assert_eq!(state.rip, 0x1000_0000);
+                            assert_eq!(state.sse.as_ref().unwrap().xmm[0], before_xmm);
+                        } else {
+                            assert_eq!(result.exit, RunExit::StopAddress);
+                            assert_eq!(result.instructions_executed, 1);
+                            assert_eq!(state.rip, 0x1000_0004);
+                            assert_eq!(
+                                u64::from_le_bytes(
+                                    state.sse.as_ref().unwrap().xmm[0][..8].try_into().unwrap()
+                                ),
+                                expected_low
+                            );
+                        }
+                        assert_eq!(state.sse.as_ref().unwrap().mxcsr, expected_mxcsr);
+                        assert_eq!(&state.sse.as_ref().unwrap().xmm[0][8..], &before_xmm[8..]);
+                        assert_eq!(state.rflags, (1 << 1) | (1 << 11));
+                        assert_eq!(memory.reads, 1);
+                    }
                 }
             }
         }

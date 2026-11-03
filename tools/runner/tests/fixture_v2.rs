@@ -186,6 +186,14 @@ const ADDSD_M64_UNMASKED_DE_UD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ad_addsd_unmasked_de_ud.case.json");
 const ADDSD_M64_UNMASKED_PE_XM: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ad_addsd_unmasked_pe_xm.case.json");
+const SUBSD_M64_UNMASKED_SUCCESS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38af_subsd_unmasked_success.case.json");
+const SUBSD_M64_UNMASKED_IE_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38af_subsd_unmasked_ie_xm.case.json");
+const SUBSD_M64_UNMASKED_DE_UD: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38af_subsd_unmasked_de_ud.case.json");
+const SUBSD_M64_UNMASKED_PE_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38af_subsd_unmasked_pe_xm.case.json");
 const SQRTPD_M128_UNMASKED_SUCCESS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ab_sqrtpd_unmasked_success.case.json");
 const SQRTPD_M128_UNMASKED_IE_XM: &[u8] =
@@ -43790,6 +43798,228 @@ fn sqrtsd_m64_memory_profile_covers_scalar_rounding_classes_and_denials() {
         run(&ac.to_json().unwrap(), "interpreter", 4).1.outcome,
         Outcome::Unsupported { .. }
     ));
+}
+
+#[test]
+fn subsd_m64_unmasked_literal_fixtures_validate_ie_de_pe_and_denials() {
+    use od_testkit::v2::Profile;
+
+    let cases = [
+        (SUBSD_M64_UNMASKED_SUCCESS, None, 0x1f80, None),
+        (SUBSD_M64_UNMASKED_IE_XM, Some(19), 0x1f01, Some(1u64)),
+        (SUBSD_M64_UNMASKED_DE_UD, Some(6), 0x1e82, Some(1 << 1)),
+        (SUBSD_M64_UNMASKED_PE_XM, Some(19), 0x0fa0, Some(1 << 5)),
+    ];
+    for (source, vector, expected_mxcsr, sticky_bit) in cases {
+        let fixture = Fixture::from_json(source)
+            .unwrap_or_else(|error| {
+                panic!("fixture {}: {error:?}", String::from_utf8_lossy(source))
+            })
+            .fixture;
+        assert_eq!(fixture.profile, Profile::LongSubsdMemoryRaxUnmaskedV1);
+        let (input, result) = run(source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let result_snapshot = snapshot(&result);
+        assert_eq!(
+            result_snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+            expected_mxcsr
+        );
+        if let Some(vector) = vector {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            let Observation::Available {
+                value: Some(exception),
+            } = &result_snapshot.exception
+            else {
+                panic!("missing SUBSD exception")
+            };
+            assert_eq!(exception.vector, vector);
+            assert_eq!(count(&result), 0);
+            assert_eq!(result_snapshot.state.rip, fixture.initial_state.rip);
+            assert_eq!(
+                result_snapshot.state.sse.as_ref().unwrap().xmm[0],
+                fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+            );
+        } else {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+            assert_eq!(
+                &result_snapshot.state.sse.as_ref().unwrap().xmm[0][..16],
+                "0000000000000040"
+            );
+            assert_eq!(
+                &result_snapshot.state.sse.as_ref().unwrap().xmm[0][16..32],
+                "deadbeefcafef00d"
+            );
+        }
+        for backend in ["jit", "native"] {
+            let (_, denied) = run(source, backend, 4);
+            assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        }
+        let mut bad_echo = result.clone();
+        snapshot_mut(&mut bad_echo)
+            .subsd_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = !fixture
+            .subsd_memory_rax_unmasked_controls
+            .unwrap()
+            .cr4_osxmmexcpt;
+        assert!(bad_echo.validate_for(&input).is_err());
+        if let Some(sticky_bit) = sticky_bit {
+            let mut bad_status = result.clone();
+            let sse = snapshot_mut(&mut bad_status).state.sse.as_mut().unwrap();
+            sse.mxcsr = HexU64(sse.mxcsr.get() ^ sticky_bit);
+            assert!(bad_status.validate_for(&input).is_err());
+        }
+        if vector.is_some() {
+            let mut bad_retirement = result.clone();
+            bad_retirement.instructions_executed = Observation::Available { value: HexU64(1) };
+            assert!(bad_retirement.validate_for(&input).is_err());
+            let mut bad_exception = result.clone();
+            match &mut snapshot_mut(&mut bad_exception).exception {
+                Observation::Available {
+                    value: Some(exception),
+                } => exception.vector = 13,
+                other => panic!("expected exception snapshot, got {other:?}"),
+            }
+            assert!(bad_exception.validate_for(&input).is_err());
+        } else {
+            let mut bad_rip = result.clone();
+            snapshot_mut(&mut bad_rip).state.rip = HexU64(fixture.initial_state.rip.get() + 1);
+            assert!(bad_rip.validate_for(&input).is_err());
+            let mut bad_low = result.clone();
+            snapshot_mut(&mut bad_low).state.sse.as_mut().unwrap().xmm[0]
+                .replace_range(0..16, "0000000000000000");
+            assert!(bad_low.validate_for(&input).is_err());
+            let mut bad_high = result.clone();
+            snapshot_mut(&mut bad_high).state.sse.as_mut().unwrap().xmm[0]
+                .replace_range(16..32, "eeeeeeeeeeeeeeee");
+            assert!(bad_high.validate_for(&input).is_err());
+        }
+    }
+    let mut missing = Fixture::from_json(SUBSD_M64_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    missing.subsd_memory_rax_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut wrong_controls = Fixture::from_json(SUBSD_M64_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    wrong_controls.subsd_controls = Some(od_testkit::v2::SubsdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(wrong_controls.validate().is_err());
+    let mut writable = Fixture::from_json(SUBSD_M64_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    writable.memory[1].permissions.write = true;
+    assert!(writable.validate().is_err());
+
+    let mut gate_wins = Fixture::from_json(SUBSD_M64_UNMASKED_IE_XM)
+        .unwrap()
+        .fixture;
+    gate_wins
+        .subsd_memory_rax_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .sse2_available = false;
+    let gate_bytes = gate_wins.to_json().unwrap();
+    let (gate_input, gate_result) = run(&gate_bytes, "interpreter", 0);
+    assert_eq!(
+        snapshot(&gate_result).state.sse.as_ref().unwrap().mxcsr,
+        gate_wins.initial_state.sse.as_ref().unwrap().mxcsr
+    );
+    let mut bad_gate_status = gate_result.clone();
+    let gate_sse = snapshot_mut(&mut bad_gate_status)
+        .state
+        .sse
+        .as_mut()
+        .unwrap();
+    gate_sse.mxcsr = HexU64(gate_sse.mxcsr.get() | 1);
+    assert!(bad_gate_status.validate_for(&gate_input).is_err());
+
+    let mut ac_wins = Fixture::from_json(SUBSD_M64_UNMASKED_IE_XM)
+        .unwrap()
+        .fixture;
+    ac_wins.initial_state.rflags = HexU64(ac_wins.initial_state.rflags.get() | (1 << 18));
+    ac_wins.expected_exit = ExpectedExit::Unsupported;
+    let ac_bytes = ac_wins.to_json().unwrap();
+    let (ac_input, ac_result) = run(&ac_bytes, "interpreter", 4);
+    assert!(matches!(ac_result.outcome, Outcome::Unsupported { .. }));
+    assert_eq!(
+        snapshot(&ac_result).state.sse.as_ref().unwrap().mxcsr,
+        ac_wins.initial_state.sse.as_ref().unwrap().mxcsr
+    );
+    let mut bad_ac_status = ac_result.clone();
+    let ac_sse = snapshot_mut(&mut bad_ac_status).state.sse.as_mut().unwrap();
+    ac_sse.mxcsr = HexU64(ac_sse.mxcsr.get() | 1);
+    assert!(bad_ac_status.validate_for(&ac_input).is_err());
+
+    let mut span_wins = Fixture::from_json(SUBSD_M64_UNMASKED_DE_UD)
+        .unwrap()
+        .fixture;
+    span_wins.initial_state.gpr[0] = HexU64(0x0000_7fff_ffff_fff9);
+    span_wins.memory[1].guest_address = span_wins.initial_state.gpr[0];
+    span_wins.expected_exit = ExpectedExit::Exception;
+    let span_bytes = span_wins.to_json().unwrap();
+    let (span_input, span_result) = run(&span_bytes, "interpreter", 0);
+    assert_eq!(
+        snapshot(&span_result).state.sse.as_ref().unwrap().mxcsr,
+        span_wins.initial_state.sse.as_ref().unwrap().mxcsr
+    );
+    match &snapshot(&span_result).exception {
+        Observation::Available {
+            value: Some(exception),
+        } => {
+            assert_eq!(exception.vector, 13);
+            assert_eq!(
+                exception.error_code,
+                Observation::Available { value: HexU64(0) }
+            );
+        }
+        other => panic!("expected #GP(0), got {other:?}"),
+    }
+    let mut bad_span_status = span_result.clone();
+    let span_sse = snapshot_mut(&mut bad_span_status)
+        .state
+        .sse
+        .as_mut()
+        .unwrap();
+    span_sse.mxcsr = HexU64(span_sse.mxcsr.get() | (1 << 1));
+    assert!(bad_span_status.validate_for(&span_input).is_err());
+
+    let mut noncanonical = Fixture::from_json(SUBSD_M64_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    noncanonical.initial_state.gpr[0] = HexU64(0x0000_7fff_ffff_fff9);
+    noncanonical.memory[1].guest_address = noncanonical.initial_state.gpr[0];
+    noncanonical.expected_exit = ExpectedExit::Exception;
+    let (input, result) = run(&noncanonical.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let Observation::Available {
+        value: Some(exception),
+    } = snapshot(&result).exception.clone()
+    else {
+        panic!("expected #GP(0)")
+    };
+    assert_eq!(exception.vector, 13);
+    assert_eq!(
+        exception.error_code,
+        Observation::Available { value: HexU64(0) }
+    );
+    let mut bad_gp = result.clone();
+    match &mut snapshot_mut(&mut bad_gp).exception {
+        Observation::Available {
+            value: Some(exception),
+        } => exception.error_code = Observation::Available { value: HexU64(1) },
+        other => panic!("expected exception snapshot, got {other:?}"),
+    }
+    assert!(bad_gp.validate_for(&input).is_err());
 }
 
 #[test]

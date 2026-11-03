@@ -8693,15 +8693,17 @@ this profile.
 
 ### S2-38af SUBSD m64 memory unmasked exceptions
 
-The exact Long64 `F2 0F 5C 00` profile requires SSE2 bit 26 and performs one
-read-only read8 from `[RAX]`. The independent raw-u64 oracle covers subtraction
-with the actual memory RHS, original-operand NaN selection, signed QNaN/SNaN in
-either position, NaN+subnormal, same-sign invalid and opposite-sign valid
-infinities, signed zero, rounding and exact tiny results. Cross RC × 64 prior
-sticky histories × IM/DM/PM × OSXMMEXCPT. Verify pre-event IE/DE, post-event PE,
-atomic XMM0/RIP/retirement suppression, high64 preservation on success, and
-literal success/exception fixtures. Also cover fetch/gate/CPL/AC ordering,
-unaligned access with AC clear, canonical span/read rollback, one callback,
-strict read-only schema, tampering and interpreter-only backend denial. Keep
-S2-37dl/S2-37ap separate; unmasked OE/UE and physical x86 acceptance are outside
-this profile.
+Implemented as the immutable interpreter-only profile
+`s2-long-subsd-memory-unmasked-rax-v1`. It requires SSE2 bit 26 and performs
+one read-only read8 from `[RAX]`; four literal fixtures cover success and IE,
+DE and PE outcomes. A 180,224-case direct interpreter matrix crosses 22 raw
+operand vectors with all RC values, 64 old sticky histories, IM/DM/ZM/PM mask
+combinations and both OSXMMEXCPT mappings. Vectors include signed QNaN/SNaN in
+either operand position, NaN+subnormal, same-sign invalid and opposite-sign
+valid infinities, signed zero, finite rounding, exact tiny and overflow values.
+The independent raw-u64 result validator uses the actual memory RHS and checks
+pre-event IE/DE, post-event PE, status commit, XMM0/RIP/retirement suppression,
+and high64 preservation. Focused tests cover gate order, AC-before-read,
+canonical span/read rollback, read-only schema, literal result/control/error
+code tampering and JIT/native denial. Keep S2-37dl/S2-37ap separate; unmasked
+OE/UE and physical x86 acceptance are outside this profile.

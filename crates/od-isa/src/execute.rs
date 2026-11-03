@@ -521,6 +521,16 @@ pub type SubssMemoryRaxControls = SubssControls;
 /// Explicit SSE2 gates for the exact local SUBSD m64-at-RAX profile.
 pub type SubsdMemoryRaxControls = SubsdControls;
 
+/// SSE2 and SIMD exception-delivery controls for unmasked SUBSD m64 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SubsdMemoryRaxUnmaskedControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
 /// Explicit SSE2 gates for the exact local MULSD m64-at-RAX profile.
 pub type MulsdMemoryRaxControls = MulsdControls;
 
@@ -538,6 +548,7 @@ enum ScalarFloatMemoryRaxProfile {
     Mulsd(MulsdMemoryRaxControls),
     Subss(SubssMemoryRaxControls),
     Subsd(SubsdMemoryRaxControls),
+    SubsdUnmasked(SubsdMemoryRaxUnmaskedControls),
 }
 
 /// Explicit SSE2 and SIMD exception-delivery controls for CVTSS2SD.
@@ -19808,6 +19819,23 @@ pub fn run_with_subsd_memory_rax_controls(
     )
 }
 
+/// Execute exact legacy `F2 0F 5C 00` SUBSD m64-at-RAX with unmasked IE/DE/PE delivery.
+pub fn run_with_subsd_memory_rax_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: SubsdMemoryRaxUnmaskedControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_scalar_float_memory_rax_profile(
+        state,
+        memory,
+        config,
+        ScalarFloatMemoryRaxProfile::SubsdUnmasked(controls),
+        stop_requested,
+    )
+}
+
 /// Execute exact legacy `F3 0F 59 00` MULSS m32-at-RAX with explicit gates.
 pub fn run_with_mulss_memory_rax_controls(
     state: &mut LongModeState,
@@ -22694,6 +22722,16 @@ fn step_configured(
                     && !instruction.prefixes.address_override
                     && instruction.prefixes.rex.is_none()
             }
+            (ScalarFloatMemoryRaxProfile::SubsdUnmasked(_), Operation::SubsdMemoryRax) => {
+                instruction.length == 4
+                    && instruction.opcode.map == OpcodeMap::Escape0f
+                    && instruction.opcode.byte == 0x5c
+                    && instruction.prefixes.group1 == Some(0xf2)
+                    && instruction.prefixes.segment.is_none()
+                    && !instruction.prefixes.operand_override
+                    && !instruction.prefixes.address_override
+                    && instruction.prefixes.rex.is_none()
+            }
             _ => false,
         };
         if !admitted {
@@ -22756,6 +22794,15 @@ fn step_configured(
                     None
                 }
             }
+            ScalarFloatMemoryRaxProfile::SubsdUnmasked(controls) => {
+                if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+                    Some(6)
+                } else if controls.cr0_ts {
+                    Some(7)
+                } else {
+                    None
+                }
+            }
         };
         if let Some(vector) = fault_vector {
             return Ok(StepOutcome::Fault(ArchitecturalFault {
@@ -22771,9 +22818,14 @@ fn step_configured(
         };
         // Masked-range arithmetic only: reserved bits, DAZ and FTZ are clear;
         // all six exception masks are set. RC and sticky history are open.
+        let unmasked = matches!(profile, ScalarFloatMemoryRaxProfile::SubsdUnmasked(_));
         if sse.mxcsr & !0xffbf != 0
             || sse.mxcsr & ((1 << 6) | (1 << 15)) != 0
-            || sse.mxcsr & 0x1f80 != 0x1f80
+            || if unmasked {
+                sse.mxcsr & ((1 << 10) | (1 << 11)) != ((1 << 10) | (1 << 11))
+            } else {
+                sse.mxcsr & 0x1f80 != 0x1f80
+            }
         {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
@@ -26499,7 +26551,14 @@ fn step_configured(
         {
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
-                && sse.mxcsr & 0x1f80 == 0x1f80
+                && if matches!(
+                    configured_scalar_float_memory_rax_profile,
+                    Some(ScalarFloatMemoryRaxProfile::SubsdUnmasked(_))
+                ) {
+                    sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+                } else {
+                    sse.mxcsr & 0x1f80 == 0x1f80
+                }
         } else if configured_subss_register_controls.is_some()
             && matches!(instruction.operation, Operation::SubssRegister { .. })
         {
@@ -35019,6 +35078,25 @@ fn step_configured(
                 && !rhs_nan
                 && !invalid_inf
                 && (lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal);
+            let profile = configured_scalar_float_memory_rax_profile
+                .expect("SUBSD memory profile was prevalidated");
+            let unmasked_controls = match profile {
+                ScalarFloatMemoryRaxProfile::SubsdUnmasked(controls) => Some(controls),
+                _ => None,
+            };
+            if let Some(controls) = unmasked_controls {
+                let unmasked_ie = new_ie && old_mxcsr & (1 << 7) == 0;
+                let unmasked_de = new_de && old_mxcsr & (1 << 8) == 0;
+                if unmasked_ie || unmasked_de {
+                    let sse = state.sse.as_mut().expect("SUBSD memory state prevalidated");
+                    sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+            }
             let computed = if lhs_nan || rhs_nan || invalid_inf {
                 None
             } else {
@@ -35048,13 +35126,22 @@ fn step_configured(
             let new_ue = tiny && computed.is_some_and(|value| value.inexact());
             let new_pe = computed.is_some_and(|value| value.inexact() || value.overflow());
             let sse = state.sse.as_mut().expect("SUBSD memory state prevalidated");
-            sse.xmm[0][..8].copy_from_slice(&raw.to_le_bytes());
             sse.mxcsr = old_mxcsr
                 | u32::from(new_ie)
                 | (u32::from(new_de) << 1)
                 | (u32::from(new_oe) << 3)
                 | (u32::from(new_ue) << 4)
                 | (u32::from(new_pe) << 5);
+            if let Some(controls) = unmasked_controls {
+                if new_pe && old_mxcsr & (1 << 12) == 0 {
+                    return Ok(StepOutcome::Fault(ArchitecturalFault {
+                        vector: if controls.cr4_osxmmexcpt { 19 } else { 6 },
+                        error_code: None,
+                        linear_address: None,
+                    }));
+                }
+            }
+            sse.xmm[0][..8].copy_from_slice(&raw.to_le_bytes());
         }
         Operation::SubsdMemoryRax => {
             return Ok(StepOutcome::Unsupported {
@@ -178774,5 +178861,229 @@ mod cvtsi2ss_r64_memory_profile_tests {
         assert_eq!(result.instructions_executed, 0);
         assert_eq!(state, before);
         assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
+    }
+
+    #[test]
+    fn subsd_memory_rax_unmasked_gates_span_and_read_failures_are_atomic() {
+        use crate::memory::{AccessKind, MemoryError};
+        let code = [0xf2, 0x0f, 0x5c, 0x00];
+        let controls = SubsdMemoryRaxUnmaskedControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for (budget, stop_rip, expected_exit) in [
+            (1, Some(0x5900), RunExit::StopAddress),
+            (0, Some(0x5904), RunExit::InstructionBudgetExhausted),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x5900;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x4a; 16]; 16],
+                mxcsr: 0x1f00,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x5900);
+            let result = run_with_subsd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: budget,
+                    stop_rip,
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(result.exit, expected_exit);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(memory.accesses, []);
+            assert_eq!(state, before);
+        }
+        for (controls, vector) in [
+            (
+                SubsdMemoryRaxUnmaskedControls {
+                    sse2_available: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                SubsdMemoryRaxUnmaskedControls {
+                    cr0_em: true,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                SubsdMemoryRaxUnmaskedControls {
+                    cr4_osfxsr: false,
+                    ..controls
+                },
+                6,
+            ),
+            (
+                SubsdMemoryRaxUnmaskedControls {
+                    cr0_ts: true,
+                    ..controls
+                },
+                7,
+            ),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x5900;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x5900);
+            let result = run_with_subsd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x5904),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert!(
+                matches!(result.exit, RunExit::Fault(ArchitecturalFault { vector: actual, .. }) if actual == vector)
+            );
+            assert_eq!(memory.accesses, []);
+            assert_eq!(state, before);
+        }
+        let mut state = LongModeState::default();
+        state.rip = 0x5a00;
+        state.gpr[Register::Rax as usize] = 0x2000;
+        state.rflags |= 1 << 18;
+        state.sse = Some(SseState {
+            xmm: [[0x6b; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&code, 0x5a00);
+        let result = run_with_subsd_memory_rax_unmasked_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x5a04),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+        assert_eq!(memory.accesses, []);
+        assert_eq!(state, before);
+
+        let mut state = LongModeState::default();
+        state.rip = 0x5b00;
+        state.gpr[Register::Rax as usize] = 0x0000_7fff_ffff_fff9;
+        state.sse = Some(SseState {
+            xmm: [[0x3c; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&code, 0x5b00);
+        let result = run_with_subsd_memory_rax_unmasked_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x5b04),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert_eq!(
+            result.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(memory.accesses, []);
+        assert_eq!(state, before);
+
+        let mut state = LongModeState::default();
+        state.rip = 0x5c00;
+        state.gpr[Register::Rax as usize] = 0x2000;
+        state.sse = Some(SseState {
+            xmm: [[0x7d; 16]; 16],
+            mxcsr: 0x1f80,
+        });
+        let before = state.clone();
+        let mut memory = Memory::at(&code, 0x5c00);
+        memory.data_base = 0x2000;
+        memory.error = Some(MemoryError::Backend("injected SUBSD read failure".into()));
+        let result = run_with_subsd_memory_rax_unmasked_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x5c04),
+                context: AccessContext::default(),
+            },
+            controls,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 8)]);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+
+        for privilege in [
+            crate::memory::PrivilegeLevel::Ring0,
+            crate::memory::PrivilegeLevel::Ring1,
+            crate::memory::PrivilegeLevel::Ring2,
+            crate::memory::PrivilegeLevel::Ring3,
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x5d00;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x91; 16]; 16],
+                mxcsr: 0x1f80 & !(1 << 7),
+            });
+            state.sse.as_mut().unwrap().xmm[0][..8]
+                .copy_from_slice(&0x7ff0_0000_0000_0001u64.to_le_bytes());
+            let mut memory = Memory::at(&code, 0x5d00);
+            memory.data_base = 0x2000;
+            memory.bytes[..8].copy_from_slice(&0x3ff0_0000_0000_0000u64.to_le_bytes());
+            let result = run_with_subsd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x5d04),
+                    context: AccessContext {
+                        privilege,
+                        ..AccessContext::default()
+                    },
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 19,
+                    error_code: None,
+                    linear_address: None,
+                })
+            );
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x2000, 8)]);
+            assert_eq!(result.instructions_executed, 0);
+        }
     }
 }
