@@ -12,14 +12,14 @@
 
 ## Записи
 
-### ISSUE-025 — layout checker rejects Git worktree metadata pointer
+### ISSUE-025 — layout checker worktree metadata acceptance pending
 
 - **Дата обнаружения:** 2026-10-27.
 - **Компонент:** `tools/check_layout.py`, Git worktree root.
-- **Статус:** открыта.
-- **Суть и последствия:** в linked worktree `.git` является обычным текстовым pointer-файлом на основную Git directory, а не каталогом или исходным файлом проекта. `python3 tools/check_layout.py` сообщает `ERROR: Unmapped root file: .git`, поэтому корректный worktree не проходит структуру.
-- **Основание:** проверка выполнена в `/Users/senya/.codex/worktrees/stage3-baseline/open_desktop`; `ls -ld .git` показывает regular file. Это не относится к изменённым S3-20i файлам.
-- **Следующий шаг:** обновить layout checker, чтобы он распознавал Git metadata file/directory и продолжал проверять рабочие файлы.
+- **Статус:** открыта до Stage 3 layout acceptance; fix implemented in `f1670fc` and passed independent static Sol/high review. Runtime/product defect не установлен.
+- **Суть и последствия:** в linked worktree `.git` является обычным текстовым pointer-файлом на основную Git directory, а не каталогом или исходным файлом проекта. До исправления `python3 tools/check_layout.py` сообщал `ERROR: Unmapped root file: .git`, поэтому корректный worktree не проходил структуру. Commit `f1670fc` updates `tools/check_layout.py` to recognize valid Git metadata pointer files while continuing to check project paths. The checker has not run after this fix, so layout acceptance is not established.
+- **Основание:** исходная ошибка была зафиксирована в `/Users/senya/.codex/worktrees/stage3-baseline/open_desktop`; `ls -ld .git` showed a regular file. Static source review of `f1670fc` passed independent Sol/high review; no execution evidence for the checker after the fix is available.
+- **Следующий шаг:** run the exact `python3 tools/check_layout.py` against the integrated Stage 3 end revision and record its result. Keep ISSUE-025 open until that acceptance run passes.
 
 ### ISSUE-026 — Stage 2 report ссылается на отсутствующие ignored oracle manifests
 

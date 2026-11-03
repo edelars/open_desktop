@@ -778,7 +778,7 @@ acceptance remains pending; ISSUE-028/029 remain open pending execution
 acceptance. Stage 3 remains partial. See the
 [S3-34do report](STAGE_3_S3-34do_2026-11-03.md).
 
-## Current-revision acceptance status — `f5d2b70`
+## Current-revision acceptance status — `f1670fc`
 
 ### Earlier successful evidence
 
@@ -792,7 +792,7 @@ and neither run includes the later S3-34dn/do changes.
 
 ### Required correctness acceptance
 
-At `f5d2b70`, the gate inventory is statically checked and pinned at 305 gates
+At `f1670fc`, the gate inventory is statically checked and pinned at 305 gates
 (295 acceptance + 10 lifecycle), 323 local steps, and 138 self-test names.
 These gates and self-tests have not been executed against this revision. Run
 the existing exact gates documented in the [JIT testing reference](../testing/JIT.md):
@@ -814,6 +814,14 @@ the existing exact gates documented in the [JIT testing reference](../testing/JI
 ISSUE-028 and ISSUE-029 remain **OPEN** until their respective exact acceptance
 gates pass. Use the existing local harness invocation recorded above; this
 update adds no runner, gate, or manifest.
+
+### Layout acceptance
+
+The linked-worktree `.git` pointer fix in `tools/check_layout.py` is present in
+`f1670fc` and passed independent static Sol/high review. The exact layout
+checker has not been run after the fix. ISSUE-025 remains **OPEN** until the
+existing `python3 tools/check_layout.py` command passes at Stage 3 end; the
+historical S3-00 checker result predates the fix and is not post-fix acceptance.
 
 ### Optional real-artifact replay or reduction
 
