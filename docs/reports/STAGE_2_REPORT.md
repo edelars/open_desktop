@@ -23305,6 +23305,28 @@ implementation `09541af` and expanded event matrix `93310a0`. See
 [CPU contract](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).
 Stage 2 remains open.
 
+## Isolated implementation: S2-38al
+
+S2-38al adds the immutable interpreter-only ADDPD XMM0,m128 `[RAX]` profile
+with unmasked IE/DE/PE delivery and its independent raw-u64 memory-RHS oracle.
+The fixed-control matrix covers 1,152 two-lane event products; 14 selected
+cross-lane and boundary vectors cover all four RC values, 64 sticky histories,
+16 IM/DM/ZM/PM mask settings, and both OSXMMEXCPT mappings (114,688 additional
+actual interpreter executions). Four literal fixtures cover masked success
+and IE, DE, and PE delivery. Direct checks cover gate/fetch priority, CPL0–3,
+AC-independent 16-byte alignment, noncanonical spans, one read16 and rollback,
+cross-lane pre-event suppression, destination/status behavior, strict schema,
+tampering and JIT/native denial. S2-37du masked memory and S2-37az register
+profiles remain separate. Physical x86 acceptance is not claimed.
+
+Focused executor, fixture and interpreter-matrix checks passed, as did
+`cargo fmt --all -- --check` and the affected package suites: od-isa 1,965,
+od-testkit 461, and od-runner 143 unit + 564 fixture tests. Workspace check,
+Graphify refresh and independent review are pending. See the
+[S2-38al report](S2_38AL_ADDPD_MEMORY_UNMASKED.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38al--exact-addpd-memory-profile-with-unmasked-exceptions),
+and [stage plan](../plans/STAGE_2.md).
+
 <a id="main-integration-s2-38ai-s2-38aj"></a>
 
 ## Main integration: S2-38ai and S2-38aj

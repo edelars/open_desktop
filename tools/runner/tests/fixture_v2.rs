@@ -140,6 +140,18 @@ const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
 const ADDPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37du_addpd_m128_memory_source_two_binary64_lanes.case.json"
 );
+const ADDPD_M128_UNMASKED_SUCCESS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38al_addpd_memory_unmasked_masked_success.case.json"
+);
+const ADDPD_M128_UNMASKED_IE_XM: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38al_addpd_memory_unmasked_ie_xm.case.json"
+);
+const ADDPD_M128_UNMASKED_DE_UD: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38al_addpd_memory_unmasked_de_ud.case.json"
+);
+const ADDPD_M128_UNMASKED_PE_XM: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38al_addpd_memory_unmasked_pe_xm.case.json"
+);
 const SUBPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dv_subpd_m128_memory_source_two_binary64_lanes.case.json"
 );
@@ -44874,6 +44886,156 @@ fn addsd_m64_unmasked_literal_fixtures_validate_ie_de_pe_and_denials() {
             .fixture;
         invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
         assert!(invalid.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+}
+
+#[test]
+fn addpd_m128_unmasked_literal_fixtures_validate_state_schema_and_backend_denial() {
+    use od_testkit::v2::Profile;
+
+    let cases = [
+        (ADDPD_M128_UNMASKED_SUCCESS, None, 0x1f80),
+        (ADDPD_M128_UNMASKED_IE_XM, Some(19), 0x1f01),
+        (ADDPD_M128_UNMASKED_DE_UD, Some(6), 0x1e82),
+        (ADDPD_M128_UNMASKED_PE_XM, Some(19), 0x0fa0),
+    ];
+    for (source, vector, mxcsr) in cases {
+        let fixture = Fixture::from_json(source).unwrap().fixture;
+        assert_eq!(fixture.profile, Profile::LongAddpdMemoryUnmaskedRaxV1);
+        let (loaded, result) = run(source, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+        let snapshot = snapshot(&result);
+        assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr.get(), mxcsr);
+        if let Some(vector) = vector {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            assert_eq!(count(&result), 0);
+            assert_eq!(snapshot.state.rip, fixture.initial_state.rip);
+            assert_eq!(
+                snapshot.state.sse.as_ref().unwrap().xmm[0],
+                fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+            );
+            let Observation::Available {
+                value: Some(exception),
+            } = &snapshot.exception
+            else {
+                panic!("missing packed arithmetic exception")
+            };
+            assert_eq!(exception.vector, vector);
+            assert!(matches!(
+                exception.error_code,
+                Observation::Unavailable { .. }
+            ));
+        } else {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+            assert_eq!(
+                &snapshot.state.sse.as_ref().unwrap().xmm[0],
+                "00000000000000400000000000001c40"
+            );
+        }
+        for backend in ["jit", "native"] {
+            let (_, denied) = run(source, backend, 4);
+            assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        }
+        let mut bad_controls = result.clone();
+        snapshot_mut(&mut bad_controls)
+            .addpd_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = !fixture
+            .addpd_memory_rax_unmasked_controls
+            .unwrap()
+            .cr4_osxmmexcpt;
+        assert!(bad_controls.validate_for(&loaded).is_err());
+        if vector.is_some() {
+            let mut bad_status = result.clone();
+            snapshot_mut(&mut bad_status)
+                .state
+                .sse
+                .as_mut()
+                .unwrap()
+                .mxcsr = HexU64(mxcsr ^ 1);
+            assert!(bad_status.validate_for(&loaded).is_err());
+            let mut bad_exception = result.clone();
+            match &mut snapshot_mut(&mut bad_exception).exception {
+                Observation::Available {
+                    value: Some(exception),
+                } => exception.vector = 13,
+                other => panic!("expected exception, got {other:?}"),
+            }
+            assert!(bad_exception.validate_for(&loaded).is_err());
+        } else {
+            let mut bad_result = result.clone();
+            snapshot_mut(&mut bad_result)
+                .state
+                .sse
+                .as_mut()
+                .unwrap()
+                .xmm[0]
+                .replace_range(0..16, "0000000000000000");
+            assert!(bad_result.validate_for(&loaded).is_err());
+        }
+    }
+
+    let mut missing = Fixture::from_json(ADDPD_M128_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    missing.addpd_memory_rax_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut mixed = Fixture::from_json(ADDPD_M128_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    mixed.addpd_controls = Some(od_testkit::v2::AddpdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(mixed.validate().is_err());
+    let mut writable = Fixture::from_json(ADDPD_M128_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    writable.memory[1].permissions.write = true;
+    assert!(writable.validate().is_err());
+    for mxcsr in [
+        0x0000_0000_0000_1b80,
+        0x0000_0000_0000_1780,
+        0x0000_0000_0000_1fc0,
+        0x0000_0000_0000_9f80,
+        0x0000_0000_0001_1f80,
+    ] {
+        let mut invalid = Fixture::from_json(ADDPD_M128_UNMASKED_SUCCESS)
+            .unwrap()
+            .fixture;
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+
+    // AC never converts mandatory m128 misalignment into local Unsupported.
+    for ac in [false, true] {
+        let mut misaligned = Fixture::from_json(ADDPD_M128_UNMASKED_SUCCESS)
+            .unwrap()
+            .fixture;
+        misaligned.case_id = format!("s2_38al_misaligned_ac{ac}");
+        misaligned.initial_state.gpr[0] = HexU64(0x2001);
+        misaligned.memory[1].guest_address = HexU64(0x2001);
+        misaligned.initial_state.rflags = HexU64(2 | (u64::from(ac) << 18));
+        misaligned.expected_exit = ExpectedExit::Exception;
+        let (input, result) = run(&misaligned.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let Observation::Available {
+            value: Some(exception),
+        } = &snapshot(&result).exception
+        else {
+            panic!("expected #GP(0)")
+        };
+        assert_eq!(exception.vector, 13);
+        assert_eq!(
+            exception.error_code,
+            Observation::Available { value: HexU64(0) }
+        );
     }
 }
 

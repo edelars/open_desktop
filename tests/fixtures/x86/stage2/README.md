@@ -8698,6 +8698,27 @@ acceptance is claimed. See the
 [implementation report](../../../../docs/reports/S2_38AB_SQRTPD_MEMORY_UNMASKED.md),
 and [stage plan](../../../../docs/plans/STAGE_2.md).
 
+### S2-38al ADDPD m128 memory unmasked exceptions
+
+The immutable `s2-long-addpd-memory-unmasked-rax-v1` profile executes exact
+Long64 `66 0F 58 00` with one read-only m128 read from `[RAX]`. Four literal
+fixtures cover masked success and unmasked IE (`#XM`), DE (SIMD `#UD`) and PE
+(`#XM`). The independent raw-u64 oracle uses the actual memory RHS. The actual
+interpreter matrix crosses six lane-event representatives over both lanes,
+all IM/DM/ZM/PM combinations, and both OSXMMEXCPT mappings (1,152 executions).
+Fourteen mixed-lane/boundary vectors additionally span all RC modes, 64 prior
+sticky histories, all masks and both deliveries (114,688 executions), including
+IE+DE across lanes, pre-event suppression of OE/PE, NaN signs/positions, exact
+tiny, cancellation, halfway, exponent-gap and overflow-midpoint inputs.
+Focused checks cover fetch/form/gate order, TS priority, AC-independent
+alignment, canonical-span/read rollback, exactly one read16, aggregate
+pre-event status, complete destination/RIP/retirement suppression, schema and
+result tampering, and JIT/native denial. Masked S2-37du and register S2-37az
+remain separate. No physical x86 acceptance is claimed. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38al--exact-addpd-memory-profile-with-unmasked-exceptions),
+[implementation report](../../../../docs/reports/S2_38AL_ADDPD_MEMORY_UNMASKED.md),
+and [stage plan](../../../../docs/plans/STAGE_2.md).
+
 ### S2-38ac ADDSS m32 memory unmasked exceptions
 
 The exact Long64 `F3 0F 58 00` profile requires SSE bit 25 and performs one
