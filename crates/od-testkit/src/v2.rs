@@ -655,6 +655,8 @@ pub enum Profile {
     LongMaxpdMemoryRaxV1,
     #[serde(rename = "s2-long-maxps-memory-rax-v1")]
     LongMaxpsMemoryRaxV1,
+    #[serde(rename = "s2-long-maxps-memory-unmasked-rax-v1")]
+    LongMaxpsMemoryUnmaskedRaxV1,
     #[serde(rename = "s2-long-maxss-memory-rax-v1")]
     LongMaxssMemoryRaxV1,
     #[serde(rename = "s2-long-minss-memory-rax-v1")]
@@ -1544,7 +1546,8 @@ impl IntegerState {
                     | Profile::LongSqrtsdMemoryRaxV1
                     | Profile::LongSqrtpdMemoryRaxV1
                     | Profile::LongMaxpdMemoryRaxV1
-                    | Profile::LongMaxpsMemoryRaxV1,
+                    | Profile::LongMaxpsMemoryRaxV1
+                    | Profile::LongMaxpsMemoryUnmaskedRaxV1,
                     Some(x87),
                 ) => Some(x87.to_cpu()?),
                 _ => None,
@@ -1681,6 +1684,7 @@ impl IntegerState {
                     | Profile::LongSqrtpdMemoryRaxV1
                     | Profile::LongMaxpdMemoryRaxV1
                     | Profile::LongMaxpsMemoryRaxV1
+                    | Profile::LongMaxpsMemoryUnmaskedRaxV1
                     | Profile::LongCmpsdRegistersV1
                     | Profile::LongCmppdRegistersV1
                     | Profile::LongCmppsRegistersV1
@@ -1998,6 +2002,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
                 | Profile::LongCmppsRegistersV1
@@ -2244,6 +2249,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
                 | Profile::LongCmppsRegistersV1
@@ -2917,6 +2923,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
                 | Profile::LongCmppsRegistersV1
@@ -3194,6 +3201,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
                 | Profile::LongCmppsRegistersV1
@@ -3480,6 +3488,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
                 | Profile::LongCmppsRegistersV1
@@ -3624,6 +3633,7 @@ impl IntegerState {
                 Profile::LongIntegerV1
                 | Profile::LongMinpdMemoryUnmaskedRaxV1
                 | Profile::LongMaxpdMemoryUnmaskedRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1
                 | Profile::LongMulssMemoryRaxV1
                 | Profile::LongMulsdMemoryRaxV1
                 | Profile::LongDivpdMemoryRaxV1
@@ -4219,6 +4229,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1
         ) {
             1 << 18 // AC is an explicit input to these memory profile admissions.
         } else {
@@ -4268,6 +4279,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1
         ) {
             1 << 9 // IF is an unrelated preserved canary only for this profile.
         } else {
@@ -4584,7 +4596,8 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
-                | Profile::LongMaxpsMemoryRaxV1,
+                | Profile::LongMaxpsMemoryRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1,
                 Some(x87),
             ) => x87.validate()?,
             (
@@ -4881,6 +4894,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
                 | Profile::LongCmppsRegistersV1
@@ -5131,6 +5145,7 @@ impl IntegerState {
                 | Profile::LongSqrtpdMemoryRaxV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
+                | Profile::LongMaxpsMemoryUnmaskedRaxV1
                 | Profile::LongCmpsdRegistersV1
                 | Profile::LongCmppdRegistersV1
                 | Profile::LongCmppsRegistersV1
@@ -7694,10 +7709,12 @@ impl Fixture {
                     "MAXPS requires reserved bits clear, ZE/OE/UE/PE masks set, and DAZ/FTZ clear; IM, DM, RC and sticky status may vary",
                 ));
             }
-        } else if self.maxps_unmasked_controls.is_some() {
+        } else if self.maxps_unmasked_controls.is_some()
+            && self.profile != Profile::LongMaxpsMemoryUnmaskedRaxV1
+        {
             return Err(invalid(
                 "maxps_unmasked_controls",
-                "only valid for the MAXPS unmasked-denormal profile",
+                "only valid for a MAXPS unmasked profile",
             ));
         }
         if self.profile == Profile::LongMaxpdUnmaskedDenormalV1 {
@@ -12350,13 +12367,37 @@ impl Fixture {
                 "only valid for MAXPD m128 profile",
             ));
         }
-        if self.profile == Profile::LongMaxpsMemoryRaxV1 {
-            let controls = self.maxps_memory_rax_controls.ok_or_else(|| {
-                invalid(
-                    "maxps_memory_rax_controls",
-                    "required by MAXPS m128 profile",
-                )
-            })?;
+        if matches!(
+            self.profile,
+            Profile::LongMaxpsMemoryRaxV1 | Profile::LongMaxpsMemoryUnmaskedRaxV1
+        ) {
+            let controls = if self.profile == Profile::LongMaxpsMemoryUnmaskedRaxV1 {
+                if self.maxps_memory_rax_controls.is_some() {
+                    return Err(invalid(
+                        "maxps_memory_rax_controls",
+                        "not valid for MAXPS unmasked m128 profile",
+                    ));
+                }
+                let c = self.maxps_unmasked_controls.ok_or_else(|| {
+                    invalid(
+                        "maxps_unmasked_controls",
+                        "required by MAXPS unmasked m128 profile",
+                    )
+                })?;
+                MaxpsMemoryRaxControlSnapshot {
+                    sse_available: c.sse_available,
+                    cr0_em: c.cr0_em,
+                    cr0_ts: c.cr0_ts,
+                    cr4_osfxsr: c.cr4_osfxsr,
+                }
+            } else {
+                self.maxps_memory_rax_controls.ok_or_else(|| {
+                    invalid(
+                        "maxps_memory_rax_controls",
+                        "required by MAXPS m128 profile",
+                    )
+                })?
+            };
             let code = self
                 .memory
                 .iter()
@@ -12407,7 +12448,17 @@ impl Fixture {
                 .get();
             if mxcsr & !0xffbf != 0
                 || mxcsr & ((1 << 6) | (1 << 15)) != 0
-                || mxcsr & 0x1f80 != 0x1f80
+                || mxcsr
+                    & (if self.profile == Profile::LongMaxpsMemoryUnmaskedRaxV1 {
+                        0x1e00
+                    } else {
+                        0x1f80
+                    })
+                    != (if self.profile == Profile::LongMaxpsMemoryUnmaskedRaxV1 {
+                        0x1e00
+                    } else {
+                        0x1f80
+                    })
             {
                 return Err(invalid(
                     "state.sse.mxcsr",
@@ -12420,7 +12471,23 @@ impl Fixture {
             let last = source.checked_add(15);
             let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
             let span = last.is_none_or(|last| !canonical(source) || !canonical(last));
-            let expected = if gate || nm || !aligned || span {
+            let data_bytes = decode_bytes(&data.initial_bytes_hex)?;
+            let mut unmasked = false;
+            if self.profile == Profile::LongMaxpsMemoryUnmaskedRaxV1 {
+                let xmm0 =
+                    decode_bytes(&self.initial_state.sse.as_ref().expect("SSE validated").xmm[0])?;
+                for lane in 0..4 {
+                    let offset = lane * 4;
+                    let lhs = u32::from_le_bytes(xmm0[offset..offset + 4].try_into().unwrap());
+                    let rhs =
+                        u32::from_le_bytes(data_bytes[offset..offset + 4].try_into().unwrap());
+                    let nan = |bits: u32| (bits >> 23) & 0xff == 0xff && bits & 0x7f_ffff != 0;
+                    let subnormal = |bits: u32| (bits >> 23) & 0xff == 0 && bits & 0x7f_ffff != 0;
+                    unmasked |= (nan(lhs) || nan(rhs)) && mxcsr & (1 << 7) == 0
+                        || (subnormal(lhs) || subnormal(rhs)) && mxcsr & (1 << 8) == 0;
+                }
+            }
+            let expected = if gate || nm || !aligned || span || unmasked {
                 ExpectedExit::Exception
             } else {
                 ExpectedExit::StopAddress
@@ -16958,6 +17025,10 @@ impl Fixture {
                     .ok()
                     .filter(|bytes| bytes == &[0x0f, 0x5f, 0x00])
                     .map(|_| 3),
+                Profile::LongMaxpsMemoryUnmaskedRaxV1 => decode_bytes(&code_bytes)
+                    .ok()
+                    .filter(|bytes| bytes == &[0x0f, 0x5f, 0x00])
+                    .map(|_| 3),
                 Profile::LongMaxssMemoryRaxV1 => decode_bytes(&code_bytes)
                     .ok()
                     .filter(|bytes| bytes == &[0xf3, 0x0f, 0x5f, 0x00])
@@ -19602,7 +19673,10 @@ impl RunResult {
                 "only valid for the MINPS profile",
             ));
         }
-        if self.profile == Profile::LongMaxpsUnmaskedDenormalV1 {
+        if matches!(
+            self.profile,
+            Profile::LongMaxpsUnmaskedDenormalV1 | Profile::LongMaxpsMemoryUnmaskedRaxV1
+        ) {
             if snapshot.maxps_unmasked_controls.is_none() {
                 return Err(invalid(
                     "snapshot.maxps_unmasked_controls",
@@ -21266,9 +21340,16 @@ impl RunResult {
                 loaded.fixture.maxps_unmasked_controls,
                 value.maxps_unmasked_controls,
             ) {
-                (Profile::LongMaxpsUnmaskedDenormalV1, Some(input), Some(output))
-                    if input == output => {}
-                (Profile::LongMaxpsUnmaskedDenormalV1, _, _) => {
+                (
+                    Profile::LongMaxpsUnmaskedDenormalV1 | Profile::LongMaxpsMemoryUnmaskedRaxV1,
+                    Some(input),
+                    Some(output),
+                ) if input == output => {}
+                (
+                    Profile::LongMaxpsUnmaskedDenormalV1 | Profile::LongMaxpsMemoryUnmaskedRaxV1,
+                    _,
+                    _,
+                ) => {
                     return Err(FormatError::CaseMismatch("maxps_unmasked_controls"));
                 }
                 (_, None, None) => {}
@@ -21276,6 +21357,9 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongMaxpsUnmaskedDenormalV1 {
                 validate_maxps_unmasked_result(loaded, self, value)?;
+            }
+            if loaded.fixture.profile == Profile::LongMaxpsMemoryUnmaskedRaxV1 {
+                validate_maxps_memory_unmasked_rax_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -42661,6 +42745,146 @@ fn validate_maxpd_memory_unmasked_rax_result(
         _ => {
             return Err(FormatError::CaseMismatch(
                 "MAXPD unmasked m128 outcome/exception",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_maxps_memory_unmasked_rax_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .maxps_unmasked_controls
+        .ok_or(FormatError::CaseMismatch("maxps_unmasked_controls"))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|r| r.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|r| r.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0x0f, 0x5f, 0x00] {
+        return Err(FormatError::CaseMismatch("MAXPS unmasked encoding"));
+    }
+    let sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let lhs_bytes = decode_bytes(&sse.xmm[0])?;
+    let rhs_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    let nan = |v: u32| v & 0x7f80_0000 == 0x7f80_0000 && v & 0x007f_ffff != 0;
+    let sub = |v: u32| v & 0x7f80_0000 == 0 && v & 0x007f_ffff != 0;
+    let ordered = |v: u32| if v >> 31 != 0 { !v } else { v | (1 << 31) };
+    let mut out_xmm = lhs_bytes.clone();
+    let mut lane_ie = [false; 4];
+    let mut lane_de = [false; 4];
+    for lane in 0..4 {
+        let o = lane * 4;
+        let l = u32::from_le_bytes(lhs_bytes[o..o + 4].try_into().unwrap());
+        let r = u32::from_le_bytes(rhs_bytes[o..o + 4].try_into().unwrap());
+        lane_ie[lane] = nan(l) || nan(r);
+        lane_de[lane] = sub(l) || sub(r);
+        let tie = l & 0x7fff_ffff == 0 && r & 0x7fff_ffff == 0;
+        let val = if lane_ie[lane] || tie || ordered(l) <= ordered(r) {
+            r
+        } else {
+            l
+        };
+        out_xmm[o..o + 4].copy_from_slice(&val.to_le_bytes());
+    }
+    let ie = lane_ie.iter().any(|x| *x);
+    let de = lane_de.iter().any(|x| *x);
+    let old = sse.mxcsr.get();
+    let im = old & (1 << 7) != 0;
+    let dm = old & (1 << 8) != 0;
+    let reported_de = (0..4).any(|i| lane_de[i] && !lane_ie[i]);
+    let arithmetic_unmasked = (ie && !im) || (de && !dm);
+    let source = fixture.initial_state.gpr[0].get();
+    let gate = if !controls.sse_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let last = source.checked_add(15);
+    let canonical = |a: u64| a >> 47 == 0 || a >> 47 == 0x1ffff;
+    let gp = source & 15 != 0 || last.is_none_or(|e| !canonical(source) || !canonical(e));
+    let fault = gate
+        .or_else(|| gp.then_some(13))
+        .or_else(|| arithmetic_unmasked.then_some(if controls.cr4_osxmmexcpt { 19 } else { 6 }));
+    if !matches!(
+        (fault, fixture.expected_exit),
+        (Some(_), ExpectedExit::Exception) | (None, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch("MAXPS unmasked expected exit"));
+    }
+    let mut expected = fixture.initial_state.clone();
+    if let Some(state_sse) = expected.sse.as_mut() {
+        if arithmetic_unmasked && gate.is_none() && !gp {
+            state_sse.mxcsr = HexU64(old | u64::from(ie) | (u64::from(de) << 1));
+        } else if fault.is_none() {
+            state_sse.xmm[0] = crate::memory::encode_bytes(&out_xmm);
+            state_sse.mxcsr = HexU64(old | u64::from(ie) | (u64::from(reported_de) << 1));
+        }
+    }
+    if fault.is_none() {
+        expected.rip = HexU64(
+            fixture
+                .initial_state
+                .rip
+                .get()
+                .checked_add(3)
+                .ok_or(FormatError::CaseMismatch("MAXPS RIP overflow"))?,
+        );
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|r| MemoryRegionSnapshot {
+            region_id: r.region_id.clone(),
+            guest_address: r.guest_address,
+            bytes_hex: r.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch("MAXPS unmasked output state"));
+    }
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(fault.is_none())),
+        })
+    {
+        return Err(FormatError::CaseMismatch("MAXPS unmasked retirement"));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (Some(v), Outcome::Exception {}, Observation::Available { value: Some(ex) })
+            if ex.vector == v
+                && ex.error_code
+                    == if v == 13 {
+                        Observation::Available { value: HexU64(0) }
+                    } else {
+                        Observation::Unavailable {
+                            reason: "exception has no architectural error code".into(),
+                        }
+                    }
+                && ex.faulting_rip == fixture.initial_state.rip
+                && matches!(ex.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "MAXPS unmasked outcome/exception",
             ));
         }
     }

@@ -18671,6 +18671,98 @@ fn maxpd_unmasked_two_lane_cross_product_validates_independent_results_and_denia
 }
 
 #[test]
+fn maxps_memory_unmasked_fixtures_validate_raw_memory_rhs_and_deny_other_backends() {
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
+    let mut paths: Vec<_> = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("s2_38t_maxps_m128_")
+        })
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths.len(),
+        2316,
+        "4-lane event/mask matrix + RC/sticky anchors + lane and address specials"
+    );
+    let mut representative = None;
+    for path in paths {
+        let source = fs::read(&path).unwrap();
+        let (input, result) = run(&source, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongMaxpsMemoryUnmaskedRaxV1
+        );
+        assert_eq!(
+            od_testkit::v2::compare(&input, &result, &result).unwrap(),
+            Vec::<String>::new(),
+            "{}",
+            input.fixture.case_id
+        );
+        let Observation::Available { value } = &result.snapshot else {
+            panic!("snapshot unavailable")
+        };
+        assert_eq!(
+            input.fixture.maxps_unmasked_controls,
+            value.maxps_unmasked_controls
+        );
+        if representative.is_none() {
+            representative = Some((source, input.clone(), result.clone()));
+        }
+    }
+    let (source, input, result) = representative.expect("generated MAXPS memory fixtures");
+    let case_id = input.fixture.case_id.clone();
+    let fixture = input.fixture.clone();
+    for backend in ["jit", "native"] {
+        let (_, denial) = run(&source, backend, 4);
+        assert!(
+            matches!(denial.outcome, od_testkit::v2::Outcome::Unsupported { .. }),
+            "{backend}: {case_id}"
+        );
+    }
+    let mut missing = fixture.clone();
+    missing.maxps_unmasked_controls = None;
+    assert!(
+        missing.validate().is_err(),
+        "unmasked memory profile requires its independent controls"
+    );
+    for wrong in ["660f5f00", "f20f5f00", "0f5f01", "0f5dc1"] {
+        let mut malformed = fixture.clone();
+        malformed.memory[0].initial_bytes_hex = wrong.into();
+        assert!(
+            malformed.validate().is_err(),
+            "MAXPS profile admitted {wrong}"
+        );
+    }
+    let mut bad_mxcsr = fixture;
+    bad_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1e40);
+    assert!(
+        bad_mxcsr.validate().is_err(),
+        "reserved MXCSR bit must be rejected"
+    );
+    for mutation in 0..4 {
+        let mut tampered = result.clone();
+        if let Observation::Available { value } = &mut tampered.snapshot {
+            match mutation {
+                0 => value.state.sse.as_mut().unwrap().xmm[0] = "ff".repeat(16),
+                1 => value.state.sse.as_mut().unwrap().mxcsr = HexU64(0x1e03),
+                2 => tampered.instructions_executed = Observation::Available { value: HexU64(1) },
+                _ => value.maxps_unmasked_controls = None,
+            }
+        }
+        assert!(
+            od_testkit::v2::compare(&input, &result, &tampered).is_err(),
+            "result mutation {mutation} was accepted"
+        );
+    }
+}
+
+#[test]
 fn maxpd_memory_unmasked_fixtures_validate_raw_memory_rhs_and_deny_other_backends() {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/x86/stage2");
