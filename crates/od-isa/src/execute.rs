@@ -174537,6 +174537,83 @@ mod cvtsi2ss_r64_memory_profile_tests {
     }
 
     #[test]
+    fn sqrtps_memory_rax_unmasked_distinguishes_signed_qnan_and_snan_lanes() {
+        let nan_cases = [
+            (0x7fc1_2345u32, false),
+            (0xffc1_2345u32, false),
+            (0x7f81_2345u32, true),
+            (0xff81_2345u32, true),
+        ];
+        for lane in 0..4 {
+            for (raw, signaling) in nan_cases {
+                for im in [false, true] {
+                    for osxmmexcpt in [false, true] {
+                        let code = [0x0f, 0x51, 0x00];
+                        let mut memory = Memory::at(&code, 0xf000);
+                        for index in 0..4 {
+                            let value = if index == lane { raw } else { 0x4080_0000 };
+                            memory.bytes[index * 4..index * 4 + 4]
+                                .copy_from_slice(&value.to_le_bytes());
+                        }
+                        let mut mxcsr = 0x1f80;
+                        if !im {
+                            mxcsr &= !(1 << 7);
+                        }
+                        let mut state = LongModeState::default();
+                        state.rip = 0xf000;
+                        state.gpr[Register::Rax as usize] = memory.data_base;
+                        state.sse = Some(SseState {
+                            xmm: [[0xa5; 16]; 16],
+                            mxcsr,
+                        });
+                        let before = state.clone();
+                        let result = run_with_sqrtps_memory_rax_unmasked_controls(
+                            &mut state,
+                            &mut memory,
+                            RunConfig {
+                                instruction_budget: 1,
+                                stop_rip: Some(0xf003),
+                                context: AccessContext::default(),
+                            },
+                            SqrtpsMemoryRaxUnmaskedControls {
+                                sse_available: true,
+                                cr0_em: false,
+                                cr0_ts: false,
+                                cr4_osfxsr: true,
+                                cr4_osxmmexcpt: osxmmexcpt,
+                            },
+                            || false,
+                        );
+                        let fault = signaling && !im;
+                        assert_eq!(result.instructions_executed, u64::from(!fault));
+                        if fault {
+                            assert_eq!(
+                                result.exit,
+                                RunExit::Fault(ArchitecturalFault {
+                                    vector: if osxmmexcpt { 19 } else { 6 },
+                                    error_code: None,
+                                    linear_address: None,
+                                })
+                            );
+                            let mut expected = before;
+                            expected.sse.as_mut().unwrap().mxcsr |= 1;
+                            assert_eq!(state, expected);
+                        } else {
+                            assert_eq!(result.exit, RunExit::StopAddress);
+                            assert_eq!(state.rip, 0xf003);
+                            assert_eq!(
+                                state.sse.as_ref().unwrap().mxcsr & 0x3f,
+                                u32::from(signaling)
+                            );
+                        }
+                        assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn sqrtps_memory_rax_unmasked_gates_cpl_and_alignment_precede_reads() {
         let code = [0x0f, 0x51, 0x00];
         for privilege in [

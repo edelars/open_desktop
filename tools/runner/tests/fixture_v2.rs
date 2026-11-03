@@ -42401,6 +42401,73 @@ fn sqrtps_m128_memory_unmasked_fixtures_and_controls_are_checked() {
         }
         assert!(od_testkit::v2::compare(&input, &result, &tampered).is_err());
     }
+    let nan_base = Fixture::from_json(SQRTPS_M128_MEMORY_UNMASKED[0])
+        .unwrap()
+        .fixture;
+    for lane in 0..4 {
+        for (raw, signaling) in [
+            (0x7fc1_2345u32, false),
+            (0xffc1_2345u32, false),
+            (0x7f81_2345u32, true),
+            (0xff81_2345u32, true),
+        ] {
+            for im_masked in [false, true] {
+                for osxmmexcpt in [false, true] {
+                    let mut case = nan_base.clone();
+                    case.case_id =
+                        format!("s2_38aa_nan_lane{lane}_{raw:08x}_im{im_masked}_os{osxmmexcpt}");
+                    let lanes: [u32; 4] =
+                        std::array::from_fn(|index| if index == lane { raw } else { 0x4080_0000 });
+                    case.memory[1].initial_bytes_hex = lanes
+                        .into_iter()
+                        .flat_map(u32::to_le_bytes)
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect();
+                    let mut mxcsr = 0x1f80u32;
+                    if !im_masked {
+                        mxcsr &= !(1 << 7);
+                    }
+                    case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(mxcsr));
+                    case.sqrtps_memory_rax_unmasked_controls
+                        .as_mut()
+                        .unwrap()
+                        .cr4_osxmmexcpt = osxmmexcpt;
+                    let should_fault = signaling && !im_masked;
+                    case.expected_exit = if should_fault {
+                        ExpectedExit::Exception
+                    } else {
+                        ExpectedExit::StopAddress
+                    };
+                    let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    assert_eq!(
+                        matches!(result.outcome, Outcome::Exception {}),
+                        should_fault,
+                        "{}",
+                        case.case_id
+                    );
+                    let Observation::Available { value } = result.snapshot else {
+                        panic!("snapshot")
+                    };
+                    assert_eq!(
+                        value.state.sse.as_ref().unwrap().mxcsr.get() as u32 & 0x3f,
+                        u32::from(signaling),
+                        "{}",
+                        case.case_id
+                    );
+                    if should_fault {
+                        assert_eq!(
+                            value.state.sse.as_ref().unwrap().xmm[0],
+                            case.initial_state.sse.as_ref().unwrap().xmm[0]
+                        );
+                        assert_eq!(value.state.rip, case.initial_state.rip);
+                    } else {
+                        assert_eq!(value.state.rip, HexU64(case.initial_state.rip.get() + 3));
+                    }
+                }
+            }
+        }
+    }
     let (fault_input, fault_result) = run(SQRTPS_M128_MEMORY_UNMASKED[1], "interpreter", 0);
     let mut bad_status = fault_result.clone();
     if let Observation::Available { value } = &mut bad_status.snapshot {
@@ -42420,6 +42487,77 @@ fn sqrtps_m128_memory_unmasked_fixtures_and_controls_are_checked() {
         }
     }
     assert!(od_testkit::v2::compare(&fault_input, &fault_result, &bad_exception).is_err());
+
+    for (fixture, status_bit) in [
+        (SQRTPS_M128_MEMORY_UNMASKED[3], 1),
+        (SQRTPS_M128_MEMORY_UNMASKED[5], 5),
+    ] {
+        let (input, result) = run(fixture, "interpreter", 0);
+        let mut bad_status = result.clone();
+        if let Observation::Available { value } = &mut bad_status.snapshot {
+            value.state.sse.as_mut().unwrap().mxcsr.0 ^= 1 << status_bit;
+        }
+        assert!(od_testkit::v2::compare(&input, &result, &bad_status).is_err());
+    }
+    let (success_input, success_result) = run(SQRTPS_M128_MEMORY_UNMASKED[0], "interpreter", 0);
+    let mut bad_xmm = success_result.clone();
+    if let Observation::Available { value } = &mut bad_xmm.snapshot {
+        value.state.sse.as_mut().unwrap().xmm[0].replace_range(..2, "ff");
+    }
+    assert!(od_testkit::v2::compare(&success_input, &success_result, &bad_xmm).is_err());
+    let mut bad_rip = success_result.clone();
+    if let Observation::Available { value } = &mut bad_rip.snapshot {
+        value.state.rip.0 += 1;
+    }
+    assert!(od_testkit::v2::compare(&success_input, &success_result, &bad_rip).is_err());
+
+    let mut gated = Fixture::from_json(SQRTPS_M128_MEMORY_UNMASKED[1])
+        .unwrap()
+        .fixture;
+    gated
+        .sqrtps_memory_rax_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .sse_available = false;
+    let mut misaligned = Fixture::from_json(SQRTPS_M128_MEMORY_UNMASKED[1])
+        .unwrap()
+        .fixture;
+    misaligned.initial_state.gpr[0] = HexU64(0x2008);
+    misaligned.memory[1].guest_address = HexU64(0x2008);
+    let mut noncanonical = Fixture::from_json(SQRTPS_M128_MEMORY_UNMASKED[1])
+        .unwrap()
+        .fixture;
+    noncanonical.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+    noncanonical.memory[1].guest_address = HexU64(0x0000_8000_0000_0000);
+    for mut case in [gated, misaligned, noncanonical] {
+        case.expected_exit = ExpectedExit::Exception;
+        let original_state = case.initial_state.clone();
+        let (input, result) = run(&case.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let Observation::Available { value } = result.snapshot else {
+            panic!("snapshot")
+        };
+        assert_eq!(value.state, original_state, "{}", case.case_id);
+    }
+    let mut gp_case = Fixture::from_json(SQRTPS_M128_MEMORY_UNMASKED[1])
+        .unwrap()
+        .fixture;
+    gp_case.case_id = "s2_38aa_gp_error_code_tamper".into();
+    gp_case.initial_state.gpr[0] = HexU64(0x2008);
+    gp_case.memory[1].guest_address = HexU64(0x2008);
+    gp_case.expected_exit = ExpectedExit::Exception;
+    let (gp_input, gp_result) = run(&gp_case.to_json().unwrap(), "interpreter", 0);
+    let mut bad_error_code = gp_result.clone();
+    if let Observation::Available { value } = &mut bad_error_code.snapshot {
+        if let Observation::Available {
+            value: Some(exception),
+        } = &mut value.exception
+        {
+            exception.error_code = Observation::Available { value: HexU64(1) };
+        }
+    }
+    assert!(od_testkit::v2::compare(&gp_input, &gp_result, &bad_error_code).is_err());
+
     let mut input = Fixture::from_json(SQRTPS_M128_MEMORY_UNMASKED[0])
         .unwrap()
         .fixture;

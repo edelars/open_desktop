@@ -10925,4 +10925,25 @@ fn independent_sqrtps_raw_oracle_covers_event_products_masks_and_rc_stickies() {
             assert_eq!(sticky | (u32::from(pe) << 5), sticky | (1 << 5));
         }
     }
+    for lane in 0..4 {
+        for (raw, signaling) in [
+            (0x7fc1_2345u32, false),
+            (0xffc1_2345u32, false),
+            (0x7f81_2345u32, true),
+            (0xff81_2345u32, true),
+        ] {
+            let lanes = std::array::from_fn(|index| if index == lane { raw } else { 0x4080_0000 });
+            for im in [false, true] {
+                let mxcsr = if im { 0x1f80 } else { 0x1f80 & !(1 << 7) };
+                let (_, ie, de, pe) = super::independent_sqrtps(lanes, mxcsr);
+                assert_eq!(ie, signaling, "lane={lane}, raw={raw:#x}, IM={im}");
+                assert!(!de && !pe, "lane={lane}, raw={raw:#x}, IM={im}");
+                for osxmmexcpt in [false, true] {
+                    let fault = signaling && !im;
+                    let vector = fault.then_some(if osxmmexcpt { 19 } else { 6 });
+                    assert_eq!(vector.is_some(), signaling && !im);
+                }
+            }
+        }
+    }
 }

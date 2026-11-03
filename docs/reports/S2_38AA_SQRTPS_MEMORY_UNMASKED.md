@@ -30,17 +30,27 @@ remain separate. JIT and native backends reject this profile.
 
 ## Verification
 
-- `cargo test -p od-isa --offline`: 1,950 passed. This includes a direct
+- `cargo test -p od-isa --offline`: 1,951 passed. This includes a direct
   10,000-case matrix of 625 neutral/IE/DE-only/PE-only/DE+PE lane products,
   all IM/DM/PM mask combinations and both OSXMMEXCPT values, plus all four RC
-  modes crossed with 64 prior sticky-state combinations.
+  modes crossed with 64 prior sticky-state combinations. An additional
+  64-case set places positive/negative QNaN and SNaN in each lane, under both
+  IM states and both OSXMMEXCPT mappings.
 - `cargo test -p od-testkit --offline`: 456 passed. The independent integer
   raw-u32 SQRTPS oracle separately covers the same event products, mask
-  combinations, OSXMMEXCPT mapping, RC modes and sticky histories.
+  combinations, OSXMMEXCPT mapping, RC modes, sticky histories and signed
+  QNaN/SNaN per lane.
 - `cargo test -p od-runner --offline`: 132 unit tests and 556 fixture tests
-  passed. The seven S2-38aa end-to-end fixtures include
-  success, unmasked IE/DE/PE under both exception mappings, result/control
-  tampering, read-only permissions and interpreter-only backend denial.
+  passed. Seven S2-38aa literal fixtures cover success and unmasked IE/DE/PE
+  under both exception mappings; 64 generated end-to-end cases cover signed
+  QNaN/SNaN in each lane with IM masked/unmasked and both exception mappings.
+  Tampering checks reject altered XMM0, RIP, IE/DE/PE flags, retirement,
+  control echoes, exception vectors and `#GP(0)` error codes. Read-only
+  permissions and interpreter-only backend denial are also checked.
+- A focused recheck also covers an unmasked IE source behind an earlier SSE
+  gate, misalignment `#GP(0)`, and noncanonical-span `#GP(0)`; all preserve the
+  original MXCSR, XMM0 and RIP. The executor read-error rollback test likewise
+  confirms no arithmetic flags are committed when the single read16 fails.
 - `cargo check --workspace --all-targets --offline`: passed.
 - `cargo fmt --all -- --check` and `git diff --check`: passed. `graphify update .`
   passed. `python3 tools/check_layout.py` reports the worktree `.git` file as

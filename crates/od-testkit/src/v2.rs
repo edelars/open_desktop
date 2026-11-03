@@ -45164,6 +45164,7 @@ fn validate_sqrtps_memory_rax_unmasked_result(
     let span_fault = last.is_none_or(|end| !canonical(source) || !canonical(end));
     let memory_fault = !aligned || span_fault;
     let arithmetic_fault = pre_unmasked || post_unmasked;
+    let arithmetic_reached = gate.is_none() && !memory_fault;
     let fault = gate
         .or_else(|| memory_fault.then_some(13))
         .or_else(|| arithmetic_fault.then_some(if controls.cr4_osxmmexcpt { 19 } else { 6 }));
@@ -45177,12 +45178,12 @@ fn validate_sqrtps_memory_rax_unmasked_result(
     }
     let mut expected = fixture.initial_state.clone();
     let mut expected_mxcsr = mxcsr;
-    if pre_unmasked {
-        expected_mxcsr |= u32::from(invalid) | (u32::from(denormal) << 1);
-    } else if post_unmasked {
-        expected_mxcsr |= generated;
-    } else if fault.is_none() {
-        expected_mxcsr |= generated;
+    if arithmetic_reached {
+        if pre_unmasked {
+            expected_mxcsr |= u32::from(invalid) | (u32::from(denormal) << 1);
+        } else if post_unmasked || fault.is_none() {
+            expected_mxcsr |= generated;
+        }
     }
     if let Some(sse) = expected.sse.as_mut() {
         sse.mxcsr = HexU64(u64::from(expected_mxcsr));
