@@ -161,6 +161,20 @@ const DIVSD_M64_MEMORY_RAX: &[u8] =
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dg_sqrtss_m32_unaligned_inexact.case.json"
 );
+const SQRTSS_M32_UNMASKED_MASKED: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38y_sqrtss_masked_inexact.case.json");
+const SQRTSS_M32_UNMASKED_IE_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38y_sqrtss_ie_xm.case.json");
+const SQRTSS_M32_UNMASKED_IE_UD: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38y_sqrtss_ie_ud.case.json");
+const SQRTSS_M32_UNMASKED_DE_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38y_sqrtss_de_xm.case.json");
+const SQRTSS_M32_UNMASKED_DE_UD: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38y_sqrtss_de_ud.case.json");
+const SQRTSS_M32_UNMASKED_PE_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38y_sqrtss_pe_xm.case.json");
+const SQRTSS_M32_UNMASKED_PE_UD: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38y_sqrtss_pe_ud.case.json");
 const CMPPS_REGISTER_PAIRS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37aa_cmpps_registers.case.json");
 const ADDSD_REGISTER_PAIR: &[u8] =
@@ -41175,6 +41189,193 @@ fn sqrtss_m32_memory_literal_rounds_unaligned_input_and_remains_backend_denied()
     let mut foreign = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
     foreign.sqrtss_memory_rax_controls = fixture.sqrtss_memory_rax_controls;
     assert!(foreign.validate().is_err());
+}
+
+#[test]
+fn sqrtss_m32_unmasked_literal_fixtures_map_ie_de_pe_and_deny_backends() {
+    let cases = [
+        (SQRTSS_M32_UNMASKED_MASKED, None, 0x1fa0u64),
+        (SQRTSS_M32_UNMASKED_IE_XM, Some(19), 0x1f01),
+        (SQRTSS_M32_UNMASKED_IE_UD, Some(6), 0x1f01),
+        (SQRTSS_M32_UNMASKED_DE_XM, Some(19), 0x1e82),
+        (SQRTSS_M32_UNMASKED_DE_UD, Some(6), 0x1e82),
+        (SQRTSS_M32_UNMASKED_PE_XM, Some(19), 0x0fa0),
+        (SQRTSS_M32_UNMASKED_PE_UD, Some(6), 0x0fa0),
+    ];
+    for (source, vector, expected_mxcsr) in cases {
+        let fixture = Fixture::from_json(source).unwrap().fixture;
+        assert_eq!(
+            fixture.profile,
+            od_testkit::v2::Profile::LongSqrtssMemoryRaxUnmaskedV1
+        );
+        let (input, result) = run(source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snapshot = snapshot(&result);
+        assert_eq!(
+            snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+            expected_mxcsr
+        );
+        if let Some(vector) = vector {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            let Observation::Available {
+                value: Some(exception),
+            } = &snapshot.exception
+            else {
+                panic!("missing exception snapshot")
+            };
+            assert_eq!(exception.vector, vector);
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(0) }
+            );
+            assert_eq!(snapshot.state.rip, fixture.initial_state.rip);
+            assert_eq!(
+                snapshot.state.sse.as_ref().unwrap().xmm[0],
+                fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+            );
+        } else {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(
+                snapshot.state.sse.as_ref().unwrap().xmm[0],
+                "f304b53fcafef00d123456789abcdef0"
+            );
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(1) }
+            );
+        }
+        for backend_name in ["jit", "native"] {
+            let (_, denied) = run(source, backend_name, 4);
+            assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+            denied.validate_for(&input).unwrap();
+        }
+        let mut tampered = result.clone();
+        snapshot_mut(&mut tampered)
+            .sqrtss_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = !fixture
+            .sqrtss_memory_rax_unmasked_controls
+            .unwrap()
+            .cr4_osxmmexcpt;
+        assert!(tampered.validate_for(&input).is_err());
+    }
+    let fixture = Fixture::from_json(SQRTSS_M32_UNMASKED_MASKED)
+        .unwrap()
+        .fixture;
+    let mut missing = fixture.clone();
+    missing.sqrtss_memory_rax_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut wrong_profile = Fixture::from_json(CMPPS_REGISTER_PAIRS).unwrap().fixture;
+    wrong_profile.sqrtss_memory_rax_unmasked_controls = fixture.sqrtss_memory_rax_unmasked_controls;
+    assert!(wrong_profile.validate().is_err());
+    let mut reserved = fixture;
+    reserved.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 16));
+    assert!(reserved.validate().is_err());
+    let mut ftz_enabled = Fixture::from_json(SQRTSS_M32_UNMASKED_MASKED)
+        .unwrap()
+        .fixture;
+    ftz_enabled.case_id = "s2_38y_ftz_supported".into();
+    ftz_enabled.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x9f80);
+    let (input, result) = run(&ftz_enabled.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get(),
+        0x9fa0
+    );
+}
+
+#[test]
+fn sqrtss_m32_unmasked_gates_precede_ts_ac_and_data_access() {
+    let base = Fixture::from_json(SQRTSS_M32_UNMASKED_MASKED)
+        .unwrap()
+        .fixture;
+    for (sse_available, cr0_em, cr0_ts, cr4_osfxsr, ac, vector) in [
+        (false, false, true, false, true, Some(6)),
+        (true, true, true, false, false, Some(6)),
+        (true, false, true, true, false, Some(7)),
+        (true, false, false, true, true, None),
+    ] {
+        let mut fixture = base.clone();
+        fixture.case_id =
+            format!("s2_38y_gate_{sse_available}_{cr0_em}_{cr0_ts}_{cr4_osfxsr}_{ac}");
+        let controls = fixture
+            .sqrtss_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap();
+        controls.sse_available = sse_available;
+        controls.cr0_em = cr0_em;
+        controls.cr0_ts = cr0_ts;
+        controls.cr4_osfxsr = cr4_osfxsr;
+        if ac {
+            fixture.initial_state.rflags = HexU64(fixture.initial_state.rflags.get() | (1 << 18));
+        }
+        fixture.expected_exit = if vector.is_none() {
+            ExpectedExit::Unsupported
+        } else {
+            ExpectedExit::Exception
+        };
+        let bytes = fixture.to_json().unwrap();
+        let (input, result) = run(&bytes, "interpreter", if vector.is_none() { 4 } else { 0 });
+        result.validate_for(&input).unwrap();
+        let snapshot = snapshot(&result);
+        if let Some(vector) = vector {
+            let Observation::Available {
+                value: Some(exception),
+            } = &snapshot.exception
+            else {
+                panic!("missing gate exception")
+            };
+            assert_eq!(exception.vector, vector);
+            assert_eq!(snapshot.state, fixture.initial_state);
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(0) }
+            );
+        } else {
+            assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+            assert_eq!(snapshot.state, fixture.initial_state);
+            assert_eq!(
+                result.instructions_executed,
+                Observation::Available { value: HexU64(0) }
+            );
+        }
+        assert_eq!(
+            snapshot.memory,
+            fixture
+                .memory
+                .iter()
+                .map(|region| od_testkit::result::MemoryRegionSnapshot {
+                    region_id: region.region_id.clone(),
+                    guest_address: region.guest_address,
+                    bytes_hex: region.initial_bytes_hex.clone(),
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+    let mut wrong_form = base;
+    wrong_form.memory[0].initial_bytes_hex = "f30f51c0".into();
+    assert!(wrong_form.validate().is_err());
+}
+
+#[test]
+fn sqrtss_m32_unmasked_quiets_negative_signaling_nan() {
+    let mut fixture = Fixture::from_json(SQRTSS_M32_UNMASKED_MASKED)
+        .unwrap()
+        .fixture;
+    fixture.case_id = "s2_38y_negative_snan_quiet".into();
+    fixture.memory[1].initial_bytes_hex = "452381ff".into();
+    fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+    let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&input, &result, &result).unwrap();
+    let snapshot = snapshot(&result);
+    assert_eq!(
+        snapshot.state.sse.as_ref().unwrap().xmm[0],
+        "4523c1ffcafef00d123456789abcdef0"
+    );
+    assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr.get(), 0x1f81);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
 }
 
 #[test]

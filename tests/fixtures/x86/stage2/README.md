@@ -8547,3 +8547,24 @@ AC behavior, NaN invalid handling and atomic refusal. No physical x86 acceptance
 is claimed; ISSUE-033 remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
 and [standalone report](../../../../docs/reports/S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md).
+
+<a id="s2-38y-sqrtss-memory-unmasked"></a>
+
+### S2-38y SQRTSS m32 memory unmasked exceptions
+
+Seven literal fixtures cover a masked inexact result and unmasked IE, DE, and
+PE under both `#XM` and arithmetic `#UD`. The dedicated schema-v2 profile
+`s2-long-sqrtss-memory-rax-unmasked-v1` echoes
+`sqrtss_memory_rax_unmasked_controls`; the S2-37dg masked profile remains
+separate. The runner matrix executes all 65,536 raw source × IM/DM/PM ×
+OSXMMEXCPT × RC × sticky-history combinations against the independent raw-u32
+SQRTSS oracle. Fixtures and checks verify terminal IE, QNaN without IE,
+positive-subnormal DE ordering, atomic postcompute PE suppression/commit,
+preserved destination/high96/RIP on exceptions, exact memory preservation,
+schema/control tampering, and JIT/native refusal. Direct ISA coverage checks
+CPL0–3, exact four-byte fetch/read ordering, #UD before #NM, AC refusal, and
+state rollback. No native, JIT, C ABI, or physical x86 acceptance is claimed.
+The source set includes the exact-square positive subnormal `0x00000002`, both
+signed QNaNs, and a positive SNaN; a focused runner test covers a negative SNaN.
+See the [S2-38y report](../../../../docs/reports/S2_38Y_SQRTSS_MEMORY_UNMASKED.md)
+and [stage plan](../../../../docs/plans/STAGE_2.md).

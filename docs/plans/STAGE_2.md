@@ -18521,3 +18521,13 @@ neighbors and prior-only flags. Require an independent raw-u32 integer oracle,
 full-state checks, poisoned destinations, gate/fault priority and fixtures for
 masked results and IE/DE/PE under both exception mappings. Native/JIT/C ABI,
 generic/fragment stay closed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38y--exact-sqrtss-m32-memory-profile-with-unmasked-exceptions).
+
+Implemented as a separate strict schema-v2 profile and runner dispatch. The
+65,536-case matrix uses 16 raw sources including exact-square positive
+subnormal `0x00000002`, both signed QNaN classes, and positive SNaN; a focused
+case covers negative SNaN quieting. Seven literal fixtures cover masked output
+and IE/DE/PE under both exception mappings. The ISA, testkit, and runner suites
+passed (1,938, 131, and 545 unit + 455 fixture tests respectively); the updated
+matrix and focused S2-38y fixture tests also passed. Workspace, layout,
+formatting, graph refresh, and independent review are recorded in the standalone
+[report](../reports/S2_38Y_SQRTSS_MEMORY_UNMASKED.md).
