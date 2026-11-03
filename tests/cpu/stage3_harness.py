@@ -86,6 +86,7 @@ SELF_TEST_NAMES = (
     "test_s3_34ad_rbx_disp32_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34ae_disp32_dword_store_boundary_gate_is_pinned_and_fail_closed",
     "test_s3_34af_dword_store_publication_gate_is_pinned_and_fail_closed",
+    "test_s3_16o_store_store_not_rcx_mixed_corpus_gate_is_pinned_once_and_fail_closed",
     "test_s3_34ag_rip_relative_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34ah_rip_relative_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34ai_addr32_dword_load_gates_are_pinned_and_fail_closed",
@@ -112,6 +113,8 @@ SELF_TEST_NAMES = (
     "test_s3_34bd_rbp_disp8_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34be_rbp_disp32_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34bf_rbp_disp32_dword_store_gates_are_pinned_and_fail_closed",
+    "test_s3_34bg_addr32_rbp_disp8_dword_load_gates_are_pinned_and_fail_closed",
+    "test_s3_34bh_addr32_rbp_disp8_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34bi_addr32_rbp_disp32_dword_load_gates_are_pinned_and_fail_closed",
     "test_s3_34bj_addr32_rbp_disp32_dword_store_gates_are_pinned_and_fail_closed",
     "test_s3_34bk_rsp_dword_load_gates_are_pinned_and_fail_closed",
@@ -188,6 +191,7 @@ SELF_TEST_NAMES = (
     "test_vmhost_process_child_log_binding_matches_command",
     "test_vmhost_codesign_commands_use_resolved_tool_path",
     "test_vmhost_process_manifest_covers_every_gate_once",
+    "test_vmhost_process_manifest_self_check_rejects_code_mismatch_drift",
     "test_generated_fault_smoke_cleans_child_group_on_success_and_failure",
     "test_app_bundle_smoke_preserves_and_executes_five_argument_bundle",
     "test_vmhost_process_timeout_kills_child_group",
@@ -1460,6 +1464,10 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_16_not_rcx_host_continuation", "local_acceptance", "od-host",
         "tests::bounded_memory_dispatch_not_rcx_fallback_composes_native_prefix_and_suffix",
+    ),
+    (
+        "s3_16o_store_store_not_rcx_store_store_corpus", "local_acceptance", "od-host",
+        "tests::s3_16o_s3_34_store_store_not_rcx_store_store_fixed_seed_boundaries",
     ),
 )
 RUST_TEST_TARGET_OVERRIDES = {

@@ -143,6 +143,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-14 | Тройное сравнение register-only | S3-13 |
 | [ ] | S3-15 | Dispatcher, budget и переходы | S3-14 |
 | [ ] | S3-16 | Interpreter fallback с прогрессом | S3-15; нужный S2 step |
+| [partial] | S3-16o | Fixed-seed native→NOT RCX fallback→native Store→Store corpus and exact gate | Adds eight bounded full-state/RAM/write-ledger cases across six budget and two stop-RIP boundaries plus callback STOP; no ISA expansion. Gate is pinned and reviewed but unexecuted; overall S3-16 remains open. См. [implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md) |
 | [ ] | S3-17 | Cache key и code dependencies | S3-04, S3-15 |
 | [ ] | S3-18 | Ограниченный block cache | S3-07, S3-17 |
 | [partial] | S3-19 | Checked memory/helper bridge | S3-08, S3-16; S2-04/08 |
@@ -915,6 +916,28 @@ executed. No build, formatting, Cargo, Python harness, Mini, or M1 check is
 claimed. This remains a single fixture-bounded fallback form; S3-16 is still
 open, and production owner/MMU integration is not covered. See the
 [JIT testing reference](../testing/JIT.md#s3-16n-bounded-memory-exact-not-rcx-fallback).
+
+**S3-16o / S3-34 mixed corpus partial (static, unexecuted):** the host test
+`tests::s3_16o_s3_34_store_store_not_rcx_store_store_fixed_seed_boundaries`
+composes exact native Store→Store (`48 89 03 48 89 02`), exact interpreter
+fallback `NOT RCX` (`48 F7 D1`), and native Store→Store. Fixed seed
+`0x5333_3136_6f34_636f` produces eight cases. Six budget boundaries (0 through
+5), two stop-RIP boundaries, and callback-triggered STOP compare complete CPU
+state, RAM, ordered write ledger, RIP, per-backend retirement, and remaining
+budget against interpreter execution. Continuations verify committed writes
+are not replayed. No instruction forms or production fallback paths were added.
+
+The harness gate is
+`s3_16o_store_store_not_rcx_store_store_corpus`; fail-closed self-test is
+`test_s3_16o_store_store_not_rcx_mixed_corpus_gate_is_pinned_once_and_fail_closed`.
+The self-check now pins all 146 unittest identities exactly once, including
+three previously omitted process, S3-34bg, and S3-34bh methods found during
+static review.
+Totals are 321 Rust gates (303 acceptance + 18 lifecycle), 339 local steps,
+321 distinct step IDs, and 146 self-test names. Independent Sol/high review
+passed; the gate and self-check remain unexecuted. General S3-16 and its
+production owner/MMU integration remain open. See the
+[S3-16o implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md).
 
 ### S3-17. Определить cache key и зависимости
 

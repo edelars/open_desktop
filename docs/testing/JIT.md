@@ -1651,6 +1651,27 @@ but unexecuted. Current totals are 312 gates (298 acceptance + 14 lifecycle),
 harness, Mini, or M1 check is claimed. These exact fixture forms do not close
 S3-16 or establish production owner/MMU integration.
 
+### S3-16o mixed Store→Store → NOT RCX → Store→Store corpus
+
+The host fixture uses fixed seed `0x5333_3136_6f34_636f` for eight bounded
+inputs. Each input composes exact native Store→Store (`48 89 03 48 89 02`),
+the exact opt-in interpreter fallback `NOT RCX` (`48 F7 D1`), and another
+native Store→Store pair. Six budget boundaries, two stop-RIP boundaries, and
+callback-triggered STOP compare full CPU state, RAM, write order, RIP,
+per-backend retirement, and remaining budget against interpreter execution.
+Continuation asserts committed stores are not replayed.
+
+Exact host identity:
+`tests::s3_16o_s3_34_store_store_not_rcx_store_store_fixed_seed_boundaries`.
+Harness gate `s3_16o_store_store_not_rcx_store_store_corpus` pins the exact
+`od-host --lib` command and `crates/od-host/src/lib.rs` fingerprint. Its
+fail-closed self-test is
+`test_s3_16o_store_store_not_rcx_mixed_corpus_gate_is_pinned_once_and_fail_closed`.
+Totals are 321 Rust gates, 339 local steps, 321 distinct step IDs, and 146
+self-test names. Sol/high static review passed; the gate and harness were not
+run. General S3-16 and production owner/MMU integration remain open. See the
+[S3-16o implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md).
+
 ### S3-28b cooperative events in bounded checked-memory dispatch
 
 Run focused dispatcher tests with

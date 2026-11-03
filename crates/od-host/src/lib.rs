@@ -107219,6 +107219,439 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn s3_16o_s3_34_store_store_not_rcx_store_store_fixed_seed_boundaries() {
+        use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
+        use od_jit::memory_dispatch::{
+            BoundedMemoryExit, FixtureExecutionBoundary, PublishedMemoryBlockExecutor,
+        };
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        const ENTRY: u64 = 0xe000;
+        const DATA: u64 = 0x20_000;
+        const SEED: u64 = 0x5333_3136_6f34_636f;
+        const CORPUS_CASES: usize = 8;
+        const CODE: [u8; 15] = [
+            0x48, 0x89, 0x03, // MOV [RBX],RAX
+            0x48, 0x89, 0x02, // MOV [RDX],RAX
+            0x48, 0xf7, 0xd1, // NOT RCX (admitted interpreter fallback)
+            0x48, 0x89, 0x03, // MOV [RBX],RAX
+            0x48, 0x89, 0x02, // MOV [RDX],RAX
+        ];
+        const BUDGET_BOUNDARIES: [(&str, u64); 6] = [
+            ("entry_before_first_store", 0),
+            ("after_first_store_within_first_pair", 1),
+            ("after_first_pair_before_not_rcx", 2),
+            ("after_not_rcx_before_second_pair", 3),
+            ("after_first_store_within_second_pair", 4),
+            ("after_second_pair_at_code_end", 5),
+        ];
+        const STOP_RIP_BOUNDARIES: [(&str, u64, u64); 2] = [
+            ("stop_rip_after_first_pair_before_not_rcx", 6, 2),
+            ("stop_rip_after_not_rcx_before_second_pair", 9, 3),
+        ];
+
+        #[derive(Clone, Debug)]
+        struct Ram {
+            code_base: u64,
+            code: [u8; 15],
+            bytes: BTreeMap<u64, u8>,
+            writes: Vec<(u64, Vec<u8>)>,
+            stop_after_write: Option<(usize, Arc<AtomicU8>)>,
+        }
+
+        impl GuestMemory for Ram {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                if let Some(byte) = address
+                    .checked_sub(self.code_base)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .and_then(|offset| self.code.get(offset).copied())
+                {
+                    return Ok(byte);
+                }
+                self.bytes.get(&address).copied().ok_or(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Fetch,
+                })
+            }
+
+            fn read(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                output: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                for (offset, byte) in output.iter_mut().enumerate() {
+                    let current = address.wrapping_add(offset as u64);
+                    *byte = *self.bytes.get(&current).ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Read,
+                    })?;
+                }
+                Ok(())
+            }
+
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                input: &[u8],
+            ) -> Result<(), MemoryError> {
+                let write_index = self.writes.len();
+                self.writes.push((address, input.to_vec()));
+                for (offset, byte) in input.iter().copied().enumerate() {
+                    self.bytes.insert(address.wrapping_add(offset as u64), byte);
+                }
+                if let Some((stop_at, stop)) = &self.stop_after_write {
+                    if *stop_at == write_index {
+                        stop.store(1, Ordering::Release);
+                    }
+                }
+                Ok(())
+            }
+
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        fn next_random(value: &mut u64) -> u64 {
+            *value ^= *value << 13;
+            *value ^= *value >> 7;
+            *value ^= *value << 17;
+            *value
+        }
+
+        fn initial_state(case_index: usize) -> od_isa::LongModeState {
+            let mut random = SEED ^ (case_index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let mut state = od_isa::LongModeState {
+                rip: ENTRY,
+                ..Default::default()
+            };
+            for (register, value) in state.gpr.iter_mut().enumerate() {
+                *value = next_random(&mut random) ^ ((register as u64) << 52);
+            }
+            let area = DATA + (case_index as u64) * 0x40;
+            state.gpr[0] = next_random(&mut random);
+            state.gpr[1] = next_random(&mut random);
+            state.gpr[2] = area + 0x20;
+            state.gpr[3] = area;
+            state.rflags = 0x202 | (next_random(&mut random) & 0x8d5);
+            state
+        }
+
+        fn initial_ram(case_index: usize) -> Ram {
+            let mut random = SEED.rotate_left(17) ^ case_index as u64;
+            let area = DATA + (case_index as u64) * 0x40;
+            let mut bytes = BTreeMap::new();
+            for offset in 0..16_u64 {
+                bytes.insert(area + offset, next_random(&mut random) as u8);
+                bytes.insert(area + 0x20 + offset, next_random(&mut random) as u8);
+            }
+            Ram {
+                code_base: ENTRY,
+                code: CODE,
+                bytes,
+                writes: Vec::new(),
+                stop_after_write: None,
+            }
+        }
+
+        fn interpreter_steps(
+            state: &mut od_isa::LongModeState,
+            ram: &mut Ram,
+            steps: u64,
+        ) {
+            for _ in 0..steps {
+                assert!(matches!(
+                    od_isa::execute::step(state, ram, AccessContext::default()),
+                    Ok(od_isa::execute::StepOutcome::Advanced)
+                ));
+            }
+        }
+
+        let _guard = jit_test_lock();
+        let code = CodeView::new(ENTRY, &CODE).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let mut executor = PublishedMemoryBlockExecutor;
+
+        for case_index in 0..CORPUS_CASES {
+            let initial = initial_state(case_index);
+            let starting_ram = initial_ram(case_index);
+            let first_address = initial.gpr[3];
+            let second_address = initial.gpr[2];
+            let payload = initial.gpr[0].to_le_bytes().to_vec();
+
+            let mut expected_state = initial.clone();
+            let mut expected_ram = starting_ram.clone();
+            interpreter_steps(&mut expected_state, &mut expected_ram, 5);
+            assert_eq!(expected_state.rip, ENTRY + CODE.len() as u64);
+            assert_eq!(expected_state.gpr[1], !initial.gpr[1], "NOT RCX state");
+            assert_eq!(expected_state.rflags, initial.rflags, "NOT RCX preserves flags");
+            assert_eq!(
+                expected_ram.writes,
+                [
+                    (first_address, payload.clone()),
+                    (second_address, payload.clone()),
+                    (first_address, payload.clone()),
+                    (second_address, payload.clone()),
+                ],
+                "seed={SEED:#x} case={case_index} interpreter write order"
+            );
+
+            for (name, budget) in BUDGET_BOUNDARIES {
+                let mut prefix_state = initial.clone();
+                let mut prefix_ram = starting_ram.clone();
+                interpreter_steps(&mut prefix_state, &mut prefix_ram, budget);
+
+                let mut actual_state = initial.clone();
+                let mut actual_ram = starting_ram.clone();
+                let stop = AtomicU8::new(0);
+                // SAFETY: this test uses immutable non-aliasing code and a private,
+                // synchronous, all-or-nothing bounded RAM fixture.
+                let first = unsafe {
+                    od_jit::memory_dispatch::run_with_nop_fallback(
+                        code,
+                        boundary.clone(),
+                        &mut actual_state,
+                        &mut actual_ram,
+                        AccessContext::default(),
+                        budget,
+                        None,
+                        &stop,
+                        &mut executor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(actual_state, prefix_state, "{name}: first state, case={case_index}");
+                assert_eq!(actual_ram.bytes, prefix_ram.bytes, "{name}: first RAM");
+                assert_eq!(actual_ram.writes, prefix_ram.writes, "{name}: first ledger");
+                assert_eq!(first.remaining_budget, 0, "{name}: first remaining budget");
+                assert_eq!(
+                    first.exit,
+                    if budget == 5 {
+                        BoundedMemoryExit::BoundaryReached { rip: ENTRY + 15 }
+                    } else {
+                        BoundedMemoryExit::BudgetExhausted
+                    },
+                    "{name}: first exit, case={case_index}"
+                );
+                assert_eq!(
+                    first.retired_native + first.retired_interpreter,
+                    budget,
+                    "{name}: first retirement, case={case_index}"
+                );
+                assert_eq!(
+                    first.retired_native,
+                    budget - u64::from(budget >= 3),
+                    "{name}: first native retirement, case={case_index}"
+                );
+                assert_eq!(
+                    first.retired_interpreter,
+                    u64::from(budget >= 3),
+                    "{name}: first fallback retirement, case={case_index}"
+                );
+
+                let (continued_native, continued_interpreter) = if budget < 5 {
+                    let resumed = unsafe {
+                        od_jit::memory_dispatch::run_with_nop_fallback(
+                            code,
+                            boundary.clone(),
+                            &mut actual_state,
+                            &mut actual_ram,
+                            AccessContext::default(),
+                            5 - budget,
+                            None,
+                            &stop,
+                            &mut executor,
+                        )
+                    }
+                    .unwrap();
+                    assert_eq!(
+                        resumed.exit,
+                        BoundedMemoryExit::BoundaryReached { rip: ENTRY + 15 },
+                        "{name}: continuation exit, case={case_index}"
+                    );
+                    assert_eq!(resumed.remaining_budget, 0);
+                    (resumed.retired_native, resumed.retired_interpreter)
+                } else {
+                    (0, 0)
+                };
+
+                assert_eq!(actual_state, expected_state, "{name}: final state, case={case_index}");
+                assert_eq!(actual_ram.bytes, expected_ram.bytes, "{name}: final RAM");
+                assert_eq!(actual_ram.writes, expected_ram.writes, "{name}: final ledger");
+                assert_eq!(
+                    first.retired_native + continued_native,
+                    4,
+                    "{name}: native retirement, case={case_index}"
+                );
+                assert_eq!(
+                    first.retired_interpreter + continued_interpreter,
+                    1,
+                    "{name}: fallback retirement, case={case_index}"
+                );
+            }
+
+            for (name, stop_offset, committed_steps) in STOP_RIP_BOUNDARIES {
+                let mut prefix_state = initial.clone();
+                let mut prefix_ram = starting_ram.clone();
+                interpreter_steps(&mut prefix_state, &mut prefix_ram, committed_steps);
+                let mut actual_state = initial.clone();
+                let mut actual_ram = starting_ram.clone();
+                let stop = AtomicU8::new(0);
+                let stopped = unsafe {
+                    od_jit::memory_dispatch::run_with_nop_fallback(
+                        code,
+                        boundary.clone(),
+                        &mut actual_state,
+                        &mut actual_ram,
+                        AccessContext::default(),
+                        5,
+                        Some(ENTRY + stop_offset),
+                        &stop,
+                        &mut executor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(stopped.exit, BoundedMemoryExit::StopAddress, "{name}");
+                assert_eq!(stopped.remaining_budget, 5 - committed_steps, "{name}");
+                assert_eq!(stopped.retired_native, 2, "{name}");
+                assert_eq!(stopped.retired_interpreter, committed_steps - 2, "{name}");
+                assert_eq!(actual_state, prefix_state, "{name}: stopped state");
+                assert_eq!(actual_ram.bytes, prefix_ram.bytes, "{name}: stopped RAM");
+                assert_eq!(actual_ram.writes, prefix_ram.writes, "{name}: stopped ledger");
+
+                let resumed = unsafe {
+                    od_jit::memory_dispatch::run_with_nop_fallback(
+                        code,
+                        boundary.clone(),
+                        &mut actual_state,
+                        &mut actual_ram,
+                        AccessContext::default(),
+                        5 - committed_steps,
+                        None,
+                        &stop,
+                        &mut executor,
+                    )
+                }
+                .unwrap();
+                assert_eq!(
+                    resumed.exit,
+                    BoundedMemoryExit::BoundaryReached { rip: ENTRY + 15 },
+                    "{name}: continuation"
+                );
+                assert_eq!(resumed.remaining_budget, 0, "{name}: continuation budget");
+                assert_eq!(actual_state, expected_state, "{name}: final state");
+                assert_eq!(actual_ram.bytes, expected_ram.bytes, "{name}: final RAM");
+                assert_eq!(actual_ram.writes, expected_ram.writes, "{name}: final ledger");
+                assert_eq!(resumed.retired_native, 4 - stopped.retired_native, "{name}");
+                assert_eq!(
+                    resumed.retired_interpreter,
+                    1 - stopped.retired_interpreter,
+                    "{name}"
+                );
+            }
+
+            let stop = Arc::new(AtomicU8::new(0));
+            let mut actual_state = initial.clone();
+            let mut actual_ram = starting_ram.clone();
+            actual_ram.stop_after_write = Some((0, stop.clone()));
+            let mut stop_prefix_state = initial.clone();
+            let mut stop_prefix_ram = starting_ram.clone();
+            interpreter_steps(&mut stop_prefix_state, &mut stop_prefix_ram, 1);
+            let stopped = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    code,
+                    boundary.clone(),
+                    &mut actual_state,
+                    &mut actual_ram,
+                    AccessContext::default(),
+                    5,
+                    None,
+                    &stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(stopped.exit, BoundedMemoryExit::StopRequested, "STOP callback");
+            assert_eq!(stopped.retired_native, 1, "STOP callback");
+            assert_eq!(stopped.retired_interpreter, 0, "STOP callback");
+            assert_eq!(stopped.remaining_budget, 4, "STOP callback");
+            assert_eq!(actual_state, stop_prefix_state, "STOP callback committed state");
+            assert_eq!(actual_ram.bytes, stop_prefix_ram.bytes, "STOP callback committed RAM");
+            assert_eq!(actual_ram.writes, stop_prefix_ram.writes, "STOP callback ledger");
+
+            stop.store(0, Ordering::Release);
+            let resumed = unsafe {
+                od_jit::memory_dispatch::run_with_nop_fallback(
+                    code,
+                    boundary.clone(),
+                    &mut actual_state,
+                    &mut actual_ram,
+                    AccessContext::default(),
+                    4,
+                    None,
+                    &stop,
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(
+                resumed.exit,
+                BoundedMemoryExit::BoundaryReached { rip: ENTRY + 15 },
+                "STOP callback continuation"
+            );
+            assert_eq!(resumed.remaining_budget, 0, "STOP callback continuation budget");
+            assert_eq!(actual_state, expected_state, "STOP callback final state");
+            assert_eq!(actual_ram.bytes, expected_ram.bytes, "STOP callback final RAM");
+            assert_eq!(actual_ram.writes, expected_ram.writes, "STOP callback final ledger");
+            assert_eq!(resumed.retired_native, 3, "STOP callback continuation native");
+            assert_eq!(resumed.retired_interpreter, 1, "STOP callback continuation fallback");
+        }
+    }
+
+    #[test]
     fn s3_20ey_rax_index_no_base_sib_disp32_dword_store_uses_full_rax_address_and_low_dword_data() {
         use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
         use std::collections::BTreeMap;
