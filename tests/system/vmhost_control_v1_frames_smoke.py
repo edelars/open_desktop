@@ -16,9 +16,9 @@ MAX_PAYLOAD = 8192
 PROCESS_TIMEOUT_SECONDS = 5
 IO_TIMEOUT_SECONDS = 2
 FRAGMENT_GAP_SECONDS = 0.05
-CODE = bytes.fromhex("4889c1 4889da")
+CODE = bytes.fromhex("4803c3 4803c3")
 RUN_RESULT = struct.pack(
-    "<6QIIQ", 0x11, 0x11, 0x44, 0x44, 6, 0x202, 0, 0, 2
+    "<6QIIQ", 0x99, 0x22, 0x33, 0x44, 6, 0x206, 0, 0, 2
 )
 
 
