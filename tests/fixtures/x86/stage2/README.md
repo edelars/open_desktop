@@ -8440,3 +8440,19 @@ rollback. No physical x86 acceptance is claimed. ISSUE-033 remains an audit of t
 NaN/denormal profiles. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38u--exact-comiss-memory-invalid-only-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38u--exact-comiss-memory-invalid-only-profile),
 and [standalone report](../../../../docs/reports/S2_38U_COMISS_MEMORY_INVALID_ONLY.md).
+
+<a id="s2-38v-ucomiss-memory-invalid-only-profile"></a>
+
+### S2-38v UCOMISS memory invalid-only profile
+
+Six literal fixtures cover finite comparison, QNaN with prior IE, masked
+SNaN, unmasked SNaN through #XM and arithmetic #UD, and post-read
+subnormal/SNaN refusal. The independent runner oracle expands NaNs across
+both operand sides, IM, OSXMMEXCPT and all 64 prior sticky-status values
+(1,024 cases), and checks finite/infinity/signed-zero relations, result
+tampering and interpreter-only backend enforcement. Direct ISA tests cover
+CPL0–3, fetch-before-gate ordering, AC refusal before data access and
+subnormal atomic refusal. No physical x86 acceptance is claimed. ISSUE-033
+remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
+and [standalone report](../../../../docs/reports/S2_38V_UCOMISS_MEMORY_INVALID_ONLY.md).

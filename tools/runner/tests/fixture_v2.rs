@@ -216,6 +216,20 @@ const COMISS_M32_MEMORY_RAX: &[u8] = include_bytes!(
 const UCOMISS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cr_ucomiss_m32_qnan_subnormal_priority.case.json"
 );
+const UCOMISS_M32_INVALID_FINITE: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38v_ucomiss_finite_less.case.json");
+const UCOMISS_M32_INVALID_QNAN_PRIOR_IE: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38v_ucomiss_qnan_unmasked_prior_ie.case.json"
+);
+const UCOMISS_M32_INVALID_SNAN_MASKED: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38v_ucomiss_snan_masked.case.json");
+const UCOMISS_M32_INVALID_SNAN_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38v_ucomiss_snan_unmasked_xm.case.json");
+const UCOMISS_M32_INVALID_SNAN_UD: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38v_ucomiss_snan_unmasked_ud.case.json");
+const UCOMISS_M32_INVALID_SUBNORMAL_SNAN: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38v_ucomiss_subnormal_snan_refusal.case.json"
+);
 const CMPSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37cs_cmpss_m32_qnan_subnormal_priority.case.json"
 );
@@ -28020,6 +28034,221 @@ fn ucomiss_m32_memory_uses_quiet_nan_priority_and_denies_other_backends() {
         run(UCOMISS_M32_MEMORY_RAX, "jit", 4).1.outcome,
         Outcome::Unsupported { .. }
     ));
+}
+
+#[test]
+fn ucomiss_m32_invalid_only_covers_nan_mask_osxmmexcpt_sticky_matrix() {
+    use od_testkit::v2::Profile;
+
+    let base = Fixture::from_json(UCOMISS_M32_INVALID_FINITE)
+        .unwrap()
+        .fixture;
+    assert_eq!(base.profile, Profile::LongUcomissMemoryInvalidRaxV1);
+    assert_eq!(base.memory[0].initial_bytes_hex, "0f2e00");
+    let encode_u32 = |value: u32| {
+        value
+            .to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let cases = [
+        (0x7fc1_2345u32, 0x3f80_0000u32, false, "qnan_lhs"),
+        (0x3f80_0000, 0x7fc1_2345, false, "qnan_memory"),
+        (0x7f81_2345, 0x3f80_0000, true, "snan_lhs"),
+        (0x3f80_0000, 0x7f81_2345, true, "snan_memory"),
+    ];
+    let mut case_index = 0;
+    for (lhs, rhs, signals_ie, stem) in cases {
+        for im in [false, true] {
+            for osxmmexcpt in [false, true] {
+                for old_sticky in 0..64u64 {
+                    let mut case = base.clone();
+                    case.case_id = format!(
+                        "s2_38v_{stem}_im{}_os{}_sticky{old_sticky:02x}",
+                        u8::from(im),
+                        u8::from(osxmmexcpt)
+                    );
+                    let xmm0 = &mut case.initial_state.sse.as_mut().unwrap().xmm[0];
+                    xmm0.replace_range(0..8, &encode_u32(lhs));
+                    case.memory[1].initial_bytes_hex = encode_u32(rhs);
+                    case.initial_state.sse.as_mut().unwrap().mxcsr =
+                        HexU64(0x1f00 | (u64::from(im) << 7) | old_sticky);
+                    case.ucomiss_memory_invalid_rax_controls
+                        .as_mut()
+                        .unwrap()
+                        .cr4_osxmmexcpt = osxmmexcpt;
+                    let fault = signals_ie && !im;
+                    case.expected_exit = if fault {
+                        ExpectedExit::Exception
+                    } else {
+                        ExpectedExit::StopAddress
+                    };
+                    let json = case.to_json().unwrap();
+                    let (input, result) = run(&json, "interpreter", 0);
+                    od_testkit::v2::compare(&input, &result, &result).unwrap();
+                    if fault {
+                        assert!(matches!(result.outcome, Outcome::Exception {}));
+                    } else {
+                        assert!(matches!(result.outcome, Outcome::StopAddress {}));
+                    }
+                    let snapshot = match &result.snapshot {
+                        Observation::Available { value } => value,
+                        other => panic!("unexpected UCOMISS invalid-only snapshot: {other:?}"),
+                    };
+                    assert_eq!(
+                        snapshot.state.sse.as_ref().unwrap().mxcsr.get() & 0x3f,
+                        old_sticky | u64::from(signals_ie),
+                        "{stem}, IM={im}, OSXMMEXCPT={osxmmexcpt}, sticky={old_sticky:#x}"
+                    );
+                    case_index += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(case_index, 1024);
+
+    for (lhs, rhs, expected_flags, label) in [
+        (0x4000_0000u32, 0x3f80_0000u32, 0, "finite_greater"),
+        (0xbf80_0000, 0x3f80_0000, 1, "finite_less"),
+        (0x3f80_0000, 0x3f80_0000, 1 << 6, "finite_equal"),
+        (0x0000_0000, 0x8000_0000, 1 << 6, "signed_zero_equal"),
+        (0x7f80_0000, 0x3f80_0000, 0, "positive_infinity_greater"),
+        (0xff80_0000, 0xbf80_0000, 1, "negative_infinity_less"),
+    ] {
+        let mut case = base.clone();
+        case.case_id = format!("s2_38v_{label}");
+        case.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(0..8, &encode_u32(lhs));
+        case.memory[1].initial_bytes_hex = encode_u32(rhs);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80);
+        let json = case.to_json().unwrap();
+        let (input, result) = run(&json, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let observed = snapshot(&result);
+        assert_eq!(
+            observed.state.rflags.get() & 0x45,
+            expected_flags,
+            "{label}"
+        );
+        assert_eq!(
+            observed.state.rip.get(),
+            base.stop_rip.unwrap().get(),
+            "{label}"
+        );
+    }
+
+    for (lhs, rhs) in [(0x7fc1_2345u32, 0x7f81_2345u32), (0x7f81_2345, 0x7fc1_2345)] {
+        let mut case = base.clone();
+        case.case_id = format!("s2_38v_qnan_snan_{lhs:08x}_{rhs:08x}");
+        case.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(0..8, &encode_u32(lhs));
+        case.memory[1].initial_bytes_hex = encode_u32(rhs);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+        case.ucomiss_memory_invalid_rax_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = true;
+        case.expected_exit = ExpectedExit::Exception;
+        let json = case.to_json().unwrap();
+        let (input, result) = run(&json, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        assert!(matches!(result.outcome, Outcome::Exception {}));
+    }
+
+    for fixture in [
+        UCOMISS_M32_INVALID_FINITE,
+        UCOMISS_M32_INVALID_QNAN_PRIOR_IE,
+        UCOMISS_M32_INVALID_SNAN_MASKED,
+        UCOMISS_M32_INVALID_SNAN_XM,
+        UCOMISS_M32_INVALID_SNAN_UD,
+        UCOMISS_M32_INVALID_SUBNORMAL_SNAN,
+    ] {
+        let expected_exit = if fixture == UCOMISS_M32_INVALID_SUBNORMAL_SNAN {
+            4
+        } else {
+            0
+        };
+        let (input, result) = run(fixture, "interpreter", expected_exit);
+        if expected_exit == 0 {
+            od_testkit::v2::compare(&input, &result, &result).unwrap();
+        }
+    }
+    assert!(matches!(
+        run(UCOMISS_M32_INVALID_FINITE, "jit", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+    assert!(matches!(
+        run(UCOMISS_M32_INVALID_FINITE, "native", 4).1.outcome,
+        Outcome::Unsupported { .. }
+    ));
+
+    let mut malformed = base.clone();
+    malformed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x0f80);
+    assert!(malformed.validate().is_err(), "DM/PM masks must be set");
+    malformed = base.clone();
+    malformed.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x9f80);
+    assert!(malformed.validate().is_err(), "FTZ must be clear");
+    malformed = base.clone();
+    malformed.ucomiss_memory_rax_controls = Some(od_testkit::v2::UcomissMemoryRaxControlSnapshot {
+        sse_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+    });
+    assert!(
+        malformed.validate().is_err(),
+        "old-profile controls are foreign"
+    );
+    malformed = base.clone();
+    malformed.memory[1].permissions.write = true;
+    assert!(
+        malformed.validate().is_err(),
+        "data mapping must be read-only"
+    );
+
+    let (input, result) = run(UCOMISS_M32_INVALID_SNAN_XM, "interpreter", 0);
+    let mut tampered = result.clone();
+    if let Observation::Available { value } = &mut tampered.snapshot {
+        value
+            .ucomiss_memory_invalid_rax_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = false;
+    }
+    assert!(tampered.validate_for(&input).is_err());
+
+    let (input, result) = run(UCOMISS_M32_INVALID_FINITE, "interpreter", 0);
+    let mut backend_tampered = result.clone();
+    backend_tampered.backend = Backend::Jit;
+    assert!(backend_tampered.validate_for(&input).is_err());
+
+    for mutation in 0..5 {
+        let mut tampered = result.clone();
+        match mutation {
+            0 => {
+                tampered.instructions_executed = Observation::Available { value: HexU64(0) };
+            }
+            1 => {
+                let state = &mut snapshot_mut(&mut tampered).state;
+                state.rip = HexU64(state.rip.get() + 1);
+            }
+            2 => {
+                let state = &mut snapshot_mut(&mut tampered).state;
+                state.rflags = HexU64(state.rflags.get() ^ 1);
+            }
+            3 => {
+                let state = &mut snapshot_mut(&mut tampered).state;
+                state.gpr[1] = HexU64(state.gpr[1].get() ^ 1);
+            }
+            _ => {
+                let state = &mut snapshot_mut(&mut tampered).state;
+                state.sse.as_mut().unwrap().xmm[0].replace_range(0..2, "ff");
+            }
+        }
+        assert!(
+            tampered.validate_for(&input).is_err(),
+            "mutation {mutation}"
+        );
+    }
 }
 
 #[test]
