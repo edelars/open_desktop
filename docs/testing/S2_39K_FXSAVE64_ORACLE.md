@@ -12,8 +12,11 @@ is exact `48 0F AE 40 40` (`FXSAVE64 [RAX+0x40]`) at CPL3. It performs A/B/A/B
 with fresh shared mappings, explicit XMM0–15 byte tables, MXCSR `0x1f80` and
 `0x7f80`, a 16-byte-aligned writable 512-byte image, and 32-byte canaries on
 both sides. Raw JSON is written under ignored
-`work/stage2/s2-39k-fxsave64/`. An unsupported host reports
-`unavailable/not_run` and does not emit empty-success evidence.
+`work/stage2/s2-39k-fxsave64/`. A prerequisite failure before the first tracee
+attempt reports `unavailable/not_run`. Once execution is attempted, an
+unexpected tracee stop, signal, exit, marker, or observation becomes explicit
+`rejected` evidence and a nonzero command result; it is never relabeled
+`not_run`.
 
 The code is isolated from the fixture/native_v2 admission path. `od-x86-runner`
 owns CPUID, CPU affinity, shared mappings, tracee lifecycle, ptrace, signal
@@ -52,6 +55,13 @@ pre/post MOVDQU/STMXCSR bytes, raw MXCSR_MASK, exit status, marker signal code,
 raw trapped RIP and adjusted E+5 boundary. Comparison ranges are carried in
 the evidence and checked against the protocol:
 
+If a repetition fails, the JSON retains its available image, guards,
+observations, raw stop RIP/RAX, wait-derived signal or exit status, and a
+per-run execution error. Completed prior repetitions remain in order in the
+same record. Top-level status is `rejected` with a failure reason, and the
+comparator always rejects it. Incomplete prerequisite coverage is represented
+by `not_run`; it has no attempted-run interpretation.
+
 - Compare MXCSR `[24,28)`, XMM `[160,416)`, and software tail `[464,512)`.
 - Compare both pre/post observations and unchanged guards.
 - Record MXCSR_MASK `[28,32)` raw without normalizing or asserting the synthetic
@@ -80,7 +90,11 @@ virtual hardware evidence remain `not_run`. The Linux x86_64 target `cargo
 check` passes for all targets with
 `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
 --offline`. This check type-checks the runner and tests but does not link the
-final runner binary. The former blocker was two `native_v2.rs` schema-v2
+final runner binary. A subsequent `cargo build -p od-x86-runner --target
+x86_64-unknown-linux-gnu --offline` reached linking but failed because the
+Darwin host `cc` invokes Apple `ld`, which rejects GNU linker flags including
+`--as-needed`, `-Bstatic`, `--gc-sections`, and `-z`; no Linux runner ELF was
+produced. The former check blocker was two `native_v2.rs` schema-v2
 literals missing 142 optional fields each; they now explicitly use `None`.
 `serde_json` 1.0.151 was already available and compiled for this target. A
 current compiler raw-pointer lint in the S2-39k setup was satisfied with an

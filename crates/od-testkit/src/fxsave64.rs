@@ -130,6 +130,8 @@ pub struct Fxsave64Run {
     pub stop_rip_adjustment: u8,
     pub observed_rip: Option<u64>,
     pub completion_marker: bool,
+    /// Present when execution was attempted but did not satisfy the protocol.
+    pub execution_error: Option<String>,
     pub exit_status: Option<i32>,
     pub signal: Option<i32>,
     pub signal_code: Option<i32>,
@@ -151,6 +153,8 @@ pub struct Fxsave64Run {
 pub struct Fxsave64Evidence {
     pub schema_version: u32,
     pub status: String,
+    /// Explains a rejected attempted run; absent for observed or unavailable evidence.
+    pub failure_reason: Option<String>,
     pub source_revision: String,
     pub hashes: Fxsave64Hashes,
     pub environment: Fxsave64Environment,
@@ -177,11 +181,25 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
     if evidence.schema_version != EVIDENCE_VERSION {
         errors.push("unsupported evidence schema version".into());
     }
-    if evidence.status != "not_run" && evidence.status != "observed" {
-        errors.push("status must be not_run or observed".into());
+    if evidence.status != "not_run"
+        && evidence.status != "observed"
+        && evidence.status != "rejected"
+    {
+        errors.push("status must be not_run, observed, or rejected".into());
     }
     if evidence.status == "not_run" {
         errors.push("not_run evidence cannot pass comparison".into());
+        if !evidence.runs.is_empty() {
+            errors.push("not_run evidence cannot contain attempted runs".into());
+        }
+    }
+    if evidence.status == "rejected" {
+        errors.push("attempted execution was rejected".into());
+        if evidence.failure_reason.as_deref().is_none_or(str::is_empty) {
+            errors.push("rejected evidence must explain the execution failure".into());
+        }
+    } else if evidence.failure_reason.is_some() {
+        errors.push("only rejected evidence may contain a failure reason".into());
     }
     let raw_fxsr = evidence.environment.cpuid_leaf1_edx & (1 << 24) != 0;
     let raw_sse = evidence.environment.cpuid_leaf1_edx & (1 << 25) != 0;
@@ -267,6 +285,9 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
         }
         if run.signal.is_some() {
             errors.push(format!("{prefix}: unexpected signal"));
+        }
+        if let Some(reason) = &run.execution_error {
+            errors.push(format!("{prefix}: execution failed: {reason}"));
         }
         if let Some(code) = run.signal_code {
             if ![0, 1, 0x80].contains(&code) {
@@ -582,6 +603,7 @@ mod tests {
                     stop_rip_adjustment: 1,
                     observed_rip: Some(0x400005),
                     completion_marker: true,
+                    execution_error: None,
                     exit_status: Some(0),
                     signal: None,
                     signal_code: Some(1),
@@ -604,6 +626,7 @@ mod tests {
         Fxsave64Evidence {
             schema_version: EVIDENCE_VERSION,
             status: "observed".into(),
+            failure_reason: None,
             source_revision: "fixture".into(),
             hashes: Fxsave64Hashes {
                 harness_source_sha256: "0".repeat(64),
@@ -705,6 +728,7 @@ mod tests {
     #[test]
     fn not_run_evidence_never_passes() {
         let mut evidence = valid_evidence();
+        evidence.runs.clear();
         evidence.status = "not_run".into();
         let comparison = compare_fxsave64(&evidence);
         assert!(!comparison.passed);
@@ -714,6 +738,40 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("not_run"))
         );
+        evidence.runs.push(valid_evidence().runs.remove(0));
+        assert!(
+            compare_fxsave64(&evidence)
+                .errors
+                .iter()
+                .any(|error| { error.contains("not_run evidence cannot contain attempted runs") })
+        );
+    }
+
+    #[test]
+    fn rejected_partial_evidence_preserves_completed_runs_and_tracee_failure() {
+        let mut evidence = valid_evidence();
+        evidence.runs.truncate(2);
+        evidence.status = "rejected".into();
+        evidence.failure_reason = Some("run 1: unexpected tracee signal".into());
+        evidence.runs[1].completion_marker = false;
+        evidence.runs[1].raw_stop_rip = Some(0x400002);
+        evidence.runs[1].observed_rip = None;
+        evidence.runs[1].exit_status = None;
+        evidence.runs[1].signal = Some(4);
+        evidence.runs[1].execution_error = Some("tracee stopped with signal 4".into());
+
+        let encoded = serde_json::to_vec(&evidence).unwrap();
+        let decoded: Fxsave64Evidence = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.runs.len(), 2);
+        assert!(decoded.runs[0].completion_marker);
+        assert_eq!(decoded.runs[0].exit_status, Some(0));
+        assert_eq!(decoded.runs[1].raw_stop_rip, Some(0x400002));
+        assert_eq!(decoded.runs[1].signal, Some(4));
+        assert!(!compare_fxsave64(&decoded).passed);
+        let errors = compare_fxsave64(&decoded).errors.join(" ");
+        assert!(errors.contains("attempted execution was rejected"));
+        assert!(errors.contains("tracee stopped with signal 4"));
+        assert!(errors.contains("exactly four A/B/A/B repetitions"));
     }
 
     #[test]
