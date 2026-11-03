@@ -7,7 +7,8 @@ only in [protocols/control/CONTROL_PROTOCOL_V1.md](../../protocols/control/CONTR
 
 [ADR-0005](../decisions/ADR-0005-persistent-same-code-session.md) fixes ownership
 and compatibility boundaries; [ADR-0003](../decisions/ADR-0003-event-driven-vmhost-completion.md)
-requires event-driven completion. The separate session C ABI contract remains
-a prerequisite to implementation. [Control v0](CONTROL_PROTOCOL_V0.md) remains
+requires event-driven completion. The separate
+[session C ABI contract](HOST_SESSION_ABI_V1.md) defines the owner proxy and
+per-invocation admission/completion boundary. [Control v0](CONTROL_PROTOCOL_V0.md) remains
 the existing single-request path. This document records a protocol design,
 not implemented transport or runtime acceptance evidence.
