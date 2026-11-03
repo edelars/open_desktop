@@ -18556,6 +18556,124 @@ SDM Rev. 093 Vol. 2B MULSS pp. 4-150–4-151, Vol. 2A §2.5.3/Table 2-20, Vol. 1
 Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance remain
 closed.
 
+## S2-38am — exact SUBPS memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-subps-memory-unmasked-rax-v1` for exact Long64 legacy `0F 5C 00`
+(`SUBPS XMM0,m128 [RAX]`), separate
+`subps_memory_rax_unmasked_controls`, one executable mapping, one read-only
+m128 mapping, budget one and stop RIP=entry+3. Require SSE bit 25; preserve
+masked-memory S2-37dr and register SUBPS behavior. Fetch all three bytes and
+check exact form before feature/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM`, at
+CPL0–3. Noncanonical instruction-fetch byte spans fault `#GP(0)` before those
+gates. Require supported MXCSR bits `0xffbf`, reserved bits clear, DAZ=FTZ=0
+and OM=UM=1; allow all RC, IM/DM/ZM/PM and prior sticky histories.
+
+The m128 operand requires 16-byte alignment regardless of RFLAGS.AC.
+Misaligned RAX returns `#GP(0)` with no data callback for AC=0 and AC=1. After
+alignment, check overflow and both canonical48 endpoints of `[RAX,RAX+15]`,
+then exactly one read16. Noncanonical fetch, data span or read failure preserves
+state and retirement.
+
+Subtract each of four memory lanes from the pre-execution XMM0 lane using the
+existing raw SUBPS operation and an independent integer-only raw-u32 oracle
+over the actual memory RHS. Classify original operands before changing the RHS
+sign: if both operands are NaNs, select the first original source (XMM0); if
+only one is NaN, select it. Quiet the selected value only when it is SNaN and
+preserve its original sign/payload; any SNaN raises IE, while QNaN alone does
+not. A NaN suppresses DE only in its own lane. Same-sign infinities raise IE
+and produce the masked negative indefinite; opposite-sign infinities produce
+the valid signed infinity. Other subnormal operands contribute lane-local DE,
+including when the other operand is infinite.
+
+Aggregate IE|DE across all lanes before checking IM/DM. If any applicable
+pre-event is unmasked, commit all applicable new IE/DE flags and suppress every
+later OE/UE/PE plus the full XMM destination, RIP and retirement. Otherwise
+compute every lane using MXCSR.RC, merge post-status and apply PM atomically;
+unmasked PE also suppresses the entire destination, RIP and retirement. WPR
+tininess-after-rounding applies; exact subnormal outputs add no UE/PE, and no
+inexact-tiny case is required for same-format subtraction. OSXMMEXCPT=1 delivers
+`#XM` vector 19; zero delivers SIMD-generated `#UD` vector 6; neither has an
+error code. Old sticky bits alone do not fault. Success updates XMM0, applicable
+MXCSR status, RIP and retirement, preserving RFLAGS and unrelated state.
+
+Exercise actual interpreter results against the independent actual-memory-RHS
+oracle. Cross six lane-event representatives (exact cancellation, SNaN/IE,
+subnormal/DE, halfway/PE, normal-minus-minsub/DE+PE, overflow/OE+PE) over
+`6^4` lane combinations and all 16 IM/DM/ZM/PM settings × both OSXMMEXCPT
+mappings: 41,472 executions at fixed RC/sticky state. Add 48 selected
+cross-lane/boundary vectors across all RC, 64 prior sticky histories, masks and
+both delivery mappings: 393,216 additional executions. Cover signed QNaN/SNaN
+positions and payloads, NaN+subnormal, infinity signs, signed zeros, exact tiny,
+halfway/adjacent values, cancellation, exponent gaps, overflow and midpoint,
+IE/DE/PE cross-lane aggregation and lane permutations. Verify full-state
+suppression, fetch/form/gates/CPL, AC-independent alignment, canonical spans,
+one-read rollback, strict schema, fixtures, result/status/control/exception
+tampering, masked-profile permissions and backend denial. Sources: Intel SDM
+Rev. 093 Vol. 2B SUBPS pp. 4-690–4-692; Vol. 2A §2.5.2/Table 2-19 p. 2-27;
+Vol. 1 §4.8.3.5/Table 4-8, §§4.9.2 and 11.5.3.1–3; Vol. 3A Event 19/Table
+7-8. Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance
+remain closed.
+
+## S2-38an — exact SUBPD memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-subpd-memory-unmasked-rax-v1` for exact Long64 legacy `66 0F 5C 00`
+(`SUBPD XMM0,m128 [RAX]`), separate
+`subpd_memory_rax_unmasked_controls`, one executable mapping, one read-only
+m128 mapping, budget one and stop RIP=entry+4. Require SSE2 bit 26; preserve
+masked-memory S2-37dv and register SUBPD behavior. Fetch all four bytes and
+check exact form before SSE2/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM`, at
+CPL0–3. Noncanonical instruction-fetch byte spans fault `#GP(0)` before those
+gates. Require supported MXCSR bits `0xffbf`, reserved bits clear, DAZ=FTZ=0
+and OM=UM=1; allow all RC, IM/DM/ZM/PM and prior sticky histories.
+
+The m128 operand requires 16-byte alignment regardless of RFLAGS.AC.
+Misaligned RAX returns `#GP(0)` with no data callback for AC=0 and AC=1. After
+alignment, check overflow and both canonical48 endpoints of `[RAX,RAX+15]`,
+then exactly one read16. Noncanonical fetch, data span or read failure preserves
+state and retirement.
+
+Subtract each of two memory lanes from the pre-execution XMM0 lane using the
+existing raw SUBPD operation and an independent integer-only raw-u64 oracle
+over the actual memory RHS. Classify original operands before changing the RHS
+sign: if both operands are NaNs, select the first original source (XMM0); if
+only one is NaN, select it. Quiet the selected value only when it is SNaN and
+preserve its original sign/payload; any SNaN raises IE, while QNaN alone does
+not. A NaN suppresses DE only in its own lane. Same-sign infinities raise IE
+and produce the masked negative indefinite; opposite-sign infinities produce
+the valid signed infinity. Other subnormal operands contribute lane-local DE,
+including when the other operand is infinite.
+
+Aggregate IE|DE across both lanes before checking IM/DM. If any applicable
+pre-event is unmasked, commit all applicable new IE/DE flags and suppress every
+later OE/UE/PE plus the full XMM destination, RIP and retirement. Otherwise
+compute both lanes using MXCSR.RC, merge post-status and apply PM atomically;
+unmasked PE also suppresses the entire destination, RIP and retirement. WPR
+tininess-after-rounding applies; exact subnormal outputs add no UE/PE, and no
+inexact-tiny case is required for same-format subtraction. OSXMMEXCPT=1 delivers
+`#XM` vector 19; zero delivers SIMD-generated `#UD` vector 6; neither has an
+error code. Old sticky bits alone do not fault. Success updates XMM0, applicable
+MXCSR status, RIP and retirement, preserving RFLAGS and unrelated state.
+
+Exercise actual interpreter results against the independent actual-memory-RHS
+oracle. Cross six lane-event representatives (exact cancellation, SNaN/IE,
+subnormal/DE, halfway/PE, normal-minus-minsub/DE+PE, overflow/OE+PE) over
+`6^2` lane combinations and all 16 IM/DM/ZM/PM settings × both OSXMMEXCPT
+mappings: 1,152 executions at fixed RC/sticky state. Add 48 selected
+cross-lane/boundary vectors across all RC, 64 prior sticky histories, masks and
+both delivery mappings: 393,216 additional executions. Cover signed QNaN/SNaN
+positions and payloads, NaN+subnormal, infinity signs, signed zeros, exact tiny,
+halfway/adjacent values, cancellation, exponent gaps, overflow and midpoint,
+IE/DE/PE cross-lane aggregation and lane permutations. Verify full-state
+suppression, fetch/form/gates/CPL, AC-independent alignment, canonical spans,
+one-read rollback, strict schema, fixtures, result/status/control/exception
+tampering, masked-profile permissions and backend denial. Sources: Intel SDM
+Rev. 093 Vol. 2B SUBPD pp. 4-687–4-689; Vol. 2A §2.5.2/Table 2-19 p. 2-27;
+Vol. 1 §4.8.3.5/Table 4-8, §§4.9.2 and 11.5.3.1–3; Vol. 3A Event 19/Table
+7-8. Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance
+remain closed.
+
 ## S2-38ah — exact MULSD memory profile with unmasked exceptions
 
 Add immutable schema-v2 interpreter-only profile
