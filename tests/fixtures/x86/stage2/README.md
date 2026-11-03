@@ -1,5 +1,19 @@
 # Собственные schema v2 fixtures этапа 2
 
+### S2-38aj — unmasked DIVSD m64 memory profile
+
+Five handwritten literals cover exact `F2 0F 5E 00`: one success case and
+unmasked IE, ZE, DE, and PE delivery. The separate schema-v2 profile requires
+read-only m64 `[RAX]`, SSE2, `DAZ=FTZ=0`, and `OM=UM=1`, while admitting all RC,
+IM/DM/ZM/PM masks, prior sticky histories, and OSXMMEXCPT routes. An in-process
+interpreter matrix checks 163,840 executions against the independent integer
+raw-u64 oracle using the actual memory RHS. Fixture tests cover events,
+status/control tampering, and JIT/native denial. This is host-side interpreter
+evidence, not physical x86 acceptance. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38aj--exact-divsd-memory-profile-with-unmasked-exceptions),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38aj--exact-divsd-memory-form-with-unmasked-exceptions),
+and [report](../../../../docs/reports/S2_38AJ_DIVSD_MEMORY_UNMASKED.md).
+
 ### S2-38ah — unmasked MULSD m64 memory profile
 
 `s2_38ah_mulsd_m64_memory_unmasked_rax.case.json` is the handwritten success

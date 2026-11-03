@@ -260,6 +260,23 @@ const MULSD_M64_MEMORY_UNMASKED_EVENTS: [&[u8]; 3] = [
 ];
 const DIVSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dp_divsd_m64_memory_rax.case.json");
+const DIVSD_M64_MEMORY_UNMASKED_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38aj_divsd_m64_memory_unmasked_rax.case.json"
+);
+const DIVSD_M64_UNMASKED_EVENTS: &[&[u8]] = &[
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aj_divsd_m64_unmasked_ie_snan_xm.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aj_divsd_m64_unmasked_ze_zero_ud.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aj_divsd_m64_unmasked_de_subnormal_xm.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38aj_divsd_m64_unmasked_pe_inexact_ud.case.json"
+    ),
+];
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dg_sqrtss_m32_unaligned_inexact.case.json"
 );
@@ -41047,7 +41064,6 @@ fn mulsd_m64_unmasked_memory_uses_memory_operand_and_suppresses_unmasked_destina
         .unwrap()
         .mxcsr = HexU64(0x1f81);
     assert!(bad_status.validate_for(&input).is_err());
-
     let encode = |raw: u64| {
         raw.to_le_bytes()
             .iter()
@@ -41388,6 +41404,95 @@ fn divsd_m64_memory_literal_and_scalar_oracle_matrix_are_interpreter_only() {
             }
         }
     }
+}
+
+#[test]
+fn divsd_m64_unmasked_literals_validate_atomic_events_and_deny_backends() {
+    let (input, result) = run(DIVSD_M64_MEMORY_UNMASKED_RAX, "interpreter", 0);
+    assert_eq!(
+        input.fixture.profile,
+        od_testkit::v2::Profile::LongDivsdMemoryRaxUnmaskedV1
+    );
+    assert!(input.fixture.divsd_controls.is_none());
+    assert!(input.fixture.memory[1].permissions.read && !input.fixture.memory[1].permissions.write);
+    assert_eq!(count(&result), 1);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    result.validate_for(&input).unwrap();
+
+    for (index, bytes) in DIVSD_M64_UNMASKED_EVENTS.iter().enumerate() {
+        let (event_input, event_result) = run(bytes, "interpreter", 0);
+        assert!(matches!(event_result.outcome, Outcome::Exception {}));
+        assert_eq!(count(&event_result), 0);
+        event_result.validate_for(&event_input).unwrap();
+        if index == 0 {
+            let mut bad_exception = event_result.clone();
+            let Observation::Available {
+                value: Some(exception),
+            } = &mut snapshot_mut(&mut bad_exception).exception
+            else {
+                panic!("literal IE must capture its exception");
+            };
+            exception.vector = 6;
+            assert!(bad_exception.validate_for(&event_input).is_err());
+            let mut bad_retirement = event_result.clone();
+            bad_retirement.instructions_executed = Observation::Available { value: HexU64(1) };
+            assert!(bad_retirement.validate_for(&event_input).is_err());
+        }
+    }
+
+    for engine in ["jit", "native"] {
+        let (_, denied) = run(DIVSD_M64_MEMORY_UNMASKED_RAX, engine, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+
+    let mut bad_status = result.clone();
+    snapshot_mut(&mut bad_status)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .mxcsr = HexU64(0x1f81);
+    assert!(bad_status.validate_for(&input).is_err());
+    let mut bad_low = result.clone();
+    snapshot_mut(&mut bad_low).state.sse.as_mut().unwrap().xmm[0]
+        .replace_range(0..16, "010000000000f03f");
+    assert!(bad_low.validate_for(&input).is_err());
+    let mut bad_high = result.clone();
+    snapshot_mut(&mut bad_high).state.sse.as_mut().unwrap().xmm[0]
+        .replace_range(16..32, "eeeeeeeeeeeeeeee");
+    assert!(bad_high.validate_for(&input).is_err());
+    let mut bad_control = result.clone();
+    snapshot_mut(&mut bad_control)
+        .divsd_memory_rax_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = false;
+    assert!(bad_control.validate_for(&input).is_err());
+    let mut bad_profile = input.fixture.clone();
+    bad_profile.divsd_memory_rax_unmasked_controls = None;
+    assert!(bad_profile.validate().is_err());
+    let mut writable = input.fixture.clone();
+    writable.memory[1].permissions.write = true;
+    assert!(writable.validate().is_err());
+
+    let mut noncanonical_fetch = input.fixture.clone();
+    noncanonical_fetch.case_id = "s2_38aj_noncanonical_code_fetch_gp".into();
+    noncanonical_fetch.initial_state.rip = HexU64(0x0000_8000_0000_0000);
+    noncanonical_fetch.memory[0].guest_address = noncanonical_fetch.initial_state.rip;
+    noncanonical_fetch.stop_rip = Some(HexU64(0x0000_8000_0000_0004));
+    noncanonical_fetch.expected_exit = ExpectedExit::Exception;
+    let (_, fetch_result) = run(&noncanonical_fetch.to_json().unwrap(), "interpreter", 0);
+    let Observation::Available {
+        value: Some(exception),
+    } = &snapshot(&fetch_result).exception
+    else {
+        panic!("noncanonical DIVSD code fetch must report #GP");
+    };
+    assert_eq!(exception.vector, 13);
+    assert_eq!(
+        exception.error_code,
+        Observation::Available { value: HexU64(0) }
+    );
 }
 
 #[test]
