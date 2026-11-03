@@ -91,6 +91,15 @@
 - **Основание и результат:** deleting only that generated temporary tree restored the exact starting source fingerprint. A standalone self-test invocation exceeded the context tool's 300-second RPC limit without a summary. The follow-up raises the harness step timeout to 600 seconds, routes temporary test roots under ignored `work/`, and preserves the original timeout if fingerprint comparison itself fails. The focused timeout/fingerprint test, Python compilation, and diff whitespace check passed; independent Sol/high review found no remaining issue. A post-fix full-local rerun attempt exceeded a 240-second context RPC window without a final summary; its result is unconfirmed.
 - **Следующий шаг:** rerun the bounded local suite in an execution session that can observe the full self-test step and final summary; confirm the new timeout and stable source fingerprint before updating S3-41 acceptance. Mini and physical-x86 acceptance remain separate.
 
+### ISSUE-034 — Mini jit-block remote preflight fails in od-x86-runner tests
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `tools/x86-runner` native V2 unit tests selected by the Stage 1 physical `jit-block` preflight.
+- **Статус:** открыта; причина 42 failures is not yet triaged. No confirmed runtime defect is claimed.
+- **Суть и последствия:** on Mini, `cargo test --offline -p od-testkit -p od-runner -p od-x86-runner` exited 101 with 571 passed and 42 failed overall; the final `od-x86-runner` test binary reported 70 passed/42 failed. The failures include native x87/profile admission expectations and other cases such as REP STOSB/RET; they are not all established as the five stale `od-isa` expectations in ISSUE-023. The official `stage1_oracle.py` flow therefore aborts before its managed fixture comparisons, even though both runner builds and a separate, explicitly supplementary S3-14 physical comparison succeeded.
+- **Основание:** the exact command, exit status, complete stdout/stderr, and all failed test names are preserved in [`S3-14 Mini evidence`](reports/data/stage3/s3-14-mini-2026-11-03/). The separate physical run is documented in the [S3-14 report](reports/STAGE_3_S3-14_2026-10-26.md); it does not turn the failed preflight into a pass.
+- **Следующий шаг:** triage each failing `native_v2` test against the current native profile contract; distinguish stale test expectations from implementation failures, fix confirmed causes, and rerun the exact package preflight on Mini before treating S3-14 as closed.
+
 ### ISSUE-024 — checked memory lowering ограничен узкими V2 MOV slices
 
 - **Дата обнаружения:** 2026-10-27.

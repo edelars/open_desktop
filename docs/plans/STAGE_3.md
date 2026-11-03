@@ -140,7 +140,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-11 | Корректные eager flags | S3-10 |
 | [x] | S3-12 | State points и PC maps | S3-11 |
 | [x] | S3-13 | Первый сквозной запуск одного блока | S3-07, S3-12 |
-| [ ] | S3-14 | Тройное сравнение register-only | S3-13 |
+| [partial] | S3-14 | Тройное сравнение register-only | S3-13 |
 | [ ] | S3-15 | Dispatcher, budget и переходы | S3-14 |
 | [ ] | S3-16 | Interpreter fallback с прогрессом | S3-15; нужный S2 step |
 | [partial] | S3-16o | Fixed-seed native→NOT RCX fallback→native Store→Store corpus and exact gate | Adds eight bounded full-state/RAM/write-ledger cases across six budget and two stop-RIP boundaries plus callback STOP; no ISA expansion. Gate is pinned and reviewed but unexecuted; overall S3-16 remains open. См. [implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md) |
@@ -694,8 +694,27 @@ timeout status, limit и команду (exit code остаётся null). Harne
 покрывают routing, nonzero exit и timeout.
 После этой правки повторная доставка ревизии `b8924dc` в отдельный remote
 checkout остановилась на SSH connect timeout. Native fixtures не запускались;
-физическая приёмка остаётся открытой. Детали попыток записаны в
+физическая приёмка оставалась открытой. Детали попыток записаны в
 [`S3-14 report`](../reports/STAGE_3_S3-14_2026-10-26.md).
+
+**Обновление, 3 ноября 2026 года:** на Mini `192.168.1.39` исходник коммита
+`74d316f` был доставлен в отдельную директорию без Git history; локальный и
+удалённый source fingerprint совпал
+(`0f78441d1298009db38083318f9ac5e8821f4626e9f7f0f33efed16c2d41ada7`).
+Стандартный CLI остановился на remote preflight `cargo test --offline
+-p od-testkit -p od-runner -p od-x86-runner`: всего 571 passed, 42 failed,
+exit 101; в завершившемся с ошибками binary `od-x86-runner` было 70 passed,
+42 failed.
+Отдельно обе сборки runner завершились успешно. Затем supplementary ручной
+прогон применил те же manifest inputs, build identity, result validators и
+сравнения: все 13 обязательных fixtures совпали между interpreter,
+`jit_ir_block` и native x86, в каждом из двух повторов; repeat comparisons
+дали 0 differences для всех трёх backends. Это только register-only
+single-block/code-end evidence: бюджетный fixture, dispatcher, memory,
+VMHost и широкий Stage 3 workload не запускались. Из-за неуспешного
+обязательного preflight ручной результат не закрывает S3-14; triage отражён в
+[ISSUE-034](../KNOWN_ISSUES.md#issue-034--mini-jit-block-remote-preflight-fails-in-od-x86-runner-tests).
+Полные результаты сохранены в [Mini evidence bundle](../reports/data/stage3/s3-14-mini-2026-11-03/).
 S3-14 остаётся открытым.
 
 **Готово:** срез A подтверждён тройным сравнением. Неподдержанные обязательные cases, недоступный SSH и mismatch оставляют задачу открытой.
