@@ -752,3 +752,19 @@ is implemented; the reducer remains pending. ISSUE-028 remains open until
 S3-20eg execution acceptance; ISSUE-029 remains open pending the exact S3-34dn
 gate run. No behavior, runtime API, dependency, or opcode claim is added. See the
 [S3-34dn report](STAGE_3_S3-34dn_2026-11-03.md).
+
+S3-34do is a bounded plan for reducing one validated S3-34dn artifact by
+changing only non-address GPR values and mapped RAM bytes. It requires two
+stable replays of the original, exact mismatch-signature preservation,
+deterministic candidate evaluation capped at 256, strictly lower mutable-value
+popcount, preserved profile/address/RSP/flags/provenance/layout/callback, and
+create-only reduced output only after acceptance. Critical fence: the existing
+`classify_replay` compares full candidate observations with the original saved
+observations; it may validate the original artifact only. Candidate checks need
+a separate profile-specific comparator. This plan adds no generic framework,
+runtime API, dependency, or opcode, and no real artifact was run. Reducer
+implementation and review remain pending. Target totals are 305 gates (295
+acceptance + 10 lifecycle), 323 steps, and 138 self-test names, pending exact
+static diff; they are unexecuted targets. ISSUE-028/029 remain open pending
+execution acceptance. Stage 3 remains partial. See the
+[S3-34do report](STAGE_3_S3-34do_2026-11-03.md).

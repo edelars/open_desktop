@@ -2553,3 +2553,48 @@ Rust self-check and harness gate. No Rust behavior gate, Python
 harness/self-check, build, formatting, Cargo, Mini, or M1 acceptance was run or
 is claimed. See the
 [S3-34dn report](../reports/STAGE_3_S3-34dn_2026-11-03.md).
+
+## S3-34do: bounded value-only reducer for one S3-34dn artifact
+
+**Status:** documentation plan only; implementation/review pending, execution
+deferred. No reducer or real artifact run is included.
+
+The planned reducer consumes exactly one validated S3-34dn artifact for
+`67 89 04 24`. First replay the original saved input twice through the
+existing original-artifact classifier. If it reports `not_reproduced`, stop
+without reducing or writing output. Search only after the original reproduces
+twice with deterministic observations and the exact recorded mismatch
+signature.
+
+Mutate only non-address GPR values and mapped fixture RAM bytes. Preserve
+source/profile, RIP, effective address, RSP, flags, seed/index, RAM layout, and
+the complete write callback (address, width/count, and bytes). Candidate order
+is deterministic and limited to at most 256 distinct candidates. Replay each
+from reset state twice. Accept a candidate only if those observations match
+between repeats, its comparator mismatch string exactly equals the original
+artifact's `mismatch` field, and the popcount of mutable GPR/RAM values is
+lower than the current accepted input. Select the accepted candidate with the
+lowest popcount and a fixed lexicographic tie-break. This bounded result is not a claim of global
+minimality. If no candidate is accepted, emit no reduced artifact.
+
+Critical boundary: `classify_replay` compares full replay observations with
+the full observations stored in the original artifact, so it can validate the
+original reproduction but cannot validate modified candidates. Candidate
+acceptance requires a separate profile-specific comparator that checks
+repeat determinism, the exact stable mismatch signature, and preserved fields.
+Do not use the original-artifact classifier for candidates or create a generic
+replay/reducer framework.
+
+Create a reduced artifact with create-only semantics only after an accepted
+candidate has strictly lower mutable-value popcount. Preserve the original
+artifact and refuse to overwrite an existing reduced artifact. The reducer
+self-check is a fail-closed acceptance gate using labeled synthetic data; no
+real S3-34dn artifact is part of that self-check or this plan.
+
+Target totals are +1 gate/step/self-test over S3-34dn's pinned 304 gates (294
+acceptance + 10 lifecycle), 322 local steps, and 137 self-test names: 305 gates
+(295 acceptance + 10 lifecycle), 323 steps, and 138 self-test names. These are
+targets pending implementation and static recount. ISSUE-028 and ISSUE-029
+remain open pending their execution acceptance. S3-34.2's artifact/replay
+subtask is implemented; its reducer remains pending. Stage 3 remains partial.
+See the [S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md).
