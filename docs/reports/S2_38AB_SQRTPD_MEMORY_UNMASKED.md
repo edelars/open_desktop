@@ -47,6 +47,11 @@ profiles remain separate.
   was started but stopped after the unit suite completed; the three S2-38ab
   fixtures and their tampering/backend checks passed in the focused test.
 - `git diff --check` — passed before the implementation commit.
+- `graphify update .` — passed (12,338 nodes / 26,626 edges / 378 communities).
+- `python3 tools/check_layout.py` — did not pass in this isolated worktree:
+  the linked `.git` marker is an unmapped root entry, and two existing
+  `STAGE_2_REPORT.md` links point to work manifests absent from this checkout.
+  No project layout was changed in this slice.
 
 The implementation is committed in isolated worktree commit `4907bba`.
 Independent Sol/high review is pending in the integrating task. Native/JIT,
