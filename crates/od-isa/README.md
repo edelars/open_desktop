@@ -284,6 +284,8 @@ forms. Native x87 admission and broader architectural exception behavior remain
 outside this slice; see the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-31p-bounded-fild-m64int-rax-df-28),
 [plan](../../docs/plans/STAGE_2.md), and [report](../../docs/reports/STAGE_2_REPORT.md).
 
+S2-31ee extends only the existing exact bare `DF 00`, `DB 00` and `DF 28` FILD memory gates to admit any history of IE/DE/ZE/OE/UE/PE. The shared preflight still rejects SF (including SF+IE), ES and B before reading, while successful integer reads preserve all six sticky flags and clear C1. Independent literal matrices cover all 64 histories × 8 TOP × 4 FCW × both previous C1 states at every width; native/JIT admission stays closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#s2-31ee--historical-sticky-flags-on-exact-bounded-fild-memory-forms), [plan](../../docs/plans/STAGE_2.md#s2-31ee--exact-fild-historical-sticky-flag-admission), and [report](../../docs/reports/S2_31EE_FILD_HISTORICAL_STICKY_FLAGS.md).
+
 S2-31q adds exact bare `DB 38` (`FSTP m80fp [RAX]`) for a Valid
 canonical-Normal binary80 ST(0). It validates the complete ten-byte
 canonical48 range, performs one raw slice write without a data read, then pops

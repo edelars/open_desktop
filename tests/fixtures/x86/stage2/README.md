@@ -8453,6 +8453,19 @@ the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31ed--historical-sf
 [plan](../../../../docs/plans/STAGE_2.md#s2-31ed), and
 [standalone report](../../../../docs/reports/S2_31ED_FLD_M80FP_HISTORICAL_SF.md).
 
+### S2-31ee historical sticky flags on bounded FILD
+
+Three handwritten schema-v2 fixtures cover exact DF 00, DB 00 and DF 28
+FILD with all six sticky flags set, SF/ES/B clear and old C1 set. The m32
+fixture composes FILD with FNSTSW AX to observe the preserved flags and cleared
+C1. Runner checks literal binary80 results and denies both JIT and native
+backends. The ISA matrix covers every sticky combination, TOP, FCW and prior
+C1 state for all three widths; rejection and memory rollback remain covered by
+local unit tests. No physical x86 acceptance is claimed. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31ee--historical-sticky-flags-on-exact-bounded-fild-memory-forms),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ee--exact-fild-historical-sticky-flag-admission),
+and [standalone report](../../../../docs/reports/S2_31EE_FILD_HISTORICAL_STICKY_FLAGS.md).
+
 <a id="s2-38u-comiss-memory-invalid-only-profile"></a>
 
 ### S2-38u COMISS memory invalid-only profile
