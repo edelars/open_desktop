@@ -423,7 +423,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20ga | Address32 RCX-base Dword store signed disp32 `67 89 81 id` | Seven-byte exact store; starting EA is `zero_extend((low32(RCX) + signed_i32_disp32) mod 2^32)`, one checked contiguous write4 of low32 RAX, preserved GPR/RFLAGS and `A+7`. Runtime `b7b361b` integrated and passed independent Sol/high review. No tests/build/fmt/Cargo/Python checks run; see bounded report. |
 | [partial] | S3-34dl | Exact harness gates for S3-20ga | Harness `c2a3e8f` pins the JIT source/site, host checked-store and fail-closed self-test identities; independent Sol/high review passed. Totals 302 gates (292 acceptance + 10 lifecycle), 320 local steps, 135 self-test names are pinned/reviewed but not executed. |
 | [partial] | S3-34dm | Fixed-seed differential corpus for S3-20eg `67 89 04 24` | Corpus implementation `c7bb9c7` and harness `2fb1265` are integrated; S3-34.1/.3/.5 code/gates passed independent static Sol/high review. Pinned totals: 303 gates (293 acceptance + 10 lifecycle), 321 local steps, 136 self-test names; the S3-34dm behavior gate and harness self-test remain unexecuted. S3-34.2 persisted replay/reducer remains pending. ISSUE-028 remains open pending S3-20eg execution acceptance. См. [JIT testing reference](../testing/JIT.md#s3-34dm-fixed-seed-differential-corpus-for-s3-20eg) and [report](../reports/STAGE_3_S3-34dm_2026-11-02.md) |
-| [ ] | S3-34dn | Create-only mismatch artifact and validated replay for S3-34dm | Documentation plan only; implementation and independent static review pending, execution deferred. Targets +1 gate/step/self-test over S3-34dm: 304 gates (294 acceptance + 10 lifecycle), 322 steps, 137 self-test names; exact static diff and recount pending. ISSUE-028 remains open. См. [JIT testing reference](../testing/JIT.md#s3-34dn-create-only-mismatch-artifact-and-validated-replay-for-s3-34dm) and [report](../reports/STAGE_3_S3-34dn_2026-11-03.md) |
+| [partial] | S3-34dn | Create-only mismatch artifact and validated replay for S3-34dm | Runtime commits `f858b7a`/`10447f0` and harness commits `89c5e28`/`13b7790` are integrated and passed independent static Sol/high review. Exact Rust self-check and optional saved-artifact replay identities and harness gate are pinned. Totals are pinned at 304 gates (294 acceptance + 10 lifecycle), 322 local steps, and 137 self-test names; nothing was executed. S3-34.2's mismatch-artifact/replay subtask is implemented; reducer remains pending. ISSUE-028 remains open until S3-20eg execution acceptance. См. [JIT testing reference](../testing/JIT.md#s3-34dn-create-only-mismatch-artifact-and-validated-replay-for-s3-34dm) and [report](../reports/STAGE_3_S3-34dn_2026-11-03.md) |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
@@ -4615,7 +4615,7 @@ execution acceptance; this review and the corpus gate do not close it. See the
 
 #### S3-34dn. Create-only mismatch artifact and validated replay for S3-34dm
 
-**Статус:** подготовка плана; реализация и независимое статическое review pending; исполнение отложено.
+**Статус реализации и независимого статического Sol/high review: PASS; исполнение отложено.** Runtime commits `f858b7a`/`10447f0` and harness commits `89c5e28`/`13b7790` are integrated. Both runtime and harness diffs passed independent static review. No tests or self-checks were run.
 
 Add one profile-specific diagnostic path for the existing S3-34dm corpus and
 its exact singleton `67 89 04 24` (`MOV [ESP],EAX`). It creates a persisted
@@ -4627,36 +4627,45 @@ seed and case index as provenance, both backends' repeated observations, and
 the exact mismatch classification/details. It is a single-profile diagnostic
 record, not a general corpus or replay format.
 
-Replay first validates the artifact schema/version, profile and source bytes,
-RIP/instruction relationship, CPU and RAM layout/lengths, and a digest over the
-captured initial input and recorded observations. Invalid or mismatched fields
+The versioned 15-field artifact schema validates profile and source bytes,
+fixed RIP, GPR/flags/address/RAM lengths and constraints, seed/index provenance,
+fixed sparse RAM layout, and an FNV-1a 64-bit digest of the saved RAM layout
+and bytes before compiling or publishing code. Invalid or mismatched fields
 are rejected before execution. The saved initial CPU/RAM state is the replay
-input; seed and case index are provenance only and must not regenerate or
-replace that state. Run interpreter and JIT independently twice from reset
-copies of that saved state and compare the resulting observations
-deterministically. Report `reproduced` only when the captured mismatch
-condition recurs with the recorded mismatch identity; report
-`not_reproduced` when a structurally valid artifact replays without that
-mismatch. `not_reproduced` is diagnostic evidence, not a passing regression
-gate. Malformed or incompatible artifacts have a separate validation error
-result and are never reported as `not_reproduced`.
+input; seed and case index are provenance only and do not regenerate or
+replace that state. Replay runs interpreter and JIT independently twice from
+reset copies of the saved state. Report `reproduced` only when both repeats are
+deterministic and the recorded mismatch identity and captured observations
+recur. Report `not_reproduced` when they do not. This is diagnostic evidence,
+not a passing regression gate. The optional replay test also emits
+`not_reproduced` and returns when no artifact path is supplied or its path is
+absent; that outcome is not evidence that replay occurred. Malformed or
+incompatible artifacts fail with a validation error rather than being
+classified as a valid replay.
 
-Self-checks use explicitly labeled synthetic mismatch data to verify
-create-only behavior, artifact round-trip/replay, stable repeated observations,
-and fail-closed rejection of changed version/profile/source/RIP/layout/digest.
-Synthetic self-check results must remain labeled and must not be presented as
-runtime mismatch or replay evidence. No new runtime API, dependency, opcode,
-generic replay framework, or reducer is in scope; broader S3-34.2 persisted
-corpus/reducer work remains pending.
+The self-check uses explicitly labeled synthetic mismatch data. It checks
+serialization/parser round-trip, both synthetic classifier outcomes, and
+fail-closed rejection of changed profile/source/address provenance/RAM
+layout/digest. It does not execute either backend. The artifact writer uses
+create-new file semantics, but this self-check does not exercise the filesystem
+no-overwrite behavior; version and RIP validation likewise have no mutation
+assertion in this self-check. Synthetic self-check results must remain labeled
+and must not be presented as runtime mismatch or replay evidence. No new
+runtime API, dependency, opcode, generic replay framework, or reducer is in
+scope. The bounded S3-34.2 artifact/replay subtask is implemented; the reducer
+remains pending.
 
-Target manifest delta: exactly one harness gate, one local step, and one
-self-test name (+1 each) over the integrated S3-34dm baseline of 303 gates
-(293 acceptance + 10 lifecycle), 321 steps, and 136 self-test names, yielding
-targets of 304 gates (294 acceptance + 10 lifecycle), 322 steps, and 137
-self-test names. These are targets only; the exact identities, static diff, and
-recount are pending implementation and review. Execution remains deferred.
-Do not run or claim Rust behavior tests, Python harness execution, build,
-formatting, Cargo, Mini, or M1 acceptance for this documentation-only plan.
+The Rust self-check identity is
+`s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed`; the optional
+saved-artifact replay identity is `replay_saved_s3_34dn_mismatch_artifact`.
+Harness gate: `s3_34dn_replay_artifact_self_check`; its fail-closed self-test
+is `test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed`.
+The pinned manifest totals are 304 gates (294 acceptance + 10 lifecycle), 322
+local steps, and 137 self-test names. These totals and identities are statically
+reviewed, not executed. The artifact/replay subtask of S3-34.2 is implemented;
+the reducer remains pending. No Rust behavior gate, Python harness,
+self-check, build, formatting, Cargo, Mini, or M1 acceptance was run or is
+claimed.
 ISSUE-028 remains open until S3-20eg execution acceptance. See the
 [S3-34dn report](../reports/STAGE_3_S3-34dn_2026-11-03.md) and the
 [JIT testing reference](../testing/JIT.md#s3-34dn-create-only-mismatch-artifact-and-validated-replay-for-s3-34dm).

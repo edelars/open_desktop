@@ -724,16 +724,29 @@ execution remains pending. S3-34.2 persisted replay/reducer remains pending, and
 ISSUE-028 remains open until S3-20eg execution acceptance. No opcode/runtime
 semantics were added. See the [S3-34dm report](STAGE_3_S3-34dm_2026-11-02.md).
 
-S3-34dn is a documentation-only plan for one create-only mismatch artifact
-and validated replay restricted to the same S3-34dm profile. It specifies
-full saved input and observations, profile/version/source/RIP/layout/digest
-validation, replay from saved CPU/RAM state with seed/index retained only as
-provenance, deterministic two-repeat execution, and distinct `not_reproduced`
-semantics. Synthetic mismatch self-checks must be labeled and cannot stand in
-for runtime evidence. Implementation and independent static review are
-pending; execution is deferred. The expected totals are targets only:
-304 gates (294 acceptance + 10 lifecycle), 322 steps, and 137 self-test names,
-pending exact static diff and recount. Broader S3-34.2 replay/reducer work is
-still pending; ISSUE-028 remains open until S3-20eg execution acceptance. No
-runtime API, dependency, or opcode is added. See the
+S3-34dn implements one create-only mismatch artifact and validated replay for
+the same exact S3-34dm profile. Runtime commits `f858b7a`/`10447f0` and harness
+commits `89c5e28`/`13b7790` are integrated and passed independent static Sol/high
+review. The self-check identity is
+`s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed`; the optional
+saved-artifact replay identity is `replay_saved_s3_34dn_mismatch_artifact`.
+Harness gate `s3_34dn_replay_artifact_self_check` and fail-closed self-test
+`test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed` are
+pinned. Totals are 304 gates (294 acceptance + 10 lifecycle), 322 steps, and
+137 self-test names. All are unexecuted; no tests or self-checks were run.
+
+Replay validates the 15-field versioned schema, exact profile/source/RIP and
+input constraints, sparse RAM layout, and RAM-layout FNV-1a 64-bit digest.
+It replays saved CPU/RAM state, retaining seed/index only as provenance, and
+requires deterministic two-repeat interpreter/JIT observations for
+`reproduced`. A valid replay without the captured mismatch reports
+`not_reproduced`; invalid artifacts fail validation. The optional replay test
+also reports `not_reproduced` when no artifact is supplied, which is not replay
+evidence. Its synthetic mismatch self-check is labeled and does not establish
+runtime behavior. The self-check covers serialization/classification and selected
+profile/source/address/layout/digest rejection; it does not exercise filesystem
+create-new behavior, and version/RIP mutation assertions are not present. The
+bounded artifact/replay subtask of S3-34.2 is implemented;
+the reducer remains pending. ISSUE-028 remains open until S3-20eg execution
+acceptance. No behavior, runtime API, dependency, or opcode claim is added. See the
 [S3-34dn report](STAGE_3_S3-34dn_2026-11-03.md).
