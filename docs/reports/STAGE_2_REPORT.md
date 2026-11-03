@@ -23640,6 +23640,37 @@ physical x86 acceptance is claimed. See the
 [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38at-cvtsd2si-m64-memory-unmasked-profile),
 and [stage plan](../plans/STAGE_2.md#s2-38at--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax-with-unmasked-exceptions).
 
+## S2-38av — CVTTSD2SI EAX, m64 memory unmasked exceptions
+
+Implemented exact Long64 `F2 0F 2C 00` (`CVTTSD2SI EAX,qword ptr [RAX]`) as a
+separate immutable schema-v2 interpreter profile, preserving masked S2-37cj.
+The independent integer-only raw-u64 oracle reads the fixture's actual memory RHS.
+Its matrix covers 33 vectors × 4 RC modes × 64 prior sticky histories × four IM/PM
+combinations × both OSXMMEXCPT delivery mappings: 67,584 actual-interpreter cases,
+plus 32 focused DM/OM/UM/ZM/FTZ samples (67,616 total executions). Binary64
+`-2147483648.75` and `2147483647.75` truncate to valid i32 results with PE, while
+`-2147483649` and `2147483648` raise IE only; exact valid `-2^31` is distinguished
+from the invalid-indefinite alias by IE.
+
+Eight literal fixtures cover high-old-RAX success and EAX zero-extension, masked
+IE/PE, unmasked IE/PE delivery, SSE2 `#UD`, TS `#NM`, and AC refusal. Direct ISA
+tests cover fetch/gate/AC/span precedence, collisions with SSE2/EM/OSFXSR/TS,
+aligned and unaligned exactly-one-read8 behavior, and full rollback on injected
+read errors. The host tests exercise actual fragment and C ABI entrypoints and
+confirm this profile is denied. The runner covers controls/result tampering,
+schema and profile isolation, and event-specific MXCSR/status behavior.
+
+Checks passed: four focused od-isa tests; od-testkit 461/461; two focused runner
+tests; eight literal fixtures end-to-end 1/1; host fragment/C ABI denial 1/1;
+`cargo check --workspace --all-targets --offline`, formatting, and diff checks.
+The full `od-runner` suite was not run, and physical x86 acceptance is not claimed.
+Independent Sol/high review found no remaining issues. Fixture provenance cites
+Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` pp. 3-253–3-254. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38av--exact-cvttsd2si-m64-memory-profile-with-unmasked-exceptions),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38av--cvttsd2si-m64-memory-unmasked-profile),
+[fixture format](../testing/TEST_CASE_FORMAT.md#s2-38av-cvttsd2si-m64-memory-unmasked-profile),
+and [stage plan](../plans/STAGE_2.md#s2-38av--exact-legacy-long64-cvttsd2si-eaxqword-ptr-rax-with-unmasked-exceptions).
+
 
 ## S2-38au — CVTTSS2SI EAX, m32 memory unmasked exceptions
 

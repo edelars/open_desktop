@@ -8993,28 +8993,37 @@ fractions near ±2^31 are not representable. Eight literal fixtures passed end-t
 and
 [plan](../../../../docs/plans/STAGE_2.md#s2-38au--exact-legacy-long64-cvttss2si-eaxdword-ptr-rax-with-unmasked-exceptions).
 
-### S2-38av — proposed CVTTSD2SI m64 memory unmasked profile
+### S2-38av — CVTTSD2SI m64 memory unmasked profile
 
-The pending contract reserves a distinct schema-v2 profile for exact `F2 0F 2C 00`
+Implemented as a separate immutable schema-v2 profile for exact `F2 0F 2C 00`
 (`CVTTSD2SI EAX,qword ptr [RAX]`). It requires local AC=0, captures old RAX as the
 address, checks the canonical48 m64 span, and reads once before any destination write.
-The planned independent raw-u64 memory-RHS oracle crosses all RC modes, 64 prior sticky
-histories, four IM/PM settings, and both OSXMMEXCPT deliveries. Separate cases sample
-DM/OM/UM/ZM both ways and check that they neither generate an event nor change.
-Conversion uses TowardZero independently of RC and checks i32 range after truncation.
-Coverage includes signed fractions/halves, representable i32 boundary neighbors,
-invalid-indefinite versus valid `-2^31`, PE suppression for invalid, subnormal no-DE,
-FTZ irrelevance, RC-independent results/events, zero-extension on success,
-event-specific MXCSR status (old sticky bits alone never fault), and full rollback for
-fetch/gate/span/read failures. AC=1 returns `Unsupported` only after exact-instruction
-fetch and SSE2/EM/OSFXSR/TS gates succeed, before canonical data-span checking or a
-source read. AC=1 combined with a fetch or prerequisite-gate failure keeps that earlier
-outcome. Exact read counts and injected read-error rollback use direct `GuestMemory`
-acceptance; the wire schema requires an exact-width readable mapping and cannot encode
-those runtime read faults. Binary64 `-2147483648.75` and `2147483647.75` must remain
-valid with PE after truncation; `-2147483649` and `2147483648` are invalid IE-only
-controls. This section records intended coverage; no implementation or fixture result
-exists yet. See the
+The independent integer-only raw-u64 oracle consumes actual memory bytes and crosses
+33 vectors × 4 RC modes × 64 prior sticky histories × four IM/PM settings × both
+OSXMMEXCPT deliveries (67,584 runs), plus 32 focused DM/OM/UM/ZM/FTZ samples. It covers
+TowardZero independently of RC, including `-2147483648.75` and `2147483647.75` as valid
+PE cases, `-2147483649` and `2147483648` as invalid IE-only cases, and the valid exact
+`-2^31` versus invalid-indefinite alias.
+
+Eight literal fixtures cover success with high old RAX and zero-extension, masked
+IE/PE, unmasked IE via `#XM`, unmasked PE via SIMD `#UD`, SSE2 `#UD`, TS `#NM`,
+and AC refusal:
+[success](s2_38av_cvttsd2si_m64_i32_unmasked.case.json),
+[masked IE](s2_38av_cvttsd2si_m64_i32_masked_ie.case.json),
+[masked PE](s2_38av_cvttsd2si_m64_i32_masked_pe.case.json),
+[unmasked IE](s2_38av_cvttsd2si_m64_i32_unmasked_ie_xm.case.json),
+[unmasked PE](s2_38av_cvttsd2si_m64_i32_unmasked_pe_ud.case.json),
+[TS #NM](s2_38av_cvttsd2si_m64_i32_gate_nm.case.json),
+[gate #UD](s2_38av_cvttsd2si_m64_i32_gate_ud.case.json), and
+[AC refusal](s2_38av_cvttsd2si_m64_i32_ac_refusal.case.json).
+
+Direct tests cover fetch/gate/AC/span precedence, AC collisions with SSE2/EM/OSFXSR/TS,
+aligned and unaligned exactly-one-read8 paths, read-error rollback, event-specific MXCSR
+updates, and actual fragment/C ABI denial. The raw-u64 oracle uses the actual memory RHS;
+schema/result tampering and masked-profile isolation are checked. Targeted ISA, fixture,
+schema/backend and host tests passed; `od-testkit` passed 461/461 and workspace check,
+format and diff checks passed. The full `od-runner` suite and physical x86 acceptance
+were not run. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38av--exact-cvttsd2si-m64-memory-profile-with-unmasked-exceptions)
 and
 [plan](../../../../docs/plans/STAGE_2.md#s2-38av--exact-legacy-long64-cvttsd2si-eaxqword-ptr-rax-with-unmasked-exceptions).

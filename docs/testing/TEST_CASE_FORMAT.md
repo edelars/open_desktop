@@ -1959,14 +1959,18 @@ signed-i32 boundary neighbors, fractional values and halves, infinities, QNaN/SN
 signed zero, normal/subnormal values, exact valid `-2^31` and invalid sentinel alias,
 and an old-RAX destination-address case. Include binary64 `-2147483648.75` and
 `2147483647.75` as valid PE cases after truncation, and `-2147483649` and `2147483648`
-as invalid IE-only controls. Require literal success, IE, PE, schema-representable
-fetch/gate/span and AC-refusal cases; check exact status, full-state rollback,
+as invalid IE-only controls. Require literal cases for schema-expressible success,
+IE/PE outcomes, feature/control gates, and AC refusal. Cover fetch/span failures with
+the generated runner matrix and direct ISA tests; check exact status, full-state rollback,
 control/result tampering, strict profile separation, and closed JIT/native/C
-ABI/generic/fragment routes. No implementation, fixture, or physical x86 acceptance is
-claimed by this pending contract. Intel SDM Rev. 093 sources: Vol. 2A `CVTTSD2SI` pp.
-3-253–3-254; Vol. 1 §§11.5.2.2 and 11.5.3.2; Vol. 3A §§4.1, 5.6–5.7, and Event 17 `#AC`. See the
+ABI/generic/fragment routes. This profile is implemented and independently reviewed;
+the full `od-runner` suite and physical x86 acceptance were not run. Intel SDM Rev. 093
+sources: Vol. 2A `CVTTSD2SI` pp. 3-253–3-254; Vol. 1 §§11.5.2.2 and 11.5.3.2;
+Vol. 3A §§4.1, 5.6–5.7, and Event 17 `#AC`. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38av--exact-cvttsd2si-m64-memory-profile-with-unmasked-exceptions)
 for official PDF links.
+
+Implementation results are in the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-38av--cvttsd2si-eax-m64-memory-unmasked-exceptions): 33 raw-u64 vectors × 4 RC × 64 sticky histories × four IM/PM settings × two delivery mappings (67,584 actual-interpreter cases), plus 32 focused mask/FTZ samples. Eight literal fixtures and focused schema/backend checks passed. Direct ISA tests cover gate collisions, one read8, full read-error rollback, and zero-extension; direct host tests deny fragment/C ABI entrypoints.
 
 The wire schema requires an exact-width readable m64 mapping at old RAX; it cannot
 represent an injected data-read error. Use direct `GuestMemory` acceptance to prove

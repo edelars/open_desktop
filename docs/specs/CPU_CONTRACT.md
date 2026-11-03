@@ -19317,7 +19317,8 @@ production conversion helpers. Sources: Intel SDM Rev. 093 Vol. 2A `CVTTSD2SI` p
 3-253–3-254 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1 §§11.5.2.2
 and 11.5.3.2 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §§4.1,
 5.6–5.7, and Event 17 `#AC` ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
-Contract status: pending implementation and independent review.
+Implementation and independent review are complete. Verification results and
+limitations are recorded in the [Stage 2 report](../reports/STAGE_2_REPORT.md#s2-38av--cvttsd2si-eax-m64-memory-unmasked-exceptions); full `od-runner` and physical x86 acceptance were not run.
 
 The strict wire schema requires an exact-width readable m64 mapping and cannot encode an
 injected source-read failure. Prove read counts and runtime read-error rollback with
