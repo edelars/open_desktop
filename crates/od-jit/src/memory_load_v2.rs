@@ -10681,7 +10681,7 @@ mod tests {
             crate::statepoints::GuestRipBoundary::Fixed(entry + 3)
         );
 
-        for index in 0..source.len() {
+        for index in 0..source.len() - 1 {
             let mut changed = source;
             changed[index] ^= 1;
             assert!(!site.matches_source_bytes(&changed, MemorySiteOperationV2::Store));
@@ -10694,6 +10694,21 @@ mod tests {
                 "admitted source-byte mutation at {index}"
             );
         }
+
+        let rcx_source = [0x67, 0x89, 0x01];
+        let rcx_block = compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &rcx_source).unwrap(),
+            entry,
+        )
+        .expect("supported addr32 RCX-base store mutation must compile");
+        let rcx_site = rcx_block.site();
+        assert_eq!(rcx_block.source_bytes(), rcx_source);
+        assert_ne!(rcx_site, site);
+        assert_eq!(rcx_site.operand().base, AddressBase::Register(Register::Rcx));
+        assert!(site.matches_source_bytes(&source, MemorySiteOperationV2::Store));
+        assert!(rcx_site.matches_source_bytes(&rcx_source, MemorySiteOperationV2::Store));
+        assert!(!site.matches_source_bytes(&rcx_source, MemorySiteOperationV2::Store));
+        assert!(!rcx_site.matches_source_bytes(&source, MemorySiteOperationV2::Store));
 
         for (mut forged, change) in [
             (*site, 0),

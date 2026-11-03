@@ -3100,7 +3100,17 @@ fn build_block_with_profile(
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(7))
-                        .is_some_and(|bytes| bytes[..3] == [0x8b, 0x04, 0x25])
+                        .is_some_and(|bytes| {
+                            bytes[..3] == [0x8b, 0x04, 0x05]
+                                || bytes[..3] == [0x8b, 0x04, 0x25]
+                        })
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(7))
+                        .is_some_and(|bytes| {
+                            bytes[..2] == [0x8b, 0x04]
+                                && matches!(bytes[2], 0x45 | 0x85 | 0xc5)
+                        })
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(7))
@@ -3141,6 +3151,15 @@ fn build_block_with_profile(
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(8))
                         .is_some_and(|bytes| bytes[..4] == [0x67, 0x8b, 0x04, 0x0d])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(8))
+                        .is_some_and(|bytes| {
+                            bytes[..4] == [0x67, 0x8b, 0x04, 0x25]
+                                || bytes[..4] == [0x67, 0x8b, 0x04, 0x05]
+                                || (bytes[..3] == [0x67, 0x8b, 0x04]
+                                    && matches!(bytes[3], 0x45 | 0x85 | 0xc5))
+                        })
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(8))
@@ -3306,6 +3325,14 @@ fn build_block_with_profile(
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(7))
                         .is_some_and(|bytes| {
+                            bytes[..3] == [0x89, 0x04, 0x05]
+                                || (bytes[..2] == [0x89, 0x04]
+                                    && matches!(bytes[2], 0x45 | 0x85 | 0xc5))
+                        })
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(7))
+                        .is_some_and(|bytes| {
                             bytes[..2] == [0x89, 0x04]
                                 && matches!(bytes[2], 0x0d | 0x4d | 0x8d | 0xcd)
                         })
@@ -3313,6 +3340,14 @@ fn build_block_with_profile(
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(8))
                         .is_some_and(|bytes| bytes[..4] == [0x67, 0x89, 0x04, 0x25])
+                    || code
+                        .bytes
+                        .get(guest_offset..guest_offset.saturating_add(8))
+                        .is_some_and(|bytes| {
+                            bytes[..4] == [0x67, 0x89, 0x04, 0x05]
+                                || (bytes[..3] == [0x67, 0x89, 0x04]
+                                    && matches!(bytes[3], 0x45 | 0x85 | 0xc5))
+                        })
                     || code
                         .bytes
                         .get(guest_offset..guest_offset.saturating_add(8))
