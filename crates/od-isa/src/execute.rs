@@ -26601,8 +26601,7 @@ fn step_configured(
                         ScalarFloatMemoryRaxProfile::SubssUnmasked(_)
                             | ScalarFloatMemoryRaxProfile::SubsdUnmasked(_)
                     )
-                )
-                {
+                ) {
                     sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
                 } else {
                     sse.mxcsr & 0x1f80 == 0x1f80
