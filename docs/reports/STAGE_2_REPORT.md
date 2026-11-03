@@ -23957,8 +23957,8 @@ cases/repeats are `not_run`; no CPU tests, physical run, Mac mini/SSH, native
 admission, gates/faults or FXRSTOR work was performed. Parent S2-39 stays open.
 `git diff --check` and targeted validation of all 15 added local links/anchors
 passed. The 16×2 literal XMM table passed byte-length, byte-order and
-within-case distinctness checks. `python3 tools/check_layout.py` was attempted
-in the isolated worktree and reported only `Unmapped root file: .git` (the
-worktree metadata pointer); a main-worktree layout check is still required.
-Independent review is pending on this authored commit before transfer; local
-S2-39d implementation evidence remains separate.
+within-case distinctness checks. The isolated worktree layout check reported
+only `Unmapped root file: .git` (the worktree metadata pointer); after transfer,
+`python3 tools/check_layout.py` passed in the main worktree. Independent review
+of authored commit `30528e5` completed with no findings before transfer to
+`d028abd`; local S2-39d implementation evidence remains separate.
