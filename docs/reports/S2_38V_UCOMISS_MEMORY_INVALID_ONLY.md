@@ -17,11 +17,11 @@ alone does not fault. JIT and native backends remain denied.
 
 The independent runner oracle covers both NaN classes on both operand sides
 across IM, OSXMMEXCPT and all 64 prior sticky-status histories (1,024 cases),
-plus QNaN/SNaN, QNaN/subnormal mixtures, finite/infinity/signed-zero relations,
-six literal fixtures, MXCSR/profile/control/result/backend tampering and
-backend denial. Direct ISA tests cover CPL0–3 and fetch, form, feature,
-CR0.EM, CR0.TS, CR4.OSFXSR, AC, canonical-span and read-error ordering with
-rollback checks.
+plus QNaN+SNaN, finite/infinity/signed-zero relations, six literal fixtures,
+MXCSR/profile/control/result/backend tampering and backend denial. Direct ISA
+tests cover both QNaN+subnormal operand orders, CPL0–3 and fetch, form,
+feature, CR0.EM, CR0.TS, CR4.OSFXSR, AC, canonical-span and read-error
+ordering with rollback checks.
 
 The author checks passed: `cargo fmt --all -- --check`, focused
 `cargo test -p od-isa --offline ucomiss_invalid_only` (3 tests),
@@ -30,9 +30,9 @@ The author checks passed: `cargo fmt --all -- --check`, focused
 `cargo check --workspace --all-targets --offline`. The 1,024-case matrix also
 passed as a focused runner invocation. Sol/high independent review found and
 verified fixes for the backend guard, read-only mapping validation, and
-coverage gaps; final review is clean. `graphify update .` reported 12,121
-nodes, 26,183 edges and 364 communities. No physical x86 acceptance is
-claimed. ISSUE-033 remains an audit of the earlier mixed-event profiles; this
+coverage gaps; final review is clean. `graphify update .` in the author
+worktree reported 12,124 nodes, 26,193 edges and 359 communities. No physical
+x86 acceptance is claimed. ISSUE-033 remains an audit of the earlier mixed-event profiles; this
 invalid-only slice does not resolve it.
 
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
@@ -40,3 +40,13 @@ See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38v--exact-ucomiss-memory-inv
 [test-case format](../testing/TEST_CASE_FORMAT.md#s2-38v-ucomiss-memory-invalid-only-profile),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38v-ucomiss-memory-invalid-only-profile),
 and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
+
+## Main integration
+
+Integrated in main as `4138abd` plus merge `57fac30`. Combined verification
+passed: `cargo test -p od-isa --offline` (1,931 tests),
+`cargo test -p od-testkit --offline` (455 tests), and
+`cargo test -p od-runner --offline` (130 unit + 539 fixture tests), plus
+`cargo check --workspace --all-targets --offline` and formatting. Graphify
+after merge: 12,087 nodes / 26,255 edges / 358 communities. `od-x86-runner`
+and physical x86 were not run; ISSUE-033 remains open.

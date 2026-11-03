@@ -8464,9 +8464,11 @@ SNaN, unmasked SNaN through #XM and arithmetic #UD, and post-read
 subnormal/SNaN refusal. The independent runner oracle expands NaNs across
 both operand sides, IM, OSXMMEXCPT and all 64 prior sticky-status values
 (1,024 cases), and checks finite/infinity/signed-zero relations, result
-tampering and interpreter-only backend enforcement. Direct ISA tests cover
-CPL0–3, fetch-before-gate ordering, AC refusal before data access and
-subnormal atomic refusal. No physical x86 acceptance is claimed. ISSUE-033
-remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
+tampering and interpreter-only backend enforcement. It also checks QNaN+SNaN.
+The direct ISA tests cover both QNaN+subnormal operand orders, CPL0–3,
+fetch/form and prerequisite order, AC refusal, canonical-span and read-error
+rollback, and subnormal atomic refusal. The schema rejects writable data
+mappings and forged result/backend fields. No physical x86 acceptance is
+claimed. ISSUE-033 remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
 and [standalone report](../../../../docs/reports/S2_38V_UCOMISS_MEMORY_INVALID_ONLY.md).

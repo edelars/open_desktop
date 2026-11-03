@@ -17954,3 +17954,15 @@ See the [Stage 2 plan](../plans/STAGE_2.md#s2-38v--exact-ucomiss-memory-invalid-
 [S2-37cr base contract](#s2-37cr--bounded-long64-ucomiss-xmm0dword-ptr-rax-m32-memory-profile),
 [S2-38u base profile](#s2-38u--exact-comiss-memory-invalid-only-profile),
 [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
+Implementation evidence: six literal fixtures cover finite comparison, prior
+IE with QNaN, masked/unmasked SNaN, both unmasked exception routes, and
+subnormal/SNaN refusal. The independent runner oracle checks 1,024 NaN
+side/class × IM × OSXMMEXCPT × prior-sticky combinations, finite/infinity/
+signed-zero cases, QNaN+SNaN, tampering and backend denial. Direct ISA tests
+cover CPL0–3, both QNaN+subnormal operand orders, and fetch/form/gate/AC/span/read
+ordering with rollback. Combined main verification passed: od-isa 1,931,
+od-testkit 455, od-runner 130 unit + 539 fixture cases, workspace all-target
+offline check and formatting. Sol/high review is clean. Graphify reports
+12,087 nodes, 26,255 edges and 358 communities. ISSUE-033 remains open; no
+physical x86 acceptance is claimed. See the [main integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-38v)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38v-ucomiss-memory-invalid-only-profile).

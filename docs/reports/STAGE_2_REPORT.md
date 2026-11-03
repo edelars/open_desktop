@@ -22906,3 +22906,35 @@ open under ISSUE-019. See the [standalone report](S2_31EC_FLD_M80FP_HISTORICAL_F
 [CPU contract](../specs/CPU_CONTRACT.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp),
 [plan](../plans/STAGE_2.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ec-historical-zeoeue-for-raw-fld-m80fp).
+
+<a id="main-integration-s2-38v"></a>
+
+## Main integration: S2-38v
+
+S2-38v adds a separate immutable schema-v2 interpreter-only profile for exact
+Long64 `0F 2E 00` UCOMISS XMM0,m32 `[RAX]`, with an independent OSXMMEXCPT
+control echo. S2-37cr remains unchanged. The new profile admits only the
+bounded read-only four-byte source, refuses AC before data access, and checks
+the canonical span before one read. Any post-read subnormal operand is an
+atomic Unsupported result, including NaN/subnormal mixtures. QNaN is unordered
+without new IE; SNaN raises IE. Masked IE commits flags, while unmasked IE
+commits sticky IE and raises `#XM` or arithmetic `#UD` without changing
+RFLAGS/RIP or retiring. Prior IE alone does not fault. JIT/native stay closed.
+
+Six literal fixtures and an independent raw-bit oracle cover 1,024 NaN
+side/class × IM × OSXMMEXCPT × prior-sticky cases, finite/infinity/signed-zero
+relations, QNaN+SNaN, control/result/backend tampering and backend denial.
+Direct ISA tests cover CPL0–3, both QNaN+subnormal orders, exact fetch/form,
+gate order, AC, canonical span and read rollback. Sol/high review is clean after
+fixing the interpreter-only guard, read-only mapping validation and missing
+fault/tampering cases. On combined main, checks passed: od-isa 1,931,
+od-testkit 455, od-runner 130 unit + 539 fixture cases, workspace all-target
+offline check and formatting. Graphify reports 12,087 nodes, 26,255 edges and
+358 communities; labels were not refreshed without an LLM API key.
+`od-x86-runner` and physical x86 were not run. ISSUE-033 remains open for the
+earlier mixed NaN/denormal COMISS profiles; Stage 2 remains open. See the
+[standalone report](S2_38V_UCOMISS_MEMORY_INVALID_ONLY.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
+[plan](../plans/STAGE_2.md#s2-38v--exact-ucomiss-memory-invalid-only-profile),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38v-ucomiss-memory-invalid-only-profile),
+and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
