@@ -23153,6 +23153,46 @@ See the [S2-38aa report](S2_38AA_SQRTPS_MEMORY_UNMASKED.md),
 [S2-38ab report](S2_38AB_SQRTPD_MEMORY_UNMASKED.md),
 [CPU contracts](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).
 
+<a id="main-integration-s2-38ac-s2-38ad"></a>
+
+## Main integration: S2-38ac and S2-38ad
+
+S2-38ac adds exact Long64 legacy `F3 0F 58 00` ADDSS XMM0,m32 `[RAX]`, with
+SSE bit 25 and a separate immutable schema-v2 interpreter-only profile.
+S2-38ad adds exact `F2 0F 58 00` ADDSD XMM0,m64 with SSE2 bit 26 and separate
+controls, schema admission and result validation. Both preserve their masked
+memory and register profiles. MXCSR requires DAZ=FTZ=0 and OM=UM=1 while
+accepting all RC modes, IM/DM/ZM/PM masks and prior sticky histories. They
+validate canonical spans before a single read, reject AC locally before memory
+access, preserve XMM/RIP/retirement on arithmetic faults, and remain
+interpreter-only.
+
+ADDSS's independent binary32 oracle covers 12 operand/event classes × 4 RC ×
+64 old sticky histories × 8 IM/DM/PM patterns × 2 OSXMMEXCPT mappings (49,152
+cases), including signed NaNs with subnormal operands, directed overflow,
+cancellation, exact tiny results and gate priority at CPL0–3. ADDSD's independent
+binary64 oracle covers 20 vectors over the same control matrix (81,920 cases),
+including signed QNaN/SNaN paired with subnormal in both operand positions.
+Literal fixtures and tampering checks cover controls, low/high XMM, IE/DE/PE
+status, RIP, exception mapping, #GP(0) error code, retirement and permissions.
+Both final Sol/high reviews were clean after coverage fixes; neither slice
+introduces a production semantic defect.
+
+On combined main, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `python3
+tools/check_layout.py`, and `git diff --check` passed. Directly affected package
+tests passed: od-isa 1,956, od-testkit 456, and od-runner 136 unit + 559 fixture
+tests. `graphify update .` reported 12,382 nodes / 26,891 edges / 381
+communities; labels were not refreshed without an LLM API key. A full-workspace
+test attempt exceeded the context executor's 300-second response limit, so its
+final exit status was not captured; the affected package suites above did pass
+on main. No `od-x86-runner` or physical x86 acceptance was run.
+
+Main commits: contract preparation `568edfe`; S2-38ac `1e6f7e9`, `899ecb1`,
+`217b14a`, `8833ef8`; S2-38ad `cb39dec`, `8e0f493`. The standalone reports are
+[S2-38ac](S2_38AC_ADDSS_MEMORY_UNMASKED.md) and
+[S2-38ad](S2_38AD_ADDSD_MEMORY_UNMASKED.md). Stage 2 remains open.
+
 ## Isolated implementation: S2-38ab
 
 S2-38ab adds the exact schema-v2 interpreter-only SQRTPD XMM0,m128 `[RAX]`

@@ -43,10 +43,13 @@ result/control/exception tampering, and non-interpreter backends.
 
 ## Validation
 
-- `cargo test -p od-isa --offline --quiet`: 1,954 passed.
+- `cargo test -p od-isa --offline --quiet`: 1,954 passed in the isolated
+  worktree; the integrated main run passed 1,956.
 - `cargo test -p od-testkit --offline --quiet`: 456 passed.
-- `cargo test -p od-runner --offline --quiet`: 135 unit and 558 fixture tests passed.
-- Focused ADDSS matrix: 49,152 cases passed in 20.41 seconds.
+- `cargo test -p od-runner --offline --quiet`: isolated 135 unit/558 fixture;
+  integrated main 136 unit/559 fixture tests passed.
+- Focused ADDSS matrix: 49,152 cases passed in 20.41 seconds; the final focused
+  gate-priority test passed across CPL0–3.
 - Focused ISA and fixture tests passed, including the three literal cases.
 - `cargo check --workspace --all-targets --offline`: passed.
 - `cargo fmt --all -- --check` and `git diff --check`: passed.
@@ -54,10 +57,18 @@ result/control/exception tampering, and non-interpreter backends.
   and the two missing historical oracle manifests already tracked as ISSUE-023.
   The new report and fixture links resolve; no layout/evidence files were
   moved or fabricated.
-- `graphify update .`: refreshed to 12,348 nodes, 26,814 edges, and 392
-  communities. Community labels were not regenerated because no LLM API key is
-  configured.
-- Independent Sol/high code review: pending.
+- Integrated main checks: `cargo fmt --all -- --check`,
+  `cargo check --workspace --all-targets --offline`, `python3
+  tools/check_layout.py`, and `git diff --check` passed. Main package tests:
+  od-isa 1,956, od-testkit 456, runner 136 unit + 559 fixture passed.
+- Main `graphify update .`: 12,382 nodes, 26,891 edges, 381 communities;
+  community labels were not regenerated without an LLM API key.
+- Independent Sol/high code review: clean after numeric-matrix and gate-priority
+  coverage fixes.
+- A combined `cargo test --workspace --offline --quiet` attempt exceeded the
+  context executor's 300-second response limit; its final exit status was not
+  captured. All directly affected package suites above passed on integrated
+  main.
 
 No physical x86 acceptance is claimed. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ac--exact-addss-memory-profile-with-unmasked-exceptions),

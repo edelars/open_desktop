@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последние интегрированные срезы — S2-38aa и S2-38ab. На объединённом main прошли: `od-isa` 1,952; `od-testkit` 456; `od-runner` 134 unit + 557 fixture tests; workspace all-target offline check, `cargo fmt --all -- --check`, `tools/check_layout.py` и `git diff --check`. Graphify после интеграции: 12,319 nodes / 26,744 edges / 372 communities; community labels не обновлялись без настроенного LLM API key. Контрактные ревью Sol/high и Astra/high чистые; независимые Sol/high code reviews обоих срезов чистые после исправления validator, signed-NaN и tampering coverage. `od-x86-runner` и физический x86 не запускались; новые профили остаются interpreter-only, native/JIT закрыты. ISSUE-019 остаётся открытым для более широкого x87/native acceptance, ISSUE-025 — для RCPSS/RCPPS tiny-result threshold, ISSUE-033 — для аудита прежних mixed NaN/denormal COMISS-профилей; Этап 2 остаётся открытым. Предыдущие пары S2-31ef/S2-38y и S2-31eg/S2-38z, а также текущая S2-38aa/S2-38ab описаны в [отчёте](../reports/STAGE_2_REPORT.md#main-integration-s2-38aa-s2-38ab).
+Последние интегрированные срезы — S2-38ac и S2-38ad. На объединённом main прошли: `od-isa` 1,956; `od-testkit` 456; `od-runner` 136 unit + 559 fixture tests; workspace all-target offline check, `cargo fmt --all -- --check`, `tools/check_layout.py` и `git diff --check`. Graphify после интеграции: 12,382 nodes / 26,891 edges / 381 communities; community labels не обновлялись без настроенного LLM API key. Контрактные ревью Sol/high и Astra/high чистые; независимые Sol/high code reviews обоих срезов чистые после исправления матриц и gate/tampering coverage. Полный workspace test command достиг лимита ожидания контекстного исполнителя, поэтому его итоговый exit code не зафиксирован; затронутые package suites на main прошли. `od-x86-runner` и физический x86 не запускались; новые профили остаются interpreter-only, native/JIT закрыты. ISSUE-019 остаётся открытым для более широкого x87/native acceptance, ISSUE-025 — для RCPSS/RCPPS tiny-result threshold, ISSUE-033 — для аудита прежних mixed NaN/denormal COMISS-профилей; Этап 2 остаётся открытым. Предыдущие пары S2-31ef/S2-38y и S2-31eg/S2-38z, а также предыдущая S2-38aa/S2-38ab описаны в [отчёте](../reports/STAGE_2_REPORT.md#main-integration-s2-38aa-s2-38ab); текущая пара — в [отчёте S2-38ac/S2-38ad](../reports/STAGE_2_REPORT.md#main-integration-s2-38ac-s2-38ad).
 
 Предыдущий завершённый срез S2-37dd — exact legacy SQRTPS XMM0,m128 `[RAX]` (`0F 51 00`): SSE bit 25, полный fetch, обязательное 16-byte alignment при AC=0/1, canonical48 span и ровно один read16. Результат строится только по четырём memory lanes; masked-only admission допускает все RC и прежние sticky flags, а binary32 integer sqrt агрегирует IE|DE|PE. Focused ISA 3/3; od-isa 1736, od-testkit 454, runner 112 unit + 485 fixture; workspace all-target check, fmt/layout/Graphify и независимый Sol/high review прошли. Первый полный workspace test исчерпал место (`No space left on device`); после очистки только disposable target relevant component suites прошли. Физическая x86-проверка не заявляется. Interpreter-only; native/JIT/C ABI/generic/fragment и unmasked/#XM path закрыты.
 
@@ -18620,35 +18620,37 @@ and [standalone report](../reports/S2_38AB_SQRTPD_MEMORY_UNMASKED.md).
 
 #### S2-38ac — unmasked outcomes for exact ADDSS memory form
 
-Implement a separate immutable interpreter-only schema-v2 profile for exact
+Implemented a separate immutable interpreter-only schema-v2 profile for exact
 Long64 `F3 0F 58 00`, SSE bit 25 and read-only m32 `[RAX]`, one read4, budget
-one and stop RIP=entry+4. Preserve masked-memory S2-37di and register S2-37bc.
-Require `DAZ=FTZ=0`, reserved MXCSR bits clear and `OM=UM=1`; allow every RC,
-IM/DM/ZM/PM mask and prior sticky history. Keep the existing scalar ADDSS
-arithmetic and independent binary32 oracle. Cover RC × 64 sticky histories ×
-IM/DM/PM × OSXMMEXCPT over the established scalar operand classes, including
-signed NaNs, infinities, subnormals, rounding, cancellation and event
-combinations. Verify pre-event IE/DE versus post-event PE status, complete
-XMM/RIP/retirement suppression, full-fetch and gate priority, CPL, AC/local
-rejection and unaligned success, canonical span/read rollback, read-only
-schema, fixtures, tampering and interpreter-only backend denial. Unmasked
-OE/UE and native/JIT/C ABI/generic/fragment/physical-x86 acceptance remain
-closed. See the
+one and stop RIP=entry+4. Masked-memory S2-37di and register S2-37bc remain
+separate. The profile requires `DAZ=FTZ=0`, reserved MXCSR bits clear and
+`OM=UM=1`, while admitting every RC, IM/DM/ZM/PM mask and prior sticky history.
+The independent binary32 oracle executed 12 operand/event classes × 4 RC × 64
+sticky histories × 8 IM/DM/PM patterns × 2 OSXMMEXCPT mappings (49,152 cases),
+including signed NaNs with subnormal operands, directed overflow, cancellation
+and exact tiny results. Three literal fixtures and focused checks cover
+pre-event IE/DE versus post-event PE, whole-XMM/RIP/retirement suppression,
+fetch/gate priority at CPL0–3, AC/local rejection, unaligned access, canonical
+span/read rollback, read-only schema, tampering and backend denial. Sol/high
+reviews are clean after matrix and gate-priority fixes. Unmasked OE/UE and
+native/JIT/C ABI/generic/fragment/physical-x86 acceptance remain closed. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ac--exact-addss-memory-profile-with-unmasked-exceptions).
 
 #### S2-38ad — unmasked outcomes for exact ADDSD memory form
 
-Implement a separate immutable interpreter-only schema-v2 profile for exact
+Implemented a separate immutable interpreter-only schema-v2 profile for exact
 Long64 `F2 0F 58 00`, SSE2 bit 26 and read-only m64 `[RAX]`, one read8, budget
-one and stop RIP=entry+4. Preserve masked-memory S2-37dj and register S2-37bb.
-Require `DAZ=FTZ=0`, reserved MXCSR bits clear and `OM=UM=1`; permit all RC,
-IM/DM/ZM/PM and prior sticky histories. Reuse existing scalar ADDSD raw
-arithmetic and the independent binary64 oracle. Cover RC × 64 sticky histories
-× IM/DM/PM × OSXMMEXCPT over rounding/cancellation, tiny/subnormal, overflow,
-infinity, signed NaNs and event combinations. Verify pre-event IE/DE and
-post-event PE handling, atomic XMM/RIP/retirement suppression, fetch/gate/CPL,
-AC/local rejection plus unaligned access, canonical span/read rollback,
-read-only schema, fixtures, tampering and interpreter-only backend denial.
-Unmasked OE/UE and native/JIT/C ABI/generic/fragment/physical-x86 acceptance
-remain outside this slice. See the
+one and stop RIP=entry+4. Masked-memory S2-37dj and register S2-37bb remain
+separate. The profile requires `DAZ=FTZ=0`, reserved MXCSR bits clear and
+`OM=UM=1`, while admitting every RC, IM/DM/ZM/PM mask and prior sticky history.
+The independent binary64 oracle executed 20 operand/event vectors × 4 RC × 64
+sticky histories × 8 IM/DM/PM patterns × 2 OSXMMEXCPT mappings (81,920 cases),
+including signed QNaN/SNaN paired with subnormals in both operand positions.
+Four literal fixtures and focused checks cover pre-event IE/DE and post-event
+PE, atomic XMM/RIP/retirement suppression, fetch/gate/CPL, AC/local rejection,
+unaligned access, canonical span/read rollback, read-only schema, low/high XMM
+and MXCSR tampering, #GP(0) error code, and backend denial. Sol/high reviews
+are clean after NaN+DE and tampering coverage fixes. Unmasked OE/UE and
+native/JIT/C ABI/generic/fragment/physical-x86 acceptance remain outside this
+slice. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ad--exact-addsd-memory-profile-with-unmasked-exceptions).

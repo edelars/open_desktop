@@ -23,7 +23,18 @@ The independent testkit oracle validates complete result state and exceptions. A
 
 ## Review follow-up
 
-Sol/high review found two coverage gaps and no production-semantic defect. The matrix now includes signed QNaN/SNaN paired with a subnormal in both operand positions over every control combination; fixture tampering now covers low/high XMM, IE/DE/PE sticky status and #GP(0)'s error code. Focused fixture and matrix tests, formatting, affected-crate check and Graphify refresh passed after these additions. A new independent review of the follow-up commit is pending.
+Sol/high review found two coverage gaps and no production-semantic defect. The matrix now includes signed QNaN/SNaN paired with a subnormal in both operand positions over every control combination; fixture tampering now covers low/high XMM, IE/DE/PE sticky status and #GP(0)'s error code. Focused fixture and matrix tests, formatting, affected-crate check and Graphify refresh passed after these additions. Independent Sol/high re-review is clean.
+
+## Main integration
+
+The profile and review-fix commits were transferred to main. Combined main checks
+passed: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
+--offline`, `python3 tools/check_layout.py`, and `git diff --check`. Directly
+affected package suites passed: od-isa 1,956, od-testkit 456, runner 136 unit
+and 559 fixture tests. Graphify after both slices: 12,382 nodes, 26,891 edges,
+381 communities. A full-workspace test attempt exceeded the context executor's
+300-second response limit without a captured final exit status; no physical x86
+acceptance is claimed.
 
 ## Boundaries
 
