@@ -1119,11 +1119,13 @@ fn is_checked_dword_load_address(
         && matches!(operand.scale, 1 | 2 | 4 | 8)
         && i32::try_from(operand.displacement).is_ok();
     let address32_profile = operand.address_size == od_isa::OperandSize::Dword
-        && ((instruction_length == 3
+        && ((matches!(instruction_length, 3 | 4)
             && matches!(operand.base, AddressBase::Register(od_isa::Register::Rcx))
             && operand.index.is_none()
             && operand.scale == 1
-            && operand.displacement == 0)
+            && ((instruction_length == 3 && operand.displacement == 0)
+                || (instruction_length == 4
+                    && i8::try_from(operand.displacement).is_ok())))
             || (matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
             && ((instruction_length == 3 && operand.displacement == 0)
                 || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok())
