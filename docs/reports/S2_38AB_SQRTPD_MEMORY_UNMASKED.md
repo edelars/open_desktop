@@ -59,8 +59,18 @@ profiles remain separate.
   `STAGE_2_REPORT.md` links point to work manifests absent from this checkout.
   No project layout was changed in this slice.
 
-The implementation is committed in isolated worktree commit `4907bba`; the
-signed-NaN review fix is `fc7d0a2`. Independent Sol/high re-review is pending
-in the integrating task. Native/JIT,
-C ABI, generic/fragment execution and physical x86 acceptance remain closed;
-no physical-hardware run is claimed.
+The signed-NaN review fix adds 40 scenarios: positive/negative QNaN/SNaN in
+lane 0, lane 1, and both lanes, with IM masked/unmasked and both OSXMMEXCPT
+mappings. QNaN leaves IE clear; SNaN raises IE and follows the expected
+suppression/mapping path. Sol/high re-review of this fix was clean.
+
+Combined main verification after pairing with S2-38aa: `od-isa` 1,952,
+`od-testkit` 456, and `od-runner` 134 unit + 557 fixture tests; workspace
+offline check, fmt, layout, and diff checks passed. Graphify after integration:
+12,319 nodes, 26,744 edges, 372 communities. Main commits are `ad53bac`
+(implementation), `170b9ce`/`5479ff8` (report/layout note), `a762373`
+(signed-NaN tests), and `3c77b5f` (coverage docs); contract preparation is
+`cb3cd3b`. The isolated worktree's full runner fixture suite was stopped after
+unit tests, but the full combined main runner suite passed. Native/JIT, C ABI,
+generic/fragment execution and physical x86 acceptance remain closed; no
+physical-hardware run is claimed.

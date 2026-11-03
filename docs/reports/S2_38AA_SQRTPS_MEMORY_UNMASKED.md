@@ -63,3 +63,11 @@ interpreter and its schema-v2 fixture contract.
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38aa--exact-sqrtps-memory-profile-with-unmasked-exceptions),
 [stage plan](../plans/STAGE_2.md#s2-38aa--unmasked-outcomes-for-exact-sqrtps-memory-form),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md).
+
+Combined main verification after pairing with S2-38ab: `od-isa` 1,952,
+`od-testkit` 456, and `od-runner` 134 unit + 557 fixture tests; workspace
+offline check, fmt, layout, and diff checks passed. Graphify after integration:
+12,319 nodes, 26,744 edges, 372 communities. Main commits are `1205db3`
+(implementation), `ee12bee` (report), and `7027e79` (review fixes); contract
+preparation is `cb3cd3b`. Independent Sol/high review is clean after fixing
+early-fault MXCSR preservation, signed NaN coverage, and validator tampering.

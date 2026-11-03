@@ -23115,6 +23115,44 @@ and ISSUE-033 remain open; Stage 2 remains open. See the [S2-31eg report]
 (S2_38Z_SQRTSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md),
 and [stage plan](../plans/STAGE_2.md).
 
+
+<a id="main-integration-s2-38aa-s2-38ab"></a>
+
+## Main integration: S2-38aa and S2-38ab
+
+S2-38aa adds exact Long64 `0F 51 00` SQRTPS XMM0,m128 `[RAX]`, with SSE
+bit 25 and a separate immutable schema-v2 interpreter-only profile. S2-38ab
+adds exact `66 0F 51 00` SQRTPD memory with SSE2 bit 26 and its own immutable
+profile and controls echo. Both preserve their prior masked memory and register
+profiles, require one read-only read16 and alignment16 independently of AC,
+and use precision-specific independent integer oracles.
+
+Both paths aggregate lane IE/DE before any PE decision. An unmasked pre-event
+commits applicable aggregate status and suppresses PE, the complete XMM result,
+RIP and retirement. Masked pre-events permit all lanes to compute; aggregate PE
+then follows PM. SQRTPS covers 10,000 four-lane event/mask/OSXMMEXCPT cases
+plus RC/sticky and signed-NaN checks. SQRTPD covers 102,400 two-lane event ×
+IM/DM/PM × OSXMMEXCPT × RC × sticky cases and 40 signed-NaN scenarios; positive
+minimum subnormal `0x1` yields exact `2^-537` with DE and no PE. Sol/high
+reviews closed coverage findings for early-fault MXCSR preservation, signed
+NaNs and result/exception tampering; both final reviews were clean.
+
+On combined main, `cargo fmt --all -- --check`, `python3
+tools/check_layout.py`, `git diff --check`, `cargo check --workspace
+--all-targets --offline`, `cargo test -p od-isa --offline --quiet` (1,952),
+`cargo test -p od-testkit --offline --quiet` (456), and `cargo test -p
+od-runner --offline --quiet` (134 unit + 557 fixture) passed. Graphify after
+integration: 12,319 nodes / 26,744 edges / 372 communities; labels were not
+refreshed without an LLM API key. No `od-x86-runner` or physical x86 acceptance
+was run. Native/JIT/C ABI/generic/fragment routes remain closed; Stage 2 and
+ISSUE-019/033 remain open.
+
+Main commits: S2-38aa `1205db3`, `ee12bee`, `7027e79`; S2-38ab `ad53bac`,
+`170b9ce`, `5479ff8`, `a762373`, `3c77b5f`; contract preparation `cb3cd3b`.
+See the [S2-38aa report](S2_38AA_SQRTPS_MEMORY_UNMASKED.md),
+[S2-38ab report](S2_38AB_SQRTPD_MEMORY_UNMASKED.md),
+[CPU contracts](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).
+
 ## Isolated implementation: S2-38ab
 
 S2-38ab adds the exact schema-v2 interpreter-only SQRTPD XMM0,m128 `[RAX]`
