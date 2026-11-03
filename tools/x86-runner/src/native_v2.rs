@@ -176,8 +176,7 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
     let input_path = input.ok_or(
         "usage: od-x86-runner --reduce-native-xorpd CASE.json [--limit N] [--output-dir DIR]",
     )?;
-    let original_bytes =
-        std::fs::read(&input_path).map_err(|e| format!("could not read fixture: {e}"))?;
+    let original_bytes = read_reducer_input(&input_path)?;
     let original = Fixture::from_json(&original_bytes)
         .map_err(|e| format!("invalid strict-schema fixture: {e}"))?;
     if original.fixture.profile != v2::Profile::LongNativeXorpdXmm0Xmm1V1 {
@@ -201,9 +200,7 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
         &original.input_sha256,
         budget,
         |candidate| {
-            let bytes = candidate.to_json().map_err(|e| e.to_string())?;
-            let loaded = Fixture::from_json(&bytes)
-                .map_err(|e| format!("candidate failed strict validation: {e}"))?;
+            let loaded = load_reducer_candidate(&original, candidate)?;
             Ok(execute(&loaded))
         },
     )?;
@@ -269,9 +266,9 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
         "initial_hamming_weight": reduction.initial_hamming_weight,
         "final_hamming_weight": reduction.final_hamming_weight,
         "provenance": original.fixture.provenance,
-        "replay_original": format!("od-x86-runner --fixture {}/original.case.json --json", output_path.display()),
-        "replay_reduced": reduced_bytes.as_ref().map(|_| format!("od-x86-runner --fixture {}/reduced.case.json --json", output_path.display())),
-        "interpreter_native_comparison_replay": reduced_bytes.as_ref().map(|_| format!("od-runner --fixture {}/reduced.case.json --engine compare --json", output_path.display())),
+        "replay_original": format!("od-x86-runner --fixture {} --json", shell_quote(&output_path.join("original.case.json").display().to_string())),
+        "replay_reduced": reduced_bytes.as_ref().map(|_| format!("od-x86-runner --fixture {} --json", shell_quote(&output_path.join("reduced.case.json").display().to_string()))),
+        "interpreter_native_comparison_replay": reduced_bytes.as_ref().map(|_| format!("od-runner --fixture {} --engine compare --json", shell_quote(&output_path.join("reduced.case.json").display().to_string()))),
         "native_execution": "uses existing native-v2 executor, admission and ptrace-supervised disposable tracee",
         "physical_mac_mini": "not_run",
     });
@@ -293,6 +290,39 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+fn read_reducer_input(path: &str) -> Result<Vec<u8>, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("could not read fixture: {e}"))?;
+    let mut bytes = Vec::new();
+    file.take(v2::MAX_FIXTURE_JSON_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("could not read fixture: {e}"))?;
+    if bytes.len() > v2::MAX_FIXTURE_JSON_BYTES {
+        return Err(format!(
+            "fixture exceeds {} byte schema limit",
+            v2::MAX_FIXTURE_JSON_BYTES
+        ));
+    }
+    Ok(bytes)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn load_reducer_candidate(
+    original: &LoadedFixture,
+    candidate: &Fixture,
+) -> Result<LoadedFixture, String> {
+    if candidate == &original.fixture {
+        return Ok(LoadedFixture {
+            fixture: original.fixture.clone(),
+            input_sha256: original.input_sha256.clone(),
+        });
+    }
+    let bytes = candidate.to_json().map_err(|e| e.to_string())?;
+    Fixture::from_json(&bytes).map_err(|e| format!("candidate failed strict validation: {e}"))
 }
 
 fn validate_native_reducer_output(path: &std::path::Path) -> Result<(), String> {
@@ -1855,6 +1885,33 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reducer_preserves_raw_digest_for_original_and_canonicalizes_candidates() {
+        let fixture = od_testkit::native_xorpd::generate_native_xorpd_fixture(
+            od_testkit::native_xorpd::NATIVE_XORPD_FIXED_SEEDS[0],
+            0,
+        );
+        let canonical = fixture.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&canonical).unwrap();
+        let reordered = serde_json::to_vec(&value).unwrap();
+        assert_ne!(canonical, reordered);
+        let mut raw = b" \n".to_vec();
+        raw.extend_from_slice(&reordered);
+        raw.extend_from_slice(b"\n  ");
+        let original = Fixture::from_json(&raw).unwrap();
+        let same = load_reducer_candidate(&original, &original.fixture).unwrap();
+        assert_eq!(same.input_sha256, od_testkit::sha256_hex(&raw));
+
+        let mut candidate = original.fixture.clone();
+        candidate.initial_state.sse.as_mut().unwrap().xmm[2] = "00".repeat(16);
+        let changed = load_reducer_candidate(&original, &candidate).unwrap();
+        assert_eq!(
+            changed.input_sha256,
+            od_testkit::sha256_hex(&candidate.to_json().unwrap())
+        );
+        assert_ne!(changed.input_sha256, original.input_sha256);
+    }
     use od_testkit::case::{MemoryRegionSpec, Provenance};
 
     fn region(
@@ -7680,5 +7737,26 @@ mod tests {
         let result = execute(&loaded);
         assert!(matches!(result.outcome, Outcome::Unsupported { ref reason }
             if reason == "this profile is local-only; native state does not observe every profile field"));
+    }
+
+    #[test]
+    fn reducer_input_reader_rejects_oversized_fixture_with_bounded_read() {
+        let path =
+            std::env::temp_dir().join(format!("od-x86-runner-oversize-{}", std::process::id()));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&vec![b' '; v2::MAX_FIXTURE_JSON_BYTES + 1])
+            .unwrap();
+        drop(file);
+        let error = read_reducer_input(path.to_str().unwrap()).unwrap_err();
+        std::fs::remove_file(path).unwrap();
+        assert!(error.contains("schema limit"));
+    }
+
+    #[test]
+    fn replay_shell_quote_handles_spaces_and_apostrophes() {
+        assert_eq!(
+            shell_quote("work/stage2/a case/it's.case.json"),
+            "'work/stage2/a case/it'\\''s.case.json'"
+        );
     }
 }

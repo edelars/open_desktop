@@ -17302,7 +17302,7 @@ schedule, bytewise-XOR oracle comparison, mismatch-position fingerprint, two-run
 stability and non-XMM state checks are shared reducer logic.
 
 Evidence output binds the original and optional reduced fixture, result pairs,
-fixture/result hashes, oracle XMM0, initial/final fingerprints, run budget and
+fixture/result hashes, original/reduced oracle states, initial/final fingerprints, run budget and
 progress, provenance and replay commands. A correct initial native result is
 reported as `no_initial_mismatch` and does not create a reduced fixture.
 Synthetic reducer checks passed (11 focused `od-testkit` tests), including
@@ -17312,9 +17312,11 @@ interpreter corpus verifier tests passed (5). `cargo fmt --all -- --check`,
 `cargo check --workspace --all-targets --offline`, and Linux-target
 `cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --tests --offline`
 passed. The Linux-target runner test binary could not be linked with the local
-macOS linker, so x86-runner runtime tests were not executed. `python3
- tools/check_layout.py` reports the linked worktree `.git` pointer as an unmapped
-root file (an existing worktree-layout condition). Native Linux replay and
+macOS linker, so x86-runner runtime tests were not executed. Linux-target
+regression tests compile, covering original raw digests for whitespace/reordered
+keys, over-limit input rejection and shell quoting for spaces/apostrophes.
+`python3 tools/check_layout.py` reports the linked worktree `.git` pointer as an
+unmapped root file (an existing worktree-layout condition). Native Linux replay and
 physical Mac mini execution are `not_run`; synthetic checks are not CPU or
 hardware evidence. S2-42 remains open because S2-21/S2-39/S2-40, additional
 corpus groups and hardware acceptance are still outstanding. See [protocol](../testing/S2_42D_NATIVE_XORPD_REDUCER.md),
