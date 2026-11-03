@@ -18039,3 +18039,75 @@ schema/control/result tampering, and backend denial. Intel SDM Rev. 093 Vol. 2A 
 QNaN/SNaN invalid behavior and EFLAGS suppression on unmasked SIMD exceptions.
 Source: [Vol. 2A COMISD](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=317).
 Physical x86 acceptance is not claimed.
+
+## S2-31ee — historical sticky flags on exact bounded FILD memory forms
+
+Extend only exact bare Long64 `DF 00` (`FILD m16int [RAX]`), `DB 00`
+(`FILD m32int [RAX]`) and `DF 28` (`FILD m64int [RAX]`). The pre-read
+status gate admits any combination of the six x87 sticky flags IE/DE/ZE/OE/UE/PE
+(PE was already admitted by the prior predicate) and rejects SF, ES or B: `FSW & 0x80c0 == 0`. Keep the existing FCW allowlist
+`0x037f/0x077f/0x0b7f/0x0f7f`, existing x87-state requirement and Empty
+physical destination `(TOP+7)&7`; do not inspect the old ST(0) tag or unrelated
+tags/payloads. This is a local FILD exception-history policy and must not widen
+any neighboring x87 profile.
+
+Validate the full canonical48 source range for its operand width, then perform
+exactly one typed read and no writes. Convert signed i16/i32/i64 to canonical
+binary80 exactly with the existing integer-only packer. Commit destination
+payload/tag, TOP, C1=0, FIP/FDP/RIP and one retirement only after the read
+succeeds; preserve all six admitted sticky flags, control/FOP fields, GPRs,
+RFLAGS and unrelated x87 state. Reject SF including SF+IE before memory access.
+Read/span faults roll back the complete architectural state; backend failures
+remain diagnostics. Native/JIT admission stays closed.
+
+Use independent literal binary80 expectations for each width across all 64
+sticky histories, eight TOP values, four FCW values and both previous C1 values,
+including zero, signed values and width extrema. Check SF/SF+IE/ES/B and invalid
+destination/environment no-read behavior, range/read rollback, unaligned reads,
+repeated FILD/FNSTSW/FNCLEX/retry and schema/backend denial. Preserve the
+existing `DB 00` SF+IE denial case. Intel SDM Rev. 093 Vol. 2A FILD
+“Description/Operation/FPU Flags” pp. 3-342–3-343 defines the conversion and
+C1 behavior ([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=460));
+Vol. 1 §8.1.3.3 defines sticky exception flags
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=211)).
+No physical x86 acceptance is claimed.
+
+## S2-38x — exact UCOMISD memory invalid-only profile
+
+Create a separate immutable schema-v2 interpreter-only profile
+`s2-long-ucomisd-memory-rax-invalid-v1` for exact Long64 legacy
+`66 0F 2E 00` (`UCOMISD XMM0,m64 [RAX]`), one executable mapping, one
+read-only eight-byte data mapping, budget one and stop RIP entry+4. Add its own
+`ucomisd_memory_rax_invalid_controls` echo for SSE2, CR0.EM, CR0.TS,
+CR4.OSFXSR and CR4.OSXMMEXCPT; preserve S2-37cp (`ucomisd_memory_rax_controls`) and S2-38w fields and behavior; do not alter COMISD or existing masked UCOMISD behavior.
+Fixtures are Ring0; direct ISA checks cover CPL0–3. Validate the actual memory
+bytes using an independent raw-u64 oracle. Apply complete fetch/exact-form
+checks before SSE2/EM/OSFXSR `#UD`, then TS `#NM`; require supported MXCSR bits
+`0xffbf`, reserved bits clear, DAZ=FTZ=0 and DM/ZM/OM/UM/PM masked. IM, RC and
+prior sticky flags may vary. AC=1 is pre-read Unsupported; AC=0 permits
+unaligned reads. Validate canonical48 `[RAX,RAX+7]` before one `read8`.
+
+After a successful read, any subnormal operand is atomic Unsupported, including
+NaN/subnormal mixtures. QNaN is unordered without new IE; SNaN in either
+operand raises IE. On committed comparisons, set CF/ZF/PF to `0`, CF, ZF or
+CF|PF|ZF for greater, less, equal or unordered; clear OF/SF/AF and preserve
+other RFLAGS. Masked IE commits sticky IE and these comparison flags. Unmasked
+IE commits IE and raises `#XM` or arithmetic `#UD` according to OSXMMEXCPT,
+without updating RFLAGS/RIP or retiring. Prior IE alone does not fault. A
+successful instruction advances RIP by four and retires once.
+Preserve other MXCSR stickies and unrelated state. Native/JIT/C ABI/generic and
+fragment routes remain closed; ISSUE-033's existing COMISS mixed-event audit
+remains open.
+
+Cover both NaN sides/classes × IM × OSXMMEXCPT × all 64 prior sticky histories
+(1,024 combinations), QNaN+SNaN in both orders, prior-only IE, subnormal
+refusals, finite/infinity/signed-zero comparisons and binary64 boundaries; provide
+literal fixtures for finite, QNaN with IM=0, masked SNaN, unmasked `#XM`,
+unmasked arithmetic `#UD` and NaN/subnormal refusal;
+probe all four RC values. Check fetch/form/gate/AC/span/read priority, callback
+counts, CPL, exception metadata, state suppression, schema/control/result
+tampering and backend denial. Intel SDM Rev. 093 Vol. 2B UCOMISD pp. 4-733–
+4-734 ([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=741));
+Vol. 1 §§11.5.2.1–2 and 11.5.3
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=284)).
+No physical x86 acceptance is claimed.

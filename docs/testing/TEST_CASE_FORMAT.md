@@ -1447,3 +1447,24 @@ controls and the strict validator uses actual data bytes as MULPD's second
 operand. Results require interpreter backend; other backends must report
 unsupported without a snapshot. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dw--masked-only-long64-mulpd-xmm0m128-rax)
 and [fixture](../../tests/fixtures/x86/stage2/s2_37dw_mulpd_m128_memory_source_two_binary64_lanes.case.json).
+
+## S2-38x UCOMISD memory invalid-only profile
+
+Use profile `s2-long-ucomisd-memory-rax-invalid-v1` with exact
+`66 0F 2E 00`, one read-only m64 source at RAX, separate UCOMISD controls,
+budget one and stop RIP entry+4. The oracle reads actual memory bytes and
+implements UCOMISD's QNaN/SNaN distinction independently. Evidence covers
+1,024 NaN side/class × IM × OSXMMEXCPT × prior-sticky combinations, QNaN+SNaN
+in both orders, prior-only IE, subnormal Unsupported, finite/infinity/zero
+relations and binary64 boundaries. Preserve S2-37cp and S2-38w profiles and keep
+ISSUE-033 open; deny non-interpreter backends.
+
+## S2-31ee FILD historical sticky flags
+
+Extend only exact bare `DF 00`, `DB 00`, and `DF 28` FILD profiles. PE is already
+admitted; newly admit historical IE/DE/ZE/OE/UE. Positive
+cases span 64 sticky histories × 8 TOP × 4 FCW × 2 prior C1 values for each
+width, with independent literal binary80 answers. Evidence must show all six
+sticky flags survive success, C1 clears, and SF (including SF+IE), ES or B
+rejects before reading. Retain the existing `DB 00` SF+IE negative case and
+prove read/span failure rollback and native/JIT denial.

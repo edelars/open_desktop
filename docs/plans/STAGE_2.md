@@ -666,6 +666,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38u | Exact Long64 COMISS XMM0,m32 [RAX], invalid-only unmasked-IE profile; post-read subnormal operands are Unsupported; interpreter-only | 1,024 NaN side/class × IM × OSXMMEXCPT × old-sticky cases; finite/infinity/zero relations, pre-read gates, AC/span/read rollback, schema/result/backend tampering and five fixtures; integrated main: ISA COMISS 9, testkit 455, runner 129+537, workspace/fmt pass; Graphify 12,054/26,189/366; clean Sol/high review; ISSUE-033 remains an audit; no physical x86 acceptance |
 | [x] | S2-38v | Exact Long64 UCOMISS XMM0,m32 [RAX], invalid-only unmasked-IE profile; post-read subnormal operands are Unsupported; separate immutable schema-v2 profile, interpreter-only | 1,024 NaN side/class × IM × OSXMMEXCPT × prior-sticky cases; QNaN+SNaN and QNaN+subnormal both sides; finite/infinity/signed-zero, prior-only IE; CPL0–3, fetch/form/gate/AC/span/read priority, read-only schema, result/backend tampering and six fixtures; integrated main: od-isa 1,931, testkit 455, runner 130+539, workspace/fmt pass, Graphify 12,087/26,255/358; clean Sol/high review; ISSUE-033 remains open; no physical x86 acceptance |
 | [x] | S2-38w | Exact Long64 COMISD XMM0,m64 [RAX], invalid-only unmasked-IE profile; post-read subnormal operands are Unsupported; separate immutable schema-v2 profile, interpreter-only | Raw binary64 oracle over both NaN sides/classes × IM × OSXMMEXCPT × 64 old sticky histories; QNaN+SNaN, prior-only IE, RC=0..3, finite/infinity/signed-zero and binary64 boundaries; CPL0–3, fetch/form/gate/AC/span/read priority, read-only schema, result/backend tampering and six fixtures; slice suites: od-isa 1,932, testkit 455, runner 130+540; after paired main integration see top-level counts and [main report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ed-s2-38w); sequential manual code review clean, Sol/high reviewer unavailable due thread limit; preserve S2-37co, ISSUE-033 remains open, no physical x86 acceptance |
+| [ ] | S2-31ee | Admit historical IE/DE/ZE/OE/UE, retaining existing PE admission, only on exact bare FILD m16/m32/m64 memory forms; reject SF/ES/B; preserve all sticky flags; native/JIT closed | 64 sticky histories × 8 TOP × 4 FCW × 2 old C1 per width, literal binary80 oracle, no-read rejection, rollback, FNSTSW/FNCLEX/retry, schema/backend denial |
+| [ ] | S2-38x | Exact Long64 UCOMISD XMM0,m64 [RAX], invalid-only memory profile; QNaN quiet, SNaN raises IE; post-read subnormal Unsupported; interpreter-only | 1,024 NaN side/class × IM × OSXMMEXCPT × prior-sticky cases; finite/infinity/zero/boundaries, CPL0–3, strict gate/read priority, fixtures, schema/result/backend denial; preserve S2-37cp/S2-38w and ISSUE-033 |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -18430,3 +18432,50 @@ and physical x86 were not run. ISSUE-033 remains open. See the [main
 integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-38v),
 [standalone report](../reports/S2_38V_UCOMISS_MEMORY_INVALID_ONLY.md), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38v-ucomiss-memory-invalid-only-profile).
+
+#### S2-31ee — exact FILD historical sticky-flag admission
+
+Extend only exact bare Long64 `DF 00`, `DB 00` and `DF 28` bounded FILD forms.
+Use the local pre-read status condition `FSW & 0x80c0 == 0`, allowing all 64
+IE/DE/ZE/OE/UE/PE histories while rejecting SF, ES and B. Keep the existing FCW
+allowlist and Empty physical destination gate; do not inspect unrelated tags or
+payloads. Read the complete canonical source range once, convert signed integer
+to binary80 exactly and commit only after a successful read. Preserve all six
+sticky flags and unrelated state; clear C1. Keep native/JIT admission closed.
+
+Use literal expected binary80 results for each width over all 64 histories × 8
+TOP × 4 FCW × 2 old C1 states. Include zero, signs, extrema, SF/SF+IE/ES/B and
+invalid destination/environment no-read cases, fault/span rollback, unaligned
+read boundaries, repeated FILD/FNSTSW/FNCLEX/retry, fixtures and backend denial.
+Preserve the S2-31ed FILD SF+IE rejection. Normative sources are the Intel SDM
+Rev. 093 Vol. 2A FILD entry and Vol. 1 §8.1.3.3, linked from the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-31ee--historical-sticky-flags-on-exact-bounded-fild-memory-forms).
+
+#### S2-38w — exact COMISD memory invalid-only profile
+
+Create a separate immutable schema-v2 interpreter-only profile
+`s2-long-comisd-memory-rax-invalid-v1` for exact `66 0F 2F 00`, with a
+read-only m64 mapping, independent controls, one-instruction budget and
+entry+4 stop. Require SSE2 and preserve S2-37co. Use an independent raw-u64
+oracle, strict fetch/form and feature/CR0/CR4/MXCSR/AC/span/read ordering,
+CPL0–3 direct coverage, and atomic post-read subnormal refusal. COMISD QNaN and
+SNaN raise IE; masked completion commits comparison flags; unmasked IE commits
+only sticky IE and raises `#XM`/arithmetic `#UD` by OSXMMEXCPT without RFLAGS/RIP
+updates or retirement. Cover the 1,024 NaN side/class × IM × OSXMMEXCPT × prior
+sticky states, RC modes, finite/boundary values, schema tampering and backend
+denial. ISSUE-033 remains open; no physical x86 claim.
+
+#### S2-38x — exact UCOMISD memory invalid-only profile
+
+Create separate immutable profile `s2-long-ucomisd-memory-rax-invalid-v1` for
+exact `66 0F 2E 00` (`UCOMISD XMM0,m64 [RAX]`), with one read-only m64 mapping,
+separate control echo, budget one and entry+4 stop. Preserve S2-37cp (`ucomisd_memory_rax_controls`) and S2-38w.
+QNaN is unordered without new IE; SNaN raises IE. Set CF/ZF/PF for greater,
+less, equal and unordered to `0`, CF, ZF and CF|PF|ZF; clear OF/SF/AF, preserve
+other RFLAGS, and retire once at RIP+4 on success. Otherwise retain S2-38w's
+invalid-only gate, rollback and exception policy, including post-read atomic
+subnormal Unsupported and interpreter-only restriction. Test all 1,024 NaN
+side/class × IM × OSXMMEXCPT × prior-sticky combinations, QNaN+SNaN both
+orders, prior-only IE, all RC values, finite/infinity/zero/boundaries, CPL0–3,
+strict memory ordering and schema/control/result/backend tampering. ISSUE-033
+remains open; no physical x86 claim.
