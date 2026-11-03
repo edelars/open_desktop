@@ -16927,6 +16927,28 @@ worktree on its `.git` pointer file (`Unmapped root file: .git`), the existing
 No checker or worktree structure was changed to hide that limitation.
 Independent review is pending; this protocol is not a completed experiment.
 
+## S2-41b — bounded LIDT oracle protocol
+
+Prepared a proposed docs-only [four-case protocol](../testing/S2_41B_LIDT_ORACLE.md)
+for exact `0F 01 5C 24 06`: CPL0 success and CPL1/2/3 `#GP(0)`. It specifies
+literal inputs, IDTR/RIP/completion fields and future SIDT/raw trap observation.
+Both old and new IDTs require verified compatible #BP/#GP/fallback gates and
+stacks; controls must validate the marker under both tables. The RSP-relative
+operand must survive entry/instrumentation, and SIDT must precede restoration.
+SIDT/INT3/trap-frame source review and harness implementation remain open.
+Existing S2-27d CPU checks and static Ubuntu mapping are separate evidence.
+No code, fixture, serialized profile, native admission or runtime changed;
+CPU tests and hardware execution were not run. Four physical cases and
+integration are `not_run`; parent S2-41 stays open.
+
+Documentation checks: all new/added relative links and heading anchors pass;
+`git diff --check` passes. `python3 tools/check_layout.py` reports only the
+linked-worktree `.git` pointer (`Unmapped root file: .git`), already tracked by
+[ISSUE-023](../KNOWN_ISSUES.md#issue-023--layout-checker-reports-worktree-metadata-and-stale-oracle-links).
+No checker or directory structure was changed to hide that limitation.
+Independent review is pending. This is a proposed protocol, not a completed
+experiment.
+
 ## S2-40b — bounded SSE-only native XORPD oracle
 
 Implemented `s2-long-native-xorpd-xmm0-xmm1-v1` as an exact one-instruction

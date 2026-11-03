@@ -8326,6 +8326,17 @@ SGDT/trap-frame observations и разделение CPU-only evidence / indepen
 privileged oracle / machine integration. Harness ещё не реализован; physical
 results всех четырёх cases — `not_run`. S2-41 остаётся открытым.
 
+#### S2-41b — bounded LIDT oracle protocol
+
+Подготовлен proposed docs-only [протокол](../testing/S2_41B_LIDT_ORACLE.md)
+для точных `0F 01 5C 24 06`: CPL0 success и CPL1/2/3 `#GP(0)`.
+Заданы literal operand, IDTR/RIP/retirement expectations и будущие SIDT/raw
+trap observations. Обе IDT требуют совместимых проверенных gates/stacks и
+marker controls; SIDT/INT3/trap-frame source review и harness ещё не выполнены.
+CPU-only S2-27d и статический Ubuntu mapping не являются physical evidence.
+Это подготовка шагов 1–2 S2-41; все четыре physical cases и integration —
+`not_run`, родительский S2-41 остаётся открытым.
+
 ### S2-42. Собрать общий corpus, reducer и harness
 
 **Файлы:** существующий testkit и CPU harness; новые stage2 entry points только при реальной необходимости.

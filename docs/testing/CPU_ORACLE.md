@@ -249,3 +249,13 @@ and raw trap-frame observations required from a future independent harness.
 Existing CPU callback/policy tests are separate evidence. All four physical
 results are `not_run`; Linux user-mode native admission stays closed and
 S2-41 / Stage 4 machine-integration requirements remain open.
+
+## S2-41b privileged LIDT protocol
+
+The proposed documentation-only [bounded LIDT protocol](S2_41B_LIDT_ORACLE.md)
+defines exact `0F 01 5C 24 06` for CPL0 success and CPL1/2/3 `#GP(0)`.
+Independent SIDT before restoration, raw trap frames, compatible verified old
+and new IDTs, and marker controls under both tables are required. SIDT/INT3
+source review and harness implementation remain prerequisites. CPU callback
+and policy checks remain separate; no serialized fixture or native admission
+is added. All four physical cases and integration are `not_run`; S2-41 stays open.

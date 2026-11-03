@@ -721,6 +721,13 @@ already cited in the [CPU contract](../specs/CPU_CONTRACT.md#s2-27d--exact-long6
 The [Stage 2 plan](../plans/STAGE_2.md#s2-27d--exact-long64-lidt-rsp-6)
 records the bounded test matrix.
 
+The proposed [S2-41b protocol](../testing/S2_41B_LIDT_ORACLE.md) prepares four
+independent privileged cases for the exact bytes using synthetic inputs. It
+requires SIDT before restoration and validated observation gates/stacks under
+both old and new IDTs. Source review and harness implementation remain open;
+all physical cases and integration are `not_run`. It adds no runtime evidence
+to this static Ubuntu mapping and does not close S2-41.
+
 ## S2-39a — FXSAVE evidence-only
 
 Static exact-image evidence above identifies three forms in Ubuntu

@@ -80,6 +80,11 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 [docs/testing/S2_41A_LGDT_ORACLE.md](testing/S2_41A_LGDT_ORACLE.md); это методика
 будущей проверки, не реализованный harness и не physical evidence.
 
+Предлагаемый privileged LIDT oracle protocol S2-41b размещён в
+[docs/testing/S2_41B_LIDT_ORACLE.md](testing/S2_41B_LIDT_ORACLE.md); это
+методика будущей проверки с открытыми harness/source-review prerequisites,
+не исполняемый harness, fixture или physical evidence.
+
 Не копировать одну реализацию в несколько этих мест. Например, disk parser — в `od-storage`, а `image-tool` лишь использует его; x86 interpreter — в `od-isa`, а `runner` управляет запуском.
 
 ### Неочевидные границы
