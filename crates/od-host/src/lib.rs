@@ -17791,7 +17791,7 @@ mod tests {
             (0xffff_8000_0000_007f, 0xffff_ffff, 0xfedc_ba98_u32),
             (0xffff_ffff_0000_0080, 0, 0x7654_3210_u32),
             (0xdead_beef_0000_0081, 1, 0x0bad_c0de_u32),
-            (0x0000_0000_0000_0100, 0x80, 0x1357_9bdf_u32),
+            (0x1234_5678_0000_0100, 0x80, 0x1357_9bdf_u32),
         ] {
             let mut ram = Ram { source: SOURCE, bytes: BTreeMap::new(), reads: Vec::new(), failure: None, fetch_failure: None };
             for (offset, byte) in value.to_le_bytes().into_iter().enumerate() {
