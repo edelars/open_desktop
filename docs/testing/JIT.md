@@ -2429,20 +2429,21 @@ completion. Evidence bundle is under
 [`data/stage3/s3-37e-local/`](../reports/data/stage3/s3-37e-local/); see the
 [S3-37e report](../reports/STAGE_3_S3-37e-local_2026-11-01.md).
 
-## S3-20ga: planned exact address32 RCX-base Dword store with signed disp32
+## S3-20ga: exact address32 RCX-base Dword store with signed disp32
 
-This bounded slice is pending implementation and independent review. Its
-exact source is seven bytes `67 89 81 id`, encoding
-`MOV [ECX+signext(disp32)],EAX`. The planned JIT identity is
+Runtime `b7b361b` and harness `c2a3e8f` are integrated and passed independent
+Sol/high static review. No behavior or harness gates were executed; those
+checks remain pending. The exact source is seven bytes `67 89 81 id`, encoding
+`MOV [ECX+signext(disp32)],EAX`. The JIT identity is
 `memory_load_v2::tests::ir_dword_addr32_rcx_disp32_store_binds_exact_source_and_site`;
-the planned host identity is
+the host identity is
 `tests::s3_20ga_addr32_rcx_disp32_dword_store_uses_wrapped_ecx_and_low_eax_payload`.
-The planned S3-34dl gate identities are
+The S3-34dl gate identities are
 `s3_34dl_ir_addr32_rcx_disp32_dword_store_source_binding` and
 `s3_34dl_host_addr32_rcx_disp32_dword_store_wrapped_ecx_and_low_eax_payload`,
 with fail-closed self-test
 `test_s3_34dl_addr32_rcx_disp32_dword_store_gates_are_pinned_and_fail_closed`.
-All identities are targets until confirmed against implementation.
+These identities are pinned and statically reviewed.
 
 Acceptance should prove exact compiler/decoded/IR/runtime/site and publisher
 admission, signed-i32 displacement metadata, and distinct source/site identity
@@ -2456,8 +2457,8 @@ and callback STOP after commit without replay.
 
 Published IR uses immutable compiler-issued bytes and performs no guest
 instruction fetch during runtime execution. Demand-interpreter instruction
-fetch failures propagate directly. Proposed S3-34dl manifest pins are 302
-gates (292 acceptance plus 10 lifecycle), 320 local steps, and 135 self-test
-names; they are unverified and unexecuted targets. No tests or other checks
-have been run for this planned slice. See the
+fetch failures propagate directly. S3-34dl manifest pins are 302 gates (292
+acceptance plus 10 lifecycle), 320 local steps, and 135 self-test names; these
+totals are pinned and statically reviewed but not executed. No tests or other
+execution checks have been run for this slice. See the
 [S3-20ga report](../reports/STAGE_3_S3-20ga_2026-11-02.md).

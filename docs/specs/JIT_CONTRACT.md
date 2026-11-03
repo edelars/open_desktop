@@ -4367,13 +4367,14 @@ The checked-memory fixture dispatcher offers controlled `run_controlled` and `ru
 
 Before compilation/executor entry and before each exact bare-NOP interpreter step, the dispatcher applies stop-RIP → STOP → fixture boundary → budget → event. The published executor repeats stop-RIP → STOP → budget → event after publication and immediately before native entry; the fixture boundary was checked by the dispatcher before compilation, and state remains unchanged until native entry. The published executor drops its just-published mapping before returning any pre-entry outcome. For callbacks during a running artifact the event is sampled only after that artifact returns. In particular, absent a higher-priority terminal exit, a two-site artifact completes both helper sites before event sampling; it may commit at most the pair's two retirements. STOP and architectural/backend failure can end a pair at their own established helper boundary, but the event is never polled between helpers. A valid returned report commits accounting and preserves actual RIP before the yield is returned. Architectural faults, `CodeInvalidated`, STOP, backend failures and malformed accounting are not hidden by an event. The request remains set; its caller clears it and resumes at actual RIP, without replaying committed work. This defines only a guest-work bound of one in-flight artifact (up to two instructions for a pair) or one bare NOP step; no wall-time latency/performance claim is made. Mini checks remain deferred through Stage 3. See [S3-28b report](../reports/STAGE_3_S3-28b_2026-10-29.md).
 
-### S3-20ga: planned exact address32 RCX-base Dword store with signed disp32
+### S3-20ga: exact address32 RCX-base Dword store with signed disp32
 
-Implementation and independent review are pending. The target profile admits
-only seven-byte `67 89 81 id` (`MOV [ECX+signext(disp32)],EAX`): `67` is the
-sole prefix, data and address sizes are Dword, RCX is the addr32 alias base,
-there is no index, and displacement is signed little-endian i32. The starting
-effective address is
+Runtime commit `b7b361b` and harness commit `c2a3e8f` are integrated and passed
+independent Sol/high static review. Behavior execution remains unrun. The
+profile admits only seven-byte `67 89 81 id`
+(`MOV [ECX+signext(disp32)],EAX`): `67` is the sole prefix, data and address
+sizes are Dword, RCX is the addr32 alias base, there is no index, and
+displacement is signed little-endian i32. The starting effective address is
 `zero_extend((low32(RCX) + signed_i32_disp32) mod 2^32)`. Perform one
 contiguous checked four-byte write of low32 pre-state RAX; preserve every GPR
 and RFLAGS and commit successful RIP `A+7`. Only the starting EA wraps at
