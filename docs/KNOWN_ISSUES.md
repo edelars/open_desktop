@@ -48,6 +48,15 @@
 - **Основание:** review of the S3-20eg host test at [`od-host/src/lib.rs`](../crates/od-host/src/lib.rs) and the [S3-20eg report](reports/STAGE_3_S3-20eg_2026-11-02.md).
 - **Следующий шаг:** after the follow-up receives final static review, execute the exact S3-20eg host gate and confirm successful retry after backend error and each entry STOP/budget guard, with committed state and exactly one successful write. Keep ISSUE-028 open until that execution acceptance is recorded. No product-code change is implied by this entry.
 
+### ISSUE-029 — S3-34dn mismatch-artifact self-check coverage gap
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `tests/cpu/stage3_dword_store_corpus.rs`, S3-34dn persisted mismatch artifact and replay validation.
+- **Статус:** открыта; concrete self-check coverage gap, runtime defect не установлен.
+- **Суть и последствия:** the artifact writer uses create-new semantics, and the parser validates the artifact version and fixed RIP. However, the S3-34dn self-check does not exercise filesystem create-only/no-overwrite behavior and has no changed-version or changed-RIP rejection assertions. A regression in those protections would not be caught by the current self-check. Runtime/harness behavior remains unverified because the gates were not executed.
+- **Основание:** static source review of `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed`, `save_mismatch_artifact`, and `parse_replay_artifact` in [`stage3_dword_store_corpus.rs`](../tests/cpu/stage3_dword_store_corpus.rs); the [S3-34dn report](reports/STAGE_3_S3-34dn_2026-11-03.md) records that Rust, harness, and self-check execution was deferred. No runtime defect is established.
+- **Следующий шаг:** add direct self-check assertions for create-only/no-overwrite behavior and rejection of changed version and RIP, then run the S3-34dn acceptance gates at Stage 3 end. Keep this issue open until those checks execute successfully.
+
 ### ISSUE-024 — checked memory lowering ограничен узкими V2 MOV slices
 
 - **Дата обнаружения:** 2026-10-27.
