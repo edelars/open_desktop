@@ -536,6 +536,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                     .fixture
                     .subpd_memory_rax_unmasked_controls,
                 mulpd_controls: input.fixture.mulpd_controls,
+                mulpd_memory_rax_unmasked_controls: input
+                    .fixture
+                    .mulpd_memory_rax_unmasked_controls,
                 addpd_controls: input.fixture.addpd_controls,
                 addpd_memory_rax_unmasked_controls: input
                     .fixture

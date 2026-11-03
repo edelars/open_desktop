@@ -411,6 +411,42 @@ pub struct MulpdControls {
     pub cr4_osxmmexcpt: bool,
 }
 
+/// SSE2 and SIMD exception-delivery controls for unmasked MULPD m128 at [RAX].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MulpdMemoryRaxUnmaskedControls {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy)]
+enum MulpdMemoryRaxExecutionProfile {
+    Masked(MulpdControls),
+    Unmasked(MulpdMemoryRaxUnmaskedControls),
+}
+
+impl MulpdMemoryRaxExecutionProfile {
+    const fn gates(self) -> (bool, bool, bool, bool) {
+        match self {
+            Self::Masked(c) => (c.sse2_available, c.cr0_em, c.cr0_ts, c.cr4_osfxsr),
+            Self::Unmasked(c) => (c.sse2_available, c.cr0_em, c.cr0_ts, c.cr4_osfxsr),
+        }
+    }
+
+    const fn is_unmasked(self) -> bool {
+        matches!(self, Self::Unmasked(_))
+    }
+
+    const fn osxmmexcpt(self) -> bool {
+        match self {
+            Self::Masked(_) => false,
+            Self::Unmasked(c) => c.cr4_osxmmexcpt,
+        }
+    }
+}
+
 /// Explicit SSE2 and SIMD exception-delivery controls for bounded ADDPD.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AddpdControls {
@@ -1574,7 +1610,7 @@ struct ExecutionProfiles<'a> {
     sqrtpd_registers: Option<SqrtpdControls>,
     subpd_registers: Option<SubpdControls>,
     subpd_memory_rax: Option<SubpdMemoryRaxExecutionProfile>,
-    mulpd_memory_rax: Option<MulpdControls>,
+    mulpd_memory_rax: Option<MulpdMemoryRaxExecutionProfile>,
     mulpd_registers: Option<MulpdControls>,
     addpd_registers: Option<AddpdControls>,
     addpd_memory_rax: Option<AddpdMemoryRaxExecutionProfile>,
@@ -17590,6 +17626,39 @@ pub fn run_with_mulpd_memory_rax_controls(
     memory: &mut impl GuestMemory,
     config: RunConfig,
     controls: MulpdControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_mulpd_memory_rax_profile(
+        state,
+        memory,
+        config,
+        MulpdMemoryRaxExecutionProfile::Masked(controls),
+        stop_requested,
+    )
+}
+
+/// Execute exact Long64 `66 0F 59 00` MULPD m128-at-RAX with unmasked IE/DE/PE delivery.
+pub fn run_with_mulpd_memory_rax_unmasked_controls(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    controls: MulpdMemoryRaxUnmaskedControls,
+    stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_mulpd_memory_rax_profile(
+        state,
+        memory,
+        config,
+        MulpdMemoryRaxExecutionProfile::Unmasked(controls),
+        stop_requested,
+    )
+}
+
+fn run_with_mulpd_memory_rax_profile(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    profile: MulpdMemoryRaxExecutionProfile,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
     run_configured(
@@ -17632,7 +17701,7 @@ pub fn run_with_mulpd_memory_rax_controls(
             sqrtpd_registers: None,
             subpd_registers: None,
             subpd_memory_rax: None,
-            mulpd_memory_rax: Some(controls),
+            mulpd_memory_rax: Some(profile),
             mulpd_registers: None,
             addpd_registers: None,
             addpd_memory_rax: None,
@@ -22531,7 +22600,7 @@ fn step_configured(
             }));
         }
     }
-    if let Some(controls) = configured_mulpd_memory_rax_controls {
+    if let Some(profile) = configured_mulpd_memory_rax_controls {
         let is_canonical_memory_form = instruction.operation == Operation::MulpdMemoryRax
             && instruction.length == 4
             && instruction.opcode.map == OpcodeMap::Escape0f
@@ -22546,9 +22615,10 @@ fn step_configured(
                 opcode: instruction.opcode.byte,
             });
         }
-        let fault_vector = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        let (sse2_available, cr0_em, cr0_ts, cr4_osfxsr) = profile.gates();
+        let fault_vector = if !sse2_available || cr0_em || !cr4_osfxsr {
             Some(6)
-        } else if controls.cr0_ts {
+        } else if cr0_ts {
             Some(7)
         } else {
             None
@@ -27158,9 +27228,15 @@ fn step_configured(
         } else if configured_mulpd_memory_rax_controls.is_some()
             && instruction.operation == Operation::MulpdMemoryRax
         {
+            let profile = configured_mulpd_memory_rax_controls
+                .expect("MULPD memory profile was checked above");
             sse.mxcsr & !0x0000_ffbf == 0
                 && sse.mxcsr & ((1 << 6) | (1 << 15)) == 0
-                && sse.mxcsr & 0x1f80 == 0x1f80
+                && if profile.is_unmasked() {
+                    sse.mxcsr & ((1 << 10) | (1 << 11)) == ((1 << 10) | (1 << 11))
+                } else {
+                    sse.mxcsr & 0x1f80 == 0x1f80
+                }
         } else if configured_mulpd_register_controls.is_some()
             && matches!(instruction.operation, Operation::MulpdRegister { .. })
         {
@@ -33462,6 +33538,19 @@ fn step_configured(
                 new_de |=
                     lhs_class == BinaryClass::Subnormal || rhs_class == BinaryClass::Subnormal;
             }
+            let profile = configured_mulpd_memory_rax_controls
+                .expect("MULPD memory profile was checked above");
+            let unmasked_pre_event = profile.is_unmasked()
+                && (new_ie && old_mxcsr & (1 << 7) == 0 || new_de && old_mxcsr & (1 << 8) == 0);
+            if unmasked_pre_event {
+                let sse = state.sse.as_mut().expect("MULPD memory state prevalidated");
+                sse.mxcsr = old_mxcsr | u32::from(new_ie) | (u32::from(new_de) << 1);
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if profile.osxmmexcpt() { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
             let rounding = cvtss2si_rounding_mode(old_mxcsr);
             let mut result = [0u8; 16];
             let mut new_oe = false;
@@ -33479,14 +33568,22 @@ fn step_configured(
                 new_pe |= computed.inexact() || computed.overflow();
                 result[lane * 8..lane * 8 + 8].copy_from_slice(&raw.to_le_bytes());
             }
+            let unmasked_pe = profile.is_unmasked() && new_pe && old_mxcsr & (1 << 12) == 0;
             let sse = state.sse.as_mut().expect("MULPD memory state prevalidated");
-            sse.xmm[0] = result;
             sse.mxcsr = old_mxcsr
                 | u32::from(new_ie)
                 | (u32::from(new_de) << 1)
                 | (u32::from(new_oe) << 3)
                 | (u32::from(new_ue) << 4)
                 | (u32::from(new_pe) << 5);
+            if unmasked_pe {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: if profile.osxmmexcpt() { 19 } else { 6 },
+                    error_code: None,
+                    linear_address: None,
+                }));
+            }
+            sse.xmm[0] = result;
         }
         Operation::MulpdMemoryRax => {
             return Ok(StepOutcome::Unsupported {
@@ -182097,6 +182194,376 @@ mod cvtsi2ss_r64_memory_profile_tests {
             RunConfig {
                 instruction_budget: 1,
                 stop_rip: Some(0x2d24),
+                context: AccessContext::default(),
+            },
+            good,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::MemoryError(_)));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
+    }
+
+    #[test]
+    fn mulpd_memory_rax_unmasked_commits_only_applicable_exception_status() {
+        let code = [0x66, 0x0f, 0x59, 0x00];
+        let one = 0x3ff0_0000_0000_0000u64;
+        let adjacent = 0x3ff0_0000_0000_0001u64;
+        let controls = MulpdMemoryRaxUnmaskedControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let cases: [(&str, [u64; 2], [u64; 2], u32, u32, Option<u8>, bool); 5] = [
+            (
+                "unmasked_ie_suppresses_other_lane_oe_pe",
+                [0x7ff0_0000_0000_0001, 0x7fef_ffff_ffff_ffff],
+                [one, 0x4000_0000_0000_0000],
+                0x1d00 | 0x20,
+                0x01,
+                Some(19),
+                true,
+            ),
+            (
+                "unmasked_de_suppresses_other_lane_ue_pe",
+                [1, 0x0010_0000_0000_0000],
+                [one, 0x3fef_ffff_ffff_ffff],
+                0x1c80 | 0x04,
+                0x02,
+                Some(6),
+                false,
+            ),
+            (
+                "masked_de_then_unmasked_pe",
+                [1, adjacent],
+                [one, adjacent],
+                0x0d80,
+                0x22,
+                Some(19),
+                true,
+            ),
+            (
+                "unmasked_pe_retains_ue",
+                [0x0010_0000_0000_0000, one],
+                [0x3fef_ffff_ffff_ffff, one],
+                0x0d80,
+                0x30,
+                Some(19),
+                true,
+            ),
+            (
+                "masked_success",
+                [one, 0x4000_0000_0000_0000],
+                [one, 0x4008_0000_0000_0000],
+                0x1f80,
+                0,
+                None,
+                true,
+            ),
+        ];
+        for (index, (name, lhs, rhs, mxcsr, generated, vector, osxmmexcpt)) in
+            cases.into_iter().enumerate()
+        {
+            let mut memory = Memory::at(&code, 0x2e00 + (index as u64) * 8);
+            for (lane, value) in rhs.into_iter().enumerate() {
+                memory.bytes[lane * 8..lane * 8 + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            let mut xmm = [[0x5a; 16]; 16];
+            for (lane, value) in lhs.into_iter().enumerate() {
+                xmm[0][lane * 8..lane * 8 + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            let mut state = LongModeState::default();
+            state.rip = 0x2e00 + (index as u64) * 8;
+            let rip = state.rip;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState { xmm, mxcsr });
+            let before = state.clone();
+            let result = run_with_mulpd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(rip + 4),
+                    context: AccessContext::default(),
+                },
+                MulpdMemoryRaxUnmaskedControls {
+                    cr4_osxmmexcpt: osxmmexcpt,
+                    ..controls
+                },
+                || false,
+            );
+            let mut expected_flags = generated;
+            if name == "unmasked_ie_suppresses_other_lane_oe_pe" {
+                expected_flags |= 0x20;
+            }
+            if name == "unmasked_de_suppresses_other_lane_ue_pe" {
+                expected_flags |= 0x04;
+            }
+            assert_eq!(
+                state.sse.as_ref().unwrap().mxcsr & 0x3f,
+                expected_flags,
+                "{name}"
+            );
+            assert_eq!(
+                memory.accesses,
+                [(AccessKind::Read, memory.data_base, 16)],
+                "{name}"
+            );
+            if let Some(vector) = vector {
+                assert_eq!(
+                    result.exit,
+                    RunExit::Fault(ArchitecturalFault {
+                        vector,
+                        error_code: None,
+                        linear_address: None,
+                    }),
+                    "{name}"
+                );
+                assert_eq!(
+                    state.sse.as_ref().unwrap().xmm[0],
+                    before.sse.as_ref().unwrap().xmm[0]
+                );
+                assert_eq!(state.rip, before.rip);
+                assert_eq!(result.instructions_executed, 0);
+            } else {
+                assert_eq!(result.exit, RunExit::StopAddress, "{name}");
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(state.rip, before.rip + 4);
+            }
+        }
+    }
+
+    #[test]
+    fn mulpd_memory_rax_unmasked_checks_fetch_gates_alignment_and_read_rollback() {
+        let code = [0x66, 0x0f, 0x59, 0x00];
+        let good = MulpdMemoryRaxUnmaskedControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        for (controls, vector) in [
+            (
+                MulpdMemoryRaxUnmaskedControls {
+                    sse2_available: false,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                MulpdMemoryRaxUnmaskedControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                MulpdMemoryRaxUnmaskedControls {
+                    cr0_ts: true,
+                    ..good
+                },
+                7,
+            ),
+            (
+                MulpdMemoryRaxUnmaskedControls {
+                    cr4_osfxsr: false,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+        ] {
+            let mut memory = Memory::at(&code, 0x2f00);
+            let mut state = LongModeState::default();
+            state.rip = 0x2f00;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x0c00,
+            });
+            let before = state.clone();
+            let result = run_with_mulpd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2f04),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert!(
+                matches!(result.exit, RunExit::Fault(ArchitecturalFault { vector: got, .. }) if got == vector)
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches, (0x2f00..0x2f04).collect::<Vec<_>>());
+            assert!(memory.accesses.is_empty());
+        }
+
+        // The bounded unmasked profile requires OM and UM to be masked on
+        // entry, even though it allows IE/DE/PE masks and sticky flags to vary.
+        for mxcsr in [0x0800, 0x0400] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2f06;
+            state.gpr[Register::Rax as usize] = 0x2000;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x2f06);
+            let result = run_with_mulpd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2f0a),
+                    context: AccessContext::default(),
+                },
+                good,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x59 });
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut memory = Memory::at(&code, 0x2f08);
+            memory.bytes[..8].copy_from_slice(&1.0f64.to_bits().to_le_bytes());
+            memory.bytes[8..16].copy_from_slice(&2.0f64.to_bits().to_le_bytes());
+            let mut state = LongModeState::default();
+            state.rip = 0x2f08;
+            state.gpr[Register::Rax as usize] = memory.data_base;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x0c00,
+            });
+            let result = run_with_mulpd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2f0c),
+                    context: AccessContext {
+                        mode: InstructionMode::Long64,
+                        privilege,
+                        origin: crate::memory::AccessOrigin::Explicit,
+                    },
+                },
+                good,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress, "CPL={privilege:?}");
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(memory.accesses, [(AccessKind::Read, memory.data_base, 16)]);
+        }
+
+        let mut truncated = LongModeState::default();
+        truncated.rip = 0x2f10;
+        truncated.gpr[Register::Rax as usize] = 0x2000;
+        truncated.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x0c00,
+        });
+        let before = truncated.clone();
+        let mut memory = Memory::at(&code[..2], 0x2f10);
+        let result = run_with_mulpd_memory_rax_unmasked_controls(
+            &mut truncated,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2f14),
+                context: AccessContext::default(),
+            },
+            MulpdMemoryRaxUnmaskedControls {
+                sse2_available: false,
+                ..good
+            },
+            || false,
+        );
+        assert!(matches!(
+            result.exit,
+            RunExit::MemoryError(MemoryError::Unmapped {
+                access: AccessKind::Fetch,
+                ..
+            })
+        ));
+        assert_eq!(truncated, before);
+        assert!(memory.accesses.is_empty());
+
+        for (address, ac) in [
+            (0x2001, false),
+            (0x2001, true),
+            (0x0000_8000_0000_0000, false),
+        ] {
+            let mut state = LongModeState::default();
+            state.rip = 0x2f20;
+            state.gpr[Register::Rax as usize] = address;
+            if ac {
+                state.rflags |= 1 << 18;
+            }
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x0c00,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x2f20);
+            let result = run_with_mulpd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(0x2f24),
+                    context: AccessContext::default(),
+                },
+                good,
+                || false,
+            );
+            assert!(matches!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    ..
+                })
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut memory = Memory::at(&code, 0x2f30);
+        memory.error_kind = Some(AccessKind::Read);
+        memory.error = Some(MemoryError::Backend(
+            "injected unmasked MULPD read failure".into(),
+        ));
+        let mut state = LongModeState::default();
+        state.rip = 0x2f30;
+        state.gpr[Register::Rax as usize] = memory.data_base;
+        state.sse = Some(SseState {
+            xmm: [[0x5a; 16]; 16],
+            mxcsr: 0x0c00,
+        });
+        let before = state.clone();
+        let result = run_with_mulpd_memory_rax_unmasked_controls(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(0x2f34),
                 context: AccessContext::default(),
             },
             good,

@@ -152,6 +152,24 @@ const ADDPD_M128_UNMASKED_DE_UD: &[u8] = include_bytes!(
 const ADDPD_M128_UNMASKED_PE_XM: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_38al_addpd_memory_unmasked_pe_xm.case.json"
 );
+const MULPD_M128_UNMASKED_SUCCESS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ap_mulpd_memory_unmasked_success.case.json"
+);
+const MULPD_M128_UNMASKED_IE_XM: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ap_mulpd_memory_unmasked_ie_xm.case.json"
+);
+const MULPD_M128_UNMASKED_DE_UD: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ap_mulpd_memory_unmasked_de_ud.case.json"
+);
+const MULPD_M128_UNMASKED_PE_XM: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ap_mulpd_memory_unmasked_pe_xm.case.json"
+);
+const MULPD_M128_UNMASKED_UE_PE_XM: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ap_mulpd_memory_unmasked_ue_pe_min_normal_xm.case.json"
+);
+const MULPD_M128_UNMASKED_FETCH_GP: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ap_mulpd_memory_unmasked_noncanonical_fetch_precedes_ud.case.json"
+);
 const SUBPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dv_subpd_m128_memory_source_two_binary64_lanes.case.json"
 );
@@ -45602,6 +45620,135 @@ fn subpd_m128_unmasked_literal_fixtures_validate_state_schema_and_backend_denial
     assert!(writable.validate().is_err());
     for mxcsr in [0x1b80, 0x1780, 0x1fc0, 0x9f80, 0x0001_1f80] {
         let mut invalid = Fixture::from_json(source).unwrap().fixture;
+        invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
+        assert!(invalid.validate().is_err(), "MXCSR={mxcsr:#x}");
+    }
+}
+
+#[test]
+fn mulpd_m128_unmasked_literal_fixtures_validate_state_schema_and_backend_denial() {
+    use od_testkit::v2::Profile;
+
+    let cases: [(&[u8], Option<u8>, bool); 6] = [
+        (MULPD_M128_UNMASKED_SUCCESS, None, false),
+        (MULPD_M128_UNMASKED_IE_XM, Some(19), false),
+        (MULPD_M128_UNMASKED_DE_UD, Some(6), false),
+        (MULPD_M128_UNMASKED_PE_XM, Some(19), false),
+        (MULPD_M128_UNMASKED_UE_PE_XM, Some(19), false),
+        (MULPD_M128_UNMASKED_FETCH_GP, Some(13), true),
+    ];
+    for (index, (source, vector, fetch_gp)) in cases.into_iter().enumerate() {
+        let fixture = Fixture::from_json(source)
+            .unwrap_or_else(|error| panic!("fixture {index}: {error}"))
+            .fixture;
+        assert_eq!(fixture.profile, Profile::LongMulpdMemoryUnmaskedRaxV1);
+        let (loaded, result) = run(source, "interpreter", 0);
+        od_testkit::v2::compare(&loaded, &result, &result).unwrap();
+        let output = snapshot(&result);
+        if let Some(vector) = vector {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            assert_eq!(count(&result), 0);
+            assert_eq!(output.state.rip, fixture.initial_state.rip);
+            assert_eq!(
+                output.state.sse.as_ref().unwrap().xmm[0],
+                fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+            );
+            let Observation::Available {
+                value: Some(exception),
+            } = &output.exception
+            else {
+                panic!("missing exception")
+            };
+            assert_eq!(exception.vector, vector);
+            if fetch_gp {
+                assert_eq!(
+                    exception.error_code,
+                    Observation::Available { value: HexU64(0) }
+                );
+            } else {
+                assert!(matches!(
+                    exception.error_code,
+                    Observation::Unavailable { .. }
+                ));
+            }
+        } else {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+        }
+        for backend in ["jit", "native"] {
+            let (_, denied) = run(source, backend, 4);
+            assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        }
+        let mut bad_controls = result.clone();
+        snapshot_mut(&mut bad_controls)
+            .mulpd_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = !fixture
+            .mulpd_memory_rax_unmasked_controls
+            .unwrap()
+            .cr4_osxmmexcpt;
+        assert!(bad_controls.validate_for(&loaded).is_err());
+        if vector.is_some() {
+            let mut bad_status = result.clone();
+            snapshot_mut(&mut bad_status)
+                .state
+                .sse
+                .as_mut()
+                .unwrap()
+                .mxcsr = HexU64(output.state.sse.as_ref().unwrap().mxcsr.get() ^ 1);
+            assert!(bad_status.validate_for(&loaded).is_err());
+            let mut bad_exception = result.clone();
+            match &mut snapshot_mut(&mut bad_exception).exception {
+                Observation::Available {
+                    value: Some(exception),
+                } => exception.vector = if vector == Some(13) { 6 } else { 13 },
+                other => panic!("expected exception, got {other:?}"),
+            }
+            assert!(
+                bad_exception.validate_for(&loaded).is_err(),
+                "case {}",
+                fixture.case_id
+            );
+        } else {
+            let mut bad_result = result.clone();
+            snapshot_mut(&mut bad_result)
+                .state
+                .sse
+                .as_mut()
+                .unwrap()
+                .xmm[0]
+                .replace_range(0..16, "0000000000000040");
+            assert!(bad_result.validate_for(&loaded).is_err());
+        }
+    }
+
+    let mut missing = Fixture::from_json(MULPD_M128_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    missing.mulpd_memory_rax_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut mixed = Fixture::from_json(MULPD_M128_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    mixed.mulpd_controls = Some(od_testkit::v2::MulpdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(mixed.validate().is_err());
+    let mut writable = Fixture::from_json(MULPD_M128_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    writable.memory[1].permissions.write = true;
+    assert!(writable.validate().is_err());
+    for mxcsr in [0x0980, 0x0580, 0x0dc0, 0x8d80, 0x0001_0d80] {
+        let mut invalid = Fixture::from_json(MULPD_M128_UNMASKED_SUCCESS)
+            .unwrap()
+            .fixture;
         invalid.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr);
         assert!(invalid.validate().is_err(), "MXCSR={mxcsr:#x}");
     }

@@ -8849,3 +8849,22 @@ host-side interpreter checks, not physical x86 acceptance. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38an--exact-subpd-memory-profile-with-unmasked-exceptions),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38an--exact-subpd-memory-form-with-unmasked-exceptions),
 and [report](../../../../docs/reports/S2_38AN_SUBPD_MEMORY_UNMASKED.md).
+
+### S2-38ap — unmasked MULPD m128 memory profile
+
+Six handwritten literals cover exact `66 0F 59 00`: success, unmasked IE,
+unmasked DE, unmasked PE, UE+PE when an inexact tiny WPR result rounds to
+minimum normal, and a four-byte noncanonical fetch crossing that preempts
+disabled SSE2 with `#GP(0)`. The immutable schema-v2 profile requires aligned
+read-only m128 `[RAX]`, SSE2, `DAZ=FTZ=0`, and `OM=UM=1`, while allowing every
+RC, IM/DM/ZM/PM mask combination and prior sticky history. The runner compares
+actual interpreter results against an independent integer-only raw-u64 MULPD
+oracle using the memory RHS. The 1,568-case two-lane event product and 393,216
+RC/sticky/boundary executions pass, including cross-lane pre-event suppression,
+inexact tiny products, UE+PE, and rounding to minimum normal. Direct tests cover
+CPL0–3, exact fetch and gate precedence, mandatory alignment independent of AC,
+canonical spans, exactly one read16, and read rollback. JIT/native routes remain
+denied. These are host-side interpreter checks, not physical x86 acceptance. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ap--exact-mulpd-memory-profile-with-unmasked-exceptions),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38ap--exact-mulpd-memory-form-with-unmasked-exceptions),
+and [report](../../../../docs/reports/S2_38AP_MULPD_MEMORY_UNMASKED.md).
