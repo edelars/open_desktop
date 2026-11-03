@@ -8,13 +8,13 @@ import hashlib
 import json
 import os
 import posixpath
-import queue
 import re
+import selectors
 import shlex
+import signal
 import subprocess
 import sys
 import tarfile
-import threading
 import time
 import uuid
 from pathlib import Path
@@ -32,6 +32,7 @@ XORPD_MANIFEST_VERSION = 1
 XORPD_GENERATOR_VERSION = "od-testkit-native-xorpd-v1"
 MAX_FIXTURE_BYTES = 512 * 1024
 MAX_RESULT_BYTES = 256 * 1024
+POST_TIMEOUT_DRAIN_SECONDS = 0.25
 DEFAULT_CASES = tuple(
     f"tests/fixtures/x86/stage2/hw_{name}.case.json"
     for name in ("mov_load_add_store", "mov_width_aliasing", "mov_rex_rip_relative")
@@ -253,63 +254,88 @@ class Evidence:
 
     @staticmethod
     def _stream_process(argv, *, cwd, env, timeout, stdout_consumer):
-        events = queue.Queue()
         stdout_parts, stderr_parts = [], []
+        stdout_buffer = bytearray()
         started_at = time.monotonic()
         try:
-            process = subprocess.Popen(argv, cwd=cwd, env=env, text=True, bufsize=1,
+            process = subprocess.Popen(argv, cwd=cwd, env=env, bufsize=0, start_new_session=True,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError as error:
             raise Stage2Error(f"could not run {argv[0]}: {error}") from error
-
-        def read_lines(name, stream):
-            try:
-                for line in iter(stream.readline, ""):
-                    events.put((name, line, line.endswith("\n")))
-            finally:
-                events.put((name, None, True))
-
-        readers = [threading.Thread(target=read_lines, args=(name, stream), daemon=True)
-                   for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))]
-        for reader in readers:
-            reader.start()
         deadline = started_at + timeout if timeout is not None else None
-        ended, timed_out = set(), False
+        timed_out, drain_deadline = False, None
 
         def terminate_for_timeout():
-            nonlocal timed_out
-            timed_out = True
-            if process.poll() is None:
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
+            nonlocal timed_out, drain_deadline
+            if not timed_out:
+                timed_out = True
+                drain_deadline = time.monotonic() + POST_TIMEOUT_DRAIN_SECONDS
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                if process.poll() is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
 
-        while len(ended) < 2:
-            if deadline is not None and time.monotonic() >= deadline and process.poll() is None:
-                terminate_for_timeout()
-            wait = None if timed_out or deadline is None else max(0.0, deadline - time.monotonic())
+        with selectors.DefaultSelector() as selector:
+            for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, name)
+            while selector.get_map():
+                now = time.monotonic()
+                if deadline is not None and now >= deadline:
+                    terminate_for_timeout()
+                if timed_out:
+                    wait = max(0.0, drain_deadline - now)
+                    if wait == 0:
+                        break
+                else:
+                    wait = None if deadline is None else max(0.0, deadline - now)
+                ready = selector.select(wait)
+                if not ready:
+                    if timed_out:
+                        break
+                    if deadline is not None and time.monotonic() >= deadline:
+                        terminate_for_timeout()
+                    continue
+                for key, _ in ready:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        terminate_for_timeout()
+                    stream, name = key.fileobj, key.data
+                    try:
+                        chunk = os.read(stream.fileno(), 65536)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        selector.unregister(stream)
+                        if name == "stdout" and stdout_buffer:
+                            stdout_consumer(stdout_buffer.decode("utf-8", errors="replace"), False)
+                            stdout_buffer.clear()
+                        stream.close()
+                    elif name == "stdout":
+                        stdout_parts.append(chunk)
+                        stdout_buffer.extend(chunk)
+                        while b"\n" in stdout_buffer:
+                            line, _, tail = stdout_buffer.partition(b"\n")
+                            stdout_buffer[:] = tail
+                            stdout_consumer(line.decode("utf-8", errors="replace").rstrip("\r"), True)
+                    else:
+                        stderr_parts.append(chunk)
+            for key in list(selector.get_map().values()):
+                stream = key.fileobj
+                selector.unregister(stream)
+                stream.close()
+
+        if not timed_out:
             try:
-                name, line, complete = events.get(timeout=wait)
-            except queue.Empty:
-                terminate_for_timeout()
-                continue
-            if deadline is not None and time.monotonic() >= deadline and process.poll() is None:
-                terminate_for_timeout()
-            if line is None:
-                ended.add(name)
-                continue
-            if name == "stdout":
-                stdout_parts.append(line)
-                stdout_consumer(line.rstrip("\r\n"), complete)
-            else:
-                stderr_parts.append(line)
-        if deadline is None:
-            process.wait()
-        else:
-            remaining = max(0.0, deadline - time.monotonic())
-            try:
-                process.wait(timeout=remaining)
+                if deadline is None:
+                    process.wait()
+                else:
+                    process.wait(timeout=max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 terminate_for_timeout()
         if timed_out:
@@ -321,11 +347,8 @@ class Evidence:
                     process.wait(timeout=1.0)
                 except subprocess.TimeoutExpired as error:
                     raise Stage2Error(f"could not reap timed-out process {argv[0]}") from error
-        for reader in readers:
-            reader.join(timeout=1.0)
-        process.stdout.close()
-        process.stderr.close()
-        stdout, stderr = "".join(stdout_parts), "".join(stderr_parts)
+        stdout = b"".join(stdout_parts).decode("utf-8", errors="replace")
+        stderr = b"".join(stderr_parts).decode("utf-8", errors="replace")
         if timed_out:
             expired = subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr)
             raise Stage2Error(f"could not run {argv[0]}: timed out after {timeout}s") from expired

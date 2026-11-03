@@ -369,6 +369,18 @@ class Stage2HarnessTests(unittest.TestCase):
         manifest = json.loads((self.output / "manifest.json").read_text())
         self.assertIsNone(manifest["commands"][0]["returncode"])
 
+    def test_stream_timeout_bounds_drain_when_grandchild_inherits_pipes(self):
+        evidence = oracle.Evidence(self.output, {"commands": []})
+        script = ("import subprocess,sys,time; "
+                  "subprocess.Popen([sys.executable,'-c','import time; time.sleep(0.8)']); "
+                  "time.sleep(5)")
+        started = time.monotonic()
+        with self.assertRaisesRegex(oracle.Stage2Error, "timed out"):
+            evidence.run([sys.executable, "-c", script], timeout=0.05,
+                         stdout_consumer=lambda _line, _complete: None)
+        self.assertLess(time.monotonic() - started, 0.7)
+        time.sleep(0.6)
+
     def test_missing_or_failed_native_output_is_not_skipped_and_raw_batch_is_preserved(self):
         path = self.case()
         cases = oracle.prepare_cases([str(path)], self.output)
