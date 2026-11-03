@@ -13556,10 +13556,10 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             for label, output in (
                 (
                     "zero matches",
-                    "running 0 tests\\n\\ntest result: ok. 0 passed; 0 failed; 0 ignored\\n",
+                    "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored\n",
                 ),
-                ("ignored", f"test {identity} ... ignored\\n"),
-                ("failed", f"test {identity} ... FAILED\\n"),
+                ("ignored", f"test {identity} ... ignored\n"),
+                ("failed", f"test {identity} ... FAILED\n"),
             ):
                 changed = passing_rust_gate_steps(log_dir)
                 replace_step_log_output(changed[step], output)
