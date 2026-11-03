@@ -48,14 +48,14 @@
 - **Основание:** review of the S3-20eg host test at [`od-host/src/lib.rs`](../crates/od-host/src/lib.rs) and the [S3-20eg report](reports/STAGE_3_S3-20eg_2026-11-02.md).
 - **Следующий шаг:** after the follow-up receives final static review, execute the exact S3-20eg host gate and confirm successful retry after backend error and each entry STOP/budget guard, with committed state and exactly one successful write. Keep ISSUE-028 open until that execution acceptance is recorded. No product-code change is implied by this entry.
 
-### ISSUE-029 — S3-34dn artifact protections await execution acceptance
+### ISSUE-029 — S3-34dn artifact protection self-check
 
 - **Дата обнаружения:** 2026-11-03.
 - **Компонент:** `tests/cpu/stage3_dword_store_corpus.rs`, S3-34dn persisted mismatch artifact and replay validation.
-- **Статус:** открыта только до execution acceptance; create-only/version/RIP self-check assertions added in `ee2af23` and passed independent static Sol/high review; runtime defect не установлен.
-- **Суть и последствия:** the S3-34dn self-check now attempts a create-only write over a sentinel file and confirms `AlreadyExists` while preserving its contents; it also mutates the version and RIP fields and confirms parser rejection. The updated assertions have not been executed, so the protections are not yet acceptance evidence. No runtime defect is established.
-- **Основание:** commit `ee2af23` updates `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed` in [`stage3_dword_store_corpus.rs`](../tests/cpu/stage3_dword_store_corpus.rs); the runtime/test diff passed independent static Sol/high review. The [S3-34dn report](reports/STAGE_3_S3-34dn_2026-11-03.md) records deferred Rust, harness, and self-check execution.
-- **Следующий шаг:** run the exact S3-34dn Rust self-check `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed` and harness gate `s3_34dn_replay_artifact_self_check` at Stage 3 end. Keep this issue open until execution acceptance succeeds.
+- **Статус:** решена для create-only/version/RIP self-check acceptance; независимое Sol/high review прошло. Это не подтверждает JIT/native parity или replay реального mismatch artifact.
+- **Суть и последствия:** the S3-34dn self-check attempts a create-only write over a sentinel file and confirms `AlreadyExists` while preserving its contents; it also mutates version and RIP fields and confirms parser rejection. These safeguards are now execution evidence for the labeled synthetic self-check. No runtime defect is established.
+- **Основание и результат:** commit `ee2af23` updates `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed` in [`stage3_dword_store_corpus.rs`](../tests/cpu/stage3_dword_store_corpus.rs). The exact Rust self-check and fail-closed harness self-test each passed 1/1; see the [S3-34dn report](reports/STAGE_3_S3-34dn_2026-11-03.md). The optional saved-artifact replay and S3-20eg acceptance tracked by ISSUE-028 remain separate.
+- **Следующий шаг:** no further work is required for this self-check issue. Keep full S3-34.2 runtime/replay acceptance and ISSUE-028 open until their separate evidence is complete.
 
 ### ISSUE-030 — Rust parser rejected the addr32 checked-load predicate
 

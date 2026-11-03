@@ -2708,11 +2708,12 @@ semantics, persisted replay format, envelope, or reducer API. See the
 
 ## S3-34dn: create-only mismatch artifact and validated replay for S3-34dm
 
-**Status:** implementation and independent static Sol/high review passed;
-execution is deferred. Runtime commits `f858b7a`/`10447f0`/`ee2af23` and
-harness commits `89c5e28`/`13b7790` are integrated. Commit `ee2af23` adds
-self-check assertions for create-only/no-overwrite behavior and invalid-version
-and invalid-RIP rejection. No tests or self-checks were run.
+**Status:** implementation and independent static Sol/high review passed. The
+artifact-protection Rust self-check and its pinned Python fail-closed self-test
+passed; full artifact/replay acceptance remains pending. Runtime commits
+`f858b7a`/`10447f0`/`ee2af23` and harness commits `89c5e28`/`13b7790` are
+integrated. Commit `ee2af23` adds self-check assertions for create-only/
+no-overwrite behavior and invalid-version and invalid-RIP rejection.
 
 The planned diagnostic is restricted to the existing S3-34dm exact profile
 `67 89 04 24`. It creates one full mismatch artifact only after a
@@ -2749,14 +2750,19 @@ Rust identities:
 optional `replay_saved_s3_34dn_mismatch_artifact`. Harness gate:
 `s3_34dn_replay_artifact_self_check`; fail-closed harness self-test:
 `test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed`.
-Pinned totals remain 304 gates (294 acceptance + 10 lifecycle), 322 local steps,
-and 137 self-test names. Static review passed; these gates and self-checks
-remain unexecuted. S3-34.2 artifact/replay/reducer implementation is now
-present; execution acceptance remains pending. ISSUE-028 stays open pending S3-20eg execution
-acceptance. ISSUE-029 remains open only pending execution of the exact S3-34dn
-Rust self-check and harness gate. No Rust behavior gate, Python
-harness/self-check, build, formatting, Cargo, Mini, or M1 acceptance was run or
-is claimed. See the
+At the S3-34dn integration revision, the manifest contained 304 gates (294
+acceptance + 10 lifecycle), 322 local steps, and 137 self-test names. The
+current manifest after S3-34dr contains 324 gates (306 acceptance + 18
+lifecycle), 342 local steps, and 149 self-test names. Static review passed.
+The exact Rust self-check and pinned Python self-test passed; both use
+synthetic observations and do not prove JIT/native parity or replay a real
+artifact. S3-34.2 artifact/replay/reducer implementation is present; full
+execution acceptance remains pending. ISSUE-028 stays open pending S3-20eg
+execution acceptance; ISSUE-029 is resolved for the artifact-protection
+self-check only. The Rust checks above are synthetic and do not count as a JIT
+runtime behavior gate. No saved-artifact replay, build, formatting, Mini test,
+or M1 acceptance is claimed. The Mini SSH attempt timed out before any remote
+command ran. See the
 [S3-34dn report](../reports/STAGE_3_S3-34dn_2026-11-03.md).
 
 ## S3-34do: bounded value-only reducer for one S3-34dn artifact
@@ -2804,10 +2810,11 @@ Rust identities: reducer `reduce_saved_s3_34do_value_only_artifact`,
 self-check `s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature`.
 Harness gate `s3_34do_value_only_reducer_self_check`; fail-closed harness
 self-test `test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed`.
-Totals are pinned at 305 gates (295 acceptance + 10 lifecycle), 323 steps, and
-138 self-test names. Static review passed; all remain unexecuted. No real
-S3-34dn artifact was reduced. ISSUE-028 and ISSUE-029 remain open pending their
-execution acceptance. S3-34.2 execution acceptance remains pending. No generic
+At the S3-34do integration revision, totals were pinned at 305 gates (295
+acceptance + 10 lifecycle), 323 steps, and 138 self-test names. Static review
+passed; these reducer gates remain unexecuted. No real S3-34dn artifact was reduced. ISSUE-028 remains open
+pending S3-20eg acceptance; ISSUE-029 is resolved for the S3-34dn
+artifact-protection self-check. S3-34.2 execution acceptance remains pending. No generic
 reducer framework, runtime API, dependency, or opcode is added. Stage 3 remains
 partial.
 See the [S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md).
