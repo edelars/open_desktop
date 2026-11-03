@@ -1434,6 +1434,7 @@ pub fn compile_ir_memory_two_site_block_v2(
         || !matches!(
             code.bytes(),
             [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]
+                | [0x48, 0x89, 0x03, 0x48, 0x89, 0x02]
                 | [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02]
                 | [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b]
         )
@@ -1448,9 +1449,12 @@ pub fn compile_ir_memory_two_site_block_v2(
     let second_view = CodeView::new(second_rip, &code.bytes()[3..])
         .map_err(|_| MemoryLoadCompileErrorV2::UnsupportedForm)?;
     let store_then_load = code.bytes() == [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b];
+    let store_then_store = code.bytes() == [0x48, 0x89, 0x03, 0x48, 0x89, 0x02];
     let load_then_store = code.bytes() == [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02];
     let (first_operation, second_operation) = if store_then_load {
         (MemorySiteOperationV2::Store, MemorySiteOperationV2::Load)
+    } else if store_then_store {
+        (MemorySiteOperationV2::Store, MemorySiteOperationV2::Store)
     } else {
         (
             MemorySiteOperationV2::Load,
@@ -1469,6 +1473,12 @@ pub fn compile_ir_memory_two_site_block_v2(
             && first.operand().base == rbx
             && second.destination() == Some(1)
             && second.operand().base == rbx
+    } else if store_then_store {
+        first.source() == Some(0)
+            && first.operand().base == rbx
+            && second.source() == Some(0)
+            && second.operand().base
+                == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rdx)
     } else if load_then_store {
         first.destination() == Some(0)
             && first.operand().base == rbx
@@ -1498,6 +1508,8 @@ pub fn compile_ir_memory_two_site_block_v2(
         sites: [first, second],
         sequence: if store_then_load {
             crate::runtime::MemoryPairSequenceV2::StoreThenLoad
+        } else if store_then_store {
+            crate::runtime::MemoryPairSequenceV2::StoreThenStore
         } else if load_then_store {
             crate::runtime::MemoryPairSequenceV2::LoadThenStore
         } else {
@@ -14446,6 +14458,54 @@ mod tests {
     }
 
     #[test]
+    fn ir_store_then_store_binds_two_exact_ordered_sites() {
+        let bytes = [0x48, 0x89, 0x03, 0x48, 0x89, 0x02];
+        let entry = 0x5800;
+        let block = compile_ir_memory_two_site_block_v2(
+            CodeView::new(entry, &bytes).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert_eq!(
+            block.sequence(),
+            crate::runtime::MemoryPairSequenceV2::StoreThenStore
+        );
+        assert_eq!(block.source_bytes(), &bytes);
+        for (index, base, rip) in [
+            (0, Register::Rbx, entry),
+            (1, Register::Rdx, entry + 3),
+        ] {
+            let site = block.sites()[index];
+            assert_eq!(site.instruction_index(), index as u32);
+            assert_eq!(site.operation(), MemorySiteOperationV2::Store);
+            assert_eq!(site.source(), Some(0));
+            assert_eq!(site.destination(), None);
+            assert_eq!(site.operand().base, AddressBase::Register(base));
+            assert_eq!(site.guest_rip(), rip);
+            assert_eq!(site.next_rip(), rip + 3);
+        }
+        assert_eq!(block.pc_map().instruction_count(), 2);
+        assert!(matches_two_site_pc_map_contract(
+            block.pc_map(),
+            entry,
+            [MemorySiteOperationV2::Store, MemorySiteOperationV2::Store]
+        ));
+
+        for unsupported in [
+            [0x48, 0x89, 0x03, 0x48, 0x89, 0x0b], // RCX payload
+            [0x48, 0x89, 0x13, 0x48, 0x89, 0x02], // RDX first payload
+            [0x48, 0x89, 0x03, 0x48, 0x89, 0x03], // wrong second base
+            [0x48, 0x89, 0x03, 0x48, 0x89, 0x42], // displacement form neighbor
+        ] {
+            assert!(compile_ir_memory_two_site_block_v2(
+                CodeView::new(entry, &unsupported).unwrap(),
+                entry
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
     fn ir_two_site_pc_maps_attribute_all_checked_ranges_and_boundaries() {
         use crate::statepoints::{GuestRipSource, SnapshotAdmissibility, StatePhase};
 
@@ -14454,6 +14514,11 @@ mod tests {
                 [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
                 crate::runtime::MemoryPairSequenceV2::StoreThenLoad,
                 [MemorySiteOperationV2::Store, MemorySiteOperationV2::Load],
+            ),
+            (
+                [0x48, 0x89, 0x03, 0x48, 0x89, 0x02],
+                crate::runtime::MemoryPairSequenceV2::StoreThenStore,
+                [MemorySiteOperationV2::Store, MemorySiteOperationV2::Store],
             ),
             (
                 [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02],

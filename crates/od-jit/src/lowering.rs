@@ -1216,7 +1216,32 @@ pub(crate) fn exact_checked_memory_pair(block: &crate::block::BasicBlock) -> boo
             && operand.address_size == od_isa::OperandSize::Qword
             && operand.size == od_isa::OperandSize::Qword
     );
-    store_to_load || load_to_store || load_to_load
+    let store_to_store = matches!(
+        first.decoded.operation,
+        DecodedOperation::Mov {
+            dst: Operand::Memory(operand),
+            src: Operand::Register(source),
+        } if operand.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            && source.register() == od_isa::Register::Rax
+            && source.size() == od_isa::OperandSize::Qword
+            && operand.index.is_none()
+            && operand.displacement == 0
+            && operand.address_size == od_isa::OperandSize::Qword
+            && operand.size == od_isa::OperandSize::Qword
+    ) && matches!(
+        second.decoded.operation,
+        DecodedOperation::Mov {
+            dst: Operand::Memory(operand),
+            src: Operand::Register(source),
+        } if operand.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rdx)
+            && source.register() == od_isa::Register::Rax
+            && source.size() == od_isa::OperandSize::Qword
+            && operand.index.is_none()
+            && operand.displacement == 0
+            && operand.address_size == od_isa::OperandSize::Qword
+            && operand.size == od_isa::OperandSize::Qword
+    );
+    store_to_load || load_to_store || load_to_load || store_to_store
 }
 
 #[derive(Clone)]
@@ -2089,6 +2114,36 @@ mod tests {
                 },
             ]
         ));
+    }
+
+    #[test]
+    fn lowers_exact_store_then_store_as_two_ordered_commits() {
+        let bytes = [0x48, 0x89, 0x03, 0x48, 0x89, 0x02];
+        let outcome = block::build_checked_qword_two_site_block(
+            CodeView::new(BASE, &bytes).unwrap(),
+            BASE,
+            AccessContext::default(),
+            BlockLimits::default(),
+        )
+        .unwrap();
+        let lowered = match lower(&outcome).unwrap() {
+            LoweringOutcome::Program(program) => program,
+            other => panic!("expected program, got {other:?}"),
+        };
+        assert!(matches!(
+            lowered.program.operations.as_slice(),
+            [
+                Operation::BeginInstruction { index: 0 },
+                Operation::CheckedStore { src: GuestGpr(0), operand: first },
+                Operation::CommitInstruction { index: 0 },
+                Operation::BeginInstruction { index: 1 },
+                Operation::CheckedStore { src: GuestGpr(0), operand: second },
+                Operation::CommitInstruction { index: 1 },
+                Operation::Exit { kind: ExitKind::BlockComplete, target_rip: 0x1006 },
+            ] if first.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+                && second.base == od_isa::long_decode::AddressBase::Register(od_isa::Register::Rdx)
+        ));
+        assert_eq!(ir::verify(&lowered.program), Ok(()));
     }
 
     #[test]

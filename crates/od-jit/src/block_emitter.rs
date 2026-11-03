@@ -833,8 +833,19 @@ pub fn emit_two_memory_runtime_block_v2(
         && *target_rip == program.guest_instructions[1].next_rip
         && supported_load_then_load_operands(*first_operand, *second_operand)
     );
+    let store_then_store = matches!(program.operations.as_slice(), [
+        Operation::BeginInstruction { index: 0 },
+        Operation::CheckedStore { src: GuestGpr(0), operand: first_operand },
+        Operation::CommitInstruction { index: 0 },
+        Operation::BeginInstruction { index: 1 },
+        Operation::CheckedStore { src: GuestGpr(0), operand: second_operand },
+        Operation::CommitInstruction { index: 1 },
+        Operation::Exit { kind: ExitKind::BlockComplete, target_rip },
+    ] if *target_rip == program.guest_instructions[1].next_rip
+        && supported_store_then_store_operands(*first_operand, *second_operand)
+    );
     if program.guest_instructions.len() != 2
-        || (!store_then_load && !load_then_store && !load_then_load)
+        || (!store_then_load && !load_then_store && !load_then_load && !store_then_store)
     {
         return Err(BlockEmitterError::UnsupportedShape {
             instruction_index: 0,
@@ -1009,7 +1020,7 @@ pub fn emit_two_memory_runtime_block_v2(
         &mut encoder,
         &mut ranges,
         allocation,
-        if store_then_load { 4 } else { 5 },
+        if store_then_load || store_then_store { 4 } else { 5 },
         1,
         second.guest_rip,
         load_failed,
@@ -1199,6 +1210,23 @@ fn supported_load_then_load_operands(
             && operand.address_size == OperandSize::Qword
             && operand.size == OperandSize::Qword
     })
+}
+
+fn supported_store_then_store_operands(
+    first: od_isa::long_decode::MemoryOperand,
+    second: od_isa::long_decode::MemoryOperand,
+) -> bool {
+    use od_isa::OperandSize;
+    use od_isa::long_decode::AddressBase;
+    first.base == AddressBase::Register(od_isa::Register::Rbx)
+        && second.base == AddressBase::Register(od_isa::Register::Rdx)
+        && [first, second].into_iter().all(|operand| {
+            operand.index.is_none()
+                && operand.scale == 1
+                && operand.displacement == 0
+                && operand.address_size == OperandSize::Qword
+                && operand.size == OperandSize::Qword
+        })
 }
 
 fn emit_checked_memory_site_call(

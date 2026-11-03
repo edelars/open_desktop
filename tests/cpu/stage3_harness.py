@@ -71,6 +71,7 @@ SELF_TEST_NAMES = (
     "test_s3_34s_memory_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_34t_register_event_gates_are_pinned_once_and_fail_closed",
     "test_s3_34u_memory_load_and_pc_map_gates_are_pinned_once_and_fail_closed",
+    "test_s3_26f_store_store_gates_are_pinned_once_and_fail_closed",
     "test_s3_34v_dword_store_gates_are_pinned_once_and_fail_closed",
     "test_s3_34w_dword_pc_map_gates_are_pinned_once_and_fail_closed",
     "test_s3_34x_dword_alias_load_gates_are_pinned_once_and_fail_closed",
@@ -205,6 +206,7 @@ LIFECYCLE_TESTS = (
     "direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse",
     "active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic",
     "ir_two_load_pair_preserves_callbacks_faults_and_continuation",
+    "ir_two_store_pair_preserves_callbacks_faults_and_continuation",
 )
 
 ADDITIONAL_TEST_GATES = (
@@ -1415,6 +1417,14 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_34do_value_only_reducer_self_check", "local_acceptance", "od-host",
         "s3_34do_value_only_reducer_self_checks_are_bounded_and_preserve_signature",
+    ),
+    (
+        "s3_26f_store_store_source_sites_and_pc_map", "local_acceptance", "od-jit",
+        "memory_load_v2::tests::ir_store_then_store_binds_two_exact_ordered_sites",
+    ),
+    (
+        "s3_26f_store_store_uncached_dispatch_continuation", "local_acceptance", "od-jit",
+        "memory_dispatch::tests::uncached_dispatch_selects_store_store_pair_and_resumes_at_second_site",
     ),
     (
         "s3_16_not_rcx_fallback", "local_acceptance", "od-jit",

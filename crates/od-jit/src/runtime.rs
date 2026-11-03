@@ -77,6 +77,7 @@ pub enum MemoryPairSequenceV2 {
     StoreThenLoad,
     LoadThenStore,
     LoadThenLoad,
+    StoreThenStore,
 }
 
 /// Immutable per-block description for one verifier-approved memory operation.

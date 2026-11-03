@@ -1497,6 +1497,28 @@ clearing the event. The exact host test is also required by the S3-34e local
 harness. This is fixture-only private ordinary RAM: the trace proves two helper
 calls, not device/MMIO behavior, full S3-26/S3-27, or physical x86 semantics.
 
+### Bounded S3-26f ordered store pair
+
+Add exact `48 89 03 48 89 02` (`MOV [RBX],RAX; MOV [RDX],RAX`) as one
+uncached two-site entry. Pin JIT source/site and PC-map evidence with
+`memory_load_v2::tests::ir_store_then_store_binds_two_exact_ordered_sites`,
+uncached dispatcher selection and continuation with
+`memory_dispatch::tests::uncached_dispatch_selects_store_store_pair_and_resumes_at_second_site`,
+and host callback/fault evidence with
+`tests::ir_two_store_pair_preserves_callbacks_faults_and_continuation`.
+Check ordered separate writes (including equal destination addresses), full
+interpreter CPU/RAM parity, first-write fault atomicity, second-write fault
+after the first commit with full GPR/flags preservation, exact fault payload,
+backend errors as host errors, budgets 0/1/2, pre-entry STOP, stop-RIP `A+3`,
+callback STOP and fault precedence, and same-artifact plus singleton retry at
+`A+3` without replay. The PC map must preserve helper attribution and commit
+boundaries `A+3`/`A+6`, with no post-write replay. Malformed source/site
+metadata and unsupported neighbors remain rejected; the cached pair backend
+must reject this variant. Each individual store is all-or-nothing in private
+synchronous ordinary RAM; the pair is not transactional. These gates were
+added but not run in this task. Full S3-26, S3-27 and physical x86 acceptance
+remain open.
+
 ### Bounded S3-27b next fetch after memory pair
 
 The native fixture runs either exact two-site pair through the generated entry,

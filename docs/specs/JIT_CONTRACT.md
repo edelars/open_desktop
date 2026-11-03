@@ -1603,6 +1603,24 @@ RAM fixture; the callback trace is not an MMIO/device model. Other load-load or
 multi-site sequences remain unsupported. Full S3-26/S3-27 and physical x86
 acceptance remain open. See the [S3-26e report](../reports/STAGE_3_S3-26e_2026-10-30.md).
 
+#### S3-26f: exact store→store pair
+
+The additional accepted source is exactly `48 89 03 48 89 02`
+(`MOV [RBX],RAX; MOV [RDX],RAX`). Site 0 binds instruction index 0, RIP `A`,
+base RBX and source RAX; site 1 binds index 1, RIP `A+3`, base RDX and the
+same source. Lowering retains two `CheckedStore` operations and separate
+instruction commits. The emitter uses helper operation index 4 for the second
+store. The sites remain separate callbacks even when RBX and RDX resolve to
+the same address. A successful first write commits at `A+3`; the second
+commits at `A+6`. A second-site architectural fault preserves the first write,
+leaves the second unchanged, and exposes state at `A+3`; the pair is not
+transactional. Each write requires private synchronous ordinary RAM whose
+individual eight-byte write is all-or-nothing. Cached pair publication
+explicitly rejects this variant. Other source, operand, metadata and pair
+shapes remain unsupported. Owner/MMU integration and full S3-26/S3-27
+acceptance remain open. See the
+[S3-26f report](../reports/STAGE_3_S3-26f_2026-11-03.md).
+
 #### S3-20l: RIP-relative qword MOV through shared IR and bounded dispatch
 
 The admitted singleton is exactly seven bytes: `48 8B /r disp32` or

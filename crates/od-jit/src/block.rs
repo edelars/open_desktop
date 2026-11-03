@@ -2814,40 +2814,41 @@ fn build_block_with_profile(
         let admitted = if profile == BlockBuildProfile::CheckedQwordMemoryPair {
             let bytes = code.bytes.get(entry_offset..entry_offset.saturating_add(6));
             let store_load = bytes == Some(&[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b][..]);
+            let store_store = bytes == Some(&[0x48, 0x89, 0x03, 0x48, 0x89, 0x02][..]);
             let load_store = bytes == Some(&[0x48, 0x8b, 0x03, 0x48, 0x89, 0x02][..]);
             let load_load = bytes == Some(&[0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b][..]);
-            match (instructions.len(), store_load, load_store, load_load) {
-                (0, true, _, _) => {
+            match (instructions.len(), store_load, store_store, load_store, load_load) {
+                (0, true, _, _, _) => {
                     is_checked_qword_store_form(decoded)
                         && exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
                         && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                             == Some(&[0x48, 0x89, 0x03][..])
                 }
-                (1, true, _, _) => {
+                (1, true, _, _, _) => {
                     is_checked_qword_load_form(decoded)
                         && exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
                         && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                             == Some(&[0x48, 0x8b, 0x0b][..])
                 }
-                (0, _, true, _) | (0, _, _, true) => {
+                (0, _, _, true, _) | (0, _, _, _, true) => {
                     is_checked_qword_load_form(decoded)
                         && exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
                         && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                             == Some(&[0x48, 0x8b, 0x03][..])
                 }
-                (1, _, true, _) => {
+                (1, _, true, _, _) | (1, _, _, true, _) => {
                     is_checked_qword_store_form(decoded)
                         && exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
                         && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                             == Some(&[0x48, 0x89, 0x02][..])
                 }
-                (1, _, _, true) => {
+                (1, _, _, _, true) => {
                     is_checked_qword_load_form(decoded)
                         && exact_direct_qword_load_bytes(code, guest_rip, decoded.length)
                         && code.bytes.get(guest_offset..guest_offset.saturating_add(3))
                             == Some(&[0x48, 0x8b, 0x0b][..])
                 }
-                (0, false, false, false) => {
+                (0, false, false, false, false) => {
                     is_checked_qword_store_form(decoded)
                         && exact_direct_qword_memory_bytes(code, guest_rip, decoded.length, 0x89)
                         && code.bytes.get(guest_offset..guest_offset.saturating_add(3))

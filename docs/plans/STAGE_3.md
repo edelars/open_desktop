@@ -159,6 +159,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-20i / S3-26b | Checked qword store через общий BasicBlock → typed IR → allocator → runtime emitter | Только `48 89 /r`, ModRM `mod=00`, source/base RAX..RBX; отдельный typed entry, no replay после helper write |
 | [partial] | S3-20j / S3-26c / S3-20k / S3-26d | Один generated entry для ровно двух exact pairs: `48 89 03; 48 8B 0B` и `48 8B 03; 48 89 02` | Только private synchronous ordinary RAM; two guest commits; STOP/fault/budget continuation bounded; singleton APIs сохранены |
 | [partial] | S3-26e | Exact native load→load pair `48 8B 03; 48 8B 0B`; две отдельные checked reads `[RBX]` в RAX и RCX | Callback trace, full interpreter parity, second-site partial fault/retry, STOP/budget/event guards; private ordinary RAM only |
+| [partial] | S3-26f | Exact native store→store pair `48 89 03; 48 89 02`; два упорядоченных checked write `[RBX]`, `[RDX]` из RAX | Added source/site, IR, PC-map, callback, interpreter-parity, fault/retry, budget/STOP, cached-rejection, and uncached-continuation evidence; validation not run; private ordinary RAM only |
 | [partial] | S3-20l | RIP-relative qword MOV через shared IR и bounded memory dispatcher | Только singleton `48 8B/89 /r`, ModRM `mod=00,r/m=101`, disp32, data RAX..RBX; exact 7-byte source; no wider block/prefix/SIB |
 | [partial] | S3-20m | Direct-base signed disp8/disp32 MOV через shared IR и bounded dispatcher | Только singleton `48 8B/89 /r`, ModRM `mod=01/10`, base/data RAX..RBX, exact length 4/7; no SIB/prefix/wider block |
 | [partial] | S3-20n | No-displacement SIB MOV через shared IR и bounded dispatcher | Только `48 8B/89 /r sib`, ModRM `mod=00,r/m=100`, data/base/index RAX..RBX, scale 1/2/4/8, ровно 4 bytes |
@@ -1375,6 +1376,12 @@ the read callback trace is a contract probe, not an MMIO/device model. Update
 the local S3-34e lifecycle list with the exact host test identity. Full S3-26,
 S3-27, owner/MMU behavior and Stage 3 remain open. See the
 [S3-26e report](../reports/STAGE_3_S3-26e_2026-10-30.md).
+
+#### S3-26f. Exact store→store two-site checked-memory entry
+
+Added only `48 89 03 48 89 02` (`MOV [RBX],RAX; MOV [RDX],RAX`) to the existing uncached V2 pair path. The source bytes bind site 0 to `[RBX]` at `A` and site 1 to `[RDX]` at `A+3`; both use RAX as the payload. The shared typed lowering emits two ordered `CheckedStore` operations and separate commits. The runtime emitter binds the second store helper to operation index 4 and keeps commit boundaries at `A+3` and `A+6`; equal effective addresses still cause two write callbacks.
+
+The added evidence covers independent interpreter parity, first-write no-commit, second-write architectural fault with the first write retained and unchanged GPR/flags, exact second-fault payload and continuation/singleton retry without repeating site 0, backend errors as host errors, budgets 0/1/2, entry STOP, stop-RIP `A+3`, callback-raised STOP and fault precedence, PC-map phases/boundaries, malformed and neighboring source rejection, uncached pair dispatch and second-site continuation, and explicit rejection by the cached pair backend. Each write retains the private synchronous ordinary-RAM all-or-nothing contract; the pair itself is not a transaction. Production owner/MMU, MMIO, multi-vCPU and physical-x86 semantics are outside this slice. Implementation evidence is recorded in the [S3-26f report](../reports/STAGE_3_S3-26f_2026-11-03.md); no validation has been run and independent review is pending.
 
 #### S3-20l. RIP-relative MOV in shared IR and bounded dispatch
 

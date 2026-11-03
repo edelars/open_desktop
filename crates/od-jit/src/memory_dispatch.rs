@@ -1703,6 +1703,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
         && matches!(
             bytes.get(..6).unwrap(),
             [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]
+                | [0x48, 0x89, 0x03, 0x48, 0x89, 0x02]
                 | [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02]
                 | [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b]
         )
@@ -3238,6 +3239,69 @@ mod tests {
         fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
             Ok(())
         }
+    }
+
+    #[derive(Default)]
+    struct PairContinuationExecutor {
+        entries: Vec<(u64, bool)>,
+    }
+    unsafe impl MemoryBlockExecutor for PairContinuationExecutor {
+        type Error = ();
+
+        unsafe fn execute_one_memory_block(
+            &mut self,
+            block: &BoundedMemoryArtifact,
+            state: &mut LongModeState,
+            _: &mut dyn GuestMemory,
+            _: AccessContext,
+            incoming_budget: u64,
+            _: Option<u64>,
+            _: &AtomicU8,
+        ) -> Result<MemoryBlockReport, Self::Error> {
+            let pair = matches!(block, BoundedMemoryArtifact::Pair(_));
+            self.entries.push((state.rip, pair));
+            let retired = if pair { incoming_budget.min(2) } else { incoming_budget.min(1) };
+            state.rip += retired * 3;
+            Ok(MemoryBlockReport {
+                exit: if pair && incoming_budget == retired {
+                    MemoryBlockExit::BudgetExhausted
+                } else {
+                    MemoryBlockExit::Complete
+                },
+                remaining_budget: incoming_budget - retired,
+                retired_instructions: retired,
+            })
+        }
+    }
+
+    #[test]
+    fn uncached_dispatch_selects_store_store_pair_and_resumes_at_second_site() {
+        const ENTRY: u64 = 0x8000;
+        let source = [0x48, 0x89, 0x03, 0x48, 0x89, 0x02];
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let mut state = LongModeState { rip: ENTRY, ..Default::default() };
+        let mut memory = EmptyMemory;
+        let stop = AtomicU8::new(0);
+        let mut executor = PairContinuationExecutor::default();
+
+        let first = unsafe {
+            run(code, boundary.clone(), &mut state, &mut memory, AccessContext::default(), 1,
+                None, &stop, &mut executor)
+        }.unwrap();
+        assert_eq!(first.exit, BoundedMemoryExit::BudgetExhausted);
+        assert_eq!(first.retired_instructions, 1);
+        assert_eq!(state.rip, ENTRY + 3);
+        assert_eq!(executor.entries, [(ENTRY, true)]);
+
+        let resumed = unsafe {
+            run(code, boundary, &mut state, &mut memory, AccessContext::default(), 1,
+                None, &stop, &mut executor)
+        }.unwrap();
+        assert_eq!(resumed.exit, BoundedMemoryExit::BoundaryReached { rip: ENTRY + 6 });
+        assert_eq!(resumed.retired_instructions, 1);
+        assert_eq!(state.rip, ENTRY + 6);
+        assert_eq!(executor.entries, [(ENTRY, true), (ENTRY + 3, false)]);
     }
 
     #[derive(Default)]

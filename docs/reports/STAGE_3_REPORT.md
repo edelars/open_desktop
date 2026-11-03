@@ -11,6 +11,16 @@
 | Physical hardware gate | S3-21 remains deferred until the end-of-Stage-3 Mac mini checks; local Apple Silicon evidence does not replace the physical x86 comparison. |
 | Production owner/MMU | Outside the current fixture scope; no production RAM/backing/mapping/MMU owner or committed-writer integration is claimed here. |
 
+S3-26f source support and unrun evidence were added for the exact uncached
+`48 89 03 48 89 02` two-store pair. Source/site binding, ordered typed IR,
+second helper operation index 4, host metadata, explicit cached rejection,
+uncached continuation selection, and focused evidence gates are recorded in
+the [S3-26f report](STAGE_3_S3-26f_2026-11-03.md). Builds, tests, formatting,
+and acceptance gates were not run; independent review is pending. The pair
+remains private ordinary RAM with per-write all-or-nothing semantics and is
+not transactional. Full S3-26/S3-27, owner/MMU and physical-hardware gates stay
+open.
+
 Stage 2 process launches or sampled activity are not blockers by themselves and
 do not need to be stopped or quiet for this local evidence. Monitoring
 limitations, including point-in-time snapshots without per-pair attribution,
