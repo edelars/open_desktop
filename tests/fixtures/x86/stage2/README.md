@@ -8426,6 +8426,20 @@ physical x86 acceptance is claimed. See the [CPU contract](../../../../docs/spec
 [plan](../../../../docs/plans/STAGE_2.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp),
 and [standalone report](../../../../docs/reports/S2_31EB_FLD_M80FP_HISTORICAL_IE_DE.md).
 
+<a id="s2-31ec-historical-zeoeue-for-raw-fld-m80fp"></a>
+
+### S2-31ec historical ZE/OE/UE on raw FLD m80fp
+
+The literal fixture admits all six historical exception flags together while
+retaining the exact DB 28 raw load, status snapshot and push result. The ISA
+matrix compares complete state across 64 sticky histories, 34 admitted raw
+class literals, 8 TOP values and 4 FCWs. Rollback starts with `FSW=0x043f`;
+the repeated FLD/FNSTSW/FNCLEX/retry sequence checks status observation and
+clearing. SF/ES/B remain rejected, and native/JIT stay closed. No physical x86
+acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp),
+[plan](../../../../docs/plans/STAGE_2.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp),
+and [standalone report](../../../../docs/reports/S2_31EC_FLD_M80FP_HISTORICAL_FLAGS.md).
+
 <a id="s2-38u-comiss-memory-invalid-only-profile"></a>
 
 ### S2-38u COMISS memory invalid-only profile

@@ -22882,3 +22882,27 @@ Stage 2 remains open. See [standalone report](S2_38U_COMISS_MEMORY_INVALID_ONLY.
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38u--exact-comiss-memory-invalid-only-profile),
 [plan](../plans/STAGE_2.md#s2-38u--exact-comiss-memory-invalid-only-profile), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38u-comiss-memory-invalid-only-profile).
+
+<a id="main-integration-s2-31ec"></a>
+
+## Main integration: S2-31ec
+
+S2-31ec widens only the exact bare Long64 `DB 28` raw FLD m80fp local status
+gate from `0x80dc` to `0x80c0`, admitting and preserving all six historical
+exception flags IE/DE/ZE/OE/UE/PE while continuing to reject SF/ES/B. The FCW
+whitelist, Empty destination, source/tag classes, raw ten-byte payload,
+one-read push contract and shared FILD gate are unchanged.
+
+The complete-state matrix covers 64 historical flag combinations × 34 raw
+class literals × 8 TOP values × 4 FCWs (69,632 cases). Span/read rollback
+starts at `FSW=0x043f`; ISA execution tests cover repeated FLD/FNSTSW/FNCLEX/
+retry, while a literal fixture checks all-flags status, strict schema and
+backend denial. Independent Sol/high review is clean after correcting the
+rollback setup. Author checks passed: od-isa 1,928, od-testkit 455, focused
+runner fixture/backend tests, workspace all-target offline check, and
+formatting. Graphify reports 12,065 nodes, 26,206 edges and 328 communities.
+No physical x86 acceptance is claimed. Broader x87/native behavior remains
+open under ISSUE-019. See the [standalone report](S2_31EC_FLD_M80FP_HISTORICAL_FLAGS.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp),
+[plan](../plans/STAGE_2.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ec-historical-zeoeue-for-raw-fld-m80fp).

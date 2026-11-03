@@ -330,7 +330,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31dz | Admit historical SF only with pre-existing IE in exact bare D9 10/D9 18/DD 10/DD 18 bounded FST/FSTP m32/m64 stores; preserve conversion and atomic write/commit; native/JIT closed | 73,728-case full-state SF+IE matrix over nine sources; SF-only SNaN, ES/B and source/tag/control refusals, rollback, repeated store/FNSTSW/FNCLEX/retry; four success fixtures plus Unsupported and JIT/native denial; integrated main suites: od-isa 1,923, testkit 455, runner 532, x86-runner 8+5; workspace/fmt/layout/diff pass, Graphify 11,985/26,039/340; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31ea | Admit historical SF only with pre-existing IE in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte store and post-write pop; native/JIT closed | 24,576 full-state SF+IE cases across accepted source/tag pairs, signs, FCWs, TOP, C1 and DE/ZE/OE/PE histories; raw SNaN/subnormal preservation, SF-only/ES/B and malformed gates, rollback/repeat/FNSTSW/FNCLEX/retry, schema and backend denial; integrated main suites: od-isa 1,925, testkit 455, runner 535, x86-runner 8+6; workspace/fmt/layout/diff pass, Graphify 12,023/26,124/317; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31eb | Admit historical IE and DE on exact bare DB 28 raw FLD m80fp [RAX]; retain existing raw classes, push behavior and native/JIT denial | 8,704 full-state cases across 34 raw class literals × TOP × FCW × IE/DE/PE; full LongModeState equality, read/span rollback with FSW 0x0423 and DB28/FNSTSW/FNCLEX composition; schema-v2 and backend denial; Sol/high clean; author checks: ISA 5, testkit 455, both runner regressions 1, fmt/workspace check/Graphify pass; no physical x86 acceptance |
-| [ ] | S2-31ec | Admit historical ZE/OE/UE with IE/DE/PE only in exact bare DB 28 raw FLD m80fp [RAX]; preserve raw classes and push; native/JIT closed | S2-31eb gate widens locally from `0x80dc` to `0x80c0`; admit all six historical exception flags, reject SF/ES/B; do not change shared FILD gate |
+| [x] | S2-31ec | Admit historical ZE/OE/UE with IE/DE/PE only in exact bare DB 28 raw FLD m80fp [RAX]; preserve raw classes and push; native/JIT closed | 69,632 full-state cases (64 sticky histories × 34 raw literals × 8 TOP × 4 FCW); all-flags rollback from FSW 0x043f, SF/ES/B rejection, FNSTSW/FNCLEX/retry, schema and backend denial; od-isa 1,928, testkit 455, focused runner checks, workspace/fmt pass; clean Sol/high review after rollback coverage fix; Graphify after merge 12,065/26,206/328; no physical x86 acceptance |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -18312,6 +18312,16 @@ Vol. 1 §8.1.3.3 and Vol. 2A FLD m80fp pp. 3-352–3-353 ([Vol. 1 PDF](https://c
 [Vol. 2A PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470)). See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp),
 [S2-31eb base contract](../specs/CPU_CONTRACT.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp).
+Implementation integrated on main as `5a4d970` plus merge `848a141`. Sol/high
+review is clean after the rollback test was widened from `FSW=0x0423` to
+`FSW=0x043f`, so span/read failures preserve all newly admitted sticky flags.
+The full-state matrix passed 69,632 cases; author verification passed od-isa 1,928,
+od-testkit 455, focused fixture/backend runner tests, workspace all-target
+offline check and formatting. Graphify after merge: 12,065 nodes / 26,206
+edges / 328 communities. No physical x86 acceptance is claimed. See the [main
+integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ec),
+[standalone report](../reports/S2_31EC_FLD_M80FP_HISTORICAL_FLAGS.md), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ec-historical-zeoeue-for-raw-fld-m80fp).
 
 #### S2-38u — exact COMISS memory invalid-only profile
 

@@ -17867,6 +17867,15 @@ without generating those exceptions. Sources: [Vol. 1 §8.1.3.3](https://cdrdv2-
 [Vol. 2A FLD m80fp](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=470).
 See the [Stage 2 plan](../plans/STAGE_2.md#s2-31ec--historical-zeoeue-for-raw-fld-m80fp),
 [S2-31eb base contract](#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp).
+Implementation evidence: 69,632 complete-state cases cover 64 historical
+sticky combinations × 34 raw literals × 8 TOP values × 4 FCWs. The rollback
+test starts from `FSW=0x043f`, and composition checks FLD/FNSTSW/FNCLEX/retry.
+Author verification passed: od-isa 1,928, od-testkit 455, focused runner fixture/backend checks, workspace
+all-target offline check and formatting passed. Sol/high review is clean after
+the rollback coverage correction. Graphify after merge reports 12,065 nodes,
+26,206 edges and 328 communities. No physical x86 acceptance is claimed. See
+the [main integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ec)
+and [standalone report](../reports/S2_31EC_FLD_M80FP_HISTORICAL_FLAGS.md).
 
 ## S2-38u — exact COMISS memory invalid-only profile
 
