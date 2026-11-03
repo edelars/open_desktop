@@ -445,7 +445,7 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-38i | Process-level STOP isolation and EOF during active V1 RUN | Exact bounded smoke passed: STOP_ACK→RESULT ordering, stopped result, fresh same-code invocation, and clean teardown after active-run EOF. Descriptor/lease cleanup before exit, broader process suite, Mini/physical-x86 and full Stage 3 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38i_vmhost_v1_stop_eof_2026-11-03.md) |
 | [partial] | S3-38j | Process-level fragmented/coalesced V1 frames and bounds | Focused process smoke passed: fragmented HELLO/RUN, coalesced second RUN rejected BUSY, partial-frame EOF, and overlength rejection before body; process-manifest self-test passed 1/1. The two-instruction fixture now uses admitted `ADD RAX,RBX` forms. Full `--suite vmhost-process` timed out at the tool call after 300s with no summary; result unconfirmed. Graphify refresh timed out after 120s. Mini SSH timed out before remote tests; M1 deferred. INVALID_STATE batch closure, full process suite, races/backpressure, internal buffer bound, owner/MMU and full Stage 3 remain open. См. [implementation report](../reports/STAGE_3_S3-38j_vmhost_v1_frames_2026-11-03.md) |
 | [pass] | S3-38k | Process-level immutable-code mismatch and RUN-ID high-watermark | Focused ARM64 process smoke and both manifest checks pass; Mini SSH timed out before remote commands. Full process-suite and broader V1 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38k_vmhost_v1_code_mismatch_2026-11-03.md) |
-| [partial] | S3-38l | Process-level active STOP, rejected RUN/STOP IDs and RUN-ID high-watermark | Pins wrong-ID STOP, duplicate/decreasing IDs, BUSY ID consumption, exact STOP_ACK→RESULT order, stale retry rejection and a fresh successful RUN. Independent static reviews passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md) |
+| [pass] | S3-38l | Process-level active STOP, rejected RUN/STOP IDs and RUN-ID high-watermark | Focused ARM64 process smoke and fail-closed manifest test pass; Mini SSH timed out before remote commands. Full process-suite and broader V1 acceptance remain open. См. [implementation report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md) |
 | [partial] | S3-38m | Process-level RUN-ID exhaustion and fresh-helper reset | Pins max `u32` ID acceptance, duplicate-max and wrapped-ID rejection on the exhausted helper, then ID 1 acceptance by a newly launched helper/socket. Independent static review passed; process execution remains pending. См. [implementation report](../reports/STAGE_3_S3-38m_vmhost_v1_id_exhaustion_2026-11-03.md) |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
@@ -4156,9 +4156,10 @@ STOP ID 1 must receive STOP_ACK before the terminal RESULT; RUN ID 3 then
 remains stale because BUSY consumed it. RUN ID 4 proves the session remains
 usable with fresh registers, flags, and budget. The process harness pins the
 command, 30-second timeout, source fingerprint, success marker, and VMHost
-binary hash. Two independent Sol/high static reviews passed; no process or
-other runtime execution was performed. INVALID_STATE batch closure and broader
-V1 acceptance remain open. See the
+binary hash. Two independent Sol/high static reviews passed. The focused smoke
+and manifest test passed locally on ARM64; Mini SSH timed out before remote
+commands. INVALID_STATE batch closure, full process-suite execution, and
+broader V1 acceptance remain open. See the
 [S3-38l report](../reports/STAGE_3_S3-38l_vmhost_v1_run_stop_id_2026-11-03.md).
 
 #### S3-38m. Process-level RUN-ID exhaustion and fresh helper

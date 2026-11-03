@@ -1,6 +1,6 @@
 # Stage 3 S3-38l: active STOP and RUN-ID high-watermark
 
-Status: partial; process smoke and exact harness gate are implemented.
+Status: focused process acceptance passed; broader V1 acceptance remains open.
 
 ## Scope
 
@@ -20,19 +20,21 @@ protocol behavior was changed.
 
 ## Review and execution
 
-Independent Sol/high static reviews of both the process scenario and harness
-integration passed. No Python, test, build, formatting, Mini, M1, or process
-execution was performed. Mini checks remain deferred until the end of Stage 3;
-the separate M1 regression was deferred by the user. The previously completed
-S3-39 M1 smoke remains recorded in its existing report.
+Independent Sol/high static reviews of the process scenario and harness
+integration passed. The focused process smoke passed on the current ARM64 host
+against the previously built, signed VMHost binary with the exact success
+marker. Its focused manifest test passed (1/1). Full process-suite acceptance
+remains unconfirmed after an earlier run timed out without a summary; physical
+Mini acceptance was not run. The Mini SSH check timed out before any remote
+command ran. M1 regression remains deferred by the user; the previously
+completed S3-39 M1 smoke remains recorded in its existing report.
 
-`graphify update .` was attempted after the code changes, but remained in its
-full scan for two minutes. Interrupting it surfaced a `pathlib` traceback, so
-the graph refresh could not be confirmed; no Graphify output was changed by
-this slice.
+The fixture was not changed in this acceptance pass, so no build or formatting
+check was needed. A later `graphify update .` completed successfully and
+refreshed the project graph.
 
 ## Remaining acceptance
 
-This gate is implemented but unexecuted. V1 INVALID_STATE batch closure,
-broader completion/backpressure/cleanup checks, unchanged V0 regressions, and
-final runtime acceptance remain open. No performance or runtime claim is made.
+V1 INVALID_STATE batch closure, broader completion/backpressure/cleanup checks,
+unchanged V0 regressions, full process-suite execution, and physical Mini
+acceptance remain open. This report makes no performance claim.
