@@ -18920,3 +18920,124 @@ SDM Rev. 093 Vol. 2A ADDPD pp. 3-16–3-18, §2.5.2/Table 2-19;
 Vol. 1 §§4.9.1.4–.6, 4.9.2, 11.5.1–11.5.3; Vol. 3A Event 19/Table 7-8.
 Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance remain
 closed.
+
+## S2-38ao — exact MULPS memory profile with unmasked exceptions
+
+Prepare a distinct immutable schema-v2 interpreter-only profile
+`s2-long-mulps-memory-unmasked-rax-v1` for exact Long64 legacy `0F 59 00`
+(`MULPS XMM0,m128 [RAX]`), with dedicated
+`mulps_memory_rax_unmasked_controls`, one executable region, one read-only m128
+region at RAX, budget one and stop RIP=entry+3. Require SSE
+(`CPUID.01H:EDX[25]`). Preserve masked-memory S2-37ds, register MULPS and the
+scalar S2-38ag profile. Fetch the full three-byte instruction and verify its
+exact form before SSE/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM`, at CPL0–3;
+noncanonical fetch span faults `#GP(0)` before those gates. Reject all other
+prefix, REX, ModR/M/addressing, VEX/EVEX and register forms.
+
+Require supported MXCSR bits `0xffbf`, reserved bits clear, DAZ=FTZ=0,
+OM=UM=1, and admit all RC values, IM/DM/ZM/PM settings and six prior sticky
+histories. RAX must be 16-byte aligned regardless of RFLAGS.AC; a misaligned
+operand faults `#GP(0)` without a data callback at AC=0 or 1. Check the
+canonical48 span `[RAX,RAX+15]` and address overflow before exactly one atomic
+read16. Fetch, gate, alignment, span and read failures preserve architectural
+state and retirement.
+
+Compute all four lanes from pre-execution XMM0 and the actual memory RHS with
+MXCSR.RC. Use an independent integer-only raw-u32 oracle that does not call the
+production multiply helper or host floating point. If both inputs are NaNs,
+select original XMM0; otherwise select the sole NaN, quieting a selected SNaN
+while preserving its sign and payload. Any SNaN and `0×∞` raise IE; a QNaN
+alone does not. NaN suppresses DE only in its lane; other non-NaN subnormal
+operands contribute DE. Aggregate lane IE/DE before masks. An unmasked pre-event commits applicable
+new pre-event sticky bits and suppresses all post-event OE/UE/PE, every XMM0
+lane, RIP and retirement. Otherwise compute every product using rounding after
+the exact product, aggregate post-status, and apply PE atomically; an unmasked
+PE commits applicable post-event flags while suppressing the entire XMM0
+write, RIP and retirement. OM and UM remain masked. Under WPR, round the exact
+product to p=24 precision with an unbounded exponent before classifying
+underflow: UE requires a tiny WPR result and an inexact destination-format
+result. An exactly representable destination-format tiny result does not raise
+UE. Cover an inexact destination result whose WPR result is tiny and which
+rounds to the minimum-normal encoding (`0x00800000 × 0x3f7fffff` under RN), as
+well as the exact boundary case; final encoded bits alone do not classify
+tininess. Masked overflow/underflow and
+inexactness follow the profile's RC and WPR rules. When OSXMMEXCPT=1, unmasked SIMD arithmetic
+exceptions deliver `#XM` vector 19; when clear they deliver SIMD-generated
+`#UD` vector 6, without an error code. Old sticky bits alone do not fault.
+Success writes all four XMM0 lanes and applicable MXCSR status and advances RIP
+by three; preserve RFLAGS and unrelated state. JIT/native/C ABI/generic/fragment
+routes and physical x86 acceptance remain closed.
+
+Require an actual-interpreter matrix against the independent memory-RHS oracle.
+Cross seven lane representatives (neutral, IE, DE-only, PE-only, DE+PE,
+OE+PE, UE+PE) over `7^4 × 16` IM/DM/ZM/PM settings ×2 OSXMMEXCPT mappings
+(76,832 executions at fixed RC and prior status). Add mixed-lane/boundary
+vectors across every RC, 64 prior sticky histories, all masks and both
+deliveries, including masked UE+PE followed by unmasked PE, pre-event IE/DE
+suppressing later UE/PE in another lane, exact/inexact tiny, half-minsub,
+rounding-to-min-normal, overflow, NaN signs/positions, zero-times-infinity,
+signed zero/infinity, and lane permutations. Verify fetch/gates/CPL, alignment
+at AC=0/1, canonical spans, callback counts, read rollback, full-state and
+retirement suppression, immutable schema/result/control/exception checks,
+literal fixtures, preservation of old profiles and backend denial. Sources:
+Intel SDM Rev. 093 Vol. 2B MULPS pp. 4-145–4-147; Vol. 2A §2.5.2/Table 2-19;
+Vol. 1 §4.8.3.5/Table 4-8, §§4.9.1.4–.6 and 4.9.2, §11.5.2.5 and
+§§11.5.3.1–.3; Vol. 3A Event 19/Table 7-8.
+
+## S2-38ap — exact MULPD memory profile with unmasked exceptions
+
+Prepare a distinct immutable schema-v2 interpreter-only profile
+`s2-long-mulpd-memory-unmasked-rax-v1` for exact Long64 legacy `66 0F 59 00`
+(`MULPD XMM0,m128 [RAX]`), with dedicated
+`mulpd_memory_rax_unmasked_controls`, one executable region, one read-only m128
+region at RAX, budget one and stop RIP=entry+4. Require SSE2
+(`CPUID.01H:EDX[26]`). Preserve masked-memory S2-37dw, register MULPD and the
+scalar S2-38ah profile. Fetch all four instruction bytes and verify exact form
+before SSE2/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM`, at CPL0–3; a
+noncanonical fetch span faults `#GP(0)` before those gates. Reject all other
+prefix, REX, ModR/M/addressing, VEX/EVEX and register forms.
+
+Require supported MXCSR bits `0xffbf`, reserved bits clear, DAZ=FTZ=0,
+OM=UM=1, and admit all RC values, IM/DM/ZM/PM settings and prior sticky
+histories. The m128 operand is 16-byte aligned independent of AC; a misaligned
+RAX faults `#GP(0)` without a callback at AC=0 or 1. Validate checked
+canonical48 `[RAX,RAX+15]` before exactly one atomic read16. Fetch, gate,
+alignment, span and read failures preserve state and retirement.
+
+Compute both binary64 lanes from old XMM0 and the actual memory RHS with
+MXCSR.RC. Use an independent integer-only raw-u64 oracle, not the production
+multiply helper or host floating point. If both operands are NaNs, select the
+original XMM0 operand; otherwise select the sole NaN. Quiet a selected SNaN
+without changing its sign or payload. Any SNaN and `0×∞` raise IE; a QNaN
+alone does not. Apply the same lane-local DE, IE/DE pre-event aggregation, and
+atomic PE policy as S2-38ao. Under WPR, round each exact product to p=53
+precision with an unbounded exponent before classifying underflow: UE requires
+a tiny WPR result and an inexact destination-format result. An exactly
+representable destination-format tiny result does not raise UE. Cover exact/
+inexact tiny products, UE+PE, half-minsub, an inexact destination result whose
+WPR result is tiny and which rounds to the minimum-normal encoding
+(`0x0010000000000000 × 0x3fefffffffffffff` under RN), and the exact boundary;
+overflow, zero-times-infinity, SNaN/QNaN signs and positions, signed zero/
+infinity, prior sticky histories and lane permutations. Final encoded bits
+alone do not classify tininess. OM/UM remain masked; masked
+overflow/underflow and inexact results use the selected RC and WPR rules. A pre-event unmasked IE/DE suppresses
+post-event OE/UE/PE and all destination/RIP/retirement updates; unmasked PE
+retains applicable generated status but suppresses the complete XMM0 write,
+RIP and retirement. Map OSXMMEXCPT to `#XM`19 or SIMD-generated `#UD`6.
+Success replaces both XMM0 lanes and advances RIP by four while preserving
+unrelated state. JIT/native/C ABI/generic/fragment routes and physical x86
+acceptance remain closed.
+
+Require an actual-interpreter matrix against an independent raw-u64 memory-RHS
+oracle. Cross seven lane representatives over `7^2 × 16` IM/DM/ZM/PM
+settings ×2 delivery mappings (1,568 executions at fixed RC and prior
+status). Add mixed-lane/boundary vectors across RC ×64 sticky histories ×all
+masks ×both deliveries, including masked UE+PE followed by unmasked PE,
+pre-event suppression of later status in another lane, exact/inexact tiny,
+half-minsub, rounding-to-min-normal, overflow and lane permutations. Verify
+fetch/gates/CPL, alignment at AC=0/1, canonical spans, one-read rollback,
+strict schema and control/result/exception tampering, literal fixtures,
+old profile preservation and backend denial. Sources: Intel SDM Rev. 093
+Vol. 2B MULPD pp. 4-142–4-144; Vol. 2A §2.5.2/Table 2-19; Vol. 1
+§4.8.3.5/Table 4-8, §§4.9.1.4–.6 and 4.9.2, §11.5.2.5 and §§11.5.3.1–.3;
+Vol. 3A Event 19/Table 7-8.

@@ -687,6 +687,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38al | Exact Long64 `ADDPD XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 1,152 actual interpreter lane/event products + 114,688 boundary/history cases against independent raw-u64 actual-memory-RHS oracle; fourteen cross-lane/boundary vectors across RC×64 stickies×16 masks×2 deliveries, including IE+DE aggregation, pre-event PE/OE suppression, NaN signs/positions, exact tiny, cancellation, halfway, exponent gap and overflow midpoint; four literal fixtures; direct fetch/form/gate/CPL0–3, mandatory 16-byte `#GP(0)` alignment regardless AC, one read16/canonical-span/read rollback, result/status/control/exception tampering and JIT/native denial; od-isa 1,965, testkit 461, runner 143+564 passed; workspace check/fmt passed; Graphify 12,597/27,238/379; independent Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AL_ADDPD_MEMORY_UNMASKED.md) |
 | [x] | S2-38am | Exact Long64 `SUBPS XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dr masked memory, S2-38ae scalar subtraction and S2-38ak packed event aggregation; independent actual-memory-RHS raw-u32 oracle; original-source NaN priority before RHS sign transform; lane-local DE and cross-lane IE/DE pre-event priority; 16-byte `#GP(0)` regardless AC; 41,472 representative + 393,216 RC/sticky/boundary actual-interpreter cases; six fixtures; od-isa 1,967, testkit 461, runner 152+564; workspace check/fmt/Graphify passed; independent Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AM_SUBPS_MEMORY_UNMASKED.md) |
 | [x] | S2-38an | Exact Long64 `SUBPD XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dv masked memory, S2-38af scalar subtraction and S2-38al packed event aggregation; independent actual-memory-RHS raw-u64 oracle; original-source NaN priority before RHS sign transform; lane-local DE and cross-lane IE/DE pre-event priority; four-byte noncanonical fetch `#GP(0)` precedes disabled SSE2; 16-byte `#GP(0)` regardless AC; 1,152 representative event + 393,216 RC/sticky/boundary cases; five literals; od-isa 1,967, testkit 461, runner 148+565; workspace check/fmt/Graphify passed; independent Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AN_SUBPD_MEMORY_UNMASKED.md) |
+| [ ] | S2-38ao | Exact Long64 `MULPS XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37ds masked memory, S2-37as register multiplication/WPR, S2-38ag scalar multiplication and S2-38ak packed aggregation; independent raw-u32 memory-RHS oracle; include inexact-tiny UE+PE, rounding-to-min-normal and cross-lane event suppression; no physical x86 acceptance |
+| [ ] | S2-38ap | Exact Long64 `MULPD XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dw masked memory, S2-37ar register multiplication/WPR, S2-38ah scalar multiplication and S2-38al packed aggregation; independent raw-u64 memory-RHS oracle; include inexact-tiny UE+PE, rounding-to-min-normal and cross-lane event suppression; no physical x86 acceptance |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -19044,3 +19046,80 @@ exception tampering, old masked permissions and backend denial. Sources:
 Intel SDM Rev. 093 Vol. 2B SUBPD pp. 4-687–4-689; Vol. 2A §2.5.2/Table 2-19
 p. 2-27; Vol. 1 §4.8.3.5/Table 4-8, §§4.9.2 and 11.5.3.1–3; Vol. 3A Event
 19/Table 7-8. See [contract](../specs/CPU_CONTRACT.md#s2-38an--exact-subpd-memory-profile-with-unmasked-exceptions).
+
+#### S2-38ao — exact MULPS memory form with unmasked exceptions
+
+Prepare immutable schema-v2 interpreter-only profile
+`s2-long-mulps-memory-unmasked-rax-v1` for exact Long64 `0F 59 00`
+(`MULPS XMM0,m128 [RAX]`), separate
+`mulps_memory_rax_unmasked_controls`, SSE bit 25, budget one and stop RIP
+entry+3. Preserve masked S2-37ds, register MULPS and S2-38ag. Require full
+three-byte fetch and exact form before SSE/EM/OSFXSR `#UD`, then TS `#NM`, at
+CPL0–3; noncanonical fetch span faults `#GP(0)` before gates. Require MXCSR
+mask `0xffbf`, reserved bits clear, DAZ=FTZ=0, OM=UM=1; permit every RC,
+IM/DM/ZM/PM setting and all prior sticky histories.
+
+Require aligned m128 access at 16 bytes regardless of AC, checked canonical48
+`[RAX,RAX+15]`, and exactly one atomic read16. Failures preserve state and
+retirement. Use old XMM0 and the actual memory RHS with an independent
+integer-only raw-u32 oracle. If both inputs are NaNs select original XMM0;
+otherwise select the sole NaN, quieting a selected SNaN while preserving its
+sign/payload. Any SNaN and zero×infinity raise IE; QNaN-only does not. Cover
+lane-local DE and masked OE/UE/PE. Under WPR, round to p=24 precision with an
+unbounded exponent before classifying underflow: UE requires a tiny WPR result
+and an inexact destination-format result; an exactly representable
+destination-format tiny result does not raise UE. Include an inexact
+destination result whose WPR result is tiny and that rounds to the
+minimum-normal encoding (for example, `0x00800000 × 0x3f7fffff` under RN), plus
+the exact boundary.
+Aggregate IE/DE before masks and post-event OE/UE/PE
+after them. An unmasked pre-event commits applicable status but suppresses all
+later flags and XMM/RIP/retirement updates. Unmasked PE retains applicable
+status but also suppresses the whole destination and retirement; OM/UM remain
+masked. Test lane interactions and the full control/result/exception/backend
+contract. A 7-class `7^4 × 16 masks × 2 delivery` base matrix is 76,832 actual
+interpreter executions at fixed RC and prior status; add boundary and
+cross-lane vectors over RC × 64 prior sticky histories × masks × deliveries.
+Native/JIT/C ABI/generic/fragment and physical x86 acceptance remain closed.
+Sources: Intel SDM Rev. 093 Vol. 2B MULPS pp. 4-145–4-147; Vol. 2A
+§2.5.2/Table 2-19; Vol. 1 §4.8.3.5/Table 4-8, §§4.9.1.4–.6 and 4.9.2,
+§11.5.2.5 and §§11.5.3.1–.3; Vol. 3A Event 19/Table 7-8. See the
+[contract](../specs/CPU_CONTRACT.md#s2-38ao--exact-mulps-memory-profile-with-unmasked-exceptions)
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ao-mulps-m128-memory-unmasked-exceptions).
+
+#### S2-38ap — exact MULPD memory form with unmasked exceptions
+
+Prepare immutable schema-v2 interpreter-only profile
+`s2-long-mulpd-memory-unmasked-rax-v1` for exact Long64 `66 0F 59 00`
+(`MULPD XMM0,m128 [RAX]`), separate
+`mulpd_memory_rax_unmasked_controls`, SSE2 bit 26, budget one and stop RIP
+entry+4. Preserve masked S2-37dw, register MULPD and S2-38ah. Require complete
+four-byte fetch and exact form before SSE2/EM/OSFXSR `#UD`, then TS `#NM`, at
+CPL0–3; noncanonical fetch span faults `#GP(0)` before gates. Require MXCSR
+mask `0xffbf`, reserved bits clear, DAZ=FTZ=0, OM=UM=1; permit all RC,
+IM/DM/ZM/PM settings and prior sticky histories.
+
+Require 16-byte alignment regardless of AC, checked canonical48
+`[RAX,RAX+15]`, and exactly one atomic read16. Use old XMM0 and the actual
+memory RHS with an independent integer-only raw-u64 oracle. If both operands
+are NaNs, select original XMM0; otherwise select the sole NaN, quieting a
+selected SNaN while preserving sign/payload. Any SNaN and zero×infinity raise
+IE; QNaN-only does not. Cover the same lane-local DE, IE/DE aggregation,
+post-event priority and atomic suppression rules as S2-38ao, including
+exact/inexact tiny results, UE+PE and half-minsub. Apply the analogous p=53
+WPR rule: UE requires a tiny WPR result and an inexact destination-format
+result; an exactly representable destination-format tiny result does not raise
+UE. Include an inexact destination result whose WPR result is tiny and that
+rounds to the minimum-normal encoding (for example,
+`0x0010000000000000 × 0x3fefffffffffffff` under RN), plus the exact boundary. A two-lane 7-class
+`7^2 × 16 masks × 2 delivery` matrix is 1,568 actual interpreter executions
+at fixed RC/prior status; add cross-lane and boundary vectors across RC × 64
+sticky histories × masks × deliveries. Check gate/fetch/CPL, alignment and
+span/read rollback, strict schema, status/result/control/exception tampering,
+old profiles and backend denial. Native/JIT/C ABI/generic/fragment and
+physical x86 acceptance remain closed. Sources: Intel SDM Rev. 093 Vol. 2B
+MULPD pp. 4-142–4-144; Vol. 2A §2.5.2/Table 2-19; Vol. 1 §4.8.3.5/Table
+4-8, §§4.9.1.4–.6 and 4.9.2, §11.5.2.5 and §§11.5.3.1–.3; Vol. 3A Event
+19/Table 7-8. See the
+[contract](../specs/CPU_CONTRACT.md#s2-38ap--exact-mulpd-memory-profile-with-unmasked-exceptions)
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ap-mulpd-m128-memory-unmasked-exceptions).

@@ -1624,6 +1624,53 @@ cover full fetch/gates/CPL/AC order, unaligned access when AC is clear,
 canonical span and one-read rollback, strict read-only admission, tampering and
 interpreter-only backend denial. Keep S2-37dn/S2-37at unchanged.
 
+## S2-38ao MULPS m128 memory unmasked exceptions
+
+Use separate immutable schema-v2 profile
+`s2-long-mulps-memory-unmasked-rax-v1` and exact
+`mulps_memory_rax_unmasked_controls` for Long64 bytes `0F 59 00`, budget one,
+stop RIP entry+3, SSE bit 25 and one read-only m128 RHS at RAX. Preserve
+`s2-long-mulps-memory-rax-v1`, register MULPS and S2-38ag. The control object
+contains only immutable feature/gate/delivery inputs for SSE availability,
+CR0.EM, CR0.TS, CR4.OSFXSR and CR4.OSXMMEXCPT; execution results echo the same
+object. MXCSR requires supported bits `0xffbf`, reserved bits clear, DAZ=FTZ=0
+and OM=UM=1; all RC, IM/DM/ZM/PM masks and prior sticky values are accepted.
+The schema keeps the four-lane XMM and full MXCSR snapshots; it adds no generic
+arithmetic fields and changes no older profile field set.
+
+Fixture validation must enforce exact encoding, full fetch before gates,
+noncanonical fetch `#GP(0)` precedence, the 16-byte alignment and one-read
+memory contract, and event-aware expected outcome/status validation. Require
+literal success, IE, DE, PE, masked UE+PE and fault/gate cases. Reject unknown,
+missing, cross-profile or tampered controls and mismatched XMM/MXCSR/RIP,
+retirement, status or exception metadata. Interpreter results require the
+profile; JIT/native and other closed backends are denied without snapshots.
+The independent expected value comes from actual fixture memory bytes and an
+integer-only raw-u32 oracle, never host FP or production arithmetic.
+
+## S2-38ap MULPD m128 memory unmasked exceptions
+
+Use separate immutable schema-v2 profile
+`s2-long-mulpd-memory-unmasked-rax-v1` and exact
+`mulpd_memory_rax_unmasked_controls` for Long64 bytes `66 0F 59 00`, budget
+one, stop RIP entry+4, SSE2 bit 26 and one read-only m128 RHS at RAX. Preserve
+`s2-long-mulpd-memory-rax-v1`, register MULPD and S2-38ah. The control object
+contains only immutable feature/gate/delivery inputs for SSE2 availability,
+CR0.EM, CR0.TS, CR4.OSFXSR and CR4.OSXMMEXCPT; result echoes must match. Admit
+only MXCSR bits in `0xffbf`, reserved bits clear, DAZ=FTZ=0 and OM=UM=1, while
+allowing each RC, IM/DM/ZM/PM pattern and all prior sticky values. Keep the
+existing two-lane XMM and full MXCSR snapshot; older profile wire fields and
+digests remain unchanged.
+
+Fixture validation enforces exact form, complete fetch/gate priority,
+noncanonical fetch `#GP(0)`, mandatory 16-byte alignment independent of AC,
+exactly one read16, and exception-aware expected result/status. Include literal
+success, IE, DE, PE, UE+PE and boundary/fault fixtures. Reject missing,
+unknown, cross-profile or tampered controls and mismatches in XMM/MXCSR/RIP,
+retirement, status or exception information. Use the actual memory RHS with an
+independent integer-only raw-u64 oracle. Interpreter execution is permitted;
+JIT/native and other closed backends are denied without snapshots.
+
 ## S2-38af SUBSD m64 memory unmasked exceptions
 
 The exact Long64 `F2 0F 5C 00` profile reads one read-only m64 from `[RAX]`,
