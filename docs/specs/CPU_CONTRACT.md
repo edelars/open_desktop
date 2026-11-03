@@ -19576,7 +19576,10 @@ and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38az-cvttpd2dq-m128-memor
 
 ## S2-38ba — exact CVTDQ2PS m128 memory profile with unmasked exceptions
 
-**Planned normative contract; implementation and acceptance are not claimed.**
+Implemented in code commit `6058525`; the 16,384-case interpreter matrix,
+16 literal fixtures and focused schema/fault/backend checks are complete. The
+full `od-runner` suite timed out at 110 seconds and physical x86 acceptance was
+not performed.
 Build on [S2-37bt masked memory](#s2-37bt--bounded-long64-cvtdq2ps-xmm0rax-aligned-m128-memory-profile)
 and [S2-37s register-unmasked semantics](#s2-37s--canonical-long64-cvtdq2ps-xmm-register-pairs).
 Reserve strict interpreter-only schema-v2 profile

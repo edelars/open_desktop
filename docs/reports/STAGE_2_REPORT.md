@@ -23885,3 +23885,37 @@ performed. See the [plan](../plans/STAGE_2.md#s2-38az--exact-legacy-long64-cvttp
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38az--exact-cvttpd2dq-m128-memory-profile-with-unmasked-exceptions),
 [fixture README](../../tests/fixtures/x86/stage2/README.md#s2-38az--cvttpd2dq-m128-memory-unmasked-profile)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38az-cvttpd2dq-m128-memory-unmasked-profile).
+
+### S2-38ba — CVTDQ2PS m128 memory unmasked profile
+
+Code commit `6058525` implements exact legacy Long64 `0F 5B 00`
+(`CVTDQ2PS XMM0,m128 [RAX]`) as a dedicated schema-v2 interpreter-only
+unmasked-PE profile, preserving the existing masked profile. Four signed i32
+memory lanes convert to binary32 according to MXCSR.RC. New inexactness sets PE;
+when PM=0, the event delivers `#XM`19 or SIMD `#UD`6 based on OSXMMEXCPT while
+preserving full XMM0, RIP and retirement. Exact or masked completion writes all
+four lanes; old PE alone does not fault.
+
+The independent integer-only memory-RHS oracle passed all 16,384
+actual-interpreter cases with complete CPU-state and source-memory comparison:
+8,704 success results, 3,840 `#XM` deliveries and 3,840 SIMD `#UD` deliveries.
+Sixteen literal fixtures passed, covering exact/masked successes, directed
+rounding, per-lane-only unmasked PE, both delivery types, stale PE, prerequisite
+gates and aligned AC=1. Generated numeric cases cover signed neighbors of 2^24,
+exact larger multiples, ties and carry, INT32_MIN/MAX and unrelated mask/FTZ
+samples.
+
+Direct ISA checks passed for all 120 nonzero-offset×CPL×AC misalignments,
+aligned AC=0/1 at each CPL, fetch/gate/span/STOP/budget ordering, prerequisite
+gate combinations and injected-read-error rollback. Schema checks reject
+contradictory expected-exit metadata and control/result tampering. A direct ISA
+check denies generic execution; runner tests deny native and JIT routes. Host
+fragment and C ABI denial passed. Focused ISA passed 3/3, `od-testkit` 461/461, runner profile 3/3, and
+focused host denial 1/1. `cargo fmt --all -- --check`, workspace all-target
+offline check, diff and Graphify passed. Independent Sol/high review is clean
+after three P2 fixes. A full `cargo test -p od-runner --offline` attempt timed
+out at 110 seconds and remains unverified. Physical x86 acceptance was not
+performed. See the [plan](../plans/STAGE_2.md#s2-38ba--exact-legacy-long64-cvtdq2ps-xmm0-m128-rax-with-unmasked-exceptions),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ba--exact-cvtdq2ps-m128-memory-profile-with-unmasked-exceptions),
+[fixture README](../../tests/fixtures/x86/stage2/README.md#s2-38ba--cvtdq2ps-m128-memory-unmasked-profile)
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ba-cvtdq2ps-m128-memory-unmasked-profile).

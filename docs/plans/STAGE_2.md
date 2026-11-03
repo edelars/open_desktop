@@ -699,7 +699,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38ax | Exact Long64 `CVTTPS2DQ XMM0,m128 [RAX]`, TowardZero independent of RC, unmasked IE/PE; separate immutable interpreter-only profile | 81 lane-class distributions × 4 RC × 64 sticky × 4 IM/PM × 2 delivery = 165,888 actual-interpreter cases with full-state/source-memory comparison per case; 15 literals, generated/direct numeric/control, 120 misalignment/CPL/AC combinations (#GP/no-read), aligned AC0/1, one read16/read-error rollback, masked regression and route denials; od-isa 1,993, od-testkit 461; focused checks and workspace/fmt/diff passed; full od-runner suite not run; no physical x86 acceptance; [report](../reports/STAGE_2_REPORT.md#s2-38ax--cvttps2dq-xmm0-m128-memory-unmasked-exceptions) |
 | [x] | S2-38ay | Exact Long64 `CVTPD2DQ XMM0,m128 [RAX]`, RC rounding, unmasked IE/PE; separate interpreter-only profile | S2-37bx, S2-37ah; 18,432-case full-state/memory oracle, 16 literals, numeric boundaries, direct fault/gate/rollback and route denial; od-isa 1,995, od-testkit 461; workspace check/fmt/diff passed; independent Sol/high review clean; full od-runner and physical x86 acceptance not run; [report](../reports/STAGE_2_REPORT.md#s2-38ay--cvtpd2dq-m128-memory-unmasked-profile) |
 | [x] | S2-38az | Exact Long64 `CVTTPD2DQ XMM0,m128 [RAX]`, TowardZero independent of RC, unmasked IE/PE; separate interpreter-only contract | S2-37bw, S2-37ai; 18,432-case full-state/memory oracle, 16 literals, numeric boundaries, direct fault/gate/rollback checks, schema/profile/backend denials; od-isa 1,997, od-testkit 461; workspace check/fmt/diff passed; independent Sol/high review clean after three nits; full od-runner and physical x86 acceptance not run; [report](../reports/STAGE_2_REPORT.md#s2-38az--cvttpd2dq-m128-memory-unmasked-profile) |
-| [ ] | S2-38ba | Exact Long64 `CVTDQ2PS XMM0,m128 [RAX]`, RC-based packed i32→f32, unmasked PE; separate interpreter-only contract | Planned bounded gap under S2-37 required inventory and S2-38; S2-37bt masked memory + S2-37s register-unmasked semantics; require 16,384-case full-state/memory oracle, 16 literals, numeric/alignment/fetch/gate/rollback and route-denial checks; implementation and physical acceptance remain open |
+| [x] | S2-38ba | Exact Long64 `CVTDQ2PS XMM0,m128 [RAX]`, RC-based packed i32→f32, unmasked PE; separate interpreter-only profile | S2-37bt masked memory + S2-37s register-unmasked semantics; 16,384 full-state/source cases (8,704 success, 3,840 #XM, 3,840 SIMD #UD), 16 literals, numeric/alignment/fetch/gate/rollback and route-denial checks; focused ISA 3, testkit 461, runner profile 3, host denial 1; workspace check/fmt/diff and Graphify passed; clean Sol/high review after three P2 fixes; runner full suite timed out at 110s and remains unverified; no physical x86 acceptance; [report](../reports/STAGE_2_REPORT.md#s2-38ba--cvtdq2ps-m128-memory-unmasked-profile) |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -19729,9 +19729,9 @@ pp. 3-244–3-247, Vol. 1 §§11.5.2.1–2, 11.5.3.1–3/Table 14-21, Vol. 3A
 
 ## S2-38ba — exact legacy Long64 CVTDQ2PS XMM0, m128 [RAX] with unmasked exceptions
 
-**Planned contract; implementation and executable acceptance remain open.**
-This bounded gap combines masked-memory S2-37bt with register-unmasked S2-37s.
-Reserve strict schema-v2 interpreter-only profile
+Implemented in code commit `6058525`, combining masked-memory S2-37bt with
+register-unmasked S2-37s. The unmasked-PE execution for exact legacy
+`0F 5B 00` uses strict schema-v2 interpreter-only profile
 `s2-long-cvtdq2ps-memory-unmasked-rax-v1` for exact `0F 5B 00`, Long64,
 budget one and checked stop RIP entry+3. Require immutable
 `cvtdq2ps_m128_unmasked_controls` with exactly `sse2_available`, `cr0_em`,
@@ -19749,7 +19749,7 @@ retirement. Old PE alone is not an event. Success replaces all four f32 lanes,
 advances RIP by three and retires once. Preserve GPRs, other XMM registers,
 RFLAGS, x87 and source memory; support MXCSR mask `0xffbf`, DAZ=0 and FTZ0/1.
 
-Acceptance requires an independent integer-only i32→binary32 oracle reading
+Acceptance uses an independent integer-only i32→binary32 oracle reading
 actual memory RHS: **16 lane-inexact masks ×4 RC ×64 old sticky histories
 ×2 PM ×2 deliveries = 16,384 actual-interpreter cases**, each comparing full
 CPU state and source bytes. Add exact representability, signed neighbors of
@@ -19763,8 +19763,20 @@ schema/result/control tampering rejection, masked-profile isolation and actual
 generic/native/JIT/host fragment/C ABI route denial. Literal mapping rejection
 is distinct from direct GuestMemory read-error coverage.
 
-No physical x86 acceptance or completed implementation is claimed. Parent
-S2-37/S2-38 and CPUID SSE/SSE2 readiness remain open. Normative details,
+The 16,384-case matrix passed with full CPU-state/source comparison: 8,704
+successful results, 3,840 `#XM` deliveries and 3,840 SIMD `#UD` deliveries.
+Sixteen literal fixtures passed. Generated raw-integer cases cover signed
+neighbors, exact multiples beyond 2^24, ties/carry, INT32_MIN/MAX and unrelated
+mask×FTZ samples. Direct checks cover all 120 misalignments, aligned AC=0/1 at
+each CPL, fetch/gate/span/STOP/budget ordering, read-error rollback and gate
+combinations. Schema rejects contradictory expected-exit metadata and control/
+result tampering; generic/JIT/native and host fragment/C ABI routes are denied.
+Focused ISA passed 3/3, od-testkit 461/461, runner profile 3/3, and focused host
+denial 1/1. Formatting, workspace all-target offline check, diff and Graphify
+passed. Sol/high review is clean after three P2 fixes. A full
+`cargo test -p od-runner --offline` attempt timed out at 110 seconds and remains
+unverified. Physical x86 acceptance was not performed. Parent S2-37/S2-38 and
+CPUID SSE/SSE2 readiness remain open. Normative details,
 inherited Intel SDM Rev. 093 sources and precise acceptance boundaries are in the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ba--exact-cvtdq2ps-m128-memory-profile-with-unmasked-exceptions),
 [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ba-cvtdq2ps-m128-memory-unmasked-profile)
