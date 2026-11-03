@@ -1539,3 +1539,36 @@ has exact root `2^-537` (DE without PE); `0x2` and `0x3` exercise DE+PE.
 Check packed pre-event aggregation, atomic whole-XMM suppression, `#XM`/
 arithmetic `#UD`, gate/fetch priority, read rollback, schema/result tampering
 and backend denial. Keep S2-37de/S2-37al masked/register contracts separate.
+
+## S2-38ac ADDSS m32 memory unmasked exceptions
+
+The exact Long64 `F3 0F 58 00` profile reads one read-only m32 from `[RAX]`,
+requires SSE bit 25, and executes only in the interpreter. Its controls require
+supported MXCSR mask `0xffbf`, clear reserved bits, `DAZ=FTZ=0`, and `OM=UM=1`;
+all RC modes, IM/DM/ZM/PM masks, and prior sticky histories are admitted. Cover
+the scalar ADDSS operand/result classes with an independent binary32 oracle,
+including first-original NaN selection, signed QNaN/SNaN, opposite infinities,
+subnormal DE, rounding/cancellation, PE, and mixed pre/post events. Cross RC ×
+all 64 old sticky histories × IM/DM/PM × OSXMMEXCPT. Check pre-event IE/DE
+status, post-event PE status, whole-XMM/RIP/retirement suppression, high96
+preservation on success, gate/fetch/CPL/AC ordering, unaligned access when AC
+is clear, canonical-span and read rollback, one callback, strict read-only
+schema, literal fixtures, result/status/exception tampering and backend denial.
+Keep masked S2-37di and register S2-37bc unchanged; unmasked OE/UE and native,
+JIT, C ABI, generic, fragment and physical x86 acceptance stay closed.
+
+## S2-38ad ADDSD m64 memory unmasked exceptions
+
+The exact Long64 `F2 0F 58 00` profile reads one read-only m64 from `[RAX]`,
+requires SSE2 bit 26, and executes only in the interpreter. Controls require
+supported MXCSR mask `0xffbf`, reserved bits clear, `DAZ=FTZ=0`, and `OM=UM=1`;
+cover every RC mode, IM/DM/ZM/PM mask and old sticky history. Use an independent
+binary64 oracle over existing scalar ADDSD cases: rounding/cancellation,
+subnormal DE, masked overflow/underflow, infinities, signed QNaN/SNaN, and
+combined events. Cross RC × 64 old sticky histories × IM/DM/PM × OSXMMEXCPT.
+Validate pre-event IE/DE versus post-event PE, atomic XMM0/RIP/retirement
+suppression, high64 preservation on success, full fetch/gates/CPL/AC order,
+unaligned access with AC clear, canonical span and one-read rollback, strict
+read-only schema, literal fixtures, tampering and backend denial. Preserve
+S2-37dj/S2-37bb. Unmasked OE/UE and native/JIT/C ABI/generic/fragment and
+physical x86 acceptance remain closed.

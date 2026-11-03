@@ -15465,11 +15465,10 @@ infinities, infinity plus subnormal, pre/post exception atomicity, MXCSR
 admission, fetch/gate/CPL/no-callback behavior, malformed inputs, tampering,
 and backend denial.
 
-Sources: Intel SDM Rev. 093 Vol. 2A ADDSD pp. 3-22–3-23 and legacy SSE rows on
-p. 2-28; generic SSE2/CR0/CR4 gates and SIMD exceptions; Vol. 1
-§§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
-Floating-Point Reference Sheet v2.13. The p. 3-23 Type 3/Table 2-20 reference
-concerns VEX forms and does not define this legacy ADDSD profile. See the
+Sources: Intel SDM Rev. 093 Vol. 2A ADDSD pp. 3-22–3-23 and §2.5.3/Table 2-20
+(Type 3, including its Legacy SSE rows); generic SSE2/CR0/CR4 gates and SIMD
+exceptions; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event
+19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-37bb--canonical-long64-addsd-xmm-register-pairs)
 and [implementation report](../reports/STAGE_2_REPORT.md#s2-37bb--addsd-register-pair-interpreter-profile).
 
@@ -15512,10 +15511,11 @@ overflow, all-pair aliasing, IE/DE and PM atomicity, full-fetch gates, CPL0–3,
 no callbacks, malformed inputs, fixture tampering and backend denial. No
 physical x86 execution or memory form is claimed.
 
-Sources: Intel SDM Rev. 093 Vol. 2A ADDSS pp. 3-24–3-25 and legacy SSE rows on p. 2-28; generic SSE/CR0/CR4 gates and SIMD exceptions; Vol. 1
-§§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8; Intel
-Floating-Point Reference Sheet v2.13. The p. 3-25 Type 3/Table 2-20 note is
-for VEX forms, not legacy ADDSS. The ADDSS text contains apparent copy/paste
+Sources: Intel SDM Rev. 093 Vol. 2A ADDSS pp. 3-24–3-25 and §2.5.3/Table 2-20
+(Type 3, including its Legacy SSE rows); generic SSE/CR0/CR4 gates and SIMD
+exceptions; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event
+19/Table 7-8; Intel Floating-Point Reference Sheet v2.13. The ADDSS text
+contains apparent copy/paste
 errors “double precision result” and “64-bit memory”; this profile follows the
 opcode row and low32 Operation semantics instead. Memory forms, other modes,
 physical acceptance, complete unmasked OE/UE behavior and parent S2-37/S2-38
@@ -17273,7 +17273,10 @@ The operation adds XMM0.low32 to the loaded memory m32 using `Binary32::add_raw_
 
 The independent integer-only `independent_addss` oracle receives memory RHS data and does not call production helpers or host floating point. Coverage includes four RC modes × all 64 old sticky histories, halfway/adjacent rounding, exponent gaps, tiny/subnormal sums, NaNs, infinities, signed zeros, overflow, XMM1 poisoning, high96 preservation, fetch/gate ordering, AC/span/address/fault atomicity, strict schema/provenance/result checks, register ADDSS regression and backend denial. See the [Stage 2 plan](../plans/STAGE_2.md#s2-37di--masked-only-long64-addss-xmm0m32-rax), [shared report](../reports/STAGE_2_REPORT.md#s2-37di--addss-xmm0m32-rax), [standalone implementation report](../reports/S2_37DI_ADDSS_MEMORY.md), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37di--addss-xmm0m32-rax).
 
-Sources: Intel SDM Rev. 093 Vol. 2A ADDSS pp. 3-24–3-25 and legacy SSE rows in Table 2-27; Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. The p. 3-25 Type 3/Table 2-20 reference is for VEX forms, not legacy ADDSS.
+Sources: Intel SDM Rev. 093 Vol. 2A ADDSS pp. 3-24–3-25 and §2.5.3/Table 2-20
+(Type 3, including its Legacy SSE rows); Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3
+and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. The Type 3 table includes the relevant
+legacy SSE gate and SIMD exception rows.
 
 
 ## S2-37dj — masked-only `Long64` `ADDSD` XMM0,m64 [RAX]
@@ -18299,6 +18302,89 @@ Rev. 093 Vol. 2B SQRTPS pp. 4-664–4-666
 Vol. 1 §§11.5.2.1–.2 and 11.5.3.1–.3
 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=286));
 Vol. 3A Event 19/Table 7-8. No physical x86 acceptance is claimed.
+
+## S2-38ac — exact ADDSS memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-addss-memory-unmasked-rax-v1` for exact Long64 legacy `F3 0F 58 00`
+(`ADDSS XMM0,m32 [RAX]`), with separate
+`addss_memory_rax_unmasked_controls`, one executable mapping, one read-only
+m32 mapping, budget one and stop RIP=entry+4. Require SSE bit 25, not SSE2;
+preserve masked-memory S2-37di and register S2-37bc. Complete fetch and exact
+form checks precede SSE/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM` at CPL0–3.
+Require supported MXCSR bits `0xffbf`, reserved bits clear, DAZ=0, FTZ=0, and
+OM=UM=1 (overflow and underflow masked). Permit every RC, IM/DM/ZM/PM mask,
+and prior sticky history. AC=1 returns local Unsupported before span/read;
+AC=0 allows unaligned RAX. Validate canonical48 `[RAX,RAX+3]`, then exactly
+one read4. Span/read failure preserves full CPU, memory and retirement.
+
+Reuse existing scalar ADDSS binary32 raw arithmetic and independent oracle;
+XMM0.low32 is the first source and memory m32 is the second. Success updates
+only XMM0.low32, applicable MXCSR flags, RIP and retirement; preserve high96,
+XMM1, RFLAGS and unrelated state. Preserve first-original-NaN selection and
+SNaN quieting; any SNaN contributes IE, QNaN alone does not, and NaNs suppress
+DE. Opposite-sign infinities contribute precompute IE; any non-NaN subnormal
+operand contributes precompute DE. If IM or DM unmasks an applicable IE/DE,
+commit all applicable generated IE/DE pre-event flags and fault before
+postcompute flags. If
+pre-events are masked, compute via the existing raw helper with MXCSR.RC,
+then handle PE; OM/UM are fixed masked, so OE/UE delivery is not opened. An
+unmasked PE commits all applicable generated status and suppresses the entire
+destination, RIP advance and retirement. CR4.OSXMMEXCPT chooses `#XM` versus
+SIMD arithmetic `#UD`; old sticky bits alone do not fault. Do not broaden the
+profile to unmasked OE/UE.
+
+Cover RC × all 64 prior sticky histories × IM/DM/PM and both OSXMMEXCPT
+mappings over the established operand/result classes: finite rounding and
+cancellation, tiny/subnormal, overflow, infinities, signed QNaN/SNaN and event
+combinations. Verify unmasked IE/DE pre-status, unmasked PE post-status,
+whole-state suppression, gates/fetch/CPL, AC and unaligned memory, canonical
+span/read rollback, read-only schema, fixtures, XMM/MXCSR/RIP/retirement/
+exception tampering and JIT/native denial. Native/JIT/C ABI/generic/fragment
+paths remain closed. Sources: Intel SDM Rev. 093 Vol. 2A ADDSS pp. 3-24–3-25
+and §2.5.3/Table 2-20 (Type 3, including its Legacy SSE rows); Vol. 1
+§§4.9.1.4–.6, 11.5.2–11.5.3 and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. The
+Table 2-27 Type 12 reference concerns gather instructions and does not apply.
+Physical x86 acceptance is not claimed.
+
+## S2-38ad — exact ADDSD memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-addsd-memory-unmasked-rax-v1` for exact Long64 legacy `F2 0F 58 00`
+(`ADDSD XMM0,m64 [RAX]`), separate
+`addsd_memory_rax_unmasked_controls`, one executable mapping, one read-only
+m64 mapping, budget one and stop RIP=entry+4. Require SSE2 bit 26; preserve
+masked-memory S2-37dj and register S2-37bb. Complete fetch and exact form
+checks precede SSE2/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM` at CPL0–3.
+Require MXCSR supported mask `0xffbf`, reserved bits clear, DAZ=FTZ=0 and
+OM=UM=1; permit all RC, IM/DM/ZM/PM and prior sticky flags. AC=1 returns local
+Unsupported before span/read; AC=0 permits unaligned RAX. Validate canonical48
+`[RAX,RAX+7]`, then exactly one read8. A span/read fault preserves full CPU,
+memory and retirement.
+
+Reuse existing scalar ADDSD raw binary64 arithmetic and independent oracle;
+XMM0.low64 is the first source, memory m64 the second. Success changes only
+XMM0.low64, applicable MXCSR status, RIP and retirement; preserve high64,
+XMM1 and unrelated state. Retain first-original-NaN selection and SNaN
+quieting, IE for any SNaN/opposite-sign infinities, QNaN without IE, and NaN
+suppression of DE. Non-NaN subnormals contribute precompute DE. If a new IE/DE
+is unmasked, commit all applicable generated IE/DE pre-event flags and suppress all
+post-event flags. Otherwise compute with MXCSR.RC and handle PE; OM/UM remain
+masked, so unmasked OE/UE is outside scope. An unmasked PE commits applicable
+status while suppressing XMM0, RIP and retirement. OSXMMEXCPT selects `#XM` or
+SIMD arithmetic `#UD`; old sticky bits alone do not fault.
+
+Cover RC × 64 prior sticky histories × IM/DM/PM and both OSXMMEXCPT mappings
+over the existing binary64 rounding/cancellation, tiny/subnormal, overflow,
+infinity and signed QNaN/SNaN classes. Verify pre/post-event status, atomic
+suppression, complete fetch/gates/CPL, AC plus unaligned access, canonical span,
+one-read rollback, read-only schema, literal fixtures, XMM/MXCSR/RIP/retirement/
+exception tampering and backend denial. Keep all old masked/register semantics
+unchanged; native/JIT/C ABI/generic/fragment routes remain closed. Sources:
+Intel SDM Rev. 093 Vol. 2A ADDSD pp. 3-22–3-23 and §2.5.3/Table 2-20
+(Type 3, including its Legacy SSE rows); Vol. 1 §§4.9.1.4–.6, 11.5.2–11.5.3
+and DAZ/FTZ; Vol. 3A Event 19/Table 7-8. Table 2-27 Type 12 concerns gather
+instructions and does not apply. Physical x86 acceptance is not claimed.
 
 ## S2-38ab — exact SQRTPD memory profile with unmasked exceptions
 

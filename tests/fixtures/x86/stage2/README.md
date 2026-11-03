@@ -8645,3 +8645,29 @@ acceptance is claimed. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions),
 [implementation report](../../../../docs/reports/S2_38AB_SQRTPD_MEMORY_UNMASKED.md),
 and [stage plan](../../../../docs/plans/STAGE_2.md).
+
+### S2-38ac ADDSS m32 memory unmasked exceptions
+
+The planned exact Long64 `F3 0F 58 00` profile requires SSE bit 25 and performs
+one read-only read4 from `[RAX]`. The independent raw-u32 oracle covers the
+established ADDSS operand/result classes across RC × 64 prior sticky histories
+× IM/DM/PM × OSXMMEXCPT. Fixtures and focused tests must distinguish pre-event
+IE/DE from post-event PE, verify signed NaN behavior and high96 preservation,
+and check complete destination/RIP/retirement suppression. Also cover fetch and
+SSE/TS priority at CPL0–3, AC/local rejection, unaligned reads with AC clear,
+canonical span/read rollback, one callback, read-only schema, tampering, and
+interpreter-only backend denial. S2-37di and S2-37bc stay separate; unmasked
+OE/UE and physical x86 acceptance are outside this profile.
+
+### S2-38ad ADDSD m64 memory unmasked exceptions
+
+The planned exact Long64 `F2 0F 58 00` profile requires SSE2 bit 26 and performs
+one read-only read8 from `[RAX]`. The independent raw-u64 oracle covers the
+existing ADDSD operand/result classes across RC × 64 prior sticky histories ×
+IM/DM/PM × OSXMMEXCPT. Verify pre-event IE/DE, post-event PE, signed NaNs,
+atomic XMM0/RIP/retirement suppression, high64 preservation on success, and
+literal success/exception fixtures. Also cover full fetch/gate/CPL ordering,
+AC/local rejection, unaligned reads with AC clear, canonical span/read rollback,
+one callback, read-only schema, tampering and interpreter-only backend denial.
+S2-37dj/S2-37bb remain separate; unmasked OE/UE and physical x86 acceptance
+are outside this profile.

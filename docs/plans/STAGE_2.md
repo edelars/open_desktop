@@ -674,6 +674,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38z | Exact Long64 SQRTSD XMM0,m64 [RAX], unmasked IE/DE/PE profile; interpreter-only | 65,536 raw-u64 cases over event masks, OSXMMEXCPT, RC and sticky histories; exact minimum subnormal result, strict priority, complete-state suppression, independent oracle, fixtures and backend denial; unmasked API gate/fetch/CPL and validator-tampering regressions; main: od-isa 1,947, testkit 455, runner 132+555; workspace/fmt/layout/diff pass; Graphify 12,258/26,599/330; clean Sol/high review after closing two coverage findings; preserve S2-37df/S2-37am and S2-38y gate fixes; no physical x86 acceptance; [report](../reports/S2_38Z_SQRTSD_MEMORY_UNMASKED.md) |
 | [x] | S2-38aa | Exact Long64 SQRTPS XMM0,m128 [RAX], unmasked packed IE/DE/PE profile; interpreter-only | 625 four-lane event products × IM/DM/PM × OSXMMEXCPT (10,000), RC×64 sticky outcomes, 64 signed-NaN cases across lanes, early-fault MXCSR preservation, result tampering; main: od-isa 1,952, testkit 456, runner 134+557; workspace/fmt/layout/diff pass; Graphify 12,319/26,744/372; clean Sol/high review after validator-order, NaN and tampering fixes; preserve S2-37dd/S2-37ak; no physical x86 acceptance; [report](../reports/S2_38AA_SQRTPS_MEMORY_UNMASKED.md) |
 | [x] | S2-38ab | Exact Long64 SQRTPD XMM0,m128 [RAX], unmasked packed IE/DE/PE profile; interpreter-only | 25 two-lane event products × IM/DM/PM × OSXMMEXCPT × RC ×64 stickies (102,400), exact minimum-subnormal DE-only, 40 signed-NaN cases, API gate/alignment/tampering; main: od-isa 1,952, testkit 456, runner 134+557; workspace/fmt/layout/diff pass; Graphify 12,319/26,744/372; clean Sol/high review after signed-NaN fix; preserve S2-37de/S2-37al; no physical x86 acceptance; [report](../reports/S2_38AB_SQRTPD_MEMORY_UNMASKED.md) |
+| [ ] | S2-38ac | Exact Long64 ADDSS XMM0,m32 [RAX], unmasked IE/DE/PE profile; interpreter-only | SSE bit25, read-only read4, preserve high96; OM=UM=1 and DAZ=FTZ=0; independent binary32 oracle over RC×64 sticky histories × IM/DM/PM × OSXMMEXCPT; preserve S2-37di/S2-37bc; no physical x86 acceptance |
+| [ ] | S2-38ad | Exact Long64 ADDSD XMM0,m64 [RAX], unmasked IE/DE/PE profile; interpreter-only | SSE2 bit26, read-only read8, preserve high64; OM=UM=1 and DAZ=FTZ=0; independent binary64 oracle over RC×64 sticky histories × IM/DM/PM × OSXMMEXCPT; preserve S2-37dj/S2-37bb; no physical x86 acceptance |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -18615,3 +18617,38 @@ Independent Sol/high review is pending after integration. This profile remains
 interpreter-only; no physical x86 acceptance is claimed. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions)
 and [standalone report](../reports/S2_38AB_SQRTPD_MEMORY_UNMASKED.md).
+
+#### S2-38ac — unmasked outcomes for exact ADDSS memory form
+
+Implement a separate immutable interpreter-only schema-v2 profile for exact
+Long64 `F3 0F 58 00`, SSE bit 25 and read-only m32 `[RAX]`, one read4, budget
+one and stop RIP=entry+4. Preserve masked-memory S2-37di and register S2-37bc.
+Require `DAZ=FTZ=0`, reserved MXCSR bits clear and `OM=UM=1`; allow every RC,
+IM/DM/ZM/PM mask and prior sticky history. Keep the existing scalar ADDSS
+arithmetic and independent binary32 oracle. Cover RC × 64 sticky histories ×
+IM/DM/PM × OSXMMEXCPT over the established scalar operand classes, including
+signed NaNs, infinities, subnormals, rounding, cancellation and event
+combinations. Verify pre-event IE/DE versus post-event PE status, complete
+XMM/RIP/retirement suppression, full-fetch and gate priority, CPL, AC/local
+rejection and unaligned success, canonical span/read rollback, read-only
+schema, fixtures, tampering and interpreter-only backend denial. Unmasked
+OE/UE and native/JIT/C ABI/generic/fragment/physical-x86 acceptance remain
+closed. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ac--exact-addss-memory-profile-with-unmasked-exceptions).
+
+#### S2-38ad — unmasked outcomes for exact ADDSD memory form
+
+Implement a separate immutable interpreter-only schema-v2 profile for exact
+Long64 `F2 0F 58 00`, SSE2 bit 26 and read-only m64 `[RAX]`, one read8, budget
+one and stop RIP=entry+4. Preserve masked-memory S2-37dj and register S2-37bb.
+Require `DAZ=FTZ=0`, reserved MXCSR bits clear and `OM=UM=1`; permit all RC,
+IM/DM/ZM/PM and prior sticky histories. Reuse existing scalar ADDSD raw
+arithmetic and the independent binary64 oracle. Cover RC × 64 sticky histories
+× IM/DM/PM × OSXMMEXCPT over rounding/cancellation, tiny/subnormal, overflow,
+infinity, signed NaNs and event combinations. Verify pre-event IE/DE and
+post-event PE handling, atomic XMM/RIP/retirement suppression, fetch/gate/CPL,
+AC/local rejection plus unaligned access, canonical span/read rollback,
+read-only schema, fixtures, tampering and interpreter-only backend denial.
+Unmasked OE/UE and native/JIT/C ABI/generic/fragment/physical-x86 acceptance
+remain outside this slice. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ad--exact-addsd-memory-profile-with-unmasked-exceptions).
