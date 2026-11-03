@@ -6998,7 +6998,7 @@ mod tests {
         }
 
         for (neighbor, expected_base) in [
-            (&[0x8b, 0x01, 0, 0, 0, 0][..], Register::Rcx),
+            (&[0x8b, 0x01][..], Register::Rcx),
             (&[0x8b, 0x80, 0, 0, 0, 0][..], Register::Rax),
         ] {
             let neighbor_block = compile_ir_memory_dword_load_block_v2(
