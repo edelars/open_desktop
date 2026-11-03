@@ -110,10 +110,14 @@ attempts. `not_run` is reserved for a prerequisite that prevents the first
 tracee execution (for example, an unsupported host or unavailable ptrace
 setup). Once a tracee has been attempted, any unexpected stop, signal, exit,
 marker, or observation result is `rejected`, never `not_run`. Preserve the raw
-`waitpid`-derived signal or exit status, stop RIP/registers and any image,
-guard, or observation bytes that were available. Include completed earlier repetitions in the same rejected
+`waitpid` status with its decoded signal or exit status, stop
+RIP/registers and any image, guard, or observation bytes that were available.
+Include completed earlier repetitions in the same rejected
 record; do not discard them when a later repetition fails. Rejected evidence
 cannot pass the comparison contract.
+If a marker stop was already verified, retain its RIP/RAX/signal code as a
+separate marker snapshot. Fields for a later wait describe only that later
+wait and remain absent when the wait or corresponding ptrace read fails.
 
 ## Comparison contract
 

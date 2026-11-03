@@ -7,7 +7,7 @@ use std::ptr;
 
 use od_testkit::fxsave64::{
     COMPARISON_RANGES, EVIDENCE_VERSION, Fxsave64Case, Fxsave64Environment, Fxsave64Evidence,
-    Fxsave64Hashes, Fxsave64Run, INSTRUCTION, compare_fxsave64,
+    Fxsave64Hashes, Fxsave64Run, Fxsave64StopSnapshot, INSTRUCTION, compare_fxsave64,
 };
 use od_testkit::sha256_hex;
 
@@ -335,6 +335,16 @@ pub fn run_cli(args: &[String]) -> ExitCode {
                 return ExitCode::from(5);
             }
             println!("raw evidence: {}", output_path.display());
+            if evidence.status == "not_run" {
+                eprintln!(
+                    "FXSAVE64 oracle unavailable/not_run: {}",
+                    evidence
+                        .failure_reason
+                        .as_deref()
+                        .unwrap_or("prerequisite unavailable")
+                );
+                return ExitCode::from(4);
+            }
             if comparison.passed {
                 ExitCode::SUCCESS
             } else {
@@ -396,8 +406,9 @@ fn run_oracle() -> Result<Fxsave64Evidence, String> {
     let test_instruction_offset = (od_fxsave64_instruction as *const () as usize as u64)
         .checked_sub(emitted_code_address as u64)
         .ok_or("test entry precedes emitted function")? as usize;
-    let mut runs = Vec::with_capacity(4);
+    let mut runs: Vec<Fxsave64Run> = Vec::with_capacity(4);
     let mut failure_reason = None;
+    let mut evidence_status = "observed";
     for (index, case) in [
         Fxsave64Case::A,
         Fxsave64Case::B,
@@ -416,11 +427,18 @@ fn run_oracle() -> Result<Fxsave64Evidence, String> {
                 failure_reason = Some(format!(
                     "run {index}: could not complete tracee setup: {error}"
                 ));
+                evidence_status = "rejected";
                 break;
             }
         };
         if let Some(error) = &run.execution_error {
             failure_reason = Some(format!("run {index}: {error}"));
+            evidence_status = if !run.attempted && !runs.iter().any(|completed| completed.attempted)
+            {
+                "not_run"
+            } else {
+                "rejected"
+            };
             runs.push(run);
             break;
         }
@@ -428,7 +446,7 @@ fn run_oracle() -> Result<Fxsave64Evidence, String> {
     }
     Ok(Fxsave64Evidence {
         schema_version: EVIDENCE_VERSION,
-        status: if failure_reason.is_some() { "rejected" } else { "observed" }.into(),
+        status: evidence_status.into(),
         failure_reason,
         source_revision,
         hashes: Fxsave64Hashes {
@@ -547,163 +565,151 @@ fn execute_case(case: Fxsave64Case, repetition: u8, cpu: usize) -> Result<Fxsave
         }
     }
     let mut status = 0;
-    let mut raw_rip = None;
-    let mut raw_rax = None;
-    let mut signal_code = None;
+    let mut snapshot = Fxsave64StopSnapshot::default();
+    let mut marker_snapshot = Fxsave64StopSnapshot::default();
     let mut marker_valid = false;
     let mut failure = None;
     let mut child_finished = false;
-    let mut status_valid = false;
+    let mut attempted = false;
+    snapshot.begin_wait();
     if unsafe { libc::waitpid(child, &mut status, 0) } != child {
         failure = Some("waitpid failed before initial tracee stop".to_string());
-    } else if failure.is_none() {
-        status_valid = true;
+    } else {
+        snapshot.publish_wait(status);
     }
-    if failure.is_none() && (!libc::WIFSTOPPED(status) || libc::WSTOPSIG(status) != libc::SIGSTOP) {
-        failure = Some("tracee did not reach initial SIGSTOP".into());
-    } else if failure.is_none()
-        && unsafe {
-            libc::ptrace(
-                libc::PTRACE_CONT,
-                child,
-                ptr::null_mut::<libc::c_void>(),
-                ptr::null_mut::<libc::c_void>(),
-            )
-        } < 0
-    {
-        failure = Some("PTRACE_CONT before instruction failed".into());
-    } else if failure.is_none() && unsafe { libc::waitpid(child, &mut status, 0) } != child {
-        failure = Some("waitpid failed while awaiting completion marker".into());
-    } else if failure.is_none() {
-        status_valid = true;
-    }
-    if failure.is_none() && libc::WIFEXITED(status) {
-        child_finished = true;
-        failure = Some(format!(
-            "tracee exited before completion marker with status {}",
-            libc::WEXITSTATUS(status)
-        ));
-    } else if failure.is_none() && libc::WIFSIGNALED(status) {
-        child_finished = true;
-        failure = Some(format!(
-            "tracee was terminated before completion marker by signal {}",
-            libc::WTERMSIG(status)
-        ));
-    } else if failure.is_none() && !libc::WIFSTOPPED(status) {
-        failure = Some("tracee wait status was neither stopped nor exited".into());
-    } else if failure.is_none() {
-        let stop_signal = libc::WSTOPSIG(status);
-        let mut regs = MaybeUninit::<libc::user_regs_struct>::zeroed();
-        if unsafe {
-            libc::ptrace(
-                libc::PTRACE_GETREGS,
-                child,
-                ptr::null_mut::<libc::c_void>(),
-                regs.as_mut_ptr().cast::<libc::c_void>(),
-            )
-        } == 0
-        {
-            let regs = unsafe { regs.assume_init() };
-            raw_rip = Some(regs.rip);
-            raw_rax = Some(regs.rax);
-        }
-        if stop_signal != libc::SIGTRAP {
-            failure = Some(format!(
-                "tracee stopped before completion marker with signal {stop_signal}"
-            ));
-        } else if raw_rip.is_none() {
-            failure = Some("PTRACE_GETREGS failed at completion stop".into());
+    if failure.is_none() {
+        if !libc::WIFSTOPPED(status) || libc::WSTOPSIG(status) != libc::SIGSTOP {
+            failure = Some("tracee did not reach initial SIGSTOP".into());
+            child_finished = libc::WIFEXITED(status) || libc::WIFSIGNALED(status);
         } else {
-            let mut info = MaybeUninit::<libc::siginfo_t>::zeroed();
+            snapshot.begin_wait();
             if unsafe {
                 libc::ptrace(
-                    libc::PTRACE_GETSIGINFO,
+                    libc::PTRACE_CONT,
                     child,
                     ptr::null_mut::<libc::c_void>(),
-                    info.as_mut_ptr().cast::<libc::c_void>(),
+                    ptr::null_mut::<libc::c_void>(),
                 )
             } < 0
             {
-                failure = Some("PTRACE_GETSIGINFO failed at completion stop".into());
+                failure = Some("PTRACE_CONT before instruction failed".into());
             } else {
-                let info = unsafe { info.assume_init() };
-                signal_code = Some(info.si_code);
-                let entry = unsafe { (*context_ptr).entry };
-                let expected_rax = image_ptr as u64 - 0x40;
-                if info.si_signo != libc::SIGTRAP || ![0, 1, 0x80].contains(&info.si_code) {
-                    failure = Some(format!(
-                        "unexpected stop signal source/code {}/{}",
-                        info.si_signo, info.si_code
-                    ));
-                } else if raw_rax != Some(expected_rax) {
-                    failure = Some(format!("raw RAX {:?} != D-0x40 {expected_rax:#x}", raw_rax));
-                } else if raw_rip != Some(entry + 6) {
-                    failure = Some(format!(
-                        "raw stop RIP {:?} != E+6 {:#x}",
-                        raw_rip,
-                        entry + 6
-                    ));
+                attempted = true;
+                snapshot.begin_wait();
+                if unsafe { libc::waitpid(child, &mut status, 0) } != child {
+                    failure = Some("waitpid failed while awaiting completion marker".into());
                 } else {
-                    let emitted = unsafe { std::slice::from_raw_parts(entry as *const u8, 6) };
-                    if emitted != [INSTRUCTION.as_slice(), &[0xcc]].concat() {
-                        failure = Some("emitted test/marker bytes differ from protocol".into());
-                    } else if unsafe {
-                        libc::ptrace(
-                            libc::PTRACE_CONT,
-                            child,
-                            ptr::null_mut::<libc::c_void>(),
-                            ptr::null_mut::<libc::c_void>(),
-                        )
-                    } < 0
-                    {
-                        failure = Some("PTRACE_CONT after marker failed".into());
-                    } else if unsafe { libc::waitpid(child, &mut status, 0) } != child {
-                        failure = Some("waitpid failed after completion marker".into());
+                    snapshot.publish_wait(status);
+                    if libc::WIFEXITED(status) {
+                        child_finished = true;
+                        failure = Some(format!(
+                            "tracee exited before completion marker with status {}",
+                            libc::WEXITSTATUS(status)
+                        ));
+                    } else if libc::WIFSIGNALED(status) {
+                        child_finished = true;
+                        failure = Some(format!(
+                            "tracee was terminated before completion marker by signal {}",
+                            libc::WTERMSIG(status)
+                        ));
+                    } else if !libc::WIFSTOPPED(status) {
+                        failure = Some("tracee wait status was neither stopped nor exited".into());
                     } else {
-                        status_valid = true;
-                        if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
-                            child_finished = true;
-                            marker_valid = true;
+                        let stop_signal = libc::WSTOPSIG(status);
+                        let (registers, signal_info) = read_stop_details(child);
+                        snapshot.publish_registers(registers);
+                        snapshot.publish_signal_info(signal_info.map(|(_, code)| code));
+                        if stop_signal != libc::SIGTRAP {
+                            failure = Some(format!(
+                                "tracee stopped before completion marker with signal {stop_signal}"
+                            ));
+                        } else if snapshot.rip.is_none() {
+                            failure = Some("PTRACE_GETREGS failed at completion stop".into());
+                        } else if signal_info.is_none() {
+                            failure = Some("PTRACE_GETSIGINFO failed at completion stop".into());
                         } else {
-                            child_finished = libc::WIFEXITED(status) || libc::WIFSIGNALED(status);
-                            failure = Some(
-                                "tracee had unexpected exit, stop, or signal after observations"
-                                    .into(),
-                            );
+                            let (signal, signal_code) = signal_info.unwrap();
+                            let entry = unsafe { (*context_ptr).entry };
+                            let expected_rax = image_ptr as u64 - 0x40;
+                            if signal != libc::SIGTRAP || ![0, 1, 0x80].contains(&signal_code) {
+                                failure = Some(format!(
+                                    "unexpected stop signal source/code {signal}/{signal_code}"
+                                ));
+                            } else if snapshot.rax != Some(expected_rax) {
+                                failure = Some(format!(
+                                    "raw RAX {:?} != D-0x40 {expected_rax:#x}",
+                                    snapshot.rax
+                                ));
+                            } else if snapshot.rip != Some(entry + 6) {
+                                failure = Some(format!(
+                                    "raw stop RIP {:?} != E+6 {:#x}",
+                                    snapshot.rip,
+                                    entry + 6
+                                ));
+                            } else {
+                                let emitted =
+                                    unsafe { std::slice::from_raw_parts(entry as *const u8, 6) };
+                                if emitted != [INSTRUCTION.as_slice(), &[0xcc]].concat() {
+                                    failure = Some(
+                                        "emitted test/marker bytes differ from protocol".into(),
+                                    );
+                                } else {
+                                    marker_snapshot = snapshot.clone();
+                                    marker_valid = true;
+                                    snapshot.begin_wait();
+                                    if unsafe {
+                                        libc::ptrace(
+                                            libc::PTRACE_CONT,
+                                            child,
+                                            ptr::null_mut::<libc::c_void>(),
+                                            ptr::null_mut::<libc::c_void>(),
+                                        )
+                                    } < 0
+                                    {
+                                        failure = Some("PTRACE_CONT after marker failed".into());
+                                    } else {
+                                        snapshot.begin_wait();
+                                        if unsafe { libc::waitpid(child, &mut status, 0) } != child
+                                        {
+                                            failure = Some(
+                                                "waitpid failed after completion marker".into(),
+                                            );
+                                        } else {
+                                            snapshot.publish_wait(status);
+                                            if libc::WIFEXITED(status)
+                                                && libc::WEXITSTATUS(status) == 0
+                                            {
+                                                child_finished = true;
+                                            } else {
+                                                child_finished = libc::WIFEXITED(status)
+                                                    || libc::WIFSIGNALED(status);
+                                                failure = Some(
+                                                    "tracee had unexpected exit, stop, or signal after observations".into(),
+                                                );
+                                                if libc::WIFSTOPPED(status) {
+                                                    let (registers, info) =
+                                                        read_stop_details(child);
+                                                    snapshot.publish_registers(registers);
+                                                    snapshot.publish_signal_info(
+                                                        info.map(|(_, code)| code),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
     }
-    if failure.is_some() && status_valid && libc::WIFSTOPPED(status) {
-        let mut regs = MaybeUninit::<libc::user_regs_struct>::zeroed();
-        if unsafe {
-            libc::ptrace(
-                libc::PTRACE_GETREGS,
-                child,
-                ptr::null_mut::<libc::c_void>(),
-                regs.as_mut_ptr().cast::<libc::c_void>(),
-            )
-        } == 0
-        {
-            let regs = unsafe { regs.assume_init() };
-            raw_rip = Some(regs.rip);
-            raw_rax = Some(regs.rax);
-        }
-        let mut info = MaybeUninit::<libc::siginfo_t>::zeroed();
-        if unsafe {
-            libc::ptrace(
-                libc::PTRACE_GETSIGINFO,
-                child,
-                ptr::null_mut::<libc::c_void>(),
-                info.as_mut_ptr().cast::<libc::c_void>(),
-            )
-        } == 0
-        {
-            let info = unsafe { info.assume_init() };
-            signal_code = Some(info.si_code);
-        }
+    if failure.is_some() && !attempted && snapshot.wait_status.is_some() && libc::WIFSTOPPED(status)
+    {
+        let (registers, info) = read_stop_details(child);
+        snapshot.publish_registers(registers);
+        snapshot.publish_signal_info(info.map(|(_, code)| code));
     }
     if failure.is_some() && !child_finished {
         unsafe {
@@ -729,6 +735,7 @@ fn execute_case(case: Fxsave64Case, repetition: u8, cpu: usize) -> Result<Fxsave
     let run = Fxsave64Run {
         case,
         repetition,
+        attempted,
         code_address: code_entry,
         input_address: context_ptr as u64 + 260,
         pre_observation_address: context_ptr as u64 + 520,
@@ -738,34 +745,38 @@ fn execute_case(case: Fxsave64Case, repetition: u8, cpu: usize) -> Result<Fxsave
         image_address: d,
         left_guard_address: d - 32,
         right_guard_address: d + 512,
-        rax: raw_rax.unwrap_or(0),
+        rax: marker_snapshot.rax,
         code_permissions: code_permissions.clone(),
         input_permissions: data_permissions.clone(),
         image_permissions: data_permissions.clone(),
         guard_permissions: data_permissions,
         entry_rip: code_entry,
-        raw_stop_rip: raw_rip,
+        raw_stop_rip: marker_snapshot.rip,
         stop_rip_adjustment: 1,
         observed_rip: if marker_valid {
-            raw_rip.and_then(|rip| rip.checked_sub(1))
+            marker_snapshot.rip.and_then(|rip| rip.checked_sub(1))
         } else {
             None
         },
         completion_marker: marker_valid,
         execution_error: failure.clone(),
-        exit_status: if status_valid && libc::WIFEXITED(status) {
+        raw_wait_status: snapshot.wait_status,
+        final_stop_rip: snapshot.rip,
+        final_rax: snapshot.rax,
+        final_signal_code: snapshot.signal_code,
+        exit_status: if snapshot.wait_status.is_some() && libc::WIFEXITED(status) {
             Some(libc::WEXITSTATUS(status))
         } else {
             None
         },
-        signal: if status_valid && libc::WIFSIGNALED(status) {
+        signal: if snapshot.wait_status.is_some() && libc::WIFSIGNALED(status) {
             Some(libc::WTERMSIG(status))
-        } else if status_valid && libc::WIFSTOPPED(status) && !marker_valid {
+        } else if snapshot.wait_status.is_some() && libc::WIFSTOPPED(status) {
             Some(libc::WSTOPSIG(status))
         } else {
             None
         },
-        signal_code,
+        signal_code: marker_snapshot.signal_code,
         initial_image,
         image: shared.image.to_vec(),
         left_guard_before,
@@ -782,6 +793,40 @@ fn execute_case(case: Fxsave64Case, repetition: u8, cpu: usize) -> Result<Fxsave
         libc::munmap(ptr, length);
     }
     Ok(run)
+}
+
+fn read_stop_details(child: libc::pid_t) -> (Option<(u64, u64)>, Option<(i32, i32)>) {
+    let mut regs = MaybeUninit::<libc::user_regs_struct>::zeroed();
+    let registers = if unsafe {
+        libc::ptrace(
+            libc::PTRACE_GETREGS,
+            child,
+            ptr::null_mut::<libc::c_void>(),
+            regs.as_mut_ptr().cast::<libc::c_void>(),
+        )
+    } == 0
+    {
+        let regs = unsafe { regs.assume_init() };
+        Some((regs.rip, regs.rax))
+    } else {
+        None
+    };
+    let mut info = MaybeUninit::<libc::siginfo_t>::zeroed();
+    let signal_info = if unsafe {
+        libc::ptrace(
+            libc::PTRACE_GETSIGINFO,
+            child,
+            ptr::null_mut::<libc::c_void>(),
+            info.as_mut_ptr().cast::<libc::c_void>(),
+        )
+    } == 0
+    {
+        let info = unsafe { info.assume_init() };
+        Some((info.si_signo, info.si_code))
+    } else {
+        None
+    };
+    (registers, signal_info)
 }
 
 fn allowed_cpus() -> Result<Vec<usize>, String> {

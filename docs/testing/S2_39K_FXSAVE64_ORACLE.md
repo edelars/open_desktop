@@ -17,6 +17,10 @@ attempt reports `unavailable/not_run`. Once execution is attempted, an
 unexpected tracee stop, signal, exit, marker, or observation becomes explicit
 `rejected` evidence and a nonzero command result; it is never relabeled
 `not_run`.
+Affinity or `PTRACE_TRACEME` child setup exits before the instruction region are
+recorded as `not_run` with their raw wait status and setup error. If earlier
+repetitions completed, those runs remain in the evidence and the incomplete
+overall attempt is `rejected`.
 
 The code is isolated from the fixture/native_v2 admission path. `od-x86-runner`
 owns CPUID, CPU affinity, shared mappings, tracee lifecycle, ptrace, signal
@@ -47,6 +51,10 @@ claim an additional Intel PDF review or physical execution.
 
 ## Evidence and comparison
 
+The raw evidence schema is version 2. It records whether each tracee reached
+the instruction region, preserves the raw latest `waitpid` status, and keeps
+the validated INT3 marker snapshot separate from any later stop snapshot.
+
 The evidence keeps source/executable/table/byte/comparator/protocol SHA-256,
 source revision, CPUID identity and raw leaf 1, kernel/OS, CPU affinity,
 toolchain/build flags, virtualization indicator, actual code/input/observation/
@@ -55,12 +63,16 @@ pre/post MOVDQU/STMXCSR bytes, raw MXCSR_MASK, exit status, marker signal code,
 raw trapped RIP and adjusted E+5 boundary. Comparison ranges are carried in
 the evidence and checked against the protocol:
 
-If a repetition fails, the JSON retains its available image, guards,
-observations, raw stop RIP/RAX, wait-derived signal or exit status, and a
-per-run execution error. Completed prior repetitions remain in order in the
-same record. Top-level status is `rejected` with a failure reason, and the
-comparator always rejects it. Incomplete prerequisite coverage is represented
-by `not_run`; it has no attempted-run interpretation.
+If a repetition fails, the JSON retains its available image, guards, and
+observations. The marker snapshot (`raw_stop_rip`, `rax`, `signal_code`) remains
+separate from latest-wait data (`raw_wait_status`, `final_stop_rip`,
+`final_rax`, `final_signal_code`, exit status and signal). Before each
+resume/wait, the latest-wait snapshot is cleared; a failed wait or register/
+siginfo read therefore cannot reuse fields from the previous stop. Completed
+prior repetitions remain in order in the same record. Top-level status is
+`rejected` with a failure reason, and the comparator always rejects it. A
+pre-entry setup failure is `not_run` with its raw setup wait status and reason;
+the validator never permits attempted runs to pass as `not_run`.
 
 - Compare MXCSR `[24,28)`, XMM `[160,416)`, and software tail `[464,512)`.
 - Compare both pre/post observations and unchanged guards.

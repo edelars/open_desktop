@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const EVIDENCE_VERSION: u32 = 1;
+pub const EVIDENCE_VERSION: u32 = 2;
 pub const INSTRUCTION: [u8; 5] = [0x48, 0x0f, 0xae, 0x40, 0x40];
 pub const REPETITION_ORDER: [Fxsave64Case; 4] = [
     Fxsave64Case::A,
@@ -111,6 +111,7 @@ pub struct Fxsave64Environment {
 pub struct Fxsave64Run {
     pub case: Fxsave64Case,
     pub repetition: u8,
+    pub attempted: bool,
     pub code_address: u64,
     pub input_address: u64,
     pub pre_observation_address: u64,
@@ -120,7 +121,7 @@ pub struct Fxsave64Run {
     pub image_address: u64,
     pub left_guard_address: u64,
     pub right_guard_address: u64,
-    pub rax: u64,
+    pub rax: Option<u64>,
     pub code_permissions: String,
     pub input_permissions: String,
     pub image_permissions: String,
@@ -132,6 +133,12 @@ pub struct Fxsave64Run {
     pub completion_marker: bool,
     /// Present when execution was attempted but did not satisfy the protocol.
     pub execution_error: Option<String>,
+    /// Raw Linux waitpid status for the latest completed wait, if any.
+    pub raw_wait_status: Option<i32>,
+    /// Register/signal details from the most recent stop after the marker wait.
+    pub final_stop_rip: Option<u64>,
+    pub final_rax: Option<u64>,
+    pub final_signal_code: Option<i32>,
     pub exit_status: Option<i32>,
     pub signal: Option<i32>,
     pub signal_code: Option<i32>,
@@ -148,12 +155,43 @@ pub struct Fxsave64Run {
     pub mxcsr_mask_raw: Vec<u8>,
 }
 
+/// Most recent ptrace wait and only the register/signal details read at that stop.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Fxsave64StopSnapshot {
+    pub wait_status: Option<i32>,
+    pub rip: Option<u64>,
+    pub rax: Option<u64>,
+    pub signal_code: Option<i32>,
+}
+
+impl Fxsave64StopSnapshot {
+    pub fn begin_wait(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn publish_wait(&mut self, status: i32) {
+        self.begin_wait();
+        self.wait_status = Some(status);
+    }
+
+    pub fn publish_registers(&mut self, registers: Option<(u64, u64)>) {
+        if let Some((rip, rax)) = registers {
+            self.rip = Some(rip);
+            self.rax = Some(rax);
+        }
+    }
+
+    pub fn publish_signal_info(&mut self, signal_code: Option<i32>) {
+        self.signal_code = signal_code;
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fxsave64Evidence {
     pub schema_version: u32,
     pub status: String,
-    /// Explains a rejected attempted run; absent for observed or unavailable evidence.
+    /// Explains a rejected run or a prerequisite-level `not_run` result.
     pub failure_reason: Option<String>,
     pub source_revision: String,
     pub hashes: Fxsave64Hashes,
@@ -189,8 +227,11 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
     }
     if evidence.status == "not_run" {
         errors.push("not_run evidence cannot pass comparison".into());
-        if !evidence.runs.is_empty() {
+        if evidence.runs.iter().any(|run| run.attempted) {
             errors.push("not_run evidence cannot contain attempted runs".into());
+        }
+        if evidence.runs.len() > 1 {
+            errors.push("not_run evidence may retain only the first setup attempt".into());
         }
     }
     if evidence.status == "rejected" {
@@ -198,8 +239,8 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
         if evidence.failure_reason.as_deref().is_none_or(str::is_empty) {
             errors.push("rejected evidence must explain the execution failure".into());
         }
-    } else if evidence.failure_reason.is_some() {
-        errors.push("only rejected evidence may contain a failure reason".into());
+    } else if evidence.status == "observed" && evidence.failure_reason.is_some() {
+        errors.push("observed evidence cannot contain a failure reason".into());
     }
     let raw_fxsr = evidence.environment.cpuid_leaf1_edx & (1 << 24) != 0;
     let raw_sse = evidence.environment.cpuid_leaf1_edx & (1 << 25) != 0;
@@ -277,6 +318,11 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
     }
     for (index, run) in evidence.runs.iter().enumerate() {
         let prefix = format!("run {index}");
+        if evidence.status == "observed" && !run.attempted {
+            errors.push(format!(
+                "{prefix}: observed evidence requires an attempted run"
+            ));
+        }
         if REPETITION_ORDER.get(index) != Some(&run.case) {
             errors.push(format!("{prefix}: repetition order must be A/B/A/B"));
         }
@@ -299,6 +345,32 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
         if run.exit_status != Some(0) {
             errors.push(format!("{prefix}: unexpected or missing exit status"));
         }
+        match run.raw_wait_status {
+            Some(raw_status) => match decode_wait_status(raw_status) {
+                Some(WaitDisposition::Exited(code)) => {
+                    if run.exit_status != Some(code) || run.signal.is_some() {
+                        errors.push(format!(
+                            "{prefix}: raw wait status contradicts decoded exit/signal fields"
+                        ));
+                    }
+                }
+                Some(WaitDisposition::Signaled(signal))
+                | Some(WaitDisposition::Stopped(signal)) => {
+                    if run.signal != Some(signal) || run.exit_status.is_some() {
+                        errors.push(format!(
+                            "{prefix}: raw wait status contradicts decoded signal/exit fields"
+                        ));
+                    }
+                }
+                None => errors.push(format!("{prefix}: invalid raw wait status")),
+            },
+            None if evidence.status == "observed" => {
+                errors.push(format!(
+                    "{prefix}: observed evidence requires raw wait status"
+                ));
+            }
+            None => {}
+        }
         if !run.completion_marker
             || run.raw_stop_rip != run.entry_rip.checked_add(6)
             || run.stop_rip_adjustment != 1
@@ -320,7 +392,9 @@ pub fn compare_fxsave64(evidence: &Fxsave64Evidence) -> Fxsave64Comparison {
                 "{prefix}: test entry is inconsistent with emitted-code address"
             ));
         }
-        if run.image_address & 15 != 0 || run.rax.checked_add(0x40) != Some(run.image_address) {
+        if run.image_address & 15 != 0
+            || run.rax.and_then(|rax| rax.checked_add(0x40)) != Some(run.image_address)
+        {
             errors.push(format!(
                 "{prefix}: image is misaligned or RAX does not target D"
             ));
@@ -564,9 +638,55 @@ fn spans_overlap(left_start: u64, left_len: usize, right_start: u64, right_len: 
     left_start < right_end && right_start < left_end
 }
 
+enum WaitDisposition {
+    Exited(i32),
+    Signaled(i32),
+    Stopped(i32),
+}
+
+fn decode_wait_status(status: i32) -> Option<WaitDisposition> {
+    let status = u32::try_from(status).ok()?;
+    let low = status & 0x7f;
+    if low == 0 {
+        Some(WaitDisposition::Exited(((status >> 8) & 0xff) as i32))
+    } else if low == 0x7f {
+        Some(WaitDisposition::Stopped(((status >> 8) & 0xff) as i32))
+    } else {
+        Some(WaitDisposition::Signaled((low & 0x7f) as i32))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_snapshot_never_mixes_details_across_waits() {
+        let mut snapshot = Fxsave64StopSnapshot::default();
+        snapshot.publish_wait(0x57f);
+        snapshot.publish_registers(Some((0x400006, 0x1000)));
+        snapshot.publish_signal_info(Some(1));
+
+        for (registers, signal_code) in [
+            (None, None),
+            (Some((0x400002, 0x2000)), None),
+            (None, Some(7)),
+        ] {
+            snapshot.begin_wait();
+            assert_eq!(snapshot, Fxsave64StopSnapshot::default());
+            snapshot.publish_wait((4 << 8) | 0x7f);
+            snapshot.publish_registers(registers);
+            snapshot.publish_signal_info(signal_code);
+            assert_eq!(snapshot.wait_status, Some((4 << 8) | 0x7f));
+            assert_eq!(snapshot.rip, registers.map(|(rip, _)| rip));
+            assert_eq!(snapshot.rax, registers.map(|(_, rax)| rax));
+            assert_eq!(snapshot.signal_code, signal_code);
+        }
+
+        // A failed CONT or wait leaves no current stop to serialize.
+        snapshot.begin_wait();
+        assert_eq!(snapshot, Fxsave64StopSnapshot::default());
+    }
 
     fn valid_evidence() -> Fxsave64Evidence {
         let runs = REPETITION_ORDER
@@ -584,6 +704,7 @@ mod tests {
                 Fxsave64Run {
                     case: *case,
                     repetition: index as u8,
+                    attempted: true,
                     code_address: 0x400000,
                     input_address: 0x500000,
                     pre_observation_address: 0x600000,
@@ -593,7 +714,7 @@ mod tests {
                     image_address: d,
                     left_guard_address: d - 32,
                     right_guard_address: d + 512,
-                    rax: d - 0x40,
+                    rax: Some(d - 0x40),
                     code_permissions: "r-xp".into(),
                     input_permissions: "rw-s".into(),
                     image_permissions: "rw-s".into(),
@@ -604,6 +725,10 @@ mod tests {
                     observed_rip: Some(0x400005),
                     completion_marker: true,
                     execution_error: None,
+                    raw_wait_status: Some(0),
+                    final_stop_rip: None,
+                    final_rax: None,
+                    final_signal_code: None,
                     exit_status: Some(0),
                     signal: None,
                     signal_code: Some(1),
@@ -728,8 +853,18 @@ mod tests {
     #[test]
     fn not_run_evidence_never_passes() {
         let mut evidence = valid_evidence();
-        evidence.runs.clear();
         evidence.status = "not_run".into();
+        evidence.failure_reason = Some("PTRACE_TRACEME setup failed before entry".into());
+        evidence.runs.truncate(1);
+        for run in &mut evidence.runs {
+            run.attempted = false;
+            run.completion_marker = false;
+            run.raw_stop_rip = None;
+            run.observed_rip = None;
+            run.exit_status = Some(91);
+            run.raw_wait_status = Some(91 << 8);
+            run.execution_error = Some("tracee setup exited before SIGSTOP".into());
+        }
         let comparison = compare_fxsave64(&evidence);
         assert!(!comparison.passed);
         assert!(
@@ -738,7 +873,7 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("not_run"))
         );
-        evidence.runs.push(valid_evidence().runs.remove(0));
+        evidence.runs[0].attempted = true;
         assert!(
             compare_fxsave64(&evidence)
                 .errors
@@ -753,11 +888,15 @@ mod tests {
         evidence.runs.truncate(2);
         evidence.status = "rejected".into();
         evidence.failure_reason = Some("run 1: unexpected tracee signal".into());
-        evidence.runs[1].completion_marker = false;
-        evidence.runs[1].raw_stop_rip = Some(0x400002);
-        evidence.runs[1].observed_rip = None;
+        evidence.runs[1].completion_marker = true;
+        evidence.runs[1].raw_stop_rip = Some(0x400006);
+        evidence.runs[1].observed_rip = Some(0x400005);
         evidence.runs[1].exit_status = None;
         evidence.runs[1].signal = Some(4);
+        evidence.runs[1].raw_wait_status = Some((4 << 8) | 0x7f);
+        evidence.runs[1].final_stop_rip = Some(0x400002);
+        evidence.runs[1].final_rax = None;
+        evidence.runs[1].final_signal_code = None;
         evidence.runs[1].execution_error = Some("tracee stopped with signal 4".into());
 
         let encoded = serde_json::to_vec(&evidence).unwrap();
@@ -765,13 +904,32 @@ mod tests {
         assert_eq!(decoded.runs.len(), 2);
         assert!(decoded.runs[0].completion_marker);
         assert_eq!(decoded.runs[0].exit_status, Some(0));
-        assert_eq!(decoded.runs[1].raw_stop_rip, Some(0x400002));
+        assert_eq!(decoded.runs[1].raw_stop_rip, Some(0x400006));
+        assert_eq!(decoded.runs[1].final_stop_rip, Some(0x400002));
         assert_eq!(decoded.runs[1].signal, Some(4));
         assert!(!compare_fxsave64(&decoded).passed);
         let errors = compare_fxsave64(&decoded).errors.join(" ");
         assert!(errors.contains("attempted execution was rejected"));
         assert!(errors.contains("tracee stopped with signal 4"));
         assert!(errors.contains("exactly four A/B/A/B repetitions"));
+    }
+
+    #[test]
+    fn successful_evidence_requires_attempt_and_consistent_raw_exit_status() {
+        let mut evidence = valid_evidence();
+        evidence.runs[0].attempted = false;
+        let errors = compare_fxsave64(&evidence).errors.join(" ");
+        assert!(errors.contains("observed evidence requires an attempted run"));
+
+        let mut evidence = valid_evidence();
+        evidence.runs[0].raw_wait_status = Some(91 << 8);
+        let errors = compare_fxsave64(&evidence).errors.join(" ");
+        assert!(errors.contains("raw wait status contradicts decoded exit/signal fields"));
+
+        let mut evidence = valid_evidence();
+        evidence.runs[0].raw_wait_status = Some((11 << 8) | 0x7f);
+        let errors = compare_fxsave64(&evidence).errors.join(" ");
+        assert!(errors.contains("raw wait status contradicts decoded signal/exit fields"));
     }
 
     #[test]
