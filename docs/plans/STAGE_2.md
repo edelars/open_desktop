@@ -691,7 +691,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38ap | Exact Long64 `MULPD XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dw masked memory, S2-37ar register multiplication/WPR, S2-38ah scalar multiplication and S2-38al packed aggregation; independent raw-u64 memory-RHS oracle; inexact-tiny UE+PE, rounding-to-min-normal and cross-lane event suppression; 1,568 event + 393,216 boundary/history cases; six literals; full suites/workspace/fmt/diff passed; clean independent Sol/high review; no physical x86 acceptance |
 | [x] | S2-38aq | Exact Long64 `DIVPS XMM0,m128 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | Prerequisites: S2-37dt masked DIVPS memory, S2-38ai DIVSS unmasked divide semantics, S2-38ak packed-event aggregation, S2-38ao MULPS WPR/memory-profile controls. Exact `0F 5E 00`, SSE bit 25; independent raw-u32 rational oracle consumes actual memory RHS. Eleven literals; actual-interpreter product 73,728 independent-oracle comparisons plus three directed SNaN/QNaN cases; separate 73,728 direct ISA control cases. Full affected suites/workspace/fmt/diff passed; clean independent Sol/high review; no physical x86 acceptance; [report](../reports/S2_38AQ_DIVPS_MEMORY_UNMASKED.md) |
 | [x] | S2-38ar | Exact Long64 `DIVPD XMM0,m128 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dx masked memory, S2-38aj DIVSD semantics, S2-38al aggregation, S2-38ap WPR controls; independent raw-u64 actual-memory-RHS rational oracle; lane-local IE→ZE→DE then cross-lane OR, any-SNaN IE, QNaN suppression; 8,192 event +65,536 boundary +2×8,192 directed/min-normal WPR-tie =90,112 interpreter comparisons; eight literals (success plus seven event/gate/fetch cases) including fffc/fffd fetch/gate precedence; suites: od-isa 1,972, runner 159+570 fixtures, od-testkit 461; workspace/fmt/diff pass; independent Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AR_DIVPD_MEMORY_UNMASKED.md) |
-| [ ] | S2-38as | Exact Long64 `CVTSS2SI EAX,dword ptr [RAX]`, unmasked IE/PE m32→r32 memory profile; separate immutable schema-v2, interpreter-only | Pending contract only. Independent raw-u32 actual-memory oracle; all RC × 64 sticky histories × four IM/PM combinations × both OSXMMEXCPT deliveries; AC=0 admission only; no implementation or acceptance claimed |
+| [x] | S2-38as | Exact Long64 `CVTSS2SI EAX,dword ptr [RAX]`, unmasked IE/PE m32→r32 memory profile; separate immutable schema-v2, interpreter-only | Independent raw-u32 actual-memory oracle: 34,816 interpreter cases; seven literal fixtures; fetch/gate/AC/span/read rollback and one-read checks, schema/result/control tampering, masked-profile isolation, backend denial; od-isa 1,978, od-host 11, od-testkit 461; targeted runner matrix + CLI/schema regression passed; workspace check/fmt/diff passed; full od-runner suite incomplete (stopped on pre-fix binary); independent Sol/high review clean; no physical x86 acceptance; [report](../reports/STAGE_2_REPORT.md#s2-38as--cvtss2si-eax-m32-memory-unmasked-exceptions) |
 | [ ] | S2-38at | Exact Long64 `CVTSD2SI EAX,qword ptr [RAX]`, unmasked IE/PE m64→r32 memory profile; separate immutable schema-v2, interpreter-only | Pending contract only. Independent raw-u64 actual-memory oracle; all RC × 64 sticky histories × four IM/PM combinations × both OSXMMEXCPT deliveries; AC=0 admission only; no implementation or acceptance claimed |
 | [ ] | S2-38au | Exact Long64 `CVTTSS2SI EAX,dword ptr [RAX]`, TowardZero independent of RC; unmasked IE/PE m32→r32 memory profile; separate immutable schema-v2, interpreter-only | Pending contract only. Independent raw-u32 actual-memory oracle; all RC × 64 sticky histories × four IM/PM combinations × both OSXMMEXCPT deliveries; AC=0 admission only; no implementation or acceptance claimed |
 | [ ] | S2-38av | Exact Long64 `CVTTSD2SI EAX,qword ptr [RAX]`, TowardZero independent of RC; unmasked IE/PE m64→r32 memory profile; separate immutable schema-v2, interpreter-only | Pending contract only. Independent raw-u64 actual-memory oracle; all RC × 64 sticky histories × four IM/PM combinations × both OSXMMEXCPT deliveries; AC=0 admission only; no implementation or acceptance claimed |
@@ -19253,7 +19253,8 @@ Status: complete for the bounded interpreter profile; independent Sol/high revie
 
 ## S2-38as — exact legacy Long64 CVTSS2SI EAX,dword ptr [RAX] with unmasked exceptions
 
-Reserve a distinct immutable schema-v2 interpreter-only profile
+The implementation adds a distinct immutable schema-v2 interpreter-only
+profile
 `s2-long-cvtss2si-r32-memory-unmasked-rax-v1` for exact legacy bytes
 `F3 0F 2D 00` only. It reads a 32-bit binary32 source from `[RAX]` and writes
 the signed 32-bit result to EAX; successful EAX writes zero-extend into the full
@@ -19268,13 +19269,15 @@ combination. The core oracle matrix crosses all four IM/PM combinations;
 separate cases sample DM/OM/UM/ZM both ways and prove they create no conversion
 events and remain preserved.
 
-Only local RFLAGS.AC=0 is admitted. With AC=1, return local `Unsupported`
-before any data read or state mutation. For admitted AC=0 cases, capture the old
-RAX as the source address, check the canonical48 `[RAX,RAX+3]` span, then issue
-exactly one read4 before changing architectural state. Fetch/gate/span/read
-failures preserve full CPU state and retirement. Preserve the existing bounded
-fetch, SSE/EM/OSFXSR `#UD`, TS `#NM`, CPL, and canonical-memory policy; do not
-claim universal exception priority.
+Only local RFLAGS.AC=0 is admitted. Instruction-fetch span failure precedes
+feature gates; within this profile SSE/EM/OSFXSR `#UD` and TS `#NM` precede AC
+refusal. After successful fetch and gates, AC=1 returns local `Unsupported`
+before any data span check/read or state mutation. For admitted AC=0 cases,
+capture the old RAX as the source address, check the canonical48 `[RAX,RAX+3]`
+span, then issue exactly one read4 before changing architectural state.
+Fetch/gate/span/read failures preserve full CPU state and retirement. Preserve
+the existing bounded CPL and canonical-memory policy; do not claim universal
+exception priority beyond these defined profile cases.
 
 Round the exact binary32 input according to MXCSR.RC before testing signed-i32
 range. Invalid inputs (including infinities and NaNs) produce integer-indefinite
@@ -19297,8 +19300,14 @@ subnormal values; valid `-2^31` versus invalid-sentinel alias; and old-RAX alias
 checks. Verify success zero-extension, exact one-read behavior, read rollback,
 all exception/status/RIP/retirement outcomes, strict schema, controls/result
 tampering, profile isolation, fetch/gate/fault precedence, and denial of
-JIT/native/C ABI/generic/fragment routes. Keep this plan item pending until
-implementation, verification, and independent review are complete. Sources:
+JIT/native/C ABI/generic/fragment routes. Implementation status: complete for
+the bounded host-side interpreter profile after independent Sol/high review.
+The 34,816-case actual-interpreter oracle matrix and seven literal fixtures
+passed; targeted runner regression, schema-negative checks, workspace
+all-target offline check, formatting and diff checks passed. The full
+`od-runner` package suite was stopped while running a pre-fix test binary, so it
+is not reported as passed. Physical x86 acceptance remains open. See the
+[implementation report](../reports/STAGE_2_REPORT.md#s2-38as--cvtss2si-eax-m32-memory-unmasked-exceptions). Sources:
 Intel SDM Rev. 093 Vol. 2A `CVTSS2SI` pp. 3-242–3-243
 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1 §§11.5.2.2 and 11.5.3.2
 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §§4.1, 5.6–5.7, and Event 17 `#AC`

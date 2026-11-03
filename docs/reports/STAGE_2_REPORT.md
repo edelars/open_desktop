@@ -2887,12 +2887,13 @@ per-backend definedness masks: `0x0402` — 18, `0x04c6` — 16, `0x04c7` — 12
 `6.17.0-41-generic`, Rust/Cargo 1.99.1. Сравнение охватывает выбранные v2 CPU
 fixtures для interpreter и native физического oracle; v2 JIT не участвовал.
 
-Итоговый manifest:
-[`work/stage2-oracle/stage2-20261022-230853-3684f650/manifest.json`](../../work/stage2-oracle/stage2-20261022-230853-3684f650/manifest.json),
+Итоговый manifest (локальный артефакт, не включённый в Git):
+`work/stage2-oracle/stage2-20261022-230853-3684f650/manifest.json`,
 SHA-256 `1ce8d6ac41ca76ac8746dd60bb1618539af10ef270559c761d9adc790ad46e6b`;
 source fingerprint `f9c90e6246c3bd40c9c51bdb2c0d62389d585cbe99f05a8bebca4963d37277fc`.
 Он связан с legacy manifest
-[`work/stage1-oracle/stage1-20261022-230241-3b73e810/manifest.json`](../../work/stage1-oracle/stage1-20261022-230241-3b73e810/manifest.json),
+`work/stage1-oracle/stage1-20261022-230241-3b73e810/manifest.json`
+(локальный артефакт, не включённый в Git),
 SHA-256 `cf2483245be2dd71cf956043c76cd7981cead0c654a01d85469ee543c0c471c8`;
 тот прошёл 1010 inputs ×2 с тем же fingerprint. Компактные параметры прогона:
 [evidence JSON](data/stage2/multiply-divide-2026-10-22.json).
@@ -23574,3 +23575,33 @@ On combined main, `cargo test -p od-isa -p od-testkit -p od-runner --offline
 12,731 nodes / 29,614 edges / 411 communities. Independent Sol/high review
 confirmed both separate profile paths, rational oracles, DIVPS lane
 aggregation and DIVPD fetch precedence. Physical x86 acceptance was not run.
+
+## S2-38as — CVTSS2SI EAX, m32 memory unmasked exceptions
+
+Implemented exact Long64 `F3 0F 2D 00` as a separate immutable schema-v2
+interpreter profile. The raw-u32 integer-only oracle consumes the fixture's
+actual memory RHS. Its actual-interpreter matrix covers 34,816 cases across
+rounding modes, prior sticky histories, IM/PM masks and both OSXMMEXCPT
+deliveries. Seven literal fixtures cover success, masked PE, unmasked IE/PE,
+the SSE/EM `#UD` and TS `#NM` gate outcomes, and local AC refusal; all seven
+keep OSFXSR=1, so none is an OSFXSR-off literal. Masked IE is covered by the
+matrix, not by a literal.
+Direct ISA test `cvtss2si_r32_memory_unmasked_gate_span_and_read_faults_are_atomic`
+checks OSFXSR=0 with TS=1 and expects `#UD` before `#NM`. Direct ISA and runner
+checks also cover old-RAX aliasing, EAX zero-extension, one read,
+fetch-span/gate/AC priority, canonical-span/read rollback, schema/result/control
+validation, masked-profile isolation and closed backend routes. The fetch-span
+collision regression at RIP `0x00007ffffffffffe` confirms `#GP` before TS and
+AC; writable mappings are rejected by schema validation.
+
+Checks passed: od-isa 1,978; od-host 11; od-testkit 461; actual-interpreter
+runner matrix 34,816; targeted CLI regression and schema negatives 1/1;
+`cargo check --workspace --all-targets --offline`, format and diff checks.
+The full `od-runner` package suite was stopped while an older pre-fix test
+binary was running; that suite is incomplete and is not reported as passed.
+The layout checker reports only the linked-worktree `.git` marker after the
+two historical local-only manifest references above were changed to plain
+paths. Independent Sol/high review found no remaining issues. No physical x86
+acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38as--exact-cvtss2si-m32-memory-profile-with-unmasked-exceptions),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38as--cvtss2si-m32-memory-unmasked-profile),
+and [stage plan](../plans/STAGE_2.md#s2-38as--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax-with-unmasked-exceptions).

@@ -8911,20 +8911,31 @@ physical x86 acceptance. See the
 [plan](../../../../docs/plans/STAGE_2.md#s2-38ao--exact-mulps-memory-form-with-unmasked-exceptions),
 and [report](../../../../docs/reports/S2_38AO_MULPS_MEMORY_UNMASKED.md).
 
-### S2-38as — proposed CVTSS2SI m32 memory unmasked profile
+### S2-38as — CVTSS2SI m32 memory unmasked profile
 
-The pending contract reserves a distinct schema-v2 profile for exact
+The implemented bounded interpreter profile uses a distinct schema-v2 contract
+for the exact
 `F3 0F 2D 00` (`CVTSS2SI EAX,dword ptr [RAX]`). It requires local AC=0,
 captures old RAX as the address, checks the canonical48 m32 span, and reads
-once before any destination write. The planned independent raw-u32 memory-RHS
-oracle crosses all RC modes, 64 prior sticky histories, four IM/PM settings,
-and both OSXMMEXCPT deliveries. Separate cases sample DM/OM/UM/ZM both ways
-and check that they neither generate an event nor change. It covers rounding before i32 range checking,
+once before any destination write. Instruction-fetch span failure precedes
+feature gates; SSE/EM/OSFXSR `#UD` and TS `#NM` precede AC refusal. AC=1 is
+`Unsupported` only after those prerequisites pass and before checking or reading
+source data. The independent raw-u32 memory-RHS oracle crosses all RC modes, 64
+prior sticky histories, four IM/PM settings, and both OSXMMEXCPT deliveries.
+Separate cases sample DM/OM/UM/ZM both ways and check that they neither
+generate an event nor change. It covers rounding before i32 range checking,
 invalid-indefinite versus valid `-2^31`, PE suppression for invalid, subnormal
 no-DE, FTZ irrelevance, zero-extension on success, event-specific MXCSR status,
-and full rollback for fetch/gate/span/read failures. AC=1 must return
-`Unsupported` without a source read. This section records intended coverage;
-no implementation or fixture result exists yet. See the
+and full rollback for fetch/gate/span/read failures. Seven literal fixtures
+cover success, masked PE, unmasked IE/PE, SSE/EM `#UD` and TS `#NM` gates, and
+AC refusal; all keep OSFXSR=1, so none is an OSFXSR-off literal. Masked IE is
+covered by the matrix, not a literal. The actual-interpreter oracle matrix
+passed 34,816 cases; targeted
+fetch/gate/AC collision and schema-negative checks passed. Direct ISA test
+`cvtss2si_r32_memory_unmasked_gate_span_and_read_faults_are_atomic` checks
+OSFXSR=0 with TS=1 and expects `#UD`; separate `GuestMemory` tests verify
+one-read behavior and rollback on read errors. The full `od-runner` package
+suite is incomplete, and physical x86 acceptance is not claimed. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38as--exact-cvtss2si-m32-memory-profile-with-unmasked-exceptions)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-38as--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax-with-unmasked-exceptions).
 

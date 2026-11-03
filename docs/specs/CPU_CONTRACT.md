@@ -19066,7 +19066,8 @@ Use the S2-38aq memory access, event, delivery, rollback, destination and retire
 
 ## S2-38as — exact CVTSS2SI m32 memory profile with unmasked exceptions
 
-Reserve a separate immutable schema-v2 interpreter-only profile
+The implemented bounded interpreter profile uses a separate immutable
+schema-v2 profile
 `s2-long-cvtss2si-r32-memory-unmasked-rax-v1` for exact legacy Long64 bytes
 `F3 0F 2D 00` (`CVTSS2SI EAX,dword ptr [RAX]`). Preserve masked profile
 S2-37ch unchanged. The profile-specific
@@ -19081,13 +19082,16 @@ Additionally sample DM/OM/UM/ZM both set and clear, proving they cannot cause
 conversion events and are preserved along with all unrelated supported MXCSR
 controls and old status except newly raised IE/PE.
 
-Admit local RFLAGS.AC=0 only. AC=1 produces local `Unsupported` before a data
-read or CPU mutation. For AC=0, capture the original RAX as the address,
-validate canonical48 `[RAX,RAX+3]`, and perform exactly one little-endian
-read4 before committing state. Fetch, gate, span, and read failures preserve
-full architectural state, including RAX, RIP, MXCSR and retirement. Apply the
-bounded S2-37ch instruction-fetch/SSE/EM/OSFXSR/TS/CPL policy without claiming
-universal exception priority. No x87 state is accessed or modified.
+Admit local RFLAGS.AC=0 only. Instruction-fetch span failure precedes feature
+gates; within this profile SSE/EM/OSFXSR `#UD` and TS `#NM` precede AC refusal.
+Only after successful fetch and gates does AC=1 produce local `Unsupported`,
+before a data span check/read or CPU mutation. For AC=0, capture the original
+RAX as the address, validate canonical48 `[RAX,RAX+3]`, and perform exactly
+one little-endian read4 before committing state. Fetch, gate, span, and read
+failures preserve full architectural state, including RAX, RIP, MXCSR and
+retirement. Apply the bounded S2-37ch CPL policy without claiming universal
+exception priority beyond these defined profile cases. No x87 state is
+accessed or modified.
 
 Round the raw binary32 source using MXCSR.RC before checking signed-i32 range.
 Invalid input, including infinity or NaN, returns the integer-indefinite bit
@@ -19113,7 +19117,13 @@ production conversion helpers. Sources: Intel SDM Rev. 093 Vol. 2A `CVTSS2SI`
 pp. 3-242–3-243 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); Vol. 1 §§11.5.2.2 and 11.5.3.2
 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436)); Vol. 3A §§4.1, 5.6–5.7, and Event 17 `#AC`
 ([PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190)).
-Contract status: pending implementation and independent review.
+Contract status: implemented for the bounded host-side interpreter profile;
+independent Sol/high review is clean. The 34,816-case actual-interpreter
+oracle matrix, seven literal fixtures, targeted runner regression, schema
+negative checks, workspace check, formatting and diff checks passed. The full
+`od-runner` suite was stopped on a pre-fix binary and remains incomplete; no
+physical x86 acceptance is claimed. See the [Stage 2 implementation
+report](../reports/STAGE_2_REPORT.md#s2-38as--cvtss2si-eax-m32-memory-unmasked-exceptions).
 
 ## S2-38at — exact CVTSD2SI m64 memory profile with unmasked exceptions
 

@@ -1750,7 +1750,8 @@ host-side interpreter profile; no physical x86 acceptance is claimed.
 
 ## S2-38as CVTSS2SI m32 memory unmasked profile
 
-Reserve the separate immutable schema-v2 profile
+The implemented bounded interpreter profile uses the separate immutable
+schema-v2 profile
 `s2-long-cvtss2si-r32-memory-unmasked-rax-v1` for exact Long64 bytes
 `f3 0f 2d 00`, one executable mapping, one read-only m32 mapping at the old
 RAX, budget one, and stop RIP `entry+4`. Preserve the existing masked
@@ -1764,11 +1765,13 @@ mask bits, and FTZ values. Cross all IM/PM combinations in the core oracle
 matrix and sample DM/OM/UM/ZM both ways to confirm they cause no conversion
 events and are preserved.
 
-Validation admits local AC=0 only. AC=1 is a valid negative case producing
-`Unsupported` before source read or CPU mutation. Capture old RAX, check the
-canonical48 m32 span, then read4 once. Model exact-instruction fetch, bounded
-SSE/EM/OSFXSR/TS gates, span faults and read errors. Fetch/gate/span/read
-failures compare full state, including RAX/RIP/MXCSR/retirement. Successful
+Validation admits local AC=0 only. Instruction-fetch span failure precedes
+feature gates; SSE/EM/OSFXSR `#UD` and TS `#NM` precede AC refusal. Only after
+successful fetch and gates does AC=1 produce `Unsupported`, before source span
+check/read or CPU mutation. For AC=0, capture old RAX, check the canonical48
+m32 span, then read4 once. Model exact-instruction fetch, bounded gates, span
+faults and read errors. Fetch/gate/span/read failures compare full state,
+including RAX/RIP/MXCSR/retirement. Successful
 EAX writes must zero-extend to RAX. Masked invalid results use `0x80000000`
 and set IE; invalid suppresses PE. A valid inexact result sets PE. Subnormals
 do not set DE; FTZ is irrelevant. An unmasked IE or PE records its MXCSR status
@@ -1780,14 +1783,30 @@ interpreter coverage across vectors × 4 RC × 64 old sticky states × four IM/P
 settings × two delivery modes. Include signed-i32 boundary neighbors and ties,
 infinities, QNaN/SNaN, signed zero, normal/subnormal values, exact valid
 `-2^31` and invalid sentinel alias, and an old-RAX destination-address case.
-Require literal success, IE, PE, fetch/gate/span/read and AC-refusal cases;
-check exact status, full-state rollback, control/result tampering, strict
-profile separation, and closed JIT/native/C ABI/generic/fragment routes.
-No implementation, fixture, or physical x86 acceptance is claimed by this
-pending contract. Intel SDM Rev. 093 sources: Vol. 2A `CVTSS2SI` pp. 3-242–3-243;
+Require literal cases only for schema-expressible success, IE/PE outcomes,
+feature/control gates, and AC refusal. Cover fetch/span failures with the
+generated runner matrix and direct ISA tests. Verify read counts and read-error
+rollback only through direct `GuestMemory` tests; those properties are not
+expressible in a literal fixture. Check exact status, full-state rollback,
+control/result tampering, strict profile separation, and closed
+JIT/native/C ABI/generic/fragment routes.
+This contract does not claim physical x86 acceptance. Intel SDM Rev. 093
+sources: Vol. 2A `CVTSS2SI` pp. 3-242–3-243;
 Vol. 1 §§11.5.2.2 and 11.5.3.2; Vol. 3A §§4.1, 5.6–5.7, and Event 17 `#AC`.
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38as--exact-cvtss2si-m32-memory-profile-with-unmasked-exceptions)
 for official PDF links.
+
+Implementation status: complete for this bounded interpreter profile after
+independent Sol/high review. The actual-interpreter raw-u32 matrix passed
+34,816 cases; targeted CLI fetch/gate/AC precedence and schema-negative
+checks passed. Seven literal fixtures cover success, masked PE, unmasked IE/PE,
+SSE/EM `#UD` and TS `#NM` gates, and AC refusal; all keep OSFXSR=1, so none is
+an OSFXSR-off literal. Masked IE is in the matrix, not a literal. Direct ISA test
+`cvtss2si_r32_memory_unmasked_gate_span_and_read_faults_are_atomic` checks
+OSFXSR=0 with TS=1 and expects `#UD` before `#NM`; separate `GuestMemory`
+checks cover one read and read-error rollback. The full `od-runner` suite
+remains incomplete; no physical x86 acceptance is claimed. See the [Stage 2 implementation
+report](../reports/STAGE_2_REPORT.md#s2-38as--cvtss2si-eax-m32-memory-unmasked-exceptions).
 
 ## S2-38at CVTSD2SI m64 memory unmasked profile
 
