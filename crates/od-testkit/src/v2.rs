@@ -7589,7 +7589,7 @@ impl Fixture {
                 .get();
             if mxcsr & !0xffbf != 0
                 || mxcsr & (1 << 6) != 0
-                || (self.profile == Profile::LongSqrtssMemoryRaxV1 && mxcsr & (1 << 15) != 0)
+                || mxcsr & (1 << 15) != 0
                 || mxcsr & 0x1e00 != 0x1e00
             {
                 return Err(invalid(
@@ -14550,6 +14550,7 @@ impl Fixture {
                 || data.guest_address.get() != source
                 || data.length != 4
                 || !data.permissions.read
+                || data.permissions.write
                 || data.permissions.execute
                 || self.instruction_budget != 1
                 || self.stop_rip.map(HexU64::get) != start.checked_add(4)
@@ -14602,10 +14603,12 @@ impl Fixture {
             } else {
                 false
             };
-            let expected = if gate || nm || span || arithmetic_exception {
+            let expected = if gate || nm {
                 ExpectedExit::Exception
             } else if ac {
                 ExpectedExit::Unsupported
+            } else if span || arithmetic_exception {
+                ExpectedExit::Exception
             } else {
                 ExpectedExit::StopAddress
             };
@@ -46964,9 +46967,13 @@ fn validate_sqrtss_memory_rax_unmasked_result(
             },
         ) if exception.vector == vector
             && exception.error_code
-                == Observation::Unavailable {
-                    reason: "exception has no architectural error code".into(),
-                }
+                == (if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                })
             && exception.faulting_rip == fixture.initial_state.rip
             && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
         (None, true, Outcome::Unsupported { .. }, Observation::Available { value: None }) => {}

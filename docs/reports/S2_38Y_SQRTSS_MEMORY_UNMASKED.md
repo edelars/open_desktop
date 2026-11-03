@@ -32,15 +32,22 @@ Seven literal fixtures cover a masked inexact result and unmasked IE, DE, and
 PE under both `#XM` and arithmetic `#UD`. Additional tests cover negative SNaN
 quieting, CPL 0–3, full-fetch and gate priority, AC/address denial, schema and
 control-echo tampering, reserved MXCSR bits, FTZ support, and backend denial.
+Focused cases also cover negative-subnormal terminal IE across IM/DM masks and
+both OSXMMEXCPT mappings, negative-SNaN unmasked IE under both mappings,
+`#GP(0)` comparator validation and AC-before-span precedence for masked and
+unmasked SQRTSS, and rejection of writable source mappings. A MINSD regression
+confirms its existing FTZ=0 restriction remains enforced.
 
 ## Validation
 
 - `cargo test -p od-isa -p od-testkit -p od-runner --offline --quiet`: passed;
-  1,938 ISA tests, 131 testkit tests, 545 runner unit tests, and 455 fixture
-  tests. This run was before adding the focused negative-SNaN case and replacing
-  one matrix input with `0x00000002`.
+  1,938 ISA tests, 455 testkit tests, 131 runner unit tests, and 549 fixture
+  tests. The runner fixture count includes the focused negative-SNaN, negative
+  subnormal, signed-span, and AC-priority regressions.
 - Updated matrix test: passed all 65,536 cases in 26.62 seconds.
 - Focused S2-38y fixture tests: 3 passed, including negative SNaN quieting.
+- Follow-up targeted MINSD, SQRTSS gate/schema, signed-span comparator,
+  negative-subnormal, and negative-SNaN tests: passed individually.
 - `cargo check --workspace --all-targets --offline`: passed.
 - `cargo fmt --all -- --check` and `git diff --check`: passed.
 - `graphify update .`: passed; refreshed graph has 12,236 nodes, 26,406 edges,

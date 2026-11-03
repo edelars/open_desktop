@@ -38979,6 +38979,17 @@ fn minsd_m64_memory_covers_raw_nan_selection_denormal_stickies_and_controls() {
 
 #[test]
 fn minsd_m64_memory_unmasked_profile_checks_mixed_priority_echo_and_backend_denial() {
+    let mut ftz_enabled = Fixture::from_json(MINSD_M64_MEMORY_UNMASKED_NAN_DENORMAL)
+        .unwrap()
+        .fixture;
+    ftz_enabled.case_id = "s2_37cw_unmasked_ftz_rejected".into();
+    let mxcsr = ftz_enabled.initial_state.sse.as_ref().unwrap().mxcsr.get();
+    ftz_enabled.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(mxcsr | (1 << 15));
+    assert!(
+        ftz_enabled.validate().is_err(),
+        "MINSD unmasked profile must continue to reject FTZ=1"
+    );
+
     for (source, expect_fault, expected_mxcsr, expected_low) in [
         (
             MINSD_M64_MEMORY_UNMASKED_NAN_DENORMAL,
@@ -41273,6 +41284,14 @@ fn sqrtss_m32_unmasked_literal_fixtures_map_ie_de_pe_and_deny_backends() {
     let mut reserved = fixture;
     reserved.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 | (1 << 16));
     assert!(reserved.validate().is_err());
+    let mut writable = Fixture::from_json(SQRTSS_M32_UNMASKED_MASKED)
+        .unwrap()
+        .fixture;
+    writable.memory[1].permissions.write = true;
+    assert!(
+        writable.validate().is_err(),
+        "SQRTSS source mapping must be read-only"
+    );
     let mut ftz_enabled = Fixture::from_json(SQRTSS_M32_UNMASKED_MASKED)
         .unwrap()
         .fixture;
@@ -41376,6 +41395,156 @@ fn sqrtss_m32_unmasked_quiets_negative_signaling_nan() {
     );
     assert_eq!(snapshot.state.sse.as_ref().unwrap().mxcsr.get(), 0x1f81);
     assert!(matches!(result.outcome, Outcome::StopAddress {}));
+}
+
+#[test]
+fn sqrtss_m32_span_gp_and_ac_precedence_are_comparator_valid_for_both_profiles() {
+    for (source, profile_name) in [
+        (SQRTSS_M32_MEMORY_RAX, "masked"),
+        (SQRTSS_M32_UNMASKED_MASKED, "unmasked"),
+    ] {
+        let base = Fixture::from_json(source).unwrap().fixture;
+        for ac in [false, true] {
+            let mut fixture = base.clone();
+            fixture.case_id = format!("s2_38y_{profile_name}_noncanonical_ac_{ac}");
+            fixture.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+            fixture.memory[1].guest_address = fixture.initial_state.gpr[0];
+            if ac {
+                fixture.initial_state.rflags =
+                    HexU64(fixture.initial_state.rflags.get() | (1 << 18));
+                fixture.expected_exit = ExpectedExit::Unsupported;
+            } else {
+                fixture.expected_exit = ExpectedExit::Exception;
+            }
+
+            let (input, result) = run(
+                &fixture.to_json().unwrap(),
+                "interpreter",
+                if ac { 4 } else { 0 },
+            );
+            if ac {
+                result.validate_for(&input).unwrap();
+                assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+                assert_eq!(count(&result), 0);
+            } else {
+                od_testkit::v2::compare(&input, &result, &result)
+                    .unwrap_or_else(|error| panic!("{profile_name}, AC={ac}: {error}"));
+                assert!(matches!(result.outcome, Outcome::Exception {}));
+                let result_snapshot = snapshot(&result);
+                let Observation::Available {
+                    value: Some(exception),
+                } = &result_snapshot.exception
+                else {
+                    panic!("expected #GP(0) for {profile_name}")
+                };
+                assert_eq!(exception.vector, 13);
+                assert_eq!(
+                    exception.error_code,
+                    Observation::Available { value: HexU64(0) }
+                );
+                assert_eq!(count(&result), 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn sqrtss_unmasked_negative_subnormal_is_terminal_ie_without_de() {
+    let base = Fixture::from_json(SQRTSS_M32_UNMASKED_MASKED)
+        .unwrap()
+        .fixture;
+    for im_masked in [false, true] {
+        for dm_masked in [false, true] {
+            for osxmmexcpt in [false, true] {
+                let mut fixture = base.clone();
+                fixture.case_id =
+                    format!("s2_38y_negative_subnormal_im{im_masked}_dm{dm_masked}_os{osxmmexcpt}");
+                fixture.memory[1].initial_bytes_hex = "01000080".into();
+                let mut mxcsr = 0x1f80u32;
+                if !im_masked {
+                    mxcsr &= !(1 << 7);
+                }
+                if !dm_masked {
+                    mxcsr &= !(1 << 8);
+                }
+                fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(mxcsr));
+                fixture
+                    .sqrtss_memory_rax_unmasked_controls
+                    .as_mut()
+                    .unwrap()
+                    .cr4_osxmmexcpt = osxmmexcpt;
+                fixture.expected_exit = if im_masked {
+                    ExpectedExit::StopAddress
+                } else {
+                    ExpectedExit::Exception
+                };
+
+                let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+                od_testkit::v2::compare(&input, &result, &result).unwrap();
+                let result_snapshot = snapshot(&result);
+                let sse = result_snapshot.state.sse.as_ref().unwrap();
+                assert_eq!(sse.mxcsr.get(), u64::from(mxcsr | 1));
+                if im_masked {
+                    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+                    assert_eq!(count(&result), 1);
+                } else {
+                    assert!(matches!(result.outcome, Outcome::Exception {}));
+                    let Observation::Available {
+                        value: Some(exception),
+                    } = &result_snapshot.exception
+                    else {
+                        panic!("expected terminal IE exception")
+                    };
+                    assert_eq!(exception.vector, if osxmmexcpt { 19 } else { 6 });
+                    assert_eq!(count(&result), 0);
+                    assert_eq!(
+                        sse.xmm[0],
+                        fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+                    );
+                    assert_eq!(result_snapshot.state.rip, fixture.initial_state.rip);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn sqrtss_unmasked_negative_signaling_nan_maps_terminal_ie() {
+    let base = Fixture::from_json(SQRTSS_M32_UNMASKED_MASKED)
+        .unwrap()
+        .fixture;
+    for osxmmexcpt in [false, true] {
+        let mut fixture = base.clone();
+        fixture.case_id = format!("s2_38y_negative_snan_unmasked_os{osxmmexcpt}");
+        fixture.memory[1].initial_bytes_hex = "452381ff".into();
+        fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+        fixture
+            .sqrtss_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = osxmmexcpt;
+        fixture.expected_exit = ExpectedExit::Exception;
+
+        let (input, result) = run(&fixture.to_json().unwrap(), "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let result_snapshot = snapshot(&result);
+        let sse = result_snapshot.state.sse.as_ref().unwrap();
+        assert_eq!(sse.mxcsr.get(), 0x1f01);
+        assert_eq!(
+            sse.xmm[0],
+            fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+        );
+        assert_eq!(result_snapshot.state.rip, fixture.initial_state.rip);
+        assert_eq!(count(&result), 0);
+        assert!(matches!(result.outcome, Outcome::Exception {}));
+        let Observation::Available {
+            value: Some(exception),
+        } = &result_snapshot.exception
+        else {
+            panic!("expected negative SNaN terminal IE exception")
+        };
+        assert_eq!(exception.vector, if osxmmexcpt { 19 } else { 6 });
+    }
 }
 
 #[test]
