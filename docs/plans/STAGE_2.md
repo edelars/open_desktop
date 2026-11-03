@@ -18542,11 +18542,12 @@ rejecting SF-only, ES, B and existing unsupported FCW/state/tag cases before
 the write. Preserve historical SF and the six sticky flags; add current IE/PE
 as defined by conversion. Recompute C1 using the existing conversion result.
 FIST does not alter TOP; FISTP writes first and pops only after the write
-succeeds. The complete-state and memory success matrix covers 13 accepted
+succeeds. The SF+IE complete-state and memory success matrix covers 13 accepted
 source classes/results (zero, exact/inexact normal, fraction, subnormal,
 infinity, QNaN/SNaN, unnormal, pseudo-infinity, pseudo-QNaN/pseudo-SNaN, and
 finite out-of-range integer-indefinite), both signs, 32 other sticky histories,
-TOP, FCW and both starting C1 values: 266,240 cases. Test span/write rollback,
+TOP, FCW and both starting C1 values: 266,240 cases. Preserve the adjacent
+seven-class SF=0 sticky-state regression. Test span/write rollback,
 FNSTSW/FNCLEX/retry, schema fixtures, tampering and backend denial. Do not
 modify FLD/FST gates. See the [implementation report](../reports/S2_31EG_FIST_HISTORICAL_SF.md).
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-31eg--historical-sf-with-prior-ie-on-bounded-integer-stores).

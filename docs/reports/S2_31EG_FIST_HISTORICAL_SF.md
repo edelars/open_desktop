@@ -6,14 +6,16 @@ conversion and write-before-commit behavior is unchanged. SF and the other six
 sticky status bits are retained; C1 remains defined by the conversion result.
 Existing FLD/FST admission gates are unchanged.
 
-The ISA success matrix compares the complete CPU state and all memory bytes for
-266,240 executions: five forms × 13 accepted source classes/results × two signs
+The SF+IE admission success matrix compares the complete CPU state and all
+memory bytes for 266,240 executions: five forms × 13 accepted source
+classes/results × two signs
 × four FCWs × eight TOP values × 32 combinations of the other sticky flags ×
 both incoming C1 values. The accepted set is zero, exact normal, inexact normal,
 fraction, infinity, quiet NaN, signaling NaN, canonical subnormal, unnormal,
 pseudo-infinity, pseudo-quiet-NaN, pseudo-signaling-NaN, and finite
 out-of-range integer-indefinite. Pseudo-denormals remain outside the existing
-accepted set.
+accepted set. The adjacent SF=0 sticky-state regression remains at its original
+seven source classes and continues to pass independently.
 
 Twenty atomicity cases cross all five forms and both incoming C1 values with a
 canonical-span fault and a denied destination write. They compare the complete

@@ -104939,22 +104939,6 @@ mod tests {
             ("infinity", X87Tag::Special, 0x8000_0000_0000_0000, 0x7fff),
             ("qnan", X87Tag::Special, 0xc000_0000_0000_0001, 0x7fff),
             ("snan", X87Tag::Special, 0x8000_0000_0000_0001, 0x7fff),
-            ("subnormal", X87Tag::Special, 1, 0),
-            ("unnormal", X87Tag::Special, 0x4000_0000_0000_0000, 0x3fff),
-            ("pseudo_infinity", X87Tag::Special, 0, 0x7fff),
-            (
-                "pseudo_qnan",
-                X87Tag::Special,
-                0x4000_0000_0000_0001,
-                0x7fff,
-            ),
-            ("pseudo_snan", X87Tag::Special, 1, 0x7fff),
-            (
-                "finite_out_of_range",
-                X87Tag::Valid,
-                0x8000_0000_0000_0000,
-                0x4040,
-            ),
         ];
 
         for (form, width, pop) in forms {
@@ -104980,19 +104964,12 @@ mod tests {
                                 (true, 0x0b7f | 0x0f7f) => (-1, 0x0020, false),
                                 _ => unreachable!(),
                             },
-                            "fraction" | "subnormal" => match (negative, control_word) {
+                            "fraction" => match (negative, control_word) {
                                 (false, 0x0b7f) => (1, 0x0020, true),
                                 (true, 0x077f) => (-1, 0x0020, true),
                                 _ => (0, 0x0020, false),
                             },
-                            "infinity"
-                            | "qnan"
-                            | "snan"
-                            | "unnormal"
-                            | "pseudo_infinity"
-                            | "pseudo_qnan"
-                            | "pseudo_snan"
-                            | "finite_out_of_range" => (i64::MIN, 0x0001, false),
+                            "infinity" | "qnan" | "snan" => (i64::MIN, 0x0001, false),
                             _ => unreachable!(),
                         };
                         for top in 0..8_u8 {
@@ -105128,6 +105105,22 @@ mod tests {
             ("infinity", X87Tag::Special, 0x8000_0000_0000_0000, 0x7fff),
             ("qnan", X87Tag::Special, 0xc000_0000_0000_0001, 0x7fff),
             ("snan", X87Tag::Special, 0x8000_0000_0000_0001, 0x7fff),
+            ("subnormal", X87Tag::Special, 1, 0),
+            ("unnormal", X87Tag::Special, 0x4000_0000_0000_0000, 0x3fff),
+            ("pseudo_infinity", X87Tag::Special, 0, 0x7fff),
+            (
+                "pseudo_qnan",
+                X87Tag::Special,
+                0x4000_0000_0000_0001,
+                0x7fff,
+            ),
+            ("pseudo_snan", X87Tag::Special, 1, 0x7fff),
+            (
+                "finite_out_of_range",
+                X87Tag::Valid,
+                0x8000_0000_0000_0000,
+                0x4040,
+            ),
         ];
         let control_words = [0x037f_u16, 0x077f, 0x0b7f, 0x0f7f];
         let other_sticky_bits = [0x0002_u16, 0x0004, 0x0008, 0x0010, 0x0020];
@@ -105155,12 +105148,19 @@ mod tests {
                                 (true, 0x0b7f | 0x0f7f) => (-1, 0x0020, false),
                                 _ => unreachable!(),
                             },
-                            "fraction" => match (negative, control_word) {
+                            "fraction" | "subnormal" => match (negative, control_word) {
                                 (false, 0x0b7f) => (1, 0x0020, true),
                                 (true, 0x077f) => (-1, 0x0020, true),
                                 _ => (0, 0x0020, false),
                             },
-                            "infinity" | "qnan" | "snan" => (i64::MIN, 0x0001, false),
+                            "infinity"
+                            | "qnan"
+                            | "snan"
+                            | "unnormal"
+                            | "pseudo_infinity"
+                            | "pseudo_qnan"
+                            | "pseudo_snan"
+                            | "finite_out_of_range" => (i64::MIN, 0x0001, false),
                             _ => unreachable!(),
                         };
                         for top in 0..8_u8 {
