@@ -1747,3 +1747,85 @@ failure fixtures, quotient-specific same-lane NaN suppression and cross-lane
 pre-event cases in the oracle matrix. JIT/native and other closed backends
 reject the profile without snapshots. Status: complete for the bounded
 host-side interpreter profile; no physical x86 acceptance is claimed.
+
+## S2-38as CVTSS2SI m32 memory unmasked profile
+
+Reserve the separate immutable schema-v2 profile
+`s2-long-cvtss2si-r32-memory-unmasked-rax-v1` for exact Long64 bytes
+`f3 0f 2d 00`, one executable mapping, one read-only m32 mapping at the old
+RAX, budget one, and stop RIP `entry+4`. Preserve the existing masked
+`s2-long-cvtss2si-r32-memory-rax-v1` wire shape and digest. The new input
+`cvtss2si_r32_memory_unmasked_controls` and result snapshot echo have exactly
+five immutable booleans: `sse_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`,
+`cr4_osxmmexcpt`. Reject missing, unknown, cross-profile or tampered controls.
+The profile requires SSE bit 25 and supported MXCSR mask `0xffbf`, reserved
+bits clear and DAZ=0; it accepts every RC, prior sticky value, all exception
+mask bits, and FTZ values. Cross all IM/PM combinations in the core oracle
+matrix and sample DM/OM/UM/ZM both ways to confirm they cause no conversion
+events and are preserved.
+
+Validation admits local AC=0 only. AC=1 is a valid negative case producing
+`Unsupported` before source read or CPU mutation. Capture old RAX, check the
+canonical48 m32 span, then read4 once. Model exact-instruction fetch, bounded
+SSE/EM/OSFXSR/TS gates, span faults and read errors. Fetch/gate/span/read
+failures compare full state, including RAX/RIP/MXCSR/retirement. Successful
+EAX writes must zero-extend to RAX. Masked invalid results use `0x80000000`
+and set IE; invalid suppresses PE. A valid inexact result sets PE. Subnormals
+do not set DE; FTZ is irrelevant. An unmasked IE or PE records its MXCSR status
+then suppresses destination/RIP/retirement and delivers `#XM`19 or SIMD `#UD`6
+using OSXMMEXCPT. Compare full RAX on those events and event-specific MXCSR.
+
+Require an independent integer-only raw-u32 memory-RHS oracle and actual
+interpreter coverage across vectors × 4 RC × 64 old sticky states × four IM/PM
+settings × two delivery modes. Include signed-i32 boundary neighbors and ties,
+infinities, QNaN/SNaN, signed zero, normal/subnormal values, exact valid
+`-2^31` and invalid sentinel alias, and an old-RAX destination-address case.
+Require literal success, IE, PE, fetch/gate/span/read and AC-refusal cases;
+check exact status, full-state rollback, control/result tampering, strict
+profile separation, and closed JIT/native/C ABI/generic/fragment routes.
+No implementation, fixture, or physical x86 acceptance is claimed by this
+pending contract. Intel SDM Rev. 093 sources: Vol. 2A `CVTSS2SI` pp. 3-242–3-243;
+Vol. 1 §§11.5.2.2 and 11.5.3.2; Vol. 3A §§4.1, 5.6–5.7, and Event 17 `#AC`.
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38as--exact-cvtss2si-m32-memory-profile-with-unmasked-exceptions)
+for official PDF links.
+
+## S2-38at CVTSD2SI m64 memory unmasked profile
+
+Reserve the separate immutable schema-v2 profile
+`s2-long-cvtsd2si-r32-memory-unmasked-rax-v1` for exact Long64 bytes
+`f2 0f 2d 00`, one executable mapping, one read-only m64 mapping at the old
+RAX, budget one, and stop RIP `entry+4`. Preserve the existing masked
+`s2-long-cvtsd2si-r32-memory-rax-v1` wire shape and digest. The new input
+`cvtsd2si_r32_memory_unmasked_controls` and result snapshot echo have exactly
+five immutable booleans: `sse2_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`,
+`cr4_osxmmexcpt`. Reject missing, unknown, cross-profile or tampered controls.
+The profile requires SSE2 bit 26 and supported MXCSR mask `0xffbf`, reserved
+bits clear and DAZ=0; it accepts every RC, prior sticky value, all exception
+mask bits, and FTZ values. Cross all IM/PM combinations in the core oracle
+matrix and sample DM/OM/UM/ZM both ways to confirm they cause no conversion
+events and are preserved.
+
+Validation admits local AC=0 only. AC=1 is a valid negative case producing
+`Unsupported` before source read or CPU mutation. Capture old RAX, check the
+canonical48 m64 span, then read8 once. Model exact-instruction fetch, bounded
+SSE2/EM/OSFXSR/TS gates, span faults and read errors. Fetch/gate/span/read
+failures compare full state, including RAX/RIP/MXCSR/retirement. Successful
+EAX writes must zero-extend to RAX. Masked invalid results use `0x80000000`
+and set IE; invalid suppresses PE. A valid inexact result sets PE. Subnormals
+do not set DE; FTZ is irrelevant. An unmasked IE or PE records its MXCSR status
+then suppresses destination/RIP/retirement and delivers `#XM`19 or SIMD `#UD`6
+using OSXMMEXCPT. Compare full RAX on those events and event-specific MXCSR.
+
+Require an independent integer-only raw-u64 memory-RHS oracle and actual
+interpreter coverage across vectors × 4 RC × 64 old sticky states × four IM/PM
+settings × two delivery modes. Include signed-i32 boundary neighbors and ties,
+infinities, QNaN/SNaN, signed zero, normal/subnormal values, exact valid
+`-2^31` and invalid sentinel alias, and an old-RAX destination-address case.
+Require literal success, IE, PE, fetch/gate/span/read and AC-refusal cases;
+check exact status, full-state rollback, control/result tampering, strict
+profile separation, and closed JIT/native/C ABI/generic/fragment routes.
+No implementation, fixture, or physical x86 acceptance is claimed by this
+pending contract. Intel SDM Rev. 093 sources: Vol. 2A `CVTSD2SI` pp. 3-232–3-233;
+Vol. 1 §§11.5.2.2 and 11.5.3.2; Vol. 3A §§4.1, 5.6–5.7, and Event 17 `#AC`.
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38at--exact-cvtsd2si-m64-memory-profile-with-unmasked-exceptions)
+for official PDF links.

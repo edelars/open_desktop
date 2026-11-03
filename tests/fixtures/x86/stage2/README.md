@@ -8910,3 +8910,37 @@ physical x86 acceptance. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ao--exact-mulps-memory-profile-with-unmasked-exceptions),
 [plan](../../../../docs/plans/STAGE_2.md#s2-38ao--exact-mulps-memory-form-with-unmasked-exceptions),
 and [report](../../../../docs/reports/S2_38AO_MULPS_MEMORY_UNMASKED.md).
+
+### S2-38as — proposed CVTSS2SI m32 memory unmasked profile
+
+The pending contract reserves a distinct schema-v2 profile for exact
+`F3 0F 2D 00` (`CVTSS2SI EAX,dword ptr [RAX]`). It requires local AC=0,
+captures old RAX as the address, checks the canonical48 m32 span, and reads
+once before any destination write. The planned independent raw-u32 memory-RHS
+oracle crosses all RC modes, 64 prior sticky histories, four IM/PM settings,
+and both OSXMMEXCPT deliveries. Separate cases sample DM/OM/UM/ZM both ways
+and check that they neither generate an event nor change. It covers rounding before i32 range checking,
+invalid-indefinite versus valid `-2^31`, PE suppression for invalid, subnormal
+no-DE, FTZ irrelevance, zero-extension on success, event-specific MXCSR status,
+and full rollback for fetch/gate/span/read failures. AC=1 must return
+`Unsupported` without a source read. This section records intended coverage;
+no implementation or fixture result exists yet. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38as--exact-cvtss2si-m32-memory-profile-with-unmasked-exceptions)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-38as--exact-legacy-long64-cvtss2si-eaxdword-ptr-rax-with-unmasked-exceptions).
+
+### S2-38at — proposed CVTSD2SI m64 memory unmasked profile
+
+The pending contract reserves a distinct schema-v2 profile for exact
+`F2 0F 2D 00` (`CVTSD2SI EAX,qword ptr [RAX]`). It requires local AC=0,
+captures old RAX as the address, checks the canonical48 m64 span, and reads
+once before any destination write. The planned independent raw-u64 memory-RHS
+oracle crosses all RC modes, 64 prior sticky histories, four IM/PM settings,
+and both OSXMMEXCPT deliveries. Separate cases sample DM/OM/UM/ZM both ways
+and check that they neither generate an event nor change. It covers rounding before i32 range checking,
+invalid-indefinite versus valid `-2^31`, PE suppression for invalid, subnormal
+no-DE, FTZ irrelevance, zero-extension on success, event-specific MXCSR status,
+and full rollback for fetch/gate/span/read failures. AC=1 must return
+`Unsupported` without a source read. This section records intended coverage;
+no implementation or fixture result exists yet. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38at--exact-cvtsd2si-m64-memory-profile-with-unmasked-exceptions)
+and [plan](../../../../docs/plans/STAGE_2.md#s2-38at--exact-legacy-long64-cvtsd2si-eaxqword-ptr-rax-with-unmasked-exceptions).
