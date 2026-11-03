@@ -9175,3 +9175,38 @@ Vol. 1/3A exception/alignment references in the
 [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38az-cvttpd2dq-m128-memory-unmasked-profile)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-38az--exact-legacy-long64-cvttpd2dq-xmm0-m128-rax-with-unmasked-exceptions),
 plus the [stage report](../../../../docs/reports/STAGE_2_REPORT.md#s2-38az--cvttpd2dq-m128-memory-unmasked-profile).
+
+
+## S2-38ba — CVTDQ2PS m128 memory unmasked profile
+
+**Planned fixture contract; implementation, fixtures and executable acceptance
+remain open.** Exact legacy Long64 `0F 5B 00` uses separate interpreter-only
+`s2-long-cvtdq2ps-memory-unmasked-rax-v1` and immutable
+`cvtdq2ps_m128_unmasked_controls`. Existing S2-37bt masked admission, fixtures
+and digests remain unchanged. Four signed i32 lanes from read-only m128 at RAX
+convert under MXCSR.RC. Only PE is possible; any new inexact lane with PM=0
+sets PE and delivers `#XM`19 or SIMD `#UD`6 while preserving all128 XMM0/RIP/
+retirement. Successful completion replaces all four lanes and retires once.
+Old PE alone does not fault; GPR/RFLAGS/x87 and source bytes are preserved.
+
+The [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38ba-cvtdq2ps-m128-memory-unmasked-profile)
+specifies 16 required literals spanning exact/masked success, directed rounding,
+each-lane-only unmasked PE, both deliveries, stale PE, gates and aligned AC=1.
+Use a read-only exact-width 16-byte source and distinct full-destination canaries.
+Generated inputs additionally cover signed ±2^24 neighbors, representability,
+even/odd ties in both directions, significand carry, INT32_MIN/MAX and irrelevant
+mask/FTZ samples. An independent integer-only memory-RHS oracle must compare
+complete state and memory for **16 lane-inexact masks ×4 RC ×64 sticky histories
+×2 PM ×2 deliveries = 16,384 actual-interpreter cases**.
+
+Separate generated/direct coverage must check 120 misalignment×CPL×AC `#GP(0)`
+cases, aligned AC0/1 acceptance, canonical endpoints/wrap, three-byte fetch and
+gate/span precedence, STOP/budget, one read16 and injected-read-error rollback.
+Schema/result tampering, masked-profile isolation and actual generic/native/
+JIT/fragment/C ABI route denial are required. Short/unreadable literal mappings
+are rejected by schema and do not stand in for direct read-error tests.
+Physical x86 acceptance is not claimed. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ba--exact-cvtdq2ps-m128-memory-profile-with-unmasked-exceptions)
+for inherited Intel SDM Rev. 093 sources and the
+[plan](../../../../docs/plans/STAGE_2.md#s2-38ba--exact-legacy-long64-cvtdq2ps-xmm0-m128-rax-with-unmasked-exceptions)
+for implementation and acceptance scope.

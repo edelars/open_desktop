@@ -2180,3 +2180,60 @@ were not run. Provenance: Intel SDM Rev. 093 Vol. 2A CVTTPD2DQ pp. 3-244–3-247
 exact shared exception/alignment pages and official links are in the CPU
 contract. See the [plan](../plans/STAGE_2.md#s2-38az--exact-legacy-long64-cvttpd2dq-xmm0-m128-rax-with-unmasked-exceptions)
 and [stage report](../reports/STAGE_2_REPORT.md#s2-38az--cvttpd2dq-m128-memory-unmasked-profile).
+
+
+## S2-38ba CVTDQ2PS m128 memory unmasked profile
+
+**Planned schema/acceptance contract; no fixtures or passing runs are claimed.**
+Reserve distinct interpreter-only `s2-long-cvtdq2ps-memory-unmasked-rax-v1`
+for exact legacy Long64 `0f 5b 00`, one executable code mapping, one read-only,
+readable, exact-width 16-byte source mapping at RAX, instruction budget one and
+checked stop RIP entry+3. Require `cvtdq2ps_m128_unmasked_controls` in input and
+result with exactly five immutable booleans: `sse2_available`, `cr0_em`,
+`cr0_ts`, `cr4_osfxsr`, `cr4_osxmmexcpt`. Reject missing/unknown/foreign controls,
+changed echoes, nonboolean values, extra bytes/prefixes/addressing forms and
+writable/unreadable/short source mappings. Preserve existing masked
+`s2-long-cvtdq2ps-memory-rax-v1` admission, wire shape, fixtures and digests.
+
+The [CPU contract](../specs/CPU_CONTRACT.md#s2-38ba--exact-cvtdq2ps-m128-memory-profile-with-unmasked-exceptions)
+is normative for input expected-exit validation and independent result checking:
+complete three-byte canonical48 fetch before SSE2/EM/OSFXSR `#UD`, then TS
+`#NM`, then complete canonical48 data span, 16-byte alignment and one read16.
+Misalignment gives `#GP(0)` at every CPL/AC; aligned AC0/1 are admitted.
+Support MXCSR mask `0xffbf`, DAZ=0, all masks/RC/sticky histories and FTZ0/1.
+Four signed i32 memory lanes convert to binary32 under RC; only new PE is
+possible. Any inexact lane with PM=0 commits PE and delivers `#XM`19 or SIMD
+`#UD`6 according to OSXMMEXCPT, with no error code and with all128 XMM0/RIP/
+retirement preserved. Exact or PM=1 completion writes all four f32 lanes,
+advances RIP by three and retires once. Old PE alone is not an event. Compare
+full CPU state, including GPR/RFLAGS/x87 canaries, and unchanged source memory.
+
+Require **16 literal fixtures**: exact signed/endpoints success; masked nearest-
+even tie-down and tie-up successes; masked directed down, up and toward-zero
+successes; lane0-only through lane3-only unmasked PE with `#XM` (four fixtures);
+unmasked PE with SIMD `#UD`; all-exact old-PE/PM=0 success; absent-SSE2 `#UD`;
+EM/OSFXSR `#UD` collision; TS `#NM`; and aligned AC=1 success. Use destination
+canaries distinct from every source lane. Generated cases additionally cover
+all individual gate combinations/CPL, both deliveries with old PE, signed ±2^24
+neighbors, exact representability, even/odd ties for both signs, significand
+carry, INT32_MIN/MAX and IM/DM/ZM/OM/UM/FTZ samples. Generated cases are not
+literal fixture files.
+
+The independent integer-only memory-RHS oracle must run **16 lane-inexact masks
+×4 RC ×64 old sticky histories ×2 PM ×2 deliveries = 16,384 actual-interpreter
+cases**, each checking full state, exit metadata and all 16 source bytes. No
+host FP or production helper may define expected conversion or inexactness.
+Fetch/span/alignment collisions may use generated runner/direct ISA tests when
+strict literal mappings cannot express them. Require all 120 nonzero-offset×
+CPL×AC alignment faults, aligned AC0/1, canonical endpoints/wrap, STOP/budget,
+exactly one read16 on success/events and no early data callback. Injected
+read-error rollback requires direct GuestMemory tests; schema rejection of a
+short/unreadable mapping does not prove it.
+
+Reject tampered controls, any XMM0 lane, flags/status, event, RIP, retirement
+and source memory. Verify masked/profile cross-denial and actual generic,
+native, JIT, host fragment and C ABI rejection. Physical x86 acceptance remains
+open. Provenance is inherited Intel SDM Rev. 093 CVTDQ2PS and shared exception/
+alignment sources linked in the CPU contract. See the
+[plan](../plans/STAGE_2.md#s2-38ba--exact-legacy-long64-cvtdq2ps-xmm0-m128-rax-with-unmasked-exceptions)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38ba--cvtdq2ps-m128-memory-unmasked-profile).
