@@ -589,7 +589,7 @@ remains partial. See
 [S3-20fz](STAGE_3_S3-20fz_2026-11-02.md) and
 [S3-34dk](STAGE_3_S3-34dk_2026-11-02.md).
 
-## S3-20ga and S3-34dl planned status
+## S3-20ga and S3-34dl status
 
 S3-20ga plans the exact address32 RCX-base Dword store `67 89 81 id` with
 signed modulo-32 starting-EA arithmetic, one contiguous checked write4 of
@@ -597,11 +597,15 @@ low32 RAX, preserved GPR/RFLAGS, and successful boundary `A+7`. Scope fences
 keep the load, singleton/disp8 neighbors, other bases, SIB, and added prefixes
 separate. Runtime must use immutable compiler-issued source without guest
 instruction fetch; demand-interpreter fetch errors propagate directly.
-Implementation and independent review are pending. S3-34dl identities and
-totals 302 gates (292 acceptance + 10 lifecycle), 320 local steps, and 135
-self-test names are unverified targets. No tests/build/format/Cargo/Python/Mini
-checks are claimed. Stage 2 and production owner/MMU remain out of scope;
-Stage 3 remains partial. See [S3-20ga](STAGE_3_S3-20ga_2026-11-02.md) and
+Runtime commit `b7b361b` and harness commit `c2a3e8f` are integrated and both
+passed independent Sol/high static review. Exact identities and totals of 302
+gates (292 acceptance + 10 lifecycle), 320 local steps, and 135 self-test
+names are pinned and reviewed, but not executed. No behavior tests, build,
+formatting, Cargo, Python harness, or Mini checks were run. Published IR uses
+immutable compiler-issued source without runtime guest instruction fetch;
+instruction-fetch errors are checked through the demand interpreter path.
+Stage 2 and production owner/MMU remain out of scope; Stage 3 remains partial.
+See [S3-20ga](STAGE_3_S3-20ga_2026-11-02.md) and
 [S3-34dl](STAGE_3_S3-34dl_2026-11-02.md).
 
 ## Источники
