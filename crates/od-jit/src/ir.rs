@@ -1126,6 +1126,11 @@ fn is_checked_dword_load_address(
             && ((instruction_length == 3 && operand.displacement == 0)
                 || (instruction_length == 4
                     && i8::try_from(operand.displacement).is_ok())))
+            || (instruction_length == 7
+                && matches!(operand.base, AddressBase::Register(od_isa::Register::Rcx))
+                && operand.index.is_none()
+                && operand.scale == 1
+                && i32::try_from(operand.displacement).is_ok())
             || (matches!(operand.base, AddressBase::Register(od_isa::Register::Rbx))
             && ((instruction_length == 3 && operand.displacement == 0)
                 || (instruction_length == 4 && i8::try_from(operand.displacement).is_ok())

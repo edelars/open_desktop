@@ -571,6 +571,23 @@ impl MemorySiteV2 {
         }
         if self.operation == MemorySiteOperationV2::Load
             && self.instruction_index == expected_index
+            && length == 7
+            && self.destination == Some(0)
+            && self.source.is_none()
+            && self.operand.address_size == od_isa::OperandSize::Dword
+            && self.operand.size == od_isa::OperandSize::Dword
+            && matches!(
+                self.operand.base,
+                od_isa::long_decode::AddressBase::Register(od_isa::Register::Rcx)
+            )
+            && self.operand.index.is_none()
+            && self.operand.scale == 1
+            && i32::try_from(self.operand.displacement).is_ok()
+        {
+            return true;
+        }
+        if self.operation == MemorySiteOperationV2::Load
+            && self.instruction_index == expected_index
             && length == 3
             && self.destination == Some(0)
             && self.source.is_none()
@@ -3312,6 +3329,23 @@ impl MemorySiteV2 {
                 && matches!(
                     self.operand.base,
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+                )
+                && self.operand.index.is_none()
+                && self.operand.scale == 1
+                && self.operand.displacement == i64::from(displacement);
+        }
+        if source.len() == 7 && source[..3] == [0x67, 0x8b, 0x81] {
+            let displacement = i32::from_le_bytes([source[3], source[4], source[5], source[6]]);
+            return expected_operation == MemorySiteOperationV2::Load
+                && self.instruction_index == expected_index
+                && self.next_rip.checked_sub(self.guest_rip) == Some(7)
+                && self.destination == Some(0)
+                && self.source.is_none()
+                && self.operand.size == od_isa::OperandSize::Dword
+                && self.operand.address_size == od_isa::OperandSize::Dword
+                && matches!(
+                    self.operand.base,
+                    od_isa::long_decode::AddressBase::Register(od_isa::Register::Rcx)
                 )
                 && self.operand.index.is_none()
                 && self.operand.scale == 1
