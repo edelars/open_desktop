@@ -17291,6 +17291,36 @@ S2-21/S2-39/S2-40 and other corpus groups/physical acceptance remain pending.
 See the [S2-42c protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md) and
 [Stage 2 plan](../plans/STAGE_2.md).
 
+## S2-42d — bounded native XORPD reducer/replay
+
+Added a separate `od-x86-runner --reduce-native-xorpd` command. Its callback
+uses the existing native-v2 executor directly, so each run retains normal
+fixture admission, tracee supervision, observation and result validation.
+The `od-testkit` reducer now has a native-backend API while the existing
+`od-runner --reduce-native-xorpd` remains interpreter-only. XMM0–XMM15 proposal
+schedule, bytewise-XOR oracle comparison, mismatch-position fingerprint, two-run
+stability and non-XMM state checks are shared reducer logic.
+
+Evidence output binds the original and optional reduced fixture, result pairs,
+fixture/result hashes, oracle XMM0, initial/final fingerprints, run budget and
+progress, provenance and replay commands. A correct initial native result is
+reported as `no_initial_mismatch` and does not create a reduced fixture.
+Synthetic reducer checks passed (11 focused `od-testkit` tests), including
+native-backend identity, no initial mismatch, mismatch-position behavior, budget,
+flakiness, callback failure and architectural state drift. The existing
+interpreter corpus verifier tests passed (5). `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and Linux-target
+`cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --tests --offline`
+passed. The Linux-target runner test binary could not be linked with the local
+macOS linker, so x86-runner runtime tests were not executed. `python3
+ tools/check_layout.py` reports the linked worktree `.git` pointer as an unmapped
+root file (an existing worktree-layout condition). Native Linux replay and
+physical Mac mini execution are `not_run`; synthetic checks are not CPU or
+hardware evidence. S2-42 remains open because S2-21/S2-39/S2-40, additional
+corpus groups and hardware acceptance are still outstanding. See [protocol](../testing/S2_42D_NATIVE_XORPD_REDUCER.md),
+[plan](../plans/STAGE_2.md#s2-42d-bounded-native-xorpd-reducerreplay), and
+[test format](../testing/TEST_CASE_FORMAT.md#s2-42d-bounded-native-xorpd-xmm-input-reducer).
+
 ## S2-27g — exact Long64 SWAPGS
 
 Implemented exact bare `0F 01 F8` execution under explicit `SwapgsV1` with

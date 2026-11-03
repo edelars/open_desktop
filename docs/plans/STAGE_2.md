@@ -715,6 +715,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
 | [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; 22 mocked harness tests; no CPU execution; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
+| [x] | S2-42d | Bounded native XORPD reducer/replay | Native callback uses existing native-v2 executor and its ptrace-supervised disposable tracee; Linux hardware and physical Mac mini remain separate; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42d--bounded-native-xorpd-reducerreplay) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -8486,6 +8487,31 @@ timeouts; 5 соответствующих Rust verifier tests; formatting и of
 check. На машине разработки эти ответы синтетические: native/physical
 execution `not_run`. См. [S2-42c evidence protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md)
 и [отчёт](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness).
+
+### S2-42d. Bounded native XORPD reducer/replay
+
+`od-x86-runner --reduce-native-xorpd CASE.json [--limit N] [--output-dir DIR]`
+adds a separate native callback path; the existing `od-runner
+--reduce-native-xorpd` remains interpreter-only. The deterministic XMM0–XMM15
+proposal schedule, mismatch-position fingerprint, bytewise oracle predicate and
+repeat acceptance stay in `od-testkit`. The native runner owns execution and
+uses the existing native-v2 executor for every callback, retaining exact profile
+admission, tracee supervision, state capture and result validation. Each initial,
+candidate and final value is confirmed by two independent native runs.
+
+The 4..5120 run budget includes two initial and two final runs. Only initial
+XMM0–XMM15 change; profile, code/layout, mode/features, MXCSR and all other
+initial state remain strict-schema validated. Invalid input, native unavailable,
+fault, timeout, malformed result or state drift cannot preserve the mismatch.
+A correct initial native result produces `no_initial_mismatch` with no reduced
+fixture. Evidence binds original/reduced fixture and result hashes, oracle XMM0,
+initial/final results and fingerprints, original/reduced oracle states, budget/progress,
+provenance and replay commands. A reduced fixture is replayable through the existing interpreter/native
+comparison command. Synthetic callbacks check orchestration only. Linux native
+execution and physical Mac mini acceptance remain `not_run`; the parent S2-42
+stays open for S2-21/S2-39/S2-40 and the remaining corpus/hardware requirements.
+See [S2-42d protocol](../testing/S2_42D_NATIVE_XORPD_REDUCER.md) and
+[report](../reports/STAGE_2_REPORT.md#s2-42d--bounded-native-xorpd-reducerreplay).
 
 ### S2-43. Диагностический interpreter и граница JIT
 

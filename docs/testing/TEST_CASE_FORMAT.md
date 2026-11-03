@@ -1097,6 +1097,31 @@ remain open. See [plan](../plans/STAGE_2.md#s2-42b-bounded-xmm-input-reducer),
 [report](../reports/STAGE_2_REPORT.md#s2-42b--bounded-native-xorpd-xmm-input-reducer),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42b-native-xorpd-xmm-input-reducer).
 
+## S2-42d bounded native XORPD XMM-input reducer
+
+`od-x86-runner --reduce-native-xorpd CASE.json [--limit N]
+[--output-dir work/stage2/s2-42d-xorpd/NAME]` consumes one strict
+`s2-long-native-xorpd-xmm0-xmm1-v1` schema-v2 fixture. It does not edit source
+fixtures. The native runner invokes its existing supervised native-v2 execution
+path for every callback, retaining admission and result checks. `od-testkit`
+owns deterministic XMM0–XMM15 proposals, the bytewise-XOR oracle comparison,
+exact mismatch-position fingerprint and acceptance predicate. The old
+`od-runner --reduce-native-xorpd` remains interpreter-only.
+
+The budget counts actual native runs (4..5120; default 5120), with two initial
+and two final confirmations reserved. A candidate is accepted only after two
+stable native outcomes preserve the initial mismatch fingerprint and every
+non-XMM architectural field matches the independent oracle. Invalid input,
+unavailable native execution, faults, timeouts, malformed results and state
+drift cannot preserve a mismatch. `no_initial_mismatch` produces no reduced
+fixture. Output includes original/reduced fixture hashes, initial/final result
+pairs and hashes, original/reduced oracle states, fingerprints, budget/progress, provenance, and
+exact original/reduced replay commands. The reduced fixture can be checked with
+`od-runner --fixture reduced.case.json --engine compare --json`.
+Synthetic tests exercise orchestration only; they are not CPU or hardware
+evidence. Native Linux and physical Mac mini execution are reported separately.
+See [S2-42d protocol](S2_42D_NATIVE_XORPD_REDUCER.md), [plan](../plans/STAGE_2.md#s2-42d-bounded-native-xorpd-reducerreplay), and [report](../reports/STAGE_2_REPORT.md#s2-42d--bounded-native-xorpd-reducerreplay).
+
 ## S2-27k `s2-long-iretq-cpl0-valid-v1`
 
 This profile admits exactly `48 CF`, one instruction and budget 1. It requires

@@ -91,6 +91,44 @@ pub fn reduce_native_xorpd_fixture_with_input_digest<F>(
     original: &Fixture,
     original_input_sha256: &str,
     call_budget: usize,
+    execute: F,
+) -> Result<NativeXorpdReduction, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    reduce_native_xorpd_fixture_with_backend(
+        original,
+        original_input_sha256,
+        call_budget,
+        crate::result::Backend::Interpreter,
+        execute,
+    )
+}
+
+/// Native callback variant for the isolated physical x86 runner.
+pub fn reduce_native_xorpd_fixture_with_native_input_digest<F>(
+    original: &Fixture,
+    original_input_sha256: &str,
+    call_budget: usize,
+    execute: F,
+) -> Result<NativeXorpdReduction, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    reduce_native_xorpd_fixture_with_backend(
+        original,
+        original_input_sha256,
+        call_budget,
+        crate::result::Backend::NativeX86,
+        execute,
+    )
+}
+
+fn reduce_native_xorpd_fixture_with_backend<F>(
+    original: &Fixture,
+    original_input_sha256: &str,
+    call_budget: usize,
+    expected_backend: crate::result::Backend,
     mut execute: F,
 ) -> Result<NativeXorpdReduction, String>
 where
@@ -150,13 +188,21 @@ where
         report.stop_detail = Some(detail);
         return Ok(report);
     }
-    let fingerprints =
-        mismatch_fingerprint_with_input_digest(original, &first, original_input_sha256).and_then(
-            |first| {
-                mismatch_fingerprint_with_input_digest(original, &second, original_input_sha256)
-                    .map(|second| (first, second))
-            },
-        );
+    let fingerprints = mismatch_fingerprint_with_input_digest(
+        original,
+        &first,
+        original_input_sha256,
+        expected_backend,
+    )
+    .and_then(|first| {
+        mismatch_fingerprint_with_input_digest(
+            original,
+            &second,
+            original_input_sha256,
+            expected_backend,
+        )
+        .map(|second| (first, second))
+    });
     let (first_fingerprint, second_fingerprint) = match fingerprints {
         Ok(fingerprints) => fingerprints,
         Err(error) => {
@@ -199,7 +245,13 @@ where
                 report.stop_detail = Some("call budget exhausted before candidate pair".into());
                 break 'registers;
             }
-            match try_candidate(&candidate, &target_fingerprint, &mut execute, &mut report)? {
+            match try_candidate(
+                &candidate,
+                &target_fingerprint,
+                expected_backend,
+                &mut execute,
+                &mut report,
+            )? {
                 CandidateDecision::Accept => {
                     accepted_weight = xmm_hamming_weight(&candidate)?;
                     accepted = candidate;
@@ -236,7 +288,13 @@ where
                     report.stop_detail = Some("call budget exhausted before candidate pair".into());
                     break 'registers;
                 }
-                match try_candidate(&candidate, &target_fingerprint, &mut execute, &mut report)? {
+                match try_candidate(
+                    &candidate,
+                    &target_fingerprint,
+                    expected_backend,
+                    &mut execute,
+                    &mut report,
+                )? {
                     CandidateDecision::Accept => {
                         accepted_weight = xmm_hamming_weight(&candidate)?;
                         accepted = candidate;
@@ -305,6 +363,7 @@ where
         &accepted,
         &final_first,
         &accepted_input_digest,
+        expected_backend,
     ) {
         Ok(fingerprint) => fingerprint,
         Err(error) => {
@@ -354,6 +413,7 @@ enum CandidateDecision {
 fn try_candidate<F>(
     candidate: &Fixture,
     expected: &NativeXorpdMismatchFingerprint,
+    expected_backend: crate::result::Backend,
     execute: &mut F,
     report: &mut NativeXorpdReduction,
 ) -> Result<CandidateDecision, String>
@@ -377,8 +437,18 @@ where
     if let Some(detail) = callback_infrastructure_error(&first) {
         return Ok(CandidateDecision::Error(detail));
     }
-    let fingerprints = mismatch_fingerprint(candidate, &first)
-        .and_then(|first| mismatch_fingerprint(candidate, &second).map(|second| (first, second)));
+    let digest = sha256_hex(&candidate.to_json().map_err(|error| error.to_string())?);
+    let fingerprints =
+        mismatch_fingerprint_with_input_digest(candidate, &first, &digest, expected_backend)
+            .and_then(|first| {
+                mismatch_fingerprint_with_input_digest(
+                    candidate,
+                    &second,
+                    &digest,
+                    expected_backend,
+                )
+                .map(|second| (first, second))
+            });
     let (first_fp, second_fp) = match fingerprints {
         Ok(fingerprints) => fingerprints,
         Err(error) => {
@@ -479,6 +549,28 @@ fn callback_infrastructure_error(result: &RunResult) -> Option<String> {
     }
 }
 
+/// Independent bytewise XOR oracle state used for reducer evidence and checks.
+pub fn native_xorpd_oracle_state(fixture: &Fixture) -> Result<IntegerState, String> {
+    validate_reducer_fixture(fixture)?;
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or("missing SSE state")?;
+    let mut destination = decode_hex(&initial_sse.xmm[0])?;
+    let source = decode_hex(&initial_sse.xmm[1])?;
+    if destination.len() != 16 || source.len() != 16 {
+        return Err("invalid XORPD operand width".into());
+    }
+    for (left, right) in destination.iter_mut().zip(source) {
+        *left ^= right;
+    }
+    let mut expected = fixture.initial_state.clone();
+    expected.sse.as_mut().ok_or("missing SSE state")?.xmm[0] = encode_hex(&destination);
+    expected.rip = fixture.stop_rip.ok_or("missing stop RIP")?;
+    Ok(expected)
+}
+
 /// Return a fingerprint only for successful one-instruction results whose
 /// complete non-XMM state matches the independent XOR oracle and whose XMM
 /// mismatch is nonempty. Refusal/fault/timeout/infrastructure outcomes do not
@@ -488,18 +580,24 @@ pub fn mismatch_fingerprint(
     result: &RunResult,
 ) -> Result<Option<NativeXorpdMismatchFingerprint>, String> {
     let fixture_json = fixture.to_json().map_err(|error| error.to_string())?;
-    mismatch_fingerprint_with_input_digest(fixture, result, &sha256_hex(&fixture_json))
+    mismatch_fingerprint_with_input_digest(
+        fixture,
+        result,
+        &sha256_hex(&fixture_json),
+        crate::result::Backend::Interpreter,
+    )
 }
 
 fn mismatch_fingerprint_with_input_digest(
     fixture: &Fixture,
     result: &RunResult,
     expected_input_sha256: &str,
+    expected_backend: crate::result::Backend,
 ) -> Result<Option<NativeXorpdMismatchFingerprint>, String> {
     use crate::result::Observation;
 
     if result.profile != Profile::LongNativeXorpdXmm0Xmm1V1
-        || result.backend != crate::result::Backend::Interpreter
+        || result.backend != expected_backend
         || result.case_id != fixture.case_id
         || result.input_sha256 != expected_input_sha256
     {
@@ -513,22 +611,10 @@ fn mismatch_fingerprint_with_input_digest(
     let Observation::Available { value: snapshot } = &result.snapshot else {
         return Err("successful callback result has no snapshot".into());
     };
-    let Some(initial_sse) = fixture.initial_state.sse.as_ref() else {
-        return Ok(None);
+    let expected = match native_xorpd_oracle_state(fixture) {
+        Ok(expected) => expected,
+        Err(_) => return Ok(None),
     };
-    let mut expected = fixture.initial_state.clone();
-    let mut xmm0 = decode_hex(&initial_sse.xmm[0])?;
-    let xmm1 = decode_hex(&initial_sse.xmm[1])?;
-    if xmm0.len() != 16 || xmm1.len() != 16 {
-        return Ok(None);
-    }
-    for (destination, source) in xmm0.iter_mut().zip(xmm1) {
-        *destination ^= source;
-    }
-    expected.sse.as_mut().expect("SSE checked").xmm[0] = encode_hex(&xmm0);
-    expected.rip = fixture
-        .stop_rip
-        .ok_or_else(|| "strict fixture has no stop RIP".to_string())?;
     let mut actual_non_xmm = snapshot.state.clone();
     let Some(actual_sse) = actual_non_xmm.sse.as_mut() else {
         return Err("successful callback result has no SSE state".into());
@@ -1206,6 +1292,46 @@ mod tests {
                 .any(|byte| *byte != 0)
         });
         synthetic_result(fixture, has_upper_input.then_some(0))
+    }
+
+    #[test]
+    fn native_callback_api_requires_native_backend() {
+        let fixture = reducer_fixture();
+        let report = reduce_native_xorpd_fixture_with_native_input_digest(
+            &fixture,
+            &sha256_hex(&fixture.to_json().unwrap()),
+            4,
+            |input| {
+                let mut result = synthetic_result(input, None);
+                result.backend = crate::result::Backend::NativeX86;
+                Ok(result)
+            },
+        )
+        .unwrap();
+        assert_eq!(report.stop, NativeXorpdReductionStop::NoInitialMismatch);
+        assert_eq!(report.actual_callbacks, 2);
+        assert!(report.reduced_fixture.is_none());
+
+        let wrong_state = reduce_native_xorpd_fixture_with_native_input_digest(
+            &fixture,
+            &sha256_hex(&fixture.to_json().unwrap()),
+            4,
+            |input| {
+                let mut result = synthetic_result(input, None);
+                result.backend = crate::result::Backend::NativeX86;
+                if let Observation::Available { value } = &mut result.snapshot {
+                    value.state.rip = HexU64(value.state.rip.get().wrapping_add(1));
+                }
+                Ok(result)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            wrong_state.stop,
+            NativeXorpdReductionStop::NoInitialMismatch
+        );
+        assert!(wrong_state.initial_fingerprint.is_none());
+        assert!(wrong_state.reduced_fixture.is_none());
     }
 
     #[test]

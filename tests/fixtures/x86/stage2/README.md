@@ -6312,6 +6312,16 @@ of a physical CPU bug. The one-pass reducer is not globally minimal. See the
 [format and replay instructions](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-42b-bounded-native-xorpd-xmm-input-reducer),
 and [report](../../../../docs/reports/STAGE_2_REPORT.md#s2-42b--bounded-native-xorpd-xmm-input-reducer).
 
+### S2-42d native XORPD reducer/replay
+
+`od-x86-runner --reduce-native-xorpd CASE.json` is the separate native callback
+path for the existing strict XORPD fixture profile. It uses the same native-v2
+executor and admission as ordinary `od-x86-runner --fixture CASE.json --json`.
+The input file is preserved; evidence is written under ignored
+`work/stage2/s2-42d-xorpd/`. A reduced fixture can be replayed with
+`od-runner --fixture reduced.case.json --engine compare --json`. No physical
+Mac mini result is claimed by local orchestration.
+
 ## S2-26f `FsBaseV1` MSR fixture
 
 `s2_26f_fs_base_rdmsr.case.json` and
