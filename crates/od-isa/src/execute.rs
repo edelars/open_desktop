@@ -173138,6 +173138,170 @@ mod cvtsi2ss_r64_memory_profile_tests {
     }
 
     #[test]
+    fn sqrtsd_memory_rax_unmasked_public_api_gates_fetch_and_cpl_are_explicit() {
+        use crate::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+
+        let code = [0xf2, 0x0f, 0x51, 0x00];
+        let good = SqrtsdMemoryRaxUnmaskedControls {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        };
+        let rip = 0x4300;
+        let denied = [
+            (
+                "missing_sse2_precedes_nm",
+                SqrtsdMemoryRaxUnmaskedControls {
+                    sse2_available: false,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                "cr0_em_precedes_nm",
+                SqrtsdMemoryRaxUnmaskedControls {
+                    cr0_em: true,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                "osfxsr_precedes_nm",
+                SqrtsdMemoryRaxUnmaskedControls {
+                    cr4_osfxsr: false,
+                    cr0_ts: true,
+                    ..good
+                },
+                6,
+            ),
+            (
+                "ts_nm_after_ud_gates",
+                SqrtsdMemoryRaxUnmaskedControls {
+                    cr0_ts: true,
+                    ..good
+                },
+                7,
+            ),
+        ];
+        for (name, controls, vector) in denied {
+            let mut memory = Memory::at(&code, rip);
+            let mut state = LongModeState::default();
+            state.rip = rip;
+            state.gpr[Register::Rax as usize] = memory.data_base + 1;
+            state.sse = Some(SseState {
+                xmm: [[0xa5; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run_with_sqrtsd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(rip + 4),
+                    context: AccessContext::default(),
+                },
+                controls,
+                || false,
+            );
+            assert_eq!(
+                result.exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector,
+                    error_code: None,
+                    linear_address: None,
+                }),
+                "{name}"
+            );
+            assert_eq!(state, before, "{name}");
+            assert_eq!(result.instructions_executed, 0, "{name}");
+            assert_eq!(memory.fetches, (rip..rip + 4).collect::<Vec<_>>(), "{name}");
+            assert!(memory.accesses.is_empty(), "{name}");
+        }
+
+        for length in 0..code.len() {
+            let mut memory = Memory::at(&code[..length], rip);
+            let mut state = LongModeState::default();
+            state.rip = rip;
+            state.gpr[Register::Rax as usize] = memory.data_base + 1;
+            state.sse = Some(SseState {
+                xmm: [[0x3c; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let result = run_with_sqrtsd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(rip + 4),
+                    context: AccessContext::default(),
+                },
+                SqrtsdMemoryRaxUnmaskedControls {
+                    sse2_available: false,
+                    cr0_ts: true,
+                    ..good
+                },
+                || false,
+            );
+            assert!(
+                matches!(result.exit, RunExit::MemoryError(_)),
+                "length={length}"
+            );
+            assert_eq!(state, before, "length={length}");
+            assert_eq!(result.instructions_executed, 0, "length={length}");
+            assert_eq!(
+                memory.fetches,
+                (rip..rip + length as u64 + 1).collect::<Vec<_>>()
+            );
+            assert!(memory.accesses.is_empty(), "length={length}");
+        }
+
+        for privilege in [
+            PrivilegeLevel::Ring0,
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut memory = Memory::at(&code, rip);
+            memory.bytes[1..9].copy_from_slice(&0x4010_0000_0000_0000u64.to_le_bytes());
+            let mut state = LongModeState::default();
+            state.rip = rip;
+            state.gpr[Register::Rax as usize] = memory.data_base + 1;
+            state.sse = Some(SseState {
+                xmm: [[0x96; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let result = run_with_sqrtsd_memory_rax_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(rip + 4),
+                    context: AccessContext {
+                        mode: InstructionMode::Long64,
+                        privilege,
+                        origin: AccessOrigin::Explicit,
+                    },
+                },
+                good,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress, "{privilege:?}");
+            assert_eq!(result.instructions_executed, 1, "{privilege:?}");
+            assert_eq!(
+                memory.accesses,
+                [(AccessKind::Read, memory.data_base + 1, 8)],
+                "{privilege:?}"
+            );
+        }
+    }
+
+    #[test]
     fn sqrtsd_memory_rax_is_scalar_unaligned_ac_refused_and_atomic() {
         let code = [0xf2, 0x0f, 0x51, 0x00];
         let controls = SqrtsdMemoryRaxControls {
