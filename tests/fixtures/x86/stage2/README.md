@@ -8568,3 +8568,26 @@ The source set includes the exact-square positive subnormal `0x00000002`, both
 signed QNaNs, and a positive SNaN; a focused runner test covers a negative SNaN.
 See the [S2-38y report](../../../../docs/reports/S2_38Y_SQRTSS_MEMORY_UNMASKED.md)
 and [stage plan](../../../../docs/plans/STAGE_2.md).
+
+### S2-31eg historical SF with prior IE on bounded integer stores
+
+Planned schema-v2 fixtures will cover exact bare bounded Long64 FIST/FISTP `DF 10`, `DF 18`,
+`DB 10`, `DB 18`, and `DF 38` at `[RAX]`. Admit prior SF only when IE is also
+set; preserve SF and the six sticky flags, and retain the conversion-defined
+C1 result. Include successful stores and FISTP pop behavior, SF-only/ES/B no-write
+refusal, rollback, FNSTSW/FNCLEX/retry, and JIT/native denial. Existing FLD/FST
+gates are unchanged. See the [S2-31eg CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31eg--historical-sf-with-prior-ie-on-bounded-integer-stores)
+and [stage plan](../../../../docs/plans/STAGE_2.md).
+
+### S2-38z SQRTSD m64 memory unmasked exceptions
+
+The planned immutable schema-v2 profile `s2-long-sqrtsd-memory-rax-unmasked-v1`
+uses exact `F2 0F 51 00`, SSE2 bit 26, one read-only m64 mapping at `[RAX]`,
+and its own `sqrtsd_memory_rax_unmasked_controls` echo. Planned fixtures will
+cover masked success and IE/DE/PE under both `#XM` and arithmetic `#UD`; planned runner
+tests will cover the 65,536-case raw-u64 oracle matrix, exact positive-minimum-subnormal root,
+negative-subnormal/SNaN terminal IE, full-state suppression, high64 preservation,
+one-read ordering, schema tampering and backend refusal. Keep S2-37df masked
+memory and S2-37am register behavior unchanged. No physical x86 acceptance is
+claimed. See the [S2-38z CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38z--exact-sqrtsd-memory-profile-with-unmasked-exceptions)
+and [stage plan](../../../../docs/plans/STAGE_2.md).

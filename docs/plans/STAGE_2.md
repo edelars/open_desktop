@@ -670,6 +670,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38x | Exact Long64 UCOMISD XMM0,m64 [RAX], invalid-only memory profile; QNaN quiet, SNaN raises IE; post-read subnormal Unsupported; interpreter-only | 1,024 NaN side/class × IM × OSXMMEXCPT × prior-sticky cases; six fixtures, CPL0–3, finite/boundary and gate/read checks; main: od-isa 1,937, testkit 455, runner 130+543, workspace/fmt/layout/diff pass, Graphify 12,150/26,369/366; clean Sol/high review after fixing finite-greater fixture; preserve S2-37cp/S2-38w and ISSUE-033; no physical x86 acceptance; [report](../reports/S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md) |
 | [x] | S2-31ef | Admit historical SF only with prior IE on exact bounded FILD m16/m32/m64; preserve SF and all six sticky flags, clear C1; native/JIT closed | 30,720 independent literal full-state cases; retained S2-31ee 12,288 SF=0 matrix; SF-only/ES/B no-read, both-C1 span/read rollback, unaligned typed reads, FNSTSW/FNCLEX/retry, four schema fixtures/backend denial; main: od-isa 1,942, testkit 455, runner 131+550; workspace check/fmt/layout/diff pass; Graphify 12,207/26,487/346; layout reports linked-worktree `.git` and two historical ignored `work/` manifest links only; clean Sol/high review after complete-state matrix fix; no physical x86 acceptance; [report](../reports/S2_31EF_FILD_HISTORICAL_SF.md) |
 | [x] | S2-38y | Exact Long64 SQRTSS XMM0,m32 [RAX], unmasked IE/DE/PE profile; interpreter-only | 65,536 raw-u32 cases over event masks, OSXMMEXCPT, RC and sticky histories; strict priority, complete-state suppression, independent oracle, fixtures and backend denial; main: od-isa 1,942, testkit 455, runner 131+550; workspace check/fmt/layout/diff pass, Graphify 12,207/26,487/346; clean Sol/high review after restoring MINSD FTZ and fixing SQRTSS gate/schema/exception handling; preserve S2-37dg/S2-37aj; no physical x86 acceptance; [report](../reports/S2_38Y_SQRTSS_MEMORY_UNMASKED.md) |
+| [ ] | S2-31eg | Admit historical SF only with prior IE on exact bounded FIST/FISTP m16/m32/m64 forms; preserve sticky flags and recompute C1 from conversion result; native/JIT closed | Five exact forms, full-state/memory matrices across existing source classes × 32 other sticky histories × TOP × FCW × old C1; no-write rejection, rollback, status composition, fixtures/backend denial; [contract](../specs/CPU_CONTRACT.md#s2-31eg--historical-sf-with-prior-ie-on-bounded-integer-stores) |
+| [ ] | S2-38z | Exact Long64 SQRTSD XMM0,m64 [RAX], unmasked IE/DE/PE profile; interpreter-only | 65,536 raw-u64 cases over event masks, OSXMMEXCPT, RC and sticky histories; exact minimum subnormal result, strict priority, complete-state suppression, independent oracle, fixtures and backend denial; preserve S2-37df/S2-37am and S2-38y gate fixes; [contract](../specs/CPU_CONTRACT.md#s2-38z--exact-sqrtsd-memory-profile-with-unmasked-exceptions) |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -18531,3 +18533,32 @@ passed (1,938 ISA; 455 testkit; 131 runner unit; 549 runner fixture tests); the 
 matrix and focused S2-38y fixture tests also passed. Workspace, layout,
 formatting, graph refresh, and independent review are recorded in the standalone
 [report](../reports/S2_38Y_SQRTSS_MEMORY_UNMASKED.md).
+
+#### S2-31eg — historical SF with prior IE on bounded integer stores
+
+Extend only exact bare Long64 `DF 10`, `DF 18`, `DB 10`, `DB 18`, and `DF 38`
+FIST/FISTP forms at `[RAX]`. Admit historical SF only with prior IE while
+rejecting SF-only, ES, B and existing unsupported FCW/state/tag cases before
+the write. Preserve historical SF and the six sticky flags; add current IE/PE
+as defined by conversion. Recompute C1 using the existing conversion result.
+FIST does not alter TOP; FISTP writes first and pops only after the write
+succeeds. Compare complete state and memory for all five forms over their
+existing accepted source classes/results, 32 non-SF/IE sticky histories,
+TOP, FCW and both starting C1 values; test rollback, FNSTSW/FNCLEX/retry,
+schema fixtures, tampering and backend denial. Do not modify FLD/FST gates.
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-31eg--historical-sf-with-prior-ie-on-bounded-integer-stores).
+
+#### S2-38z — unmasked outcomes for exact SQRTSD memory form
+
+Add separate immutable schema-v2 profile `s2-long-sqrtsd-memory-rax-unmasked-v1`
+for exact Long64 `F2 0F 51 00`, SSE2 bit 26 and one read8 of read-only m64
+`[RAX]`; preserve S2-37df masked memory and S2-37am register profiles. Apply
+the S2-38y admission/fault ordering, including AC before span, `#GP(0)` error
+code zero, read-only mapping, DAZ/reserved checks, and MINSD FTZ regression.
+Use binary64 raw-u64 integer square-root oracle across all 65,536 source ×
+IM/DM/PM × OSXMMEXCPT × RC × prior-sticky states. Positive minimum subnormal
+`0x1` produces exact `2^-537` with DE and no PE; `0x2`/`0x3` produce PE when
+computed. Cover negative subnormal terminal IE, signed SNaN, atomic suppression,
+high64 preservation, memory callback count, fixtures and backend denial. Native,
+JIT, C ABI, generic and fragment routes stay closed. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38z--exact-sqrtsd-memory-profile-with-unmasked-exceptions).

@@ -18190,3 +18190,68 @@ Vol. 1 §§11.5.2.1–.2, 11.5.2.6 and 11.5.3.1–.3
 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=284));
 Vol. 3A Table 7-8. Physical x86 acceptance is not claimed; ISSUE-033 is not
 changed.
+
+## S2-31eg — historical SF with prior IE on bounded integer stores
+
+Extend only the existing exact bare Long64 FIST/FISTP memory forms `DF 10`
+(m16 FIST), `DF 18` (m16 FISTP), `DB 10` (m32 FIST), `DB 18` (m32 FISTP),
+and `DF 38` (m64 FISTP), each at `[RAX]`. Admit historical SF only when IE
+is already set: `(FSW & 0x8080) == 0 && (SF == 0 || IE != 0)`. SF-only, ES, B,
+unsupported FCW/state/tag classes and non-exact forms remain pre-write
+refusals. Preserve historical SF and all six sticky flags; OR in current IE/PE
+as already defined. C1 continues to follow the existing conversion/rounding
+result and is not unconditionally cleared. FIST keeps TOP and tags; FISTP
+updates memory before popping only after successful write. Any span or write
+failure preserves full CPU state and memory.
+
+Cover each of the five exact forms across its established literal classes and
+integer-conversion results, all 32 DE/ZE/OE/UE/PE histories with SF+IE, eight
+TOP values, four FCWs and both starting C1 values. Compare complete
+`LongModeState` and memory against an independent literal/integer oracle.
+Retain SF=0 tests, and add SF-only/ES/B no-write, malformed tags, write/span
+rollback, repeated store/FNSTSW/FNCLEX/retry, schema fixtures, result/control
+tampering and JIT/native denial. Keep the existing conversion policy and
+read/write/commit order; do not broaden other x87 gates. Intel SDM Rev. 093
+Vol. 2A FIST/FISTP pp. 3-347–3-349
+([official PDF](https://cdrdv2-public.intel.com/929353/253666-093-sdm-vol-2a.pdf#page=465));
+the SF+IE rule is a local interpreter-profile admission restriction, not a
+physical-x86 acceptance claim.
+
+## S2-38z — exact SQRTSD memory profile with unmasked exceptions
+
+Add a separate immutable schema-v2 interpreter-only profile
+`s2-long-sqrtsd-memory-rax-unmasked-v1` for exact Long64 `F2 0F 51 00`
+(`SQRTSD XMM0,m64 [RAX]`), separate control echo
+`sqrtsd_memory_rax_unmasked_controls`, SSE2 bit 26, one executable mapping,
+one read-only m64 mapping, budget one, and stop RIP equal to entry RIP+4.
+Preserve masked memory S2-37df and register S2-37am. Complete fetch and
+exact-form checks precede SSE2/EM/OSFXSR
+`#UD`, then TS `#NM`. Require MXCSR supported bits `0xffbf`, reserved bits
+clear and DAZ=0; allow FTZ, all masks, RC, and prior sticky histories. AC=1 is
+pre-read Unsupported; AC=0 permits unaligned m64. Validate canonical48
+`[RAX,RAX+7]`, then exactly one read8. Success changes XMM0.low64, applicable
+MXCSR stickies, RIP+4 and one retirement; preserve XMM0.high64 and unrelated
+state. Read/span failures preserve the complete state.
+
+Use the existing scalar binary64 square-root classification and exception
+policy: SNaN and negative nonzero numeric inputs (including negative
+subnormal and negative infinity) are terminal IE; QNaN follows the established
+local policy without new IE. Positive subnormal contributes precompute DE;
+if DM=0, commit DE and fault without PE. If DE is masked, compute with raw
+binary64 integer semantics and MXCSR.RC. Unmasked PE commits applicable
+DE|PE while suppressing destination, RIP and retirement. OSXMMEXCPT selects
+`#XM` versus arithmetic `#UD`; prior sticky bits alone do not fault. The
+minimum positive subnormal `0x0000000000000001` has exact square root
+`2^-537` (DE without PE); `0x2` and `0x3` produce inexact results. Cover 16
+raw-u64 sources × eight IM/DM/PM patterns × two OSXMMEXCPT values × four RC
+modes × 64 prior sticky histories (65,536 cases), plus focused negative
+subnormal and signed-SNaN checks. Verify full-state suppression, canaries,
+callback count, gate/fault priority, read-only schema, fixtures, result/control
+tampering and native/JIT denial. Preserve the S2-38y fixes for AC-before-span,
+`#GP(0)` error-code validation, writable-source refusal, and MINSD FTZ=0
+admission. Intel SDM Rev. 093 Vol. 2B SQRTSD pp. 4-667–4-668
+([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=675));
+Vol. 1 §§11.5.2.1–.2, 11.5.2.6 and 11.5.3.1–.3
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=284));
+Vol. 3A Table 7-8. Physical x86 acceptance is not claimed; ISSUE-033 is
+unchanged.

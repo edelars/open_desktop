@@ -1491,3 +1491,27 @@ unmasked suppression, high96 canaries, gate/read ordering and result/control/bac
 tampering. Literal fixtures demonstrate masked output plus unmasked IE, DE and PE
 under both `#XM` and arithmetic `#UD` paths. Preserve S2-37dg masked memory
 semantics and S2-37aj register semantics.
+
+## S2-31eg FIST/FISTP historical SF with prior IE
+
+Use exact bare bounded Long64 FIST/FISTP m16/m32/m64 forms only. Admit SF
+only when IE is already set; reject SF-only, ES and B before a write. Preserve
+all prior sticky bits, and compare C1 against the existing conversion-rounding
+result. Cover five exact forms × established source classes/results × 32 other
+sticky histories × eight TOP × four FCW × two old C1 states, with complete CPU
+state and memory equality. Include no-write, rollback, FNSTSW/FNCLEX/retry,
+schema/result tampering and backend denial. The S2-31ed/31ee FILD SF+IE
+rejection was historical; do not change FLD/FST gates.
+
+## S2-38z SQRTSD m64 memory unmasked exceptions
+
+Use a separate immutable schema-v2 profile and control echo for exact Long64
+`F2 0F 51 00`, SSE2 bit 26, read-only m64 `[RAX]`, one read8, budget one,
+and stop RIP equal to entry RIP+4.
+Cover 16 raw-u64 sources × eight IM/DM/PM patterns × two OSXMMEXCPT × four RC
+modes × 64 prior sticky histories (65,536 cases), plus negative-subnormal and
+signed-SNaN terminal IE cases. The positive minimum subnormal `0x1` has exact
+root `2^-537` and raises DE without PE; `0x2`/`0x3` are inexact when computed.
+Check `#XM`/arithmetic `#UD`, full-state suppression, high64 preservation,
+fetch/gate/AC/span/read order, controls/result tampering and backend denial.
+Preserve S2-37df and S2-37am and apply the reviewed S2-38y gate-fix regressions.
