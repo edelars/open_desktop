@@ -8265,6 +8265,17 @@ retirements остаются. STOP, exhausted budget и truncated fetch не ч�
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-39i-fp-init-plus-fxrstor64-composition),
 и [fixture format](../testing/TEST_CASE_FORMAT.md#s2-39i-fp-init-plus-fxrstor64-profile).
 
+#### S2-39j. Successful CPL3 FXSAVE64 oracle protocol
+
+**Статус:** documentation-only protocol prepared for exact S2-39d
+`48 0F AE 40 40`. [Method](../testing/S2_39J_FXSAVE64_ORACLE.md) defines two
+literal XMM0–15/MXCSR cases, different image canaries, independent observations
+and byte-range comparison boundaries. It records host MXCSR_MASK without
+asserting synthetic target equality. Hardware cases/repeats are `not_run`;
+no executable harness, new fixture/profile or native admission is added.
+EM/TS/OSFXSR gates, faults, x87 source cases and FXRSTOR remain outside this
+slice; parent S2-39 remains open. See [delivery report](../reports/STAGE_2_REPORT.md#s2-39j--successful-cpl3-fxsave64-oracle-protocol).
+
 ### S2-40. Дополнительные обязательные расширения
 
 1. Сопоставить принятый Linux/Windows candidate profile с оставшимися ISA requirements: не считать SSE2 автоматически достаточным для любого современного ПО.

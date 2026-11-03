@@ -23941,3 +23941,24 @@ performed. See the [plan](../plans/STAGE_2.md#s2-38ba--exact-legacy-long64-cvtdq
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ba--exact-cvtdq2ps-m128-memory-profile-with-unmasked-exceptions),
 [fixture README](../../tests/fixtures/x86/stage2/README.md#s2-38ba--cvtdq2ps-m128-memory-unmasked-profile)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ba-cvtdq2ps-m128-memory-unmasked-profile).
+
+## S2-39j — successful CPL3 FXSAVE64 oracle protocol
+
+Prepared the documentation-only [S2-39j protocol](../testing/S2_39J_FXSAVE64_ORACLE.md)
+for the existing five-byte S2-39d form `48 0F AE 40 40`. Cases A/B specify
+literal distinct XMM0–15 patterns, MXCSR `0x1f80`/`0x7f80`, different canaries
+and repeated successful CPL3 execution. Comparison covers exact MXCSR, XMM
+and software-tail bytes; raw MXCSR_MASK is CPU-specific evidence, while
+reserved/unused bytes and unprepared x87 fields are excluded. Independent
+MOVDQU/STMXCSR observations and raw dumps avoid the production serializer.
+
+This delivers a future method, not a harness or experimental result. Hardware
+cases/repeats are `not_run`; no CPU tests, physical run, Mac mini/SSH, native
+admission, gates/faults or FXRSTOR work was performed. Parent S2-39 stays open.
+`git diff --check` and targeted validation of all 15 added local links/anchors
+passed. The 16×2 literal XMM table passed byte-length, byte-order and
+within-case distinctness checks. `python3 tools/check_layout.py` was attempted
+in the isolated worktree and reported only `Unmapped root file: .git` (the
+worktree metadata pointer); a main-worktree layout check is still required.
+Independent review is pending on this authored commit before transfer; local
+S2-39d implementation evidence remains separate.

@@ -259,3 +259,14 @@ and new IDTs, and marker controls under both tables are required. SIDT/INT3
 source review and harness implementation remain prerequisites. CPU callback
 and policy checks remain separate; no serialized fixture or native admission
 is added. All four physical cases and integration are `not_run`; S2-41 stays open.
+
+## S2-39j successful CPL3 FXSAVE64 protocol
+
+The documentation-only [S2-39j protocol](S2_39J_FXSAVE64_ORACLE.md) specifies
+successful CPL3 cases for exact `48 0F AE 40 40`, with independent literal
+XMM0–15/MXCSR setup, raw dumps and MOVDQU/STMXCSR observations. It compares
+defined MXCSR/XMM bytes and the software tail, records host MXCSR_MASK without
+synthetic-mask equality, and excludes undefined/reserved and unprepared x87
+fields. No full-image equality or hardware callback/atomicity assertion is
+made. A/B repeats are `not_run`; harness implementation, review and native
+admission remain future work. S2-39 and physical acceptance remain open.
