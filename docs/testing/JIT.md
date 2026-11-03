@@ -1744,11 +1744,12 @@ stop-RIP before and after fallback, atomic STOP after the native prefix, and
 strict/opt-in rejection of the NOT RAX neighbor. Harness steps `s3_16_not_rcx_fallback`,
 `s3_16_nop_u64_max_regression`, and `s3_16_not_rcx_host_continuation` pin all
 three identities and reject missing gates, zero-match output, or forged argv.
-The identities, manifest, and self-check are encoded and statically reviewed
-but unexecuted. Current totals are 312 gates (298 acceptance + 14 lifecycle),
-330 local steps, and 140 self-test names, including S3-38e. No build, formatting, Cargo, Python
-harness, Mini, or M1 check is claimed. These exact fixture forms do not close
-S3-16 or establish production owner/MMU integration.
+The three exact Rust gates and
+`test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed` passed on the local
+ARM64 host (each Rust gate 1/1). At verification time the manifest contained
+324 gates (306 acceptance + 18 lifecycle), 342 local steps, and 149 self-test
+names. Mini and M1 checks remain deferred. These exact fixture forms do not
+close S3-16 or establish production owner/MMU integration.
 
 ### S3-16o mixed Store→Store → NOT RCX → Store→Store corpus
 
@@ -1768,8 +1769,9 @@ fail-closed self-test is
 `test_s3_16o_store_store_not_rcx_mixed_corpus_gate_is_pinned_once_and_fail_closed`.
 Current totals are 324 Rust gates (306 acceptance + 18 lifecycle), 342 local
 steps, 324 distinct step IDs, 149 self-test names, and 18 local Rust source
-pins. Sol/high static review passed; the gate and harness were not run.
-General S3-16 and production owner/MMU integration remain open. See the
+pins. Sol/high static review passed. The exact host gate passed 1/1 on the
+local ARM64 host and the fail-closed self-check passed 1/1. Mini and M1 checks
+remain deferred. General S3-16 and production owner/MMU integration remain open. See the
 [S3-16o implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md).
 
 ### S3-28b cooperative events in bounded checked-memory dispatch

@@ -918,11 +918,11 @@ at `CodeView` end `u64::MAX`. Rust identities are
 `memory_dispatch::tests::nop_fallback_handles_code_end_at_u64_max`, and
 `tests::bounded_memory_dispatch_not_rcx_fallback_composes_native_prefix_and_suffix`;
 harness gates are `s3_16_not_rcx_fallback`,
-`s3_16_nop_u64_max_regression`, and `s3_16_not_rcx_host_continuation`. Manifest
-totals are 312 gates (298 acceptance + 14 lifecycle), 330 local steps, and 140
-self-test names. The gates and fail-closed self-check are encoded and
-statically reviewed but unexecuted. No behavior test, Rust/Python build or
-test, formatting, Mini, or M1 result is claimed. Strict `run`, native
+`s3_16_nop_u64_max_regression`, and `s3_16_not_rcx_host_continuation`. At
+verification time the harness manifest contained 324 gates (306 acceptance +
+18 lifecycle), 342 local steps, and 149 self-test names. All three exact Rust
+gates passed (1/1 each), as did the fail-closed self-check. These were local
+ARM64 host checks; Mini and M1 checks remain deferred. Strict `run`, native
 admission, unrelated unsupported instructions, and production owner/MMU
 integration remain outside this slice. S3-16 remains partial; see the
 [focused report](STAGE_3_S3-16-nop-fallback-partial.md),

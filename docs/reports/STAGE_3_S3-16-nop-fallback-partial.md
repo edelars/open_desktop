@@ -109,9 +109,11 @@ Rust identities:
 `tests::bounded_memory_dispatch_not_rcx_fallback_composes_native_prefix_and_suffix`.
 Harness gates: `s3_16_not_rcx_fallback`, `s3_16_nop_u64_max_regression`, and
 `s3_16_not_rcx_host_continuation`; fail-closed self-test:
-`test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed`. The manifest is
-pinned at 308 Rust gates (298 acceptance + 10 lifecycle), 326 local steps, and
-139 self-test names. Gates and self-check are encoded and statically reviewed
-but unexecuted. No behavior test, build, formatting, Cargo, Python harness,
-Mini, or M1 check was run for this addition. Production owner/MMU integration,
-broader fallback coverage, and S3-16 completion remain open.
+`test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed`. At implementation
+time the manifest snapshot had 308 Rust gates (298 acceptance + 10 lifecycle),
+326 local steps, and 139 self-test names. At local verification time it had 324
+Rust gates (306 acceptance + 18 lifecycle), 342 local steps, and 149 self-test
+names. The three exact Rust gates passed 1/1 each on the local ARM64 host, and
+the fail-closed self-check passed 1/1. Mini and M1 checks remain deferred.
+Production owner/MMU integration, broader fallback coverage, and S3-16
+completion remain open.

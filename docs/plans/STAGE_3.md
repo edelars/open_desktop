@@ -143,7 +143,7 @@ Host PC map нужен для диагностики и восстановлен
 | [x] | S3-14 | Тройное сравнение register-only | S3-13 |
 | [partial] | S3-15 | Dispatcher, budget и переходы | S3-14 |
 | [ ] | S3-16 | Interpreter fallback с прогрессом | S3-15; нужный S2 step |
-| [partial] | S3-16o | Fixed-seed native→NOT RCX fallback→native Store→Store corpus and exact gate | Adds eight bounded full-state/RAM/write-ledger cases across six budget and two stop-RIP boundaries plus callback STOP; no ISA expansion. Gate is pinned and reviewed but unexecuted; overall S3-16 remains open. См. [implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md) |
+| [partial] | S3-16o | Fixed-seed native→NOT RCX fallback→native Store→Store corpus and exact gate | Adds eight bounded full-state/RAM/write-ledger cases across six budget and two stop-RIP boundaries plus callback STOP; no ISA expansion. Exact Rust gate and fail-closed self-check passed locally on ARM64; Mini remains deferred and overall S3-16 remains open. См. [implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md) |
 | [ ] | S3-17 | Cache key и code dependencies | S3-04, S3-15 |
 | [ ] | S3-18 | Ограниченный block cache | S3-07, S3-17 |
 | [partial] | S3-18e | Capacity-one retained cache for exact Store→Load and Load→Store fixture pairs | See implementation report; production owner/MMU and broader S3-18 remain open |
@@ -936,7 +936,7 @@ NOP, `0F 1F`, PAUSE and all other non-exact forms never enter fallback. This
 does not add production owner integration or general Stage 2 fallback; S3-16
 remains open.
 
-**S3-16n bounded-memory exact NOT RCX partial (static, unexecuted):**
+**S3-16n bounded-memory exact NOT RCX partial:**
 `run_with_nop_fallback{,_controlled}` now accepts the existing exact bare NOP
 and exact bare `48 F7 D1` (`NOT RCX`) at a strict dispatcher's `Unsupported`
 RIP. A shared exact-decoder check requires the three-byte W64 register form,
@@ -959,15 +959,16 @@ Rust identities are
 Harness gates `s3_16_not_rcx_fallback`, `s3_16_nop_u64_max_regression`, and
 `s3_16_not_rcx_host_continuation` pin them, and
 `test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed` checks omission,
-zero-match evidence, and forged argv. Current manifest totals are 312 Rust
-gates (298 acceptance + 14 lifecycle), 330 local steps, and 140 self-test
-names. The gate and self-check are encoded and statically reviewed but were not
-executed. No build, formatting, Cargo, Python harness, Mini, or M1 check is
-claimed. This remains a single fixture-bounded fallback form; S3-16 is still
-open, and production owner/MMU integration is not covered. See the
+zero-match evidence, and forged argv. Earlier S3-16n documentation recorded a
+312-gate/140-self-test manifest snapshot; the manifest at local verification
+contained 324 Rust gates (306 acceptance + 18 lifecycle), 342 local steps, and
+149 self-test names. All three exact Rust gates and the fail-closed self-check
+passed locally on ARM64. Mini and M1 checks remain deferred. This remains a
+single fixture-bounded fallback form; S3-16 is still open, and production
+owner/MMU integration is not covered. See the
 [JIT testing reference](../testing/JIT.md#s3-16n-bounded-memory-exact-not-rcx-fallback).
 
-**S3-16o / S3-34 mixed corpus partial (static, unexecuted):** the host test
+**S3-16o / S3-34 mixed corpus partial:** the host test
 `tests::s3_16o_s3_34_store_store_not_rcx_store_store_fixed_seed_boundaries`
 composes exact native Store→Store (`48 89 03 48 89 02`), exact interpreter
 fallback `NOT RCX` (`48 F7 D1`), and native Store→Store. Fixed seed
@@ -983,10 +984,12 @@ The harness gate is
 The self-check now pins all 149 unittest identities exactly once, including
 three previously omitted process, S3-34bg, and S3-34bh methods found during
 static review.
-Current totals are 324 Rust gates (306 acceptance + 18 lifecycle), 342 local
+The earlier S3-16o report snapshot recorded 321 gates/146 self-test names;
+current totals are 324 Rust gates (306 acceptance + 18 lifecycle), 342 local
 steps, 324 distinct step IDs, 149 self-test names, and 18 Rust source pins.
-Independent Sol/high review passed; the gate and self-check remain unexecuted. General S3-16 and its
-production owner/MMU integration remain open. See the
+Independent Sol/high review passed. The exact Rust gate and fail-closed
+self-check passed locally on ARM64; Mini and M1 checks remain deferred. General
+S3-16 and its production owner/MMU integration remain open. See the
 [S3-16o implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md).
 
 ### S3-17. Определить cache key и зависимости
