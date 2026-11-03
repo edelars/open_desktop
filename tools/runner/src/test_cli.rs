@@ -11,12 +11,12 @@ use od_isa::execute::{
     Cvtpi2pdControls, Cvtpi2psControls, Cvtps2dqMemoryControls, Cvtps2dqMemoryUnmaskedControls,
     Cvtps2pdMemoryControls, Cvtsd2ssControls, Cvtsd2ssMemoryControls, Cvtss2sdMemoryControls,
     Cvttpd2dqControls, Cvttpd2dqMemoryControls, Cvttps2dqControls, Cvttps2dqMemoryControls,
-    Cvttss2siRegistersControls, DivpdControls, DivpdMemoryRaxUnmaskedControls, DivpsControls,
-    DivpsMemoryRaxUnmaskedControls, DivsdControls, DivsdMemoryRaxControls,
-    DivsdMemoryRaxUnmaskedControls, DivssControls, DivssMemoryRaxControls, MulpdControls,
-    MulpdMemoryRaxUnmaskedControls, MulpsControls, MulpsMemoryRaxUnmaskedControls, MulsdControls,
-    MulsdMemoryRaxUnmaskedControls, MulssControls, MulssMemoryRaxUnmaskedControls, SqrtpdControls,
-    SqrtpdMemoryRaxUnmaskedControls, SqrtpsControls, SqrtsdControls,
+    Cvttps2dqMemoryUnmaskedControls, Cvttss2siRegistersControls, DivpdControls,
+    DivpdMemoryRaxUnmaskedControls, DivpsControls, DivpsMemoryRaxUnmaskedControls, DivsdControls,
+    DivsdMemoryRaxControls, DivsdMemoryRaxUnmaskedControls, DivssControls, DivssMemoryRaxControls,
+    MulpdControls, MulpdMemoryRaxUnmaskedControls, MulpsControls, MulpsMemoryRaxUnmaskedControls,
+    MulsdControls, MulsdMemoryRaxUnmaskedControls, MulssControls, MulssMemoryRaxUnmaskedControls,
+    SqrtpdControls, SqrtpdMemoryRaxUnmaskedControls, SqrtpsControls, SqrtsdControls,
     SqrtsdMemoryRaxUnmaskedControls, SqrtssControls, SqrtssMemoryRaxUnmaskedControls,
     SubpdControls, SubpdMemoryRaxUnmaskedControls, SubpsControls, SubpsMemoryRaxUnmaskedControls,
     SubsdControls, SubsdMemoryRaxControls, SubsdMemoryRaxUnmaskedControls, SubssControls,
@@ -38,32 +38,33 @@ use od_isa::execute::{
     run_with_cvtss2sd_memory_controls, run_with_cvttpd2dq_memory_controls,
     run_with_cvttpd2dq_register_controls, run_with_cvttpd2pi_mm0_memory_rax_controls,
     run_with_cvttpd2pi_mm0_xmm1_controls, run_with_cvttps2dq_memory_controls,
-    run_with_cvttps2dq_register_controls, run_with_cvttps2pi_mm0_memory_rax_controls,
-    run_with_cvttps2pi_mm0_xmm1_controls, run_with_cvttsd2si_registers_controls,
-    run_with_cvttss2si_registers_controls, run_with_divpd_memory_rax_controls,
-    run_with_divpd_memory_rax_unmasked_controls, run_with_divpd_register_controls,
-    run_with_divps_memory_rax_unmasked_controls, run_with_divps_register_controls,
-    run_with_divsd_memory_rax_controls, run_with_divsd_memory_rax_unmasked_controls,
-    run_with_divsd_register_controls, run_with_divss_memory_rax_controls,
-    run_with_divss_register_controls, run_with_maxps_memory_rax_controls,
-    run_with_minps_memory_rax_controls, run_with_minps_memory_unmasked_rax_controls,
-    run_with_mulpd_memory_rax_controls, run_with_mulpd_memory_rax_unmasked_controls,
-    run_with_mulpd_register_controls, run_with_mulps_memory_rax_unmasked_controls,
-    run_with_mulps_register_controls, run_with_mulsd_memory_rax_controls,
-    run_with_mulsd_memory_rax_unmasked_controls, run_with_mulsd_register_controls,
-    run_with_mulss_memory_rax_controls, run_with_mulss_memory_rax_unmasked_controls,
-    run_with_mulss_register_controls, run_with_sqrtpd_memory_rax_controls,
-    run_with_sqrtpd_memory_rax_unmasked_controls, run_with_sqrtpd_register_controls,
-    run_with_sqrtps_memory_rax_controls, run_with_sqrtps_memory_rax_unmasked_controls,
-    run_with_sqrtps_register_controls, run_with_sqrtsd_memory_rax_controls,
-    run_with_sqrtsd_memory_rax_unmasked_controls, run_with_sqrtsd_register_controls,
-    run_with_sqrtss_memory_rax_controls, run_with_sqrtss_memory_rax_unmasked_controls,
-    run_with_sqrtss_register_controls, run_with_subpd_memory_rax_controls,
-    run_with_subpd_memory_rax_unmasked_controls, run_with_subpd_register_controls,
-    run_with_subps_memory_rax_unmasked_controls, run_with_subps_register_controls,
-    run_with_subsd_memory_rax_controls, run_with_subsd_memory_rax_unmasked_controls,
-    run_with_subsd_register_controls, run_with_subss_memory_rax_controls,
-    run_with_subss_memory_rax_unmasked_controls, run_with_subss_register_controls,
+    run_with_cvttps2dq_memory_unmasked_controls, run_with_cvttps2dq_register_controls,
+    run_with_cvttps2pi_mm0_memory_rax_controls, run_with_cvttps2pi_mm0_xmm1_controls,
+    run_with_cvttsd2si_registers_controls, run_with_cvttss2si_registers_controls,
+    run_with_divpd_memory_rax_controls, run_with_divpd_memory_rax_unmasked_controls,
+    run_with_divpd_register_controls, run_with_divps_memory_rax_unmasked_controls,
+    run_with_divps_register_controls, run_with_divsd_memory_rax_controls,
+    run_with_divsd_memory_rax_unmasked_controls, run_with_divsd_register_controls,
+    run_with_divss_memory_rax_controls, run_with_divss_register_controls,
+    run_with_maxps_memory_rax_controls, run_with_minps_memory_rax_controls,
+    run_with_minps_memory_unmasked_rax_controls, run_with_mulpd_memory_rax_controls,
+    run_with_mulpd_memory_rax_unmasked_controls, run_with_mulpd_register_controls,
+    run_with_mulps_memory_rax_unmasked_controls, run_with_mulps_register_controls,
+    run_with_mulsd_memory_rax_controls, run_with_mulsd_memory_rax_unmasked_controls,
+    run_with_mulsd_register_controls, run_with_mulss_memory_rax_controls,
+    run_with_mulss_memory_rax_unmasked_controls, run_with_mulss_register_controls,
+    run_with_sqrtpd_memory_rax_controls, run_with_sqrtpd_memory_rax_unmasked_controls,
+    run_with_sqrtpd_register_controls, run_with_sqrtps_memory_rax_controls,
+    run_with_sqrtps_memory_rax_unmasked_controls, run_with_sqrtps_register_controls,
+    run_with_sqrtsd_memory_rax_controls, run_with_sqrtsd_memory_rax_unmasked_controls,
+    run_with_sqrtsd_register_controls, run_with_sqrtss_memory_rax_controls,
+    run_with_sqrtss_memory_rax_unmasked_controls, run_with_sqrtss_register_controls,
+    run_with_subpd_memory_rax_controls, run_with_subpd_memory_rax_unmasked_controls,
+    run_with_subpd_register_controls, run_with_subps_memory_rax_unmasked_controls,
+    run_with_subps_register_controls, run_with_subsd_memory_rax_controls,
+    run_with_subsd_memory_rax_unmasked_controls, run_with_subsd_register_controls,
+    run_with_subss_memory_rax_controls, run_with_subss_memory_rax_unmasked_controls,
+    run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -597,6 +598,7 @@ fn expected_native_xorpd_oracle(
                 cvtps2dq_controls: None,
                 cvttps2dq_controls: None,
                 cvttps2dq_m128_controls: None,
+                cvttps2dq_m128_unmasked_controls: None,
                 cvtps2dq_m128_controls: None,
                 cvtps2dq_m128_unmasked_controls: None,
                 cvtpd2dq_controls: None,
@@ -1889,6 +1891,24 @@ fn execute_fixture_v2(
             memory,
             config,
             Cvtps2dqMemoryUnmaskedControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
+    } else if loaded.fixture.profile == v2::Profile::LongCvttps2dqMemoryUnmaskedRaxV1 {
+        let controls = loaded
+            .fixture
+            .cvttps2dq_m128_unmasked_controls
+            .expect("validated unmasked CVTTPS2DQ m128 controls");
+        run_with_cvttps2dq_memory_unmasked_controls(
+            &mut state,
+            memory,
+            config,
+            Cvttps2dqMemoryUnmaskedControls {
                 sse2_available: controls.sse2_available,
                 cr0_em: controls.cr0_em,
                 cr0_ts: controls.cr0_ts,
@@ -4478,6 +4498,7 @@ fn execute_fixture_v2(
                         v2::Profile::LongCvttpd2piMemoryRaxV1
                             | v2::Profile::LongCvtpd2piMemoryRaxV1
                             | v2::Profile::LongCvttps2dqMemoryRaxV1
+                            | v2::Profile::LongCvttps2dqMemoryUnmaskedRaxV1
                             | v2::Profile::LongCvtps2dqMemoryRaxV1
                             | v2::Profile::LongCvtps2dqMemoryUnmaskedRaxV1
                             | v2::Profile::LongCvttpd2dqMemoryRaxV1
@@ -4511,6 +4532,7 @@ fn execute_fixture_v2(
                 cvtps2dq_controls: loaded.fixture.cvtps2dq_controls,
                 cvttps2dq_controls: loaded.fixture.cvttps2dq_controls,
                 cvttps2dq_m128_controls: loaded.fixture.cvttps2dq_m128_controls,
+                cvttps2dq_m128_unmasked_controls: loaded.fixture.cvttps2dq_m128_unmasked_controls,
                 cvtps2dq_m128_controls: loaded.fixture.cvtps2dq_m128_controls,
                 cvtps2dq_m128_unmasked_controls: loaded.fixture.cvtps2dq_m128_unmasked_controls,
                 cvtpd2dq_controls: loaded.fixture.cvtpd2dq_controls,
@@ -6558,6 +6580,9 @@ mod tests {
                     cvtps2dq_controls: input.fixture.cvtps2dq_controls,
                     cvttps2dq_controls: input.fixture.cvttps2dq_controls,
                     cvttps2dq_m128_controls: input.fixture.cvttps2dq_m128_controls,
+                    cvttps2dq_m128_unmasked_controls: input
+                        .fixture
+                        .cvttps2dq_m128_unmasked_controls,
                     cvtps2dq_m128_controls: input.fixture.cvtps2dq_m128_controls,
                     cvtps2dq_m128_unmasked_controls: input.fixture.cvtps2dq_m128_unmasked_controls,
                     cvtpd2dq_controls: input.fixture.cvtpd2dq_controls,
