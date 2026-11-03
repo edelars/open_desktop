@@ -1374,6 +1374,17 @@ FCW/source/tag state and any profile-control leakage. Preserve the existing
 one-read, raw ten-byte result, rollback and push-on-success contracts. Do not
 change the FILD status predicate or any adjacent FLD profile.
 
+## S2-31ed historical SF with prior IE on raw FLD m80fp
+
+The exact DB28 schema-v2 profile extends only its local status predicate:
+reject ES/B (`FSW & 0x8080 != 0`) and reject SF (`0x0040`) unless IE (`0x0001`)
+is already set. Preserve all six prior exception flags, raw ten-byte memory,
+one-read behavior, push-on-success, and rollback. The pre-read validator must
+reject SF-only without consulting memory and must not widen FILD or neighboring
+x87 profiles. Success preserves SF+IE and clears C1 according to the bounded
+FLD policy. Keep the existing 69,632 SF=0 state matrix as a regression while
+adding the SF+IE matrix.
+
 ## S2-38u COMISS memory invalid-only profile
 
 The strict profile identifies exact `0F 2F 00`, one four-byte data read, SSE
@@ -1405,6 +1416,25 @@ schema/result/control/backend tampering and JIT/native denial. Mixed
 NaN/subnormal processing is excluded under
 [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
 Direct ISA execution tests exercise CPL0–3; fixtures remain Ring0.
+
+## S2-38w COMISD memory invalid-only profile
+
+Use a new immutable profile `s2-long-comisd-memory-rax-invalid-v1` for exact
+`66 0F 2F 00`, one executable code mapping, one read-only eight-byte data
+mapping at RAX, budget 1 and stop RIP `entry+4`. Add independent
+`comisd_memory_rax_invalid_controls` inputs and result echo for SSE2, CR0.EM,
+CR0.TS, CR4.OSFXSR and CR4.OSXMMEXCPT. Preserve S2-37co's profile and fields.
+Fixtures remain Ring0; direct ISA tests cover CPL0–3. Validate actual m64 bytes
+with an independent raw-u64 oracle. The local controls require supported MXCSR
+bits `0xffbf`, DAZ=FTZ=0 and DM/ZM/OM/UM/PM masked; IM, RC and prior sticky
+histories may vary. A successful read followed by any subnormal operand is an
+atomic Unsupported result, including NaN/subnormal mixtures. QNaN and SNaN
+both raise IE, including QNaN+SNaN; masked completion commits IE and comparison flags, while an
+unmasked IE changes only sticky IE and suppresses RFLAGS/RIP/retirement, with
+`#XM` versus arithmetic `#UD` selected by OSXMMEXCPT. Check exact fetch/form,
+SSE2/EM/OSFXSR/TS order, AC and canonical/read priority, CPL, exception
+metadata, prior IE alone, all four RC values, schema/control/result/backend
+tampering and JIT/native denial. Existing COMISS mixed-event audit ISSUE-033 remains open.
 
 ## S2-37dw MULPD m128 memory profile
 
