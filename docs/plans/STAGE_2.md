@@ -1,6 +1,6 @@
 # Этап 2. Эталонный интерпретатор x86-64 — пошаговый план реализации
 
-Последние интегрированные срезы — S2-38ak ADDPS и S2-38al ADDPD: точные legacy m128 memory-профили с unmasked IE/DE/PE, отдельными immutable schema-v2 controls, actual-memory-RHS oracle и interpreter-only dispatch. На объединённом main прошли `od-isa` 1,966; `od-testkit` 461; `od-runner` 147 unit + 564 fixture tests; `cargo check --workspace --all-targets --offline`, `cargo fmt --all -- --check`, `tools/check_layout.py` и `git diff --check`. Graphify: 12,571 nodes / 27,344 edges / 342 communities; labels не обновлялись без настроенного LLM API key. Архитектурное и независимое Sol/high ревью обоих срезов и итогового объединения чистые. Полный workspace test suite, `od-x86-runner` и физический x86 не запускались; native/JIT/C ABI/generic/fragment пути остаются закрыты. ISSUE-019 остаётся открытым для более широкого x87/native acceptance, ISSUE-025 — для RCPSS/RCPPS tiny-result threshold, ISSUE-033 — для аудита прежних mixed NaN/denormal COMISS-профилей; Этап 2 остаётся открытым. Предыдущие пары и отдельные результаты описаны в [отчёте](../reports/STAGE_2_REPORT.md); текущая пара — в [сводке S2-38ak/al](../reports/STAGE_2_REPORT.md#main-integration-s2-38ak-s2-38al).
+На базовом main `e106b73` последний завершённый срез — S2-38ap MULPD: точный legacy m128 memory-профиль с unmasked исключениями, immutable schema-v2 controls, actual-memory-RHS oracle и interpreter-only dispatch. Сводные результаты затронутых suites, workspace check, fmt, Graphify и независимого Sol/high review зафиксированы в [отчёте этапа](../reports/STAGE_2_REPORT.md#main-integration-s2-38am-through-s2-38ap). Полный workspace test suite, `od-x86-runner` и физический x86 не запускались; native/JIT/C ABI/generic/fragment пути остаются закрыты. ISSUE-019 остаётся открытым для более широкого x87/native acceptance, ISSUE-025 — для RCPSS/RCPPS tiny-result threshold, ISSUE-033 — для аудита прежних mixed NaN/denormal COMISS-профилей; Этап 2 остаётся открытым. Предыдущие срезы и отдельные результаты описаны в [отчёте](../reports/STAGE_2_REPORT.md).
 
 Предыдущий завершённый срез S2-37dd — exact legacy SQRTPS XMM0,m128 `[RAX]` (`0F 51 00`): SSE bit 25, полный fetch, обязательное 16-byte alignment при AC=0/1, canonical48 span и ровно один read16. Результат строится только по четырём memory lanes; masked-only admission допускает все RC и прежние sticky flags, а binary32 integer sqrt агрегирует IE|DE|PE. Focused ISA 3/3; od-isa 1736, od-testkit 454, runner 112 unit + 485 fixture; workspace all-target check, fmt/layout/Graphify и независимый Sol/high review прошли. Первый полный workspace test исчерпал место (`No space left on device`); после очистки только disposable target relevant component suites прошли. Физическая x86-проверка не заявляется. Interpreter-only; native/JIT/C ABI/generic/fragment и unmasked/#XM path закрыты.
 
@@ -689,6 +689,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38an | Exact Long64 `SUBPD XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dv masked memory, S2-38af scalar subtraction and S2-38al packed event aggregation; independent actual-memory-RHS raw-u64 oracle; original-source NaN priority before RHS sign transform; lane-local DE and cross-lane IE/DE pre-event priority; four-byte noncanonical fetch `#GP(0)` precedes disabled SSE2; 16-byte `#GP(0)` regardless AC; 1,152 representative event + 393,216 RC/sticky/boundary cases; five literals; od-isa 1,967, testkit 461, runner 148+565; workspace check/fmt/Graphify passed; independent Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AN_SUBPD_MEMORY_UNMASKED.md) |
 | [x] | S2-38ao | Exact Long64 `MULPS XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37ds masked memory, S2-37as register multiplication/WPR, S2-38ag scalar multiplication and S2-38ak packed aggregation; independent raw-u32 memory-RHS oracle; include inexact-tiny UE+PE, rounding-to-min-normal and cross-lane event suppression; no physical x86 acceptance |
 | [x] | S2-38ap | Exact Long64 `MULPD XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dw masked memory, S2-37ar register multiplication/WPR, S2-38ah scalar multiplication and S2-38al packed aggregation; independent raw-u64 memory-RHS oracle; inexact-tiny UE+PE, rounding-to-min-normal and cross-lane event suppression; 1,568 event + 393,216 boundary/history cases; six literals; full suites/workspace/fmt/diff passed; clean independent Sol/high review; no physical x86 acceptance |
+| [ ] | S2-38aq | Exact Long64 `DIVPS XMM0,m128 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | Prerequisites: S2-37dt masked DIVPS memory, S2-38ai DIVSS unmasked divide semantics, S2-38ak packed-event aggregation, S2-38ao MULPS WPR/memory-profile controls. Exact `0F 5E 00`, SSE bit 25; independent raw-u32 rational oracle must consume actual memory RHS. Cover same-lane NaN suppression of ZE/DE, lane-local IE→ZE→DE priority, cross-lane OR aggregation and pre-event suppression of post events, 4 RC ×64 sticky ×16 IM/DM/ZM/PM ×2 delivery, exact/inexact tiny and overflow+PE. Mandatory aligned m128, one read16, full fetch/gates/CPL/rollback; interpreter only; no physical x86 acceptance. Status remains pending. |
+| [ ] | S2-38ar | Exact Long64 `DIVPD XMM0,m128 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | Prerequisites: S2-37dx masked DIVPD memory, S2-38aj DIVSD unmasked divide semantics, S2-38al packed-event aggregation, S2-38ap MULPD WPR/memory-profile controls. Exact `66 0F 5E 00`, SSE2 bit 26; independent raw-u64 rational oracle must consume actual memory RHS. Cover same-lane NaN suppression of ZE/DE, lane-local IE→ZE→DE priority, cross-lane OR aggregation and pre-event suppression of post events, 4 RC ×64 sticky ×16 IM/DM/ZM/PM ×2 delivery, exact/inexact tiny and overflow+PE. Mandatory aligned m128, one read16, full fetch/gates/CPL/rollback; interpreter only; no physical x86 acceptance. Status remains pending. |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -7410,8 +7412,8 @@ inventory.
 | CVTTPS2DQ | `F3 0F 5B /r` | SSE2 | XMM, m128; 4×f32 → 4×i32 | 3-249 | S2-37ag register; S2-37bu exact `[RAX]` memory profile |
 | CVTTPS2PI | `NP 0F 2C /r` | SSE | XMM, m64 → mm; 2×f32 → 2×i32 | 3-252 | S2-37bh, exact masked `0F 2C C1` register-source; S2-37bo, exact masked `[RAX]` memory profile |
 | CVTTSD2SI | `F2 0F 2C /r`; `F2 REX.W 0F 2C /r` | SSE2 | m64 → r32 / r64 | 3-253 | S2-37ae bounded register forms; S2-37cj exact `F2 0F 2C 00` m64 `[RAX]`→EAX memory form |
-| DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | S2-37av register-only masked-range; memory and full unmasked OE/UE missing |
-| DIVPS | `NP 0F 5E /r` | SSE | XMM, m128; 4×f32 | 3-270 | S2-37aw bounded register-only; memory and full unmasked OE/UE missing |
+| DIVPD | `66 0F 5E /r` | SSE2 | XMM, m128; 2×f64 | 3-267 | S2-37av register and S2-37dx masked-memory profiles; S2-38ar unmasked memory profile pending (OM=UM=1; full unmasked OE/UE remains outside this profile) |
+| DIVPS | `NP 0F 5E /r` | SSE | XMM, m128; 4×f32 | 3-270 | S2-37aw register and S2-37dt masked-memory profiles; S2-38aq unmasked memory profile pending (OM=UM=1; full unmasked OE/UE remains outside this profile) |
 | DIVSD | `F2 0F 5E /r` | SSE2 | XMM, m64; low f64 | 3-273 | S2-37ax bounded register-only; memory and complete unmasked OE/UE missing |
 | DIVSS | `F3 0F 5E /r` | SSE | XMM, m32; low f32 | 3-275 | S2-37ay bounded register-only; memory and full unmasked OE/UE missing |
 | MAXPD | `66 0F 5F /r` | SSE2 | XMM, m128; 2×f64 | 4-5–4-7 | S2-37l register form; S2-37cz exact `66 0F 5F 00` aligned m128 `[RAX]` memory profile |
@@ -19123,3 +19125,120 @@ MULPD pp. 4-142–4-144; Vol. 2A §2.5.2/Table 2-19; Vol. 1 §4.8.3.5/Table
 19/Table 7-8. See the
 [contract](../specs/CPU_CONTRACT.md#s2-38ap--exact-mulpd-memory-profile-with-unmasked-exceptions)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ap-mulpd-m128-memory-unmasked-exceptions).
+
+#### S2-38aq — exact DIVPS memory form with unmasked exceptions (pending)
+
+Prepare immutable schema-v2 interpreter-only profile
+`s2-long-divps-memory-unmasked-rax-v1` for exact Long64 `0F 5E 00`
+(`DIVPS XMM0,m128 [RAX]`), with separate
+`divps_memory_rax_unmasked_controls`, SSE bit 25, one executable mapping,
+one read-only m128 RHS mapping, budget one and stop RIP entry+3. Preserve the
+masked memory S2-37dt, register DIVPS S2-37aw and scalar DIVSS S2-38ai
+contracts. Fetch all three bytes and verify exact form before SSE/CR0.EM/
+CR4.OSFXSR `#UD`, then CR0.TS `#NM`, at CPL0–3. A noncanonical fetch span
+faults `#GP(0)` before those gates. Require supported MXCSR mask `0xffbf`,
+reserved bits clear, DAZ=FTZ=0 and OM=UM=1; allow every RC, IM/DM/ZM/PM mask
+setting and any prior sticky history.
+
+Require 16-byte alignment independent of RFLAGS.AC (misalignment is `#GP(0)`
+with no data callback), checked canonical48 `[RAX,RAX+15]`, then exactly one
+read16. Fetch/data span and read failures preserve full CPU state and
+retirement. Divide each original XMM0 binary32 lane by its corresponding lane
+from the actual memory bytes. Expected results and flags must come from an
+independent integer-only raw-u32 rational oracle, not production arithmetic,
+host floating point, or register-space canaries.
+
+Classify original operands before arithmetic. Preserve the established DIVPS
+NaN source selection and quiet a selected SNaN without losing its sign/payload.
+Any original SNaN raises IE even when a QNaN is selected; QNaN-only does not
+raise IE. Masked `0/0` and `infinity/infinity` return the
+architectural QNaN indefinite; both raise IE. `0/0` and `infinity/infinity` raise IE; finite nonzero divided by
+signed zero raises ZE, including a subnormal numerator, while `infinity/0`
+does not. A NaN in a lane suppresses that lane's otherwise applicable ZE and
+DE. Remaining subnormal inputs are lane-local DE candidates. Resolve each lane's candidates with IE before ZE before DE, respecting
+QNaN precedence; then OR the surviving IE/ZE/DE candidates across lanes. If
+any aggregated pre-event is unmasked, commit all applicable aggregate
+pre-event flags and suppress later OE/UE/PE, XMM0, RIP and retirement changes.
+If aggregated pre-events are masked, compute and merge post-computation status. Use MXCSR.RC; under WPR, round with unbounded exponent then classify
+tininess after precision rounding. With UM masked, exact tiny results do not
+raise UE; inexact tiny results raise UE+PE, including the relevant
+half-minsub and rounding-to-minimum-normal boundaries. Overflow produces
+OE+PE. Apply PM after pre-event aggregation; unmasked PE keeps applicable
+generated status but suppresses the whole packed destination, RIP and
+retirement. Prior sticky bits alone do not fault. OSXMMEXCPT maps an
+unmasked SIMD arithmetic event to `#XM` vector 19 when set, otherwise SIMD
+`#UD` vector 6, without an error code. Success replaces XMM0, updates only
+applicable MXCSR status, advances RIP by three and retires once.
+
+Acceptance must include signed SNaN in either original operand position,
+QNaN with zero/subnormal counterpart, `0/0`, `infinity/infinity`, finite and
+subnormal nonzero divided by signed zero, `infinity/0`, zero/subnormal,
+infinity/subnormal, exact and inexact ratios including 1/3, exact and inexact
+tiny results, half-minsub, min-normal WPR boundary, exponent gaps, overflow
+with PE, and cases proving cross-lane event aggregation and pre-event
+suppression. Cross all four RC modes, 64 prior sticky histories, IM/DM/ZM/PM
+mask combinations and both OSXMMEXCPT deliveries in actual-interpreter
+oracle-backed coverage. Include literal success and each applicable exception
+class plus fetch/gate/alignment/span/read faults. Validate immutable controls,
+result/status/exception data, memory-source sensitivity, destination and
+retirement suppression, old-profile permissions, and JIT/native denial.
+Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance remain
+closed. Do not reuse a MULPS lane matrix without DIV-specific ZE, same-lane
+NaN suppression and quotient boundaries. Sources: Intel SDM Rev. 093 Vol. 2A
+DIVPS pp. 3-270–3-272, §2.5.2/Table 2-19 p. 2-27; Vol. 1 §§4.9.1–4.9.3,
+§4.9.1.5/Table 4-12, §11.5.2.3–.6 and §§11.5.3.1–.3; Vol. 3A Event
+19/Table 7-8. See the
+[contract](../specs/CPU_CONTRACT.md#s2-38aq--exact-divps-memory-profile-with-unmasked-exceptions-pending)
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38aq-divps-m128-memory-unmasked-exceptions-pending).
+Status: pending implementation, fixtures, focused checks and independent
+review.
+
+#### S2-38ar — exact DIVPD memory form with unmasked exceptions (pending)
+
+Prepare immutable schema-v2 interpreter-only profile
+`s2-long-divpd-memory-unmasked-rax-v1` for exact Long64 `66 0F 5E 00`
+(`DIVPD XMM0,m128 [RAX]`), with separate
+`divpd_memory_rax_unmasked_controls`, SSE2 bit 26, one executable mapping,
+one read-only m128 RHS mapping, budget one and stop RIP entry+4. Preserve the
+masked memory S2-37dx, register DIVPD S2-37av and scalar DIVSD S2-38aj
+contracts. Fetch all four bytes and verify exact form before SSE2/CR0.EM/
+CR4.OSFXSR `#UD`, then CR0.TS `#NM`, at CPL0–3. A noncanonical fetch span
+faults `#GP(0)` before those gates. Require supported MXCSR mask `0xffbf`,
+reserved bits clear, DAZ=FTZ=0 and OM=UM=1; allow every RC, IM/DM/ZM/PM mask
+setting and any prior sticky history.
+
+Require 16-byte alignment independent of RFLAGS.AC (misalignment is `#GP(0)`
+with no data callback), checked canonical48 `[RAX,RAX+15]`, then exactly one
+read16. Fetch/data span and read failures preserve full CPU state and
+retirement. Divide each original XMM0 binary64 lane by its corresponding lane
+from the actual memory bytes. Expected results and flags must come from an
+independent integer-only raw-u64 rational oracle, not production arithmetic,
+host floating point, or register-space canaries.
+
+Use the DIVPS event contract above with binary64 boundaries and an independent
+raw-u64 oracle: inherit DIVPD NaN source selection/quieting and masked invalid
+QNaN indefinite; any original SNaN raises IE even if a QNaN is selected; cover
+SNaN/QNaN positions, `0/0`,
+`infinity/infinity`, finite nonzero or subnormal divided by signed zero
+(ZE), `infinity/0` (no ZE), same-lane NaN suppression of ZE/DE, lane-local IE→ZE→DE priority, cross-lane OR aggregation of surviving
+pre-events, and suppression of post-computation events when any aggregated
+pre-event is unmasked. Under WPR at p=53, test
+exact tiny results without UE, inexact tiny results with UE+PE, half-minsub,
+rounding around minimum-normal, large exponent gaps, and overflow+PE. OM=UM=1
+keeps OE/UE masked; unmasked PE is whole-XMM0/RIP/retirement atomic. Exercise
+all RC × prior sticky histories × IM/DM/ZM/PM mask combinations × both
+OSXMMEXCPT delivery mappings with interpreter results. Include literal
+success, IE, ZE, DE, PE, UE+PE and fetch/gate/alignment/span/read rollback
+fixtures; verify control/result/status/exception tampering, actual-memory-RHS
+sensitivity, existing profile permissions and closed backend denial.
+Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance remain
+closed. Do not copy the MULPD matrix mechanically: quotient classification,
+ZE and NaN suppression need independent cases. Sources: Intel SDM Rev. 093
+Vol. 2A DIVPD pp. 3-267–3-269, §2.5.2/Table 2-19 p. 2-27; Vol. 1
+§§4.9.1–4.9.3, §4.9.1.5/Table 4-12, §11.5.2.3–.6 and §§11.5.3.1–.3;
+Vol. 3A Event 19/Table 7-8.
+See the
+[contract](../specs/CPU_CONTRACT.md#s2-38ar--exact-divpd-memory-profile-with-unmasked-exceptions-pending)
+and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ar-divpd-m128-memory-unmasked-exceptions-pending).
+Status: pending implementation, fixtures, focused checks and independent
+review.

@@ -1687,3 +1687,54 @@ fetch/gates/CPL/AC order, unaligned access with AC clear, canonical span and
 one-read rollback, strict read-only schema, literal fixtures, tampering and
 backend denial. Preserve S2-37dl/S2-37ap. Unmasked OE/UE and native/JIT/C ABI/
 generic/fragment and physical x86 acceptance remain outside this profile.
+
+## S2-38aq DIVPS m128 memory unmasked exceptions (pending)
+
+Define a distinct immutable schema-v2 fixture profile
+`s2-long-divps-memory-unmasked-rax-v1`; do not extend or mutate masked
+`s2-long-divps-memory-rax-v1`. Admit only exact legacy bytes `0f5e00`, one
+executable mapping, one read-only 16-byte data mapping at RAX, budget 1 and
+`stop_rip` = `entry+3`. Require complete SSE/XMM and MXCSR snapshots. Its
+`divps_memory_rax_unmasked_controls` input and echoed
+`snapshot.divps_memory_rax_unmasked_controls` contain exactly five immutable
+booleans: `sse_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`, `cr4_osxmmexcpt`.
+Require echo equality; reject missing, unknown, cross-profile and tampered
+controls. Require supported MXCSR mask `0xffbf`, reserved bits clear, `DAZ=FTZ=0`,
+`OM=UM=1`; RC, IM/DM/ZM/PM and old sticky bits remain fixture inputs.
+
+Expected output must preserve established DIVPS NaN source selection/quieting (any original SNaN sets IE even if a QNaN is selected) and masked invalid QNaN indefinite, and be validated independently using `raw-u32` integer rational division and RHS bytes from the fixture memory mapping. Never use host FP,
+production arithmetic or register RHS as oracle. Model `stop_address` success,
+the applicable precise SIMD arithmetic event (`#XM` vector 19 or SIMD-generated `#UD` vector 6
+according to `OSXMMEXCPT`), fetch/gate faults, alignment `#GP(0)`, canonical-span
+faults and read errors. Require event-aware MXCSR status and whole-destination/
+RIP/retirement checks. Acceptance fixtures must include memory-source-sensitive
+success and representative IE, ZE, DE, PE, masked UE+PE, gate/fetch/alignment/
+span/read faults; include quotient-specific NaN, zero-divide and tiny
+boundaries in the oracle matrix. JIT/native and all other closed backends
+reject the profile without result snapshots. Status: pending; no fixture or
+runtime support is claimed.
+
+## S2-38ar DIVPD m128 memory unmasked exceptions (pending)
+
+Define a separate immutable schema-v2 profile
+`s2-long-divpd-memory-unmasked-rax-v1`; do not extend or mutate masked
+`s2-long-divpd-memory-rax-v1`. Admit only exact legacy bytes `660f5e00`, one
+executable mapping, one read-only 16-byte data mapping at RAX, budget 1 and
+`stop_rip` = `entry+4`. Require complete SSE/XMM and MXCSR snapshots. Its
+`divpd_memory_rax_unmasked_controls` input and echoed
+`snapshot.divpd_memory_rax_unmasked_controls` contain exactly five immutable
+booleans: `sse2_available`, `cr0_em`, `cr0_ts`, `cr4_osfxsr`, `cr4_osxmmexcpt`.
+Require exact echo equality and reject missing, unknown, cross-profile or
+tampered fields. Require supported MXCSR mask `0xffbf`, reserved bits clear,
+`DAZ=FTZ=0` and `OM=UM=1`; RC, IM/DM/ZM/PM and old sticky bits remain fixture
+inputs.
+
+Expected output must preserve established DIVPD NaN source selection/quieting (any original SNaN sets IE even if a QNaN is selected) and masked invalid QNaN indefinite, and be validated by an independent `raw-u64` integer rational oracle using actual fixture memory bytes. Keep all status, controls, exception,
+XMM, RIP and retirement fields profile-specific and exact; older profile
+schemas/digests do not change. Resolve IE→ZE→DE priority within each lane, then OR surviving pre-event flags across lanes; an unmasked aggregate pre-event records those flags and suppresses post-event status and destination/RIP/retirement. Model success, IE/ZE/DE/PE/UE+PE, both
+OSXMMEXCPT delivery routes and the same fetch/gate/alignment/span/read
+rollback contract as S2-38aq. Require literal success, event and access
+failure fixtures, quotient-specific same-lane NaN suppression and cross-lane
+pre-event cases in the oracle matrix. JIT/native and other closed backends
+reject the profile without snapshots. Status: pending; no fixture or runtime
+support is claimed.
