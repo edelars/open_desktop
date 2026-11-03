@@ -23257,3 +23257,50 @@ and review/report update `0bf0ad8`. See [S2-38ae](S2_38AE_SUBSS_MEMORY_UNMASKED.
 [S2-38af](S2_38AF_SUBSD_MEMORY_UNMASKED.md), the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ae--exact-subss-memory-profile-with-unmasked-exceptions),
 and [stage plan](../plans/STAGE_2.md). Stage 2 remains open.
+
+<a id="main-integration-s2-38ag-s2-38ah"></a>
+
+## Main integration: S2-38ag and S2-38ah
+
+S2-38ag adds exact Long64 `F3 0F 59 00` MULSS XMM0,m32 `[RAX]` with SSE bit
+25; S2-38ah adds exact `F2 0F 59 00` MULSD XMM0,m64 with SSE2 bit 26. Each
+has an immutable schema-v2 interpreter-only profile and separate controls,
+budget one, stop RIP=entry+4, and one read-only read4/read8. Existing masked
+memory and register profiles retain their contracts. The new profiles admit
+all RC, IM/DM/ZM/PM masks and prior sticky histories with DAZ=FTZ=0 and OM=UM=1.
+They preserve the required fetch/gate/MXCSR/AC/span/read order, original NaN
+selection, pre-event IE/DE priority, and post-compute PE behavior. Applicable
+unmasked outcomes update MXCSR status while suppressing destination, RIP and
+retirement. Native/JIT/C ABI/generic/fragment dispatch and physical x86
+acceptance remain closed.
+
+The MULSS production matrix executes 13 event vectors plus exact-tiny across
+4 RC × 64 prior sticky histories × 16 IM/DM/ZM/PM masks × 2 OSXMMEXCPT values
+(114,688 interpreter executions), each checked against an independent raw-u32
+oracle. A separate 106,496-case matrix checks schema and result validation.
+The MULSD production matrix executes 20 raw-u64 operand/event vectors across
+the same control/history product (163,840 interpreter executions), checked by
+an independent raw-u64 oracle. Coverage includes exact and inexact tiny,
+DE-to-PE priority and suppression, signed NaNs in both operands, zero×infinity,
+overflow, and writable-mapping compatibility for older masked profiles.
+Three MULSS and four MULSD literal fixtures, gate/fetch/CPL, AC/span/read
+rollback, tampering, and backend-denial checks are included. Independent
+Sol/high reviews are clean after expanding both runtime matrices and separating
+the MULSS schema-only matrix from actual interpreter execution.
+
+On combined main, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo test -p od-isa -p od-testkit -p od-runner --offline --quiet`,
+`python3 tools/check_layout.py`, and `git diff --check` passed. Package tests
+passed: od-isa 1,961; od-testkit 461; od-runner 139 unit + 562 fixture tests.
+Graphify reported 12,480 nodes / 27,113 edges / 325 communities; labels were
+not refreshed without an LLM API key. Full workspace tests, `od-x86-runner`,
+and physical x86 were not run.
+
+Main commits: contract preparation `fa46620`; MULSS implementation
+`cea148c`, runtime-oracle fix `74d5762`, full event matrix `b93d02e`; MULSD
+implementation `09541af` and expanded event matrix `93310a0`. See
+[S2-38ag](S2_38AG_MULSS_MEMORY_UNMASKED.md),
+[S2-38ah](S2_38AH_MULSD_MEMORY_UNMASKED.md), the
+[CPU contract](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).
+Stage 2 remains open.
