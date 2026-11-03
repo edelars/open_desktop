@@ -11664,7 +11664,6 @@ mod tests {
         .unwrap();
         for neighbor in [
             &[0x89, 0x81, 0x04, 0x03, 0x02, 0x01, 0x90][..],
-            &[0x89, 0x80, 0x04, 0x03, 0x02, 0x01][..],
             &[0x89, 0x84, 0x08, 0x04, 0x03, 0x02, 0x01][..],
             &[0x8b, 0x81, 0x04, 0x03, 0x02, 0x01][..],
             &[0x48, 0x89, 0x81, 0x04, 0x03, 0x02, 0x01][..],
@@ -11677,6 +11676,20 @@ mod tests {
             )
             .is_err(), "unexpectedly admitted {neighbor:02x?}");
         }
+
+        let rax_source = [0x89, 0x80, 0x04, 0x03, 0x02, 0x01];
+        let rax_block = compile_ir_memory_dword_store_block_v2(
+            CodeView::new(entry, &rax_source).unwrap(),
+            entry,
+        )
+        .unwrap();
+        assert_ne!(rax_block.site(), block.site());
+        assert!(!block
+            .site()
+            .matches_source_bytes(&rax_source, MemorySiteOperationV2::Store));
+        assert!(!rax_block
+            .site()
+            .matches_source_bytes(&source, MemorySiteOperationV2::Store));
 
         let disp8_source = [0x89, 0x41, 0x04];
         let disp8_block = compile_ir_memory_dword_store_block_v2(

@@ -35764,7 +35764,7 @@ mod tests {
         let published = PublishedCode::publish_ir_memory_dword_store_v2(&block).unwrap();
         drop(block);
 
-        for displacement_byte in 2..6 {
+        for displacement_byte in 2..source.len() {
             let fetch_address = ENTRY + displacement_byte;
             for fetch_error in [
                 MemoryError::Unmapped {
