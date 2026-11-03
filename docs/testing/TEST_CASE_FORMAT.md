@@ -1574,3 +1574,37 @@ unaligned access with AC clear, canonical span and one-read rollback, strict
 read-only schema, literal fixtures, tampering and backend denial. Preserve
 S2-37dj/S2-37bb. Unmasked OE/UE and native/JIT/C ABI/generic/fragment and
 physical x86 acceptance remain closed.
+
+## S2-38ae SUBSS m32 memory unmasked exceptions
+
+The exact Long64 `F3 0F 5C 00` profile reads one read-only m32 from `[RAX]`,
+requires SSE bit 25, and executes only in the interpreter. Controls require
+supported MXCSR mask `0xffbf`, reserved bits clear, `DAZ=FTZ=0`, and `OM=UM=1`;
+cover every RC mode, IM/DM/ZM/PM mask and old sticky history. Use an independent
+raw-u32 oracle with the actual memory RHS. Preserve original operands while
+classifying NaNs, cover signed QNaN/SNaN in either position and NaN+subnormal,
+same-sign invalid versus opposite-sign valid infinities, cancellation/signed
+zero, rounding, exact tiny and masked overflow. Cross RC × 64 old sticky
+histories × IM/DM/PM × OSXMMEXCPT. Verify pre-event IE/DE versus post-event PE,
+atomic XMM0/RIP/retirement suppression, high96 preservation on success, full
+fetch/gates/CPL/AC order, unaligned access with AC clear, canonical span and
+one-read rollback, strict read-only schema, literal fixtures, tampering and
+backend denial. Preserve S2-37dk/S2-37aq. Unmasked OE/UE and native/JIT/C ABI/
+generic/fragment and physical x86 acceptance remain outside this profile.
+
+## S2-38af SUBSD m64 memory unmasked exceptions
+
+The exact Long64 `F2 0F 5C 00` profile reads one read-only m64 from `[RAX]`,
+requires SSE2 bit 26, and executes only in the interpreter. Controls require
+supported MXCSR mask `0xffbf`, reserved bits clear, `DAZ=FTZ=0`, and `OM=UM=1`;
+cover every RC mode, IM/DM/ZM/PM mask and old sticky history. Use an independent
+raw-u64 oracle with the actual memory RHS. Preserve original operands while
+classifying NaNs, cover signed QNaN/SNaN in either position and NaN+subnormal,
+same-sign invalid versus opposite-sign valid infinities, cancellation/signed
+zero, rounding, exact tiny and masked overflow. Cross RC × 64 old sticky
+histories × IM/DM/PM × OSXMMEXCPT. Verify pre-event IE/DE versus post-event PE,
+atomic XMM0/RIP/retirement suppression, high64 preservation on success, full
+fetch/gates/CPL/AC order, unaligned access with AC clear, canonical span and
+one-read rollback, strict read-only schema, literal fixtures, tampering and
+backend denial. Preserve S2-37dl/S2-37ap. Unmasked OE/UE and native/JIT/C ABI/
+generic/fragment and physical x86 acceptance remain outside this profile.

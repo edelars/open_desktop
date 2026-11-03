@@ -8675,3 +8675,33 @@ AC/local rejection, unaligned reads with AC clear, canonical span/read rollback,
 one callback, read-only schema, tampering and interpreter-only backend denial.
 S2-37dj/S2-37bb remain separate; unmasked OE/UE and physical x86 acceptance
 are outside this profile.
+
+### S2-38ae SUBSS m32 memory unmasked exceptions
+
+The exact Long64 `F3 0F 5C 00` profile requires SSE bit 25 and performs one
+read-only read4 from `[RAX]`. The independent raw-u32 oracle covers subtraction
+with the actual memory RHS, original-operand NaN selection, signed QNaN/SNaN in
+either position, NaN+subnormal, same-sign invalid and opposite-sign valid
+infinities, signed zero, rounding and exact tiny results. Cross RC × 64 prior
+sticky histories × IM/DM/PM × OSXMMEXCPT. Verify pre-event IE/DE, post-event PE,
+atomic XMM0/RIP/retirement suppression, high96 preservation on success, and
+literal success/exception fixtures. Also cover fetch/gate/CPL/AC ordering,
+unaligned access with AC clear, canonical span/read rollback, one callback,
+strict read-only schema, tampering and interpreter-only backend denial. Keep
+S2-37dk/S2-37aq separate; unmasked OE/UE and physical x86 acceptance are outside
+this profile.
+
+### S2-38af SUBSD m64 memory unmasked exceptions
+
+The exact Long64 `F2 0F 5C 00` profile requires SSE2 bit 26 and performs one
+read-only read8 from `[RAX]`. The independent raw-u64 oracle covers subtraction
+with the actual memory RHS, original-operand NaN selection, signed QNaN/SNaN in
+either position, NaN+subnormal, same-sign invalid and opposite-sign valid
+infinities, signed zero, rounding and exact tiny results. Cross RC × 64 prior
+sticky histories × IM/DM/PM × OSXMMEXCPT. Verify pre-event IE/DE, post-event PE,
+atomic XMM0/RIP/retirement suppression, high64 preservation on success, and
+literal success/exception fixtures. Also cover fetch/gate/CPL/AC ordering,
+unaligned access with AC clear, canonical span/read rollback, one callback,
+strict read-only schema, tampering and interpreter-only backend denial. Keep
+S2-37dl/S2-37ap separate; unmasked OE/UE and physical x86 acceptance are outside
+this profile.

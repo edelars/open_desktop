@@ -18429,3 +18429,88 @@ Sources: Intel SDM Rev. 093 Vol. 2B SQRTPD pp. 4-661–4-663
 Vol. 1 §§11.5.2.1–.2 and 11.5.3.1–.3
 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=286));
 Vol. 3A Event 19/Table 7-8. No physical x86 acceptance is claimed.
+
+## S2-38ae — exact SUBSS memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-subss-memory-unmasked-rax-v1` for exact Long64 legacy `F3 0F 5C 00`
+(`SUBSS XMM0,m32 [RAX]`), separate `subss_memory_rax_unmasked_controls`, one
+executable mapping, one read-only m32 mapping, budget one and stop RIP=entry+4.
+Require SSE bit 25; preserve masked-memory S2-37dk and register S2-37aq. Complete
+fetch and exact-form checks precede SSE/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS
+`#NM` at CPL0–3. Require MXCSR supported mask `0xffbf`, reserved bits clear,
+DAZ=FTZ=0 and OM=UM=1; permit all RC, IM/DM/ZM/PM and prior sticky flags. AC=1
+returns local Unsupported before span/read; AC=0 permits unaligned RAX. Validate
+canonical48 `[RAX,RAX+3]`, then exactly one read4. A span/read fault preserves
+full CPU state, memory and retirement.
+
+Compute old XMM0.low32 minus the actual memory RHS with existing raw-u32 SUBSS
+semantics and an independent integer-only oracle. Preserve the original operands
+until NaN classification/selection is complete: select the first original NaN,
+quiet SNaN and raise IE, while QNaN alone does not raise IE; NaNs suppress DE.
+Same-sign infinities in a subtraction produce invalid IE and the masked
+indefinite result; opposite-sign infinities produce a valid infinity. Non-NaN
+subnormal operands contribute precompute DE. If a new IE/DE is unmasked, commit
+all applicable generated IE/DE pre-event flags and suppress computation, PE,
+XMM0, RIP and retirement. Otherwise compute with MXCSR.RC and handle PE; OM/UM
+remain masked, so unmasked OE/UE stays outside the profile. An unmasked PE
+commits applicable status while suppressing the full instruction result and
+retirement. OSXMMEXCPT selects `#XM` or SIMD-generated arithmetic `#UD`; old
+sticky bits alone do not fault. Success changes only XMM0.low32, applicable
+MXCSR status, RIP and retirement; preserve XMM0.high96, RFLAGS and unrelated
+state.
+
+Cover RC × 64 prior sticky histories × IM/DM/PM and both OSXMMEXCPT mappings
+across finite rounding/cancellation, exact tiny and overflow results, signed
+QNaN/SNaN in both operand positions, NaN+subnormal, signed zero, and same-sign
+versus opposite-sign infinities. Verify pre-event IE/DE and post-event PE,
+whole-state suppression, gates/fetch/CPL, AC and unaligned memory, canonical
+span/read rollback, one callback, strict read-only schema, literal fixtures,
+XMM/MXCSR/RIP/retirement/exception tampering and JIT/native denial. Native/JIT/
+C ABI/generic/fragment paths remain closed. Sources: Intel SDM Rev. 093 Vol. 2B
+SUBSS pp. 4-695–4-696, Vol. 2A §2.5.3/Table 2-20, Vol. 1 §§4.9.1.4–.6 and
+11.5.2–11.5.3, and Vol. 3A Event 19/Table 7-8. The Vol. 2A Table 2-27 Type 12
+entry concerns gather instructions, not SUBSS. No physical x86 acceptance is
+claimed.
+
+## S2-38af — exact SUBSD memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-subsd-memory-unmasked-rax-v1` for exact Long64 legacy `F2 0F 5C 00`
+(`SUBSD XMM0,m64 [RAX]`), separate `subsd_memory_rax_unmasked_controls`, one
+executable mapping, one read-only m64 mapping, budget one and stop RIP=entry+4.
+Require SSE2 bit 26; preserve masked-memory S2-37dl and register S2-37ap. Complete
+fetch and exact-form checks precede SSE2/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS
+`#NM` at CPL0–3. Require MXCSR supported mask `0xffbf`, reserved bits clear,
+DAZ=FTZ=0 and OM=UM=1; permit all RC, IM/DM/ZM/PM and prior sticky flags. AC=1
+returns local Unsupported before span/read; AC=0 permits unaligned RAX. Validate
+canonical48 `[RAX,RAX+7]`, then exactly one read8. A span/read fault preserves
+full CPU state, memory and retirement.
+
+Compute old XMM0.low64 minus the actual memory RHS with existing raw-u64 SUBSD
+semantics and an independent integer-only oracle. Preserve the original operands
+until NaN classification/selection is complete: select the first original NaN,
+quiet SNaN and raise IE, while QNaN alone does not raise IE; NaNs suppress DE.
+Same-sign infinities in a subtraction produce invalid IE and the masked
+indefinite result; opposite-sign infinities produce a valid infinity. Non-NaN
+subnormal operands contribute precompute DE. If a new IE/DE is unmasked, commit
+all applicable generated IE/DE pre-event flags and suppress computation, PE,
+XMM0, RIP and retirement. Otherwise compute with MXCSR.RC and handle PE; OM/UM
+remain masked, so unmasked OE/UE stays outside the profile. An unmasked PE
+commits applicable status while suppressing the full instruction result and
+retirement. OSXMMEXCPT selects `#XM` or SIMD-generated arithmetic `#UD`; old
+sticky bits alone do not fault. Success changes only XMM0.low64, applicable
+MXCSR status, RIP and retirement; preserve XMM0.high64, RFLAGS and unrelated
+state.
+
+Cover RC × 64 prior sticky histories × IM/DM/PM and both OSXMMEXCPT mappings
+across binary64 rounding/cancellation, exact tiny and overflow results, signed
+QNaN/SNaN in both operand positions, NaN+subnormal, signed zero, and same-sign
+versus opposite-sign infinities. Verify pre-event IE/DE and post-event PE,
+whole-state suppression, gates/fetch/CPL, AC and unaligned memory, canonical
+span/read rollback, one callback, strict read-only schema, literal fixtures,
+XMM/MXCSR/RIP/retirement/exception tampering and JIT/native denial. Native/JIT/
+C ABI/generic/fragment paths remain closed. Sources: Intel SDM Rev. 093 Vol. 2B
+SUBSD p. 4-693, Vol. 2A §2.5.3/Table 2-20 (Type 3), Vol. 1 §§4.9.1.4–.6 and
+11.5.2–11.5.3, and Vol. 3A Event 19/Table 7-8. No physical x86 acceptance is
+claimed.
