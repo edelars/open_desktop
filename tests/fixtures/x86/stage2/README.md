@@ -8691,6 +8691,10 @@ strict read-only schema, tampering and interpreter-only backend denial. Keep
 S2-37dk/S2-37aq separate; unmasked OE/UE and physical x86 acceptance are outside
 this profile.
 
+Literal cases: `s2_38ae_subss_success.case.json`,
+`s2_38ae_subss_ie_xm.case.json`, `s2_38ae_subss_ie_ud.case.json`,
+`s2_38ae_subss_de_xm.case.json`, and `s2_38ae_subss_pe_ud.case.json`.
+
 ### S2-38af SUBSD m64 memory unmasked exceptions
 
 Implemented as the immutable interpreter-only profile

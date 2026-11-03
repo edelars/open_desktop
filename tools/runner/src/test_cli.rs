@@ -16,6 +16,7 @@ use od_isa::execute::{
     SqrtpsControls, SqrtsdControls, SqrtsdMemoryRaxUnmaskedControls, SqrtssControls,
     SqrtssMemoryRaxUnmaskedControls, SubpdControls, SubpsControls, SubsdControls,
     SubsdMemoryRaxControls, SubsdMemoryRaxUnmaskedControls, SubssControls,
+    SubssMemoryRaxUnmaskedControls,
     UcomisdMemoryRaxControls, UcomissMemoryRaxControls, run_with_addpd_memory_rax_controls,
     run_with_addpd_register_controls, run_with_addps_register_controls,
     run_with_addsd_memory_rax_controls, run_with_addsd_memory_rax_unmasked_controls,
@@ -52,7 +53,8 @@ use od_isa::execute::{
     run_with_subpd_memory_rax_controls, run_with_subpd_register_controls,
     run_with_subps_register_controls, run_with_subsd_memory_rax_controls,
     run_with_subsd_memory_rax_unmasked_controls, run_with_subsd_register_controls,
-    run_with_subss_memory_rax_controls, run_with_subss_register_controls,
+    run_with_subss_memory_rax_controls, run_with_subss_memory_rax_unmasked_controls,
+    run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -653,6 +655,7 @@ fn expected_native_xorpd_oracle(
                 maxss_memory_unmasked_rax_controls: None,
                 addss_memory_rax_controls: None,
                 addss_memory_rax_unmasked_controls: None,
+                subss_memory_rax_unmasked_controls: None,
                 addsd_memory_rax_controls: None,
                 addsd_memory_rax_unmasked_controls: None,
                 maxsd_memory_rax_controls: None,
@@ -2813,6 +2816,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongSubssMemoryRaxUnmaskedV1 {
+        let controls = loaded
+            .fixture
+            .subss_memory_rax_unmasked_controls
+            .expect("validated unmasked SUBSS m32 controls");
+        run_with_subss_memory_rax_unmasked_controls(
+            &mut state,
+            memory,
+            config,
+            SubssMemoryRaxUnmaskedControls {
+                sse_available: controls.sse_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongAddssMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -4239,6 +4260,9 @@ fn execute_fixture_v2(
                 addss_memory_rax_unmasked_controls: loaded
                     .fixture
                     .addss_memory_rax_unmasked_controls,
+                subss_memory_rax_unmasked_controls: loaded
+                    .fixture
+                    .subss_memory_rax_unmasked_controls,
                 addsd_memory_rax_controls: loaded.fixture.addsd_memory_rax_controls,
                 addsd_memory_rax_unmasked_controls: loaded
                     .fixture
@@ -5898,6 +5922,9 @@ mod tests {
                     addss_memory_rax_unmasked_controls: input
                         .fixture
                         .addss_memory_rax_unmasked_controls,
+                    subss_memory_rax_unmasked_controls: input
+                        .fixture
+                        .subss_memory_rax_unmasked_controls,
                     addsd_memory_rax_controls: input.fixture.addsd_memory_rax_controls,
                     addsd_memory_rax_unmasked_controls: input
                         .fixture
@@ -12104,6 +12131,211 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn subss_memory_unmasked_profile_matches_raw_u32_event_mask_sticky_matrix() {
+        let template = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_38ae_subss_success.case.json"
+        ))
+        .expect("unmasked SUBSS schema")
+        .fixture;
+        let cases: [(u32, u32, bool, bool, bool); 21] = [
+            (0x3f80_0000, 0x3300_0000, false, false, true), // finite inexact rounding
+            (0x3f80_0000, 0x3380_0000, false, false, false), // exact predecessor below one
+            (0xff7f_ffff, 0x7f7f_ffff, false, false, true), // negative overflow OE+PE
+            (1, 0, false, true, false),                     // exact subnormal input: DE only
+            (0x3f80_0000, 1, false, true, true),            // DE then PE
+            (2, 1, false, true, false),                     // exact tiny result
+            (0x7f80_0000, 0x7f80_0000, true, false, false), // same-sign infinities IE
+            (0x7f80_0000, 0xff80_0000, false, false, false), // opposite infinities valid
+            (0x7f80_0001, 0x3f80_0000, true, false, false), // positive SNaN lhs
+            (0xff80_0001, 0x3f80_0000, true, false, false), // negative SNaN lhs
+            (0x3f80_0000, 0x7f80_0001, true, false, false), // positive SNaN rhs
+            (0x3f80_0000, 0xff80_0001, true, false, false), // negative SNaN rhs
+            (0x7fc0_1234, 0xff80_0001, true, false, false), // first QNaN selected; SNaN IE
+            (0xffc0_1234, 0x3f80_0000, false, false, false), // negative QNaN
+            (0x3f80_0000, 0x7fc0_1234, false, false, false), // positive QNaN memory RHS
+            (0x3f80_0000, 0xffc0_1234, false, false, false), // negative QNaN memory RHS
+            (0x7fc0_1234, 1, false, false, false),          // NaN suppresses subnormal DE
+            (1, 0xffc0_1234, false, false, false), // QNaN memory RHS suppresses subnormal DE
+            (0, 0x8000_0000, false, false, false), // signed zero result
+            (0x8000_0000, 0, false, false, false), // negative zero minus positive zero
+            (0x0080_0001, 0x0080_0000, false, false, false), // exact minimum subnormal
+        ];
+        for (case_index, (lhs, rhs, ie, de, pe)) in cases.into_iter().enumerate() {
+            for rc in 0..4u32 {
+                for old_sticky in 0..64u32 {
+                    for mask_pattern in 0..8u32 {
+                        for osxmmexcpt in [false, true] {
+                            let im = mask_pattern & 1 != 0;
+                            let dm = mask_pattern & 2 != 0;
+                            let pm = mask_pattern & 4 != 0;
+                            let mxcsr = (u32::from(im) << 7)
+                                | (u32::from(dm) << 8)
+                                | (1 << 9)
+                                | (1 << 10)
+                                | (1 << 11)
+                                | (u32::from(pm) << 12)
+                                | (rc << 13)
+                                | old_sticky;
+                            let pre_unmasked = (ie && !im) || (de && !dm);
+                            let post_unmasked = !pre_unmasked && pe && !pm;
+                            let arithmetic_fault = pre_unmasked || post_unmasked;
+                            let mut fixture = template.clone();
+                            fixture.case_id = format!(
+                                "s2_38ae_matrix_case{case_index}_rc{rc}_sticky{old_sticky:02x}_mask{mask_pattern}_os{}",
+                                u8::from(osxmmexcpt)
+                            );
+                            fixture.expected_exit = if arithmetic_fault {
+                                v2::ExpectedExit::Exception
+                            } else {
+                                v2::ExpectedExit::StopAddress
+                            };
+                            let sse = fixture.initial_state.sse.as_mut().unwrap();
+                            let mut xmm0 = v2::decode_bytes(&sse.xmm[0]).unwrap();
+                            xmm0[..4].copy_from_slice(&lhs.to_le_bytes());
+                            sse.xmm[0] = od_testkit::memory::encode_bytes(&xmm0);
+                            sse.mxcsr = HexU64(u64::from(mxcsr));
+                            fixture.memory[1].initial_bytes_hex =
+                                od_testkit::memory::encode_bytes(&rhs.to_le_bytes());
+                            fixture
+                                .subss_memory_rax_unmasked_controls
+                                .as_mut()
+                                .unwrap()
+                                .cr4_osxmmexcpt = osxmmexcpt;
+
+                            let loaded = v2::Fixture::from_json(&fixture.to_json().unwrap())
+                                .unwrap_or_else(|error| panic!("fixture validation: {error:?}"));
+                            let mut memory =
+                                od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture)
+                                    .unwrap();
+                            let result = execute_fixture_v2(&loaded, &mut memory);
+                            assert_eq!(
+                                matches!(&result.outcome, v2::Outcome::Exception {}),
+                                arithmetic_fault,
+                                "SUBSS {lhs:08x}-{rhs:08x}, RC={rc}, sticky={old_sticky:02x}, masks={mask_pattern}, OSXMMEXCPT={osxmmexcpt}: {:?}",
+                                result.outcome
+                            );
+                            let vector = if osxmmexcpt { 19 } else { 6 };
+                            if arithmetic_fault {
+                                let Observation::Available { value: snapshot } = &result.snapshot
+                                else {
+                                    panic!("missing SUBSS snapshot")
+                                };
+                                let Observation::Available {
+                                    value: Some(exception),
+                                } = &snapshot.exception
+                                else {
+                                    panic!("missing SUBSS arithmetic exception")
+                                };
+                                assert_eq!(exception.vector, vector);
+                            }
+                            assert_eq!(
+                                result.instructions_executed,
+                                Observation::Available {
+                                    value: HexU64(u64::from(!arithmetic_fault))
+                                }
+                            );
+                            result.validate_for(&loaded).unwrap_or_else(|error| {
+                                panic!("SUBSS independent memory-RHS oracle mismatch for {lhs:08x}-{rhs:08x}, RC={rc}, sticky={old_sticky:02x}, masks={mask_pattern}, OSXMMEXCPT={osxmmexcpt}: {error:?}")
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn subss_memory_unmasked_literal_fixtures_and_interpreter_only_contract() {
+        use v2::ExpectedExit;
+
+        let success_template = v2::Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_38ae_subss_success.case.json"
+        ))
+        .unwrap()
+        .fixture;
+        let mut writable_source = success_template.clone();
+        writable_source.memory[1].permissions.write = true;
+        assert!(writable_source.validate().is_err());
+        let mut wrong_form = success_template.clone();
+        wrong_form.memory[0].initial_bytes_hex = "f30f5cc0".into();
+        assert!(wrong_form.validate().is_err());
+        let mut unsupported_mxcsr = success_template.clone();
+        unsupported_mxcsr.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1fc0);
+        assert!(unsupported_mxcsr.validate().is_err());
+
+        let fixtures: [(&[u8], ExpectedExit); 5] = [
+            (
+                include_bytes!(
+                    "../../../tests/fixtures/x86/stage2/s2_38ae_subss_success.case.json"
+                ),
+                ExpectedExit::StopAddress,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ae_subss_ie_xm.case.json"),
+                ExpectedExit::Exception,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ae_subss_ie_ud.case.json"),
+                ExpectedExit::Exception,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ae_subss_de_xm.case.json"),
+                ExpectedExit::Exception,
+            ),
+            (
+                include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ae_subss_pe_ud.case.json"),
+                ExpectedExit::Exception,
+            ),
+        ];
+        assert!(od_jit::compile(&[0xf3, 0x0f, 0x5c, 0x00]).is_err());
+        for (json, expected_exit) in fixtures {
+            let loaded = v2::Fixture::from_json(json).expect("S2-38ae fixture schema");
+            assert_eq!(loaded.fixture.expected_exit, expected_exit);
+            let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).unwrap();
+            let result = execute_fixture_v2(&loaded, &mut memory);
+            result
+                .validate_for(&loaded)
+                .unwrap_or_else(|error| panic!("{}: {error:?}", loaded.fixture.case_id));
+            assert_eq!(result.backend, od_testkit::result::Backend::Interpreter);
+            for backend in [
+                od_testkit::result::Backend::Jit,
+                od_testkit::result::Backend::NativeX86,
+            ] {
+                let mut forged = result.clone();
+                forged.backend = backend;
+                assert!(forged.validate_for(&loaded).is_err());
+            }
+            match expected_exit {
+                ExpectedExit::StopAddress => {
+                    assert!(matches!(result.outcome, v2::Outcome::StopAddress {}))
+                }
+                ExpectedExit::Exception => {
+                    assert!(matches!(result.outcome, v2::Outcome::Exception {}))
+                }
+                _ => unreachable!("only success and arithmetic exception fixtures are included"),
+            }
+            if expected_exit == ExpectedExit::Exception {
+                assert_eq!(
+                    result.instructions_executed,
+                    Observation::Available { value: HexU64(0) }
+                );
+            } else {
+                assert_eq!(
+                    result.instructions_executed,
+                    Observation::Available { value: HexU64(1) }
+                );
+            }
+            let mut tampered = result.clone();
+            let Observation::Available { value } = &mut tampered.snapshot else {
+                panic!("completed SUBSS fixture must include a snapshot")
+            };
+            let controls = value.subss_memory_rax_unmasked_controls.as_mut().unwrap();
+            controls.cr4_osxmmexcpt = !controls.cr4_osxmmexcpt;
+            assert!(tampered.validate_for(&loaded).is_err());
         }
     }
 

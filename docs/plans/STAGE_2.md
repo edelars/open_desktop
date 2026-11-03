@@ -676,8 +676,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38ab | Exact Long64 SQRTPD XMM0,m128 [RAX], unmasked packed IE/DE/PE profile; interpreter-only | 25 two-lane event products × IM/DM/PM × OSXMMEXCPT × RC ×64 stickies (102,400), exact minimum-subnormal DE-only, 40 signed-NaN cases, API gate/alignment/tampering; main: od-isa 1,952, testkit 456, runner 134+557; workspace/fmt/layout/diff pass; Graphify 12,319/26,744/372; clean Sol/high review after signed-NaN fix; preserve S2-37de/S2-37al; no physical x86 acceptance; [report](../reports/S2_38AB_SQRTPD_MEMORY_UNMASKED.md) |
 | [x] | S2-38ac | Exact Long64 ADDSS XMM0,m32 [RAX], unmasked IE/DE/PE profile; interpreter-only | 12 operand/event classes × 4 RC ×64 sticky ×8 IM/DM/PM masks ×2 OSXMMEXCPT =49,152 independent-oracle executions; three literal fixtures, isolated gates at CPL0–3, AC/span/read rollback and tampering; separate Sol/high reviews clean after coverage and TS-priority fixes; preserve S2-37di/S2-37bc; no physical x86 acceptance; [report](../reports/S2_38AC_ADDSS_MEMORY_UNMASKED.md) |
 | [x] | S2-38ad | Exact Long64 ADDSD XMM0,m64 [RAX], unmasked IE/DE/PE profile; interpreter-only | 20 signed-NaN/subnormal and other vectors × 4 RC ×64 stickies ×8 IM/DM/PM masks ×2 OSXMMEXCPT =81,920 executions; four literal fixtures, result/control/exception/#GP tampering and backend denial; Sol/high review clean after NaN+DE/tampering fixes; preserve S2-37dj/S2-37bb; no physical x86 acceptance; [report](../reports/S2_38AD_ADDSD_MEMORY_UNMASKED.md) |
-| [ ] | S2-38ae | Exact Long64 `SUBSS XMM0,m32 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dk masked memory, S2-37aq register subtraction, and S2-38ac control/fault pattern; independent raw-u32 oracle over operand/event classes × RC × 64 sticky histories × IM/DM/ZM/PM × OSXMMEXCPT; signed NaNs in both operand positions, subtraction-specific infinity and zero cases, literal fixtures, callback/rollback/tampering/backend checks; Sol/high review required; no physical x86 acceptance |
-| [ ] | S2-38af | Exact Long64 `SUBSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 22 raw operand vectors × RC × 64 sticky histories × IM/DM/ZM/PM × OSXMMEXCPT = 180,224 direct interpreter cases; independent raw-u64 fixture oracle, four literal fixtures, pre/post suppression, one read8, AC/span/read rollback, result/control/backend tampering and #GP(0); S2-37dl/S2-37ap preserved; Sol/high review pending; no physical x86 acceptance; [report](../reports/S2_38AF_SUBSD_MEMORY_UNMASKED.md) |
+| [x] | S2-38ae | Exact Long64 `SUBSS XMM0,m32 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 21 operand/event pairs × 4 RC ×64 sticky histories ×8 IM/DM/PM masks ×2 OSXMMEXCPT =86,016 raw-u32 memory-RHS oracle executions; five literal fixtures; one-read unaligned/canonical-span/read rollback, schema/result/backend checks; affected package suites, workspace check, Graphify and fmt pass; Sol/high review clean after permission regression fix; [report](../reports/S2_38AE_SUBSS_MEMORY_UNMASKED.md); preserve S2-37dk/S2-37aq; no physical x86 acceptance |
+| [x] | S2-38af | Exact Long64 `SUBSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 22 raw operand vectors ×4 RC ×64 sticky histories ×16 IM/DM/ZM/PM masks ×2 OSXMMEXCPT =180,224 independent raw-u64 cases; four literal fixtures, precedence-aware status validation, pre/post suppression, one read8, AC/span/read rollback, result/control/backend tampering and #GP(0); S2-37dl/S2-37ap preserved; Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AF_SUBSD_MEMORY_UNMASKED.md) |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -18657,22 +18657,22 @@ native/JIT/C ABI/generic/fragment/physical-x86 acceptance remain outside this
 slice. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ad--exact-addsd-memory-profile-with-unmasked-exceptions).
 
-#### S2-38ae — planned outcomes for exact SUBSS memory form
+#### S2-38ae — outcomes for exact SUBSS memory form
 
-Implement a separate immutable interpreter-only schema-v2 profile for exact
-Long64 `F3 0F 5C 00`, SSE bit 25 and read-only m32 `[RAX]`, one read4, budget
-one and stop RIP=entry+4. Masked-memory S2-37dk and register S2-37aq remain
-separate. Require `DAZ=FTZ=0`, reserved MXCSR bits clear and `OM=UM=1`, while
-admitting every RC, IM/DM/ZM/PM mask and prior sticky history. Implement an
-independent raw-u32 oracle using original operands for NaN selection and the
-actual memory RHS. Cover signed QNaN/SNaN in either operand position,
-NaN+subnormal, same-sign invalid versus opposite-sign valid infinities,
-rounding/cancellation, signed zero, exact tiny and masked overflow. Verify
-pre-event IE/DE and post-event PE, whole-XMM/RIP/retirement suppression,
-full-fetch/gate/CPL/AC ordering, canonical span/read rollback, read-only schema,
-literal fixtures, tampering and backend denial. Unmasked OE/UE and native/JIT/
-C ABI/generic/fragment/physical-x86 acceptance remain closed until separately
-specified. Sol/high review is required; physical x86 acceptance is not claimed.
+Implemented the separate immutable schema-v2 interpreter-only profile for
+exact Long64 `F3 0F 5C 00`, SSE bit 25, read-only m32 `[RAX]`, one read4, budget
+one and stop RIP=entry+4. S2-37dk masked-memory and S2-37aq register profiles
+remain separate. The profile requires `DAZ=FTZ=0`, clear reserved MXCSR bits,
+and `OM=UM=1`, while admitting each RC, IM/DM/ZM/PM mask and prior sticky
+history. The integer-only oracle uses original operands for NaN selection and
+the actual memory RHS. The matrix covers signed QNaN/SNaN in either operand
+position, NaN+subnormal, same-sign invalid and opposite-sign valid infinities,
+rounding, signed zero and exact tiny results. It verifies pre-event IE/DE and
+post-event PE status, XMM0/RIP/retirement suppression, five literal fixtures,
+one read4, unaligned access, canonical span and read rollback, result/control
+tampering, and JIT/native backend denial. No unmasked OE/UE, native/JIT/C
+ABI/generic/fragment implementation or physical-x86 acceptance is included.
+Validation and review status are recorded in the linked report.
 
 #### S2-38af — exact SUBSD memory form with unmasked exceptions
 
