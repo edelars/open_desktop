@@ -1,7 +1,6 @@
 # Stage 3 S3-38m: V1 RUN-ID exhaustion and fresh helper
 
-Status: partial; exact process smoke and harness gate are implemented, but
-process execution remains pending.
+Status: focused process acceptance passed; broader V1 acceptance remains open.
 
 ## Scope
 
@@ -19,14 +18,18 @@ command, source, and marker drift.
 
 ## Review and execution
 
-Independent Sol/high static review passed. Python AST parsing and
-`git diff --check` passed. The process smoke, harness self-check, VMHost build,
-and runtime were not executed. The VMHost build was not available because the
-Stage 3 Rust validation blockers in [KNOWN_ISSUES](../KNOWN_ISSUES.md) remain
-open. `graphify update .` was attempted after the source changes but stopped
-after more than 90 seconds without progress; the graph refresh could not be
-confirmed. Mini checks remain deferred until the end of Stage 3, and the
-separate M1 regression remains deferred by the user.
+Independent Sol/high review passed. The smoke uses decoder-supported
+`ADD RAX,RBX` for both the maximum-ID invocation and the fresh helper. The
+focused process smoke passed on the current ARM64 host against the previously
+built, signed VMHost binary, with its exact success marker. Its focused harness
+manifest test passed (1/1). No VMHost rebuild was performed for this
+fixture-only change. Full process-suite acceptance remains unconfirmed after
+an earlier invocation timed out without a summary. Physical Mini acceptance
+was not run; the Mini SSH check timed out before any remote command ran. M1
+regression remains deferred by the user.
+
+A later `graphify update .` completed successfully and refreshed the project
+graph.
 
 ## Boundaries
 
@@ -34,4 +37,5 @@ This gate covers the V1 helper-local high-water mark at its maximum value and
 fresh-helper initialization only. It does not change VMHost production code,
 wire protocol, automatic reconnect/replay, or the S3-38 acceptance scope.
 INVALID_STATE batch closure, broader backpressure/cleanup checks, V0
-regressions, and final runtime acceptance remain open.
+regressions, full process-suite execution, and physical Mini acceptance remain
+open.

@@ -66,7 +66,7 @@ def expect_frame(channel, expected, label):
 
 
 def run_payload(code):
-    # mov rcx, rax; one instruction reaches code_length and completes.
+    # One decoder-supported ADD RAX,RBX reaches code_length and completes.
     prefix = struct.pack("<IQ6Q", len(code), 1, 0x11, 0x22, 0x33, 0x44, 0, 0x202)
     if len(prefix) != 60:
         raise AssertionError("RUN prefix must be exactly 60 bytes")
@@ -74,14 +74,14 @@ def run_payload(code):
 
 
 def accepted_run(channel, request_id, label):
-    code = bytes.fromhex("4889c1")
+    code = bytes.fromhex("4803c3")
     channel.sendall(frame(RUN, request_id, run_payload(code)))
     expect_frame(
         channel,
         (RUN_ACK, request_id, struct.pack("<I", STATUS_OK)),
         f"{label} RUN_ACK",
     )
-    result = struct.pack("<6QIIQ", 0x11, 0x11, 0x33, 0x44, 3, 0x202, 0, 0, 1)
+    result = struct.pack("<6QIIQ", 0x55, 0x22, 0x33, 0x44, 3, 0x206, 0, 0, 1)
     expect_frame(channel, (RESULT, request_id, result), f"{label} RESULT")
 
 
@@ -110,7 +110,7 @@ def check_exhaustion_and_fresh_connection(vmhost):
         exhausted_error = struct.pack(
             "<III", STATUS_INVALID_REQUEST_ID, ERROR_SCOPE_REJECTED_COMMAND, RUN
         )
-        channel.sendall(frame(RUN, MAX_REQUEST_ID, run_payload(bytes.fromhex("4889c1"))))
+        channel.sendall(frame(RUN, MAX_REQUEST_ID, run_payload(bytes.fromhex("4803c3"))))
         expect_frame(
             channel,
             (ERROR, MAX_REQUEST_ID, exhausted_error),
@@ -119,7 +119,7 @@ def check_exhaustion_and_fresh_connection(vmhost):
 
         # RUN IDs cannot wrap on this connection. ID 1 is stale too; its exact
         # ERROR is the next frame and catches any extra response to max-ID.
-        channel.sendall(frame(RUN, 1, run_payload(bytes.fromhex("4889c1"))))
+        channel.sendall(frame(RUN, 1, run_payload(bytes.fromhex("4803c3"))))
         expect_frame(channel, (ERROR, 1, exhausted_error), "post-exhaustion RUN ID 1")
 
         channel.close()
