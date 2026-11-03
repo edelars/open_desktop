@@ -33,10 +33,11 @@ signed QNaNs, QNaN destination plus subnormal memory source (DE suppressed),
 and infinity plus subnormal. Each result
 checks complete state, status, RIP, retirement, exception mapping, and memory.
 
-Focused ISA tests check fetch and separate SSE/EM/OSFXSR gates at CPL0–3,
-AC-before-span, canonical span `#GP(0)`, unaligned read at AC=0, one callback,
-read rollback, pre-event versus post-event status, XMM suppression, high96
-preservation, and successful retirement. Fixture validation rejects missing or
+Focused ISA tests check full fetch, separate SSE/EM/OSFXSR `#UD` priority over
+TS `#NM`, and TS-only `#NM` at CPL0–3. They also check AC-before-span, canonical
+span `#GP(0)`, unaligned read at AC=0, one callback, read rollback, pre-event
+versus post-event status, XMM suppression, high96 preservation, and successful
+retirement. Fixture validation rejects missing or
 cross-profile controls, disallowed MXCSR masks, writable/source form changes,
 result/control/exception tampering, and non-interpreter backends.
 

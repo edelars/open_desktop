@@ -176292,6 +176292,18 @@ mod cvtsi2ss_r64_memory_profile_tests {
                 || false,
             )
         };
+        let run_at_privilege = |state: &mut LongModeState,
+                                memory: &mut Memory,
+                                controls: AddssMemoryRaxUnmaskedControls,
+                                privilege| {
+            let mut config = RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(state.rip + 4),
+                context: AccessContext::default(),
+            };
+            config.context.privilege = privilege;
+            run_with_addss_memory_rax_unmasked_controls(state, memory, config, controls, || false)
+        };
 
         for privilege in [
             crate::memory::PrivilegeLevel::Ring0,
@@ -176302,14 +176314,17 @@ mod cvtsi2ss_r64_memory_profile_tests {
             for profile in [
                 AddssMemoryRaxUnmaskedControls {
                     sse_available: false,
+                    cr0_ts: true,
                     ..controls
                 },
                 AddssMemoryRaxUnmaskedControls {
                     cr0_em: true,
+                    cr0_ts: true,
                     ..controls
                 },
                 AddssMemoryRaxUnmaskedControls {
                     cr4_osfxsr: false,
+                    cr0_ts: true,
                     ..controls
                 },
             ] {
@@ -176322,21 +176337,8 @@ mod cvtsi2ss_r64_memory_profile_tests {
                 });
                 let before = state.clone();
                 let mut memory = Memory::at(&code, 0x5500);
-                let mut config = RunConfig {
-                    instruction_budget: 1,
-                    stop_rip: Some(state.rip + 4),
-                    context: AccessContext::default(),
-                };
-                config.context.privilege = privilege;
                 assert!(matches!(
-                    run_with_addss_memory_rax_unmasked_controls(
-                        &mut state,
-                        &mut memory,
-                        config,
-                        profile,
-                        || false,
-                    )
-                    .exit,
+                    run_at_privilege(&mut state, &mut memory, profile, privilege,).exit,
                     RunExit::Fault(ArchitecturalFault {
                         vector: 6,
                         error_code: None,
@@ -176347,6 +176349,36 @@ mod cvtsi2ss_r64_memory_profile_tests {
                 assert!(memory.accesses.is_empty());
                 assert_eq!(state, before);
             }
+
+            let mut state = LongModeState::default();
+            state.rip = 0x5500;
+            state.gpr[Register::Rax as usize] = 0x2400;
+            state.sse = Some(SseState {
+                xmm: [[0x5a; 16]; 16],
+                mxcsr: 0x1f80,
+            });
+            let before = state.clone();
+            let mut memory = Memory::at(&code, 0x5500);
+            assert!(matches!(
+                run_at_privilege(
+                    &mut state,
+                    &mut memory,
+                    AddssMemoryRaxUnmaskedControls {
+                        cr0_ts: true,
+                        ..controls
+                    },
+                    privilege,
+                )
+                .exit,
+                RunExit::Fault(ArchitecturalFault {
+                    vector: 7,
+                    error_code: None,
+                    linear_address: None,
+                })
+            ));
+            assert_eq!(memory.fetches, [0x5500, 0x5501, 0x5502, 0x5503]);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
         }
 
         let mut truncated_memory = Memory::at(&code[..2], 0x5500);
