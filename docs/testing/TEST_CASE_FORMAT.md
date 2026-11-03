@@ -2052,13 +2052,18 @@ apply, with **TowardZero for every lane regardless of RC**. Preserve RC and
 prove invariant result/new-event behavior across all four RC settings. Keep
 unmasked IE-before-PE aggregation and complete XMM0 suppression; preserve old
 sticky flags. Aligned AC=1 is admitted; misalignment remains `#GP(0)` regardless
-of CPL/AC. Use a separate independent raw-u32 memory oracle, the full 165,888-case
-class product, numeric boundaries/ties/subnormals, both IE/PE permutations,
-unrelated masks/FTZ samples, 120 misalignment cases and direct read-count/rollback
-coverage. Literals versus generated/direct tests follow the expressibility
-boundary above. All native/JIT/generic/fragment/C ABI routes remain closed.
+of CPL/AC. The separate independent raw-u32 memory oracle executes 81 ordered
+lane-class distributions × 4 RC × 64 sticky histories × 4 IM/PM combinations ×
+2 delivery mappings = 165,888 actual-interpreter cases. Additional numeric
+boundaries/ties/subnormals and unrelated mask/FTZ controls are separate samples.
+Both IE/PE lane orders, 120 misalignment cases and direct read-count/rollback
+coverage are required. Literals versus generated/direct tests follow the
+expressibility boundary above. All native/JIT/generic/fragment/C ABI routes
+remain closed.
 
-Status: pending implementation, fixtures and independent review. Provenance:
+Status: implemented in `13404fc`; full-state matrix assertion fix in `640a9f0`.
+See the [execution report](../reports/STAGE_2_REPORT.md#s2-38ax--cvttps2dq-xmm0-m128-memory-unmasked-exceptions).
+Provenance:
 Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251; use those instruction pages
 rather than scalar CVTTSS2SI/CVTTSD2SI or RC-based CVTPS2DQ references. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ax--exact-cvttps2dq-m128-memory-profile-with-unmasked-exceptions)

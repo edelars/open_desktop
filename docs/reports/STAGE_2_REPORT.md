@@ -23747,3 +23747,51 @@ pp. 3-225–3-227; exception and alignment references are recorded in the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38aw--exact-cvtps2dq-m128-memory-profile-with-unmasked-exceptions).
 See also the [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38aw-cvtps2dq-m128-memory-unmasked-profile)
 and [stage plan](../plans/STAGE_2.md#s2-38aw--exact-legacy-long64-cvtps2dq-xmm0-m128-rax-with-unmasked-exceptions).
+
+## S2-38ax — CVTTPS2DQ XMM0, m128 memory unmasked exceptions
+
+Implementation commit `13404fc` adds exact legacy Long64 `F3 0F 5B 00`
+(`CVTTPS2DQ XMM0,m128 [RAX]`) as the separate immutable schema-v2 profile
+`s2-long-cvttps2dq-memory-unmasked-rax-v1`, with controls
+`cvttps2dq_m128_unmasked_controls`. It preserves S2-37bu masked-memory and
+S2-37ag register-unmasked profiles. Every packed lane truncates TowardZero
+independently of MXCSR.RC; RC is preserved. The unmasked IE-before-PE aggregation
+and atomic XMM0/RIP/retirement suppression rules remain as specified in the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ax--exact-cvttps2dq-m128-memory-profile-with-unmasked-exceptions).
+
+The independent integer-only raw-u32 oracle consumes the actual memory RHS. The
+actual-interpreter matrix crosses 81 ordered lane-class distributions
+`{exact, IE, PE}^4` × 4 RC values × 64 prior sticky histories × 4 IM/PM
+combinations × 2 OSXMMEXCPT deliveries: **165,888 cases**. Each case compares
+the complete `LongModeState` and source memory against the oracle; the full-state
+matrix assertion fix is `640a9f0`. Numeric/control checks add RC-invariance,
+truncation boundaries, signed-i32 edges, signed zero, normal/subnormal and
+infinity/NaN inputs, plus DM/OM/UM/ZM and FTZ controls. These additional samples
+are separate from the class-product matrix.
+
+All 15 handwritten schema-expressible literal fixtures passed. They cover exact
+INT32_MIN, masked IE/PE, mixed-lane IE/PE priority and suppression, both IE
+delivery mappings, unmasked PE, stale-flags-only success, prerequisite gates
+and aligned AC=1 success. Generated `fixture_v2` runner inputs exercise numeric
+and control coverage through the fixture schema; they are not literal files.
+The exact filenames and their categories are in the
+[fixture README](../../tests/fixtures/x86/stage2/README.md#s2-38ax--cvttps2dq-m128-memory-unmasked-profile).
+
+Direct memory/admission checks cover 15 misalignment offsets × CPL0–3 × AC=0/1
+(120 `#GP(0)` cases with no data read), aligned AC=0/1 admission, exactly one
+read16 on success, injected read-error rollback, and fetch/span/gate precedence.
+The masked-profile regression passed. Focused runner checks covered literal
+execution, numeric/control validation, schema/result/control tampering,
+profile isolation and native/JIT denial. Host `execute_x86_fragment` and C ABI
+`od_fragment_create` rejection passed. `od-isa` passed 1,993 tests and
+`od-testkit` passed 461 tests. `cargo check --workspace --all-targets --offline`,
+formatting and diff checks passed. The full `od-runner` suite was not run, and
+physical x86 acceptance was not performed. Native/JIT/generic/fragment/C ABI
+execution remains closed.
+
+Fixture provenance cites Intel SDM Rev. 093 Vol. 2A **CVTTPS2DQ pp. 3-249–3-251**;
+it does not substitute CVTPS2DQ or scalar conversion instruction pages. Shared
+Vol. 1/3A exception and alignment sources are recorded in the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ax--exact-cvttps2dq-m128-memory-profile-with-unmasked-exceptions).
+See the [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ax-cvttps2dq-m128-memory-unmasked-profile)
+and [stage plan](../plans/STAGE_2.md#s2-38ax--exact-legacy-long64-cvttps2dq-xmm0-m128-rax-with-unmasked-exceptions).

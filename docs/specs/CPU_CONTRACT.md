@@ -19429,8 +19429,9 @@ PE themselves. IM=0 plus any IE commits only new IE and suppresses new PE from
 all other lanes; IM=1 permits their PE, and PM=0 then suppresses the whole XMM0
 write through a precision event. Old status is preserved.
 
-Retain the complete 165,888 planned actual-interpreter class matrix, separate
-raw-u32 oracle and numeric/control cases. The exact 16-byte aligned read, CPL×AC
+The independent raw-u32 memory-RHS oracle executes the 165,888-case class
+matrix. Additional numeric/control cases are separate samples. The exact
+16-byte aligned read, CPL×AC
 misalignment behavior, admitted aligned AC=1, fetch/gate/span/read rollback and
 real backend-denial proof are identical requirements. The wire schema requires
 an exact-width readable, nonwritable m128 mapping; runtime injected read-error
@@ -19439,6 +19440,8 @@ rollback belongs to direct GuestMemory tests, not unreadable literal mappings.
 Sources: Intel SDM Rev. 093 Vol. 2A CVTTPS2DQ pp. 3-249–3-251
 ([official PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)); the Vol. 1/3A
 sources linked in S2-38aw establish packed exception ordering and alignment.
-Contract status: pending implementation and independent review. See the
+Contract status: implemented in `13404fc`; the full-state matrix assertion fix is
+in `640a9f0`. Executed evidence is recorded in the
+[stage report](../reports/STAGE_2_REPORT.md#s2-38ax--cvttps2dq-xmm0-m128-memory-unmasked-exceptions). See the
 [plan](../plans/STAGE_2.md#s2-38ax--exact-legacy-long64-cvttps2dq-xmm0-m128-rax-with-unmasked-exceptions)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ax-cvttps2dq-m128-memory-unmasked-profile).

@@ -9064,20 +9064,41 @@ See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38aw--exact-cvt
 [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38aw-cvtps2dq-m128-memory-unmasked-profile)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-38aw--exact-legacy-long64-cvtps2dq-xmm0-m128-rax-with-unmasked-exceptions).
 
-## S2-38ax — proposed CVTTPS2DQ m128 memory unmasked profile
+## S2-38ax — CVTTPS2DQ m128 memory unmasked profile
 
-Pending profile `s2-long-cvttps2dq-memory-unmasked-rax-v1` reserves exact
-`f3 0f 5b 00` with separate `cvttps2dq_m128_unmasked_controls`. Preserve S2-37bu
-masked fixtures. The packed memory/alignment, IE-before-PE, all-lane suppression,
-165,888-case matrix and literal/generated/direct boundaries described for
-[S2-38aw](#s2-38aw--cvtps2dq-m128-memory-unmasked-profile) apply, with one
-arithmetic difference: truncate every lane TowardZero independently of MXCSR.RC.
-Require identical result/new-event behavior across RC, both IE/PE lane orders,
-all supported mask/FTZ samples and aligned AC0/1. No scalar AC-refusal rule applies.
+Implemented exact profile `s2-long-cvttps2dq-memory-unmasked-rax-v1` in
+`13404fc` for `f3 0f 5b 00` (`CVTTPS2DQ XMM0,m128 [RAX]`) with separate immutable
+`cvttps2dq_m128_unmasked_controls`. TowardZero applies to every lane regardless
+of MXCSR.RC; RC is preserved. The 15 handwritten literal fixtures are:
 
-No implementation, fixture or physical x86 evidence is claimed. Use Intel SDM
-Rev. 093 Vol. 2A **CVTTPS2DQ pp. 3-249–3-251** in each future fixture provenance,
-with the shared Vol. 1/3A sources above. See the
+- `s2_38ax_cvttps2dq_aligned_ac1.case.json` — aligned AC=1 success.
+- `s2_38ax_cvttps2dq_exact_int_min.case.json` — exact INT32_MIN.
+- `s2_38ax_cvttps2dq_gate_nm.case.json` and `s2_38ax_cvttps2dq_gate_ud.case.json` — prerequisite gates.
+- `s2_38ax_cvttps2dq_ie_unmasked_simd_ud.case.json` and `s2_38ax_cvttps2dq_ie_unmasked_xm.case.json` — unmasked IE delivery mappings.
+- `s2_38ax_cvttps2dq_masked_invalid_indefinite.case.json` and `s2_38ax_cvttps2dq_masked_pe_success.case.json` — masked IE/PE.
+- `s2_38ax_cvttps2dq_mixed_fully_masked.case.json`, `s2_38ax_cvttps2dq_mixed_ie_first.case.json`, `s2_38ax_cvttps2dq_mixed_ie_first_simd_ud.case.json`, `s2_38ax_cvttps2dq_mixed_pe_masked.case.json`, and `s2_38ax_cvttps2dq_mixed_pe_masked_simd_ud.case.json` — mixed-lane priority and IE/PE lane orders.
+- `s2_38ax_cvttps2dq_pe_unmasked_xm.case.json` — unmasked PE delivery.
+- `s2_38ax_cvttps2dq_stale_flags_only.case.json` — old flags alone do not trigger an event.
+
+The literals preserve a differing XMM0 canary and use a read-only 16-byte
+memory RHS. The actual-interpreter matrix contains 81 ordered lane-class
+distributions × 4 RC × 64 sticky histories × 4 IM/PM combinations × 2 delivery
+settings = **165,888 cases**; each compares the complete `LongModeState` and
+source memory to the independent raw-u32 memory-RHS oracle. The full-state
+assertion correction is in `640a9f0`. Generated runner cases and direct numeric
+checks add RC-invariance, truncation boundaries, subnormal and control coverage;
+they are additional samples, not part of the 165,888 product or literal files.
+
+Direct checks cover all 120 misalignment combinations (15 offsets × CPL0–3 ×
+AC=0/1), each producing `#GP(0)` without a data read. Aligned AC=0/1 admission,
+one read16, injected read-error rollback, fetch/span/gate precedence and masked
+profile regression are checked. Runner checks cover literals, numeric/control
+validation, schema/result/control tampering and native/JIT denial. Host
+`execute_x86_fragment` and C ABI `od_fragment_create` rejection were verified.
+Preserve S2-37bu masked fixtures and their digests. The full `od-runner` suite
+and physical x86 acceptance were not run; all native/JIT/generic/fragment/C ABI
+routes remain closed. Provenance: Intel SDM Rev. 093 Vol. 2A **CVTTPS2DQ pp.
+3-249–3-251**, with the shared Vol. 1/3A sources above. See the
 [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ax--exact-cvttps2dq-m128-memory-profile-with-unmasked-exceptions),
 [fixture format](../../../../docs/testing/TEST_CASE_FORMAT.md#s2-38ax-cvttps2dq-m128-memory-unmasked-profile)
 and [plan](../../../../docs/plans/STAGE_2.md#s2-38ax--exact-legacy-long64-cvttps2dq-xmm0-m128-rax-with-unmasked-exceptions).
