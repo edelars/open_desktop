@@ -520,6 +520,9 @@ fn result(input: &LoadedFixture) -> RunResult {
                     .fixture
                     .comisd_memory_rax_invalid_controls,
                 ucomisd_memory_rax_controls: input.fixture.ucomisd_memory_rax_controls,
+                ucomisd_memory_rax_invalid_controls: input
+                    .fixture
+                    .ucomisd_memory_rax_invalid_controls,
                 comiss_memory_rax_controls: input.fixture.comiss_memory_rax_controls,
                 comiss_memory_invalid_rax_controls: input
                     .fixture

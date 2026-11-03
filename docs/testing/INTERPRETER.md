@@ -2393,3 +2393,15 @@ remain unsupported. See the [CPU contract](../specs/CPU_CONTRACT.md#local-s2-30c
 ## Local masked ADDPS m128 memory profile — S2-37dq
 
 `s2-long-addps-memory-rax-v1` accepts only exact legacy `0F 58 00` and requires SSE bit 25, XMM/MXCSR state, all exception masks, supported MXCSR bits, and DAZ/FTZ/reserved clear. Every rounding mode and old sticky history is admitted. The interpreter adds four lanes from old XMM0 to one aligned m128 `[RAX]` read. Alignment is mandatory regardless of AC; checked canonical48 endpoints precede exactly one `read16`, and read failure rolls back state and retirement. Tests cover all 4 RC values × 64 prior sticky patterns, NaN/invalid plus DE and overflow aggregation, SSE/EM/OSFXSR/TS gates, truncated fetch, both AC settings, alignment/canonical faults, read rollback, strict fixture validation and JIT/NativeX86 denial. Unmasked/#XM and all non-interpreter paths remain closed. See [CPU contract](../specs/CPU_CONTRACT.md#s2-37dq--masked-only-long64-addps-xmm0m128-rax), [plan](../plans/STAGE_2.md#s2-37dq--exact-legacy-long64-addps-xmm0m128-rax), and [fixture](../../tests/fixtures/x86/stage2/s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json).
+
+## S2-38x UCOMISD memory invalid-only profile
+
+The separate `s2-long-ucomisd-memory-rax-invalid-v1` schema-v2 profile accepts
+exact `66 0F 2E 00`, one executable mapping, and a read-only m64 mapping. Its
+independent raw-u64 oracle distinguishes QNaN from SNaN, preserves S2-37cp and
+S2-38w behavior, and validates the 1,024 NaN/mask/delivery/sticky combinations.
+A successful read followed by any subnormal operand returns atomic Unsupported.
+Only the interpreter backend is admitted; JIT/native routes remain denied.
+See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
+[plan](../plans/STAGE_2.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
+and [standalone report](../reports/S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md).

@@ -8506,3 +8506,18 @@ is claimed; ISSUE-033 remains an audit of older COMISS mixed-event profiles.
 See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38w--exact-comisd-memory-invalid-only-profile),
 [plan](../../../../docs/plans/STAGE_2.md), and
 [standalone report](../../../../docs/reports/S2_38W_COMISD_MEMORY_INVALID_ONLY.md).
+
+<a id="s2-38x-ucomisd-memory-invalid-only-profile"></a>
+
+### S2-38x UCOMISD memory invalid-only profile
+
+Six literal fixtures cover finite greater, QNaN with IM=0 (quiet success),
+masked SNaN, unmasked SNaN `#XM`, unmasked SNaN arithmetic `#UD`, and atomic
+NaN/subnormal refusal. Runner checks exercise 1,024 NaN side/class × IM ×
+OSXMMEXCPT × prior-sticky combinations, all RC values, both QNaN+SNaN orders,
+prior-only IE, binary64 finite/infinity/signed-zero boundaries, schema/result
+tampering and backend denial. Direct ISA coverage spans CPL0–3, exact reads,
+AC behavior, NaN invalid handling and atomic refusal. No physical x86 acceptance
+is claimed; ISSUE-033 remains open. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
+and [standalone report](../../../../docs/reports/S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md).

@@ -531,3 +531,15 @@ masked-only MXCSR, one aligned canonical m128 read and the independent raw-bit
 covered; JIT/native and unmasked/#XM paths remain closed. See the [CPU
 contract](../../docs/specs/CPU_CONTRACT.md#s2-37ds--masked-only-legacy-long64-mulps-xmm0m128-rax)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-37ds--mulps-xmm0m128-rax).
+
+### S2-38x — UCOMISD m64 invalid-only memory profile
+
+The runner admits the separate strict profile `s2-long-ucomisd-memory-rax-invalid-v1`
+for exact `66 0F 2E 00`. Its raw-u64 oracle keeps QNaN quiet and raises IE only
+for SNaN; an unmasked SNaN suppresses EFLAGS/RIP/retirement and selects `#XM`
+or arithmetic `#UD` from OSXMMEXCPT. After one successful read, any subnormal
+operand is atomic Unsupported. The focused matrix covers both NaN positions
+and classes × IM × OSXMMEXCPT × all 64 old sticky states (1,024 combinations),
+plus RC, finite boundaries, schema/result tampering, and interpreter-only
+backend enforcement. Direct ISA tests cover CPL0–3. No physical x86 execution is
+claimed; see the [standalone report](../../docs/reports/S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md).

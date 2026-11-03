@@ -22972,3 +22972,20 @@ with native/JIT closed. See the [S2-31ed standalone report](S2_31ED_FLD_M80FP_HI
 [S2-38w standalone report](S2_38W_COMISD_MEMORY_INVALID_ONLY.md),
 [CPU contracts](../specs/CPU_CONTRACT.md#s2-31ed--historical-sf-with-pre-existing-ie-for-raw-fld-m80fp),
 [Stage 2 plan](../plans/STAGE_2.md), and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
+
+## S2-38x worktree implementation — UCOMISD memory invalid-only
+
+The local `feat/s2-38x-ucomisd-memory-invalid` implementation adds a separate
+interpreter-only schema-v2 profile for exact `66 0F 2E 00`. It preserves
+S2-37cp's masked profile and S2-38w's COMISD profile. QNaN is quiet; SNaN adds
+IE. An unmasked SNaN commits only sticky IE before `#XM` or arithmetic `#UD`.
+Subnormal operands are refused atomically after the single eight-byte read.
+The raw-u64 oracle runs the 1,024 NaN-side/class × IM × OSXMMEXCPT × prior-sticky
+matrix, plus RC, finite boundaries, prior-only IE, QNaN+SNaN and control/result
+validation. Six literal fixtures are provided. This worktree report is not a
+physical x86 acceptance claim; ISSUE-033 remains open.
+
+See [S2-38x standalone report](S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
+[Stage 2 plan](../plans/STAGE_2.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38x-ucomisd-memory-invalid-only-profile).

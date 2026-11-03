@@ -431,6 +431,8 @@ pub enum Profile {
     LongComisdMemoryInvalidRaxV1,
     #[serde(rename = "s2-long-ucomisd-memory-rax-v1")]
     LongUcomisdMemoryRaxV1,
+    #[serde(rename = "s2-long-ucomisd-memory-rax-invalid-v1")]
+    LongUcomisdMemoryInvalidRaxV1,
     #[serde(rename = "s2-long-comiss-memory-rax-v1")]
     LongComissMemoryRaxV1,
     #[serde(rename = "s2-long-comiss-memory-invalid-rax-v1")]
@@ -1521,6 +1523,7 @@ impl IntegerState {
                     | Profile::LongUcomissMemoryRaxV1
                     | Profile::LongUcomissMemoryInvalidRaxV1
                     | Profile::LongComisdMemoryInvalidRaxV1
+                    | Profile::LongUcomisdMemoryInvalidRaxV1
                     | Profile::LongCmpssMemoryRaxV1
                     | Profile::LongCmpsdMemoryRaxV1
                     | Profile::LongCmppdMemoryRaxV1
@@ -1705,6 +1708,7 @@ impl IntegerState {
                     | Profile::LongUcomissMemoryRaxV1
                     | Profile::LongUcomissMemoryInvalidRaxV1
                     | Profile::LongComisdMemoryInvalidRaxV1
+                    | Profile::LongUcomisdMemoryInvalidRaxV1
                     | Profile::LongCvtsi2sdR32ExactV1
                     | Profile::LongCvtsi2sdMemory32RaxV1
                     | Profile::LongCvtsi2ssMemory32RaxV1
@@ -2026,6 +2030,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -2276,6 +2281,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory32RaxV1
@@ -2953,6 +2959,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -3234,6 +3241,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -3524,6 +3532,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -3821,6 +3830,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdR64ExactV1
                 | Profile::LongCvtsi2sdRegistersV1
@@ -4223,6 +4233,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCmpssMemoryRaxV1
                 | Profile::LongCmpsdMemoryRaxV1
                 | Profile::LongCmppdMemoryRaxV1
@@ -4276,6 +4287,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCmpssMemoryRaxV1
                 | Profile::LongCmpsdMemoryRaxV1
                 | Profile::LongCmppdMemoryRaxV1
@@ -4600,6 +4612,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCmpssMemoryRaxV1
                 | Profile::LongCmpsdMemoryRaxV1
                 | Profile::LongCmppdMemoryRaxV1
@@ -4945,6 +4958,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory32RaxV1
@@ -5199,6 +5213,7 @@ impl IntegerState {
                 | Profile::LongUcomissMemoryRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
                 | Profile::LongCvtsi2sdR32ExactV1
                 | Profile::LongCvtsi2sdMemory32RaxV1
                 | Profile::LongCvtsi2ssMemory32RaxV1
@@ -5585,6 +5600,8 @@ pub struct Fixture {
     /// Immutable SSE2 gates for the exact S2-37cp UCOMISD m64 profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ucomisd_memory_rax_controls: Option<UcomisdMemoryRaxControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ucomisd_memory_rax_invalid_controls: Option<UcomisdMemoryInvalidRaxControlSnapshot>,
     /// Immutable SSE gates for the exact S2-37cq COMISS m32 profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comiss_memory_rax_controls: Option<ComissMemoryRaxControlSnapshot>,
@@ -6017,6 +6034,16 @@ pub struct ComisdMemoryRaxControlSnapshot {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComisdMemoryInvalidRaxControlSnapshot {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UcomisdMemoryInvalidRaxControlSnapshot {
     pub sse2_available: bool,
     pub cr0_em: bool,
     pub cr0_ts: bool,
@@ -15000,6 +15027,107 @@ impl Fixture {
                 "only valid for COMISD m64 profile",
             ));
         }
+        if self.profile == Profile::LongUcomisdMemoryInvalidRaxV1 {
+            let controls = self.ucomisd_memory_rax_invalid_controls.ok_or_else(|| {
+                invalid(
+                    "ucomisd_memory_rax_invalid_controls",
+                    "required by invalid-only UCOMISD m64 profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| {
+                    invalid("memory.code", "required by invalid-only UCOMISD profile")
+                })?;
+            let data = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "data")
+                .ok_or_else(|| {
+                    invalid("memory.data", "required by invalid-only UCOMISD profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if self.comisd_ucomisd_controls.is_some()
+                || self.comisd_memory_rax_controls.is_some()
+                || self.comisd_memory_rax_invalid_controls.is_some()
+                || self.ucomisd_memory_rax_controls.is_some()
+                || self.comiss_memory_rax_controls.is_some()
+                || self.comiss_memory_invalid_rax_controls.is_some()
+                || self.ucomiss_memory_rax_controls.is_some()
+                || self.ucomiss_memory_invalid_rax_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || !code.initial_bytes_hex.eq_ignore_ascii_case("660f2e00")
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 8
+                || !data.permissions.read
+                || data.permissions.write
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress | ExpectedExit::Unsupported
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "invalid-only UCOMISD requires exact 66 0F 2E 00, one executable code mapping, one read-only eight-byte data mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by invalid-only UCOMISD profile"))?
+                .mxcsr
+                .get();
+            if mxcsr & !0x0000_ffbf != 0
+                || mxcsr & ((1 << 6) | (1 << 15)) != 0
+                || mxcsr & 0x0000_1f00 != 0x0000_1f00
+            {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "invalid-only UCOMISD requires supported bits, DAZ=FTZ=0, DM/ZM/OM/UM/PM=1; IM may vary",
+                ));
+            }
+            let gate = !controls.sse2_available
+                || controls.cr0_em
+                || !controls.cr4_osfxsr
+                || controls.cr0_ts;
+            let ac = self.initial_state.rflags.get() & (1 << 18) != 0;
+            let last = source.checked_add(7);
+            let canonical48 = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+            let span_fault = last.is_none_or(|end| !canonical48(source) || !canonical48(end));
+            if (gate && self.expected_exit != ExpectedExit::Exception)
+                || (!gate && ac && self.expected_exit != ExpectedExit::Unsupported)
+                || (!gate && !ac && span_fault && self.expected_exit != ExpectedExit::Exception)
+                || (!gate
+                    && !ac
+                    && !span_fault
+                    && !matches!(
+                        self.expected_exit,
+                        ExpectedExit::StopAddress
+                            | ExpectedExit::Unsupported
+                            | ExpectedExit::Exception
+                    ))
+            {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect invalid-only UCOMISD gates, AC, and canonical span",
+                ));
+            }
+        } else if self.ucomisd_memory_rax_invalid_controls.is_some() {
+            return Err(invalid(
+                "ucomisd_memory_rax_invalid_controls",
+                "only valid for invalid-only UCOMISD m64 profile",
+            ));
+        }
         if self.profile == Profile::LongUcomisdMemoryRaxV1 {
             let controls = self.ucomisd_memory_rax_controls.ok_or_else(|| {
                 invalid(
@@ -19480,6 +19608,7 @@ impl Fixture {
             comisd_memory_rax_controls: None,
             comisd_memory_rax_invalid_controls: None,
             ucomisd_memory_rax_controls: None,
+            ucomisd_memory_rax_invalid_controls: None,
             comiss_memory_rax_controls: None,
             ucomiss_memory_rax_controls: None,
             ucomiss_memory_invalid_rax_controls: None,
@@ -19739,6 +19868,8 @@ pub struct Snapshot {
     pub comisd_memory_rax_invalid_controls: Option<ComisdMemoryInvalidRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ucomisd_memory_rax_controls: Option<UcomisdMemoryRaxControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ucomisd_memory_rax_invalid_controls: Option<UcomisdMemoryInvalidRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comiss_memory_rax_controls: Option<ComissMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -20815,6 +20946,19 @@ impl RunResult {
                 "only valid for COMISD m64 profile",
             ));
         }
+        if self.profile == Profile::LongUcomisdMemoryInvalidRaxV1 {
+            if snapshot.ucomisd_memory_rax_invalid_controls.is_none() {
+                return Err(invalid(
+                    "snapshot.ucomisd_memory_rax_invalid_controls",
+                    "required by invalid-only UCOMISD m64 profile",
+                ));
+            }
+        } else if snapshot.ucomisd_memory_rax_invalid_controls.is_some() {
+            return Err(invalid(
+                "snapshot.ucomisd_memory_rax_invalid_controls",
+                "only valid for invalid-only UCOMISD m64 profile",
+            ));
+        }
         if self.profile == Profile::LongUcomisdMemoryRaxV1 {
             if snapshot.ucomisd_memory_rax_controls.is_none() {
                 return Err(invalid(
@@ -21637,6 +21781,7 @@ impl RunResult {
                 | Profile::LongComissMemoryInvalidRaxV1
                 | Profile::LongUcomissMemoryInvalidRaxV1
                 | Profile::LongComisdMemoryInvalidRaxV1
+                | Profile::LongUcomisdMemoryInvalidRaxV1
         ) && self.backend != Backend::Interpreter
             && (!matches!(self.outcome, Outcome::Unsupported { .. })
                 || !matches!(self.snapshot, Observation::Unavailable { .. }))
@@ -22782,6 +22927,28 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongComisdMemoryRaxV1 {
                 validate_comisd_memory_rax_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.ucomisd_memory_rax_invalid_controls,
+                value.ucomisd_memory_rax_invalid_controls,
+            ) {
+                (Profile::LongUcomisdMemoryInvalidRaxV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongUcomisdMemoryInvalidRaxV1, _, _) => {
+                    return Err(FormatError::CaseMismatch(
+                        "ucomisd_memory_rax_invalid_controls",
+                    ));
+                }
+                (_, None, None) => {}
+                _ => {
+                    return Err(FormatError::CaseMismatch(
+                        "ucomisd_memory_rax_invalid_controls",
+                    ));
+                }
+            }
+            if loaded.fixture.profile == Profile::LongUcomisdMemoryInvalidRaxV1 {
+                validate_comparison_memory_rax_result(loaded, self, value, false, false, true)?;
             }
             match (
                 loaded.fixture.profile,
@@ -46908,8 +47075,21 @@ fn validate_comparison_memory_rax_result(
 ) -> Result<(), FormatError> {
     let fixture = &loaded.fixture;
     let (sse_available, cr0_em, cr0_ts, cr4_osfxsr, cr4_osxmmexcpt) = if fixture.profile
-        == Profile::LongComisdMemoryInvalidRaxV1
+        == Profile::LongUcomisdMemoryInvalidRaxV1
     {
+        let c = fixture
+            .ucomisd_memory_rax_invalid_controls
+            .ok_or(FormatError::CaseMismatch(
+                "ucomisd_memory_rax_invalid_controls",
+            ))?;
+        (
+            c.sse2_available,
+            c.cr0_em,
+            c.cr0_ts,
+            c.cr4_osfxsr,
+            c.cr4_osxmmexcpt,
+        )
+    } else if fixture.profile == Profile::LongComisdMemoryInvalidRaxV1 {
         let c = fixture
             .comisd_memory_rax_invalid_controls
             .ok_or(FormatError::CaseMismatch(
