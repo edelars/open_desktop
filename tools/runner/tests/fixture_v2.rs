@@ -178,6 +178,12 @@ const SQRTSD_M64_UNMASKED_PE_XM: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_38z_sqrtsd_pe_xm.case.json");
 const SQRTSD_M64_UNMASKED_PE_UD: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_38z_sqrtsd_pe_ud.case.json");
+const SQRTPD_M128_UNMASKED_SUCCESS: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ab_sqrtpd_unmasked_success.case.json");
+const SQRTPD_M128_UNMASKED_IE_XM: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ab_sqrtpd_unmasked_ie_xm.case.json");
+const SQRTPD_M128_UNMASKED_PE_UD: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_38ab_sqrtpd_unmasked_pe_ud.case.json");
 const MINPD_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37db_minpd_m128_qnan_and_other_lane_denormal.case.json"
 );
@@ -44030,6 +44036,113 @@ fn sqrtsd_m64_unmasked_validator_rejects_state_retirement_and_exception_tamperin
         other => panic!("expected #GP exception snapshot, got {other:?}"),
     }
     assert!(bad_gp_code.validate_for(&gp_input).is_err());
+}
+
+#[test]
+fn sqrtpd_m128_unmasked_fixtures_validate_atomic_exceptions_and_denials() {
+    use od_testkit::v2::Profile;
+
+    for (source, vector) in [
+        (SQRTPD_M128_UNMASKED_SUCCESS, None),
+        (SQRTPD_M128_UNMASKED_IE_XM, Some(19)),
+        (SQRTPD_M128_UNMASKED_PE_UD, Some(6)),
+    ] {
+        let fixture = Fixture::from_json(source).unwrap().fixture;
+        assert_eq!(fixture.profile, Profile::LongSqrtpdMemoryRaxUnmaskedV1);
+        let (input, result) = run(source, "interpreter", 0);
+        od_testkit::v2::compare(&input, &result, &result).unwrap();
+        let snap = snapshot(&result);
+        if let Some(vector) = vector {
+            assert!(matches!(result.outcome, Outcome::Exception {}));
+            assert_eq!(count(&result), 0);
+            assert_eq!(snap.state.rip, fixture.initial_state.rip);
+            assert_eq!(
+                snap.state.sse.as_ref().unwrap().xmm[0],
+                fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+            );
+            let Observation::Available {
+                value: Some(exception),
+            } = &snap.exception
+            else {
+                panic!("missing SQRTPD exception")
+            };
+            assert_eq!(exception.vector, vector);
+        } else {
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            assert_eq!(count(&result), 1);
+            assert_eq!(snap.state.rip, fixture.stop_rip.unwrap());
+            assert_ne!(
+                snap.state.sse.as_ref().unwrap().xmm[0],
+                fixture.initial_state.sse.as_ref().unwrap().xmm[0]
+            );
+        }
+        for backend in ["jit", "native"] {
+            let (_, denied) = run(source, backend, 4);
+            assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+            assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
+        }
+        let mut bad = result.clone();
+        snapshot_mut(&mut bad)
+            .sqrtpd_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = !fixture
+            .sqrtpd_memory_rax_unmasked_controls
+            .unwrap()
+            .cr4_osxmmexcpt;
+        assert!(bad.validate_for(&input).is_err());
+    }
+
+    let mut missing = Fixture::from_json(SQRTPD_M128_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    missing.sqrtpd_memory_rax_unmasked_controls = None;
+    assert!(missing.validate().is_err());
+    let mut writable = Fixture::from_json(SQRTPD_M128_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    writable.memory[1].permissions.write = true;
+    assert!(writable.validate().is_err());
+
+    let (success_input, success) = run(SQRTPD_M128_UNMASKED_SUCCESS, "interpreter", 0);
+    let mut bad_xmm = success.clone();
+    snapshot_mut(&mut bad_xmm).state.sse.as_mut().unwrap().xmm[0]
+        .replace_range(0..16, "0000000000000000");
+    assert!(bad_xmm.validate_for(&success_input).is_err());
+
+    let (input, expected) = run(SQRTPD_M128_UNMASKED_IE_XM, "interpreter", 0);
+    let mut no_ie = expected.clone();
+    snapshot_mut(&mut no_ie).state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f00);
+    assert!(no_ie.validate_for(&input).is_err());
+    let mut retired = expected.clone();
+    retired.instructions_executed = Observation::Available { value: HexU64(1) };
+    assert!(retired.validate_for(&input).is_err());
+    let mut vector = expected.clone();
+    match &mut snapshot_mut(&mut vector).exception {
+        Observation::Available {
+            value: Some(exception),
+        } => exception.vector = 6,
+        other => panic!("expected SQRTPD exception, got {other:?}"),
+    }
+    assert!(vector.validate_for(&input).is_err());
+
+    let mut bad_gp = Fixture::from_json(SQRTPD_M128_UNMASKED_SUCCESS)
+        .unwrap()
+        .fixture;
+    bad_gp.case_id = "s2_38ab_unmasked_gp_zero_tamper".into();
+    bad_gp.initial_state.gpr[0] = HexU64(0x0000_8000_0000_0000);
+    bad_gp.memory[1].guest_address = bad_gp.initial_state.gpr[0];
+    bad_gp.expected_exit = ExpectedExit::Exception;
+    let (gp_input, gp_result) = run(&bad_gp.to_json().unwrap(), "interpreter", 0);
+    od_testkit::v2::compare(&gp_input, &gp_result, &gp_result).unwrap();
+    let mut bad_error_code = gp_result.clone();
+    match &mut snapshot_mut(&mut bad_error_code).exception {
+        Observation::Available {
+            value: Some(exception),
+        } => exception.error_code = Observation::Available { value: HexU64(1) },
+        other => panic!("expected #GP(0), got {other:?}"),
+    }
+    assert!(bad_error_code.validate_for(&gp_input).is_err());
 }
 
 #[test]

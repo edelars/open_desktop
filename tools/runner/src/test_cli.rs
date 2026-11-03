@@ -11,7 +11,7 @@ use od_isa::execute::{
     Cvtss2sdMemoryControls, Cvttpd2dqControls, Cvttpd2dqMemoryControls, Cvttps2dqControls,
     Cvttps2dqMemoryControls, Cvttss2siRegistersControls, DivpdControls, DivpsControls,
     DivsdControls, DivsdMemoryRaxControls, DivssControls, DivssMemoryRaxControls, MulpdControls,
-    MulpsControls, MulsdControls, MulssControls, SqrtpdControls, SqrtpsControls, SqrtsdControls,
+    MulpsControls, MulsdControls, MulssControls, SqrtpdControls, SqrtpdMemoryRaxUnmaskedControls, SqrtpsControls, SqrtsdControls,
     SqrtsdMemoryRaxUnmaskedControls, SqrtssControls, SqrtssMemoryRaxUnmaskedControls,
     SubpdControls, SubpsControls, SubsdControls, SubsdMemoryRaxControls, SubssControls,
     UcomisdMemoryRaxControls, UcomissMemoryRaxControls, run_with_addpd_memory_rax_controls,
@@ -40,7 +40,7 @@ use od_isa::execute::{
     run_with_mulpd_register_controls, run_with_mulps_register_controls,
     run_with_mulsd_memory_rax_controls, run_with_mulsd_register_controls,
     run_with_mulss_memory_rax_controls, run_with_mulss_register_controls,
-    run_with_sqrtpd_memory_rax_controls, run_with_sqrtpd_register_controls,
+    run_with_sqrtpd_memory_rax_controls, run_with_sqrtpd_memory_rax_unmasked_controls, run_with_sqrtpd_register_controls,
     run_with_sqrtps_memory_rax_controls, run_with_sqrtps_memory_rax_unmasked_controls,
     run_with_sqrtps_register_controls, run_with_sqrtsd_memory_rax_controls,
     run_with_sqrtsd_memory_rax_unmasked_controls, run_with_sqrtsd_register_controls,
@@ -566,6 +566,7 @@ fn expected_native_xorpd_oracle(
                 sqrtss_memory_rax_controls: None,
                 sqrtss_memory_rax_unmasked_controls: None,
                 sqrtpd_memory_rax_controls: None,
+                sqrtpd_memory_rax_unmasked_controls: None,
                 sqrtsd_memory_rax_controls: None,
                 sqrtsd_memory_rax_unmasked_controls: None,
                 minps_unmasked_controls: None,
@@ -3100,6 +3101,24 @@ fn execute_fixture_v2(
             },
             timeout,
         )
+    } else if loaded.fixture.profile == v2::Profile::LongSqrtpdMemoryRaxUnmaskedV1 {
+        let controls = loaded
+            .fixture
+            .sqrtpd_memory_rax_unmasked_controls
+            .expect("validated unmasked SQRTPD m128 controls");
+        run_with_sqrtpd_memory_rax_unmasked_controls(
+            &mut state,
+            memory,
+            config,
+            SqrtpdMemoryRaxUnmaskedControls {
+                sse2_available: controls.sse2_available,
+                cr0_em: controls.cr0_em,
+                cr0_ts: controls.cr0_ts,
+                cr4_osfxsr: controls.cr4_osfxsr,
+                cr4_osxmmexcpt: controls.cr4_osxmmexcpt,
+            },
+            timeout,
+        )
     } else if loaded.fixture.profile == v2::Profile::LongMaxpdMemoryRaxV1 {
         let controls = loaded
             .fixture
@@ -4171,6 +4190,9 @@ fn execute_fixture_v2(
                     .fixture
                     .sqrtss_memory_rax_unmasked_controls,
                 sqrtpd_memory_rax_controls: loaded.fixture.sqrtpd_memory_rax_controls,
+                sqrtpd_memory_rax_unmasked_controls: loaded
+                    .fixture
+                    .sqrtpd_memory_rax_unmasked_controls,
                 sqrtsd_memory_rax_controls: loaded.fixture.sqrtsd_memory_rax_controls,
                 sqrtsd_memory_rax_unmasked_controls: loaded
                     .fixture
@@ -5818,6 +5840,9 @@ mod tests {
                         .fixture
                         .sqrtss_memory_rax_unmasked_controls,
                     sqrtpd_memory_rax_controls: input.fixture.sqrtpd_memory_rax_controls,
+                    sqrtpd_memory_rax_unmasked_controls: input
+                        .fixture
+                        .sqrtpd_memory_rax_unmasked_controls,
                     sqrtsd_memory_rax_controls: input.fixture.sqrtsd_memory_rax_controls,
                     sqrtsd_memory_rax_unmasked_controls: input
                         .fixture
@@ -12182,6 +12207,10 @@ mod memory_instruction_matrix_tests {
     const SQRTSD_UNMASKED_MATRIX_BASE: &[u8] =
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_38z_sqrtsd_masked_success.case.json");
 
+    const SQRTPD_UNMASKED_MATRIX_BASE: &[u8] = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_37de_sqrtpd_m128_memory_source_lanes_rounding.case.json"
+    );
+
     const CASE: &[u8] = include_bytes!(
         "../../../tests/fixtures/x86/stage2/s2_37dz_rsqrtps_m128_memory_rhs.case.json"
     );
@@ -12513,5 +12542,147 @@ mod memory_instruction_matrix_tests {
             }
         }
         assert_eq!(covered, 65_536);
+    }
+
+    #[test]
+    fn sqrtpd_unmasked_memory_covers_the_25_lane_event_products() {
+        use od_testkit::v2::{Profile, SqrtpdMemoryRaxUnmaskedControlSnapshot};
+
+        let mut base = Fixture::from_json(SQRTPD_UNMASKED_MATRIX_BASE)
+            .unwrap()
+            .fixture;
+        base.profile = Profile::LongSqrtpdMemoryRaxUnmaskedV1;
+        base.sqrtpd_memory_rax_controls = None;
+        base.sqrtpd_memory_rax_unmasked_controls = Some(SqrtpdMemoryRaxUnmaskedControlSnapshot {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        });
+
+        // Neutral, IE, DE-only, PE-only, and DE+PE lanes. The first operand is
+        // an exact root; 0x1 is exact after scaling while 0x2 and 0x3 round.
+        let categories: [(&str, u64); 5] = [
+            ("neutral", 0x3ff0_0000_0000_0000),
+            ("ie", 0xbff0_0000_0000_0000),
+            ("de_only", 0x0000_0000_0000_0001),
+            ("pe_only", 0x4000_0000_0000_0000),
+            ("de_pe", 0x0000_0000_0000_0002),
+        ];
+        let (minsub_roots, minsub_ie, minsub_de, minsub_pe) =
+            od_testkit::v2::independent_sqrtpd_for_test(
+                [0x0000_0000_0000_0001, 0x0000_0000_0000_0002],
+                0x1f80,
+            );
+        assert_eq!(minsub_roots[0], 0x1e60_0000_0000_0000);
+        assert_eq!((minsub_ie, minsub_de, minsub_pe), (false, true, true));
+        assert_eq!(
+            od_testkit::v2::independent_sqrtpd_for_test(
+                [0x0000_0000_0000_0001, 0x0000_0000_0000_0001],
+                0x1f80,
+            ),
+            (
+                [0x1e60_0000_0000_0000, 0x1e60_0000_0000_0000],
+                false,
+                true,
+                false,
+            ),
+            "sqrt(2^-1074) must be exact 2^-537 with DE only"
+        );
+        let mut checks = 0usize;
+        for (first_name, first) in categories {
+            for (second_name, second) in categories {
+                for mask_pattern in 0..8u32 {
+                    for osxmmexcpt in [false, true] {
+                        for rc in 0..4u32 {
+                            for old_sticky in 0..64u32 {
+                                let mut fixture = base.clone();
+                                fixture.case_id = format!(
+                                    "s2_38ab_events_{first_name}_{second_name}_m{mask_pattern}_os{}_rc{rc}_s{old_sticky:02x}",
+                                    u8::from(osxmmexcpt),
+                                );
+                                let raw = [first, second];
+                                fixture.memory[1].initial_bytes_hex = raw
+                                    .into_iter()
+                                    .flat_map(u64::to_le_bytes)
+                                    .map(|byte| format!("{byte:02x}"))
+                                    .collect();
+                                let mut mxcsr = 0x1f80 | (rc << 13) | old_sticky;
+                                for (pattern_bit, mask_bit) in [(0, 7), (1, 8), (2, 12)] {
+                                    if mask_pattern & (1 << pattern_bit) == 0 {
+                                        mxcsr &= !(1 << mask_bit);
+                                    }
+                                }
+                                fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                                    HexU64(u64::from(mxcsr));
+                                fixture
+                                    .sqrtpd_memory_rax_unmasked_controls
+                                    .as_mut()
+                                    .unwrap()
+                                    .cr4_osxmmexcpt = osxmmexcpt;
+
+                                let (_, ie, de, computed_pe) =
+                                    od_testkit::v2::independent_sqrtpd_for_test(raw, mxcsr);
+                                let masks = (mxcsr >> 7) & 0x3f;
+                                let unmasked_pre = ie && masks & 1 == 0 || de && masks & 2 == 0;
+                                let computed_pe = computed_pe && !unmasked_pre;
+                                let arithmetic_fault =
+                                    unmasked_pre || computed_pe && masks & 32 == 0;
+                                fixture.expected_exit = if arithmetic_fault {
+                                    v2::ExpectedExit::Exception
+                                } else {
+                                    v2::ExpectedExit::StopAddress
+                                };
+
+                                let loaded =
+                                    Fixture::from_json(&fixture.to_json().unwrap()).unwrap();
+                                let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+                                let result = execute_fixture_v2(&loaded, &mut memory);
+                                assert_eq!(result.backend, Backend::Interpreter);
+                                result.validate_for(&loaded).unwrap_or_else(|error| {
+                            panic!("{first_name}+{second_name} mask={mask_pattern} OSXMMEXCPT={osxmmexcpt}: {error}")
+                        });
+                                assert_eq!(
+                                    matches!(result.outcome, Outcome::Exception {}),
+                                    arithmetic_fault,
+                                    "{first_name}+{second_name} mask={mask_pattern} OSXMMEXCPT={osxmmexcpt}"
+                                );
+                                let Observation::Available { value: snapshot } = &result.snapshot
+                                else {
+                                    panic!("missing SQRTPD snapshot")
+                                };
+                                let expected_flags = u32::from(ie)
+                                    | (u32::from(de) << 1)
+                                    | (u32::from(computed_pe) << 5);
+                                assert_eq!(
+                                    snapshot.state.sse.as_ref().unwrap().mxcsr.get(),
+                                    u64::from(mxcsr | expected_flags)
+                                );
+                                if arithmetic_fault {
+                                    assert_eq!(
+                                        snapshot.state.sse.as_ref().unwrap().xmm[0],
+                                        base.initial_state.sse.as_ref().unwrap().xmm[0],
+                                        "fault must suppress the whole XMM destination"
+                                    );
+                                    assert_eq!(snapshot.state.rip, base.initial_state.rip);
+                                    assert_eq!(
+                                        result.instructions_executed,
+                                        Observation::Available { value: HexU64(0) }
+                                    );
+                                } else {
+                                    assert_eq!(
+                                        result.instructions_executed,
+                                        Observation::Available { value: HexU64(1) }
+                                    );
+                                }
+                                checks += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checks, 102_400);
     }
 }

@@ -666,6 +666,8 @@ pub enum Profile {
     LongSqrtsdMemoryRaxUnmaskedV1,
     #[serde(rename = "s2-long-sqrtpd-memory-rax-v1")]
     LongSqrtpdMemoryRaxV1,
+    #[serde(rename = "s2-long-sqrtpd-memory-rax-unmasked-v1")]
+    LongSqrtpdMemoryRaxUnmaskedV1,
     #[serde(rename = "s2-long-maxpd-memory-rax-v1")]
     LongMaxpdMemoryRaxV1,
     #[serde(rename = "s2-long-maxps-memory-rax-v1")]
@@ -1567,6 +1569,7 @@ impl IntegerState {
                     | Profile::LongSqrtsdMemoryRaxV1
                     | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                     | Profile::LongSqrtpdMemoryRaxV1
+                    | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                     | Profile::LongMaxpdMemoryRaxV1
                     | Profile::LongMaxpsMemoryRaxV1
                     | Profile::LongMaxpsMemoryUnmaskedRaxV1,
@@ -1707,6 +1710,7 @@ impl IntegerState {
                     | Profile::LongSqrtsdMemoryRaxV1
                     | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                     | Profile::LongSqrtpdMemoryRaxV1
+                    | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                     | Profile::LongMaxpdMemoryRaxV1
                     | Profile::LongMaxpsMemoryRaxV1
                     | Profile::LongMaxpsMemoryUnmaskedRaxV1
@@ -2032,6 +2036,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1
@@ -2286,6 +2291,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1
@@ -2967,6 +2973,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1
@@ -3252,6 +3259,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1
@@ -3546,6 +3554,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1
@@ -3848,6 +3857,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongCmpsdRegistersV1
@@ -4305,6 +4315,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1
@@ -4362,6 +4373,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1
@@ -4687,6 +4699,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1,
@@ -4987,6 +5000,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1
@@ -5245,6 +5259,7 @@ impl IntegerState {
                 | Profile::LongSqrtsdMemoryRaxV1
                 | Profile::LongSqrtsdMemoryRaxUnmaskedV1
                 | Profile::LongSqrtpdMemoryRaxV1
+                | Profile::LongSqrtpdMemoryRaxUnmaskedV1
                 | Profile::LongMaxpdMemoryRaxV1
                 | Profile::LongMaxpsMemoryRaxV1
                 | Profile::LongMaxpsMemoryUnmaskedRaxV1
@@ -5698,6 +5713,8 @@ pub struct Fixture {
     pub sqrtss_memory_rax_unmasked_controls: Option<SqrtssMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtpd_memory_rax_controls: Option<SqrtpdMemoryRaxControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtpd_memory_rax_unmasked_controls: Option<SqrtpdMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtsd_memory_rax_controls: Option<SqrtsdMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6204,6 +6221,15 @@ pub struct SqrtpdMemoryRaxControlSnapshot {
     pub cr0_em: bool,
     pub cr0_ts: bool,
     pub cr4_osfxsr: bool,
+}
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SqrtpdMemoryRaxUnmaskedControlSnapshot {
+    pub sse2_available: bool,
+    pub cr0_em: bool,
+    pub cr0_ts: bool,
+    pub cr4_osfxsr: bool,
+    pub cr4_osxmmexcpt: bool,
 }
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -13607,6 +13633,104 @@ impl Fixture {
                 "only valid for SQRTSD m64 profile",
             ));
         }
+        if self.profile == Profile::LongSqrtpdMemoryRaxUnmaskedV1 {
+            let controls = self.sqrtpd_memory_rax_unmasked_controls.ok_or_else(|| {
+                invalid(
+                    "sqrtpd_memory_rax_unmasked_controls",
+                    "required by unmasked SQRTPD m128 profile",
+                )
+            })?;
+            let code = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "code")
+                .ok_or_else(|| {
+                    invalid("memory.code", "required by unmasked SQRTPD m128 profile")
+                })?;
+            let data = self
+                .memory
+                .iter()
+                .find(|region| region.region_id == "data")
+                .ok_or_else(|| {
+                    invalid("memory.data", "required by unmasked SQRTPD m128 profile")
+                })?;
+            let start = self.initial_state.rip.get();
+            let source = self.initial_state.gpr[0].get();
+            if self.sqrtpd_memory_rax_controls.is_some()
+                || code.guest_address.get() != start
+                || code.length != 4
+                || !code.permissions.execute
+                || decode_bytes(&code.initial_bytes_hex)? != [0x66, 0x0f, 0x51, 0x00]
+                || self.memory.len() != 2
+                || data.guest_address.get() != source
+                || data.length != 16
+                || !data.permissions.read
+                || data.permissions.write
+                || data.permissions.execute
+                || self.instruction_budget != 1
+                || self.stop_rip.map(HexU64::get) != start.checked_add(4)
+                || !matches!(
+                    self.expected_exit,
+                    ExpectedExit::Exception | ExpectedExit::StopAddress
+                )
+            {
+                return Err(invalid(
+                    "memory",
+                    "unmasked SQRTPD m128 requires exact 66 0F 51 00, one code/read-only-data mapping, budget 1, and stop RIP entry+4",
+                ));
+            }
+            let mxcsr = self
+                .initial_state
+                .sse
+                .as_ref()
+                .ok_or_else(|| invalid("state.sse", "required by unmasked SQRTPD m128 profile"))?
+                .mxcsr
+                .get() as u32;
+            if mxcsr & !0xffbf != 0 || mxcsr & (1 << 6) != 0 {
+                return Err(invalid(
+                    "state.sse.mxcsr",
+                    "unmasked SQRTPD m128 requires supported MXCSR bits and DAZ=0",
+                ));
+            }
+            let gate = !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr;
+            let nm = !gate && controls.cr0_ts;
+            let aligned = source & 0xf == 0;
+            let last = source.checked_add(15);
+            let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+            let span = last.is_none_or(|end| !canonical(source) || !canonical(end));
+            let mut simd_fault = false;
+            if !gate && !nm && aligned && !span {
+                let bytes = decode_bytes(&data.initial_bytes_hex)?;
+                if bytes.len() != 16 {
+                    return Err(invalid("memory.data", "must contain exactly sixteen bytes"));
+                }
+                let raw = [
+                    u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+                    u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+                ];
+                let (_, ie, de, computed_pe) = independent_sqrtpd(raw, mxcsr);
+                let masks = (mxcsr >> 7) & 0x3f;
+                let unmasked_pre = (ie && masks & 1 == 0) || (de && masks & 2 == 0);
+                let pe = computed_pe && !unmasked_pre;
+                simd_fault = unmasked_pre || (pe && masks & 32 == 0);
+            }
+            let expected = if gate || nm || !aligned || span || simd_fault {
+                ExpectedExit::Exception
+            } else {
+                ExpectedExit::StopAddress
+            };
+            if self.expected_exit != expected {
+                return Err(invalid(
+                    "expected_exit",
+                    "must reflect unmasked SQRTPD gates, alignment, span, and SIMD exception masks",
+                ));
+            }
+        } else if self.sqrtpd_memory_rax_unmasked_controls.is_some() {
+            return Err(invalid(
+                "sqrtpd_memory_rax_unmasked_controls",
+                "only valid for unmasked SQRTPD m128 profile",
+            ));
+        }
         if self.profile == Profile::LongSqrtpdMemoryRaxV1 {
             let controls = self.sqrtpd_memory_rax_controls.ok_or_else(|| {
                 invalid(
@@ -17807,10 +17931,12 @@ impl Fixture {
                         .filter(|bytes| bytes == &[0xf2, 0x0f, 0x51, 0x00])
                         .map(|_| 4)
                 }
-                Profile::LongSqrtpdMemoryRaxV1 => decode_bytes(&code_bytes)
-                    .ok()
-                    .filter(|bytes| bytes == &[0x66, 0x0f, 0x51, 0x00])
-                    .map(|_| 4),
+                Profile::LongSqrtpdMemoryRaxV1 | Profile::LongSqrtpdMemoryRaxUnmaskedV1 => {
+                    decode_bytes(&code_bytes)
+                        .ok()
+                        .filter(|bytes| bytes == &[0x66, 0x0f, 0x51, 0x00])
+                        .map(|_| 4)
+                }
                 Profile::LongMinpdMemoryRaxV1 => decode_bytes(&code_bytes)
                     .ok()
                     .filter(|bytes| bytes == &[0x66, 0x0f, 0x5d, 0x00])
@@ -19950,6 +20076,7 @@ impl Fixture {
             sqrtss_memory_rax_controls: None,
             sqrtss_memory_rax_unmasked_controls: None,
             sqrtpd_memory_rax_controls: None,
+            sqrtpd_memory_rax_unmasked_controls: None,
             sqrtsd_memory_rax_controls: None,
             sqrtsd_memory_rax_unmasked_controls: None,
             maxpd_memory_rax_controls: None,
@@ -20233,6 +20360,8 @@ pub struct Snapshot {
     pub sqrtss_memory_rax_unmasked_controls: Option<SqrtssMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtpd_memory_rax_controls: Option<SqrtpdMemoryRaxControlSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqrtpd_memory_rax_unmasked_controls: Option<SqrtpdMemoryRaxUnmaskedControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqrtsd_memory_rax_controls: Option<SqrtsdMemoryRaxControlSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -22084,6 +22213,19 @@ impl RunResult {
                         "only valid for SQRTPD m128 profile",
                     ));
                 }
+                if self.profile == Profile::LongSqrtpdMemoryRaxUnmaskedV1 {
+                    if snapshot.sqrtpd_memory_rax_unmasked_controls.is_none() {
+                        return Err(invalid(
+                            "snapshot.sqrtpd_memory_rax_unmasked_controls",
+                            "required by unmasked SQRTPD m128 profile",
+                        ));
+                    }
+                } else if snapshot.sqrtpd_memory_rax_unmasked_controls.is_some() {
+                    return Err(invalid(
+                        "snapshot.sqrtpd_memory_rax_unmasked_controls",
+                        "only valid for unmasked SQRTPD m128 profile",
+                    ));
+                }
             }
             Observation::Unavailable { reason } => {
                 text(reason, "snapshot.exception")?;
@@ -23878,6 +24020,28 @@ impl RunResult {
             }
             if loaded.fixture.profile == Profile::LongSqrtpdMemoryRaxV1 {
                 validate_sqrtpd_memory_rax_result(loaded, self, value)?;
+            }
+            match (
+                loaded.fixture.profile,
+                loaded.fixture.sqrtpd_memory_rax_unmasked_controls,
+                value.sqrtpd_memory_rax_unmasked_controls,
+            ) {
+                (Profile::LongSqrtpdMemoryRaxUnmaskedV1, Some(input), Some(output))
+                    if input == output => {}
+                (Profile::LongSqrtpdMemoryRaxUnmaskedV1, _, _) => {
+                    return Err(FormatError::CaseMismatch(
+                        "sqrtpd_memory_rax_unmasked_controls",
+                    ));
+                }
+                (_, None, None) => {}
+                _ => {
+                    return Err(FormatError::CaseMismatch(
+                        "sqrtpd_memory_rax_unmasked_controls",
+                    ));
+                }
+            }
+            if loaded.fixture.profile == Profile::LongSqrtpdMemoryRaxUnmaskedV1 {
+                validate_sqrtpd_memory_rax_unmasked_result(loaded, self, value)?;
             }
             match (
                 loaded.fixture.profile,
@@ -40909,6 +41073,11 @@ fn independent_sqrtpd(raw: [u64; 2], mxcsr: u32) -> ([u64; 2], bool, bool, bool)
     (values, ie, de, pe)
 }
 
+#[doc(hidden)]
+pub fn independent_sqrtpd_for_test(raw: [u64; 2], mxcsr: u32) -> ([u64; 2], bool, bool, bool) {
+    independent_sqrtpd(raw, mxcsr)
+}
+
 /// Independently parse the canonical Long64 CVTDQ2PS register byte forms.
 fn cvtdq2ps_register_encoding(code_bytes: &str) -> Option<(u8, u8, u32)> {
     if code_bytes.len() % 2 != 0 {
@@ -45984,6 +46153,153 @@ fn validate_sqrtsd_memory_rax_unmasked_result(
         _ => {
             return Err(FormatError::CaseMismatch(
                 "unmasked SQRTSD m64 outcome/exception",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_sqrtpd_memory_rax_unmasked_result(
+    loaded: &LoadedFixture,
+    result: &RunResult,
+    snapshot: &Snapshot,
+) -> Result<(), FormatError> {
+    let fixture = &loaded.fixture;
+    let controls = fixture
+        .sqrtpd_memory_rax_unmasked_controls
+        .ok_or(FormatError::CaseMismatch(
+            "sqrtpd_memory_rax_unmasked_controls",
+        ))?;
+    let code = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "code")
+        .ok_or(FormatError::CaseMismatch("memory.code"))?;
+    if decode_bytes(&code.initial_bytes_hex)? != [0x66, 0x0f, 0x51, 0x00] {
+        return Err(FormatError::CaseMismatch("unmasked SQRTPD m128 encoding"));
+    }
+    let initial_sse = fixture
+        .initial_state
+        .sse
+        .as_ref()
+        .ok_or(FormatError::CaseMismatch("state.sse"))?;
+    let data = fixture
+        .memory
+        .iter()
+        .find(|region| region.region_id == "data")
+        .ok_or(FormatError::CaseMismatch("memory.data"))?;
+    let data_bytes = decode_bytes(&data.initial_bytes_hex)?;
+    if data_bytes.len() != 16 {
+        return Err(FormatError::CaseMismatch("memory.data"));
+    }
+    let raw = [
+        u64::from_le_bytes(data_bytes[0..8].try_into().unwrap()),
+        u64::from_le_bytes(data_bytes[8..16].try_into().unwrap()),
+    ];
+    let mxcsr = initial_sse.mxcsr.get() as u32;
+    let (values, invalid, denormal, computed_pe) = independent_sqrtpd(raw, mxcsr);
+    let masks = (mxcsr >> 7) & 0x3f;
+    let unmasked_pre = (invalid && masks & 1 == 0) || (denormal && masks & 2 == 0);
+    let precision = computed_pe && !unmasked_pre;
+    let unmasked_post = precision && masks & 32 == 0;
+    let source = fixture.initial_state.gpr[0].get();
+    let gate = if !controls.sse2_available || controls.cr0_em || !controls.cr4_osfxsr {
+        Some(6)
+    } else if controls.cr0_ts {
+        Some(7)
+    } else {
+        None
+    };
+    let aligned = source & 0xf == 0;
+    let last = source.checked_add(15);
+    let canonical = |address: u64| address >> 47 == 0 || address >> 47 == 0x1ffff;
+    let span = last.is_none_or(|end| !canonical(source) || !canonical(end));
+    let address_fault = if !aligned || span { Some(13) } else { None };
+    let preflight_fault = gate.or(address_fault);
+    let simd_fault = preflight_fault.is_none() && (unmasked_pre || unmasked_post);
+    let fault = preflight_fault
+        .or_else(|| simd_fault.then_some(if controls.cr4_osxmmexcpt { 19 } else { 6 }));
+    if !matches!(
+        (fault.is_some(), fixture.expected_exit),
+        (true, ExpectedExit::Exception) | (false, ExpectedExit::StopAddress)
+    ) {
+        return Err(FormatError::CaseMismatch(
+            "unmasked SQRTPD m128 expected exit",
+        ));
+    }
+
+    let mut expected = fixture.initial_state.clone();
+    if preflight_fault.is_none() {
+        let sse = expected
+            .sse
+            .as_mut()
+            .ok_or(FormatError::CaseMismatch("state.sse"))?;
+        sse.mxcsr = HexU64(u64::from(
+            mxcsr | u32::from(invalid) | (u32::from(denormal) << 1) | (u32::from(precision) << 5),
+        ));
+        if !simd_fault {
+            let mut expected_xmm = [0u8; 16];
+            for (lane, value) in values.into_iter().enumerate() {
+                expected_xmm[lane * 8..lane * 8 + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            sse.xmm[0] = crate::memory::encode_bytes(&expected_xmm);
+            expected.rip = HexU64(
+                fixture
+                    .initial_state
+                    .rip
+                    .get()
+                    .checked_add(4)
+                    .ok_or(FormatError::CaseMismatch("SQRTPD m128 RIP overflow"))?,
+            );
+        }
+    }
+    let memory = fixture
+        .memory
+        .iter()
+        .map(|region| MemoryRegionSnapshot {
+            region_id: region.region_id.clone(),
+            guest_address: region.guest_address,
+            bytes_hex: region.initial_bytes_hex.clone(),
+        })
+        .collect::<Vec<_>>();
+    if snapshot.state != expected
+        || snapshot.rflags_defined != HexU64(INTEGER_FLAGS)
+        || snapshot.memory != memory
+    {
+        return Err(FormatError::CaseMismatch(
+            "unmasked SQRTPD m128 output state",
+        ));
+    }
+    let retired = preflight_fault.is_none() && !simd_fault;
+    if result.instructions_executed
+        != (Observation::Available {
+            value: HexU64(u64::from(retired)),
+        })
+    {
+        return Err(FormatError::CaseMismatch("unmasked SQRTPD m128 retirement"));
+    }
+    match (fault, &result.outcome, &snapshot.exception) {
+        (
+            Some(vector),
+            Outcome::Exception {},
+            Observation::Available {
+                value: Some(exception),
+            },
+        ) if exception.vector == vector
+            && exception.error_code
+                == if vector == 13 {
+                    Observation::Available { value: HexU64(0) }
+                } else {
+                    Observation::Unavailable {
+                        reason: "exception has no architectural error code".into(),
+                    }
+                }
+            && exception.faulting_rip == fixture.initial_state.rip
+            && matches!(exception.fault_address, Observation::Unavailable { .. }) => {}
+        (None, Outcome::StopAddress {}, Observation::Available { value: None }) => {}
+        _ => {
+            return Err(FormatError::CaseMismatch(
+                "unmasked SQRTPD m128 outcome/exception",
             ));
         }
     }
