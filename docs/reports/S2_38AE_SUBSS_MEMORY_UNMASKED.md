@@ -73,5 +73,7 @@ legacy S2-37dk SUBSS writable-source admission and DIVSS S2-37do rejection in
 opposite directions. Both predicates are restored to their pre-slice behavior;
 the new unmasked SUBSS profile alone requires a read-only source. A regression
 test confirms masked SUBSS accepts the former writable case and DIVSS rejects
-it. The focused test and all affected package suites pass; targeted Sol/high
-re-review of the correction is pending.
+it. The focused test and all affected package suites pass. Targeted independent
+Sol/high re-review of the correction is clean, with no collateral behavior
+changes found. That review covered the correction diff; full suites are
+recorded above.
