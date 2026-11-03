@@ -38910,6 +38910,535 @@ fn cvtpd2dq_m128_unmasked_literals_and_full_state_matrix() {
     }
 }
 
+fn cvttpd2dq_raw_integer_oracle(raw: u64, rc: u32) -> (u32, bool, bool) {
+    let sign = raw >> 63 != 0;
+    let exponent = ((raw >> 52) & 0x7ff) as i32;
+    let fraction = raw & 0x000f_ffff_ffff_ffff;
+    if exponent == 0x7ff {
+        return (0x8000_0000, true, false);
+    }
+    let (significand, power) = if exponent == 0 {
+        (fraction, -1074)
+    } else {
+        ((1u64 << 52) | fraction, exponent - 1023 - 52)
+    };
+    if significand == 0 {
+        return (0, false, false);
+    }
+    let (mut magnitude, remainder, _shift) = if power >= 0 {
+        if power > 31 {
+            return (0x8000_0000, true, false);
+        }
+        ((significand as u128) << power, 0, 0)
+    } else {
+        let shift = (-power) as u32;
+        let quotient = if shift < 64 { significand >> shift } else { 0 };
+        let remainder = if shift < 64 {
+            significand & ((1u64 << shift) - 1)
+        } else {
+            significand
+        };
+        (u128::from(quotient), remainder, shift)
+    };
+    let inexact = remainder != 0;
+    let _ = rc; // CVTTPD2DQ truncates independently of MXCSR.RC.
+    let increment = false;
+    magnitude += u128::from(increment);
+    let limit = if sign {
+        0x8000_0000u128
+    } else {
+        0x7fff_ffffu128
+    };
+    if magnitude > limit {
+        return (0x8000_0000, true, false);
+    }
+    let signed = if sign {
+        -(magnitude as i64)
+    } else {
+        magnitude as i64
+    };
+    (signed as i32 as u32, false, inexact)
+}
+
+#[test]
+fn cvttpd2dq_m128_unmasked_literals_and_full_state_matrix() {
+    use od_isa::execute::{
+        Cvttpd2dqMemoryUnmaskedControls, RunConfig, RunExit,
+        run_with_cvttpd2dq_memory_unmasked_controls,
+    };
+    use od_isa::memory::{AccessContext, GuestMemory};
+    use od_isa::state::SseState;
+    use od_isa::{LongModeState, Register};
+    use od_testkit::memory::{FlatMemory, encode_bytes};
+    use od_testkit::v2::{ExpectedExit, Profile};
+
+    let literal_names = [
+        "exact_int_min",
+        "masked_invalid_indefinite",
+        "masked_pe_success",
+        "mixed_fully_masked",
+        "ie_unmasked_xm",
+        "ie_unmasked_simd_ud",
+        "pe_unmasked_xm",
+        "pe_unmasked_simd_ud",
+        "mixed_ie_first",
+        "mixed_ie_first_simd_ud",
+        "mixed_pe_masked",
+        "mixed_pe_masked_simd_ud",
+        "stale_flags_only",
+        "gate_nm",
+        "gate_ud",
+        "aligned_ac1",
+    ];
+    let mut base = None;
+    for name in literal_names {
+        let path = format!("../../tests/fixtures/x86/stage2/s2_38az_cvttpd2dq_{name}.case.json");
+        let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("{path}: {error}"));
+        let (input, result) = run(&bytes, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            Profile::LongCvttpd2dqMemoryUnmaskedRaxV1,
+            "{name}"
+        );
+        od_testkit::v2::compare(&input, &result, &result)
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        if name == "exact_int_min" {
+            base = Some(input.fixture.clone());
+        }
+        if matches!(name, "ie_unmasked_xm" | "pe_unmasked_xm" | "mixed_ie_first") {
+            let sse = snapshot(&result).state.sse.as_ref().unwrap();
+            let initial = input.fixture.initial_state.sse.as_ref().unwrap();
+            assert_eq!(sse.xmm[0], initial.xmm[0], "event preserves XMM0: {name}");
+            assert_eq!(snapshot(&result).state.rip, input.fixture.initial_state.rip);
+        }
+    }
+    let exact_min_bytes =
+        std::fs::read("../../tests/fixtures/x86/stage2/s2_38az_cvttpd2dq_exact_int_min.case.json")
+            .unwrap();
+    let invalid_bytes = std::fs::read(
+        "../../tests/fixtures/x86/stage2/s2_38az_cvttpd2dq_masked_invalid_indefinite.case.json",
+    )
+    .unwrap();
+    let (_, exact_min_result) = run(&exact_min_bytes, "interpreter", 0);
+    let (_, invalid_result) = run(&invalid_bytes, "interpreter", 0);
+    let exact_min = &snapshot(&exact_min_result).state.sse.as_ref().unwrap().xmm[0];
+    let indefinite = &snapshot(&invalid_result).state.sse.as_ref().unwrap().xmm[0];
+    assert_eq!(&exact_min[..8], &indefinite[..8]);
+    assert_eq!(
+        snapshot(&exact_min_result)
+            .state
+            .sse
+            .as_ref()
+            .unwrap()
+            .mxcsr
+            .get()
+            & 1,
+        0
+    );
+    assert_eq!(
+        snapshot(&invalid_result)
+            .state
+            .sse
+            .as_ref()
+            .unwrap()
+            .mxcsr
+            .get()
+            & 1,
+        1
+    );
+    let base = base.expect("exact minimum literal provides the matrix template");
+    let base_json = base.to_json().unwrap();
+    for backend in ["jit", "native"] {
+        let (_, denied) = run(&base_json, backend, 4);
+        assert!(
+            matches!(denied.outcome, Outcome::Unsupported { .. }),
+            "{backend}"
+        );
+        assert!(
+            matches!(denied.snapshot, Observation::Unavailable { .. }),
+            "{backend}"
+        );
+    }
+    let (loaded, exact_result) = run(&base_json, "interpreter", 0);
+    let mut tampered_controls = exact_result.clone();
+    snapshot_mut(&mut tampered_controls)
+        .cvttpd2dq_m128_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = false;
+    assert!(tampered_controls.validate_for(&loaded).is_err());
+    let mut tampered_destination = exact_result.clone();
+    snapshot_mut(&mut tampered_destination)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .xmm[0]
+        .replace_range(16..18, "ff");
+    assert!(tampered_destination.validate_for(&loaded).is_err());
+    let mut tampered_memory = exact_result.clone();
+    snapshot_mut(&mut tampered_memory).memory[1]
+        .bytes_hex
+        .replace_range(0..2, "ff");
+    assert!(tampered_memory.validate_for(&loaded).is_err());
+    let event_path = "../../tests/fixtures/x86/stage2/s2_38az_cvttpd2dq_ie_unmasked_xm.case.json";
+    let event_bytes = std::fs::read(event_path).unwrap();
+    let (event_input, event_result) = run(&event_bytes, "interpreter", 0);
+    let mut tampered_event_status = event_result.clone();
+    snapshot_mut(&mut tampered_event_status)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .mxcsr = HexU64(0x1f00);
+    assert!(tampered_event_status.validate_for(&event_input).is_err());
+    let mut tampered_event_vector = event_result.clone();
+    if let Observation::Available {
+        value: Some(exception),
+    } = &mut snapshot_mut(&mut tampered_event_vector).exception
+    {
+        exception.vector = 6;
+    } else {
+        panic!("expected an unmasked IE event");
+    }
+    assert!(tampered_event_vector.validate_for(&event_input).is_err());
+    let mut missing_controls = base.clone();
+    missing_controls.cvttpd2dq_m128_unmasked_controls = None;
+    assert!(missing_controls.validate().is_err());
+    let mut masked_cross_profile = base.clone();
+    masked_cross_profile.profile = Profile::LongCvttpd2dqMemoryRaxV1;
+    assert!(masked_cross_profile.validate().is_err());
+    let mut foreign_controls = base.clone();
+    foreign_controls.cvtps2dq_m128_unmasked_controls =
+        Some(od_testkit::v2::Cvtps2dqMemoryUnmaskedControlSnapshot {
+            sse2_available: true,
+            cr0_em: false,
+            cr0_ts: false,
+            cr4_osfxsr: true,
+            cr4_osxmmexcpt: true,
+        });
+    assert!(foreign_controls.validate().is_err());
+
+    let class_raw = [
+        0x3ff0_0000_0000_0000u64,
+        0x7ff8_0000_0000_0042,
+        0x3ff8_0000_0000_0000,
+    ];
+    let mut cases = 0usize;
+    for encoded in 0..9usize {
+        let classes = [encoded % 3, encoded / 3];
+        for rc in 0..4u32 {
+            for old_sticky in 0..64u32 {
+                for im in [false, true] {
+                    for pm in [false, true] {
+                        for osxmmexcpt in [false, true] {
+                            let mxcsr = (0x1f80 & !((1 << 7) | (1 << 12)))
+                                | (rc << 13)
+                                | old_sticky
+                                | (u32::from(im) << 7)
+                                | (u32::from(pm) << 12);
+                            let lane_raw = [class_raw[classes[0]], class_raw[classes[1]]];
+                            let source = lane_raw
+                                .into_iter()
+                                .flat_map(u64::to_le_bytes)
+                                .collect::<Vec<_>>();
+                            let mut fixture = base.clone();
+                            fixture.case_id = format!(
+                                "s2_38az_matrix_{encoded}_{rc}_{old_sticky}_{im}_{pm}_{osxmmexcpt}"
+                            );
+                            fixture.memory[1].initial_bytes_hex = encode_bytes(&source);
+                            fixture.initial_state.sse.as_mut().unwrap().mxcsr =
+                                HexU64(u64::from(mxcsr));
+                            let controls =
+                                fixture.cvttpd2dq_m128_unmasked_controls.as_mut().unwrap();
+                            controls.cr4_osxmmexcpt = osxmmexcpt;
+                            let input_oracle =
+                                lane_raw.map(|raw| cvttpd2dq_raw_integer_oracle(raw, rc));
+                            let new_ie = input_oracle.iter().any(|(_, ie, _)| *ie);
+                            let new_pe = input_oracle.iter().any(|(_, ie, pe)| !*ie && *pe);
+                            let unmasked_ie = new_ie && !im;
+                            let unmasked_pe = new_pe && !pm;
+                            let event = unmasked_ie || unmasked_pe;
+                            fixture.expected_exit = if event {
+                                ExpectedExit::Exception
+                            } else {
+                                ExpectedExit::StopAddress
+                            };
+                            fixture.validate().unwrap();
+                            let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+                            let source_snapshot = memory.snapshot();
+                            let mut actual_rhs = [0u8; 16];
+                            memory
+                                .read(0x2000, AccessContext::default(), &mut actual_rhs)
+                                .unwrap();
+                            let actual_lanes = [
+                                u64::from_le_bytes(actual_rhs[..8].try_into().unwrap()),
+                                u64::from_le_bytes(actual_rhs[8..].try_into().unwrap()),
+                            ];
+                            let oracle =
+                                actual_lanes.map(|raw| cvttpd2dq_raw_integer_oracle(raw, rc));
+                            assert_eq!(oracle, input_oracle, "oracle uses actual memory RHS");
+                            let mut state = LongModeState::default();
+                            state.rip = fixture.initial_state.rip.get();
+                            state.rflags = fixture.initial_state.rflags.get();
+                            for (target, value) in
+                                state.gpr.iter_mut().zip(&fixture.initial_state.gpr)
+                            {
+                                *target = value.get();
+                            }
+                            state.gpr[Register::Rax as usize] = 0x2000;
+                            let initial_xmm = fixture.initial_state.sse.as_ref().unwrap();
+                            let mut xmm = [[0u8; 16]; 16];
+                            for (out, encoded) in xmm.iter_mut().zip(&initial_xmm.xmm) {
+                                out.copy_from_slice(
+                                    &od_testkit::v2::decode_bytes(encoded).unwrap(),
+                                );
+                            }
+                            state.sse = Some(SseState { xmm, mxcsr });
+                            state.x87 = Some(od_isa::state::X87State::fixture_seed());
+                            let before = state.clone();
+                            let controls = Cvttpd2dqMemoryUnmaskedControls {
+                                sse2_available: true,
+                                cr0_em: false,
+                                cr0_ts: false,
+                                cr4_osfxsr: true,
+                                cr4_osxmmexcpt: osxmmexcpt,
+                            };
+                            let result = run_with_cvttpd2dq_memory_unmasked_controls(
+                                &mut state,
+                                &mut memory,
+                                RunConfig {
+                                    instruction_budget: 1,
+                                    stop_rip: Some(before.rip + 4),
+                                    context: AccessContext::default(),
+                                },
+                                controls,
+                                || false,
+                            );
+                            let mut expected = before.clone();
+                            let expected_status = if unmasked_ie {
+                                mxcsr | 1
+                            } else {
+                                mxcsr | u32::from(new_ie) | (u32::from(new_pe) << 5)
+                            };
+                            expected.sse.as_mut().unwrap().mxcsr = expected_status;
+                            if !event {
+                                let sse = expected.sse.as_mut().unwrap();
+                                sse.xmm[0] = [0; 16];
+                                for lane in 0..2 {
+                                    sse.xmm[0][lane * 4..lane * 4 + 4]
+                                        .copy_from_slice(&oracle[lane].0.to_le_bytes());
+                                }
+                                expected.rip = before.rip + 4;
+                            }
+                            assert_eq!(
+                                state, expected,
+                                "full LongModeState: classes={classes:?} RC={rc} sticky={old_sticky:#x} IM={im} PM={pm} OSXMMEXCPT={osxmmexcpt}"
+                            );
+                            assert_eq!(
+                                result.instructions_executed,
+                                u64::from(!event),
+                                "retirement"
+                            );
+                            if let Some(vector) = event.then_some(if osxmmexcpt { 19 } else { 6 }) {
+                                assert!(
+                                    matches!(result.exit, RunExit::Fault(ref fault) if fault.vector == vector),
+                                    "event vector {vector}"
+                                );
+                            } else {
+                                assert_eq!(result.exit, RunExit::StopAddress);
+                            }
+                            assert_eq!(
+                                memory.snapshot(),
+                                source_snapshot,
+                                "source memory unchanged"
+                            );
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 18_432);
+
+    let mut numeric_samples: Vec<u64> = vec![
+        0x41df_ffff_ffc0_0000, // INT32_MAX
+        0x41df_ffff_ffbf_ffff, // immediate predecessor of INT32_MAX
+        0x41df_ffff_ffc0_0001, // immediate successor of INT32_MAX
+        0x41df_ffff_ffd0_0000, // INT32_MAX + .25
+        0x41df_ffff_ffe0_0000, // INT32_MAX + .5
+        0x41df_ffff_fff0_0000, // INT32_MAX + .75
+        0x41e0_0000_0000_0000, // +2^31
+        0x41df_ffff_ffff_ffff, // immediate predecessor of +2^31
+        0x41e0_0000_0000_0001, // immediate successor of +2^31
+        0xc1e0_0000_0000_0000, // exact INT32_MIN
+        0xc1df_ffff_ffff_ffff, // immediate neighbor toward zero of INT32_MIN
+        0xc1e0_0000_0000_0001, // immediate neighbor below INT32_MIN
+        0xc1e0_0000_0008_0000, // INT32_MIN - .25
+        0xc1e0_0000_0010_0000, // INT32_MIN - .5
+        0xc1e0_0000_0018_0000, // INT32_MIN - .75
+        0xc1e0_0000_001f_ffff, // immediate neighbor toward zero of -2147483649
+        0xc1e0_0000_0020_0000, // -2^31 - 1
+        0xc1e0_0000_0020_0001, // immediate neighbor below -2147483649
+        0x0000_0000_0000_0000, // +0
+        0x8000_0000_0000_0000, // -0
+        0x3fdf_ffff_ffff_ffff, // immediate predecessor of +.5
+        0x3fe0_0000_0000_0000,
+        0x3fe0_0000_0000_0001, // immediate successor of +.5
+        0x3ff7_ffff_ffff_ffff, // predecessor of +1.5
+        0x3ff8_0000_0000_0000,
+        0x3ff8_0000_0000_0001, // successor of +1.5
+        0x4003_ffff_ffff_ffff, // predecessor of +2.5
+        0x4004_0000_0000_0000,
+        0x4004_0000_0000_0001, // successor of +2.5
+        0xbfd0_0000_0000_0000, // -.25
+        0xbfe0_0000_0000_0000, // -.5
+        0xbfdf_ffff_ffff_ffff, // immediate neighbor toward zero of -.5
+        0xbfe0_0000_0000_0001, // immediate neighbor below -.5
+        0xbff8_0000_0000_0000, // -1.5
+        0xbff7_ffff_ffff_ffff, // immediate neighbor toward zero of -1.5
+        0xbff8_0000_0000_0001, // immediate neighbor below -1.5
+        0xc004_0000_0000_0000, // -2.5
+        0xc003_ffff_ffff_ffff, // immediate neighbor toward zero of -2.5
+        0xc004_0000_0000_0001, // immediate neighbor below -2.5
+        0x0000_0000_0000_0001, // minimum positive subnormal
+        0x000f_ffff_ffff_ffff, // maximum positive subnormal
+        0x0010_0000_0000_0000, // minimum positive normal
+        0x8000_0000_0000_0001, // minimum negative subnormal
+        0x800f_ffff_ffff_ffff, // maximum negative subnormal
+        0x8010_0000_0000_0000, // minimum negative normal
+        0x7ff0_0000_0000_0000, // +infinity
+        0xfff0_0000_0000_0000, // -infinity
+        0x7ff8_0000_0000_0042, // QNaN
+        0xfff8_0000_0000_0042,
+        0x7ff0_0000_0000_0042, // SNaN
+        0xfff0_0000_0000_0042,
+    ];
+    numeric_samples.sort_unstable();
+    for raw in numeric_samples {
+        for rc in 0..4u32 {
+            for ftz in [false, true] {
+                let mxcsr = 0x1f80 | (rc << 13) | (u32::from(ftz) << 15);
+                let mut fixture = base.clone();
+                fixture.case_id = format!("s2_38az_boundary_{raw:016x}_rc{rc}_ftz{ftz}");
+                fixture.memory[1].initial_bytes_hex =
+                    encode_bytes(&[raw.to_le_bytes(), 0u64.to_le_bytes()].concat());
+                fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(mxcsr));
+                fixture.expected_exit = ExpectedExit::StopAddress;
+                fixture.validate().unwrap();
+                let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+                let before_memory = memory.snapshot();
+                let mut actual_rhs = [0u8; 16];
+                memory
+                    .read(0x2000, AccessContext::default(), &mut actual_rhs)
+                    .unwrap();
+                let actual_raw = u64::from_le_bytes(actual_rhs[..8].try_into().unwrap());
+                let mut state = LongModeState::default();
+                state.rip = fixture.initial_state.rip.get();
+                state.rflags = fixture.initial_state.rflags.get();
+                for (target, value) in state.gpr.iter_mut().zip(&fixture.initial_state.gpr) {
+                    *target = value.get();
+                }
+                let mut xmm = [[0u8; 16]; 16];
+                for (out, encoded) in xmm
+                    .iter_mut()
+                    .zip(&fixture.initial_state.sse.as_ref().unwrap().xmm)
+                {
+                    out.copy_from_slice(&od_testkit::v2::decode_bytes(encoded).unwrap());
+                }
+                state.sse = Some(SseState { xmm, mxcsr });
+                state.x87 = Some(od_isa::state::X87State::fixture_seed());
+                let before = state.clone();
+                let result = run_with_cvttpd2dq_memory_unmasked_controls(
+                    &mut state,
+                    &mut memory,
+                    RunConfig {
+                        instruction_budget: 1,
+                        stop_rip: Some(before.rip + 4),
+                        context: AccessContext::default(),
+                    },
+                    Cvttpd2dqMemoryUnmaskedControls {
+                        sse2_available: true,
+                        cr0_em: false,
+                        cr0_ts: false,
+                        cr4_osfxsr: true,
+                        cr4_osxmmexcpt: true,
+                    },
+                    || false,
+                );
+                assert_eq!(result.exit, RunExit::StopAddress, "raw={raw:016x} RC={rc}");
+                let (bits, invalid, inexact) = cvttpd2dq_raw_integer_oracle(actual_raw, rc);
+                let second = cvttpd2dq_raw_integer_oracle(0, rc);
+                let expected_flags =
+                    mxcsr | u32::from(invalid) | (u32::from(!invalid && inexact) << 5);
+                let mut expected = before;
+                let sse = expected.sse.as_mut().unwrap();
+                sse.mxcsr = expected_flags;
+                sse.xmm[0] = [0; 16];
+                sse.xmm[0][..4].copy_from_slice(&bits.to_le_bytes());
+                sse.xmm[0][4..8].copy_from_slice(&second.0.to_le_bytes());
+                expected.rip += 4;
+                assert_eq!(state, expected, "raw={raw:016x} RC={rc} FTZ={ftz}");
+                assert_eq!(state.sse.as_ref().unwrap().mxcsr & (1 << 1), 0, "no DE");
+                assert_eq!(memory.snapshot(), before_memory, "source memory unchanged");
+            }
+        }
+    }
+    for auxiliary_mask in 0..16u32 {
+        for ftz in [false, true] {
+            let mxcsr = (0x1f80 & !0x0000_0f00)
+                | (((auxiliary_mask & 1) != 0) as u32) << 8
+                | (((auxiliary_mask & 2) != 0) as u32) << 9
+                | (((auxiliary_mask & 4) != 0) as u32) << 10
+                | (((auxiliary_mask & 8) != 0) as u32) << 11
+                | (u32::from(ftz) << 15);
+            assert_eq!((mxcsr >> 8) & 0x0f, auxiliary_mask);
+            let mut fixture = base.clone();
+            fixture.case_id = format!("s2_38az_auxiliary_masks_{auxiliary_mask:x}_ftz{ftz}");
+            fixture.memory[1].initial_bytes_hex = encode_bytes(
+                &[1u64.to_le_bytes(), 0x8000_0000_0000_0001u64.to_le_bytes()].concat(),
+            );
+            fixture.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(u64::from(mxcsr));
+            fixture.expected_exit = ExpectedExit::StopAddress;
+            fixture.validate().unwrap();
+            let mut memory = FlatMemory::from_fixture(&fixture).unwrap();
+            let mut state = LongModeState::default();
+            state.rip = fixture.initial_state.rip.get();
+            state.gpr[Register::Rax as usize] = fixture.initial_state.gpr[0].get();
+            let mut xmm = [[0u8; 16]; 16];
+            for (out, encoded) in xmm
+                .iter_mut()
+                .zip(&fixture.initial_state.sse.as_ref().unwrap().xmm)
+            {
+                out.copy_from_slice(&od_testkit::v2::decode_bytes(encoded).unwrap());
+            }
+            state.sse = Some(SseState { xmm, mxcsr });
+            let stop_rip = state.rip + 4;
+            let result = run_with_cvttpd2dq_memory_unmasked_controls(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(stop_rip),
+                    context: AccessContext::default(),
+                },
+                Cvttpd2dqMemoryUnmaskedControls {
+                    sse2_available: true,
+                    cr0_em: false,
+                    cr0_ts: false,
+                    cr4_osfxsr: true,
+                    cr4_osxmmexcpt: true,
+                },
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress);
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr & 0x3f, 0x20);
+            assert_eq!(state.sse.as_ref().unwrap().mxcsr & (1 << 1), 0);
+        }
+    }
+}
+
 #[test]
 fn cvttsd2si_m64_r32_unmasked_schema_result_and_backend_are_profile_locked() {
     let fixture = Fixture::from_json(CVTTSD2SI_R32_MEMORY_UNMASKED_RAX)
