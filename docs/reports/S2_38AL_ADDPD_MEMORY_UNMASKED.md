@@ -51,14 +51,16 @@ alignment at AC=0/1, and JIT/native denial.
 - `cargo test -p od-isa -p od-testkit -p od-runner --offline --quiet` —
   passed: od-isa 1,965; runner 143 unit and 564 fixture tests; od-testkit 461.
 - `cargo check --workspace --all-targets --offline` — passed.
-- `graphify update .` — passed: 12,597 nodes, 27,238 edges, 379 communities.
+- `graphify update .` — passed: 12,571 nodes, 27,344 edges, 342 communities
+  on combined main.
 - `git diff --check` — passed.
-- `python3 tools/check_layout.py` — blocked by existing isolated-worktree
-  conditions: `.git` is an unmapped root entry, and two existing
-  `STAGE_2_REPORT.md` links target absent stage-1/stage-2 work manifests. No
-  layout change was made to mask those conditions.
-- `cargo fmt --all -- --check` — passed before the final testkit fixture-field
-  initializer update; rerun pending.
-- Independent Sol/high review — pending.
+- `python3 tools/check_layout.py` — passed on main: 48 required directories,
+  6 crate scaffolds and 14 instruction scopes.
+- Independent Sol/high review — clean; no actionable findings.
+
+Combined main checks after ADDPS and ADDPD integration passed: od-isa 1,966;
+od-testkit 461; od-runner 147 unit + 564 fixture tests; workspace all-target
+offline check, format, layout and diff checks. The full workspace test suite,
+`od-x86-runner` tests and physical x86 execution were not run.
 
 No physical x86 execution is claimed.

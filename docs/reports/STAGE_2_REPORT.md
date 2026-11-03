@@ -23322,7 +23322,8 @@ profiles remain separate. Physical x86 acceptance is not claimed.
 Focused executor, fixture and interpreter-matrix checks passed, as did
 `cargo fmt --all -- --check` and the affected package suites: od-isa 1,965,
 od-testkit 461, and od-runner 143 unit + 564 fixture tests. Workspace check,
-Graphify refresh and independent review are pending. See the
+Graphify refresh and independent review are recorded in the combined main
+integration below. See the
 [S2-38al report](S2_38AL_ADDPD_MEMORY_UNMASKED.md),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38al--exact-addpd-memory-profile-with-unmasked-exceptions),
 and [stage plan](../plans/STAGE_2.md).
@@ -23391,3 +23392,44 @@ RC, all 64 sticky histories, masks and both delivery mappings. Full package
 results, workspace/layout checks, graph update and independent review are in
 the [S2-38ak implementation report](S2_38AK_ADDPS_MEMORY_UNMASKED.md). No
 physical x86 acceptance is claimed.
+
+<a id="main-integration-s2-38ak-s2-38al"></a>
+
+## Main integration: S2-38ak and S2-38al
+
+S2-38ak adds exact legacy Long64 `0F 58 00` ADDPS XMM0,m128 `[RAX]` with SSE
+bit 25; S2-38al adds exact `66 0F 58 00` ADDPD with SSE2 bit 26. Each has its
+own immutable schema-v2 interpreter-only profile and controls echo; existing
+masked memory and register profiles remain separate. Both fetch and check the
+exact instruction before feature/EM/OSFXSR `#UD` and TS `#NM`, enforce 16-byte
+alignment with `#GP(0)` regardless of AC, validate the canonical `[RAX,RAX+15]`
+span and perform one read16. Noncanonical instruction fetch faults before
+gates. Each lane uses the actual memory RHS and an independent raw integer
+oracle. IE/DE aggregate across every lane before mask handling; unmasked
+pre-events suppress later OE/UE/PE and the full destination, while unmasked PE
+also suppresses the full result and retirement. OSXMMEXCPT selects #XM vector
+19 or SIMD #UD vector 6. JIT/native/C ABI/generic/fragment execution and
+physical x86 acceptance remain closed.
+
+The ADDPS interpreter matrix includes 41,472 four-lane representative × mask ×
+delivery executions plus 376,832 cross-lane/boundary cases across RC, 64 prior
+sticky histories, masks and delivery mappings. ADDPD includes 1,152 event
+products plus 114,688 cross-lane/boundary/history executions. Independent
+Sol/high reviews are clean; both cover actual-memory-RHS validation, event
+priority, access order and sibling-profile preservation.
+
+On combined main, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`,
+`cargo test -p od-isa -p od-testkit -p od-runner --offline --quiet`,
+`python3 tools/check_layout.py`, `git diff --check` and Graphify refresh passed.
+Package totals: od-isa 1,966; od-testkit 461; od-runner 147 unit + 564
+fixture tests. Graphify reported 12,571 nodes / 27,344 edges / 342 communities;
+semantic labels were not refreshed without an LLM API key. The full workspace
+test suite, `od-x86-runner` tests and physical x86 execution were not run.
+
+Main commits: contract preparation `a3eb170`; ADDPS `5998ab5`; ADDPD and
+integration resolution are recorded in the following commit. See
+[S2-38ak](S2_38AK_ADDPS_MEMORY_UNMASKED.md),
+[S2-38al](S2_38AL_ADDPD_MEMORY_UNMASKED.md), the
+[CPU contract](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).
+Stage 2 remains open.
