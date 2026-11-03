@@ -96,6 +96,23 @@ const RSQRTSS_M32_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37eb_rsqrtss_m32_memory_rhs.case.json");
 const RSQRTPS_M128_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dz_rsqrtps_m128_memory_rhs.case.json");
+const FIST_HISTORICAL_SF_IE_FIXTURES: [&[u8]; 5] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_31eg_fist_m16int_historical_sf_ie.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_31eg_fistp_m16int_historical_sf_ie.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_31eg_fist_m32int_historical_sf_ie.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_31eg_fistp_m32int_historical_sf_ie.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_31eg_fistp_m64int_historical_sf_ie.case.json"
+    ),
+];
 const ADDPS_M128_MEMORY_RAX: &[u8] = include_bytes!(
     "../../../tests/fixtures/x86/stage2/s2_37dq_addps_m128_memory_source_and_destination_lanes.case.json"
 );
@@ -13904,6 +13921,59 @@ fn v2_jit_denies_pseudo_nan_fistp_m64_fixture_without_fallback() {
         result.instructions_executed,
         Observation::Unavailable { .. }
     ));
+}
+
+#[test]
+fn local_x87_fist_fistp_fixtures_accept_historical_sf_with_prior_ie() {
+    let expected = [
+        (false, 0x4541_u64, 0xfffc_u64, "0100"),
+        (true, 0x4d41_u64, 0xffff_u64, "0100"),
+        (false, 0x4541_u64, 0xfffc_u64, "01000000"),
+        (true, 0x4d41_u64, 0xffff_u64, "01000000"),
+        (true, 0x4d41_u64, 0xffff_u64, "0100000000000000"),
+    ];
+    for (fixture, (pop, status, tags, stored)) in
+        FIST_HISTORICAL_SF_IE_FIXTURES.iter().zip(expected)
+    {
+        let (input, result) = run(fixture, "interpreter", 0);
+        assert_eq!(count(&result), 1, "{}", input.fixture.case_id);
+        let state = &snapshot(&result).state;
+        let x87 = state.x87.as_ref().expect("x87 state");
+        assert_eq!(x87.status_word, HexU64(status), "{}", input.fixture.case_id);
+        assert_eq!(x87.tag_word, HexU64(tags), "{}", input.fixture.case_id);
+        assert_eq!(
+            ((x87.status_word.get() >> 11) & 7) as u8,
+            u8::from(pop),
+            "{}",
+            input.fixture.case_id
+        );
+        assert_eq!(
+            x87.registers[0], "0000000000000080ff3f",
+            "{}",
+            input.fixture.case_id
+        );
+        assert_eq!(x87.instruction_pointer, HexU64(0x0010_0000));
+        assert_eq!(x87.data_pointer, HexU64(0x0030_0001));
+        assert_eq!(
+            snapshot(&result).memory[1].bytes_hex,
+            stored,
+            "{}",
+            input.fixture.case_id
+        );
+    }
+}
+
+#[test]
+fn v2_jit_denies_historical_sf_fist_fistp_fixtures_without_fallback() {
+    for fixture in FIST_HISTORICAL_SF_IE_FIXTURES {
+        let (_, result) = run(fixture, "jit", 4);
+        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
+    }
 }
 
 #[test]

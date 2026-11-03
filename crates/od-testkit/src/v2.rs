@@ -18956,8 +18956,10 @@ impl Fixture {
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let status = x87.status_word.get();
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-                        || x87.status_word.get() & 0x80df != 0
+                        || status & 0x8080 != 0
+                        || (status & 0x0040 != 0 && status & 0x0001 == 0)
                 });
             let is_fistp_qword_overflow_rejected = code_bytes == "df38"
                 && self.stop_rip.is_none()
@@ -18991,8 +18993,10 @@ impl Fixture {
                 && self.stop_rip.is_none()
                 && self.instruction_budget == 1
                 && self.initial_state.x87.as_ref().is_some_and(|x87| {
+                    let status = x87.status_word.get();
                     !matches!(x87.control_word.get(), 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-                        || x87.status_word.get() & 0x80df != 0
+                        || status & 0x8080 != 0
+                        || (status & 0x0040 != 0 && status & 0x0001 == 0)
                 });
             let is_fld_m80_pseudo_infinity_rejected = code_bytes == "db28"
                 && self.stop_rip.is_none()
