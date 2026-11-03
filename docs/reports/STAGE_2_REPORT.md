@@ -22973,9 +22973,9 @@ with native/JIT closed. See the [S2-31ed standalone report](S2_31ED_FLD_M80FP_HI
 [CPU contracts](../specs/CPU_CONTRACT.md#s2-31ed--historical-sf-with-pre-existing-ie-for-raw-fld-m80fp),
 [Stage 2 plan](../plans/STAGE_2.md), and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
 
-## S2-38x worktree implementation — UCOMISD memory invalid-only
+## S2-38x — UCOMISD memory invalid-only profile
 
-The local `feat/s2-38x-ucomisd-memory-invalid` implementation adds a separate
+The `feat/s2-38x-ucomisd-memory-invalid` implementation adds a separate
 interpreter-only schema-v2 profile for exact `66 0F 2E 00`. It preserves
 S2-37cp's masked profile and S2-38w's COMISD profile. QNaN is quiet; SNaN adds
 IE. An unmasked SNaN commits only sticky IE before `#XM` or arithmetic `#UD`.
@@ -22989,3 +22989,44 @@ See [S2-38x standalone report](S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
 [Stage 2 plan](../plans/STAGE_2.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38x-ucomisd-memory-invalid-only-profile).
+
+
+<a id="main-integration-s2-31ee-s2-38x"></a>
+
+## Main integration: S2-31ee and S2-38x
+
+S2-31ee changes only the bounded FILD pre-read status gate for exact bare
+`DF 00`, `DB 00` and `DF 28`: historical IE/DE/ZE/OE/UE become admissible,
+while PE remains admitted as before and SF/ES/B remain rejected. All six sticky
+flags survive success, C1 clears, and each width has 4,096 full-state cases
+(12,288 total), plus no-read rejection, read/span rollback, FNSTSW/FNCLEX/retry,
+schema-v2 fixtures and native/JIT denial.
+
+S2-38x adds separate immutable schema-v2 interpreter-only UCOMISD m64 profile
+`66 0F 2E 00`, preserving masked S2-37cp and COMISD S2-38w. QNaN remains quiet;
+SNaN raises IE. Any subnormal operand is refused atomically after one read8.
+Six fixtures and an independent raw-u64 oracle cover 1,024 NaN side/class × IM
+× OSXMMEXCPT × prior-sticky combinations, plus RC, finite boundaries, prior IE,
+QNaN+SNaN, CPL0–3 and schema/backend denial. Review caught a mislabeled
+finite-greater fixture containing QNaN; commit `8580b70` corrected it to 2.0 >
+1.0, and the independent reviewer then reported clean.
+
+The paired contract preparation was independently reviewed by Sol/high and
+Astra/high. Both implementation diffs received clean independent Sol/high code
+reviews; the S2-38x reviewer also reran `od-isa` 1,934, `od-testkit` 455 and
+`od-runner` 130+542 before integration. On the combined main, `cargo fmt --all
+-- --check`, `python3 tools/check_layout.py`, `git diff --check`,
+`cargo check --workspace --all-targets --offline`, `cargo test -p od-isa
+--offline --quiet` (1,937), `cargo test -p od-testkit --offline --quiet` (455),
+and `cargo test -p od-runner --offline --quiet` (130 unit + 543 fixture) all
+passed. Graphify after integration: 12,150 nodes / 26,369 edges / 366
+communities; labels were not refreshed without an LLM API key.
+
+The main implementation commits are `fe54bbd` and `8580b70` for S2-38x and
+`ccc259c` for S2-31ee; contract preparation is `fb89822`. No `od-x86-runner`
+or physical x86 acceptance was run. Both profiles remain interpreter-only,
+with native/JIT closed. ISSUE-019 and ISSUE-033 remain open; Stage 2 remains
+open. See the [S2-31ee standalone report](S2_31EE_FILD_HISTORICAL_STICKY_FLAGS.md),
+[S2-38x standalone report](S2_38X_UCOMISD_MEMORY_INVALID_ONLY.md),
+[contracts](../specs/CPU_CONTRACT.md#s2-31ee--historical-sticky-flags-on-exact-bounded-fild-memory-forms),
+[plan](../plans/STAGE_2.md), and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).

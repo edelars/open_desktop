@@ -34,9 +34,18 @@ requests without fallback.
   absent ignored `work/` data. Before this report was added, it also reported
   this report's two new links as broken; those links now resolve. No fixture
   shape or placement violation was reported.
-- Independent Sol/high review was unavailable because the agent thread limit
-  was reached; the parent should perform the required code review before
-  integration.
+- Independent Sol/high review completed cleanly with no findings. It checked
+  the `0x80c0` gate, 12,288-state matrix, literal oracle, sticky preservation,
+  rollback, no-read refusals and backend denial; 10 focused ISA checks and the
+  new runner fixture/backend test passed.
+
+## Main integration
+
+Integrated as `ccc259c` with S2-38x. The independent Sol/high review found no
+defects. Combined main verification passed: od-isa 1,937, od-testkit 455,
+od-runner 130 unit + 543 fixture, workspace offline check, fmt, layout, diff
+check, and Graphify 12,150/26,369/366. See the [main Stage 2 integration
+report](STAGE_2_REPORT.md#main-integration-s2-31ee-s2-38x).
 
 No physical x86 acceptance is claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-31ee--historical-sticky-flags-on-exact-bounded-fild-memory-forms),
 [Stage 2 plan](../plans/STAGE_2.md#s2-31ee--exact-fild-historical-sticky-flag-admission),

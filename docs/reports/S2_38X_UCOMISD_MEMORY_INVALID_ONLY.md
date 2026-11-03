@@ -42,8 +42,18 @@ unmasked exception suppression, and atomic subnormal refusal.
   as an unmapped root file and two pre-existing broken links to ignored Stage
   1/2 oracle manifests; those files are absent from this isolated worktree.
 - `graphify update .`: passed (12,183 nodes, 26,301 edges, 366 communities).
-- Independent review is pending at this report revision.
+- Independent Sol/high review is clean. It found that the finite-greater fixture
+  contained QNaN; commit `8580b70` corrects it to 2.0 > 1.0, after which review
+  completed with no remaining findings.
 - No physical x86 execution or acceptance is claimed. ISSUE-033 remains open.
+
+## Main integration
+
+Integrated as `fe54bbd` plus fixture correction `8580b70` with S2-31ee.
+Independent Sol/high review is clean. Combined main verification passed: od-isa
+1,937, od-testkit 455, od-runner 130 unit + 543 fixture, workspace offline
+check, fmt, layout, diff check, and Graphify 12,150/26,369/366. See the
+[main Stage 2 integration report](STAGE_2_REPORT.md#main-integration-s2-31ee-s2-38x).
 
 See the [CPU contract](../specs/CPU_CONTRACT.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
 [Stage 2 plan](../plans/STAGE_2.md#s2-38x--exact-ucomisd-memory-invalid-only-profile),
