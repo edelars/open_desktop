@@ -38,6 +38,12 @@ def temporary_run_root():
     return temporary, run_root
 
 
+def temporary_fixture_directory():
+    parent = harness.ROOT / "work" / "stage3-harness" / "test-fixtures"
+    parent.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(dir=parent)
+
+
 def valid_process_step(run_root: Path, name: str = "process_sw_vers"):
     argv = harness.vmhost_process_commands(run_root)[name]
     stdout = "Darwin host evidence\n"
@@ -354,7 +360,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             )
 
     def test_s3_34h_exact_gate_requires_exact_identity_and_argv(self):
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             log_path = Path(temporary) / "gate.log"
             output = f"test {harness.MEMORY_EXACT_GATE} ... ok\n"
             log_path.write_text(output)
@@ -561,7 +567,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         run_id = harness.new_run_id()
         run_root = harness.ROOT / "work" / "stage3-harness" / run_id
         try:
-            with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            with temporary_fixture_directory() as temporary:
                 with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
                     summary = passing_final_summary(run_id, Path(temporary))
             self.assertEqual(summary["steps"][p3_step]["test_identity"], p3_identity)
@@ -844,7 +850,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         self.assertEqual(harness.LOCAL_STEPS.count(p4_step), 1)
         self.assertEqual(len([gate for gate in harness.RUST_TEST_GATES if gate[0] == p4_step]), 1)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -941,7 +947,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         run_id = harness.new_run_id()
         run_root = harness.ROOT / "work" / "stage3-harness" / run_id
         try:
-            with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            with temporary_fixture_directory() as temporary:
                 with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
                     summary = passing_final_summary(run_id, Path(temporary))
             self.assertEqual(summary["status"], "local_only")
@@ -994,7 +1000,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         ])
         self.assertIn("crates/od-host/tests/memory_corpus.rs", harness.LOCAL_RUST_TEST_SOURCES)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -1234,7 +1240,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         run_id = harness.new_run_id()
         run_root = harness.ROOT / "work" / "stage3-harness" / run_id
         try:
-            with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            with temporary_fixture_directory() as temporary:
                 log_dir = Path(temporary)
                 with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
                     summary = passing_final_summary(run_id, log_dir)
@@ -1277,7 +1283,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             gate["identity"] for gate in manifest if gate["step"].startswith("s3_33")
         }
         self.assertEqual(len(native_identities), 42)
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_dir = Path(temporary)
             wrong_path = {
                 "artifact_directory": "work/other-run/artifacts/native-register-v1"
@@ -1385,7 +1391,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         harness_run = harness.ROOT / "work" / "stage3-harness" / run_id
         (harness_run / "logs").mkdir(parents=True)
         try:
-            with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            with temporary_fixture_directory() as temporary:
                 summary = passing_final_summary(run_id, harness_run / "logs")
                 manifest_path = Path(temporary) / "input_manifest.json"
                 manifest_raw = harness.write_json_create(manifest_path, harness.input_manifest())
@@ -1480,7 +1486,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             value = ((value ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
         trace["trace_digest"] = f"fnv1a64:{value:016x}"
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_dir = Path(temporary)
             artifact_dir = run_dir / "artifacts" / "native-register-v1"
             artifact_dir.mkdir(parents=True)
@@ -1654,7 +1660,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         run_id = harness.new_run_id()
         run_root = harness.ROOT / "work" / "stage3-harness" / run_id
         try:
-            with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+            with temporary_fixture_directory() as temporary:
                 with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
                     summary = passing_final_summary(run_id, Path(temporary))
             lifecycle_steps = summary["suites"]["local_lifecycle"]["tests"]
@@ -1664,7 +1670,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         finally:
             shutil.rmtree(run_root, ignore_errors=True)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -1741,7 +1747,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         ]
         self.assertEqual(harness.rust_test_argv(expected[2], expected[3]), exact_argv)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             log_dir = Path(temporary)
 
             steps = passing_rust_gate_steps(log_dir)
@@ -1860,7 +1866,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "--", "--exact", "--test-threads=1",
             ])
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -2005,7 +2011,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 "--", "--exact", "--test-threads=1",
             ])
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -2170,7 +2176,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
             harness.validate_rust_test_manifest(missing_manifest)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -2363,7 +2369,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(changed)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -2448,7 +2454,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 ):
                     harness.validate_rust_test_manifest(changed)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -2529,7 +2535,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
             harness.validate_rust_test_manifest(missing_manifest)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -2633,7 +2639,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -2732,7 +2738,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -2836,7 +2842,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -2954,7 +2960,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -3063,7 +3069,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -3166,7 +3172,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -3281,7 +3287,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -3384,7 +3390,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -3485,7 +3491,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -3601,7 +3607,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -3720,7 +3726,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -3845,7 +3851,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -3965,7 +3971,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -4084,7 +4090,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -4203,7 +4209,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -4247,7 +4253,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                         harness.validate_required_rust_test_evidence(changed, run_root)
 
     def test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks(self):
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_dir = Path(temporary)
             reducer_dir = (
                 run_dir
@@ -4312,7 +4318,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
 
 
     def test_rust_gate_summary_rejects_an_omitted_mandatory_gate(self):
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             mandatory_steps = (
                 "s3_33e_native_cmp_rax_imm8_host",
                 "s3_33e_native_cmp_rax_imm8_compiler",
@@ -4358,7 +4364,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                         harness.validate_required_rust_test_evidence(steps)
 
     def test_rust_gate_summary_rejects_forged_passed_evidence(self):
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             steps = passing_rust_gate_steps(Path(temporary))
             step_name, _, package, _ = harness.ADDITIONAL_TEST_GATES[0]
             steps[step_name]["output_tail"] = "test tests::unrelated_test ... ok\n"
@@ -4382,7 +4388,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
 
     def test_rust_gate_rejects_zero_match_ignored_and_failed_runs(self):
         step_name, _, _, identity = harness.ADDITIONAL_TEST_GATES[0]
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             for output in (
                 "test result: ok. 0 passed; 0 failed; 0 ignored\n",
                 f"test {identity} ... ignored\n",
@@ -4415,7 +4421,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
     def test_final_summary_rejects_run_directory_and_logs_symlinks(self):
         harness_root = harness.ROOT / "work" / "stage3-harness"
         harness_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as external:
+        with temporary_fixture_directory() as external:
             external_path = Path(external)
 
             run_id = harness.new_run_id()
@@ -4459,7 +4465,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         run_dir = harness_root / run_id
         logs_dir = run_dir / "logs"
         logs_dir.mkdir(parents=True)
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as external:
+        with temporary_fixture_directory() as external:
             external_log = Path(external) / "result.log"
             step_name, _, _, identity = harness.RUST_TEST_GATES[0]
             output = f"test {identity} ... ok\n"
@@ -4537,34 +4543,70 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             temporary.cleanup()
 
     def test_vmhost_process_timeout_kills_child_group(self):
-        temporary, run_root = temporary_run_root()
-        try:
-            child = (
-                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                "print('child-before-cleanup', flush=True); time.sleep(30)"
+        with temporary_fixture_directory() as temporary_fixture:
+            fixture_path = Path(temporary_fixture)
+            self.assertEqual(
+                fixture_path.parent,
+                harness.ROOT / "work" / "stage3-harness" / "test-fixtures",
             )
-            parent = (
-                "import subprocess,sys,time; print('parent-before-cleanup', flush=True); "
-                "subprocess.Popen([sys.executable, '-c', sys.argv[1]]); "
-                "time.sleep(30)"
-            )
-            with mock.patch.object(harness, "source_fingerprint", return_value="a" * 64):
-                step = harness.run_process_step(
-                    "process_group_timeout",
-                    [sys.executable, "-c", parent, child],
-                    run_root,
-                    0.2,
-                    "a" * 64,
-                )
-            self.assertEqual(step["failure"], "timeout")
-            self.assertEqual(step["status"], "failed")
-            stdout_evidence = step["timeout_diagnostics"]["stdout"]
-            diagnostic_path = harness.ROOT / stdout_evidence["path"]
-            self.assertIn("parent-before-cleanup", diagnostic_path.read_text())
-            self.assertIn("child-before-cleanup", diagnostic_path.read_text())
-            self.assertFalse(harness.process_group_exists(step["process_group_id"]))
-        finally:
-            temporary.cleanup()
+
+        child = (
+            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "print('child-before-cleanup', flush=True); time.sleep(30)"
+        )
+        parent = (
+            "import subprocess,sys,time; print('parent-before-cleanup', flush=True); "
+            "subprocess.Popen([sys.executable, '-c', sys.argv[1]]); "
+            "time.sleep(30)"
+        )
+        for run_process in (False, True):
+            for fingerprint_error in (False, True):
+                with self.subTest(run_process=run_process, fingerprint_error=fingerprint_error):
+                    temporary, run_root = temporary_run_root()
+                    try:
+                        command = (
+                            [sys.executable, "-c", parent, child]
+                            if run_process
+                            else [sys.executable, "-c", "import time; time.sleep(30)"]
+                        )
+                        runner = harness.run_process_step if run_process else harness.run_step
+                        fingerprint_patch = (
+                            mock.patch.object(
+                                harness,
+                                "source_fingerprint",
+                                side_effect=harness.HarnessError(
+                                    "synthetic fingerprint read failure"
+                                ),
+                            )
+                            if fingerprint_error
+                            else mock.patch.object(
+                                harness, "source_fingerprint", return_value="b" * 64
+                            )
+                        )
+                        with fingerprint_patch:
+                            step = runner(
+                                "timeout_fingerprint_precedence",
+                                command,
+                                run_root,
+                                0.2,
+                                "a" * 64,
+                            )
+                        self.assertEqual(step["failure"], "timeout")
+                        self.assertEqual(step["status"], "failed")
+                        if fingerprint_error:
+                            self.assertIsNone(step["source_fingerprint_after"])
+                        else:
+                            self.assertEqual(step["source_fingerprint_after"], "b" * 64)
+                        if run_process:
+                            stdout_evidence = step["timeout_diagnostics"]["stdout"]
+                            diagnostic_path = harness.ROOT / stdout_evidence["path"]
+                            self.assertIn("parent-before-cleanup", diagnostic_path.read_text())
+                            self.assertIn("child-before-cleanup", diagnostic_path.read_text())
+                            self.assertFalse(
+                                harness.process_group_exists(step["process_group_id"])
+                            )
+                    finally:
+                        temporary.cleanup()
 
     def test_vmhost_process_child_log_binding_matches_command(self):
         temporary, run_root = temporary_run_root()
@@ -5052,7 +5094,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -5173,7 +5215,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -5293,7 +5335,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -5413,7 +5455,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -5533,7 +5575,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -5653,7 +5695,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -5773,7 +5815,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -5893,7 +5935,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -6013,7 +6055,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -6133,7 +6175,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -6253,7 +6295,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -6371,7 +6413,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -6490,7 +6532,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -6609,7 +6651,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -6728,7 +6770,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -6846,7 +6888,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "source pin differs"):
             harness.validate_rust_test_manifest(bad_source_pin)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -6941,7 +6983,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         }
         harness.validate_rust_test_manifest(source_manifest)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -7018,7 +7060,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         }
         harness.validate_rust_test_manifest(source_manifest)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -7101,7 +7143,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
             harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -7212,7 +7254,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
             harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -7323,7 +7365,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
             harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -7427,7 +7469,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         }
         harness.validate_rust_test_manifest(source_manifest)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -7504,7 +7546,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         }
         harness.validate_rust_test_manifest(source_manifest)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -7594,7 +7636,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
             harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -7693,7 +7735,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -7809,7 +7851,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -7924,7 +7966,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -8043,7 +8085,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -8162,7 +8204,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -8280,7 +8322,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -8398,7 +8440,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -8517,7 +8559,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -8636,7 +8678,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -8773,7 +8815,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -8918,7 +8960,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -9063,7 +9105,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -9208,7 +9250,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -9353,7 +9395,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -9499,7 +9541,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -9646,7 +9688,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -9796,7 +9838,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -9941,7 +9983,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -10086,7 +10128,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -10231,7 +10273,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -10376,7 +10418,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -10521,7 +10563,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -10666,7 +10708,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -10784,7 +10826,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -10883,7 +10925,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -10983,7 +11025,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -11083,7 +11125,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -11183,7 +11225,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -11282,7 +11324,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -11380,7 +11422,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -11478,7 +11520,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -11576,7 +11618,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -11674,7 +11716,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -11772,7 +11814,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -11870,7 +11912,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -11979,7 +12021,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -12088,7 +12130,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -12198,7 +12240,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -12304,7 +12346,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -12410,7 +12452,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -12516,7 +12558,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -12621,7 +12663,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -12723,7 +12765,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -12829,7 +12871,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -12934,7 +12976,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -13039,7 +13081,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -13143,7 +13185,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -13248,7 +13290,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -13355,7 +13397,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -13463,7 +13505,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -13570,7 +13612,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -13679,7 +13721,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -13789,7 +13831,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -13898,7 +13940,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
             ):
                 harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             temporary_dir = Path(temporary)
             run_root = temporary_dir / "run"
             log_dir = run_root / "logs"
@@ -14014,7 +14056,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
             harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -14124,7 +14166,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
             harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -14234,7 +14276,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(harness.HarnessError, "exact required Rust test gates"):
             harness.validate_rust_test_manifest(missing_manifest_gate)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -14316,7 +14358,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 harness.validate_rust_test_manifest(missing_gate_manifest)
         harness.validate_rust_test_manifest(source_manifest)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -14398,7 +14440,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                 harness.validate_rust_test_manifest(missing_manifest)
         harness.validate_rust_test_manifest(source_manifest)
 
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)
@@ -14503,7 +14545,7 @@ class Stage3HarnessValidationTests(unittest.TestCase):
                     harness.validate_rust_test_manifest(missing_gate)
 
         harness.validate_rust_test_manifest(source_manifest)
-        with tempfile.TemporaryDirectory(dir=harness.ROOT) as temporary:
+        with temporary_fixture_directory() as temporary:
             run_root = Path(temporary) / "run"
             log_dir = run_root / "logs"
             log_dir.mkdir(parents=True)

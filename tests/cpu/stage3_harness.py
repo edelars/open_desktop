@@ -3093,10 +3093,10 @@ def run_step(
     try:
         end_fingerprint = source_fingerprint()
         if fingerprint != end_fingerprint:
-            failure = "source_fingerprint_changed: source files changed during the command"
+            failure = failure or "source_fingerprint_changed: source files changed during the command"
     except HarnessError as error:
         end_fingerprint = None
-        failure = f"source_fingerprint_changed: {error}"
+        failure = failure or f"source_fingerprint_changed: {error}"
 
     result = {
         "name": name,
@@ -3217,10 +3217,10 @@ def run_process_step(
     try:
         end_fingerprint = source_fingerprint()
         if fingerprint != end_fingerprint:
-            failure = "source_fingerprint_changed: source files changed during the command"
+            failure = failure or "source_fingerprint_changed: source files changed during the command"
     except HarnessError as error:
         end_fingerprint = None
-        failure = f"source_fingerprint_changed: {error}"
+        failure = failure or f"source_fingerprint_changed: {error}"
 
     result = {
         "name": name,
@@ -4558,7 +4558,7 @@ def main(argv: list[str] | None = None) -> int:
             (
                 "harness_self_tests",
                 [sys.executable, "tests/cpu/test_stage3_harness.py"],
-                120,
+                600,
             ),
             (
                 "stage1_dispatch",

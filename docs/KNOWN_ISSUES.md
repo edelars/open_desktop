@@ -82,6 +82,15 @@
 - **Суть и последствия:** первый запуск `cargo test -p od-jit --lib --offline` после parser repair дал 380 passed / 17 failed. Четыре ошибки относились к StoreThenStore lowering/dispatch, exact sites и PC maps; двенадцать — к admission и source expectations для addr32/qword dword load/store; одна — к fixture мутации source byte. Exact first-site builder arm для StoreThenStore добавлен в `48b554d`; расширены точные literal gates для отсутствовавших адресных форм и исправлена устаревшая negative fixture. Не установлено, существовали ли эти ошибки до ISSUE-030.
 - **Результат:** четыре StoreThenStore gates прошли отдельно после исправления; затем полный `cargo test -p od-jit --lib --offline` прошёл: 397 passed / 0 failed. Это результат локального od-jit suite, без утверждения о host runtime или Stage 3 acceptance. Границы StoreThenStore описаны в [S3-26f report](reports/STAGE_3_S3-26f_2026-11-03.md).
 
+### ISSUE-033 — Stage 3 local harness self-tests exceed their bounded timeout
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `tests/cpu/stage3_harness.py`, mandatory `harness_self_tests` step and `tests/cpu/test_stage3_harness.py` temporary fixtures.
+- **Статус:** в работе; timeout raised to 600 seconds, test fixtures moved below ignored `work/stage3-harness/`, and primary failure preservation now has a focused regression test. Full local-suite rerun remains unverified.
+- **Суть и последствия:** `python3 tests/cpu/stage3_harness.py --suite local` stopped before the selected local suites because its required self-test step had a 120-second timeout. The 2026-11-03 summary (`stage3-20261103-123052-8fa49da8df`) records `returncode: null`, 138.722 seconds including cleanup/fingerprint work, and output ending during the 60th self-test. Termination left a temporary `run/logs` tree at repository root, so the final source fingerprint also changed and masked the timeout as the reported failure.
+- **Основание и результат:** deleting only that generated temporary tree restored the exact starting source fingerprint. A standalone self-test invocation later exceeded the context tool's 300-second RPC limit without a summary. The follow-up raises the harness step timeout to 600 seconds, routes temporary test roots under ignored `work/`, and preserves the original timeout if fingerprint comparison itself fails. The focused timeout/fingerprint test, Python compilation, and diff whitespace check passed; independent Sol/high review found no remaining issue. No full local-suite rerun was performed.
+- **Следующий шаг:** rerun the bounded local suite in an execution session that can observe the full self-test step and final summary; confirm the new timeout and stable source fingerprint before updating S3-41 acceptance. Mini and physical-x86 acceptance remain separate.
+
 ### ISSUE-024 — checked memory lowering ограничен узкими V2 MOV slices
 
 - **Дата обнаружения:** 2026-10-27.

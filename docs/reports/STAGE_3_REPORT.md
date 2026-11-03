@@ -521,6 +521,16 @@ no findings; the summary does not close S3-41 or Stage 3. See the
 [current S3-41a report](STAGE_3_S3-41a-current-local_2026-11-01.md) and its
 [evidence bundle](data/stage3/s3-41a-local-20261101/).
 
+**Follow-up, 3 November 2026:** a newer `--suite local` attempt
+(`stage3-20261103-123052-8fa49da8df`) failed before selected suites began
+because the mandatory self-test exceeded its 120-second limit. Its interrupted
+temporary root changed the source fingerprint and masked the timeout; the
+test-generated directory was removed and the starting fingerprint restored.
+A follow-up raises that bounded timeout to 600 seconds, places test temporary
+directories under ignored `work/stage3-harness/`, and preserves the primary
+failure if fingerprint checking also fails. The focused regression passed 1/1,
+but no full local-suite rerun has confirmed the repair. See [ISSUE-033](../KNOWN_ISSUES.md#issue-033--stage-3-local-harness-self-tests-exceed-their-bounded-timeout).
+
 ## Карта требований и границ
 
 | Область | Локально подтверждено | Статус и граница |

@@ -85,3 +85,24 @@ Stage 2, Mini, performance, physical x86, or production owner/MMU gates. The
 run's local RESULT-state suite does not replace the separate S3-38d report; the
 process-only S3-38b result remains a separate run. The failed artifact-root
 attempt is retained in the record even though the accepted retry completed.
+
+## Follow-up attempt on 3 November 2026
+
+The local selector was rerun at revision `0bbdf2b6e6faf00822501d1868da39543f5b7c89`
+as run `stage3-20261103-123052-8fa49da8df`. It failed before any selected local
+suite started: the required `harness_self_tests` step exceeded its 120-second
+limit. The summary records `returncode: null`, 138.722 seconds including
+fingerprint work, and a log ending during the 60th test. The interrupted test
+left a temporary run directory at the repository root, which changed the
+source fingerprint and masked the original timeout. Removing only that
+test-generated directory restored the starting fingerprint.
+
+A standalone self-test invocation later exceeded the context tool's 300-second
+RPC limit without a final summary. Its result is unconfirmed. The follow-up
+raises the bounded step timeout to 600 seconds, moves test fixture directories
+under ignored `work/stage3-harness/`, and preserves the primary failure when
+fingerprint comparison also fails. The focused regression passed 1/1, Python
+compilation and `git diff --check` passed, and independent review found no
+remaining issue. The full local selector was not rerun, so the accepted
+1 November run remains the latest successful full-local evidence; ISSUE-033
+stays open pending a complete current-run summary.
