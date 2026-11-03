@@ -725,9 +725,11 @@ ISSUE-028 remains open until S3-20eg execution acceptance. No opcode/runtime
 semantics were added. See the [S3-34dm report](STAGE_3_S3-34dm_2026-11-02.md).
 
 S3-34dn implements one create-only mismatch artifact and validated replay for
-the same exact S3-34dm profile. Runtime commits `f858b7a`/`10447f0` and harness
-commits `89c5e28`/`13b7790` are integrated and passed independent static Sol/high
-review. The self-check identity is
+the same exact S3-34dm profile. Runtime commits `f858b7a`/`10447f0`/`ee2af23`
+and harness commits `89c5e28`/`13b7790` are integrated and passed independent
+static Sol/high review. Commit `ee2af23` adds self-check assertions for
+create-only/no-overwrite behavior and invalid-version/RIP rejection; these
+assertions remain unexecuted. The self-check identity is
 `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed`; the optional
 saved-artifact replay identity is `replay_saved_s3_34dn_mismatch_artifact`.
 Harness gate `s3_34dn_replay_artifact_self_check` and fail-closed self-test
@@ -743,10 +745,10 @@ requires deterministic two-repeat interpreter/JIT observations for
 `not_reproduced`; invalid artifacts fail validation. The optional replay test
 also reports `not_reproduced` when no artifact is supplied, which is not replay
 evidence. Its synthetic mismatch self-check is labeled and does not establish
-runtime behavior. The self-check covers serialization/classification and selected
-profile/source/address/layout/digest rejection; it does not exercise filesystem
-create-new behavior, and version/RIP mutation assertions are not present. The
-bounded artifact/replay subtask of S3-34.2 is implemented;
-the reducer remains pending. ISSUE-028 remains open until S3-20eg execution
-acceptance. No behavior, runtime API, dependency, or opcode claim is added. See the
+runtime behavior. It covers serialization/classification, selected
+profile/source/address/layout/digest rejection, create-only/no-overwrite, and
+invalid-version/RIP rejection. The bounded artifact/replay subtask of S3-34.2
+is implemented; the reducer remains pending. ISSUE-028 remains open until
+S3-20eg execution acceptance; ISSUE-029 remains open pending the exact S3-34dn
+gate run. No behavior, runtime API, dependency, or opcode claim is added. See the
 [S3-34dn report](STAGE_3_S3-34dn_2026-11-03.md).

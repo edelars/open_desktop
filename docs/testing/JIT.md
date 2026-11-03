@@ -2505,8 +2505,10 @@ semantics, persisted replay format, envelope, or reducer API. See the
 ## S3-34dn: create-only mismatch artifact and validated replay for S3-34dm
 
 **Status:** implementation and independent static Sol/high review passed;
-execution is deferred. Runtime commits `f858b7a`/`10447f0` and harness commits
-`89c5e28`/`13b7790` are integrated. No tests or self-checks were run.
+execution is deferred. Runtime commits `f858b7a`/`10447f0`/`ee2af23` and
+harness commits `89c5e28`/`13b7790` are integrated. Commit `ee2af23` adds
+self-check assertions for create-only/no-overwrite behavior and invalid-version
+and invalid-RIP rejection. No tests or self-checks were run.
 
 The planned diagnostic is restricted to the existing S3-34dm exact profile
 `67 89 04 24`. It creates one full mismatch artifact only after a
@@ -2530,11 +2532,10 @@ separately.
 
 The self-check uses explicitly labeled synthetic mismatch input. It covers
 serialization/parser round-trip, synthetic `reproduced` and `not_reproduced`
-classification, and rejection of changed profile/source/address provenance,
-RAM layout, or digest. It does not run either backend. The writer uses
-create-new file semantics, but the self-check does not exercise filesystem
-no-overwrite behavior; version and RIP validation have no mutation assertion
-in this self-check. Synthetic data is not runtime mismatch evidence. The slice
+classification, rejection of changed profile/source/address provenance, RAM
+layout, digest, version, and RIP, plus create-only/no-overwrite behavior by
+preserving a pre-existing sentinel file. It does not run either backend.
+Synthetic data is not runtime mismatch evidence. The slice
 adds no runtime API, dependency, opcode, generic replay framework, or reducer.
 The S3-34.2 reducer remains pending.
 
@@ -2543,10 +2544,12 @@ Rust identities:
 optional `replay_saved_s3_34dn_mismatch_artifact`. Harness gate:
 `s3_34dn_replay_artifact_self_check`; fail-closed harness self-test:
 `test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed`.
-Pinned totals are 304 gates (294 acceptance + 10 lifecycle), 322 local steps,
+Pinned totals remain 304 gates (294 acceptance + 10 lifecycle), 322 local steps,
 and 137 self-test names. Static review passed; these gates and self-checks
 remain unexecuted. The artifact/replay subtask of S3-34.2 is implemented, but
 the reducer remains pending. ISSUE-028 stays open pending S3-20eg execution
-acceptance. No Rust behavior gate, Python harness/self-check, build,
-formatting, Cargo, Mini, or M1 acceptance was run or is claimed. See the
+acceptance. ISSUE-029 remains open only pending execution of the exact S3-34dn
+Rust self-check and harness gate. No Rust behavior gate, Python
+harness/self-check, build, formatting, Cargo, Mini, or M1 acceptance was run or
+is claimed. See the
 [S3-34dn report](../reports/STAGE_3_S3-34dn_2026-11-03.md).
