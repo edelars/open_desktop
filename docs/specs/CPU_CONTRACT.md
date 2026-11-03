@@ -3901,6 +3901,7 @@ remain finite Normal binary80; other inputs/results return `None`. The existing
 `multiply_finite_to_binary80` helper and its subnormal-output domain are
 unchanged.
 
+
 For normalized product significand M with bit 127 set, target shift is
 `s=128-p`, truncated significand is `T=M>>s`, and exact discarded tail is
 `R=M mod 2^s`. `inexact` is `R != 0`; rounding mode and T parity choose a
@@ -18255,3 +18256,90 @@ Vol. 1 §§11.5.2.1–.2, 11.5.2.6 and 11.5.3.1–.3
 ([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=284));
 Vol. 3A Table 7-8. Physical x86 acceptance is not claimed; ISSUE-033 is
 unchanged.
+
+## S2-38aa — exact SQRTPS memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-sqrtps-memory-rax-unmasked-v1` for exact Long64 `0F 51 00`
+(`SQRTPS XMM0,m128 [RAX]`), with its own
+`sqrtps_memory_rax_unmasked_controls` echo, one executable mapping, one
+read-only m128 mapping, budget one and stop RIP=entry+3. Require SSE bit 25
+(not SSE2). Preserve masked S2-37dd and register S2-37ak. Complete fetch and
+exact form checks precede SSE/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM` at
+CPL0–3. Require supported MXCSR mask `0xffbf`, reserved bits clear and DAZ=0;
+allow FTZ, all masks, RC and prior sticky histories. Require 16-byte RAX
+alignment regardless of AC; misalignment raises `#GP(0)` before callback.
+Validate canonical48 `[RAX,RAX+15]` before exactly one read16. Read/span
+failure preserves the full CPU state, memory and retirement.
+
+Classify all four raw-u32 memory lanes independently using the established
+SQRTPS rules: negative nonzero numeric operands (including negative
+subnormal/−infinity) and SNaN contribute IE; QNaN contributes no IE; positive
+subnormal contributes DE; computed inexact roots contribute PE. Aggregate IE
+and DE across lanes before the mask decision. If any newly generated IE/DE is
+unmasked, commit all applicable aggregate IE|DE and fault without computing or
+adding any PE. Otherwise compute every lane using MXCSR.RC, aggregate PE, and
+apply PM. An unmasked pre/post event commits applicable sticky flags, then
+selects `#XM` when OSXMMEXCPT=1 or SIMD-generated arithmetic `#UD` otherwise;
+the complete XMM0, RIP and retirement remain unchanged. Prior sticky bits
+alone do not fault. On success replace all XMM0 bits and advance RIP by three.
+
+Use an independent integer-only raw-u32 oracle. Cover the lane-event product
+of neutral, IE, DE-only, PE-only and DE+PE representatives across four lanes
+(625 products), each across IM/DM/PM mask patterns and both OSXMMEXCPT values;
+add independent RC×64 prior-sticky coverage for numerical results and status.
+For DE-only use positive subnormal `0x00000002`; `0x00000001` contributes
+DE+PE when computed. Include mixed-lane IE+DE+PE with a poisoned destination,
+all-XMM suppression, signed NaNs, gate/fetch/CPL, alignment at AC=0/1,
+canonical span, callback count, rollback, writable-source refusal, fixtures,
+result/status/retirement/exception tampering and interpreter-only backend
+denial. Native/JIT/C ABI/generic/fragment remain closed. Sources: Intel SDM
+Rev. 093 Vol. 2B SQRTPS pp. 4-664–4-666
+([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=672));
+Vol. 1 §§11.5.2.1–.2 and 11.5.3.1–.3
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=286));
+Vol. 3A Event 19/Table 7-8. No physical x86 acceptance is claimed.
+
+## S2-38ab — exact SQRTPD memory profile with unmasked exceptions
+
+Add immutable schema-v2 interpreter-only profile
+`s2-long-sqrtpd-memory-rax-unmasked-v1` for exact Long64 `66 0F 51 00`
+(`SQRTPD XMM0,m128 [RAX]`), with separate
+`sqrtpd_memory_rax_unmasked_controls`, one executable mapping, one read-only
+m128 mapping, budget one and stop RIP=entry+4. Require SSE2 bit 26. Preserve
+masked S2-37de and register S2-37al. Full fetch/exact-form checks precede
+SSE2/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM` at CPL0–3. Require supported
+MXCSR mask `0xffbf`, reserved bits clear and DAZ=0; allow FTZ, all masks, RC
+and old sticky histories. RAX must be 16-byte aligned regardless of AC;
+misalignment raises `#GP(0)` before data callback. Validate canonical48
+`[RAX,RAX+15]` before exactly one read16. Read/span failure preserves full
+state and memory.
+
+Classify each of two raw-u64 lanes independently using SQRTPD semantics.
+Negative nonzero numeric operands (including negative subnormal/−infinity) and
+SNaN contribute IE; QNaN contributes no IE; positive subnormal contributes
+DE; computed inexact roots contribute PE. Aggregate IE/DE across lanes before
+deciding masks. Any unmasked new IE/DE commits all applicable aggregate
+IE|DE and suppresses computation/PE. If pre-events are masked, compute both
+lanes by integer raw-u64 SQRT using MXCSR.RC, aggregate PE, and apply PM.
+Unmasked events commit applicable MXCSR flags and select `#XM` or
+SIMD-generated arithmetic `#UD` via OSXMMEXCPT, while suppressing all XMM0,
+RIP and retirement changes. Old stickies alone do not fault. Success replaces
+all XMM0 and advances RIP by four.
+
+Use an independent raw-u64 integer oracle. Cover the lane-event product of
+neutral, IE, DE-only, PE-only and DE+PE representatives across two lanes
+(25 products), each across IM/DM/PM and OSXMMEXCPT; add RC×64 sticky-history
+coverage. Positive minimum subnormal `0x0000000000000001` is DE-only because
+its root is exactly `2^-537`; `0x2`/`0x3` contribute DE+PE when computed.
+Include mixed-lane IE+DE+PE, poisoned whole-XMM suppression, signed NaNs,
+gate/fetch/CPL, alignment independent of AC, canonical span, one-read and
+rollback checks, read-only schema, fixtures, result/status/retirement/
+exception tampering and backend denial. Preserve all S2-38y/38z review fixes;
+do not introduce a scalar helper sequence in place of packed aggregation.
+Native/JIT/C ABI/generic/fragment and physical x86 acceptance remain closed.
+Sources: Intel SDM Rev. 093 Vol. 2B SQRTPD pp. 4-661–4-663
+([official PDF](https://cdrdv2-public.intel.com/929354/253667-093-sdm-vol-2b.pdf#page=669));
+Vol. 1 §§11.5.2.1–.2 and 11.5.3.1–.3
+([official PDF](https://cdrdv2-public.intel.com/929351/253665-093-sdm-vol-1.pdf#page=286));
+Vol. 3A Event 19/Table 7-8. No physical x86 acceptance is claimed.

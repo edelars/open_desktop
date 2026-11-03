@@ -1515,3 +1515,27 @@ root `2^-537` and raises DE without PE; `0x2`/`0x3` are inexact when computed.
 Check `#XM`/arithmetic `#UD`, full-state suppression, high64 preservation,
 fetch/gate/AC/span/read order, controls/result tampering and backend denial.
 Preserve S2-37df and S2-37am and apply the reviewed S2-38y gate-fix regressions.
+
+## S2-38aa SQRTPS m128 memory unmasked exceptions
+
+Use a separate immutable profile for exact Long64 `0F 51 00`, SSE bit 25,
+read-only m128 `[RAX]`, budget one, stop RIP=entry+3 and exactly one read16.
+Require 16-byte alignment at every AC/CPL value. Cover the 625 four-lane
+products of neutral/IE/DE-only/PE-only/DE+PE event representatives across all
+IM/DM/PM and OSXMMEXCPT settings; add RC and 64-sticky-history result coverage.
+Aggregate precompute IE/DE across lanes before computing PE, and check whole-XMM
+atomic suppression, `#XM`/arithmetic `#UD`, gate/fetch priority, callback/read
+rollback, schema/result tampering and backend denial. Keep S2-37dd/S2-37ak
+masked/register contracts separate.
+
+## S2-38ab SQRTPD m128 memory unmasked exceptions
+
+Use a separate immutable profile for exact Long64 `66 0F 51 00`, SSE2 bit 26,
+read-only m128 `[RAX]`, budget one, stop RIP=entry+4 and exactly one read16.
+Require alignment16 independent of AC/CPL. Cover 25 two-lane neutral/IE/DE-only/
+PE-only/DE+PE event products across all IM/DM/PM and OSXMMEXCPT settings; add RC
+and 64-sticky-history result coverage. The positive minimum subnormal `0x1`
+has exact root `2^-537` (DE without PE); `0x2` and `0x3` exercise DE+PE.
+Check packed pre-event aggregation, atomic whole-XMM suppression, `#XM`/
+arithmetic `#UD`, gate/fetch priority, read rollback, schema/result tampering
+and backend denial. Keep S2-37de/S2-37al masked/register contracts separate.

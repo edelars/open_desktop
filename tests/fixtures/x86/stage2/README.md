@@ -8605,3 +8605,28 @@ memory and S2-37am register behavior are preserved. No physical x86 acceptance
 is claimed. See the [S2-38z CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38z--exact-sqrtsd-memory-profile-with-unmasked-exceptions),
 [implementation report](../../../../docs/reports/S2_38Z_SQRTSD_MEMORY_UNMASKED.md),
 and [stage plan](../../../../docs/plans/STAGE_2.md).
+
+### S2-38aa SQRTPS m128 memory unmasked exceptions
+
+The planned immutable schema-v2 profile uses exact `0F 51 00`, SSE bit 25,
+read-only m128 `[RAX]`, one read16 and mandatory alignment16. Planned fixtures
+cover masked success and unmasked IE/DE/PE under `#XM` and arithmetic `#UD`.
+Runner coverage will use an independent raw-u32 oracle, mixed-lane pre-event
+aggregation, whole-XMM suppression, gate/fetch/CPL checks, alignment with AC
+clear/set, one-read and rollback assertions, tampering and interpreter-only
+backend denial. S2-37dd masked memory and S2-37ak register profiles remain
+separate. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38aa--exact-sqrtps-memory-profile-with-unmasked-exceptions)
+and [stage plan](../../../../docs/plans/STAGE_2.md).
+
+### S2-38ab SQRTPD m128 memory unmasked exceptions
+
+The planned immutable schema-v2 profile uses exact `66 0F 51 00`, SSE2 bit 26,
+read-only m128 `[RAX]`, one read16 and mandatory alignment16. Planned fixtures
+cover masked success and unmasked IE/DE/PE under `#XM` and arithmetic `#UD`.
+Runner coverage will use an independent raw-u64 oracle, mixed-lane pre-event
+aggregation, whole-XMM suppression, minimum-subnormal DE-only and DE+PE cases,
+gate/fetch/CPL checks, alignment with AC clear/set, one-read/rollback assertions,
+tampering and interpreter-only backend denial. S2-37de masked memory and
+S2-37al register profiles remain separate. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions)
+and [stage plan](../../../../docs/plans/STAGE_2.md).

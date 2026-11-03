@@ -672,6 +672,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38y | Exact Long64 SQRTSS XMM0,m32 [RAX], unmasked IE/DE/PE profile; interpreter-only | 65,536 raw-u32 cases over event masks, OSXMMEXCPT, RC and sticky histories; strict priority, complete-state suppression, independent oracle, fixtures and backend denial; main: od-isa 1,942, testkit 455, runner 131+550; workspace check/fmt/layout/diff pass, Graphify 12,207/26,487/346; clean Sol/high review after restoring MINSD FTZ and fixing SQRTSS gate/schema/exception handling; preserve S2-37dg/S2-37aj; no physical x86 acceptance; [report](../reports/S2_38Y_SQRTSS_MEMORY_UNMASKED.md) |
 | [x] | S2-31eg | Admit historical SF only with prior IE on exact bounded FIST/FISTP m16/m32/m64 forms; preserve sticky flags and recompute C1 from conversion result; native/JIT closed | Five exact forms ×13 accepted classes ×sign ×32 other sticky histories ×TOP ×FCW ×old C1 =266,240 full-state/memory cases; 20 SF+IE span/write rollback cases, no-write rejection, FNSTSW/FNCLEX/retry, five fixtures/backend denial; main: od-isa 1,947, testkit 455, runner 132+555; workspace/fmt/layout/diff pass; Graphify 12,258/26,599/330; clean Sol/high review after placing classes in target matrix; no physical x86 acceptance; [report](../reports/S2_31EG_FIST_HISTORICAL_SF.md) |
 | [x] | S2-38z | Exact Long64 SQRTSD XMM0,m64 [RAX], unmasked IE/DE/PE profile; interpreter-only | 65,536 raw-u64 cases over event masks, OSXMMEXCPT, RC and sticky histories; exact minimum subnormal result, strict priority, complete-state suppression, independent oracle, fixtures and backend denial; unmasked API gate/fetch/CPL and validator-tampering regressions; main: od-isa 1,947, testkit 455, runner 132+555; workspace/fmt/layout/diff pass; Graphify 12,258/26,599/330; clean Sol/high review after closing two coverage findings; preserve S2-37df/S2-37am and S2-38y gate fixes; no physical x86 acceptance; [report](../reports/S2_38Z_SQRTSD_MEMORY_UNMASKED.md) |
+| [ ] | S2-38aa | Exact Long64 SQRTPS XMM0,m128 [RAX], unmasked packed IE/DE/PE profile; interpreter-only | Four-lane event aggregation before masks; 625 lane-event products × IM/DM/PM × OSXMMEXCPT plus RC/sticky numerical coverage; aligned one-read16 profile; preserve S2-37dd/S2-37ak |
+| [ ] | S2-38ab | Exact Long64 SQRTPD XMM0,m128 [RAX], unmasked packed IE/DE/PE profile; interpreter-only | Two-lane event aggregation before masks; 25 lane-event products × IM/DM/PM × OSXMMEXCPT plus RC/sticky numerical coverage; aligned one-read16 profile; preserve S2-37de/S2-37al |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -18566,3 +18568,33 @@ computed. Cover negative subnormal terminal IE, signed SNaN, atomic suppression,
 high64 preservation, memory callback count, fixtures and backend denial. Native,
 JIT, C ABI, generic and fragment routes stay closed. See the
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38z--exact-sqrtsd-memory-profile-with-unmasked-exceptions).
+
+#### S2-38aa — unmasked outcomes for exact SQRTPS memory form
+
+Add separate immutable schema-v2 interpreter-only profile for exact Long64
+`0F 51 00`, SSE bit 25 and read-only m128 `[RAX]`. Require full fetch, exact
+form, SSE/EM/OSFXSR before TS; allow supported MXCSR mask `0xffbf`, DAZ=0,
+reserved=0, any FTZ/masks/RC/stickies. Require 16-byte alignment regardless of
+AC and exactly one read16 after canonical span validation. Aggregate IE/DE
+across all four lanes before masking; an unmasked pre-event commits aggregate
+flags and suppresses PE and whole-XMM/RIP/retirement. Otherwise compute all
+lanes and apply aggregate PE. Check 625 neutral/IE/DE/PE/DE+PE lane products,
+all mask and OSXMMEXCPT combinations, plus RC/sticky history, alignment,
+callbacks/rollback, fixtures, tampering and backend denial. Keep S2-37dd
+masked memory and S2-37ak register profiles unchanged. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38aa--exact-sqrtps-memory-profile-with-unmasked-exceptions).
+
+#### S2-38ab — unmasked outcomes for exact SQRTPD memory form
+
+Add separate immutable schema-v2 interpreter-only profile for exact Long64
+`66 0F 51 00`, SSE2 bit 26 and read-only m128 `[RAX]`. Require full fetch,
+exact form, SSE2/EM/OSFXSR before TS; allow supported MXCSR mask `0xffbf`,
+DAZ=0, reserved=0 and any FTZ/masks/RC/stickies. Require alignment16
+regardless of AC and exactly one read16 after canonical span validation.
+Aggregate IE/DE across both lanes before masking, suppress PE on an unmasked
+pre-event, and preserve the full XMM/RIP/retirement on every fault. Check 25
+neutral/IE/DE/PE/DE+PE lane products across masks/OSXMMEXCPT, plus RC/sticky
+history, minimum-subnormal DE-only (`0x1`), DE+PE (`0x2`/`0x3`), alignment,
+callbacks/rollback, fixtures, tampering and backend denial. Keep S2-37de
+masked memory and S2-37al register profiles unchanged. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions).
