@@ -35619,7 +35619,7 @@ mod tests {
                 error: None,
                 stop: None,
             }
-        }
+        };
 
         fn state_at(rcx: u64, rax: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
