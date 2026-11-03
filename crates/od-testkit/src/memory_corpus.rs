@@ -23,6 +23,15 @@ pub const MEMORY_CORPUS_SEQUENCES: [MemoryCorpusSequence; 3] = [
 ];
 pub const MEMORY_CORPUS_RAM_LEN: usize = 128;
 
+/// Fixed S3-34dm corpus dimensions for the Address32 RSP-base Dword store.
+pub const S3_34DM_SEEDS: [u64; 3] = [
+    0x5333_3444_4d00_0001,
+    0x5333_3444_4d00_0002,
+    0x5333_3444_4d00_0003,
+];
+pub const S3_34DM_CASES_PER_SEED: usize = 400;
+pub const S3_34DM_RAM_LEN: usize = 12;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryCorpusSequence {
@@ -49,6 +58,18 @@ pub struct MemoryCorpusInput {
     pub first_address: u64,
     pub second_address: u64,
     pub ram: [u8; MEMORY_CORPUS_RAM_LEN],
+}
+
+/// One bounded input for the exact `67 89 04 24` dword store scenario.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct DwordStoreCorpusInput {
+    pub gpr: [u64; 16],
+    pub flags: u64,
+    /// Low 32-bit ESP value used as the zero-extended effective address.
+    pub address: u32,
+    /// Bytes for offsets -4 through +7 from `address`; negative offsets that
+    /// underflow address zero are omitted when the test memory is built.
+    pub ram: [u8; S3_34DM_RAM_LEN],
 }
 
 #[derive(Clone, Copy)]
@@ -139,6 +160,38 @@ pub fn generate_memory_corpus_input(
         } else {
             first_address
         },
+        ram,
+    }
+}
+
+/// Generate one deterministic S3-34dm input. Each seed/index pair selects a
+/// stable address class and independently generated CPU/RAM bytes.
+pub fn generate_s3_34dm_dword_store_input(seed: u64, index: usize) -> DwordStoreCorpusInput {
+    let mut rng = Rng(seed ^ (index as u64).wrapping_mul(0xd6e8_feb8_6659_fd93));
+    let address = match index % 4 {
+        0 => 0,
+        1 => 1 + 2 * (rng.next() as u32 % 0x800),
+        2 => 0x1000 + (rng.next() as u32 % 0x7fff_ffff),
+        // Every fourth input stores across the 4 GiB boundary.
+        _ => [0xffff_fffd, 0xffff_fffe, 0xffff_ffff][index / 4 % 3],
+    };
+    let mut ram = [0; S3_34DM_RAM_LEN];
+    for chunk in ram.chunks_mut(8) {
+        let bytes = rng.next().to_le_bytes();
+        chunk.copy_from_slice(&bytes[..chunk.len()]);
+    }
+    let mut gpr = [0; 16];
+    for value in &mut gpr {
+        *value = rng.next();
+    }
+    // Address-size override discards the high half of RSP for the effective
+    // address, while retaining randomized high bits as an explicit input.
+    gpr[4] = (rng.next() & 0xffff_ffff_0000_0000) | u64::from(address);
+
+    DwordStoreCorpusInput {
+        gpr,
+        flags: rng.next() & 0x8d5,
+        address,
         ram,
     }
 }
