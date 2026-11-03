@@ -25,9 +25,35 @@ XMM0.high64, is preserved.
   canonical span failure, read rollback, IE/DE ordering, PE suppression, and
   #XM/#UD delivery.
 - Runner matrix crosses four RC settings × 64 prior sticky histories × all 16
-  IM/DM/ZM/PM combinations × both OSXMMEXCPT settings for four event vectors
-  (SNaN lhs, SNaN rhs, QNaN with subnormal, and inexact product): 32,768
-  independently validated executions.
+  IM/DM/ZM/PM combinations × both OSXMMEXCPT settings for 20 operand/event
+  vectors: 163,840 independently validated executions. Exact raw-u64 pairs:
+
+  | Vector | XMM0.low64 × m64 RHS | Event intent |
+  | --- | --- | --- |
+  | `snan_lhs` | `7ff0000000000001 × 3ff0000000000000` | IE, left SNaN |
+  | `snan_rhs` | `3ff0000000000000 × 7ff0000000000001` | IE, right SNaN |
+  | `negative_snan_lhs` | `fff0000000000001 × 3ff0000000000000` | IE, negative left SNaN |
+  | `negative_snan_rhs` | `3ff0000000000000 × fff0000000000001` | IE, negative right SNaN |
+  | `negative_qnan_lhs` | `fff8000000001234 × 3ff0000000000000` | negative left QNaN |
+  | `negative_qnan_rhs` | `3ff0000000000000 × fff8000000001234` | negative right QNaN |
+  | `qnan_subnormal` | `7ff8000000001234 × 0000000000000001` | QNaN suppresses input DE |
+  | `qnan_rhs` | `3ff0000000000000 × 7ff8000000001234` | right QNaN |
+  | `denormal_lhs` | `0000000000000001 × 3ff0000000000000` | DE, exact continuation when masked |
+  | `denormal_inexact_tiny` | `0000000000000001 × 3ff8000000000000` | DE then tiny/inexact continuation |
+  | `exact_tiny_product` | `0010000000000000 × 3fe0000000000000` | exact subnormal, no UE/PE |
+  | `inexact_tiny_product` | `0010000000000001 × 3fe0000000000000` | UE/PE tiny pair |
+  | `round_to_min_normal` | `0010000000000000 × 3fefffffffffffff` | WPR boundary near minimum normal |
+  | `zero_infinity` | `0000000000000000 × 7ff0000000000000` | IE, zero × infinity |
+  | `negative_zero_infinity` | `8000000000000000 × 7ff0000000000000` | IE with signed zero |
+  | `signed_zero_product` | `8000000000000000 × 4000000000000000` | exact negative zero |
+  | `signed_infinity_product` | `fff0000000000000 × 4000000000000000` | exact negative infinity |
+  | `exact_normal_product` | `4000000000000000 × 4000000000000000` | exact finite product |
+  | `overflow_product` | `7fefffffffffffff × 4000000000000000` | OE/PE overflow |
+  | `inexact_product` | `3ff0000000000001 × 3ff0000000000001` | normal PE |
+
+  Both subnormal-input vectors raise DE. The inexact-tiny subnormal-input case
+  exercises masked DE continuation to UE/PE and unmasked DE suppression of
+  later events. Exact-tiny and inexact-tiny are separate vectors.
 - Event vectors cover signed QNaN/SNaN positions, QNaN+subnormal, zero×infinity,
   signed zero/infinity, exact/inexact product, overflow, tiny results and WPR
   rounding to minimum normal. Three additional literal fixtures exercise IE,
@@ -49,8 +75,9 @@ Passed in the isolated worktree:
 - `cargo test -p od-testkit --offline` — 459 passed
 - `cargo test -p od-runner --offline` — 139 unit and 561 fixture tests passed
 - Focused ISA profile tests — 2 passed; focused literal fixture test — 1 passed
-- 32,768-run RC/sticky/mask/delivery matrix — passed
-- `graphify update .` — 12,499 nodes, 27,005 edges, 385 communities
+- 163,840-run RC/sticky/mask/delivery matrix with exact/inexact tiny,
+  subnormal-input DE/continuation, signed NaN permutations and event priority — passed
+- `graphify update .` — 12,504 nodes, 27,011 edges, 344 communities
 - `git diff --check`
 
 Independent Sol/high review is pending. These results are host-side

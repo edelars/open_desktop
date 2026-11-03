@@ -8746,9 +8746,11 @@ x86 acceptance remain outside this profile.
 
 Exact Long64 `F2 0F 59 00`, SSE2 bit 26, and one read-only read8 from `[RAX]`.
 The independent raw-u64 oracle uses the memory RHS and covers signed SNaN/QNaN
-in both operands, NaN+subnormal, zero×infinity, signed zero/infinity,
-exact/inexact products, overflow, tiny results and WPR rounding. Cross RC × 64
-prior sticky histories × IM/DM/ZM/PM × OSXMMEXCPT. Verify pre-event IE/DE,
+in both operands, NaN+subnormal, subnormal-input DE, exact/inexact tiny,
+zero×infinity, signed zero/infinity, exact/inexact products, overflow and WPR
+rounding. Cross RC × 64 prior sticky histories × IM/DM/ZM/PM × OSXMMEXCPT
+across 20 vectors (163,840 runtime cases), including DE with inexact-tiny
+continuation. Verify pre-event IE/DE,
 post-event PE, atomic XMM0/RIP/retirement suppression, high64 preservation, and
 literal success/exception fixtures. Also cover exact fetch/gate/CPL/AC order,
 unaligned access with AC clear, canonical span/read rollback, one callback,

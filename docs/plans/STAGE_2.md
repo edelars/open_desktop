@@ -18729,10 +18729,13 @@ independent testkit oracle uses integer raw-u64 arithmetic and the actual
 memory RHS, preserving original-operand NaN priority and WPR
 tininess-after-rounding.
 
-Coverage includes signed SNaN/QNaN positions, QNaN+subnormal, zero×infinity,
-signed zero/infinity, exact/inexact products, overflow, tiny/underflow, and
-rounding to min-normal. A 32,768-run RC × 64 sticky × IM/DM/ZM/PM × OSXMMEXCPT
-matrix checks IE/DE pre-event priority and PE post-event suppression. Direct
+Coverage includes SNaN/QNaN in both operand positions, signed NaN operands,
+QNaN+subnormal, zero×infinity, signed zero/infinity, exact/inexact normal
+products, overflow, exact/inexact tiny results, and rounding near min-normal.
+The 163,840-run RC × 64 sticky × IM/DM/ZM/PM × OSXMMEXCPT matrix explicitly
+includes subnormal-input DE, a DE+inexact-tiny continuation, and separate
+exact-tiny/inexact-tiny vectors; it checks IE/DE pre-event priority and
+PE/OE/UE post-event status with destination suppression. Direct
 and schema tests cover fetch/gates/CPL, AC-before-span/read, unaligned access
 with AC clear, canonical span/read rollback, read-only data, callback count,
 complete state/status/result/control/exception tampering, literal success and
