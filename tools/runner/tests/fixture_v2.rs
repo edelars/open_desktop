@@ -244,6 +244,20 @@ const MULSS_M32_MEMORY_UNMASKED_WPR_MIN_NORMAL: &[u8] = include_bytes!(
 );
 const MULSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dn_mulsd_m64_memory_rax.case.json");
+const MULSD_M64_MEMORY_UNMASKED_RAX: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_38ah_mulsd_m64_memory_unmasked_rax.case.json"
+);
+const MULSD_M64_MEMORY_UNMASKED_EVENTS: [&[u8]; 3] = [
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38ah_mulsd_m64_unmasked_ie_snan_xm.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38ah_mulsd_m64_unmasked_de_subnormal_ud.case.json"
+    ),
+    include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_38ah_mulsd_m64_unmasked_pe_inexact_ud.case.json"
+    ),
+];
 const DIVSD_M64_MEMORY_RAX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_37dp_divsd_m64_memory_rax.case.json");
 const SQRTSS_M32_MEMORY_RAX: &[u8] = include_bytes!(
@@ -9047,7 +9061,7 @@ fn minss_unmasked_denormal_profiles_commit_flags_and_fault_without_retirement() 
             panic!("snapshot unavailable")
         };
         let Observation::Available {
-            value: Some(exception),
+            value: Some(ref exception),
         } = value.exception
         else {
             panic!("missing exception")
@@ -40973,6 +40987,241 @@ fn mulsd_m64_memory_literal_and_scalar_oracle_matrix_are_interpreter_only() {
             }
         }
     }
+}
+
+#[test]
+fn mulsd_m64_unmasked_memory_uses_memory_operand_and_suppresses_unmasked_destinations() {
+    let literal = Fixture::from_json(MULSD_M64_MEMORY_UNMASKED_RAX).unwrap();
+    let base = literal.fixture.clone();
+    assert_eq!(
+        base.profile,
+        od_testkit::v2::Profile::LongMulsdMemoryRaxUnmaskedV1
+    );
+    assert!(base.mulsd_controls.is_none());
+    assert!(base.memory[1].permissions.read && !base.memory[1].permissions.write);
+    assert_eq!(base.memory[1].initial_bytes_hex, "000000000000e03f");
+    let (input, result) = run(MULSD_M64_MEMORY_UNMASKED_RAX, "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().xmm[0],
+        "000000000000f03fefbeadde78563412"
+    );
+    result.validate_for(&input).unwrap();
+
+    for event_fixture in MULSD_M64_MEMORY_UNMASKED_EVENTS {
+        let (event_input, event_result) = run(event_fixture, "interpreter", 0);
+        assert_eq!(count(&event_result), 0);
+        event_result.validate_for(&event_input).unwrap();
+    }
+
+    let mut bad_control_echo = result.clone();
+    snapshot_mut(&mut bad_control_echo)
+        .mulsd_memory_rax_unmasked_controls
+        .as_mut()
+        .unwrap()
+        .cr4_osxmmexcpt = false;
+    assert!(bad_control_echo.validate_for(&input).is_err());
+    let mut bad_retirement = result.clone();
+    bad_retirement.instructions_executed = Observation::Available { value: HexU64(0) };
+    assert!(bad_retirement.validate_for(&input).is_err());
+    let mut bad_rip = result.clone();
+    snapshot_mut(&mut bad_rip).state.rip = HexU64(base.initial_state.rip.get() + 1);
+    assert!(bad_rip.validate_for(&input).is_err());
+    let mut bad_low = result.clone();
+    snapshot_mut(&mut bad_low).state.sse.as_mut().unwrap().xmm[0]
+        .replace_range(0..16, "010000000000f03f");
+    assert!(bad_low.validate_for(&input).is_err());
+    let mut bad_high = result.clone();
+    snapshot_mut(&mut bad_high).state.sse.as_mut().unwrap().xmm[0]
+        .replace_range(16..32, "eeeeeeeeeeeeeeee");
+    assert!(bad_high.validate_for(&input).is_err());
+    let mut bad_state = result.clone();
+    snapshot_mut(&mut bad_state).state.gpr[1] = HexU64(0);
+    assert!(bad_state.validate_for(&input).is_err());
+    let mut bad_status = result.clone();
+    snapshot_mut(&mut bad_status)
+        .state
+        .sse
+        .as_mut()
+        .unwrap()
+        .mxcsr = HexU64(0x1f81);
+    assert!(bad_status.validate_for(&input).is_err());
+
+    let encode = |raw: u64| {
+        raw.to_le_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let mut cases = Vec::new();
+    for (name, lhs, rhs, unmask_bit, vector, osxmmexcpt) in [
+        (
+            "snan_lhs",
+            0x7ff0_0000_0000_0001,
+            0x3ff0_0000_0000_0000,
+            7,
+            19,
+            true,
+        ),
+        (
+            "zero_infinity",
+            0x8000_0000_0000_0000,
+            0x7ff0_0000_0000_0000,
+            7,
+            6,
+            false,
+        ),
+        (
+            "subnormal_rhs",
+            0x3ff0_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            8,
+            19,
+            true,
+        ),
+        (
+            "inexact_pe",
+            0x3ff0_0000_0000_0001,
+            0x3ff0_0000_0000_0001,
+            12,
+            6,
+            false,
+        ),
+        (
+            "overflow_pe",
+            0x7fef_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            12,
+            19,
+            true,
+        ),
+        (
+            "tiny_after_rounding_pe",
+            0x0010_0000_0000_0001,
+            0x3fef_ffff_ffff_fffe,
+            12,
+            6,
+            false,
+        ),
+        (
+            "rounds_to_min_normal_pe",
+            0x000f_ffff_ffff_ffff,
+            0x3ff0_0000_0000_0001,
+            12,
+            19,
+            true,
+        ),
+    ] {
+        let mut case = base.clone();
+        case.case_id = format!("s2_38ah_{name}");
+        let old_xmm = case.initial_state.sse.as_ref().unwrap().xmm[0].clone();
+        case.initial_state.sse.as_mut().unwrap().xmm[0] =
+            format!("{}{}", encode(lhs), &old_xmm[16..]);
+        case.memory[1].initial_bytes_hex = encode(rhs);
+        case.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 & !(1 << unmask_bit));
+        case.mulsd_memory_rax_unmasked_controls
+            .as_mut()
+            .unwrap()
+            .cr4_osxmmexcpt = osxmmexcpt;
+        case.expected_exit = ExpectedExit::Exception;
+        let bytes = case.to_json().unwrap();
+        let (input, result) = run(&bytes, "interpreter", 0);
+        assert!(
+            matches!(result.outcome, Outcome::Exception {}),
+            "{name}: {:?}",
+            result.outcome
+        );
+        assert_eq!(count(&result), 0);
+        let observed = snapshot(&result);
+        let Observation::Available {
+            value: Some(ref exception),
+        } = observed.exception
+        else {
+            panic!("{name}: expected exception snapshot");
+        };
+        assert_eq!(exception.vector, vector);
+        assert_eq!(observed.state.rip, case.initial_state.rip, "{name}");
+        assert_eq!(
+            observed.state.sse.as_ref().unwrap().xmm[0],
+            case.initial_state.sse.as_ref().unwrap().xmm[0],
+            "{name}"
+        );
+        let status_bit = match unmask_bit {
+            7 => 0,
+            8 => 1,
+            _ => 5,
+        };
+        assert_ne!(
+            observed.state.sse.as_ref().unwrap().mxcsr.get() & (1 << status_bit),
+            0,
+            "{name}"
+        );
+        result.validate_for(&input).unwrap();
+        let mut bad_exception = result.clone();
+        let Observation::Available {
+            value: Some(exception),
+        } = &mut snapshot_mut(&mut bad_exception).exception
+        else {
+            panic!("expected arithmetic exception snapshot");
+        };
+        exception.vector = if vector == 19 { 6 } else { 19 };
+        assert!(bad_exception.validate_for(&input).is_err());
+        let mut bad_pre_status = result.clone();
+        snapshot_mut(&mut bad_pre_status)
+            .state
+            .sse
+            .as_mut()
+            .unwrap()
+            .mxcsr = HexU64(0x1f80);
+        assert!(bad_pre_status.validate_for(&input).is_err());
+        cases.push((input, result));
+    }
+    // QNaN has priority over a subnormal operand and therefore suppresses DE.
+    let mut qnan = base.clone();
+    qnan.case_id = "s2_38ah_qnan_suppresses_denormal".into();
+    qnan.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, "010000000000f87f");
+    qnan.memory[1].initial_bytes_hex = encode(0x0000_0000_0000_0001);
+    qnan.initial_state.sse.as_mut().unwrap().mxcsr = HexU64(0x1f80 & !(1 << 8));
+    let (input, result) = run(&qnan.to_json().unwrap(), "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().mxcsr.get() & 2,
+        0
+    );
+    result.validate_for(&input).unwrap();
+
+    let mut signed_zero = base.clone();
+    signed_zero.case_id = "s2_38ah_signed_zero_product".into();
+    signed_zero.initial_state.sse.as_mut().unwrap().xmm[0].replace_range(0..16, "0000000000000080");
+    signed_zero.memory[1].initial_bytes_hex = encode(0xc000_0000_0000_0000);
+    let (input, result) = run(&signed_zero.to_json().unwrap(), "interpreter", 0);
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(
+        snapshot(&result).state.sse.as_ref().unwrap().xmm[0],
+        "0000000000000000efbeadde78563412"
+    );
+    result.validate_for(&input).unwrap();
+
+    for engine in ["jit", "native"] {
+        let (_, denied) = run(MULSD_M64_MEMORY_UNMASKED_RAX, engine, 4);
+        assert!(matches!(denied.outcome, Outcome::Unsupported { .. }));
+    }
+    let mut writable = base.clone();
+    writable.memory[1].permissions.write = true;
+    assert!(writable.validate().is_err());
+    let mut foreign_masked = base.clone();
+    foreign_masked.mulsd_controls = Some(od_testkit::v2::MulsdControlSnapshot {
+        sse2_available: true,
+        cr0_em: false,
+        cr0_ts: false,
+        cr4_osfxsr: true,
+        cr4_osxmmexcpt: true,
+    });
+    assert!(foreign_masked.validate().is_err());
+    let mut missing = base;
+    missing.mulsd_memory_rax_unmasked_controls = None;
+    assert!(missing.validate().is_err());
 }
 
 #[test]

@@ -1,5 +1,21 @@
 # Собственные schema v2 fixtures этапа 2
 
+### S2-38ah — unmasked MULSD m64 memory profile
+
+`s2_38ah_mulsd_m64_memory_unmasked_rax.case.json` is the handwritten success
+literal for exact `F2 0F 59 00` with an unaligned, read-only m64 source at
+`[RAX]`. Three further literal event fixtures cover unmasked IE (`ie_snan_xm`),
+DE (`de_subnormal_ud`), and PE (`pe_inexact_ud`).
+Its separate schema-v2 profile permits every RC, IM/DM/ZM/PM and prior sticky
+history, while requiring `DAZ=FTZ=0` and `OM=UM=1`. Runner checks use the
+testkit's independent raw-u64 integer oracle, verify unmasked IE/DE before
+computation and PE after computation, and keep the destination/RIP/retirement
+unchanged on arithmetic events. Native/JIT routes remain denied. The fixture is
+host-side interpreter evidence, not physical x86 acceptance. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ah--exact-mulsd-memory-profile-with-unmasked-exceptions),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38ah--exact-mulsd-memory-form-with-unmasked-exceptions),
+and [report](../../../../docs/reports/S2_38AH_MULSD_MEMORY_UNMASKED.md).
+
 ## S2-26e RDTSC with injected source
 
 `s2_26e_rdtsc_source.case.json` and `s2_26e_rdtsc_tsd_fault.case.json` are
