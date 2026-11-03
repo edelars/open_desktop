@@ -1,4 +1,4 @@
-//! Capacity-one retained cache for the two frozen S3-34a memory fixtures.
+//! Capacity-one retained cache for the exact bounded memory-pair fixtures.
 //!
 //! This is separate from `MemoryBlockExecutor`: its opaque backend handle
 //! remains owned between synchronous calls and must retain code plus immutable
@@ -26,11 +26,12 @@ use crate::{
 pub const MAX_MEMORY_PAIR_CACHE_BYTES: usize = 512 * 1024;
 const MAX_MEMORY_PAIR_DEPENDENCIES: usize = 6;
 
-/// The two and only two memory profiles admitted by this fixture cache.
+/// The exact memory profiles admitted by this fixture cache.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum MemoryPairProfile {
     StoreThenLoad,
     LoadThenStore,
+    LoadThenLoad,
 }
 
 impl MemoryPairProfile {
@@ -38,6 +39,7 @@ impl MemoryPairProfile {
         match self {
             Self::StoreThenLoad => [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
             Self::LoadThenStore => [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02],
+            Self::LoadThenLoad => [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b],
         }
     }
 }
@@ -436,6 +438,9 @@ impl<H> MemoryPairCache<H> {
                 MemoryPairProfile::LoadThenStore => {
                     crate::runtime::MemoryPairSequenceV2::LoadThenStore
                 }
+                MemoryPairProfile::LoadThenLoad => {
+                    crate::runtime::MemoryPairSequenceV2::LoadThenLoad
+                }
             }
         {
             return Err(MemoryPairCacheRunError::Cache(MemoryCacheError::Key(
@@ -482,7 +487,7 @@ impl<H> MemoryPairCache<H> {
         Ok(())
     }
 
-    /// Run one exact S3-34a two-site profile through the resident capacity-one
+    /// Run one exact admitted two-site profile through the resident capacity-one
     /// mapping. Other entry RIPs/forms are outside this opt-in API.
     ///
     /// # Safety
@@ -820,6 +825,7 @@ mod tests {
         let bytes: &'static [u8; 6] = match profile {
             MemoryPairProfile::StoreThenLoad => &[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b],
             MemoryPairProfile::LoadThenStore => &[0x48, 0x8b, 0x03, 0x48, 0x89, 0x02],
+            MemoryPairProfile::LoadThenLoad => &[0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b],
         };
         let code = CodeView::new(base, bytes).unwrap();
         let dependencies = [crate::translation::CodeDependencySpan {
@@ -960,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn profiles_admit_only_the_two_frozen_s3_34a_forms() {
+    fn profiles_admit_only_the_exact_load_store_sequences() {
         assert_eq!(
             MemoryPairProfile::StoreThenLoad.source_bytes(),
             [0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]
@@ -968,6 +974,10 @@ mod tests {
         assert_eq!(
             MemoryPairProfile::LoadThenStore.source_bytes(),
             [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02]
+        );
+        assert_eq!(
+            MemoryPairProfile::LoadThenLoad.source_bytes(),
+            [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b]
         );
         let code = [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b];
         assert_eq!(
@@ -979,6 +989,59 @@ mod tests {
             ),
             Err(MemoryCacheKeyError::ProfileSourceMismatch)
         );
+        let store_then_store = [0x48, 0x89, 0x03, 0x48, 0x89, 0x02];
+        assert_eq!(
+            MemoryPairCacheKey::new(
+                MemoryPairProfile::LoadThenLoad,
+                context(1),
+                CodeView::new(0x1000, &store_then_store).unwrap(),
+                &[],
+            ),
+            Err(MemoryCacheKeyError::ProfileSourceMismatch)
+        );
+    }
+
+    #[test]
+    fn internal_second_site_rip_remains_rejected_for_load_pair() {
+        let profile = MemoryPairProfile::LoadThenLoad;
+        let (cache_key, code) = key(profile, 1, BASE, 1, 1);
+        let dependencies = cache_key.dependencies.clone();
+        let mut cache = MemoryPairCache::<MockPublished>::new();
+        let mut backend = MockBackend::default();
+        let mut memory = UnusedMemory;
+        let mut state = LongModeState {
+            rip: BASE + 3,
+            ..Default::default()
+        };
+        let before = state.clone();
+        let stop = AtomicU8::new(0);
+        // SAFETY: the interior RIP is rejected before publication or execution.
+        let result = unsafe {
+            cache.run(
+                profile,
+                context(1),
+                code,
+                &dependencies,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        };
+        assert_eq!(
+            result,
+            Err(MemoryPairCacheRunError::Cache(MemoryCacheError::Key(
+                MemoryCacheKeyError::InvalidCodeView
+            )))
+        );
+        assert_eq!(state, before);
+        assert_eq!(backend.publishes, 0);
+        assert_eq!(backend.executes, 0);
+        assert_eq!(cache.resident_entries(), 0);
     }
 
     #[test]

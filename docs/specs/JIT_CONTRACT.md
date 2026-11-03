@@ -2309,6 +2309,27 @@ default-policy, or performance conclusion follows. See
 [ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md). S3-18 and
 S3-22/23/25 remain open.
 
+### S3-18f: opt-in retained exact load-then-load cache profile
+
+The capacity-one checked-memory cache also admits one exact profile,
+`MemoryPairProfile::LoadThenLoad`, with only the six source bytes
+`48 8B 03 48 8B 0B`. It is opt-in through the existing typed cache API; cache
+capacity, complete source/dependency/context keying, replacement lifetime, and
+the ordinary-RAM synchronous safety preconditions remain unchanged. The
+published handle and cache key contain immutable code/artifact identity only.
+Each invocation supplies current CPU state, RAM/helper boundary, access
+context, STOP and event controls, budget, and stop-RIP anew.
+
+The two checked reads remain independent helper calls, including when both
+decode to the same address. Each successful load commits at its own guest
+boundary; if the second read faults, the first load and RIP `A+3` remain
+committed. The cache API continues to reject entry at internal RIP `A+3`; the
+caller resumes through the established continuation path without replaying the
+first load. `StoreThenStore` and all other byte sequences remain rejected by
+cache admission. Existing guard order is preserved. This optional profile
+does not change lowering, dispatcher routing, benchmark defaults, or any
+performance claim; see the S3-18f implementation evidence when recorded.
+
 ### S3-25a: synchronous published-entry lifetime partial
 
 For the bounded single-vCPU fixture path, the cache entry's compiled metadata

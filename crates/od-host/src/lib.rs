@@ -2295,10 +2295,9 @@ impl od_jit::memory_cache::CachedMemoryPairBackend for CachedPublishedMemoryPair
         use od_jit::runtime::MemoryPairSequenceV2;
 
         match block.sequence() {
-            MemoryPairSequenceV2::StoreThenLoad | MemoryPairSequenceV2::LoadThenStore => {}
-            MemoryPairSequenceV2::LoadThenLoad => {
-                return Err(CachedPublishedMemoryPairError::ArtifactProfileMismatch);
-            }
+            MemoryPairSequenceV2::StoreThenLoad
+            | MemoryPairSequenceV2::LoadThenStore
+            | MemoryPairSequenceV2::LoadThenLoad => {}
             MemoryPairSequenceV2::StoreThenStore => {
                 return Err(CachedPublishedMemoryPairError::ArtifactProfileMismatch);
             }
@@ -80092,6 +80091,502 @@ pub(crate) mod tests {
             od_jit::memory_cache::CachedMemoryPairBackend::publish_memory_pair(&mut cached, &block),
             Err(CachedPublishedMemoryPairError::ArtifactProfileMismatch)
         ));
+    }
+
+    #[test]
+    fn retained_load_load_pair_uses_fresh_reads_and_continues_after_second_read_fault() {
+        use od_isa::memory::{
+            AccessContext, AccessKind, AccessOrigin, GuestMemory, InstructionMode, MemoryError,
+            PrivilegeLevel,
+        };
+        use od_jit::memory_cache::{
+            MemoryExecutionContextGeneration, MemoryPairCache, MemoryPairProfile,
+        };
+        use od_jit::translation::{
+            AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity, MappingId,
+            MappingVersion,
+        };
+        use std::num::NonZeroU64;
+
+        const BASE: u64 = 0xa200;
+        const CODE: [u8; 6] = [0x48, 0x8b, 0x03, 0x48, 0x8b, 0x0b];
+        let _guard = jit_test_lock();
+
+        #[derive(Default)]
+        struct ReadRam {
+            values: Vec<u64>,
+            reads: Vec<(u64, AccessContext)>,
+            fail_read_at: Option<usize>,
+            stop_after_read: Option<(usize, std::sync::Arc<AtomicU8>)>,
+            event_after_read: Option<(usize, std::sync::Arc<AtomicBool>)>,
+        }
+        impl GuestMemory for ReadRam {
+            fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+                address
+                    .checked_sub(BASE)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .and_then(|offset| CODE.get(offset).copied())
+                    .ok_or(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Fetch,
+                    })
+            }
+            fn read(
+                &mut self,
+                address: u64,
+                context: AccessContext,
+                out: &mut [u8],
+            ) -> Result<(), MemoryError> {
+                let index = self.reads.len();
+                self.reads.push((address, context));
+                if self.fail_read_at == Some(index) {
+                    return Err(MemoryError::Architectural(
+                        od_isa::memory::ArchitecturalFault {
+                            vector: 14,
+                            error_code: Some(0),
+                            linear_address: Some(address),
+                        },
+                    ));
+                }
+                if out.len() != 8 {
+                    return Err(MemoryError::Unmapped {
+                        address,
+                        access: AccessKind::Read,
+                    });
+                }
+                let value = *self.values.get(index).ok_or(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Read,
+                })?;
+                out.copy_from_slice(&value.to_le_bytes());
+                if self
+                    .stop_after_read
+                    .as_ref()
+                    .is_some_and(|(stop_at, _)| *stop_at == index)
+                {
+                    self.stop_after_read
+                        .as_ref()
+                        .unwrap()
+                        .1
+                        .store(1, Ordering::Release);
+                }
+                if self
+                    .event_after_read
+                    .as_ref()
+                    .is_some_and(|(event_at, _)| *event_at == index)
+                {
+                    self.event_after_read
+                        .as_ref()
+                        .unwrap()
+                        .1
+                        .store(true, Ordering::Release);
+                }
+                Ok(())
+            }
+            fn write(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: &[u8],
+            ) -> Result<(), MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_fetch_add_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn atomic_compare_exchange_integer(
+                &mut self,
+                address: u64,
+                _: AccessContext,
+                _: od_isa::OperandSize,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, MemoryError> {
+                Err(MemoryError::Unmapped {
+                    address,
+                    access: AccessKind::Write,
+                })
+            }
+            fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+                Ok(())
+            }
+        }
+
+        let context_generation = MemoryExecutionContextGeneration::from_u64(1).unwrap();
+        let identity = CodeIdentity {
+            address_space: AddressSpaceId::new(NonZeroU64::new(1).unwrap()),
+            mapping: MappingId::new(NonZeroU64::new(1).unwrap()),
+            mapping_version: MappingVersion::new(NonZeroU64::new(1).unwrap()),
+            backing: BackingId::new(NonZeroU64::new(1).unwrap()),
+            backing_version: BackingVersion::new(NonZeroU64::new(1).unwrap()),
+            executable: true,
+        };
+        let dependencies = [CodeDependencySpan {
+            start_rip: BASE,
+            end_rip: BASE + CODE.len() as u64,
+            identity,
+        }];
+        let code = od_jit::block::CodeView::new(BASE, &CODE).unwrap();
+        let mut cache: MemoryPairCache<PublishedMemoryPairHandle> = MemoryPairCache::new();
+        let mut backend = CachedPublishedMemoryPairBackend;
+        let stop = AtomicU8::new(0);
+        let ring3 = AccessContext::default();
+        let ring0 = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+
+        let mut first_state = od_isa::LongModeState {
+            rip: BASE,
+            ..Default::default()
+        };
+        first_state.gpr[3] = 16;
+        let mut first_ram = ReadRam {
+            values: vec![0x1111, 0x2222],
+            ..Default::default()
+        };
+        // SAFETY: test RAM is private and synchronous; code bytes are immutable
+        // and separate from callback data, with no concurrent observer.
+        let first = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &dependencies,
+                &mut first_state,
+                &mut first_ram,
+                ring3,
+                2,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        }
+        .unwrap();
+        assert_eq!(first.retired_instructions, 2);
+        assert_eq!(first_state.rip, BASE + 6);
+        assert_eq!(first_state.gpr[0], 0x1111);
+        assert_eq!(first_state.gpr[1], 0x2222);
+        assert_eq!(first_ram.reads, vec![(16, ring3), (16, ring3)]);
+        assert_eq!(cache.resident_entries(), 1);
+
+        // Same typed key hits the resident code, while this call supplies a
+        // new CPU, callback object, privilege context, and one-instruction budget.
+        let mut hit_state = od_isa::LongModeState {
+            rip: BASE,
+            ..Default::default()
+        };
+        hit_state.gpr[0] = 0xaaaa;
+        hit_state.gpr[1] = 0xbbbb;
+        hit_state.gpr[3] = 24;
+        let mut hit_ram = ReadRam {
+            values: vec![0x3333],
+            ..Default::default()
+        };
+        let hit = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &dependencies,
+                &mut hit_state,
+                &mut hit_ram,
+                ring0,
+                1,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            hit.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::BudgetExhausted
+        );
+        assert_eq!(hit.remaining_budget, 0);
+        assert_eq!(hit.retired_instructions, 1);
+        assert_eq!(hit_state.rip, BASE + 3);
+        assert_eq!(hit_state.gpr[0], 0x3333);
+        assert_eq!(hit_state.gpr[1], 0xbbbb);
+        assert_eq!(hit_ram.reads, vec![(24, ring0)]);
+
+        let hit_stop = std::sync::Arc::new(AtomicU8::new(0));
+        let mut stop_state = od_isa::LongModeState {
+            rip: BASE,
+            ..Default::default()
+        };
+        stop_state.gpr[1] = 0xcccc;
+        stop_state.gpr[3] = 40;
+        let mut stop_ram = ReadRam {
+            values: vec![0x4444, 0x5555],
+            stop_after_read: Some((0, hit_stop.clone())),
+            ..Default::default()
+        };
+        let stopped = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &dependencies,
+                &mut stop_state,
+                &mut stop_ram,
+                ring3,
+                2,
+                None,
+                &hit_stop,
+                None,
+                &mut backend,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            stopped.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::StopRequested
+        );
+        assert_eq!(stopped.retired_instructions, 1);
+        assert_eq!(stopped.remaining_budget, 1);
+        assert_eq!(stop_state.rip, BASE + 3);
+        assert_eq!(stop_state.gpr[0], 0x4444);
+        assert_eq!(stop_state.gpr[1], 0xcccc);
+        assert_eq!(stop_ram.reads, vec![(40, ring3)]);
+        assert_eq!(hit_stop.load(Ordering::Acquire), 1);
+
+        let mut stop_rip_state = od_isa::LongModeState {
+            rip: BASE,
+            ..Default::default()
+        };
+        stop_rip_state.gpr[3] = 48;
+        let mut stop_rip_ram = ReadRam {
+            values: vec![0x6666],
+            ..Default::default()
+        };
+        let stop_at_second_site = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &dependencies,
+                &mut stop_rip_state,
+                &mut stop_rip_ram,
+                ring3,
+                2,
+                Some(BASE + 3),
+                &stop,
+                None,
+                &mut backend,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            stop_at_second_site.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::StopAddress
+        );
+        assert_eq!(stop_at_second_site.retired_instructions, 1);
+        assert_eq!(stop_rip_state.rip, BASE + 3);
+        assert_eq!(stop_rip_ram.reads, vec![(48, ring3)]);
+
+        let hit_event = std::sync::Arc::new(AtomicBool::new(false));
+        let mut event_state = od_isa::LongModeState {
+            rip: BASE,
+            ..Default::default()
+        };
+        event_state.gpr[3] = 56;
+        let mut event_ram = ReadRam {
+            values: vec![0x7777, 0x8888],
+            event_after_read: Some((0, hit_event.clone())),
+            ..Default::default()
+        };
+        let event_exit = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &dependencies,
+                &mut event_state,
+                &mut event_ram,
+                ring3,
+                2,
+                None,
+                &stop,
+                Some(&hit_event),
+                &mut backend,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            event_exit.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::BoundaryReached { rip: BASE + 6 }
+        );
+        assert_eq!(event_exit.retired_instructions, 2);
+        assert_eq!(event_state.rip, BASE + 6);
+        assert_eq!(event_state.gpr[0], 0x7777);
+        assert_eq!(event_state.gpr[1], 0x8888);
+        assert_eq!(event_ram.reads, vec![(56, ring3), (56, ring3)]);
+        assert!(hit_event.load(Ordering::Acquire));
+
+        let pre_entry_event = std::sync::Arc::new(AtomicBool::new(true));
+        let mut pre_entry_event_state = od_isa::LongModeState {
+            rip: BASE,
+            ..Default::default()
+        };
+        pre_entry_event_state.gpr[3] = 64;
+        let before_event = pre_entry_event_state.clone();
+        let mut pre_entry_event_ram = ReadRam::default();
+        let pending_event = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &dependencies,
+                &mut pre_entry_event_state,
+                &mut pre_entry_event_ram,
+                ring0,
+                2,
+                None,
+                &stop,
+                Some(&pre_entry_event),
+                &mut backend,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            pending_event.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::EventPending
+        );
+        assert_eq!(pending_event.retired_instructions, 0);
+        assert_eq!(pending_event.remaining_budget, 2);
+        assert_eq!(pre_entry_event_state, before_event);
+        assert!(pre_entry_event_ram.reads.is_empty());
+
+        let mut fault_state = od_isa::LongModeState {
+            rip: BASE,
+            rflags: 0x246,
+            ..Default::default()
+        };
+        fault_state.gpr[1] = 0xdddd;
+        fault_state.gpr[4] = 0xeeee;
+        fault_state.gpr[3] = 32;
+        let fault_before = fault_state.clone();
+        let mut fault_ram = ReadRam {
+            values: vec![0x5555, 0x6666],
+            fail_read_at: Some(1),
+            ..Default::default()
+        };
+        let fault = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &dependencies,
+                &mut fault_state,
+                &mut fault_ram,
+                ring3,
+                2,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        }
+        .unwrap();
+        let fault_value = od_isa::memory::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(32),
+        };
+        assert_eq!(
+            fault.exit,
+            od_jit::memory_dispatch::BoundedMemoryExit::GuestFault(fault_value)
+        );
+        assert_eq!(fault.retired_instructions, 1);
+        assert_eq!(fault.remaining_budget, 1);
+        let mut expected_fault_state = fault_before;
+        expected_fault_state.rip = BASE + 3;
+        expected_fault_state.gpr[0] = 0x5555;
+        assert_eq!(fault_state, expected_fault_state);
+        assert_eq!(fault_ram.reads, vec![(32, ring3), (32, ring3)]);
+
+        let before_internal_rip = fault_state.clone();
+        let internal = unsafe {
+            cache.run(
+                MemoryPairProfile::LoadThenLoad,
+                context_generation,
+                code,
+                &dependencies,
+                &mut fault_state,
+                &mut fault_ram,
+                ring3,
+                1,
+                None,
+                &stop,
+                None,
+                &mut backend,
+            )
+        };
+        assert_eq!(
+            internal,
+            Err(od_jit::memory_cache::MemoryPairCacheRunError::Cache(
+                od_jit::memory_cache::MemoryCacheError::Key(
+                    od_jit::memory_cache::MemoryCacheKeyError::InvalidCodeView
+                )
+            ))
+        );
+        assert_eq!(fault_state, before_internal_rip);
+        assert_eq!(fault_ram.reads.len(), 2);
+
+        // Resume the faulting instruction at its committed RIP. This fetches
+        // and reads only site 1; the successful first load is not replayed.
+        let mut continuation_ram = ReadRam {
+            values: vec![0x7777],
+            ..Default::default()
+        };
+        let continuation = od_isa::execute::run(
+            &mut fault_state,
+            &mut continuation_ram,
+            od_isa::execute::RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: ring0,
+            },
+            || false,
+        );
+        assert_eq!(continuation.instructions_executed, 1);
+        assert_eq!(fault_state.rip, BASE + 6);
+        assert_eq!(fault_state.gpr[0], 0x5555);
+        assert_eq!(fault_state.gpr[1], 0x7777);
+        assert_eq!(continuation_ram.reads, vec![(32, ring0)]);
+        assert_eq!(cache.counters().hits, 5);
+        assert_eq!(cache.counters().misses, 1);
+        assert_eq!(cache.counters().successful_compiles, 1);
+        assert_eq!(cache.counters().successful_publications, 1);
+        assert_eq!(cache.resident_entries(), 1);
     }
 
     #[test]

@@ -146,6 +146,8 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-16o | Fixed-seed native→NOT RCX fallback→native Store→Store corpus and exact gate | Adds eight bounded full-state/RAM/write-ledger cases across six budget and two stop-RIP boundaries plus callback STOP; no ISA expansion. Gate is pinned and reviewed but unexecuted; overall S3-16 remains open. См. [implementation report](../reports/STAGE_3_S3-16o_2026-11-03.md) |
 | [ ] | S3-17 | Cache key и code dependencies | S3-04, S3-15 |
 | [ ] | S3-18 | Ограниченный block cache | S3-07, S3-17 |
+| [partial] | S3-18e | Capacity-one retained cache for exact Store→Load and Load→Store fixture pairs | See implementation report; production owner/MMU and broader S3-18 remain open |
+| [partial] | S3-18f | Opt-in retained cache for the exact Load→Load pair `48 8B 03 48 8B 0B` | Independent review passed; exact two-read/fault/continuation behavior is covered in code, but Rust execution is blocked by ISSUE-030. Store→Store remains rejected. См. [implementation report](../reports/STAGE_3_S3-18f_2026-11-03.md) |
 | [partial] | S3-19 | Checked memory/helper bridge | S3-08, S3-16; S2-04/08 |
 | [partial] | S3-19a | Invocation-local checked helper ABI и native probe | Узкий standalone slice внутри S3-19; production block exits остаются открыты |
 | [partial] | S3-19b | Production V2 block/helper path для одного MOV r64 load | Точный `48 8B /r`, base/dst RAX..RBX; без cache/general IR |
@@ -1105,6 +1107,21 @@ does not implement production owner/MMU/SMC/DMA lifecycle or establish a
 performance/default-policy conclusion. See the
 [S3-18e implementation report](../reports/STAGE_3_S3-18e_2026-11-01.md) and
 [JIT test scope](../testing/JIT.md#s3-18e-bounded-checked-memory-cache).
+S3-18 remains open.
+
+**S3-18f exact Load→Load retained profile partial:** adds only the existing
+S3-26e bytes `48 8B 03 48 8B 0B` to the typed capacity-one cache admission.
+The full key, code-only retained handle, 512 KiB bound, and replacement
+lifetime are unchanged; each hit receives fresh state, memory, access context,
+STOP/event controls, budget, and stop-RIP. Two same-address reads remain
+independent; a second-read fault commits the first result at `A+3`, and a
+continuation does not replay it. An entry beginning at `A+3` remains rejected,
+and `StoreThenStore` is still rejected. Sol/high static review passed. Rust
+execution and workspace formatting are blocked by the unchanged parse error
+recorded as ISSUE-030. This adds no benchmark/default-policy or performance
+claim. See the [S3-18f report](../reports/STAGE_3_S3-18f_2026-11-03.md),
+[JIT test scope](../testing/JIT.md),
+and [ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md).
 S3-18 remains open.
 
 ### S3-19. Подключить checked memory bridge

@@ -1074,6 +1074,27 @@ memory profiles, Mini support, physical-x86 equivalence, or performance.
 See the [implementation report](../reports/STAGE_3_S3-18e_2026-11-01.md) and
 [ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md).
 
+## S3-18f: opt-in retained Load→Load profile
+
+Run the focused `od-jit` memory-cache unit tests and, on macOS ARM64, the
+`od-host` regression
+`retained_load_load_pair_uses_fresh_reads_and_continues_after_second_read_fault`.
+The regression checks two distinct same-address reads, a same-key hit with
+fresh CPU/RAM/access/STOP/event/budget/stop-RIP bindings, one compile and
+publication, exact second-read fault state and remaining budget, continuation
+at `A+3` without replay, and internal-RIP rejection. Its separate pre-entry
+event case returns `EventPending` with zero reads and zero retirement; an event
+raised during the pair does not interrupt its two reads, and code-end wins at
+`A+6`. The profile and retained publisher accept only exact
+`48 8B 03 48 8B 0B`; `StoreThenStore` remains rejected.
+
+Workspace formatting and the focused Rust checks remain pending while ISSUE-030
+blocks Rust parsing in `od-jit/src/ir.rs`. This cache option is experimental;
+the tests do not establish a performance benefit, production owner/MMU
+integration, or Mini/M1 acceptance. See the
+[S3-18f implementation report](../reports/STAGE_3_S3-18f_2026-11-03.md) and
+[ADR-0004](../decisions/ADR-0004-capacity-one-memory-cache.md).
+
 ## S3-38b: cached eager NativeRegisterV1 fixture
 
 Run the three pinned `s3_38b_native_register_v1_*` gates in

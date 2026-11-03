@@ -57,6 +57,15 @@
 - **Основание:** commit `ee2af23` updates `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed` in [`stage3_dword_store_corpus.rs`](../tests/cpu/stage3_dword_store_corpus.rs); the runtime/test diff passed independent static Sol/high review. The [S3-34dn report](reports/STAGE_3_S3-34dn_2026-11-03.md) records deferred Rust, harness, and self-check execution.
 - **Следующий шаг:** run the exact S3-34dn Rust self-check `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed` and harness gate `s3_34dn_replay_artifact_self_check` at Stage 3 end. Keep this issue open until execution acceptance succeeds.
 
+### ISSUE-030 — Rust workspace formatting and check blocked by parse error in `od-jit/src/ir.rs`
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `crates/od-jit/src/ir.rs`, function containing `address32_profile` near line 1122.
+- **Статус:** открыта; файл не изменён в S3-18f; следующий шаг — исправить delimiter mismatch в отдельном согласованном срезе и повторить workspace formatting/check.
+- **Суть и последствия:** `cargo fmt --all` and `cargo check -p od-jit -p od-host --all-targets --offline` stop before checking the S3-18f changes with `mismatched closing delimiter: '}'` at `ir.rs:1122`; the reported opening `{` is at line 1069 and the parser reaches the function close at line 1231 with the expression still unclosed. Workspace formatting and these crate checks therefore cannot currently provide acceptance evidence. The file is clean relative to HEAD and outside S3-18f scope; no broader runtime failure is inferred from the parse error.
+- **Основание:** exact tool output during S3-18f formatting/check attempts; `git diff -- crates/od-jit/src/ir.rs` was empty. Targeted `rustfmt` on the changed `memory_cache.rs` succeeded, but it does not establish workspace formatting or compilation.
+- **Следующий шаг:** repair the delimiter mismatch in the appropriate follow-up, then rerun `cargo fmt --all -- --check` and `cargo check -p od-jit -p od-host --all-targets --offline`; keep this issue open until both commands pass.
+
 ### ISSUE-024 — checked memory lowering ограничен узкими V2 MOV slices
 
 - **Дата обнаружения:** 2026-10-27.
