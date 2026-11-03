@@ -318,7 +318,7 @@ Host PC map нужен для диагностики и восстановлен
 | [ ] | S3-31 | Прямые связи блоков, если оправданы | S3-25, S3-28, S3-30 |
 | [ ] | S3-32 | Локальные IR-преобразования, если оправданы | S3-03, S3-27, S3-30 |
 | [ ] | S3-33 | Расширение lowering по готовности S2 | S3-27, S3-29; готовый interpreter/native subset |
-| [partial] | S3-33n | Composed uncached `NativeRegisterV1` admission/lowering for committed S3-33a–m forms | Existing exact admissions; implementation and acceptance evidence pending |
+| [partial] | S3-33n | Composed uncached `NativeRegisterV1` admission/lowering for committed S3-33a–m forms | Bounded implementation, independent review, and local evidence recorded; 33 local cases `not_run`; broader Stage 3 acceptance remains open |
 | [ ] | S3-34 | Corpus, reducer и негативные проверки | S3-24–S3-33 в принятой конфигурации |
 | [partial] | S3-34f | Exact local acceptance gates for bounded S3-28/29/38 slices | S3-34e, S3-28a/b, S3-29a–e, S3-38a; full suite gates remain open |
 | [partial] | S3-34i | Exact local gates for native arithmetic slices | S3-34e, S3-33a–d; full S3-34 gates remain open |
@@ -3020,9 +3020,12 @@ fallthrough MOV paths, STOP/budget boundaries, and bare-NOP fallback/control.
 The host gate compares eager/candidate execution with the interpreter over
 exactly 169 ordered pairs from 13 forms using seed `0x5333_336e_7265_6731`;
 failure output includes seed, pair, bytes, and initial state. Harness
-self-checks passed 28/28. Independent review and the full local suite remain
-pending. Mini, performance, Stage 2 and owner/MMU checks remain `not_run` or
-outside this slice. See
+self-checks passed 28/28. Independent code/contract review was clean. The
+post-review full local run recorded 73 passed, 0 failed, and 33 `not_run`
+(`local_only`); all three S3-33n identities passed. This establishes the
+bounded local evidence recorded in the report, not end-to-end Stage 3
+acceptance. Mini, performance, Stage 2 and owner/MMU checks remain `not_run`
+or outside this slice. See
 [S3-33n report](../reports/STAGE_3_S3-33n_2026-10-30.md).
 
 ## 9. Проверка, производительность и интеграция

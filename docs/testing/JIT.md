@@ -1411,9 +1411,11 @@ The mixed compiler case passed with five instructions under the existing
 4096-byte cap. Eager and candidate paths cover pending-ZF taken and fallthrough
 through distinct MOV paths, STOP/budget boundaries, and bare-NOP fallback /
 control. The three targeted Rust identities passed, as did 28/28 harness
-self-checks. Independent review and the full local suite remain pending. Mini,
-performance, Stage 2, and owner/MMU checks remain `not_run` or outside this
-slice. See
+self-checks. Independent code/contract review was clean. The post-review full
+local run recorded 73 passed, 0 failed, and 33 `not_run` (`local_only`), with
+all three S3-33n identities passing. This is bounded local evidence, not
+end-to-end Stage 3 acceptance. Mini, performance, Stage 2, and owner/MMU checks
+remain `not_run` or outside this slice. See
 [S3-33n report](../reports/STAGE_3_S3-33n_2026-10-30.md).
 
 ## Срез A: один register-only блок
