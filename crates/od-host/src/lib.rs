@@ -1,5 +1,7 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
+pub mod session;
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::ptr::NonNull;
 use std::sync::Mutex;
@@ -3860,7 +3862,7 @@ pub unsafe extern "C" fn od_fragment_destroy(handle: *mut std::ffi::c_void) -> u
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use od_isa::memory::{AccessContext, MemoryError};
     use od_jit::allocator::{Allocation, AllocatorConfig, HelperBoundaryPosition, ValueLocation};
@@ -5027,7 +5029,7 @@ mod tests {
         }
     }
 
-    fn jit_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn jit_test_lock() -> std::sync::MutexGuard<'static, ()> {
         JIT_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
