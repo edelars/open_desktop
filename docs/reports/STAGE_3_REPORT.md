@@ -557,17 +557,17 @@ no findings; the summary does not close S3-41 or Stage 3. See the
 | M1 Pro (S3-39) | Ограниченный ARM64 smoke завершён на MacBookPro18,3 / macOS 14.6.1 для arithmetic, taken multi-block branch, accepted S3-14 helper, cooperative STOP и same-handle C ABI publication lifecycle. Это не широкая гарантия host support и не заменяет physical x86 oracle. См. [S3-39 report](STAGE_3_S3-39_M1PRO_2026-10-31.md). |
 | Итоговая приёмка S3-41 | Открыта. Stage 3 нельзя объявлять завершённым по этой локальной сводке. |
 
-## Pending slice documentation
+## S3-20fy and S3-34dj status
 
-S3-20fy plans the exact address-size-32 RCX-base Dword store with signed
-disp8 (`67 89 41 ib`), and S3-34dj plans its pinned harness identities. Both
-are documentation-only status records at this point: implementation, static
-review, and harness evidence remain pending. The shared host helper currently
-recognizes only the addr32 RCX singleton store, so review must ensure exact
-disp8 recognition is added or isolated while preserving adjacent store
-contracts. Expected harness totals are targets only. Checks, including Mini,
-remain deferred until the end of Stage 3; M1 regression is deferred by the
-user. See [S3-20fy](STAGE_3_S3-20fy_2026-11-02.md) and
+S3-20fy implements the exact address-size-32 RCX-base Dword store with signed
+disp8 (`67 89 41 ib`), and S3-34dj pins its JIT and host gate identities. The
+shared host fixture helper accepts the exact addr32 singleton `67 89 01` and
+disp8 form `67 89 41 ib`; it applies signed disp8 modulo-32 arithmetic to the
+starting EA while retaining full RCX and preserving adjacent address64 store
+contracts. Runtime and harness independent Sol/high reviews passed. Behavior,
+build, formatting, Cargo, Python harness, and Mini checks remain deferred until
+the end of Stage 3; M1 regression is deferred by the user. See
+[S3-20fy](STAGE_3_S3-20fy_2026-11-02.md) and
 [S3-34dj](STAGE_3_S3-34dj_2026-11-02.md).
 
 ## Источники
