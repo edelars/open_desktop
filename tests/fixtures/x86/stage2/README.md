@@ -8608,14 +8608,19 @@ and [stage plan](../../../../docs/plans/STAGE_2.md).
 
 ### S2-38aa SQRTPS m128 memory unmasked exceptions
 
-The planned immutable schema-v2 profile uses exact `0F 51 00`, SSE bit 25,
-read-only m128 `[RAX]`, one read16 and mandatory alignment16. Planned fixtures
-cover masked success and unmasked IE/DE/PE under `#XM` and arithmetic `#UD`.
-Runner coverage will use an independent raw-u32 oracle, mixed-lane pre-event
-aggregation, whole-XMM suppression, gate/fetch/CPL checks, alignment with AC
-clear/set, one-read and rollback assertions, tampering and interpreter-only
-backend denial. S2-37dd masked memory and S2-37ak register profiles remain
-separate. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38aa--exact-sqrtps-memory-profile-with-unmasked-exceptions)
+The immutable schema-v2 profile uses exact `0F 51 00`, SSE bit 25, read-only
+m128 `[RAX]`, one read16 and mandatory alignment16. Seven literal fixtures cover
+success and unmasked IE/DE/PE under both `#XM` and arithmetic `#UD`. Direct ISA
+coverage executes 625 four-lane event products across all IM/DM/PM and
+OSXMMEXCPT combinations (10,000 cases), plus all four RC modes and 64 prior
+sticky combinations. The independent raw-u32 oracle checks the same products
+and RC/sticky histories. Focused coverage also checks mixed-lane IE|DE|PE
+aggregation, whole-XMM/RIP/retirement suppression, gate priority at CPL0–3,
+full/truncated fetch, alignment with AC clear/set, one-read16 and read-fault
+rollback, result/control tampering, and interpreter-only backend denial.
+S2-37dd masked memory and S2-37ak register profiles remain separate. No
+physical x86 acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38aa--exact-sqrtps-memory-profile-with-unmasked-exceptions),
+[implementation report](../../../../docs/reports/S2_38AA_SQRTPS_MEMORY_UNMASKED.md),
 and [stage plan](../../../../docs/plans/STAGE_2.md).
 
 ### S2-38ab SQRTPD m128 memory unmasked exceptions
