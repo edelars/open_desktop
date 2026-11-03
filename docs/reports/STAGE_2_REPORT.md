@@ -23304,3 +23304,49 @@ implementation `09541af` and expanded event matrix `93310a0`. See
 [S2-38ah](S2_38AH_MULSD_MEMORY_UNMASKED.md), the
 [CPU contract](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).
 Stage 2 remains open.
+
+<a id="main-integration-s2-38ai-s2-38aj"></a>
+
+## Main integration: S2-38ai and S2-38aj
+
+S2-38ai adds exact Long64 `F3 0F 5E 00` DIVSS XMM0,m32 `[RAX]`, SSE bit 25;
+S2-38aj adds exact `F2 0F 5E 00` DIVSD XMM0,m64, SSE2 bit 26. Both use
+immutable schema-v2 interpreter-only profiles and separate controls, budget
+one, stop RIP=entry+4, executable code plus read-only data, and one read4/read8.
+Existing masked-memory and register profiles retain their contracts. Full
+fetch/form and feature/EM/OSFXSR/TS gates precede MXCSR admission, AC refusal,
+canonical span and the single data read. IE/ZE/DE are classified in priority
+order: SNaN and `0/0` or `∞/∞` raise IE; QNaN alone does not. NaNs suppress
+same-lane ZE/DE; finite nonzero divided by zero raises ZE, but `∞/0` does not.
+Unmasked pre-events suppress later OE/UE/PE and the destination; masked
+pre-events continue through WPR rounding and PE. OSXMMEXCPT selects #XM vector
+19 or SIMD-generated #UD vector 6, without error code. Native/JIT/C ABI/generic/
+fragment dispatch and physical x86 acceptance remain closed.
+
+The DIVSS production matrix runs 27 event vectors ×4 RC ×64 prior sticky
+histories ×16 IM/DM/ZM/PM masks ×2 OSXMMEXCPT mappings (221,184 actual
+interpreter executions), checked against an independent raw-u32 oracle with
+the actual memory RHS. DIVSD runs 20 raw-u64 vectors over the same controls and
+histories (163,840 interpreter executions), checked against its independent
+actual-memory-RHS oracle. Coverage includes signed SNaNs in both operand
+positions, QNaN suppression, IE/ZE/DE distinctions, exact/inexact tiny,
+half-minsub, WPR boundaries, overflow and suppression of later events. Literal
+success/exception fixtures, direct gate/fetch/CPL/AC/span/read rollback,
+tampering and backend denial are included. Independent Sol/high reviews are
+clean after fixing fetch-span validator precedence for both profiles; the
+DIVSD reviewer’s own full-matrix rerun timed out at 60 seconds without a
+failure, while the author’s full matrix passed.
+
+On combined main, formatting, `cargo check --workspace --all-targets --offline`,
+`cargo test -p od-isa -p od-testkit -p od-runner --offline --quiet`,
+`python3 tools/check_layout.py`, `git diff --check` and Graphify refresh passed.
+Package results: od-isa 1,964; od-testkit 461; od-runner 142 unit + 563
+fixture tests. Graphify reported 12,520 nodes / 27,215 edges / 362 communities;
+labels were not refreshed without an LLM API key. Full workspace tests,
+`od-x86-runner` and physical x86 were not run.
+
+Main commits: contract preparation `b372570`; DIVSS `69ba364`; DIVSD `41697eb`.
+See [S2-38ai](S2_38AI_DIVSS_MEMORY_UNMASKED.md),
+[S2-38aj](S2_38AJ_DIVSD_MEMORY_UNMASKED.md), the
+[CPU contract](../specs/CPU_CONTRACT.md), and [stage plan](../plans/STAGE_2.md).
+Stage 2 remains open.

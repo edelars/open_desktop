@@ -681,7 +681,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38af | Exact Long64 `SUBSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 22 raw operand vectors ×4 RC ×64 sticky histories ×16 IM/DM/ZM/PM masks ×2 OSXMMEXCPT =180,224 independent raw-u64 cases; four literal fixtures, precedence-aware status validation, pre/post suppression, one read8, AC/span/read rollback, result/control/backend tampering and #GP(0); S2-37dl/S2-37ap preserved; Sol/high review clean; no physical x86 acceptance; [report](../reports/S2_38AF_SUBSD_MEMORY_UNMASKED.md) |
 | [x] | S2-38ag | Exact Long64 `MULSS XMM0,m32 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 13 original event vectors plus exact-tiny ×4 RC ×64 prior stickies ×16 IM/DM/ZM/PM ×2 OSXMMEXCPT =114,688 real interpreter executions checked by independent raw-u32 oracle; separate 106,496-case schema/result-validator matrix; three literal fixtures; direct gate/fetch/CPL/TS, AC, unaligned one-read, canonical-span/read rollback, status/result/control tampering and backend denial; masked S2-37dm/S2-37dk/S2-37do permissions preserved; od-isa 1,959, testkit 461, runner 138+561; workspace/fmt/Graphify/diff checks passed; Sol/high review clean; [report](../reports/S2_38AG_MULSS_MEMORY_UNMASKED.md); no physical x86 acceptance |
 | [x] | S2-38ah | Exact Long64 `MULSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 20 raw-u64 memory-RHS vectors ×4 RC ×64 sticky histories ×16 IM/DM/ZM/PM ×2 OSXMMEXCPT =163,840 real interpreter executions checked by independent oracle; exact/inexact tiny, DE→PE priority, signed NaNs, zero×infinity, overflow and preservation/backend cases; four literal fixtures; od-isa 1,960, testkit 459, runner 139+561; workspace/fmt/Graphify/diff checks passed; Sol/high review clean; [report](../reports/S2_38AH_MULSD_MEMORY_UNMASKED.md); no physical x86 acceptance |
-| [x] | S2-38ai | Exact Long64 `DIVSS XMM0,m32 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | 27 event vectors × RC ×64 prior sticky ×16 IM/DM/ZM/PM × both OSXMMEXCPT = 221,184 actual interpreter runs validated against independent raw-u32 actual-memory-RHS oracle; IE/ZE/DE priority, signed SNaN in both positions, QNaN suppression, ZE-only zero cases, DE, exact/inexact ratios and tiny results, half-minsub, min-normal WPR boundary, overflow and pre-event suppression; direct gate/fetch/CPL/AC/span/read rollback and one-read probes; three literal fixtures, schema/result/status/control/exception tampering, S2-37do read-only regression and backend denial; od-isa 1,962, testkit 461, runner 141+562; workspace/fmt/Graphify/diff passed; fetch-span validator fix passed Sol/high follow-up review; [report](../reports/S2_38AI_DIVSS_MEMORY_UNMASKED.md); no physical x86 acceptance |
+| [x] | S2-38ai | Exact Long64 `DIVSS XMM0,m32 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | 27 event vectors × RC ×64 prior sticky ×16 IM/DM/ZM/PM × both OSXMMEXCPT = 221,184 actual interpreter runs validated against independent raw-u32 actual-memory-RHS oracle; IE/ZE/DE priority, signed SNaN in both positions, QNaN suppression, ZE-only zero cases, DE, exact/inexact ratios and tiny results, half-minsub, min-normal WPR boundary, overflow and pre-event suppression; direct gate/fetch/CPL/AC/span/read rollback and one-read probes; three literal fixtures, schema/result/status/control/exception tampering, S2-37do read-only regression and backend denial; od-isa 1,962, testkit 461, runner 141+562; workspace/fmt/Graphify/diff passed; fetch-span validator fix passed clean Sol/high follow-up review; [report](../reports/S2_38AI_DIVSS_MEMORY_UNMASKED.md); no physical x86 acceptance |
 | [x] | S2-38aj | Exact Long64 `DIVSD XMM0,m64 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | 20 raw-u64 vectors ×4 RC ×64 sticky histories ×16 IM/DM/ZM/PM ×2 OSXMMEXCPT =163,840 actual interpreter cases checked by independent raw-u64 actual-memory-RHS oracle; signed SNaNs in both positions, QNaN suppression, IE/ZE/DE priority, exact/inexact tiny, half-minsub, min-normal boundary, overflow, DE→PE suppression and masked-pre→unmasked-PE; five literal fixtures; direct gate/fetch/form, noncanonical code/data span, CPL0–3, AC-before-read, one-read and rollback; result/status/control/exception/destination/retirement tampering and backend denial. Affected suites passed: od-isa 1,963, testkit 461, runner 140+563; workspace all-target offline check, fmt, Graphify, diff and main layout checks passed. Sol/high review clean; reviewer’s full matrix attempt timed out without failure, author’s full matrix passed; [report](../reports/S2_38AJ_DIVSD_MEMORY_UNMASKED.md); no physical x86 acceptance |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
@@ -18769,8 +18769,11 @@ event vectors × 4 RC × 64 prior sticky histories × 16 IM/DM/ZM/PM combination
 schema/result/status/control/exception tampering, backend denial and masked
 read-only permissions are checked. See the [standalone report](../reports/S2_38AI_DIVSS_MEMORY_UNMASKED.md).
 
-No physical x86 acceptance is claimed; native, JIT, C ABI, generic and fragment
-routes remain closed.
+Validation passed: od-isa 1,962, od-testkit 461, od-runner 141 unit + 562
+fixture tests; workspace all-target offline check, formatting, Graphify,
+diff/layout checks. Independent Sol/high follow-up review is clean after fixing
+fetch-span result validation; no physical x86 acceptance is claimed. Native,
+JIT, C ABI, generic and fragment routes remain closed.
 #### S2-38aj — exact DIVSD memory form with unmasked exceptions
 
 Implemented immutable schema-v2 interpreter-only profile
@@ -18827,10 +18830,11 @@ tampering, and backend denial. Existing S2-37dp masked-memory and S2-37ax
 register profiles remain covered by their prior suites.
 
 Validation passed: focused matrix 163,840/163,840; affected suites od-isa
-1,962, od-testkit 461, runner unit 140 and fixture_v2 563; full workspace
-all-target offline check; formatting; diff check; Graphify refresh (12,549
+1,963, od-testkit 461, runner unit 140 and fixture_v2 563; full workspace
+all-target offline check; formatting; diff check; Graphify refresh (12,550
 nodes); project layout check in main. The isolated linked worktree's layout
 check reports its `.git` pointer as an unmapped root file and lacks ignored
 `work/` evidence referenced by the existing aggregate report; the unchanged
-main checkout passes layout. Independent Sol/high review is pending agent
-availability. No physical x86 acceptance is claimed.
+main checkout passes layout. Independent Sol/high review is clean; the
+reviewer's full-matrix attempt timed out without failure, while the author's
+full matrix passed. No physical x86 acceptance is claimed.

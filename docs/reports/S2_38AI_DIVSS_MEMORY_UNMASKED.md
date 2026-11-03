@@ -58,8 +58,8 @@ fixture's actual memory RHS.
   pre-existing aggregate `STAGE_2_REPORT.md` links to absent `work/` oracle
   manifests; no S2-38ai layout issue was reported.
 - Independent Sol/high review found the fetch-span validator mismatch and
-  provenance wording issues. Both were fixed and covered by regressions; a
-  follow-up review of those fixes is pending.
+  provenance wording issues. Both were fixed, covered by regressions, and
+  independently re-reviewed with no remaining findings.
 
 This is local interpreter fixture evidence. It does not establish physical x86
 acceptance. Native, JIT, C ABI, generic and fragment routes remain closed.
