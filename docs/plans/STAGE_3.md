@@ -425,12 +425,14 @@ Host PC map нужен для диагностики и восстановлен
 | [partial] | S3-34dm | Fixed-seed differential corpus for S3-20eg `67 89 04 24` | Corpus implementation `c7bb9c7` and harness `2fb1265` are integrated; S3-34.1/.3/.5 code/gates passed independent static Sol/high review. Historical pinned totals: 303 gates (293 acceptance + 10 lifecycle), 321 local steps, 136 self-test names; this slice's behavior gate and harness self-test remain unexecuted. S3-34.2 implementation was subsequently added by S3-34dn/do; execution acceptance remains pending. ISSUE-028 remains open pending S3-20eg execution acceptance. См. [JIT testing reference](../testing/JIT.md#s3-34dm-fixed-seed-differential-corpus-for-s3-20eg) and [report](../reports/STAGE_3_S3-34dm_2026-11-02.md) |
 | [partial] | S3-34dn | Create-only mismatch artifact and validated replay for S3-34dm | Runtime commits `f858b7a`/`10447f0`/`ee2af23` and harness commits `89c5e28`/`13b7790` are integrated and passed independent static Sol/high review. The self-check now pins no-overwrite, invalid-version, and invalid-RIP assertions. Rust self-check and optional saved-artifact replay identities and harness gate are pinned. Historical totals for this slice: 304 gates (294 acceptance + 10 lifecycle), 322 local steps, 137 self-test names; nothing was executed. S3-34.2 replay/reducer implementation was subsequently completed by S3-34dn/do; execution acceptance remains pending. ISSUE-028 and ISSUE-029 remain open pending their respective execution acceptance. См. [JIT testing reference](../testing/JIT.md#s3-34dn-create-only-mismatch-artifact-and-validated-replay-for-s3-34dm) and [report](../reports/STAGE_3_S3-34dn_2026-11-03.md) |
 | [partial] | S3-34do | Bounded value-only reducer for one S3-34dn artifact | Runtime commits `5ae5e47`/`0e64b07` and harness commit `2c24eec` are integrated and passed independent static Sol/high review. Reducer, reducer self-check, and harness identities are pinned. Totals: 305 gates (295 acceptance + 10 lifecycle), 323 steps, 138 self-test names; all remain unexecuted. No real S3-34dn artifact was reduced. S3-34.2 execution acceptance remains pending. ISSUE-028/029 remain open; Stage 3 partial. См. [JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact) and [report](../reports/STAGE_3_S3-34do_2026-11-03.md) |
+| [partial] | S3-34dp | Exact local harness gates for S3-38e session ownership | Four exact `od-host --lib` lifecycle identities and the fail-closed harness self-check are pinned, including the `session.rs` source fingerprint. Current totals: 312 gates (298 acceptance + 14 lifecycle), 330 local steps, 140 self-test names. Static review only; no harness or Rust gate execution. Mini/M1 remain deferred. См. [JIT testing reference](../testing/JIT.md#s3-38e-bounded-local-rust-session-owner) and [report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
 | [partial] | S3-35 | Измерить холодное исполнение | S3-01, S3-34 |
 | [ ] | S3-36 | Измерить прогретое исполнение | S3-35 |
 | [ ] | S3-37 | Cache churn и ресурсы | S3-25, S3-34 |
 | [ ] | S3-38 | Интеграция VMHost и ABI | S3-28, S3-34 |
 | [partial] | S3-38a | Register-only S0-09 V0 C ABI through run-local eager block dispatcher | Immutable fragment, per-call arena/cache, C ABI lifecycle and local VMHost process regressions; full cache/request ownership and all S3-38 gates remain open |
 | [partial] | S3-38c | Sequential cross-thread V0 handle lifecycle | One idle handle called sequentially from two host threads, second-handle interleaving, pre-run STOP and per-call mapping release; persistent cache and full S3-38 remain open |
+| [partial] | S3-38e | Bounded opt-in local Rust S0-09 session owner | Retains copied code/admission, bounded cache and one executable-memory lease across synchronous calls; no VMHost IPC RUN/session or production MMU integration. Four exact local gates are pinned but unexecuted. См. [implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md) and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md) |
 | [x] | S3-39 | Bounded macOS/ARM smoke passed on M1 Pro; see [report](../reports/STAGE_3_S3-39_M1PRO_2026-10-31.md) | S3-38a |
 | [ ] | S3-40 | Зафиксировать решения по данным | S3-35–S3-39 |
 | [partial] | S3-40j | Profile-specific offline audit of saved S3-31c reports | Recomputes both paired ratios/ranges and validates profile, workload, schedule, and preflight schema; does not complete S3-40 or Stage 3 |
@@ -898,8 +900,8 @@ Rust identities are
 Harness gates `s3_16_not_rcx_fallback`, `s3_16_nop_u64_max_regression`, and
 `s3_16_not_rcx_host_continuation` pin them, and
 `test_s3_16_not_rcx_fallback_gate_is_pinned_and_fail_closed` checks omission,
-zero-match evidence, and forged argv. Updated manifest totals are 308 Rust
-gates (298 acceptance + 10 lifecycle), 326 local steps, and 139 self-test
+zero-match evidence, and forged argv. Current manifest totals are 312 Rust
+gates (298 acceptance + 14 lifecycle), 330 local steps, and 140 self-test
 names. The gate and self-check are encoded and statically reviewed but were not
 executed. No build, formatting, Cargo, Python harness, Mini, or M1 check is
 claimed. This remains a single fixture-bounded fallback form; S3-16 is still
@@ -3957,6 +3959,23 @@ VMHost process suite. Принят только финальный прогон,
 Stage 2 и ISSUE-027 не запускался; Mini остаётся отложенным до конца Stage 3.
 S3-38 и Stage 3 остаются открытыми. См. [S3-38d report](../reports/STAGE_3_S3-38d-local_2026-11-01.md).
 
+#### S3-38e. Bounded local Rust session owner
+
+The opt-in `od-host::session::Session` owns a copied S0-09 code fragment and
+admission, frozen fixture identity/dependency inputs, a bounded multi-entry
+cache, and one executable-memory lease. It borrows fresh CPU state, budget, and
+STOP for each call; it is thread-affine, and `clear`/drop release the mapping
+lease. The V0 ABI and its per-call lifecycle remain unchanged. This local Rust
+slice does not route VMHost IPC RUN requests through a persistent session and
+does not add `od-machine` or MMU/SMC integration.
+
+Four exact `od-host --lib` lifecycle gates cover same-code publication reuse
+with fresh state/control, cleanup, rejection of a second executable-memory
+owner, and explicit invalid-entry errors without retry. S3-34dp pins them and
+they remain unexecuted. No performance claim follows. See the
+[S3-38e implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md)
+and [S3-34dp harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md).
+
 ### S3-39. Повторить ARM64 smoke на M1 Pro
 
 1. Зафиксировать реально доступные OS/toolchain, способ сборки/передачи собственного artifact и выбранную ad-hoc/Hardened Runtime конфигурацию.
@@ -4783,3 +4802,22 @@ build, formatting, Cargo, Mini, M1, or real-artifact reduction was run or is
 claimed. Stage 3 remains partial. See the
 [S3-34do report](../reports/STAGE_3_S3-34do_2026-11-03.md) and the
 [JIT testing reference](../testing/JIT.md#s3-34do-bounded-value-only-reducer-for-one-s3-34dn-artifact).
+
+#### S3-34dp. Exact local harness gates for S3-38e session ownership
+
+The harness pins four exact `od-host --lib` lifecycle tests in
+`session::tests`: repeated same-code publication reuse with fresh CPU state,
+budget and STOP; clear/drop mapping cleanup; rejection of a second live
+executable-memory owner; and explicit invalid-entry error reporting without an
+automatic retry. The fail-closed self-check verifies unique gate/manifest/step
+identities, exact Cargo argv, the `session.rs` source pin, synthetic summary
+membership, and rejection of missing, ignored, failed, zero-match, wrong
+identity, or wrong-argv evidence.
+
+Totals after integration are 312 Rust gates (298 acceptance + 14 lifecycle),
+330 local steps, and 140 self-test names. Independent static review passed.
+These gates and the self-check remain unexecuted; Mini/M1 remain deferred.
+The session owner itself is documented in the
+[S3-38e report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md); see the
+[focused harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md) and
+[JIT testing reference](../testing/JIT.md#s3-38e-bounded-local-rust-session-owner).

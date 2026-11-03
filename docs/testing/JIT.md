@@ -1121,6 +1121,29 @@ deferred until Stage 3 ends. S3-38 and Stage 3 remain open. The accepted-run
 receipts, logs, binary hash bindings, and five failed preflight receipts are in
 the [S3-38d report](../reports/STAGE_3_S3-38d-local_2026-11-01.md).
 
+## S3-38e: bounded local Rust session owner
+
+The opt-in `od-host::session::Session` retains copied S0-09 code/admission,
+frozen fixture identity/dependencies, a bounded multi-entry cache, and one
+executable-memory lease across synchronous calls. Every call borrows fresh CPU
+state, budget, and STOP. The owner is thread-affine; clear/drop release the
+lease. The V0 C ABI and per-call lifecycle remain unchanged. This is not
+VMHost IPC RUN/session integration and does not provide production MMU, SMC,
+DMA, or asynchronous ownership.
+
+S3-34dp pins these exact `od-host --lib` identities in the local lifecycle
+suite: `session::tests::same_code_reuses_publication_with_fresh_state_budget_and_stop`,
+`session::tests::clear_releases_publication_and_mapping_lease`,
+`session::tests::retained_session_rejects_a_second_executable_memory_owner`, and
+`session::tests::invalid_entry_is_reported_without_an_automatic_retry`. Its
+fail-closed self-check covers the exact manifest, source fingerprint, Cargo
+argv, summary membership, and missing, zero-match, ignored, failed, and
+wrong-identity evidence. Totals are 312 Rust gates (298 acceptance + 14
+lifecycle), 330 local steps, and 140 self-test names. Static review passed;
+the harness and Rust gates were not run. Mini/M1 remain deferred. See the
+[implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md)
+and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md).
+
 ## S3-29a: bounded demand-driven flags correctness candidate
 
 Run `cargo test -p od-jit --lib demand_flags_candidate --offline` and
@@ -1562,8 +1585,8 @@ strict/opt-in rejection of the NOT RAX neighbor. Harness steps `s3_16_not_rcx_fa
 `s3_16_nop_u64_max_regression`, and `s3_16_not_rcx_host_continuation` pin all
 three identities and reject missing gates, zero-match output, or forged argv.
 The identities, manifest, and self-check are encoded and statically reviewed
-but unexecuted. Totals are 308 gates (298 acceptance + 10 lifecycle), 326
-local steps, and 139 self-test names. No build, formatting, Cargo, Python
+but unexecuted. Current totals are 312 gates (298 acceptance + 14 lifecycle),
+330 local steps, and 140 self-test names, including S3-38e. No build, formatting, Cargo, Python
 harness, Mini, or M1 check is claimed. These exact fixture forms do not close
 S3-16 or establish production owner/MMU integration.
 

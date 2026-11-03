@@ -168,6 +168,7 @@ SELF_TEST_NAMES = (
     "test_s3_34dn_replay_artifact_self_check_gate_is_pinned_and_fail_closed",
     "test_s3_34do_value_only_reducer_self_check_gate_is_pinned_and_fail_closed",
     "test_s3_38b_native_register_cache_gates_are_pinned_once",
+    "test_s3_38e_session_lifecycle_gates_are_pinned_once_and_fail_closed",
     "test_s3_38d_result_state_validator_rejects_corruption",
     "test_s3_34o_reducer_artifact_inventory_rejects_tampering_and_symlinks",
     "test_rust_gate_summary_rejects_an_omitted_mandatory_gate",
@@ -246,6 +247,22 @@ ADDITIONAL_TEST_GATES = (
     (
         "s3_38c_native_register_v1_candidate_cold_hit_parity", "local_acceptance", "od-host",
         "tests::cached_native_register_v1_demand_candidate_cold_hit_full_state_parity",
+    ),
+    (
+        "s3_38e_session_same_code_reuses_publication", "local_lifecycle", "od-host",
+        "session::tests::same_code_reuses_publication_with_fresh_state_budget_and_stop",
+    ),
+    (
+        "s3_38e_session_clear_releases_publication", "local_lifecycle", "od-host",
+        "session::tests::clear_releases_publication_and_mapping_lease",
+    ),
+    (
+        "s3_38e_session_rejects_second_mapping_owner", "local_lifecycle", "od-host",
+        "session::tests::retained_session_rejects_a_second_executable_memory_owner",
+    ),
+    (
+        "s3_38e_session_invalid_entry_no_automatic_retry", "local_lifecycle", "od-host",
+        "session::tests::invalid_entry_is_reported_without_an_automatic_retry",
     ),
     (
         "s3_27c_active_code_v3_pc_map", "local_acceptance", "od-jit",
@@ -1628,6 +1645,7 @@ PROCESS_SOURCE_PATHS = (
 LOCAL_RUST_TEST_SOURCES = (
     "crates/od-host/tests/memory_corpus.rs",
     "crates/od-host/src/lib.rs",
+    "crates/od-host/src/session.rs",
     "crates/od-host/src/tests/native_register_v1_corpus.rs",
     "tests/cpu/stage3_dword_store_corpus.rs",
     "crates/od-jit/src/memory_load_v2.rs",
