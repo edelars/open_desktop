@@ -41211,12 +41211,12 @@ fn bounded_x87_fild_destination(state: &LongModeState) -> Option<usize> {
     (x87.tag(destination) == Some(X87Tag::Empty)).then_some(usize::from(destination))
 }
 
-/// DB 28 FLD m80fp retains the historical admission of IE and DE while
-/// keeping the other local environment gates used by this bounded profile.
+/// DB 28 FLD m80fp admits historical sticky exception flags while keeping
+/// stack faults, summary, busy state, and other local environment gates closed.
 fn bounded_x87_fld_m80_destination(state: &LongModeState) -> Option<usize> {
     let x87 = state.x87.as_ref()?;
     if !matches!(x87.control_word, 0x037f | 0x077f | 0x0b7f | 0x0f7f)
-        || x87.status_word & 0x80dc != 0
+        || x87.status_word & 0x80c0 != 0
     {
         return None;
     }
@@ -100923,7 +100923,7 @@ mod tests {
     }
 
     #[test]
-    fn fld_m32fp_and_m64fp_preserve_sticky_de_but_integer_and_m80_loads_keep_their_gate() {
+    fn fld_m32fp_and_m64fp_preserve_sticky_de_but_integer_loads_keep_their_gate() {
         let mut state = LongModeState::default();
         state.rip = 0x8690;
         state.gpr[Register::Rax as usize] = 0x1000;
@@ -100984,7 +100984,7 @@ mod tests {
             vec![(AccessKind::Read, 0x1000, 8); 2]
         );
 
-        for bytes in [&[0xdb, 0x00][..], &[0xdf, 0x28][..], &[0xdb, 0x28][..]] {
+        for bytes in [&[0xdb, 0x00][..], &[0xdf, 0x28][..]] {
             for status_word in [0x0001, 0x0002, 0x0003] {
                 let mut rejected = LongModeState::default();
                 rejected.rip = 0x86a0;
@@ -101603,13 +101603,10 @@ mod tests {
             [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xbf, 0xff, 0x7f],
             [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xbf, 0xff, 0xff],
         ];
-        let admitted_status = [
-            0x0000, 0x0001, 0x0002, 0x0003, 0x0020, 0x0021, 0x0022, 0x0023,
-        ];
         for top in 0..8_u8 {
             for (index, raw) in literals.into_iter().enumerate() {
                 for control_word in [0x037f, 0x077f, 0x0b7f, 0x0f7f] {
-                    for sticky_status in admitted_status {
+                    for sticky_status in 0..=0x003f_u16 {
                         let destination = top.wrapping_add(7) & 7;
                         let mut state = LongModeState::default();
                         state.rip = 0x8600;
@@ -101663,8 +101660,7 @@ mod tests {
                             (before.status_word & !(0x3800 | 0x0200))
                                 | (u16::from(destination) << 11)
                         );
-                        assert_eq!(after.status_word & 0x0003, before.status_word & 0x0003);
-                        assert_eq!(after.status_word & 0x0020, before.status_word & 0x0020);
+                        assert_eq!(after.status_word & 0x003f, sticky_status);
                         assert_eq!(after.status_word & 0x4500, before.status_word & 0x4500);
                         assert_eq!(after.instruction_pointer, 0x8600);
                         assert_eq!(after.data_pointer, 0x1003);
@@ -101713,13 +101709,13 @@ mod tests {
     }
 
     #[test]
-    fn fld_m80fp_ie_de_survive_fnstsw_and_clear_before_a_repeated_load() {
+    fn fld_m80fp_all_historical_flags_survive_fnstsw_and_clear_before_a_repeated_load() {
         let mut state = LongModeState::default();
         state.rip = 0x8670;
         state.gpr[Register::Rax as usize] = 0x1000;
         let mut x87 = crate::state::X87State::fixture_seed();
         x87.control_word = 0x037f;
-        x87.status_word = 0x0023;
+        x87.status_word = 0x003f;
         x87.set_tag(7, X87Tag::Empty);
         x87.set_tag(6, X87Tag::Empty);
         state.x87 = Some(x87);
@@ -101735,7 +101731,7 @@ mod tests {
             Ok(StepOutcome::Advanced)
         );
         let after_first_load = state.x87.as_ref().unwrap();
-        assert_eq!(after_first_load.status_word, 0x3823);
+        assert_eq!(after_first_load.status_word, 0x383f);
         assert_eq!(after_first_load.registers[7][..2], [0x35, 0x12]);
         assert_eq!(after_first_load.instruction_pointer, 0x8670);
         assert_eq!(after_first_load.data_pointer, 0x1000);
@@ -101744,8 +101740,8 @@ mod tests {
             step(&mut state, &mut memory, AccessContext::default()),
             Ok(StepOutcome::Advanced)
         );
-        assert_eq!(&memory.bytes[..2], &[0x23, 0x38]);
-        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x3823);
+        assert_eq!(&memory.bytes[..2], &[0x3f, 0x38]);
+        assert_eq!(state.x87.as_ref().unwrap().status_word, 0x383f);
 
         assert_eq!(
             step(&mut state, &mut memory, AccessContext::default()),
@@ -101759,7 +101755,7 @@ mod tests {
         );
         let after_second_load = state.x87.as_ref().unwrap();
         assert_eq!(after_second_load.status_word, 0x3000);
-        assert_eq!(after_second_load.registers[6][..2], [0x23, 0x38]);
+        assert_eq!(after_second_load.registers[6][..2], [0x3f, 0x38]);
         assert_eq!(after_second_load.instruction_pointer, 0x8676);
         assert_eq!(after_second_load.data_pointer, 0x1000);
 
@@ -101788,7 +101784,7 @@ mod tests {
             state.gpr[Register::Rax as usize] = address;
             let mut x87 = crate::state::X87State::fixture_seed();
             x87.control_word = 0x037f;
-            x87.status_word = 0x0423;
+            x87.status_word = 0x043f;
             x87.set_tag(7, X87Tag::Empty);
             state.x87 = Some(x87);
             state
@@ -101803,7 +101799,7 @@ mod tests {
             state.x87.as_mut().unwrap().control_word = control_word;
             rejected.push(state);
         }
-        for status_word in [0x0004, 0x0008, 0x0010, 0x0040, 0x0080, 0x8000] {
+        for status_word in [0x0040, 0x007f, 0x0080, 0x00bf, 0x8000, 0x803f] {
             let mut state = setup(0x1000);
             state.x87.as_mut().unwrap().status_word = status_word;
             rejected.push(state);
