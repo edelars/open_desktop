@@ -93,6 +93,97 @@ class Stage2HarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(oracle.Stage2Error, "duplicate JSON field"):
             oracle.prepare_cases([str(path)], self.output)
 
+    def write_xorpd_corpus(self, root):
+        corpus = root / "corpus"
+        corpus.mkdir(parents=True)
+        digests = []
+        for seed in oracle.XORPD_SEEDS:
+            for sequence in range(oracle.XORPD_CASES_PER_SEED):
+                case_id = f"s2_42a_xorpd_{seed:016x}_{sequence:04x}"
+                value = {"schema_version": 2, "case_id": case_id, "profile": oracle.XORPD_PROFILE,
+                         "seed": f"0x{seed:016x}",
+                         "initial_state": {"sse": {"xmm": [hashlib.sha256(f"{case_id}:{index}".encode()).hexdigest()[:32]
+                                                               for index in range(16)]}}}
+                raw = json.dumps(value, separators=(",", ":")).encode()
+                (corpus / f"{case_id}.case.json").write_bytes(raw)
+                digests.append(hashlib.sha256(raw).hexdigest())
+        manifest = {"manifest_version": 1, "generator_version": oracle.XORPD_GENERATOR_VERSION,
+                    "profile": oracle.XORPD_PROFILE,
+                    "seeds": [f"0x{seed:016x}" for seed in oracle.XORPD_SEEDS],
+                    "sequence": "0..256 (exclusive)", "case_digests": digests,
+                    "corpus_digest": hashlib.sha256("\n".join(digests).encode()).hexdigest()}
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        return root
+
+    def test_recorded_xorpd_corpus_is_frozen_in_manifest_order(self):
+        corpus_root = self.write_xorpd_corpus(self.root / "recorded")
+        cases, manifest, digest = oracle.prepare_xorpd_corpus(corpus_root, self.output)
+        self.assertEqual(len(cases), 1024)
+        self.assertEqual(cases[0][1]["case_id"], f"s2_42a_xorpd_{oracle.XORPD_SEEDS[0]:016x}_0000")
+        self.assertEqual(cases[-1][1]["case_id"], f"s2_42a_xorpd_{oracle.XORPD_SEEDS[-1]:016x}_00ff")
+        self.assertEqual(manifest["profile"], oracle.XORPD_PROFILE)
+        self.assertEqual(digest, hashlib.sha256((corpus_root / "manifest.json").read_bytes()).hexdigest())
+        self.assertEqual((self.output / "fixtures" / cases[0][0].name).read_bytes(), cases[0][0].read_bytes())
+
+    def test_xorpd_corpus_rejects_manifest_hash_case_set_profile_and_duplicate_input_changes(self):
+        for change in ("manifest_hash", "missing", "extra", "wrong_profile", "duplicate_input"):
+            with self.subTest(change=change):
+                root = self.write_xorpd_corpus(self.root / change)
+                if change == "manifest_hash":
+                    manifest = json.loads((root / "manifest.json").read_text())
+                    manifest["case_digests"][0] = "0" * 64
+                    manifest["corpus_digest"] = hashlib.sha256("\n".join(manifest["case_digests"]).encode()).hexdigest()
+                    (root / "manifest.json").write_text(json.dumps(manifest))
+                    expected = "case hash mismatch"
+                elif change == "missing":
+                    next((root / "corpus").iterdir()).unlink()
+                    expected = "missing or extra"
+                elif change == "extra":
+                    (root / "corpus" / "extra.case.json").write_text("{}")
+                    expected = "missing or extra"
+                elif change == "wrong_profile":
+                    path = sorted((root / "corpus").glob("*.case.json"))[0]
+                    value = json.loads(path.read_text())
+                    value["profile"] = "s2-long-integer-v1"
+                    path.write_text(json.dumps(value))
+                    expected = "case hash mismatch"
+                else:
+                    first_path = root / "corpus" / f"s2_42a_xorpd_{oracle.XORPD_SEEDS[0]:016x}_0000.case.json"
+                    second_path = root / "corpus" / f"s2_42a_xorpd_{oracle.XORPD_SEEDS[0]:016x}_0001.case.json"
+                    second = json.loads(second_path.read_text())
+                    first = json.loads(first_path.read_text())
+                    second["initial_state"]["sse"]["xmm"] = first["initial_state"]["sse"]["xmm"]
+                    second_path.write_text(json.dumps(second))
+                    # Keep manifest hashes consistent so duplicate input validation is reached.
+                    manifest = json.loads((root / "manifest.json").read_text())
+                    manifest["case_digests"][1] = hashlib.sha256(second_path.read_bytes()).hexdigest()
+                    manifest["corpus_digest"] = hashlib.sha256("\n".join(manifest["case_digests"]).encode()).hexdigest()
+                    (root / "manifest.json").write_text(json.dumps(manifest))
+                    expected = "duplicate XMM inputs"
+                (self.output / change).mkdir()
+                with self.assertRaisesRegex(oracle.Stage2Error, expected):
+                    oracle.prepare_xorpd_corpus(root, self.output / change)
+
+    def test_xorpd_manifest_rejects_extra_fields_duplicate_json_and_wrong_profile(self):
+        root = self.write_xorpd_corpus(self.root / "strict-manifest")
+        path = root / "manifest.json"
+        base = json.loads(path.read_text())
+        for malformed in ({**base, "unrecognized": True},
+                          {**base, "profile": "s2-long-integer-v1"}):
+            path.write_text(json.dumps(malformed))
+            with self.assertRaises(oracle.Stage2Error):
+                oracle._xorpd_manifest(path)
+        path.write_text(path.read_text().replace('"manifest_version": 1',
+                                                  '"manifest_version": 1, "manifest_version": 1', 1))
+        with self.assertRaisesRegex(oracle.Stage2Error, "duplicate JSON field"):
+            oracle._xorpd_manifest(path)
+
+    def test_xorpd_suite_requires_two_repeats_and_recorded_corpus_only(self):
+        with self.assertRaises(SystemExit):
+            oracle.main(["--suite", "xorpd-native-corpus", "--repeats", "3"])
+        with self.assertRaises(SystemExit):
+            oracle.main(["--suite", "xorpd-native-corpus", "some.case.json"])
+
     def test_failed_process_evidence_preserves_output_returncode_and_only_build_environment(self):
         manifest = {"commands": []}
         evidence = oracle.Evidence(self.output, manifest)
@@ -162,6 +253,23 @@ class Stage2HarnessTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(oracle.Stage2Error):
                 oracle.validate_result(malformed, fixture, "a" * 64, "native_x86", "sha256:test", "rustc test", "test")
 
+    def test_xorpd_result_requires_native_profile_and_complete_snapshot_admission(self):
+        fixture = json.loads(self.raw)
+        fixture["profile"] = oracle.XORPD_PROFILE
+        result = {"schema_version": 2, "case_id": fixture["case_id"], "input_sha256": "a" * 64,
+                  "profile": oracle.XORPD_PROFILE, "backend": "native_x86",
+                  "outcome": {"kind": fixture["expected_exit"]},
+                  "build": {"revision": "sha256:test", "compiler": "rustc test",
+                            "target": "x86_64-linux", "profile": "debug"},
+                  "machine": {"host_os": "linux", "host_arch": "x86_64"},
+                  "snapshot": {"status": "available", "value": {"state": {"mode": "long64", "gpr": [0] * 16},
+                      "exception": {"status": "available"}, "memory": fixture["memory"]}}}
+        oracle.validate_result(result, fixture, "a" * 64, "native_x86", "sha256:test", "rustc test",
+                               "native result", oracle.XORPD_PROFILE)
+        with self.assertRaisesRegex(oracle.Stage2Error, "invalid profile"):
+            oracle.validate_result(result, fixture, "a" * 64, "native_x86", "sha256:test", "rustc test",
+                                   "native result")
+
     def test_comparison_requires_positive_match_and_exact_case_binding(self):
         fixture = json.loads(self.raw)
         report = {"schema_version": 2, "case_id": fixture["case_id"], "input_sha256": "a" * 64,
@@ -187,6 +295,9 @@ class Stage2HarnessTests(unittest.TestCase):
         manifests = list((self.root / "work/stage2-oracle").glob("*/manifest.json"))
         self.assertEqual(len(manifests), 1)
         manifest = json.loads(manifests[0].read_text())
+        self.assertEqual(manifest["suite"], "integer")
+        self.assertEqual(manifest["profile"], "s2-long-integer-v1")
+        self.assertNotIn("corpus_manifest", manifest)
         self.assertEqual(manifest["status"], "failed")
         self.assertIn("local runner build failed", manifest["error"])
         frozen = self.root / manifest["inputs"][0]["fixture_path"]

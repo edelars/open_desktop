@@ -20,6 +20,13 @@ import stage1_oracle as oracle
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = "s2-long-integer-v1"
+XORPD_PROFILE = "s2-long-native-xorpd-xmm0-xmm1-v1"
+XORPD_CORPUS_ROOT = Path("work/stage2/s2-42a-xorpd")
+XORPD_SEEDS = (0x243F6A8885A308D3, 0x13198A2E03707344,
+               0xA4093822299F31D0, 0x082EFA98EC4E6C89)
+XORPD_CASES_PER_SEED = 256
+XORPD_MANIFEST_VERSION = 1
+XORPD_GENERATOR_VERSION = "od-testkit-native-xorpd-v1"
 MAX_FIXTURE_BYTES = 512 * 1024
 MAX_RESULT_BYTES = 256 * 1024
 DEFAULT_CASES = tuple(
@@ -44,7 +51,7 @@ def read_json(raw: bytes | str):
     return json.loads(raw, object_pairs_hook=strict_object, parse_constant=nonfinite)
 
 
-def prepare_cases(names: list[str], output: Path) -> list[tuple[Path, dict, str]]:
+def prepare_cases(names: list[str], output: Path, profile: str = PROFILE) -> list[tuple[Path, dict, str]]:
     """Freeze exact bytes; Rust readers remain the authority for the full schema."""
     selected = []
     for name in names:
@@ -72,7 +79,7 @@ def prepare_cases(names: list[str], output: Path) -> list[tuple[Path, dict, str]
             raise Stage2Error(f"unsafe fixture case_id: {path}")
         if type(value.get("schema_version")) is not int or value["schema_version"] != 2:
             raise Stage2Error(f"schema v2 fixture required: {path}")
-        if value.get("profile") != PROFILE:
+        if value.get("profile") != profile:
             raise Stage2Error(f"unsupported S2 fixture profile: {path}")
         if type(value.get("wall_timeout_ms")) is not int or not 1 <= value["wall_timeout_ms"] <= 30_000:
             raise Stage2Error(f"invalid fixture wall timeout: {path}")
@@ -91,10 +98,90 @@ def prepare_cases(names: list[str], output: Path) -> list[tuple[Path, dict, str]
     return cases
 
 
+def _xorpd_manifest(path: Path) -> tuple[dict, bytes]:
+    raw = path.read_bytes()
+    value = read_json(raw)
+    required = {"manifest_version", "generator_version", "profile", "seeds",
+                "sequence", "case_digests", "corpus_digest"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise Stage2Error("XORPD corpus manifest has missing or extra fields")
+    expected_seeds = [f"0x{seed:016x}" for seed in XORPD_SEEDS]
+    digests = value["case_digests"]
+    if (type(value["manifest_version"]) is not int or value["manifest_version"] != XORPD_MANIFEST_VERSION
+            or value["generator_version"] != XORPD_GENERATOR_VERSION
+            or value["profile"] != XORPD_PROFILE or value["seeds"] != expected_seeds
+            or value["sequence"] != f"0..{XORPD_CASES_PER_SEED} (exclusive)"
+            or not isinstance(digests, list) or len(digests) != len(XORPD_SEEDS) * XORPD_CASES_PER_SEED
+            or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item) for item in digests)):
+        raise Stage2Error("XORPD corpus manifest has an unsupported profile or shape")
+    corpus_digest = hashlib.sha256("\n".join(digests).encode()).hexdigest()
+    if value["corpus_digest"] != corpus_digest:
+        raise Stage2Error("XORPD corpus manifest digest does not match its case hashes")
+    return value, raw
+
+
+def prepare_xorpd_corpus(corpus_root: Path, output: Path) -> tuple[list[tuple[Path, dict, str]], dict, str]:
+    """Freeze the recorded S2-42a corpus; never generate or rewrite its manifest."""
+    manifest, manifest_raw = _xorpd_manifest(corpus_root / "manifest.json")
+    source_dir = corpus_root / "corpus"
+    if source_dir.is_symlink() or not source_dir.is_dir():
+        raise Stage2Error("XORPD corpus directory must be a real directory")
+    expected_names = []
+    for seed in XORPD_SEEDS:
+        for sequence in range(XORPD_CASES_PER_SEED):
+            case_id = f"s2_42a_xorpd_{seed:016x}_{sequence:04x}"
+            expected_names.append(f"{case_id}.case.json")
+    try:
+        entries = list(source_dir.iterdir())
+        if any(item.is_symlink() for item in entries):
+            raise Stage2Error("XORPD corpus must not contain symlinks")
+        actual_names = sorted(item.name for item in entries if item.is_file())
+    except OSError as error:
+        raise Stage2Error(f"missing or unreadable XORPD corpus directory: {error}") from error
+    if actual_names != sorted(expected_names):
+        raise Stage2Error("XORPD corpus has missing or extra case files")
+
+    frozen = output / "fixtures"
+    frozen.mkdir()
+    cases, seen_inputs = [], set()
+    for index, name in enumerate(expected_names):
+        path = source_dir / name
+        raw = path.read_bytes()
+        if len(raw) > MAX_FIXTURE_BYTES:
+            raise Stage2Error(f"fixture exceeds schema v2 JSON limit: {path}")
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest != manifest["case_digests"][index]:
+            raise Stage2Error(f"XORPD corpus case hash mismatch: {name}")
+        fixture = read_json(raw)
+        case_id = name.removesuffix(".case.json")
+        seed = f"0x{XORPD_SEEDS[index // XORPD_CASES_PER_SEED]:016x}"
+        if (not isinstance(fixture, dict) or fixture.get("case_id") != case_id
+                or fixture.get("profile") != XORPD_PROFILE or fixture.get("schema_version") != 2
+                or fixture.get("seed") != seed):
+            raise Stage2Error(f"XORPD corpus case identity, schema, seed or profile mismatch: {name}")
+        initial_state = fixture.get("initial_state")
+        if not isinstance(initial_state, dict):
+            raise Stage2Error(f"XORPD corpus case lacks initial state: {name}")
+        sse = initial_state.get("sse", {})
+        xmm = sse.get("xmm") if isinstance(sse, dict) else None
+        if not isinstance(xmm, list) or len(xmm) != 16 or any(
+                not isinstance(reg, str) or not re.fullmatch(r"[0-9a-f]{32}", reg) for reg in xmm):
+            raise Stage2Error(f"XORPD corpus case lacks complete XMM input: {name}")
+        input_key = tuple(xmm)
+        if input_key in seen_inputs:
+            raise Stage2Error(f"XORPD corpus contains duplicate XMM inputs: {name}")
+        seen_inputs.add(input_key)
+        frozen_path = frozen / name
+        frozen_path.write_bytes(raw)
+        cases.append((frozen_path, fixture, digest))
+    (output / "xorpd-corpus-manifest.json").write_bytes(manifest_raw)
+    return cases, manifest, hashlib.sha256(manifest_raw).hexdigest()
+
+
 def validate_result(result: dict, fixture: dict, digest: str, backend: str,
-                    revision: str, compiler: str, label: str) -> None:
+                    revision: str, compiler: str, label: str, profile: str = PROFILE) -> None:
     expected = {"schema_version": 2, "case_id": fixture["case_id"],
-                "input_sha256": digest, "profile": PROFILE, "backend": backend}
+                "input_sha256": digest, "profile": profile, "backend": backend}
     for key, value in expected.items():
         if result.get(key) != value:
             raise Stage2Error(f"{label}: invalid {key}: {result.get(key)!r}, expected {value!r}")
@@ -212,6 +299,8 @@ def legacy_evidence(path: Path, fingerprint: str) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", nargs="*", help="explicit v2 files/directories; default: three hardware fixtures")
+    parser.add_argument("--suite", choices=("integer", "xorpd-native-corpus"), default="integer",
+                        help="strict selected suite; integer remains the default")
     parser.add_argument("--host", default="192.168.1.14")
     parser.add_argument("--user", default="senya")
     parser.add_argument("--remote-root", default="/home/senya/projects/open_desktop-stage1")
@@ -221,6 +310,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.repeats < 2:
         parser.error("--repeats must be at least 2")
+    if args.suite == "xorpd-native-corpus" and args.repeats != 2:
+        parser.error("the strict XORPD corpus suite requires exactly two repeats")
+    if args.suite == "xorpd-native-corpus" and args.cases:
+        parser.error("the strict XORPD corpus suite uses the recorded S2-42a corpus; positional cases are not accepted")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.host) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", args.user):
         parser.error("--host and --user must be plain SSH host/user names")
     if (not args.remote_root.startswith("/") or args.remote_root == "/"
@@ -234,8 +327,11 @@ def main(argv=None) -> int:
     run_id = time.strftime("stage2-%Y%m%d-%H%M%S", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
     output = output_root / run_id
     output.mkdir(parents=True)
-    manifest = {"run_id": run_id, "status": "running",
-                "scope": "Selected v2 CPU fixtures: interpreter vs physical Linux x86 native; no v2 JIT",
+    profile = XORPD_PROFILE if args.suite == "xorpd-native-corpus" else PROFILE
+    manifest = {"run_id": run_id, "status": "running", "suite": args.suite, "profile": profile,
+                "scope": ("Recorded S2-42a XORPD corpus: strict interpreter and physical Linux x86 native, twice; no v2 JIT"
+                          if args.suite == "xorpd-native-corpus" else
+                          "Selected v2 CPU fixtures: interpreter vs physical Linux x86 native; no v2 JIT"),
                 "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "target": f"{args.user}@{args.host}", "remote_root": args.remote_root,
                 "repeats": args.repeats, "commands": [], "inputs": [], "fixtures": [],
@@ -243,15 +339,26 @@ def main(argv=None) -> int:
     evidence = Evidence(output, manifest)
     evidence.save()
     try:
-        cases = prepare_cases(args.cases or list(DEFAULT_CASES), output)
+        corpus_manifest = None
+        if args.suite == "xorpd-native-corpus":
+            cases, corpus_manifest, corpus_manifest_digest = prepare_xorpd_corpus(ROOT / XORPD_CORPUS_ROOT, output)
+            manifest["corpus_manifest"] = {"path": str(XORPD_CORPUS_ROOT / "manifest.json"),
+                "sha256": corpus_manifest_digest, "case_count": len(cases),
+                "corpus_digest": corpus_manifest["corpus_digest"], "physical_native": "not_run"}
+        else:
+            cases = prepare_cases(args.cases or list(DEFAULT_CASES), output)
         manifest["inputs"] = [{"case_id": fixture["case_id"], "filename": path.name,
             "fixture_path": str(path.relative_to(ROOT)), "fixture_sha256": digest,
-            "seed": fixture.get("seed"), "schema_version": 2, "profile": PROFILE}
+            "seed": fixture.get("seed"), "schema_version": 2, "profile": profile}
             for path, fixture, digest in cases]
         manifest["reproduce_argv"] = [sys.executable, "tests/cpu/stage2_oracle.py", "--host", args.host,
-            "--user", args.user, "--remote-root", args.remote_root, "--repeats", str(args.repeats),
-            *(["--stage1-manifest", args.stage1_manifest] if args.stage1_manifest else []),
-            *[str(path.relative_to(ROOT)) for path, _, _ in cases]]
+            "--user", args.user, "--remote-root", args.remote_root, "--repeats", str(args.repeats)]
+        if args.stage1_manifest:
+            manifest["reproduce_argv"].extend(["--stage1-manifest", args.stage1_manifest])
+        if args.suite == "xorpd-native-corpus":
+            manifest["reproduce_argv"].extend(["--suite", args.suite])
+        else:
+            manifest["reproduce_argv"].extend(str(path.relative_to(ROOT)) for path, _, _ in cases)
         manifest["harness_sha256"] = {name: hashlib.sha256((ROOT / "tests/cpu" / name).read_bytes()).hexdigest()
                                       for name in ("stage1_oracle.py", "stage2_oracle.py")}
         fingerprint = oracle.source_fingerprint(ROOT)
@@ -274,6 +381,10 @@ def main(argv=None) -> int:
         env = os.environ.copy()
         env["OPEN_DESKTOP_GIT_REVISION"], env["RUSTC_VERSION"] = revision, local_info["rustc"]
         oracle.require_success(evidence.run(["cargo", "build", "--offline", "-p", "od-runner"], env=env), "local runner build")
+        runner = ROOT / "target/debug/od-runner"
+        if args.suite == "xorpd-native-corpus":
+            oracle.require_success(evidence.run([str(runner), "--verify-native-xorpd-corpus"], env=env,
+                timeout=300.0), "strict XORPD corpus verifier")
         build = (f'{remote_cd} && . "$HOME/.cargo/env" && '
                  f"OPEN_DESKTOP_GIT_REVISION={shlex.quote(revision)} RUSTC_VERSION={shlex.quote(remote_rustc)} "
                  "cargo build --offline -p od-x86-runner")
@@ -295,11 +406,13 @@ def main(argv=None) -> int:
         oracle.require_success(evidence.run(["scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
             str(archive_path), f"{target}:{remote_archive}"], timeout=120.0), "frozen fixture upload")
         evidence.ssh(target, f"tar -xzf {shlex.quote(remote_archive)} -C {shlex.quote(remote_fixtures)}", "remote fixture extraction")
-        runner = ROOT / "target/debug/od-runner"
         remote_runner = posixpath.join(args.remote_root, "target/debug/od-x86-runner")
         for repeat in range(1, args.repeats + 1):
             repeat_dir = output / f"repeat-{repeat:02d}"
             repeat_dir.mkdir()
+            if args.suite == "xorpd-native-corpus":
+                manifest["corpus_manifest"]["physical_native"] = "running"
+                evidence.save()
             natives = oracle.run_remote_batch(target, args.remote_root, remote_runner, remote_fixtures,
                 cases, repeat_dir, process_runner=evidence.run)
             for path, fixture, digest in cases:
@@ -312,7 +425,8 @@ def main(argv=None) -> int:
                 if native_path.stat().st_size > MAX_RESULT_BYTES:
                     raise Stage2Error("native result exceeds v2 JSON limit")
                 native = natives[path.name]
-                validate_result(native, fixture, digest, "native_x86", revision, remote_rustc, "native result")
+                validate_result(native, fixture, digest, "native_x86", revision, remote_rustc,
+                                "native result", profile)
                 argv = [str(runner), "--fixture", str(path), "--engine", "interpreter", "--json"]
                 process = evidence.run(argv, env=env, timeout=max(60.0, fixture["wall_timeout_ms"] / 1000 + 30))
                 local_path = directory / "interpreter.json"
@@ -323,7 +437,8 @@ def main(argv=None) -> int:
                 if len(process.stdout.encode()) > MAX_RESULT_BYTES:
                     raise Stage2Error("interpreter result exceeds v2 JSON limit")
                 local = oracle.parse_result(process.stdout, local_path)
-                validate_result(local, fixture, digest, "interpreter", revision, local_info["rustc"], "interpreter result")
+                validate_result(local, fixture, digest, "interpreter", revision, local_info["rustc"],
+                                "interpreter result", profile)
                 compare(evidence, runner, local_path, native_path, path, fixture, digest,
                         directory / "interpreter-vs-native.json", env)
                 if repeat > 1:
@@ -349,12 +464,17 @@ def main(argv=None) -> int:
                 or evidence.ssh(target, fingerprint_command, "final remote fingerprint").strip() != fingerprint):
             raise Stage2Error("runner sources changed during the selected suite")
         manifest.pop("active_case", None)
+        if args.suite == "xorpd-native-corpus":
+            manifest["corpus_manifest"]["physical_native"] = "executed_and_matched"
         manifest["status"] = "passed"
         manifest["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         evidence.save()
         print(f"manifest: {output / 'manifest.json'}")
         return 0
     except (Stage2Error, OSError, KeyError, TypeError, ValueError) as error:
+        if (args.suite == "xorpd-native-corpus" and "corpus_manifest" in manifest
+                and manifest["corpus_manifest"]["physical_native"] == "running"):
+            manifest["corpus_manifest"]["physical_native"] = "failed"
         manifest["status"], manifest["error"] = "failed", str(error)
         manifest["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         evidence.save()
