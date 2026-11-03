@@ -223,6 +223,16 @@ fn ram_digest(input: &DwordStoreCorpusInput) -> u64 {
     hash
 }
 
+fn address_matches_profile(index: usize, address: u32) -> bool {
+    match index % 4 {
+        0 => address == 0,
+        1 => (1..=0x0fff).contains(&address) && address % 2 == 1,
+        2 => (0x1000..=0x8000_0ffe).contains(&address),
+        3 => address == [0xffff_fffd, 0xffff_fffe, 0xffff_ffff][index / 4 % 3],
+        _ => unreachable!(),
+    }
+}
+
 fn serialize_replay_artifact(artifact: &ReplayArtifact) -> String {
     let registers = artifact
         .input
@@ -321,6 +331,9 @@ fn parse_replay_artifact(contents: &str) -> Result<ReplayArtifact, &'static str>
     }
     if input.gpr[4] as u32 != address {
         return Err("low32(RSP) does not equal the effective address");
+    }
+    if !address_matches_profile(index, address) {
+        return Err("address is outside the generated class for its provenance index");
     }
     if fields["ram_layout"] != REPLAY_RAM_LAYOUT {
         return Err("RAM layout does not match the fixed profile");
@@ -660,6 +673,16 @@ fn s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed() {
     assert_eq!(
         parse_replay_artifact(&invalid_source),
         Err("instruction bytes do not match replay profile")
+    );
+
+    let mut invalid_address_artifact = artifact.clone();
+    invalid_address_artifact.input.address = 2;
+    invalid_address_artifact.input.gpr[4] =
+        (invalid_address_artifact.input.gpr[4] & 0xffff_ffff_0000_0000) | 2;
+    let invalid_address = serialize_replay_artifact(&invalid_address_artifact);
+    assert_eq!(
+        parse_replay_artifact(&invalid_address),
+        Err("address is outside the generated class for its provenance index")
     );
 
     let bad_digest = ram_digest(&artifact.input) ^ 1;
