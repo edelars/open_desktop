@@ -8425,3 +8425,18 @@ status observation, clearing, and retry. The slice is interpreter-only; no
 physical x86 acceptance is claimed. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp),
 [plan](../../../../docs/plans/STAGE_2.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp),
 and [standalone report](../../../../docs/reports/S2_31EB_FLD_M80FP_HISTORICAL_IE_DE.md).
+
+<a id="s2-38u-comiss-memory-invalid-only-profile"></a>
+
+### S2-38u COMISS memory invalid-only profile
+
+Five literal fixtures cover finite comparison, post-read subnormal refusal,
+masked QNaN, unmasked QNaN/#XM and unmasked SNaN/#UD. The independent runner
+oracle expands NaNs across both operand sides, IM, OSXMMEXCPT and all 64 old
+sticky-status values (1,024 cases), and also checks finite/infinity/zero
+relations, gate priority, AC, canonical span, schema/result tampering and
+interpreter-only backend enforcement. ISA unit tests cover CPL and read-error
+rollback. No physical x86 acceptance is claimed. ISSUE-033 remains an audit of the existing mixed
+NaN/denormal profiles. See the [CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38u--exact-comiss-memory-invalid-only-profile),
+[plan](../../../../docs/plans/STAGE_2.md#s2-38u--exact-comiss-memory-invalid-only-profile),
+and [standalone report](../../../../docs/reports/S2_38U_COMISS_MEMORY_INVALID_ONLY.md).

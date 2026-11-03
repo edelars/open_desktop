@@ -22854,3 +22854,31 @@ open. See the [standalone report](S2_31EB_FLD_M80FP_HISTORICAL_IE_DE.md),
 [CPU contract](../specs/CPU_CONTRACT.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp),
 [plan](../plans/STAGE_2.md#s2-31eb--historical-ie-and-de-for-raw-fld-m80fp),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31eb-historical-ie-de-on-raw-fld-m80fp).
+
+<a id="main-integration-s2-38u"></a>
+
+## Main integration: S2-38u
+
+S2-38u is the exact Long64 legacy `0F 2F 00` COMISS XMM0,m32 `[RAX]`
+interpreter-only invalid profile. Admission requires the documented SSE,
+CR0/CR4, MXCSR and CPL conditions; AC=1 refuses before data access, while
+canonical span validation precedes exactly one four-byte read. A subnormal in
+either operand after a successful read yields Unsupported without state
+commit. QNaN and SNaN set IE; masked completion updates comparison flags, and
+unmasked IE suppresses RFLAGS/RIP/retirement while reporting `#XM` or
+arithmetic `#UD` per OSXMMEXCPT. Native/JIT remain closed.
+
+The independent runner oracle covers 1,024 NaN operand-side/class × IM ×
+OSXMMEXCPT × old sticky-status cases, finite/infinity/zero relations, five
+literal fixtures, gate/fetch ordering, AC/span priority, schema and result
+tampering, and forged backend labels. ISA unit tests cover CPL variation and
+read-error rollback. On main, checks passed: od-isa
+COMISS 9, od-testkit 455, od-runner 129 unit + 537 fixture cases, workspace
+all-target offline check, and formatting. Sol/high review is clean. Graphify
+reports 12,054 nodes, 26,189 edges and 366 communities; labels were not
+refreshed without an LLM API key. `od-x86-runner` and physical x86 were not
+run. ISSUE-033 remains open for the existing mixed NaN/denormal profile audit;
+Stage 2 remains open. See [standalone report](S2_38U_COMISS_MEMORY_INVALID_ONLY.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38u--exact-comiss-memory-invalid-only-profile),
+[plan](../plans/STAGE_2.md#s2-38u--exact-comiss-memory-invalid-only-profile), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38u-comiss-memory-invalid-only-profile).

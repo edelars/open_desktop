@@ -17871,3 +17871,12 @@ Sources: Intel SDM Rev. 093 Vol. 2A COMISS pp. 3-201–3-202
 Vol. 1 §§4.9.2, 11.5.2.2 and 11.5.3; Vol. 3A §16.1.3/Table 16-1. See the
 [Stage 2 plan](../plans/STAGE_2.md#s2-38u--exact-comiss-memory-invalid-only-profile)
 and [ISSUE-033](../KNOWN_ISSUES.md#issue-033-s2-37cq-comiss-mixed-event-handling-audit).
+Implementation evidence: the generated runner oracle checked 1,024 QNaN/SNaN
+side × IM × OSXMMEXCPT × prior sticky-status combinations, plus finite,
+infinity, zero, gate/AC/span priority, tampering and backend refusal. ISA unit
+tests cover CPL variation and failed-read rollback. Main verification passed:
+od-isa COMISS 9, od-testkit 455, od-runner 129 unit + 537 fixture cases,
+workspace all-target offline check and formatting. Sol/high review is clean.
+ISSUE-033 remains an audit of existing mixed NaN/denormal profiles; no
+physical x86 acceptance is claimed. See the [main integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-38u)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38u-comiss-memory-invalid-only-profile).
