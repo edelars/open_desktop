@@ -23114,3 +23114,21 @@ and ISSUE-033 remain open; Stage 2 remains open. See the [S2-31eg report]
 (S2_31EG_FIST_HISTORICAL_SF.md), [S2-38z report]
 (S2_38Z_SQRTSD_MEMORY_UNMASKED.md), [CPU contract](../specs/CPU_CONTRACT.md),
 and [stage plan](../plans/STAGE_2.md).
+
+## Isolated implementation: S2-38ab
+
+S2-38ab adds the exact schema-v2 interpreter-only SQRTPD XMM0,m128 `[RAX]`
+profile with unmasked IE/DE/PE handling. The independent raw-u64 matrix passed
+102,400 cases across two-lane event categories, IM/DM/PM, OSXMMEXCPT, RC and
+old sticky histories in 45.01 seconds. It pins the exact minimum-subnormal
+root `2^-537` with DE only and verifies `0x2`/`0x3` DE+PE. Executor and fixture
+checks cover aggregate pre-events, PE suppression, whole-XMM atomicity,
+gate/fetch/CPL, AC-independent alignment, rollback, tampering and backend
+denial. The focused suites passed: od-isa 1,948, od-testkit 455, and runner
+unit tests 133; workspace check and formatting passed. The full runner fixture
+suite was stopped after its unit suite completed, while the focused S2-38ab
+fixture test passed. Isolated commit: `4907bba`. Independent Sol/high review
+and main integration remain pending. No native/JIT or physical x86 acceptance
+is claimed. See [S2-38ab implementation report](S2_38AB_SQRTPD_MEMORY_UNMASKED.md),
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions),
+and [stage plan](../plans/STAGE_2.md).

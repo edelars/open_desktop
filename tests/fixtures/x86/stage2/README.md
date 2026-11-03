@@ -8625,13 +8625,19 @@ and [stage plan](../../../../docs/plans/STAGE_2.md).
 
 ### S2-38ab SQRTPD m128 memory unmasked exceptions
 
-The planned immutable schema-v2 profile uses exact `66 0F 51 00`, SSE2 bit 26,
-read-only m128 `[RAX]`, one read16 and mandatory alignment16. Planned fixtures
-cover masked success and unmasked IE/DE/PE under `#XM` and arithmetic `#UD`.
-Runner coverage will use an independent raw-u64 oracle, mixed-lane pre-event
-aggregation, whole-XMM suppression, minimum-subnormal DE-only and DE+PE cases,
-gate/fetch/CPL checks, alignment with AC clear/set, one-read/rollback assertions,
-tampering and interpreter-only backend denial. S2-37de masked memory and
-S2-37al register profiles remain separate. See the
-[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions)
+The immutable schema-v2 interpreter-only profile uses exact `66 0F 51 00`,
+SSE2 bit 26, read-only m128 `[RAX]`, one read16 and mandatory alignment16.
+Three literal fixtures cover masked success (`s2_38ab_sqrtpd_unmasked_success`),
+unmasked IE `#XM`, and unmasked PE arithmetic `#UD`. The runner's independent
+raw-u64 oracle covers 25 two-lane event-category products × all IM/DM/PM and
+OSXMMEXCPT combinations × all RC modes × 64 old sticky histories (102,400
+cases). It checks mixed-lane pre-event aggregation and whole-XMM suppression.
+The exact positive minimum subnormal `0x1` has root `2^-537` and DE only;
+`0x2`/`0x3` produce DE+PE. Focused tests cover gate/fetch/CPL, alignment with
+AC clear/set, canonical span, one-read/rollback, result/status/retirement/
+exception tampering, read-only schema and JIT/native denial. S2-37de masked
+memory and S2-37al register profiles remain separate. No physical x86
+acceptance is claimed. See the
+[CPU contract](../../../../docs/specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions),
+[implementation report](../../../../docs/reports/S2_38AB_SQRTPD_MEMORY_UNMASKED.md),
 and [stage plan](../../../../docs/plans/STAGE_2.md).

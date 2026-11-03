@@ -18586,15 +18586,28 @@ masked memory and S2-37ak register profiles unchanged. See the
 
 #### S2-38ab — unmasked outcomes for exact SQRTPD memory form
 
-Add separate immutable schema-v2 interpreter-only profile for exact Long64
-`66 0F 51 00`, SSE2 bit 26 and read-only m128 `[RAX]`. Require full fetch,
-exact form, SSE2/EM/OSFXSR before TS; allow supported MXCSR mask `0xffbf`,
-DAZ=0, reserved=0 and any FTZ/masks/RC/stickies. Require alignment16
-regardless of AC and exactly one read16 after canonical span validation.
-Aggregate IE/DE across both lanes before masking, suppress PE on an unmasked
-pre-event, and preserve the full XMM/RIP/retirement on every fault. Check 25
-neutral/IE/DE/PE/DE+PE lane products across masks/OSXMMEXCPT, plus RC/sticky
-history, minimum-subnormal DE-only (`0x1`), DE+PE (`0x2`/`0x3`), alignment,
-callbacks/rollback, fixtures, tampering and backend denial. Keep S2-37de
-masked memory and S2-37al register profiles unchanged. See the
-[CPU contract](../specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions).
+Implemented the immutable schema-v2 interpreter-only profile for exact Long64
+`66 0F 51 00`, SSE2 bit 26 and read-only m128 `[RAX]`. Full fetch precedes
+SSE2/EM/OSFXSR and TS gates. Supported MXCSR mask `0xffbf`, DAZ=0 and reserved
+bits clear are enforced while FTZ, masks, RC and old stickies remain accepted.
+The executor validates alignment16 regardless of AC and canonical span before
+one read16. It aggregates both lanes' IE/DE before mask handling, suppresses PE
+when an unmasked pre-event occurs, and preserves XMM/RIP/retirement on faults.
+The independent raw-u64 oracle matrix passes all 102,400 combinations: 25
+two-lane event products × 8 mask patterns × 2 OSXMMEXCPT values × 4 RC modes ×
+64 old sticky histories. The exact `0x1` root is `2^-537` with DE only;
+`0x2`/`0x3` yield DE+PE. Three literal fixtures cover success, IE `#XM` and PE
+arithmetic `#UD`; focused checks cover gates, truncated fetch, CPL0–3,
+AC-independent alignment, canonical faults, rollback, tampering and backend
+denial. S2-37de masked memory and S2-37al register profiles remain separate.
+
+Verification in the isolated worktree: `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, `cargo test -p od-isa
+--offline` (1,948 passed), `cargo test -p od-testkit --offline` (455 passed),
+the runner's 133 unit tests (including the 102,400-case matrix), and the
+focused SQRTPD fixture test passed. A full runner fixture-suite attempt was
+stopped after the unit suite completed; the focused three-fixture test passed.
+Independent Sol/high review is pending after integration. This profile remains
+interpreter-only; no physical x86 acceptance is claimed. See the
+[CPU contract](../specs/CPU_CONTRACT.md#s2-38ab--exact-sqrtpd-memory-profile-with-unmasked-exceptions)
+and [standalone report](../reports/S2_38AB_SQRTPD_MEMORY_UNMASKED.md).
