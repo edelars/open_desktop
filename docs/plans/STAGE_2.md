@@ -331,7 +331,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-31ea | Admit historical SF only with pre-existing IE in exact bare DB 38 raw FSTP m80fp [RAX]; preserve raw ten-byte store and post-write pop; native/JIT closed | 24,576 full-state SF+IE cases across accepted source/tag pairs, signs, FCWs, TOP, C1 and DE/ZE/OE/PE histories; raw SNaN/subnormal preservation, SF-only/ES/B and malformed gates, rollback/repeat/FNSTSW/FNCLEX/retry, schema and backend denial; integrated main suites: od-isa 1,925, testkit 455, runner 535, x86-runner 8+6; workspace/fmt/layout/diff pass, Graphify 12,023/26,124/317; clean Sol/high review; no physical x86 acceptance |
 | [x] | S2-31eb | Admit historical IE and DE on exact bare DB 28 raw FLD m80fp [RAX]; retain existing raw classes, push behavior and native/JIT denial | 8,704 full-state cases across 34 raw class literals × TOP × FCW × IE/DE/PE; full LongModeState equality, read/span rollback with FSW 0x0423 and DB28/FNSTSW/FNCLEX composition; schema-v2 and backend denial; Sol/high clean; author checks: ISA 5, testkit 455, both runner regressions 1, fmt/workspace check/Graphify pass; no physical x86 acceptance |
 | [x] | S2-31ec | Admit historical ZE/OE/UE with IE/DE/PE only in exact bare DB 28 raw FLD m80fp [RAX]; preserve raw classes and push; native/JIT closed | 69,632 full-state cases (64 sticky histories × 34 raw literals × 8 TOP × 4 FCW); all-flags rollback from FSW 0x043f, SF/ES/B rejection, FNSTSW/FNCLEX/retry, schema and backend denial; od-isa 1,928, testkit 455, focused runner checks, workspace/fmt pass; clean Sol/high review after rollback coverage fix; Graphify after merge 12,065/26,206/328; no physical x86 acceptance |
-| [ ] | S2-31ed | Admit historical SF only with pre-existing IE on exact bare DB 28 raw FLD m80fp [RAX]; preserve six other sticky flags and raw push; native/JIT closed | Add 69,632 full-state SF+IE cases (32 combinations of DE/ZE/OE/UE/PE × 34 raw literals × 8 TOP × 4 FCW × 2 C1) while retaining S2-31ec's 69,632 SF=0 cases; reject SF-only/ES/B before read, rollback at C1=0/1, FILD denial, FNSTSW/FNCLEX/retry, schema/backend denial; no physical x86 acceptance |
+| [x] | S2-31ed | Admit historical SF only with pre-existing IE on exact bare DB 28 raw FLD m80fp [RAX]; preserve six other sticky flags and raw push; native/JIT closed | Add 69,632 full-state SF+IE cases (32 combinations of DE/ZE/OE/UE/PE × 34 raw literals × 8 TOP × 4 FCW × 2 C1) while retaining S2-31ec's 69,632 SF=0 cases; reject SF-only/ES/B before read, rollback at C1=0/1, FILD denial, FNSTSW/FNCLEX/retry, schema/backend denial; od-isa 1,932, testkit 455, runner 130+540, workspace/fmt pass, Graphify 12,146/26,227/401; parent manual review clean, Sol/high agent unavailable due thread limit; no physical x86 acceptance |
 | [ ] | S2-31b | Bare bounded FISTP m32int [RAX] DB 18, partial slice | S2-31a |
 | [x] | S2-31c | Bare bounded FIST m32int [RAX] DB 10, partial slice | S2-31b |
 | [x] | S2-31d | Bare bounded FISTP m16int [RAX] DF 18, partial slice | S2-31c |
@@ -18324,6 +18324,20 @@ edges / 328 communities. No physical x86 acceptance is claimed. See the [main
 integration report](../reports/STAGE_2_REPORT.md#main-integration-s2-31ec),
 [standalone report](../reports/S2_31EC_FLD_M80FP_HISTORICAL_FLAGS.md), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ec-historical-zeoeue-for-raw-fld-m80fp).
+
+#### S2-31ed — historical SF with pre-existing IE for raw FLD m80fp
+
+Extend only exact bare Long64 `DB 28` `FLD m80fp [RAX]`. Reject ES/B and
+historical SF unless IE is already set; continue admitting all combinations
+of IE/DE/ZE/OE/UE/PE. Preserve all historical flags and the raw source, clear
+C1, then apply the existing push/TOP transition. Keep shared FILD and every
+other x87 gate unchanged. Add 69,632 complete-state SF+IE cases and retain the
+69,632 S2-31ec SF=0 cases as a regression. Include SF-only/ES/B pre-read
+refusal, both C1 rollback histories, canonical-span/read failure, FILD SF
+denial, repeated FLD/FNSTSW/FNCLEX/retry, schema validation and backend denial.
+The conditional SF=>IE boundary is local to this profile. Physical x86
+acceptance is not claimed. See the [CPU contract](../specs/CPU_CONTRACT.md#s2-31ed--historical-sf-with-pre-existing-ie-for-raw-fld-m80fp)
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-31ed-historical-sf-with-prior-ie-on-raw-fld-m80fp).
 
 #### S2-38u — exact COMISS memory invalid-only profile
 

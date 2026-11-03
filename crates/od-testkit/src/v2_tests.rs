@@ -5900,7 +5900,22 @@ fn x87_state_profile_admits_only_exact_bare_two_byte_operations() {
             "DB28 must admit historical exception flags {historical_status:04x}"
         );
     }
-    for rejected_status in [0x0040_u64, 0x007f, 0x0080, 0x00bf, 0x8000, 0x803f] {
+    for historical_status in (0..=0x003f_u64).filter(|status| status & 1 != 0) {
+        let mut rejected_with_sf_ie = admitted_status_probe.clone();
+        rejected_with_sf_ie
+            .initial_state
+            .x87
+            .as_mut()
+            .unwrap()
+            .status_word = HexU64(0x4540 | historical_status);
+        assert!(
+            rejected_with_sf_ie.validate().is_err(),
+            "DB28 must admit historical SF only with IE: {historical_status:04x}"
+        );
+    }
+    for rejected_status in [
+        0x0040_u64, 0x0240, 0x0080, 0x00bf, 0x8000, 0x803f, 0x00c1, 0x8041, 0x80c1, 0x82c1,
+    ] {
         let mut rejected_environment = admitted_status_probe.clone();
         rejected_environment
             .initial_state
