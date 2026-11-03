@@ -683,6 +683,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-38ah | Exact Long64 `MULSD XMM0,m64 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | 20 raw-u64 memory-RHS vectors ×4 RC ×64 sticky histories ×16 IM/DM/ZM/PM ×2 OSXMMEXCPT =163,840 real interpreter executions checked by independent oracle; exact/inexact tiny, DE→PE priority, signed NaNs, zero×infinity, overflow and preservation/backend cases; four literal fixtures; od-isa 1,960, testkit 459, runner 139+561; workspace/fmt/Graphify/diff checks passed; Sol/high review clean; [report](../reports/S2_38AH_MULSD_MEMORY_UNMASKED.md); no physical x86 acceptance |
 | [x] | S2-38ai | Exact Long64 `DIVSS XMM0,m32 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | 27 event vectors × RC ×64 prior sticky ×16 IM/DM/ZM/PM × both OSXMMEXCPT = 221,184 actual interpreter runs validated against independent raw-u32 actual-memory-RHS oracle; IE/ZE/DE priority, signed SNaN in both positions, QNaN suppression, ZE-only zero cases, DE, exact/inexact ratios and tiny results, half-minsub, min-normal WPR boundary, overflow and pre-event suppression; direct gate/fetch/CPL/AC/span/read rollback and one-read probes; three literal fixtures, schema/result/status/control/exception tampering, S2-37do read-only regression and backend denial; od-isa 1,962, testkit 461, runner 141+562; workspace/fmt/Graphify/diff passed; fetch-span validator fix passed clean Sol/high follow-up review; [report](../reports/S2_38AI_DIVSS_MEMORY_UNMASKED.md); no physical x86 acceptance |
 | [x] | S2-38aj | Exact Long64 `DIVSD XMM0,m64 [RAX]`, unmasked IE/ZE/DE/PE memory profile; immutable schema-v2, interpreter-only | 20 raw-u64 vectors ×4 RC ×64 sticky histories ×16 IM/DM/ZM/PM ×2 OSXMMEXCPT =163,840 actual interpreter cases checked by independent raw-u64 actual-memory-RHS oracle; signed SNaNs in both positions, QNaN suppression, IE/ZE/DE priority, exact/inexact tiny, half-minsub, min-normal boundary, overflow, DE→PE suppression and masked-pre→unmasked-PE; five literal fixtures; direct gate/fetch/form, noncanonical code/data span, CPL0–3, AC-before-read, one-read and rollback; result/status/control/exception/destination/retirement tampering and backend denial. Affected suites passed: od-isa 1,963, testkit 461, runner 140+563; workspace all-target offline check, fmt, Graphify, diff and main layout checks passed. Sol/high review clean; reviewer’s full matrix attempt timed out without failure, author’s full matrix passed; [report](../reports/S2_38AJ_DIVSD_MEMORY_UNMASKED.md); no physical x86 acceptance |
+| [ ] | S2-38ak | Exact Long64 `ADDPS XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37dq masked memory, S2-37ba register arithmetic, S2-38aa packed memory order and S2-38ac scalar exception pattern; independent actual-memory-RHS raw-u32 oracle; aggregate IE/DE across all lanes before mask handling, cross-lane pre-event suppression, NaN lane priority and 16-byte `#GP(0)` alignment regardless AC; real full-history lane matrix, boundary vectors, gate/rollback/tampering/backend checks; no physical x86 acceptance |
+| [ ] | S2-38al | Exact Long64 `ADDPD XMM0,m128 [RAX]`, unmasked IE/DE/PE memory profile; immutable schema-v2, interpreter-only | S2-37du masked memory, S2-37az register arithmetic, S2-38ab packed memory order and S2-38ad scalar exception pattern; independent actual-memory-RHS raw-u64 oracle; aggregate IE/DE across all lanes before mask handling, cross-lane pre-event suppression, NaN lane priority and 16-byte `#GP(0)` alignment regardless AC; real full-history lane matrix, boundary vectors, gate/rollback/tampering/backend checks; no physical x86 acceptance |
 | [ ] | S2-39 | FP/SIMD save/restore | S2-33, S2-38 |
 | [x] | S2-39a | Нормативное evidence и контракт legacy FXSAVE/FXRSTOR | S2-00, S2-34, S2-38; evidence only |
 | [x] | S2-39b | Представление FCS/FDS в X87State/schema-v2; точечный selector profile; x87 transition fail-closed | S2-39a; FXSAVE/FXRSTOR execution remained open at this historical substage |
@@ -18838,3 +18840,111 @@ check reports its `.git` pointer as an unmapped root file and lacks ignored
 main checkout passes layout. Independent Sol/high review is clean; the
 reviewer's full-matrix attempt timed out without failure, while the author's
 full matrix passed. No physical x86 acceptance is claimed.
+
+#### S2-38ak — exact ADDPS memory form with unmasked exceptions
+
+Implement immutable schema-v2 interpreter-only profile
+`s2-long-addps-memory-unmasked-rax-v1` for exact Long64 `0F 58 00`
+(`ADDPS XMM0,m128 [RAX]`), separate
+`addps_memory_rax_unmasked_controls`, SSE bit 25 and one read-only m128
+`[RAX]`; preserve masked-memory S2-37dq and register S2-37ba. Use one
+executable mapping, budget one and stop RIP=entry+3. Full three-byte fetch and
+exact-form checks precede SSE/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM`, at
+CPL0–3; noncanonical instruction-fetch spans fault `#GP(0)` before gates.
+Require supported MXCSR bits `0xffbf`, reserved bits clear, DAZ=FTZ=0,
+OM=UM=1; permit all RC, IM/DM/ZM/PM and prior sticky histories.
+
+The m128 read requires 16-byte alignment regardless of RFLAGS.AC. Misaligned
+RAX returns `#GP(0)` with no callback when AC is zero or one; AC does not cause
+local Unsupported. For aligned RAX, check overflow and both canonical48
+endpoints of `[RAX,RAX+15]`, then exactly one read16. Fetch/data span or read
+fault preserves state, memory and retirement.
+
+Compute each of four lanes from pre-execution destination and memory snapshots
+using existing raw ADDPS semantics and an independent integer-only raw-u32
+oracle over the actual memory RHS. Preserve original-operand NaN selection:
+quiet the selected first NaN, any SNaN raises IE, QNaN alone does not, and a
+NaN suppresses DE only in its own lane. Opposite-sign infinities raise IE and
+produce the masked negative indefinite. Other subnormal inputs contribute DE.
+Collect IE|DE over all lanes before checking IM/DM; a newly unmasked pre-event
+commits all applicable new pre-flags, suppresses all later OE/UE/PE and leaves
+the entire XMM destination, RIP and retirement unchanged. If pre-events are
+masked, compute all lanes with RC, merge post-status and apply PM atomically.
+An unmasked PE also suppresses the full XMM destination, RIP and retirement.
+WPR tininess-after-rounding applies; exact subnormal results do not create
+UE/PE. OSXMMEXCPT=1 delivers `#XM` vector 19; zero delivers SIMD-generated
+`#UD` vector 6; neither has an error code. Old sticky bits alone do not fault.
+Success updates all four low lanes, applicable MXCSR status, RIP and retirement
+while preserving RFLAGS and unrelated state.
+
+Require actual-interpreter execution with the independent memory-RHS oracle.
+Cross six lane representatives (neutral, IE, DE-only, PE-only, DE+PE, OE+PE)
+over `6^4` packed lane combinations and all 16 IM/DM/ZM/PM settings × both
+OSXMMEXCPT mappings (41,472 cases at fixed RC and prior sticky state). Add
+selected mixed-lane/boundary vectors across every RC,
+64 prior sticky histories, all masks and both deliveries: IE+DE in different
+lanes, pre-event suppressing PE/OE from another lane, masked DE then unmasked
+PE, lane permutations, signed SNaN/QNaN positions, exact tiny, cancellation,
+halfway, exponent-gap and overflow midpoint. Do not require an inexact-tiny
+case that same-format addition cannot produce. Verify full-state/no-partial
+write behavior, gates/fetch/CPL, alignment at AC=0/1, canonical/code/data span
+and read rollback, callback counts, strict schema, literal fixtures, status,
+result, control, exception tampering, old masked permissions and backend
+denial. Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance
+remain closed. Sources: Intel SDM Rev. 093 Vol. 2A ADDPS pp. 3-19–3-21,
+§2.5.2/Table 2-19; Vol. 1 §§4.9.1.4–.6, 4.9.2,
+11.5.1–11.5.3; Vol. 3A Event 19/Table 7-8.
+
+#### S2-38al — exact ADDPD memory form with unmasked exceptions
+
+Implement immutable schema-v2 interpreter-only profile
+`s2-long-addpd-memory-unmasked-rax-v1` for exact Long64 `66 0F 58 00`
+(`ADDPD XMM0,m128 [RAX]`), separate
+`addpd_memory_rax_unmasked_controls`, SSE2 bit 26 and one read-only m128
+`[RAX]`; preserve masked-memory S2-37du and register S2-37az. Use one
+executable mapping, budget one and stop RIP=entry+4. Full four-byte fetch
+and exact-form checks precede SSE2/CR0.EM/CR4.OSFXSR `#UD`, then CR0.TS `#NM`,
+at CPL0–3; noncanonical instruction-fetch spans fault `#GP(0)` before gates.
+Require supported MXCSR bits `0xffbf`, reserved bits clear,
+DAZ=FTZ=0, OM=UM=1; permit all RC, IM/DM/ZM/PM and prior sticky histories.
+
+The m128 read requires 16-byte alignment regardless of RFLAGS.AC. Misaligned
+RAX returns `#GP(0)` with no callback when AC is zero or one; AC does not cause
+local Unsupported. For aligned RAX, check overflow and both canonical48
+endpoints of `[RAX,RAX+15]`, then exactly one read16. Fetch/data span or read
+fault preserves state, memory and retirement.
+
+Compute each of two lanes from pre-execution destination and memory snapshots
+using existing raw ADDPD semantics and an independent integer-only raw-u64
+oracle over the actual memory RHS. Preserve original-operand NaN selection:
+quiet the selected first NaN, any SNaN raises IE, QNaN alone does not, and a
+NaN suppresses DE only in its own lane. Opposite-sign infinities raise IE and
+produce the masked negative indefinite. Other subnormal inputs contribute DE.
+Collect IE|DE over both lanes before checking IM/DM; a newly unmasked pre-event
+commits all applicable new pre-flags, suppresses all later OE/UE/PE and leaves
+the entire XMM destination, RIP and retirement unchanged. If pre-events are
+masked, compute both lanes with RC, merge post-status and apply PM atomically.
+An unmasked PE also suppresses the full XMM destination, RIP and retirement.
+WPR tininess-after-rounding applies; exact subnormal results do not create
+UE/PE. OSXMMEXCPT=1 delivers `#XM` vector 19; zero delivers SIMD-generated
+`#UD` vector 6; neither has an error code. Old sticky bits alone do not fault.
+Success updates both low lanes, applicable MXCSR status, RIP and retirement
+while preserving RFLAGS and unrelated state.
+
+Require actual-interpreter execution with the independent memory-RHS oracle.
+Cross six lane representatives (neutral, IE, DE-only, PE-only, DE+PE, OE+PE)
+over `6^2` packed lane combinations and all 16 IM/DM/ZM/PM settings × both
+OSXMMEXCPT mappings (1,152 cases at fixed RC and prior sticky state). Add
+selected mixed-lane/boundary vectors across every RC,
+64 prior sticky histories, all masks and both deliveries: IE+DE in different
+lanes, pre-event suppressing PE/OE from another lane, masked DE then unmasked
+PE, lane permutations, signed SNaN/QNaN positions, exact tiny, cancellation,
+halfway, exponent-gap and overflow midpoint. Do not require an inexact-tiny
+case that same-format addition cannot produce. Verify full-state/no-partial
+write behavior, gates/fetch/CPL, alignment at AC=0/1, canonical/code/data span
+and read rollback, callback counts, strict schema, literal fixtures, status,
+result, control, exception tampering, old masked permissions and backend
+denial. Native/JIT/C ABI/generic/fragment routes and physical x86 acceptance
+remain closed. Sources: Intel SDM Rev. 093 Vol. 2A ADDPD pp. 3-16–3-18,
+§2.5.2/Table 2-19; Vol. 1 §§4.9.1.4–.6, 4.9.2,
+11.5.1–11.5.3; Vol. 3A Event 19/Table 7-8.
