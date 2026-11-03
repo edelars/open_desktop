@@ -1,7 +1,7 @@
 # S3-38e: bounded opt-in S0-09 session owner
 
-**Status:** implemented as a local Rust ownership slice; correctness gates are
-added but were not run at the user's request.
+**Status:** implemented as a local Rust ownership slice; all four exact
+macOS/ARM64 correctness gates and the pinned harness self-check passed.
 
 ## Scope
 
@@ -34,9 +34,11 @@ The macOS ARM64 local tests in `crates/od-host/src/session.rs` cover:
 All four gates use the existing process-wide `od-host` JIT test lock so their
 MAP_JIT lease assertions do not race other host tests.
 
-These tests, formatting, build, layout checks, VMHost IPC, and Mini/M1 checks
-were not run for this author slice. The implementation makes no performance
-claim.
+Each exact session test passed individually (1/1), and the S3-34dp fail-closed
+harness self-check exited 0. The full Stage 3 harness, formatting, build,
+layout checks, and VMHost IPC were not run for this slice. Mini/physical-x86
+checks remain pending because the documented SSH attempt timed out; M1 remains
+deferred by the user. The implementation makes no performance claim.
 
 ## Boundaries
 

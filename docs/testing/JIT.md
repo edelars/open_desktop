@@ -1172,9 +1172,13 @@ suite: `session::tests::same_code_reuses_publication_with_fresh_state_budget_and
 `session::tests::invalid_entry_is_reported_without_an_automatic_retry`. Its
 fail-closed self-check covers the exact manifest, source fingerprint, Cargo
 argv, summary membership, and missing, zero-match, ignored, failed, and
-wrong-identity evidence. Totals are 312 Rust gates (298 acceptance + 14
-lifecycle), 330 local steps, and 140 self-test names. Static review passed;
-the harness and Rust gates were not run. Mini/M1 remain deferred. See the
+wrong-identity evidence. At S3-34dp integration the manifest had 312 Rust
+gates (298 acceptance + 14 lifecycle), 330 local steps, and 140 self-test
+names; current totals after S3-34dr are 324 gates (306 acceptance + 18
+lifecycle), 342 steps, 149 self-tests, and 18 source pins. All four exact
+Session gates passed 1/1, and the pinned fail-closed self-test exited 0. The full
+Stage 3 harness was not run. Mini/physical-x86 acceptance remains pending
+endpoint availability; M1 is deferred. See the
 [implementation report](../reports/STAGE_3_S3-38e_session_owner_2026-11-03.md)
 and [harness report](../reports/STAGE_3_S3-34dp_2026-11-03.md).
 
