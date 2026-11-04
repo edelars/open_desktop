@@ -720,6 +720,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42f | Proposed schema-v2 reducer acceptance contract | Documentation only; no generic reducer or hardware acceptance; parent S2-42 remains open; [protocol](../testing/S2_42_REDUCER_CONTRACT.md), [report](../reports/STAGE_2_REPORT.md#s2-42f--schema-v2-reducer-acceptance-contract) |
 | [x] | S2-42g | Bounded qword GPR PUSH/POP interpreter reducer | Eight focused reducer tests + runnable replay integration; original local fixtures report `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42G_STACK_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42g--bounded-qword-gpr-pushpop-reducer) |
 | [x] | S2-42h | Deterministic qword GPR PUSH/POP corpus | 1,024 generated + 32 handwritten controls; all 1,056 interpreter/oracle cases matched; Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42H_STACK_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42h--deterministic-qword-gpr-pushpop-corpus) |
+| [x] | S2-42i | Deterministic positive REP STOSB corpus | 1,024 generated + 36 handwritten cases for count 0–8 and DF=0/1; all 1,060 interpreter/oracle cases matched; Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42i--deterministic-rep-stosb-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -8592,6 +8593,28 @@ physical execution не запускались (`not_run`). S2-42 остаётс
 
 См. [протокол S2-42h](../testing/S2_42H_STACK_CORPUS.md) и
 [отчёт](../reports/STAGE_2_REPORT.md#s2-42h--deterministic-qword-gpr-pushpop-corpus).
+
+### S2-42i. Deterministic positive REP STOSB corpus
+
+Добавлено 1,024 deterministic cases и 36 handwritten controls для exact `F3 AA`
+в `s2-long-integer-v1`: address-size 64, full RCX count 0..8, DF=0/1, budget 1,
+stop на `entry+2` и одно architectural retirement включая count 0. Независимый
+byte-fill oracle проверяет весь integer state, flags/definedness, retirement,
+полную code/data memory и canaries. Zero-count controls используют unmapped RDI
+и подтверждают отсутствие destination access.
+
+Все 1,060 cases локально прошли interpreter/oracle без расхождений. Suites
+42i/42h/42e после переноса прошли 8/8, 8/8 и 9/9 tests; `od-runner` build,
+py_compile, layout, diff-check и Graphify update прошли. Saved evidence строго
+связывает fixture/result/schema/profile/backend/build/machine; corpus-path
+preflight and saved-result identity failures write a failed summary. Remote
+Linux/native и physical Mac
+execution не запускались (`not_run`). CPU/schema/native admission не менялись.
+REP fault/restart, controlled continuation, большие counts и прочие string
+forms остаются отдельными требованиями; parent S2-42 остаётся открытым.
+
+См. [протокол S2-42i](../testing/S2_42I_REP_STOSB_CORPUS.md) и
+[отчёт](../reports/STAGE_2_REPORT.md#s2-42i--deterministic-rep-stosb-corpus).
 
 ### S2-43. Диагностический interpreter и граница JIT
 

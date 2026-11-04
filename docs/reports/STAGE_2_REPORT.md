@@ -17416,6 +17416,28 @@ S2-42, which still needs generic reducer coverage, REP/FP groups, dependencies
 S2-21/S2-39/S2-40 and physical acceptance. See [protocol](../testing/S2_42H_STACK_CORPUS.md)
 and [plan](../plans/STAGE_2.md#s2-42h-deterministic-qword-gpr-pushpop-corpus).
 
+## S2-42i — deterministic REP STOSB corpus
+
+Added 1,024 fixed-seed generated fixtures and 36 handwritten controls for the
+exact admitted `F3 AA` form in `s2-long-integer-v1`: address-size 64, full RCX
+count 0–8, DF=0/1, one instruction budget, stop at `entry+2`, and exactly one
+architectural retirement even when count is zero. An independent byte-fill
+oracle checks full integer state, flags/definedness, retirement, code/data bytes
+and canaries. Count-zero controls place RDI unmapped to confirm there is no
+destination access.
+
+All 1,060 cases passed local interpreter comparison with the independent oracle.
+After transfer, Python suites passed (S2-42i: 8; S2-42h: 8; S2-42e: 9),
+`cargo build --offline -p od-runner`, Python compilation, layout, diff-check and
+Graphify update passed. Saved-run verification binds each fixture/result to
+schema/profile/backend/build/machine; corpus-path preflight failures and invalid
+saved-result identities replace stale success summaries. Independent Sol/high
+review cleared both findings. Remote Linux/native and physical Mac runs were not performed
+(`not_run`). The slice changes no CPU/schema/admission code. Fault/restart,
+controlled continuation, larger counts and other string forms remain open, as
+do parent S2-42 and S2-21/S2-39/S2-40. See [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md)
+and [plan](../plans/STAGE_2.md#s2-42i-deterministic-positive-rep-stosb-corpus).
+
 ## S2-27g — exact Long64 SWAPGS
 
 Implemented exact bare `0F 01 F8` execution under explicit `SwapgsV1` with
