@@ -24457,3 +24457,25 @@ validated, including tampering, missing phases/repeats, and duplicate/missing
 stores. Native and physical execution remain `not_run`; this local bounded
 checkpoint test does not claim the 1,000-case native requirement. Parent S2-42
 and dependencies S2-21/S2-39/S2-40 remain open. See the [protocol](../testing/S2_42S_REP_CHECKPOINT.md), [plan](../plans/STAGE_2.md#s2-42s--rep-stosb-work-limit-checkpointreplay), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42s-rep-stosb-work-limit-checkpointreplay).
+
+## S2-42r — deterministic JZ/JNZ rel8 branch corpus
+
+S2-42r adds a deterministic short-conditional-branch corpus: 32 static
+handwritten controls and 1,024 generated cases. The exact matrix covers JZ and
+JNZ, both ZF states, and displacements `[-128, -127, -16, -3, 1, 16, 126,
+127]`. Generated inputs are unique across all 16 GPRs, defined non-ZF flags,
+and two entry offsets; each of four seeds retains eight cases per matrix cell.
+All 1,056 fixtures were executed twice by the local interpreter and their
+saved evidence was independently verified.
+
+The oracle uses the literal opcode and ZF bit 6, computes the signed target
+from next RIP, and checks full GPR/RIP/RFLAGS-definedness state, one retirement,
+stop address, no exception, and the complete unchanged code mapping. Strict
+bundle verification rejects missing/extra/tampered controls and snapshots.
+Saved-run verification binds frozen inputs, process status, run fingerprint,
+runner revision, compiler provenance, CPU profile and debug/release build
+configuration. Focused Python tests passed (12/12); positive synthetic native
+evidence roundtrips passed for both debug and release, with negative tests for
+provenance and process mutations. Actual native execution and physical
+acceptance remain `not_run`. S2-42 and dependencies S2-21/S2-39/S2-40 remain
+open. See the [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [plan](../plans/STAGE_2.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42r-jzjnz-rel8-branch-corpus).

@@ -9311,3 +9311,14 @@ limit completion expects `stop_address`; undefined AF is excluded by mask
 [`s2_42s_rep_checkpoint/`](s2_42s_rep_checkpoint/), with the full contract in
 [`S2_42S_REP_CHECKPOINT.md`](../../../../docs/testing/S2_42S_REP_CHECKPOINT.md).
 Native/physical evidence is `not_run`.
+
+### S2-42r JZ/JNZ rel8 branch corpus
+
+[`s2_42r_branch_controls/`](s2_42r_branch_controls/) contains 32 literal
+JZ/JNZ controls with complete static expected snapshots. The generator adds
+1,024 deterministic cases across four seeds, preserving eight cases per
+opcode/ZF/displacement cell and varying all GPRs, defined non-ZF flags, and
+entry offsets to provide 1,024 distinct architectural inputs. All 1,056 cases
+matched the independent full-state oracle twice on the local interpreter.
+Native and physical acceptance remain `not_run`; see the
+[S2-42r protocol](../../../../docs/testing/S2_42R_BRANCH_CORPUS.md).

@@ -729,6 +729,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42o | Bounded SQRTSS SNaN #XM interpreter reducer | One exact register instruction; descending nonzero-payload reduction, independent full-state/#XM predicate, callback journal and replay; synthetic IE omission and XMM0 corruption; literal `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42o--sqrtss-snan-fault-reducer) |
 | [x] | S2-42p | Six handwritten XORPD controls in S2-42c harness | Adds four literal boundaries alongside two exact S2-40b controls; separate strict control identity/hash manifest; 1,024 generated + 6 handwritten, two repeats; local interpreter passed; native/physical `not_run`; [protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md), [report](../reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls) |
 | [x] | S2-42q | 56 handwritten MOV memory/addressing controls in S2-42e harness | Adds exactly 4×2×7 literal controls before unchanged 1,024 generated cases; static full snapshots and pinned strict manifest; all 56 passed twice on local interpreter; native/physical `not_run`; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42q--56-handwritten-mov-memory-controls) |
+| [x] | S2-42r | Deterministic JZ/JNZ rel8 branch corpus | 32 literal controls + 1,024 generated cases with unique architectural inputs; all 1,056×2 passed local interpreter and saved evidence verifier; native/physical `not_run`; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus) |
 | [x] | S2-42s | REP STOSB work-limit checkpoint/replay evidence | Eight handwritten count 1024/1025/2048/2049 × DF controls; 8×2 local executions, 32 phase snapshots, successful-store journal and masked undefined-AF checks; native/physical `not_run`; parent S2-42 and dependencies S2-21/39/40 remain open; [protocol](../testing/S2_42S_REP_CHECKPOINT.md), [report](../reports/STAGE_2_REPORT.md#s2-42s--rep-stosb-work-limit-checkpointreplay) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
@@ -20202,3 +20203,18 @@ value is not treated as an architectural result. The focused target passed
 all-target offline check, and workspace formatting check also passed. Native
 and physical execution remain `not_run`; this bounded checkpoint slice does
 not complete S2-42 or its S2-21/S2-39/S2-40 dependencies. See the [protocol](../testing/S2_42S_REP_CHECKPOINT.md), [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-42s-rep-stosb-work-limit-checkpointreplay), and [test report](../reports/STAGE_2_REPORT.md#s2-42s--rep-stosb-work-limit-checkpointreplay).
+
+### S2-42r — deterministic JZ/JNZ rel8 branch corpus
+
+Adds 32 static handwritten controls for JZ/JNZ with both ZF values and signed
+rel8 displacements `[-128, -127, -16, -3, 1, 16, 126, 127]`, plus 1,024
+deterministic generated cases across four seeds. The generated matrix contains
+1,024 distinct architectural inputs while retaining eight cases per seed and
+opcode/condition/displacement cell. Each instruction executes as the only
+retired instruction; the oracle independently uses ZF bit 6 and signed
+next-RIP-relative arithmetic, and verifies full state plus unchanged code.
+All 1,056 cases passed twice on the local interpreter; strict saved local and
+synthetic native evidence checks passed for debug and release build profiles.
+Actual native and physical execution remain `not_run`. This bounded rel8 slice
+does not cover rel32, indirect branches, fault cases, or complete S2-42. See
+the [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-42r-jzjnz-rel8-branch-corpus), and [test report](../reports/STAGE_2_REPORT.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus).
