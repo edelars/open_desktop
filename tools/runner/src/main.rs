@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use od_isa::{CpuState, ExecutionResult, interpret};
 
+mod diagnostic;
 mod test_cli;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +58,8 @@ fn main() -> ExitCode {
         Some("--convert-fixture-v1") => return test_cli::convert_fixture_v1(&args[1..]),
         Some("--minimize") => return test_cli::minimize_fixture(&args[1..]),
         Some("--fixture") => return test_cli::run_fixture(&args[1..]),
+        Some("--diagnostic") => return diagnostic::run(&args[1..]),
+        Some("--diagnostic-replay") => return diagnostic::replay(&args[1..]),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
         _ => {}
     }

@@ -25100,3 +25100,36 @@ dependencies S2-21/39/40 remain open. See the
 Independent Sol/high review found an address-zero DF=1 post-index wrap bug and
 a misplaced fixture note; both were fixed with a wrap regression and moved
 documentation. Follow-up review found no remaining issues.
+
+## S2-43a — integer diagnostic CLI slice
+
+An opt-in runner path adds one-record single-step and bounded trace/replay for
+schema-v2 `s2-long-integer-v1` fixtures. It calls the existing interpreter
+boundary with a one-retirement budget and forwards the returned `rflags_defined`
+mask into the next step. Records include integer state before and after, the
+definedness mask, retired count, outcome, faulting RIP for fault exits, and
+changed fixture-RAM bytes. Replay embeds the original fixture bytes and limits,
+re-executes them, and rejects malformed or modified results. Other fixture
+profiles and JIT/native diagnostic requests are rejected.
+Diagnostic errors are reported on stderr with a nonzero process status; they do
+not use the structured `--fixture` exit-code table.
+
+Bounds are enforced before the corresponding large allocation or parse: input
+fixtures are at most 512 KiB, mapped fixture RAM at most 64 KiB, traces at most
+64 records, memory-change data at most 2048 bytes, replay files at most 1 MiB,
+and serialized output at most 1 MiB with a conservative escaped-string size
+preflight. This is an interpreter-only diagnostic slice, not JIT/native
+acceptance or completion of S2-43. Parent S2-42 and full S2-43/S2-44 remain open.
+
+Focused verification passed:
+
+- `cargo test -p od-runner --test s2_43a_diagnostic --offline` (4/4): load/add/store and flags-definedness continuity; taken branch; fetch/store faults without state or memory commit; zero/exact limits; replay, malformed/tampered input; explicit profile/JIT rejection and regular fixture CLI smoke.
+- `cargo fmt --all -- --check` and `cargo check --workspace --all-targets --offline`.
+- Manual one-step trace of the existing `s2_11_sub_64_reg_mem` fixture returned one `StopAddress` record with state and definedness fields.
+
+`python3 tools/check_layout.py` reported the worktree `.git` pointer as an
+unmapped root file and missing ignored `work/` evidence referenced by existing
+documents. It reported no broken links in the files changed for this slice.
+`git diff --check` passed. Graphify update completed with 14,927 nodes, 35,992
+edges, and 360 communities. Independent Sol/high review remains pending; S2-43a
+is not treated as accepted until that review completes.

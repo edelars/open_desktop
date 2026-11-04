@@ -36,7 +36,31 @@ target/debug/od-runner --compare-results interpreter.json jit.json \
   --case tests/fixtures/x86/s0_09_add_overflow.case.json --json
 ```
 
-Schema v1 comparison JSON contains `field`, optional `mask`, `expected`, `actual`, and fixture/backend `context` for every difference. Schema v2 comparison reports contain `schema_version`, `case_id`, `input_sha256`, `matches`, and differing field names. Exit codes are `0` for a completed run or comparison match, `2` for a comparison mismatch, `3` for invalid input, `4` for an unsupported operation or host, and `5` for a harness failure or deadline. Unsupported engine results remain valid JSON and never appear as completed runs. Unknown CPU model, kernel, page size, compiler version, and source revision are represented as unavailable metadata; the CLI does not guess them.
+Schema v1 comparison JSON contains `field`, optional `mask`, `expected`, `actual`, and fixture/backend `context` for every difference. Schema v2 comparison reports contain `schema_version`, `case_id`, `input_sha256`, `matches`, and differing field names. The `--fixture` and `--compare-results` commands use exit codes `0` for a completed run or comparison match, `2` for a comparison mismatch, `3` for invalid input, `4` for an unsupported operation or host, and `5` for a harness failure or deadline. Unsupported engine results remain valid JSON and never appear as completed runs. Unknown CPU model, kernel, page size, compiler version, and source revision are represented as unavailable metadata; the CLI does not guess them.
+
+## Integer diagnostic trace and replay
+
+The opt-in `--diagnostic CASE.json` path records up to 64 single-step records
+for schema-v2 `s2-long-integer-v1` fixtures. Each record includes integer state
+before and after execution, the defined RFLAGS mask, retirement count, outcome,
+faulting RIP when applicable, and bounded byte-level changes to fixture RAM.
+Use `--steps 1` for one step (the default), or `--steps 0` for an empty trace;
+`--max-event-bytes` caps changed memory bytes recorded, up to 2048. The input
+fixture is limited to 512 KiB and mapped RAM to 64 KiB. JIT and native diagnostic
+requests and every other profile are rejected explicitly.
+
+The output embeds the fixture bytes and limits needed for deterministic replay:
+
+```sh
+cargo run --offline -p od-runner -- --diagnostic CASE.json --steps 16 > trace.json
+cargo run --offline -p od-runner -- --diagnostic-replay trace.json
+```
+
+Replay recomputes the trace and rejects a changed request or result. This
+interpreter diagnostic does not provide JIT support or broaden the established
+fixture profile. Trace and replay commands return success on success and a
+nonzero process status on invalid input, unsupported requests, or replay
+mismatches; error details go to stderr.
 
 The fixture command accepts `interpreter` or `jit` per invocation and dispatches strictly by schema version. The S0-09 v1 fixture contract and digests remain unchanged; it does not capture RAM or exceptions, and its in-process path has no wall-time watchdog. The native x86 runner enforces its wall-time limit in an isolated process.
 

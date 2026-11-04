@@ -8965,6 +8965,15 @@ S2-21/S2-39/S2-40 остаются открыты.
 3. JIT явно отклоняет новые неподдержанные формы; если есть interpreter fallback, он вызывает собственный core с тем же state и точной границей передачи управления. Не называть fallback нативной JIT-поддержкой.
 4. Не реализовывать новый block JIT/cache/оптимизатор в этой задаче. Общий helper не считается независимым эталоном; hardware comparison сохраняется.
 
+Подсрез S2-43a добавляет opt-in ограниченный single-step/trace/replay CLI только
+для schema-v2 `s2-long-integer-v1`: он материализует целочисленное состояние,
+сохраняет маску defined RFLAGS между шагами и записывает ограниченные эффекты
+памяти и faulting RIP. Остальные профили и JIT/native diagnostic requests
+отклоняются. Это частичное диагностическое основание; оно не закрывает
+совместимость JIT/native regressions, новые JIT boundaries или весь S2-43.
+Точные ограничения и проверки приведены в [runner README](../../tools/runner/README.md#integer-diagnostic-trace-and-replay)
+и [отчёте S2-43a](../reports/STAGE_2_REPORT.md#s2-43a--integer-diagnostic-cli-slice).
+
 **Готово:** ошибка воспроизводится через interpreter CLI; совместимость существующего вертикального среза подтверждена. Новые формы честно отделены от JIT capability.
 
 ### S2-44. Оформить приёмку
