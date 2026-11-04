@@ -767,4 +767,122 @@ mod tests {
         assert_eq!(wrong_backend.stop, MovMemoryReductionStop::CallbackError);
         assert!(wrong_backend.reduced_fixture.is_none());
     }
+
+    #[test]
+    fn synthetic_native_x86_mismatch_reduces_and_preserves_the_fixture_shape() {
+        let fixture = fixture();
+        let digest = sha256_hex(FIXTURE);
+        let reduction =
+            reduce_mov_memory_fixture_with_native_backend(&fixture, &digest, 132, |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                Ok(result_for_backend(
+                    candidate,
+                    &candidate_digest,
+                    true,
+                    false,
+                    Backend::NativeX86,
+                ))
+            })
+            .unwrap();
+
+        assert_eq!(reduction.stop, MovMemoryReductionStop::Reduced);
+        assert_eq!(reduction.original_fixture, fixture);
+        assert!(reduction.candidate_proposals > 0);
+        assert_eq!(reduction.candidate_runs, reduction.candidate_proposals);
+        assert_eq!(
+            reduction.actual_callbacks,
+            2 + reduction.candidate_runs * 2 + 2
+        );
+        let reduced = reduction.reduced_fixture.as_ref().unwrap();
+        assert!(
+            reduced.initial_state.gpr[0].get().count_ones()
+                < fixture.initial_state.gpr[0].get().count_ones()
+        );
+        assert_eq!(reduced.initial_state.gpr[0].get(), 0);
+        for index in 1..16 {
+            assert_eq!(
+                reduced.initial_state.gpr[index],
+                fixture.initial_state.gpr[index]
+            );
+        }
+        assert_eq!(reduced.initial_state.rip, fixture.initial_state.rip);
+        assert_eq!(reduced.initial_state.rflags, fixture.initial_state.rflags);
+        assert_eq!(reduced.memory, fixture.memory);
+        assert_eq!(reduced.stop_rip, fixture.stop_rip);
+        assert_eq!(reduced.expected_exit, fixture.expected_exit);
+
+        let expected_fingerprint = Some(crate::mov_memory_reducer::MovMemoryFingerprint {
+            wrong_destination_byte_offsets: vec![0],
+        });
+        assert_eq!(reduction.initial_fingerprint, expected_fingerprint);
+        assert_eq!(reduction.final_fingerprint, expected_fingerprint);
+        assert_eq!(reduction.final_hamming_weight, Some(0));
+    }
+
+    #[test]
+    fn native_adapter_fails_closed_on_wrong_backend_for_candidate_and_final_pairs() {
+        let fixture = fixture();
+        let digest = sha256_hex(FIXTURE);
+
+        let mut calls = 0;
+        let wrong_candidate =
+            reduce_mov_memory_fixture_with_native_backend(&fixture, &digest, 132, |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                calls += 1;
+                let backend = if calls <= 2 {
+                    Backend::NativeX86
+                } else {
+                    Backend::Interpreter
+                };
+                Ok(result_for_backend(
+                    candidate,
+                    &candidate_digest,
+                    true,
+                    false,
+                    backend,
+                ))
+            })
+            .unwrap();
+        assert_eq!(wrong_candidate.stop, MovMemoryReductionStop::CallbackError);
+        assert_eq!(wrong_candidate.candidate_proposals, 1);
+        assert!(wrong_candidate.reduced_fixture.is_none());
+
+        let final_pair_start = 2 + fixture.initial_state.gpr[0].get().count_ones() as usize * 2;
+        let mut calls = 0;
+        let wrong_final =
+            reduce_mov_memory_fixture_with_native_backend(&fixture, &digest, 132, |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                let backend = if calls < final_pair_start {
+                    Backend::NativeX86
+                } else {
+                    Backend::Interpreter
+                };
+                calls += 1;
+                Ok(result_for_backend(
+                    candidate,
+                    &candidate_digest,
+                    true,
+                    false,
+                    backend,
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            wrong_final.stop,
+            MovMemoryReductionStop::FinalConfirmationFailed
+        );
+        assert!(wrong_final.reduced_fixture.is_none());
+    }
 }

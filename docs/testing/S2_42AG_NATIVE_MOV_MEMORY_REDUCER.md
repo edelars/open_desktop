@@ -69,3 +69,21 @@ the exact saved-original replay result is
 This validates one bounded native reducer path; it does not demonstrate a CPU
 defect, close parent S2-42, cover the other lettered suites, or establish
 physical Mac acceptance. S2-21, S2-39 and S2-40 remain open.
+
+## Synthetic callback orchestration coverage
+
+The testkit also exercises the native adapter with synthetic callbacks whose
+`RunResult.backend` is `native_x86`. These tests inject one stable wrong byte
+inside the MOV destination qword, then verify the reducer reaches `Reduced`,
+proposes and runs candidate pairs, lowers RAX Hamming weight, preserves the
+initial/final mismatch fingerprint, and leaves the fixture's memory and other
+architectural inputs unchanged. Separate negative cases return an
+interpreter-labelled result during candidate evaluation and final confirmation;
+both fail closed without publishing a reduced fixture.
+
+This is synthetic orchestration coverage only. The callback does not execute
+native x86, and the test does not establish physical/native Linux mismatch
+shrinking. The literal supervised Linux run above still found no initial
+mismatch, so an actual native mismatch reduction remains unverified.
+The focused testkit reducer group now passes 7/7; its command and updated
+source hash are recorded in the linked verification record.

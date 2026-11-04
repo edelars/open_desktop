@@ -24872,7 +24872,8 @@ requirements or parent S2-42. See the
 
 The native adapter passed on Linux x86_64 without changing native admission.
 The `native_v2::tests` group passed 220 tests, the focused supervised child
-dispatch test passed 1, and local MOV reducer tests passed 5. On the literal
+dispatch test passed 1, and local MOV reducer tests passed 7 including synthetic
+NativeX86 candidate/final orchestration. On the literal
 S2-42n fixture, two supervised native callbacks returned identical results;
 the reducer reported `no_initial_mismatch`. Replaying its saved
 `original.case.json` returned `native_x86` / `stop_address` with exit 0.

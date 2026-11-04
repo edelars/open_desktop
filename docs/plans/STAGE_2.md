@@ -8437,10 +8437,16 @@ child evidence и оставшиеся границы
 **Статус:** native adapter существующего S2-42n reducer использует общий
 native-v2 admission и supervisor; interpreter API и admission не расширялись.
 На Linux x86_64 `native_v2::tests` прошёл 220/220; локальные testkit reducer
-tests — 5/5. Smoke на буквальной S2-42n fixture завершился
-`no_initial_mismatch` после двух одинаковых supervised native callbacks; replay
-сохранённого original fixture завершился `stop_address`. Детали и hashes в
+tests — 7/7 после synthetic NativeX86 follow-up. Smoke на буквальной S2-42n
+fixture завершился `no_initial_mismatch` после двух одинаковых supervised
+native callbacks; replay сохранённого original fixture завершился
+`stop_address`. Детали и hashes в
 [S2-42ag protocol and acceptance](../testing/S2_42AG_NATIVE_MOV_MEMORY_REDUCER.md).
+Дополнительный synthetic test slice проверяет NativeX86-labelled callback
+orchestration при стабильном destination-byte mismatch и fail-closed поведение
+для wrong-backend callback на candidate/final парах. Это не физическое/native
+Linux shrinking: callback синтетический, а фактический literal Linux smoke
+по-прежнему не получил initial mismatch.
 Срез не закрыл родителя S2-42 и не выявил CPU mismatch. Поскольку буквальная
 fixture не содержала mismatch, actual native reduction остаётся не проверен;
 physical Mac remains `not_run`.
