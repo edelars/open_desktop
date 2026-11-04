@@ -17527,6 +17527,28 @@ fault/progress reductions. Parent S2-42 and its S2-21/S2-39/S2-40 dependencies
 remain open. See [protocol](../testing/S2_42K_BRANCH_REDUCER.md) and
 [plan](../plans/STAGE_2.md#s2-42k-bounded-forward-jzjnz-nop-deletion-reducer).
 
+## S2-42ah — native adapter for the bounded JZ/JNZ branch reducer
+
+Added a backend-parametrized testkit entry point while retaining the existing
+interpreter wrapper. Native results are required to identify `NativeX86` and
+pass exact fixture identity and snapshot validation. The CLI reuses the
+existing supervised `--native-v2-child` path and journals each callback's
+fixture/result hashes, backend, status, and result path. Report data retains
+candidate decisions, relocation maps, raw original input identity, and replay
+executable/arguments/cwd. Synthetic tests cover accepted native identity and
+rejection of an interpreter result requested as native.
+
+Branch reducer tests passed 11/11, Linux x86_64 `native_v2::tests` passed
+220/220, and Linux-target check/formatting passed. A bounded Linux run of the
+literal S2-42k JZ fixture returned `no_initial_mismatch` after two native
+callbacks; saved-original replay returned `native_x86` / `stop_address`. No
+candidate pair was proposed, so branch NOP shrinking remains unverified.
+`execution_kind` is `unknown`; physical Mac acceptance remains `not_run`.
+Native admission, CPU/JIT behavior, and parent S2-42 are unchanged. See the
+[protocol](../testing/S2_42AH_NATIVE_BRANCH_REDUCER.md),
+[Linux acceptance](S2_42AH_LINUX_ACCEPTANCE.md), and
+[plan](../plans/STAGE_2.md#s2-42ah-native-adapter-for-the-bounded-jzjnz-branch-reducer).
+
 ## S2-42m — deterministic CVTSI2SD interpreter corpus
 
 Added 1,024 fixed-seed fixtures plus nine literal controls for the exact

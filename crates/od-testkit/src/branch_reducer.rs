@@ -173,6 +173,27 @@ pub fn reduce_branch_fixture_with_input_digest<F>(
     original: &Fixture,
     original_input_sha256: &str,
     call_budget: usize,
+    execute: F,
+) -> Result<BranchReduction, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    reduce_branch_fixture_with_backend_input_digest(
+        original,
+        original_input_sha256,
+        call_budget,
+        Backend::Interpreter,
+        execute,
+    )
+}
+
+/// Run the same reducer while requiring every callback to report `backend`.
+/// The callback remains responsible for backend admission and execution.
+pub fn reduce_branch_fixture_with_backend_input_digest<F>(
+    original: &Fixture,
+    original_input_sha256: &str,
+    call_budget: usize,
+    backend: Backend,
     mut execute: F,
 ) -> Result<BranchReduction, String>
 where
@@ -236,7 +257,7 @@ where
         return Ok(report);
     }
     let initial_fingerprint =
-        match fingerprint_pair(original, original_input_sha256, &first, &second) {
+        match fingerprint_pair(original, original_input_sha256, backend, &first, &second) {
             Ok((None, None)) => {
                 report.stop = BranchReductionStop::NoInitialMismatch;
                 return Ok(report);
@@ -300,8 +321,13 @@ where
                 &serde_json::to_vec(&expected_candidate).map_err(|error| error.to_string())?,
             );
             let callbacks_before = report.actual_callbacks;
-            let evaluation =
-                try_candidate(&candidate, &initial_fingerprint, &mut execute, &mut report)?;
+            let evaluation = try_candidate(
+                &candidate,
+                &initial_fingerprint,
+                backend,
+                &mut execute,
+                &mut report,
+            )?;
             let candidate_callback_count = report.actual_callbacks - callbacks_before;
             report.candidate_runs += candidate_callback_count;
             let (decision_status, reason) = match &evaluation.decision {
@@ -412,7 +438,13 @@ where
         report.stop_detail = Some("final interpreter results differ semantically".into());
         return Ok(report);
     }
-    match fingerprint_pair(&current, &current_digest, &final_first, &final_second) {
+    match fingerprint_pair(
+        &current,
+        &current_digest,
+        backend,
+        &final_first,
+        &final_second,
+    ) {
         Ok((Some(left), Some(right))) if left == right && left == initial_fingerprint => {
             report.final_fingerprint = Some(left);
             report.final_nops = Some(current_template.total_nops());
@@ -800,6 +832,7 @@ impl Template {
 fn fingerprint_pair(
     fixture: &Fixture,
     digest: &str,
+    backend: Backend,
     first: &RunResult,
     second: &RunResult,
 ) -> Result<
@@ -810,17 +843,18 @@ fn fingerprint_pair(
     String,
 > {
     Ok((
-        mismatch_fingerprint(fixture, digest, first)?,
-        mismatch_fingerprint(fixture, digest, second)?,
+        mismatch_fingerprint(fixture, digest, backend, first)?,
+        mismatch_fingerprint(fixture, digest, backend, second)?,
     ))
 }
 
 fn mismatch_fingerprint(
     fixture: &Fixture,
     digest: &str,
+    backend: Backend,
     result: &RunResult,
 ) -> Result<Option<BranchMismatchFingerprint>, String> {
-    validate_callback_result(fixture, digest, result)?;
+    validate_callback_result(fixture, digest, backend, result)?;
     let template = validate_branch_fixture(fixture)?;
     let expected_path = expected_path(fixture, template);
     let expected = expected_for_path(fixture, template, digest, expected_path)?;
@@ -859,10 +893,11 @@ fn result_matches(result: &RunResult, expected: &BranchExpectedResult) -> bool {
 fn validate_callback_result(
     fixture: &Fixture,
     digest: &str,
+    backend: Backend,
     result: &RunResult,
 ) -> Result<(), String> {
     if result.profile != Profile::LongIntegerV1
-        || result.backend != Backend::Interpreter
+        || result.backend != backend
         || result.case_id != fixture.case_id
         || result.input_sha256 != digest
     {
@@ -874,7 +909,7 @@ fn validate_callback_result(
     };
     result
         .validate_for(&loaded)
-        .map_err(|error| format!("invalid interpreter result: {error}"))
+        .map_err(|error| format!("invalid {backend:?} result: {error}"))
 }
 
 fn same_semantic_result(left: &RunResult, right: &RunResult) -> bool {
@@ -899,6 +934,7 @@ fn run_result_digest(result: &RunResult) -> Result<String, String> {
 fn try_candidate<F>(
     candidate: &Fixture,
     expected: &BranchMismatchFingerprint,
+    backend: Backend,
     execute: &mut F,
     report: &mut BranchReduction,
 ) -> Result<CandidateEvaluation, String>
@@ -935,28 +971,31 @@ where
             fingerprint: None,
         });
     }
-    let (decision, fingerprint) = match fingerprint_pair(candidate, &digest, &first, &second) {
-        Ok((Some(left), Some(right))) if left == right && left == *expected => {
-            (CandidateDecision::Accept, Some(left))
-        }
-        Ok((None, None)) => (
-            CandidateDecision::Reject(
-                "candidate no longer reproduces an opposite-path mismatch".into(),
+    let (decision, fingerprint) =
+        match fingerprint_pair(candidate, &digest, backend, &first, &second) {
+            Ok((Some(left), Some(right))) if left == right && left == *expected => {
+                (CandidateDecision::Accept, Some(left))
+            }
+            Ok((None, None)) => (
+                CandidateDecision::Reject(
+                    "candidate no longer reproduces an opposite-path mismatch".into(),
+                ),
+                None,
             ),
-            None,
-        ),
-        Ok((Some(left), Some(right))) if left != right => (
-            CandidateDecision::Flaky("candidate branch fingerprints differ between repeats".into()),
-            None,
-        ),
-        Ok((Some(_), Some(_))) | Ok(_) => (
-            CandidateDecision::Reject(
-                "candidate mismatch fingerprint differs from the original".into(),
+            Ok((Some(left), Some(right))) if left != right => (
+                CandidateDecision::Flaky(
+                    "candidate branch fingerprints differ between repeats".into(),
+                ),
+                None,
             ),
-            None,
-        ),
-        Err(error) => (CandidateDecision::Error(error), None),
-    };
+            Ok((Some(_), Some(_))) | Ok(_) => (
+                CandidateDecision::Reject(
+                    "candidate mismatch fingerprint differs from the original".into(),
+                ),
+                None,
+            ),
+            Err(error) => (CandidateDecision::Error(error), None),
+        };
     Ok(CandidateEvaluation {
         decision,
         results: vec![first, second],
@@ -1075,6 +1114,15 @@ mod tests {
     }
 
     fn synthetic_result(fixture: &Fixture, digest: &str, path: BranchPath) -> RunResult {
+        synthetic_result_backend(fixture, digest, path, Backend::Interpreter)
+    }
+
+    fn synthetic_result_backend(
+        fixture: &Fixture,
+        digest: &str,
+        path: BranchPath,
+        backend: Backend,
+    ) -> RunResult {
         let template = super::validate_branch_fixture(fixture).unwrap();
         let expected = super::expected_for_path(fixture, template, digest, path).unwrap();
         serde_json::from_value(json!({
@@ -1082,7 +1130,7 @@ mod tests {
             "case_id": fixture.case_id,
             "input_sha256": digest,
             "profile": fixture.profile,
-            "backend": Backend::Interpreter,
+            "backend": backend,
             "outcome": Outcome::StopAddress {},
             "instructions_executed": {"status": "available", "value": expected.instructions_executed},
             "snapshot": {"status": "available", "value": {
@@ -1235,6 +1283,65 @@ mod tests {
             reduction.initial_results[0].input_sha256
         );
         assert!(reduction.reduced_fixture.is_none());
+    }
+
+    #[test]
+    fn backend_parameter_preserves_native_identity_and_rejects_interpreter_result() {
+        let fixture = template_fixture(BranchOpcode::Jz, true, 1, 0, 0);
+        let digest = sha256_hex(JE_TAKEN);
+        let native = super::reduce_branch_fixture_with_backend_input_digest(
+            &fixture,
+            &digest,
+            4,
+            Backend::NativeX86,
+            |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                let template = super::validate_branch_fixture(candidate).unwrap();
+                let path = super::expected_path(candidate, template);
+                Ok(synthetic_result_backend(
+                    candidate,
+                    &candidate_digest,
+                    path,
+                    Backend::NativeX86,
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(native.stop, BranchReductionStop::NoInitialMismatch);
+        assert!(
+            native
+                .initial_results
+                .iter()
+                .all(|result| result.backend == Backend::NativeX86)
+        );
+
+        let wrong_backend = super::reduce_branch_fixture_with_backend_input_digest(
+            &fixture,
+            &digest,
+            4,
+            Backend::NativeX86,
+            |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                let template = super::validate_branch_fixture(candidate).unwrap();
+                let path = super::expected_path(candidate, template);
+                Ok(synthetic_result_backend(
+                    candidate,
+                    &candidate_digest,
+                    path,
+                    Backend::Interpreter,
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(wrong_backend.stop, BranchReductionStop::UnsupportedMismatch);
     }
 
     #[test]
