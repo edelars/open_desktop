@@ -24,6 +24,7 @@ define a new wire format.
 | [S2-42a/b](TEST_CASE_FORMAT.md#s2-42a-native-xorpd-generated-corpus) | Deterministic exact native-XORPD profile corpus and interpreter callback reducer over initial XMM bytes | Instruction deletion, memory reduction, FP fault or REP handling |
 | [S2-42c](S2_42C_XORPD_CORPUS_HARNESS.md) | Strict saved XORPD corpus orchestration, repeated interpreter/native results and partial failure evidence | New profile admission or completed physical execution |
 | [S2-42d](S2_42D_NATIVE_XORPD_REDUCER.md) | Native callback for the same XMM-only reducer and exact bytewise XOR oracle | A generic schema-v2 reducer or hardware acceptance for other groups |
+| [S2-42l](S2_42L_REP_FAULT_REDUCER.md) | Exact interpreter `#GP(0)` after canonical48-boundary REP STOSB partial progress; AL-only reduction | Injected faults, invented linear fault addresses, native admission, or hardware acceptance |
 
 In particular, XORPD's successful-stop predicate rejects every fault. A future
 fault reducer needs its own predicate; changing the XORPD predicate to accept

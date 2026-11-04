@@ -86,6 +86,10 @@ use od_testkit::native_xorpd::{
     generate_native_xorpd_fixture, native_xorpd_case_id,
     reduce_native_xorpd_fixture_with_input_digest,
 };
+use od_testkit::rep_fault_reducer::{
+    REP_FAULT_REDUCER_DEFAULT_BUDGET, REP_FAULT_REDUCER_MAX_BUDGET, RepFaultReductionStop,
+    reduce_rep_fault_fixture,
+};
 use od_testkit::result::{
     Backend, BuildMetadata, CompletionStatus, CpuSnapshot, ExitReason, GprSnapshot,
     MachineMetadata, Observation, RESULT_SCHEMA_VERSION, RunResult,
@@ -94,6 +98,7 @@ use od_testkit::stack_reducer::{
     STACK_REDUCER_DEFAULT_BUDGET, STACK_REDUCER_MAX_BUDGET, StackReductionStop,
     reduce_stack_fixture_with_input_digest, stack_oracle,
 };
+use od_testkit::v2;
 use od_testkit::{HexU64, sha256_hex};
 
 const EXIT_MISMATCH: u8 = 2;
@@ -103,6 +108,7 @@ const EXIT_HARNESS_FAILURE: u8 = 5;
 
 const NATIVE_XORPD_WORK_DIR: &str = "work/stage2/s2-42a-xorpd";
 const NATIVE_XORPD_REDUCE_WORK_DIR: &str = "work/stage2/s2-42b-xorpd";
+const REP_FAULT_REDUCE_WORK_DIR: &str = "work/stage2/s2-42l-rep-fault";
 const STACK_REDUCE_WORK_DIR: &str = "work/stage2/s2-42g-stack";
 const BRANCH_REDUCE_WORK_DIR: &str = "work/stage2/s2-42k-branch";
 
@@ -793,6 +799,357 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+pub fn reduce_rep_fault(args: &[String]) -> ExitCode {
+    match reduce_rep_fault_inner(args) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("REP fault reducer: {error}");
+            ExitCode::from(EXIT_INVALID_INPUT)
+        }
+    }
+}
+
+fn reduce_rep_fault_inner(args: &[String]) -> Result<ExitCode, String> {
+    let mut input_path = None;
+    let mut output_dir = None;
+    let mut call_budget = REP_FAULT_REDUCER_DEFAULT_BUDGET;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--limit" => {
+                index += 1;
+                call_budget = args
+                    .get(index)
+                    .ok_or("--limit requires an integer")?
+                    .parse()
+                    .map_err(|_| "--limit must be an integer")?;
+            }
+            "--output-dir" => {
+                index += 1;
+                output_dir = Some(
+                    args.get(index)
+                        .ok_or("--output-dir requires a path")?
+                        .clone(),
+                );
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown REP fault reducer option: {value}"));
+            }
+            value if input_path.is_none() => input_path = Some(value.to_string()),
+            value => return Err(format!("unexpected REP fault reducer argument: {value}")),
+        }
+        index += 1;
+    }
+    let input_path = input_path
+        .ok_or("usage: od-runner --reduce-rep-fault <fixture> [--limit N] [--output-dir DIR]")?;
+    if !(4..=REP_FAULT_REDUCER_MAX_BUDGET).contains(&call_budget) {
+        return Err(format!(
+            "--limit must be 4..={REP_FAULT_REDUCER_MAX_BUDGET}"
+        ));
+    }
+    let output_relative = std::path::PathBuf::from(output_dir.unwrap_or_else(|| {
+        format!(
+            "{REP_FAULT_REDUCE_WORK_DIR}/{}",
+            std::path::Path::new(&input_path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )
+    }));
+    validate_rep_fault_output_dir(&output_relative)?;
+    let output_path = workspace_root().join(&output_relative);
+    let original_bytes =
+        read_file_bounded(&input_path, v2::MAX_FIXTURE_JSON_BYTES, "fixture JSON")?;
+    let loaded = v2::Fixture::from_json(&original_bytes)
+        .map_err(|error| format!("invalid strict-schema fixture: {error}"))?;
+    // Reject an unsupported profile before creating evidence artifacts.
+    let expected_original = serde_json::to_vec_pretty(
+        &od_testkit::rep_fault_reducer::rep_fault_oracle(&loaded.fixture, &loaded.input_sha256)?,
+    )
+    .map_err(|error| error.to_string())?;
+    fs::create_dir_all(
+        output_path
+            .parent()
+            .ok_or("output directory has no parent")?,
+    )
+    .map_err(|error| format!("could not create output parent: {error}"))?;
+    fs::create_dir(&output_path)
+        .map_err(|error| format!("could not create fresh output directory: {error}"))?;
+    let output_path = fs::canonicalize(&output_path)
+        .map_err(|error| format!("could not canonicalize output directory: {error}"))?;
+    let callback_dir = output_path.join("callbacks");
+    let candidates_dir = callback_dir.join("candidates");
+    fs::create_dir(&callback_dir)
+        .map_err(|error| format!("could not create callback evidence directory: {error}"))?;
+    fs::create_dir(&candidates_dir)
+        .map_err(|error| format!("could not create candidate evidence directory: {error}"))?;
+    write_new(output_path.join("original.case.json"), &original_bytes)?;
+    write_new(
+        output_path.join("expected-original.json"),
+        &expected_original,
+    )?;
+    let mut callback_sequence = 0usize;
+    let mut repeat_counts = HashMap::<String, usize>::new();
+    let mut saved_candidates = HashSet::<String>::new();
+    let reduction = reduce_rep_fault_fixture(
+        &loaded.fixture,
+        &loaded.input_sha256,
+        call_budget,
+        |candidate| {
+            callback_sequence += 1;
+            let is_original = candidate == &loaded.fixture;
+            let bytes = if is_original {
+                original_bytes.clone()
+            } else {
+                candidate.to_json().map_err(|error| error.to_string())?
+            };
+            let candidate_sha256 = sha256_hex(&bytes);
+            let relative = if is_original {
+                std::path::PathBuf::from("original.case.json")
+            } else {
+                std::path::PathBuf::from("callbacks/candidates")
+                    .join(format!("{candidate_sha256}.case.json"))
+            };
+            if !is_original && saved_candidates.insert(candidate_sha256.clone()) {
+                write_new(output_path.join(&relative), &bytes)?;
+            }
+            let repeat = repeat_counts.entry(candidate_sha256.clone()).or_default();
+            *repeat += 1;
+            let run = if is_original {
+                run_rep_fault_interpreter(&loaded)
+            } else {
+                match v2::Fixture::from_json(&bytes) {
+                    Ok(candidate_loaded) => run_rep_fault_interpreter(&candidate_loaded),
+                    Err(error) => {
+                        let record = serde_json::json!({"sequence":callback_sequence,"fixture_sha256":candidate_sha256,
+                        "fixture":relative,"repeat":*repeat,"backend":"interpreter","status":"invalid_candidate","error":error.to_string()});
+                        write_callback_record(&callback_dir, callback_sequence, &record)?;
+                        return Err(format!("candidate failed strict validation: {error}"));
+                    }
+                }
+            };
+            let result = match run {
+                Ok(result) => result,
+                Err(error) => {
+                    let record = serde_json::json!({"sequence":callback_sequence,"fixture_sha256":candidate_sha256,
+                    "fixture":relative,"repeat":*repeat,"backend":"interpreter","status":"harness_error","error":error});
+                    write_callback_record(&callback_dir, callback_sequence, &record)?;
+                    return Err(error);
+                }
+            };
+            let result_bytes = match result.to_json() {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let record = serde_json::json!({
+                        "sequence": callback_sequence,
+                        "fixture_sha256": candidate_sha256,
+                        "fixture": relative,
+                        "repeat": *repeat,
+                        "backend": "interpreter",
+                        "status": "invalid_result",
+                        "error": error.to_string()
+                    });
+                    write_callback_record(&callback_dir, callback_sequence, &record)?;
+                    return Err(format!(
+                        "interpreter result failed strict serialization: {error}"
+                    ));
+                }
+            };
+            let result_relative = std::path::PathBuf::from("callbacks")
+                .join(format!("run-{callback_sequence:06}.result.json"));
+            write_new(output_path.join(&result_relative), &result_bytes)?;
+            let record = serde_json::json!({"sequence":callback_sequence,"fixture_sha256":candidate_sha256,
+            "fixture":relative,"repeat":*repeat,"backend":result.backend,"status":"completed",
+            "outcome":result.outcome,"result_sha256":sha256_hex(&result_bytes),"result":result_relative});
+            write_callback_record(&callback_dir, callback_sequence, &record)?;
+            Ok(result)
+        },
+    )?;
+    for (index, result) in reduction.initial_results.iter().enumerate() {
+        write_new(
+            output_path.join(format!("initial-{}.result.json", index + 1)),
+            &result.to_json().map_err(|error| error.to_string())?,
+        )?;
+    }
+    for (index, result) in reduction.final_results.iter().enumerate() {
+        write_new(
+            output_path.join(format!("final-{}.result.json", index + 1)),
+            &result.to_json().map_err(|error| error.to_string())?,
+        )?;
+    }
+    let reduced_bytes = reduction
+        .reduced_fixture
+        .as_ref()
+        .map(|fixture| rep_fault_reduced_fixture_bytes(&loaded.fixture, fixture, &original_bytes))
+        .transpose()?;
+    let mut expected_reduced_sha256 = None;
+    if let Some(bytes) = &reduced_bytes {
+        write_new(output_path.join("reduced.case.json"), bytes)?;
+        let expected = serde_json::to_vec_pretty(
+            reduction
+                .expected_reduced
+                .as_ref()
+                .ok_or("missing reduced oracle")?,
+        )
+        .map_err(|error| error.to_string())?;
+        expected_reduced_sha256 = Some(sha256_hex(&expected));
+        write_new(output_path.join("expected-reduced.json"), &expected)?;
+    }
+    let runner = std::env::current_exe()
+        .map_err(|error| error.to_string())?
+        .canonicalize()
+        .map_err(|error| error.to_string())?
+        .display()
+        .to_string();
+    let original_artifact = output_path.join("original.case.json");
+    let reduced_artifact = output_path.join("reduced.case.json");
+    let argv_original = vec![
+        runner.clone(),
+        "--fixture".into(),
+        original_artifact.display().to_string(),
+        "--engine".into(),
+        "interpreter".into(),
+        "--json".into(),
+    ];
+    let argv_reduced = reduced_bytes.as_ref().map(|_| {
+        vec![
+            runner.clone(),
+            "--fixture".into(),
+            reduced_artifact.display().to_string(),
+            "--engine".into(),
+            "interpreter".into(),
+            "--json".into(),
+        ]
+    });
+    let argv_reducer = vec![
+        runner.clone(),
+        "--reduce-rep-fault".into(),
+        input_path.clone(),
+        "--limit".into(),
+        call_budget.to_string(),
+        "--output-dir".into(),
+        output_relative.display().to_string(),
+    ];
+    let command = |argv: &[String]| {
+        argv.iter()
+            .map(|argument| shell_quote(argument))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let report = serde_json::json!({
+        "report_version":1,"reducer":od_testkit::rep_fault_reducer::REP_FAULT_REDUCER_VERSION,
+        "profile":"s2-long-integer-v1","source_fixture":input_path,"original_sha256":sha256_hex(&original_bytes),
+        "provenance":loaded.fixture.provenance,"revision":local_revision_at(&workspace_root()),
+        "toolchain":local_rustc_version(),
+        "build_metadata":reduction.initial_results.first().map(|result| &result.build),
+        "machine_metadata":reduction.initial_results.first().map(|result| &result.machine),
+        "build_options":{"profile":reduction.initial_results.first().map(|result| &result.build.profile),
+            "target":reduction.initial_results.first().map(|result| &result.build.target),
+            "features":"workspace defaults; runner does not expose an active feature list",
+            "rustflags":"unavailable from runner result"},
+        "reduced_sha256":reduced_bytes.as_ref().map(|bytes|sha256_hex(bytes)),"stop_reason":reduction.stop,
+        "stop_detail":reduction.stop_detail,"initial_fingerprint":reduction.initial_fingerprint,
+        "final_fingerprint":reduction.final_fingerprint,"call_budget":call_budget,
+        "actual_callbacks":reduction.actual_callbacks,"callback_records":callback_sequence,
+        "candidate_fixtures_saved":saved_candidates.len(),"candidate_proposals":reduction.candidate_proposals,
+        "candidate_runs":reduction.candidate_runs,"accepted_candidates":reduction.accepted_candidates,
+        "initial_hamming_weight":reduction.initial_hamming_weight,"final_hamming_weight":reduction.final_hamming_weight,
+        "expected_original_sha256":sha256_hex(&expected_original),"expected_reduced_sha256":expected_reduced_sha256,
+        "result_sha256":{"initial":reduction.initial_results.iter().map(|result|result.to_json().map(|bytes|sha256_hex(&bytes))).collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())?,
+            "final":reduction.final_results.iter().map(|result|result.to_json().map(|bytes|sha256_hex(&bytes))).collect::<Result<Vec<_>,_>>().map_err(|error|error.to_string())?},
+        "replay":{"working_directory":std::env::current_dir().map_err(|error|error.to_string())?.canonicalize().map_err(|error|error.to_string())?,
+            "argv_original":argv_original,"command_original":command(&argv_original),
+            "argv_reduced":argv_reduced,"command_reduced":argv_reduced.as_ref().map(|argv|command(argv)),
+            "argv_reducer":argv_reducer,"command_reducer":command(&argv_reducer)},
+        "native":"not_run","physical_hardware":"not_run",
+        "output_files":{"original_fixture":"original.case.json","initial_results":reduction.initial_results.len(),
+            "final_results":reduction.final_results.len(),"callback_evidence":"callbacks/","expected_original":true,
+            "reduced_fixture":reduced_bytes.is_some(),"expected_reduced":expected_reduced_sha256.is_some()}
+    });
+    write_new(
+        output_path.join("report.json"),
+        &serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
+    )?;
+    println!(
+        "REP fault reducer: {:?}; callbacks={}; output={}",
+        reduction.stop,
+        reduction.actual_callbacks,
+        output_path.display()
+    );
+    Ok(
+        if matches!(
+            reduction.stop,
+            RepFaultReductionStop::CallbackBudgetExhausted
+                | RepFaultReductionStop::CallbackError
+                | RepFaultReductionStop::FlakyInitial
+                | RepFaultReductionStop::FlakyCandidate
+                | RepFaultReductionStop::FinalConfirmationFailed
+        ) {
+            ExitCode::from(EXIT_HARNESS_FAILURE)
+        } else {
+            ExitCode::SUCCESS
+        },
+    )
+}
+
+fn validate_rep_fault_output_dir(path: &std::path::Path) -> Result<(), String> {
+    use std::path::Component;
+    let parts = path.components().collect::<Vec<_>>();
+    let allowed = ["work", "stage2", "s2-42l-rep-fault"];
+    if parts.len() <= allowed.len()
+        || parts
+            .iter()
+            .any(|part| !matches!(part, Component::Normal(_)))
+        || parts
+            .iter()
+            .take(allowed.len())
+            .zip(allowed)
+            .any(|(part, expected)| *part != Component::Normal(std::ffi::OsStr::new(expected)))
+    {
+        return Err(format!(
+            "--output-dir must be a new child directory under {REP_FAULT_REDUCE_WORK_DIR}"
+        ));
+    }
+    let mut prefix = workspace_root();
+    for component in parts {
+        prefix.push(component.as_os_str());
+        match fs::symlink_metadata(&prefix) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!(
+                    "--output-dir contains a symlink: {}",
+                    prefix.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => return Err(format!("could not inspect output path: {error}")),
+        }
+    }
+    Ok(())
+}
+
+fn run_rep_fault_interpreter(loaded: &v2::LoadedFixture) -> Result<v2::RunResult, String> {
+    let mut memory = od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture)
+        .map_err(|error| error.to_string())?;
+    let result = execute_fixture_v2(loaded, &mut memory);
+    result
+        .validate_for(loaded)
+        .map_err(|error| format!("invalid interpreter result: {error}"))?;
+    Ok(result)
+}
+
+fn rep_fault_reduced_fixture_bytes(
+    original: &v2::Fixture,
+    reduced: &v2::Fixture,
+    original_bytes: &[u8],
+) -> Result<Vec<u8>, String> {
+    if reduced == original {
+        Ok(original_bytes.to_vec())
+    } else {
+        reduced.to_json().map_err(|error| error.to_string())
+    }
 }
 
 pub fn reduce_push_pop(args: &[String]) -> ExitCode {
@@ -18876,5 +19233,44 @@ mod cvtdq2ps_m128_unmasked_profile_tests {
             let status = super::run_fixture_v2(bytes, backend);
             assert_eq!(format!("{status:?}"), format!("{unsupported:?}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod rep_fault_reducer_evidence_tests {
+    #[test]
+    fn unchanged_reduced_fixture_retains_noncanonical_original_bytes_and_digest() {
+        let bytes = include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_42l_rep_stosb_canonical48_gp.case.json"
+        );
+        let loaded = crate::test_cli::v2::Fixture::from_json(bytes).unwrap();
+        let mut noncanonical = b" \n".to_vec();
+        noncanonical.extend_from_slice(bytes);
+        let reparsed = crate::test_cli::v2::Fixture::from_json(&noncanonical).unwrap();
+        assert_eq!(reparsed.fixture, loaded.fixture);
+        let unchanged = super::rep_fault_reduced_fixture_bytes(
+            &loaded.fixture,
+            &reparsed.fixture,
+            &noncanonical,
+        )
+        .unwrap();
+        assert_eq!(unchanged, noncanonical);
+        assert_eq!(od_testkit::sha256_hex(&unchanged), reparsed.input_sha256);
+
+        let mut changed = loaded.fixture.clone();
+        changed.initial_state.gpr[0] = od_testkit::HexU64(0x1122_3344_5566_7700);
+        let changed_bytes =
+            super::rep_fault_reduced_fixture_bytes(&loaded.fixture, &changed, &noncanonical)
+                .unwrap();
+        assert_ne!(
+            od_testkit::sha256_hex(&changed_bytes),
+            reparsed.input_sha256
+        );
+        assert_eq!(
+            crate::test_cli::v2::Fixture::from_json(&changed_bytes)
+                .unwrap()
+                .fixture,
+            changed
+        );
     }
 }

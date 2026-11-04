@@ -1,5 +1,8 @@
 //! Real CLI/interpreter checks; expected values are hand-calculated from Intel SDM 093.
 use od_testkit::HexU64;
+use od_testkit::rep_fault_reducer::{
+    RepFaultReductionStop, reduce_rep_fault_fixture, rep_fault_oracle,
+};
 use od_testkit::result::{Backend, MemoryRegionSnapshot, Observation};
 use od_testkit::v2::{
     CmpsdMemoryRaxControlSnapshot, CmpssMemoryRaxControlSnapshot, ComissUcomissControlSnapshot,
@@ -10840,6 +10843,130 @@ fn rep_stosb_cli_fixtures_preserve_full_state_and_one_instruction_retirement() {
             );
         }
     }
+}
+
+#[test]
+fn rep_fault_boundary_cli_and_al_reducer_preserve_only_destination_mismatch() {
+    let raw = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_42l_rep_stosb_canonical48_gp.case.json"
+    );
+    let (loaded, literal) = run(raw, "interpreter", 0);
+    let snapshot = snapshot(&literal);
+    assert!(matches!(literal.outcome, Outcome::Exception {}));
+    assert_eq!(
+        literal.instructions_executed,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert_eq!(snapshot.state.rip, loaded.fixture.initial_state.rip);
+    assert_eq!(snapshot.state.gpr[1], HexU64(1));
+    assert_eq!(snapshot.state.gpr[7], HexU64(0x0000_8000_0000_0000));
+    assert_eq!(snapshot.memory[1].bytes_hex, "fefe");
+    let Observation::Available {
+        value: Some(exception),
+    } = &snapshot.exception
+    else {
+        panic!("missing exception")
+    };
+    assert_eq!(exception.vector, 13);
+    assert_eq!(
+        exception.error_code,
+        Observation::Available { value: HexU64(0) }
+    );
+    assert_eq!(exception.faulting_rip, loaded.fixture.initial_state.rip);
+    assert!(!exception.fault_address.is_available());
+
+    let original_digest = loaded.input_sha256.clone();
+    let original_case = loaded.fixture.clone();
+    let template = literal.clone();
+    let reduction = reduce_rep_fault_fixture(&original_case, &original_digest, 20, |candidate| {
+        let bytes = candidate.to_json().map_err(|error| error.to_string())?;
+        let digest = if candidate == &original_case {
+            original_digest.clone()
+        } else {
+            od_testkit::sha256_hex(&bytes)
+        };
+        let expected = rep_fault_oracle(candidate, &digest)?;
+        let mut result = template.clone();
+        result.input_sha256 = digest;
+        result.case_id = candidate.case_id.clone();
+        result.outcome = expected.outcome;
+        result.instructions_executed = Observation::Available {
+            value: expected.instructions_executed,
+        };
+        let Observation::Available { value } = &mut result.snapshot else {
+            return Err("template snapshot unavailable".into());
+        };
+        value.state = expected.state;
+        value.rflags_defined = expected.rflags_defined;
+        value.memory = expected.memory;
+        value.exception = Observation::Available {
+            value: Some(expected.exception),
+        };
+        let data = value
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "data")
+            .ok_or("data missing")?;
+        let mut destination = data
+            .bytes_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                u8::from_str_radix(
+                    std::str::from_utf8(pair).map_err(|error| error.to_string())?,
+                    16,
+                )
+                .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        destination[0] ^= 1;
+        data.bytes_hex = destination
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Ok(result)
+    })
+    .unwrap();
+    assert_eq!(
+        reduction.stop,
+        RepFaultReductionStop::Reduced,
+        "{:?}",
+        reduction.stop_detail
+    );
+    assert_eq!(
+        reduction
+            .initial_fingerprint
+            .unwrap()
+            .wrong_destination_byte_positions,
+        [0]
+    );
+    assert_eq!(
+        reduction
+            .final_fingerprint
+            .unwrap()
+            .wrong_destination_byte_positions,
+        [0]
+    );
+    assert_eq!(reduction.actual_callbacks, 18);
+    assert_eq!(reduction.candidate_proposals, 7);
+    assert_eq!(reduction.accepted_candidates, 7);
+    assert_eq!(reduction.final_hamming_weight, Some(0));
+    assert_eq!(
+        reduction.reduced_fixture.unwrap().initial_state.gpr[0].get(),
+        0x1122_3344_5566_7700
+    );
+
+    let mut drift = template;
+    let Observation::Available { value } = &mut drift.snapshot else {
+        panic!("template snapshot unavailable")
+    };
+    value.state.gpr[1] = HexU64(2);
+    let rejected =
+        reduce_rep_fault_fixture(&original_case, &original_digest, 20, |_| Ok(drift.clone()))
+            .unwrap();
+    assert_eq!(rejected.stop, RepFaultReductionStop::CallbackError);
+    assert!(rejected.initial_fingerprint.is_none());
+    assert!(rejected.reduced_fixture.is_none());
 }
 
 #[test]
