@@ -273,11 +273,16 @@ is added. All four physical cases and integration are `not_run`; S2-41 stays ope
 
 ## S2-39j successful CPL3 FXSAVE64 protocol
 
-The documentation-only [S2-39j protocol](S2_39J_FXSAVE64_ORACLE.md) specifies
+The [S2-39j protocol](S2_39J_FXSAVE64_ORACLE.md), originally delivered as
+documentation only before the 2026-11-04 acceptance run, specifies
 successful CPL3 cases for exact `48 0F AE 40 40`, with independent literal
 XMM0–15/MXCSR setup, raw dumps and MOVDQU/STMXCSR observations. It compares
 defined MXCSR/XMM bytes and the software tail, records host MXCSR_MASK without
 synthetic-mask equality, and excludes undefined/reserved and unprepared x87
 fields. No full-image equality or hardware callback/atomicity assertion is
-made. A/B repeats are `not_run`; harness implementation, review and native
-admission remain future work. S2-39 and physical acceptance remain open.
+made. The separate [S2-39k harness](S2_39K_FXSAVE64_ORACLE.md) is implemented;
+one Linux native A/B/A/B run passed after linked-code/ABI inspection on
+2026-11-04. The [acceptance report](../reports/S2_39K_LINUX_ACCEPTANCE.md)
+records all four observations and preserves raw `execution_kind=unknown`.
+General fixture/native admission is unchanged. S2-39 and separately established
+physical acceptance remain open.

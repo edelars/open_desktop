@@ -1,9 +1,11 @@
 # S2-39j — successful CPL3 FXSAVE64 oracle protocol
 
-**Status:** documentation-only protocol for a future independent harness.
-Cases A and B, all repeats and physical acceptance are `not_run`. No executable
-harness, fixture/profile admission, CPU implementation or native/JIT support
-is added. Parent S2-39 and Stage 2 remain open.
+**Status:** normative protocol for the separate S2-39k independent harness.
+Cases A/B/A/B passed on Linux x86_64 on 2026-11-04 after linked-code/ABI
+inspection; see the [acceptance report](../reports/S2_39K_LINUX_ACCEPTANCE.md).
+Raw `execution_kind=unknown` is preserved; separately established physical
+acceptance, parent S2-39 and Stage 2 remain open. This protocol document
+does not itself add fixture admission, CPU implementation or JIT support.
 
 ## Scope and sources
 
@@ -45,7 +47,12 @@ verify the executable bytes at `[E,E+5)` exactly match the five bytes above.
 | Guard `[D+512,D+544)` | `C3` repeated | `3C` repeated |
 | Successful next instruction address | `E+5` | `E+5` |
 | Completed instruction under test | exactly one | exactly one |
-| Hardware result | `not_run` | `not_run` |
+| Linux native result, 2026-11-04 | passed, repetitions 0 and 2 | passed, repetitions 1 and 3 |
+| Independently established physical acceptance | open (`execution_kind=unknown`) | open (`execution_kind=unknown`) |
+
+Before 2026-11-04 this protocol had no executed-case evidence. The
+[S2-39k acceptance report](../reports/S2_39K_LINUX_ACCEPTANCE.md) records the
+subsequent Linux native A/B/A/B run; raw `execution_kind=unknown` is preserved.
 
 Both MXCSR values keep exception masks set and reserved bits, DAZ and FTZ
 clear; B changes rounding control. No arithmetic result is used to derive an
@@ -168,10 +175,11 @@ never average, discard or mask a disagreement. Record:
 
 The dedicated S2-39k harness implementation is described in
 [S2_39K_FXSAVE64_ORACLE.md](S2_39K_FXSAVE64_ORACLE.md). This protocol remains
-normative for its cases and comparison rules; its hardware repetitions remain
-`not_run` until the harness is run on a supported Linux x86_64 host and the
-emitted-code/ABI review is complete. It may feed the combined final Mac mini
-hardware substage only after those prerequisites.
+normative for its cases and comparison rules. One A/B/A/B Linux native run
+passed after emitted-code/ABI inspection on 2026-11-04; see the separate
+[acceptance report](../reports/S2_39K_LINUX_ACCEPTANCE.md). Its raw
+`execution_kind=unknown` remains unchanged, and separately established physical
+Mac acceptance remains open.
 See [CPU oracle boundaries](CPU_ORACLE.md), the
 [S2-40a matrix](../reports/STAGE_2_LINUX_PROFILE.md#s2-40a--матрица-требований-ubuntu-generic-amd64)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-39j-successful-cpl3-fxsave64-oracle-protocol).

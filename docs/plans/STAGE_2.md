@@ -709,8 +709,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39f | Exact FXSAVE64 `[RAX+0x40]` CR0.EM/TS `#NM` gates | S2-39d; other forms and physical acceptance remain open |
 | [x] | S2-39g | Exact FXRSTOR64 `[RBX+0x40]` CR0.EM/TS `#NM` gates | S2-39e/f; other forms and physical acceptance remain open |
 | [x] | S2-39h | Exact 33-byte S2-25c + FXSAVE64 composition, nine retirements, strict synthetic save image | S2-25c, S2-39d/f; interpreter only; hardware remains not_run |
-| [x] | S2-39j | Successful CPL3 FXSAVE64 oracle protocol | Independent protocol review and layout/link checks recorded; physical execution remains `not_run` |
-| [x] | S2-39k | Bounded executable CPL3 FXSAVE64 oracle | Linux-only isolated ptrace tracee + raw evidence validator; rejected attempts preserve partial tracee output/status and earlier repetitions; pre-entry setup failures are `not_run`; testkit regression covers partial retention, stop-snapshot coherence and status classification; Linux x86_64 `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline` passes; final cross-target build blocked at Darwin Apple linker (`--as-needed`, `-Bstatic`, `--gc-sections`, `-z`); linked-binary inspection, Linux runtime/ptrace and physical hardware execution remain `not_run`; [report](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle) |
+| [x] | S2-39j | Successful CPL3 FXSAVE64 oracle protocol | Protocol review and layout/link checks recorded; originally protocol-only. S2-39k Linux native A/B/A/B passed on 2026-11-04; raw `execution_kind=unknown`, separately established physical acceptance remains open; [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
+| [x] | S2-39k | Bounded executable CPL3 FXSAVE64 oracle | Linux-only isolated ptrace tracee + raw evidence validator; rejected attempts preserve partial output and earlier repetitions; pre-entry setup failures remain `not_run`. Linked-binary/ABI inspection and one Linux x86_64 A/B/A/B acceptance passed on 2026-11-04 (4/4 observations, exit 0); raw `execution_kind=unknown`, separate physical Mac acceptance and parent S2-39 remain open. [Implementation](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle); [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
@@ -8299,12 +8299,15 @@ retirements остаются. STOP, exhausted budget и truncated fetch не ч�
 
 #### S2-39j. Successful CPL3 FXSAVE64 oracle protocol
 
-**Статус:** documentation-only protocol prepared for exact S2-39d
+**Статус:** originally delivered as a documentation-only protocol for exact S2-39d
 `48 0F AE 40 40`. [Method](../testing/S2_39J_FXSAVE64_ORACLE.md) defines two
 literal XMM0–15/MXCSR cases, different image canaries, independent observations
 and byte-range comparison boundaries. It records host MXCSR_MASK without
-asserting synthetic target equality. Hardware cases/repeats are `not_run`;
-the executable harness is the follow-on S2-39k.
+asserting synthetic target equality. Before 2026-11-04 this protocol had no
+executed-case evidence. The separate S2-39k harness is now implemented and
+[Linux native A/B/A/B passed](../reports/S2_39K_LINUX_ACCEPTANCE.md) on
+2026-11-04 after linked-code/ABI inspection. Raw `execution_kind=unknown`
+is preserved; separately established physical acceptance remains open.
 EM/TS/OSFXSR gates, faults, x87 source cases and FXRSTOR remain outside this
 slice; parent S2-39 remains open. See [delivery report](../reports/STAGE_2_REPORT.md#s2-39j--successful-cpl3-fxsave64-oracle-protocol).
 
@@ -8332,7 +8335,7 @@ corruption, unexpected signals and incorrect stop addresses. Do not add
 FXRSTOR, privileged gates/faults, general CPU semantics, production-profile
 admission, JIT or machine integration.
 
-Delivery status and verification limits are in the [S2-39k report](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle). Linux x86_64 all-target `cargo check` now type-checks after the ISSUE-029 initializer fix; it does not link the final runner binary. This Darwin arm64 host cannot execute the Linux ptrace/runtime path or establish physical hardware acceptance; those remain `not_run`.
+Delivery status and verification limits are in the [S2-39k report](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle). The prior Darwin cross-target check did not establish runtime evidence. On 2026-11-04, final linked-binary/ABI inspection and one A/B/A/B run passed on Linux x86_64 with 4/4 observations and exit 0; see [acceptance evidence](../reports/S2_39K_LINUX_ACCEPTANCE.md). Raw `execution_kind=unknown` is preserved; separately established physical Mac acceptance and parent S2-39 remain open.
 
 ### S2-40. Дополнительные обязательные расширения
 

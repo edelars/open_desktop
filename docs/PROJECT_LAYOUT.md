@@ -89,8 +89,11 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 x86_64 harness S2-39k размещены в
 [docs/testing/S2_39J_FXSAVE64_ORACLE.md](testing/S2_39J_FXSAVE64_ORACLE.md) и
 [docs/testing/S2_39K_FXSAVE64_ORACLE.md](testing/S2_39K_FXSAVE64_ORACLE.md).
-Harness не меняет native fixture admission; physical hardware cases остаются
-`not_run` до запуска на поддерживаемом host.
+Отдельный результат Linux runtime/ptrace acceptance 2026-11-04 записан в
+[docs/reports/S2_39K_LINUX_ACCEPTANCE.md](reports/S2_39K_LINUX_ACCEPTANCE.md);
+raw evidence остаётся в ignored `work/stage2/s2-39k-acceptance-20261104-01/`.
+Harness не меняет native fixture admission. Linux native A/B/A/B прошёл;
+raw `execution_kind=unknown`, отдельная physical acceptance остаётся открытой.
 
 Не копировать одну реализацию в несколько этих мест. Например, disk parser — в `od-storage`, а `image-tool` лишь использует его; x86 interpreter — в `od-isa`, а `runner` управляет запуском.
 

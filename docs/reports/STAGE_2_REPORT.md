@@ -24258,9 +24258,13 @@ and software-tail bytes; raw MXCSR_MASK is CPU-specific evidence, while
 reserved/unused bytes and unprepared x87 fields are excluded. Independent
 MOVDQU/STMXCSR observations and raw dumps avoid the production serializer.
 
-This delivers a future method, not a harness or experimental result. Hardware
-cases/repeats are `not_run`; no CPU tests, physical run, Mac mini/SSH, native
-admission, gates/faults or FXRSTOR work was performed. Parent S2-39 stays open.
+The original S2-39j delivery was protocol-only, with no executed-case evidence
+before 2026-11-04. It did not itself add a harness, native admission,
+gates/faults or FXRSTOR. The separate S2-39k implementation subsequently passed
+one Linux native A/B/A/B run on 2026-11-04 after linked-code/ABI inspection;
+see the [acceptance report](S2_39K_LINUX_ACCEPTANCE.md). Raw
+`execution_kind=unknown` is preserved; separately established physical
+acceptance and parent S2-39 remain open.
 `git diff --check` and targeted validation of all 15 added local links/anchors
 passed. The 16×2 literal XMM table passed byte-length, byte-order and
 within-case distinctness checks. The isolated worktree layout check reported
@@ -24318,9 +24322,14 @@ compiled for this target. Disassembly confirms `48 0f ae 40 40` at E followed
 by `cc` at E+5. The worktree layout check reports only its known worktree
 metadata `.git` pointer as an unmapped root file.
 
-No final linked Linux oracle binary inspection, Linux runtime, ptrace oracle
-execution, or physical/hardware observation occurred on this host; each remains
-`not_run`. Testkit regressions round-trip completed plus partial rejected
+The original Darwin validation did not include final linked Linux binary
+inspection or Linux runtime/ptrace execution. On 2026-11-04 the existing Linux
+x86_64 ELF passed linked-code/ABI inspection and one A/B/A/B native oracle run
+(4/4 observations, exit 0, unchanged binary SHA-256). The separate
+[acceptance report](S2_39K_LINUX_ACCEPTANCE.md) records the exact binary, dirty
+checkout provenance, ignored raw evidence and scope. Raw `execution_kind=unknown`
+is preserved; separately established physical Mac acceptance remains open.
+Testkit regressions round-trip completed plus partial rejected
 evidence, validate setup-level `not_run` evidence and attempted-run rejection,
 exercise cleared snapshots
 when register/siginfo reads or a new wait fail, and reject inconsistent raw

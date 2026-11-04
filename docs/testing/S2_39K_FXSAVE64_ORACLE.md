@@ -1,9 +1,11 @@
 # S2-39k — bounded CPL3 FXSAVE64 oracle implementation
 
 **Status:** Linux x86_64 harness and independent evidence comparator are
-implemented. Execution on this Darwin arm64 host is unavailable; all hardware
-observations remain `not_run`. Do not treat cross-target compilation or static
-disassembly as physical evidence.
+implemented. One A/B/A/B Linux native run passed on 2026-11-04 after final
+linked-code/ABI inspection (4/4 observations, exit 0); see the separate
+[acceptance report](../reports/S2_39K_LINUX_ACCEPTANCE.md). Raw
+`execution_kind=unknown` is preserved; separately established physical Mac
+acceptance remains open. Cross-target compilation alone is not runtime evidence.
 
 ## Scope and run
 
@@ -97,8 +99,10 @@ inputs, image, and guards.
 
 ## Verification status and limits
 
-This host is Darwin arm64, so Linux runtime/ptrace execution and physical or
-virtual hardware evidence remain `not_run`. The Linux x86_64 target `cargo
+The original implementation validation was on Darwin arm64 and did not run
+the Linux runtime/ptrace path. The separate 2026-11-04 Linux acceptance above
+now supplies bounded native observations; its physical/virtual classification
+remains `unknown`. The Linux x86_64 target `cargo
 check` passes for all targets with
 `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
 --offline`. This check type-checks the runner and tests but does not link the
@@ -113,8 +117,9 @@ current compiler raw-pointer lint in the S2-39k setup was satisfied with an
 explicit mutable reference to the existing XMM input array field. The
 independent `global_asm!` strings were extracted and assembled by Apple clang
 for ELF x86_64; disassembly shows `48 0f ae 40 40` at E and `cc` at E+5. Final
-Linux binary inspection, ptrace runtime, and hardware behavior remain
-unverified.
+Linux binary inspection and ptrace runtime were unverified in that original
+Darwin delivery; the subsequent bounded Linux acceptance is recorded separately
+above and does not establish the broader parent S2-39 scope.
 
 No interpreter integration, native profile widening, FXRSTOR, privileged
 gates/faults, JIT, or machine integration is added. Parent S2-39 remains open.
