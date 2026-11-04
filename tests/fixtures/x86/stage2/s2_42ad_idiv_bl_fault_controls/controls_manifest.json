@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "profile": "s2-long-integer-v1",
+  "control_count": 8,
+  "fixtures": [
+    {
+      "case_id": "s2_42ad_idiv_bl_fault_c00",
+      "fixture_sha256": "de089cd5d9e573fddf1f7385314f4e337346969f02dc9d948de81cdb03462400",
+      "expected_sha256": "52be4e45e073e64b196e39de6a2969561c8603d939223012dd5ae46df18b0a96"
+    },
+    {
+      "case_id": "s2_42ad_idiv_bl_fault_c01",
+      "fixture_sha256": "13b067c830633eec47b400a7c5e9bdbd766451e9c23512e472bd74b50dd94c30",
+      "expected_sha256": "94d3f5155e726231e97d095002b104dbaee52695eb8fb6a50ab12a324ead8955"
+    },
+    {
+      "case_id": "s2_42ad_idiv_bl_fault_c02",
+      "fixture_sha256": "46cabd5d46a0a3016e2bb8fc1db56522a4b9b6725c3c63ad0b57d67901b6e7c0",
+      "expected_sha256": "213f04cf9f40facd80a8ebf8ad1df610cff5bf96f8d2f07d414847599592e174"
+    },
+    {
+      "case_id": "s2_42ad_idiv_bl_fault_c03",
+      "fixture_sha256": "4cbc25c768e0e26be288ad118a753e7b7507dbf1fa557579c08b76215a182796",
+      "expected_sha256": "97b226512642e9a109de17d39c964678563ca1ec375162b675c4145a18b1e518"
+    },
+    {
+      "case_id": "s2_42ad_idiv_bl_fault_c04",
+      "fixture_sha256": "44c8b6121d22b6da35928c8bf53a63c39d03bd94049741e7d3df7aa12730674c",
+      "expected_sha256": "029fe533213cdfcdc53aacc81e41f6ceca16363c38710f7cfa71b53b3f433218"
+    },
+    {
+      "case_id": "s2_42ad_idiv_bl_fault_c05",
+      "fixture_sha256": "66c876606ea13111880acc8f73ca83d60ad539f714ef5db7472e697545086d99",
+      "expected_sha256": "dca3faf5ca61acc35dc325ba759f1fede9a219f18ee7b8ae9be11aa6ff25b9ee"
+    },
+    {
+      "case_id": "s2_42ad_idiv_bl_fault_c06",
+      "fixture_sha256": "8cb7aa3f4ead450553b45cafbe04c57933a196265c114b86ab09eabdbce5573c",
+      "expected_sha256": "ca9b35ffedf2b4139e979084768ba1c9237960d42e1ea291611cd8fc2ff34714"
+    },
+    {
+      "case_id": "s2_42ad_idiv_bl_fault_c07",
+      "fixture_sha256": "1a8473efe63ed2456bff2d52dcc44b24b1c8320f50d169a7f2462affb717edd4",
+      "expected_sha256": "2582ce1a41398e98489d323690a1bc05e8d243961fe9f6fe65adc23d1800ff54"
+    }
+  ],
+  "expected_sha256": "c5bcc3c4ee96ed6713d50dfdc2c2364e955261e13506ca35a3dd964f796b5455"
+}
