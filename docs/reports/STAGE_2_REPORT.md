@@ -25130,6 +25130,9 @@ Focused verification passed:
 `python3 tools/check_layout.py` reported the worktree `.git` pointer as an
 unmapped root file and missing ignored `work/` evidence referenced by existing
 documents. It reported no broken links in the files changed for this slice.
-`git diff --check` passed. Graphify update completed with 14,927 nodes, 35,992
-edges, and 360 communities. Independent Sol/high review remains pending; S2-43a
-is not treated as accepted until that review completes.
+`git diff --check` passed. After transfer, Graphify update completed with
+14,927 nodes, 35,994 edges, and 411 communities. Independent `gpt-6.1-sol`
+high review found no remaining issues after the exit-status documentation was
+corrected; the reviewer reran the focused suite (4/4), formatting, workspace
+check, and boundary probes. S2-43a is a verified partial slice; S2-43 remains
+open.
