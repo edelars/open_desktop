@@ -94,6 +94,11 @@ private synchronous RAM model; a fence backend error prevents retirement while
 preserving effects from earlier completed instructions. This does not establish
 shared-memory/SMP ordering, advertise SSE2, or implement other fence forms.
 
+S2-21h adds only explicit `F0 48 87 /r` qword memory XCHG in the same
+private synchronous serial `FlatMemory` profile. It reuses the existing
+`XchgMemory` operation and one `GuestMemory::atomic_exchange_integer` call;
+native admission stays closed and ISSUE-017 remains open.
+
 
 S2-18e adds one bare `AA` STOSB iteration in long mode: AL is stored to flat
 `[RDI]`, then RDI advances by one according to DF; RSI and flags are preserved.

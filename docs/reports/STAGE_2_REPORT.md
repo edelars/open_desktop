@@ -4345,6 +4345,47 @@ Local validation passed: `od-isa` 129/129, `od-testkit` 124/124, runner
 `fixture_v2` 35/35, focused generator freshness/provenance 2/2. Physical checks
 remain in the shared final acceptance stage.
 
+## S2-21h — explicit LOCK qword memory XCHG (private serial RAM only)
+
+Admitted only `F0 + effective REX.W + 87 /r` with a qword memory destination.
+The decoder returns the existing `XchgMemory` operation; the executor reuses
+one `GuestMemory::atomic_exchange_integer` call and publishes the old value in
+the source register only after success. Decoder regressions reject LOCK
+register/byte/default-dword, `66`/`67`, segment, F2/F3 and repeated group-1
+prefix neighbors. The explicit LOCK memory form remains outside native
+admission.
+
+The one literal schema-v2 fixture uses `F0 48 87 00` with RAX as both address
+base and replacement. Its unaligned qword crosses two adjacent private
+synchronous `FlatMemory` regions. It compares the old qword in RAX, unchanged
+flags, RIP/retirement and exact memory/canary bytes. Executor spy/fault coverage
+confirms one atomic exchange call and no CPU or RAM commit on backend errors.
+The x86-runner native classifier regression verifies this LOCK-prefixed
+instruction stays outside its allowlist before tracee execution.
+
+Integration is restricted to serial access over private synchronous ordinary
+RAM with no concurrent observers/writers, DMA, shared aliases, delayed writes
+or MMIO. Intel documents XCHG memory operations as implicitly locked, with or
+without F0; this local backend fixture does not establish full x86 LOCK
+ordering, SMP or hardware atomicity, nor #AC/split-lock behavior for the
+unaligned operand. ISSUE-017 remains open. The deferred S2-15-onward pool grows
+602 → 603; native-selected membership is unchanged.
+
+Normative source: Intel SDM revision 093, Vol.2D XCHG (334569-093US), p.6-32,
+and Vol.2A LOCK prefix (253666-093US), pp.3-565–3-566 ([official Vol.2D PDF](https://cdrdv2-public.intel.com/929356/334569-093-sdm-vol-2d.pdf), [official Vol.2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199)).
+
+Validation passed: all `od-isa` tests (2,001), full runner `fixture_v2` suite
+(586), both new Python generator checks, `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and a Linux-target
+`cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu
+--offline`. The Linux-only native classifier regression was compile-checked but
+not executed on this macOS host. The layout checker reports
+pre-existing broken links to absent `work/stage2` evidence files in unrelated
+reports; this slice introduces no `work/` references. `graphify update .`
+completed AST-only with 10,542 nodes, 30,768 edges and 219 communities; its
+semantic document refresh was unavailable because no LLM API key is configured.
+Physical validation remains in the shared final Mac mini acceptance stage.
+
 ## S2-22a — one local-only FS-base load form
 
 Added `s2-long-fs-base-v1`, a schema-v2 profile whose state requires canonical48

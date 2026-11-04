@@ -1,0 +1,79 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_21h_lock_xchg_qword_memory_alias",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten F0 48 87 00 bytes, register values, and literal memory result; tests/cpu/generate_stage2_lock_xchg_qword_memory.py only serializes these constants. No assembler, emulator, or semantic expected-value generator.",
+    "specification": "Intel SDM revision 093, Vol.2D XCHG and Vol.2A LOCK prefix: F0 + REX.W + 87 /r exchanges the qword register and memory operands. Explicit LOCK does not change XCHG semantics because memory XCHG is already implicitly locked. This local fixture checks one GuestMemory atomic exchange call and state results only; private serial FlatMemory use does not establish shared-memory, SMP, or hardware atomicity.",
+    "specification_version": "Intel SDM revision 093: Vol.2D XCHG (334569-093US), p.6-32; Vol.2A LOCK prefix (253666-093US), pp.3-565–3-566; project S2-21h"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000200ffe",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "f0488700",
+      "comparison_mask_hex": "ffffffff"
+    },
+    {
+      "region_id": "data_left",
+      "guest_address": "0x0000000000200ff8",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "a5a5a5a5a5a58877",
+      "comparison_mask_hex": "ffffffffffffffff"
+    },
+    {
+      "region_id": "data_right",
+      "guest_address": "0x0000000000201000",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "665544332211a5a5",
+      "comparison_mask_hex": "ffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

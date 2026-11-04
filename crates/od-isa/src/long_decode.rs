@@ -2394,6 +2394,9 @@ impl<M: GuestMemory> Fetch<'_, M> {
         let locked_qword_memory_xadd_candidate = opcode.map == OpcodeMap::Escape0f
             && opcode.byte == 0xc1
             && prefixes.group1 == Some(0xf0);
+        let locked_qword_memory_xchg_candidate = opcode.map == OpcodeMap::Primary
+            && opcode.byte == 0x87
+            && prefixes.group1 == Some(0xf0);
         let locked_cli = opcode.map == OpcodeMap::Primary
             && matches!(opcode.byte, 0xfa | 0xfb)
             && prefixes.group1 == Some(0xf0);
@@ -4739,6 +4742,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && !movss_memory_load
                 && !movss_memory_store
                 && !locked_qword_memory_xadd_candidate
+                && !locked_qword_memory_xchg_candidate
                 && !locked_cli
                 && !locked_hlt)
         {
@@ -7836,10 +7840,14 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 );
                 let right = self.rm_operand(modrm, prefixes, size)?;
                 match right {
-                    Operand::Register(right) => Operation::Xchg { left, right },
+                    Operand::Register(right) if prefixes.group1.is_none() => {
+                        Operation::Xchg { left, right }
+                    }
                     Operand::Memory(memory)
                         if byte == 0x87
                             && size == OperandSize::Qword
+                            && !duplicate
+                            && matches!(prefixes.group1, None | Some(0xf0))
                             && !prefixes.operand_override
                             && !prefixes.address_override
                             && prefixes.segment.is_none() =>
@@ -18111,7 +18119,6 @@ mod tests {
             &[0x66, 0x48, 0x87, 0x00],
             &[0x67, 0x48, 0x87, 0x00],
             &[0x2e, 0x48, 0x87, 0x00],
-            &[0xf0, 0x48, 0x87, 0x00],
         ] {
             assert!(
                 matches!(
@@ -18126,6 +18133,48 @@ mod tests {
             register_form.decode().unwrap().operation,
             Operation::Xchg { .. }
         ));
+    }
+
+    #[test]
+    fn explicit_lock_qword_memory_xchg_accepts_only_memory_qword_profile() {
+        let mut memory = Memory::new(&[0xf0, 0x48, 0x87, 0x00]);
+        let instruction = memory.decode().unwrap();
+        assert_eq!(instruction.length, 4);
+        assert_eq!(instruction.prefixes.group1, Some(0xf0));
+        assert_eq!(
+            instruction.operation,
+            Operation::XchgMemory {
+                register: RegisterView::low(Register::Rax, OperandSize::Qword),
+                memory: MemoryOperand {
+                    base: AddressBase::Register(Register::Rax),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Qword,
+                },
+            }
+        );
+
+        for bytes in [
+            &[0xf0, 0x48, 0x87, 0xc0][..], // LOCK register destination
+            &[0xf0, 0x87, 0x00][..],       // default dword width
+            &[0xf0, 0x66, 0x48, 0x87, 0x00],
+            &[0xf0, 0x67, 0x48, 0x87, 0x00],
+            &[0xf0, 0x2e, 0x48, 0x87, 0x00],
+            &[0xf0, 0x48, 0x86, 0x00], // LOCK byte XCHG
+            &[0xf2, 0x48, 0x87, 0x00],
+            &[0xf3, 0x48, 0x87, 0x00],
+            &[0xf0, 0xf3, 0x48, 0x87, 0x00],
+        ] {
+            assert!(
+                matches!(
+                    Memory::new(bytes).decode(),
+                    Err(DecodeError::Unsupported { .. })
+                ),
+                "{bytes:02x?}"
+            );
+        }
     }
 
     #[test]

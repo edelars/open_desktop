@@ -1211,6 +1211,36 @@ python3 tests/cpu/test_stage2_mfence_generator.py
 cargo test -p od-runner --test fixture_v2 mfence_store_fence_load --offline
 ```
 
+## Explicit LOCK qword memory XCHG fixture S2-21h
+
+One local-only schema-v2 fixture executes literal `F0 48 87 00` (`LOCK XCHG
+qword [RAX], RAX`). It checks the old memory value in aliased RAX, unchanged
+flags, RIP/retirement, and exact bytes/canaries for an unaligned qword crossing
+two adjacent regions. It exercises the existing single
+`GuestMemory::atomic_exchange_integer` call. Since memory XCHG is already
+implicitly locked, the explicit prefix does not change its exchange semantics.
+
+The fixture is restricted to serial execution over private synchronous
+`FlatMemory`, with no external observers/writers, DMA, shared aliases, delayed
+writes, or MMIO. It establishes no general LOCK ordering, SMP, native admission,
+physical, or hardware-atomicity claim; ISSUE-017 remains open. LOCK register,
+byte/default-dword, `66`/`67`, segment, and REP neighbors remain rejected. The
+deferred S2-15-onward pool grows from 602 to 603; native-selected membership is
+unchanged. A Linux-only `od-x86-runner` classifier test asserts this form is
+rejected before native tracee execution.
+
+[`generate_stage2_lock_xchg_qword_memory.py`](../../../cpu/generate_stage2_lock_xchg_qword_memory.py)
+serializes the handwritten literals with Intel SDM revision 093 provenance:
+Vol.2D XCHG (334569-093US), p.6-32, and Vol.2A LOCK prefix (253666-093US),
+pp.3-565–3-566.
+
+```sh
+python3 tests/cpu/generate_stage2_lock_xchg_qword_memory.py --check
+python3 tests/cpu/test_stage2_lock_xchg_qword_memory_generator.py
+cargo test -p od-runner --test fixture_v2 explicit_lock_qword_memory_xchg_fixture_matches_literal_alias_and_split_result --offline
+cargo test -p od-x86-runner --offline s2_21h_lock_qword_memory_xchg_is_denied_before_native_execution
+```
+
 ## FS selector MOV fixture S2-22c
 
 The local-only `s2-long-fs-selector-v1` fixture runs exactly `48 8C E0`

@@ -30292,7 +30292,7 @@ fn step_configured(
                 && instruction.operand_size == OperandSize::Qword
                 && memory.size == OperandSize::Qword
                 && instruction.prefixes.rex.is_some_and(|rex| rex & 8 != 0)
-                && instruction.prefixes.group1.is_none()
+                && matches!(instruction.prefixes.group1, None | Some(0xf0))
                 && !instruction.prefixes.operand_override
                 && !instruction.prefixes.address_override
                 && instruction.prefixes.segment.is_none()
@@ -52867,8 +52867,8 @@ mod tests {
     }
 
     #[test]
-    fn qword_memory_xchg_uses_one_atomic_call_and_commits_only_on_success() {
-        let code = [0x48, 0x87, 0x00]; // XCHG [RAX], RAX
+    fn locked_qword_memory_xchg_uses_one_atomic_call_and_commits_only_on_success() {
+        let code = [0xf0, 0x48, 0x87, 0x00]; // LOCK XCHG [RAX], RAX
         let mut state = LongModeState {
             cr4: None,
             cr0: None,
@@ -52915,7 +52915,7 @@ mod tests {
         );
         assert_eq!(result.exit, RunExit::InstructionBudgetExhausted);
         assert_eq!(result.instructions_executed, 1);
-        assert_eq!(state.rip, 3);
+        assert_eq!(state.rip, 4);
         assert_eq!(state.rflags, 0x0cd7);
         assert_eq!(state.gpr[Register::Rax as usize], 0x0f0e_0d0c_0b0a_0908);
         assert_eq!(
@@ -53662,7 +53662,7 @@ mod tests {
         assert_eq!(state, before);
         for code in [
             &[0x86, 0x03][..],
-            &[0xf0, 0x48, 0x87, 0x03],
+            &[0xf0, 0x48, 0x87, 0xc3], // LOCK register destination
             &[0x66, 0x48, 0x87, 0x03],
         ] {
             let mut memory = Memory::new(code);

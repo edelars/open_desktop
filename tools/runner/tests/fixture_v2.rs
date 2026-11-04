@@ -40,6 +40,9 @@ const RET66_IGNORED_REX: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_17t_ret66_ignored_rex.case.json");
 const XCHG_QWORD_MEMORY_ALIAS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_21a_xchg_qword_memory_alias.case.json");
+const LOCK_XCHG_QWORD_MEMORY_ALIAS: &[u8] = include_bytes!(
+    "../../../tests/fixtures/x86/stage2/s2_21h_lock_xchg_qword_memory_alias.case.json"
+);
 const XADD_QWORD_REGISTER_ALIAS: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_21b_xadd_qword_register_alias.case.json");
 const XADD_QWORD_MEMORY_ALIAS_SPLIT: &[u8] = include_bytes!(
@@ -2968,6 +2971,30 @@ fn qword_memory_xchg_fixture_matches_literal_alias_and_split_memory_result() {
     assert_eq!(observed.memory.len(), 3);
     assert_eq!(observed.memory[0].region_id, "code");
     assert_eq!(observed.memory[0].bytes_hex, "488700");
+    assert_eq!(observed.memory[1].region_id, "data_left");
+    assert_eq!(observed.memory[1].bytes_hex, "a5a5a5a5a5a5fe0f");
+    assert_eq!(observed.memory[2].region_id, "data_right");
+    assert_eq!(observed.memory[2].bytes_hex, "200000000000a5a5");
+    assert_eq!(observed.exception, Observation::Available { value: None });
+}
+
+#[test]
+fn explicit_lock_qword_memory_xchg_fixture_matches_literal_alias_and_split_result() {
+    let (input, result) = run(LOCK_XCHG_QWORD_MEMORY_ALIAS, "interpreter", 0);
+    assert_eq!(input.fixture.case_id, "s2_21h_lock_xchg_qword_memory_alias");
+    assert!(matches!(result.outcome, Outcome::StopAddress {}));
+    assert_eq!(count(&result), 1);
+
+    let observed = snapshot(&result);
+    let mut expected_gpr = input.fixture.initial_state.gpr;
+    expected_gpr[0] = HexU64(0x1122_3344_5566_7788);
+    assert_eq!(observed.state.gpr, expected_gpr);
+    assert_eq!(observed.state.rip, HexU64(0x0010_0004));
+    assert_eq!(observed.state.rflags, HexU64(0x0cd7));
+    assert_eq!(observed.rflags_defined, HexU64(0x0cd7));
+    assert_eq!(observed.memory.len(), 3);
+    assert_eq!(observed.memory[0].region_id, "code");
+    assert_eq!(observed.memory[0].bytes_hex, "f0488700");
     assert_eq!(observed.memory[1].region_id, "data_left");
     assert_eq!(observed.memory[1].bytes_hex, "a5a5a5a5a5a5fe0f");
     assert_eq!(observed.memory[2].region_id, "data_right");
