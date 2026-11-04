@@ -11006,9 +11006,41 @@ fn rep_fault_boundary_cli_and_al_reducer_preserve_only_destination_mismatch() {
 #[test]
 fn rep_stosb_success_reducer_is_al_only_repeatable_and_fails_closed_on_drift() {
     let raw = include_bytes!("../../../tests/fixtures/x86/stage2/s2_19a_rep_stosb_one.case.json");
-    let (loaded, template) = run(raw, "interpreter", 0);
-    let original = loaded.fixture.clone();
+    let (loaded_xonly, _) = run(raw, "interpreter", 0);
+    let mut original = loaded_xonly.fixture.clone();
+    let code = original
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap();
+    assert!(!code.permissions.read, "literal control is execute-only");
+    code.permissions.read = true;
+    let rx_fixture_json = original.to_json().unwrap();
+    let (loaded, template) = run(&rx_fixture_json, "interpreter", 0);
+    original = loaded.fixture.clone();
     let original_digest = loaded.input_sha256.clone();
+
+    let mut execute_only = original.clone();
+    execute_only
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "code")
+        .unwrap()
+        .permissions
+        .read = false;
+    let mut execute_only_callbacks = 0;
+    let rejected_execute_only = reduce_rep_stosb_fixture(
+        &execute_only,
+        &od_testkit::sha256_hex(&execute_only.to_json().unwrap()),
+        4,
+        |_| {
+            execute_only_callbacks += 1;
+            Ok(template.clone())
+        },
+    )
+    .unwrap_err();
+    assert!(rejected_execute_only.contains("exact RX F3 AA"));
+    assert_eq!(execute_only_callbacks, 0, "X-only must fail preflight");
     let mut decrement_wrap = original.clone();
     decrement_wrap.initial_state.gpr[7] = HexU64(0);
     decrement_wrap.initial_state.rflags.0 |= 1 << 10;
@@ -11205,12 +11237,9 @@ fn rep_stosb_success_reducer_is_al_only_repeatable_and_fails_closed_on_drift() {
     assert_eq!(rejected_fault.stop, RepStosbReductionStop::CallbackError);
     assert!(rejected_fault.reduced_fixture.is_none());
 
-    let loaded = od_testkit::v2::Fixture::from_json(raw).unwrap();
     let wrong_backend =
-        reduce_rep_stosb_fixture_native(&loaded.fixture, &loaded.input_sha256, 4, |_| {
-            Ok(template.clone())
-        })
-        .unwrap();
+        reduce_rep_stosb_fixture_native(&original, &original_digest, 4, |_| Ok(template.clone()))
+            .unwrap();
     assert_eq!(wrong_backend.stop, RepStosbReductionStop::CallbackError);
     assert!(wrong_backend.reduced_fixture.is_none());
 
@@ -11231,10 +11260,9 @@ fn rep_stosb_success_reducer_is_al_only_repeatable_and_fails_closed_on_drift() {
         .collect::<Vec<_>>();
     bytes[15] ^= 1;
     data.bytes_hex = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    let canary_drift = reduce_rep_stosb_fixture(&loaded.fixture, &loaded.input_sha256, 4, |_| {
-        Ok(bad_canary.clone())
-    })
-    .unwrap();
+    let canary_drift =
+        reduce_rep_stosb_fixture(&original, &original_digest, 4, |_| Ok(bad_canary.clone()))
+            .unwrap();
     assert_eq!(canary_drift.stop, RepStosbReductionStop::CallbackError);
     assert!(canary_drift.reduced_fixture.is_none());
 

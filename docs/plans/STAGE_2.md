@@ -726,7 +726,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42k | Bounded forward JZ/JNZ NOP-deletion reducer | Preserves the same MOV-RBX branch target via instruction map/rel8 recomputation; 10 reducer tests + replay integration; local fixture `NoInitialMismatch`, synthetic opposite-path reduction; native/physical `not_run`; [protocol](../testing/S2_42K_BRANCH_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer) |
 | [x] | S2-42ah | Native adapter for bounded JZ/JNZ NOP-deletion reducer | Backend-parametrized result validation; synthetic opposite-path reduction runs under Interpreter and NativeX86 callback identities and checks target relocation/rel8/state/stop/mask/counts; candidate/final backend swaps fail closed; actual native NOP shrinking remains unverified; physical acceptance `not_run`; [protocol](../testing/S2_42AH_NATIVE_BRANCH_REDUCER.md), [acceptance](../reports/S2_42AH_LINUX_ACCEPTANCE.md) |
 | [x] | S2-42l | REP STOSB partial-progress #GP reducer | Literal #GP(0) fixture plus bounded AL-only fault reducer/replay; exact RCX/RDI/memory progress and unchanged RIP/retirement; native/physical `not_run`; [protocol](../testing/S2_42L_REP_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42l--rep-stosb-partial-progress-gp-reducer) |
-| [x] | S2-42ai | Successful REP STOSB AL-only reducer and native adapter | Count 1–8, DF=0/1, independent fill oracle, exact destination mismatch offsets and canaries; synthetic reduction under Interpreter and NativeX86 identities plus drift/flaky/callback/budget/backend-swap regressions; Linux smoke not run because authorized host lacked base 24db62b and its main checkout was already dirty; `execution_kind=unknown`; [protocol](../testing/S2_42AI_REP_STOSB_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42ai--successful-rep-stosb-reducer-and-native-adapter) |
+| [x] | S2-42ai | Successful REP STOSB AL-only reducer and native adapter | Count 1–8, DF=0/1, independent fill oracle, exact destination mismatch offsets and canaries; synthetic Interpreter/NativeX86 identities plus drift/flaky/callback/budget/backend-swap regressions; initial Linux smoke found RX/X-only preflight mismatch, fixed with RX admission and X-only rejection regression; post-fix Linux rerun pending; `execution_kind=unknown`; [protocol](../testing/S2_42AI_REP_STOSB_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42ai--successful-rep-stosb-reducer-and-native-adapter) |
 | [x] | S2-42m | Deterministic CVTSI2SD interpreter corpus | 1,024 generated + 9 literal controls; all 1,033 fixtures ×2 passed integer-only binary64 oracle; native profile closed and recorded `not_run_profile_closed`; [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus) |
 | [x] | S2-42n | Bounded exact MOV qword memory interpreter reducer | RAX-only reduction for literal `48 89 03`; independent byte-store oracle, complete mapping/mask preservation, callback journal and replay; synthetic stable mismatch and drift/failure/budget regressions; local fixture `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42N_MOV_MEMORY_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42n--bounded-mov-qword-memory-reducer) |
 | [x] | S2-42o | Bounded SQRTSS SNaN #XM interpreter reducer | One exact register instruction; descending nonzero-payload reduction, independent full-state/#XM predicate, callback journal and replay; synthetic IE omission and XMM0 corruption; literal `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42o--sqrtss-snan-fault-reducer) |
@@ -8840,12 +8840,16 @@ retirement, code, data и canaries. Fingerprint содержит точные с
 canaries. Каждый original/candidate/final требует двух совпадающих callbacks.
 
 Добавлены interpreter API/CLI и NativeX86 callback API с отдельным native CLI,
-который использует существующий supervised native-v2 fixture child. Native
-admission и CPU не менялись. Synthetic regression подтверждает AL-only
-сокращение, сохранение точного mismatch offset и fail-closed для state drift,
-canary corruption и неправильной backend identity. Подробный протокол:
+который использует существующий supervised native-v2 fixture child. Preflight
+требует точные RX code permissions из native-v2 admission; X-only S2-19a
+controls отклоняются. Synthetic regression подтверждает RX admission,
+X-only rejection, AL-only сокращение, сохранение точного mismatch offset и
+fail-closed для state drift, canary corruption и неправильной backend identity.
+Первый Linux smoke выявил несовпадение RX/X-only gate; исправление добавлено,
+пост-fix Linux rerun ожидается. Подробный протокол:
 [S2-42ai](../testing/S2_42AI_REP_STOSB_REDUCER.md). На этой macOS среде
-Linux native smoke не запускался; `execution_kind=unknown`, physical Mac
+post-fix Linux native smoke недоступен; первый Linux запуск выявил и помог
+исправить RX/X-only preflight mismatch. `execution_kind=unknown`, physical Mac
 acceptance `not_run`. Parent S2-42 и зависимости S2-21/39/40 остаются
 открытыми.
 

@@ -378,7 +378,7 @@ fn validate_fixture(f: &Fixture) -> Result<(), String> {
         || code.initial_bytes_hex != "f3aa"
         || code.permissions
             != (crate::case::MemoryPermissions {
-                read: false,
+                read: true,
                 write: false,
                 execute: true,
             })

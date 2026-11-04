@@ -24987,6 +24987,7 @@ canary-changing and budget-incomplete callbacks fail closed.
 The interpreter API/CLI and backend-parametrized NativeX86 API were added. The
 native CLI reuses the existing native-v2 admission and supervised
 `--native-v2-child` execution; no CPU implementation or admission code changed.
+Reducer preflight requires the exact RX code permissions used by native-v2.
 The synthetic test reduced AL to zero while preserving one exact destination
 offset; it also checks the DF=1/count=1 post-index wrap at address zero and
 rejects state drift, canary corruption and an interpreter result presented as
@@ -24996,8 +24997,10 @@ NativeX86. It passed with:
 - `cargo check --offline -p od-runner --all-targets`
 - `cargo check --offline -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu`
 - `cargo fmt --all -- --check`
-- Literal S2-19a interpreter CLI smoke and saved callback evidence verification:
-  `no_initial_mismatch` after two callbacks; no candidate pair proposed.
+- Historical pre-RX-fix S2-19a interpreter CLI smoke and callback evidence:
+  `no_initial_mismatch` after two callbacks. The fixture is X-only and is now
+  intentionally rejected by reducer preflight, so this is not current
+  acceptance evidence.
 - Graphify code update completed: 14,841 nodes and 35,792 edges; a follow-up
   query found `RepStosbReductionStop` and the new reducer/oracle nodes.
 
@@ -25005,10 +25008,14 @@ NativeX86. It passed with:
 file as an unmapped root item and reported absent ignored `work/` evidence files
 referenced by existing docs; those paths are outside this slice. The authorized
 Linux host has a different current ref and does not contain required base
-24db62b; its existing main checkout was already dirty, so no native smoke was
-run and that checkout was left untouched. No real mismatch is claimed; native
-evidence remains unrun, `execution_kind=unknown`, and physical Mac acceptance
-is `not_run`. S2-42 and dependencies S2-21/39/40 remain open. See the
+24db62b; its existing main checkout was already dirty, so no initial native
+smoke was run and that checkout was left untouched. A later authorized Linux
+smoke using an RX-admitted fixture found a preflight permission mismatch: the
+reducer required X-only code while native-v2 requires RX. The reducer gate is
+now RX, with a regression confirming RX admission and X-only rejection before
+callbacks. A post-fix Linux rerun is pending; native success is not claimed,
+`execution_kind` remains `unknown`, and physical Mac acceptance is `not_run`.
+S2-42 and dependencies S2-21/39/40 remain open. See the
 [protocol](../testing/S2_42AI_REP_STOSB_REDUCER.md) and
 [plan](../plans/STAGE_2.md#s2-42ai-successful-rep-stosb-bounded-reducer-and-native-adapter).
 Independent Sol/high review found an address-zero DF=1 post-index wrap bug and

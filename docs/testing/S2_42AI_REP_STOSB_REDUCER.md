@@ -43,15 +43,17 @@ Interpreter reducer:
 
 ```sh
 cargo run -p od-runner --offline -- \
-  --reduce-rep-stosb tests/fixtures/x86/stage2/s2_19a_rep_stosb_one.case.json
+  --reduce-rep-stosb path/to/native-rx-rep-stosb.case.json
 ```
 
 Linux x86_64 native reducer, using the existing supervised native-v2 fixture
-child and exact `F3 AA` admission:
+child and exact `F3 AA` admission. Supply a native-admitted fixture with RX code;
+the S2-19a literal fixture is X-only and is intentionally rejected by both
+reducer APIs at preflight.
 
 ```sh
 cargo run -p od-x86-runner --offline --target x86_64-unknown-linux-gnu -- \
-  --reduce-native-rep-stosb tests/fixtures/x86/stage2/s2_19a_rep_stosb_one.case.json
+  --reduce-native-rep-stosb path/to/native-rx-rep-stosb.case.json
 ```
 
 Both commands accept `--limit N` (4–20) and `--output-dir DIR`; output must be a
