@@ -17,8 +17,15 @@ RIP и разрешённые flags снимаются через ptrace; memory
 Exact retired count увеличивается только после подтверждённого TRAP_TRACE;
 неожиданный host signal не становится guest exception.
 
-Native mappings ограничены readable low canonical ranges от `0x10000` с
-местом для нижней guard page и endpoint не выше `0x80000000` (2 GiB).
+Native mappings ограничены low canonical ranges от `0x10000` с местом для
+нижней guard page и endpoint не выше `0x80000000` (2 GiB). Logical regions
+должны быть readable либо immutable execute-only; write-only и regions без
+read/write/execute остаются неподдерживаемыми. Для tracee immutable
+execute-only code получает host RX backing, чтобы tracer мог читать bytes для
+полного snapshot. Это не hardware execute-only mapping: logical permissions
+проверяются программно до каждого native шага, и profile admission должен
+отклонить чтение таких bytes как данных или запись в них до
+`PTRACE_SINGLESTEP`. Поэтому эта граница не подтверждает доставку guest `#PF`.
 Envelope вместе с guard pages не превышает 64 MiB. Нет writable+executable
 страниц; logical regions одной host page должны иметь одинаковые permissions.
 До каждого шага allowlist проверяет actual native registers, fetch bytes и

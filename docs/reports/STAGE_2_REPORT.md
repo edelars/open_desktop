@@ -17349,17 +17349,17 @@ Sol/high re-review found no remaining findings. `cargo build --offline
 orchestration command sends the complete corpus to the
 existing Linux x86_64 native oracle, performs two repeats for interpreter and
 native, writes machine-readable success/failure evidence, and fails closed when
-a required result/backend is missing. On 2026-11-04 the documented native suite
-was attempted on Linux x86_64 at source fingerprint
-`d740ae2b8b341138ce1149514ecf594df67138973bea4aa8fff78bf3e288a118`. All 1,080
-first-repeat native results were rejected as `unsupported` because the exact
-code region is execute-only (`read=false`); no guest instruction executed and
-the suite summary is `failed`. Evidence is retained at
-`work/stage2-42e-oracle/s2-42e-summary.json` and
-`work/stage2-42e-oracle/stage2-20261104-102111-498cc626/`. Physical Mac
-acceptance remains `not_run`; see [ISSUE-034](../KNOWN_ISSUES.md#issue-034-s2-42e-execute-only-code-not-admitted-by-native-v2).
-This slice changes no CPU semantics, fixture schema, runner CLI or native
-admission; S2-42 remains open
+a required result/backend is missing. The Linux native command was attempted on
+2026-11-04 at source fingerprint
+`d740ae2b8b341138ce1149514ecf594df67138973bea4aa8fff78bf3e288a118`; all 1,080
+first-repeat native results failed closed as `unsupported` before guest
+execution because native-v2 required readable mappings. The runner mapping
+fix now gives immutable logical execute-only code host RX backing for tracer
+snapshots while preserving logical permissions for pre-step admission. This
+does not claim hardware execute-only enforcement or guest `#PF`. A full
+1,080-case native rerun is pending; ISSUE-034 stays open until saved evidence
+passes. Physical Mac acceptance remains `not_run`. The change does not alter
+CPU semantics, fixture schema or runner CLI; S2-42 remains open
 for additional memory/stack/REP/FP groups, generic reduction, S2-21/S2-39/S2-40
 dependencies and physical acceptance. See [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md)
 and [plan](../plans/STAGE_2.md#s2-42e-deterministic-mov-memory-corpus).
@@ -24438,13 +24438,12 @@ mocked remote orchestration, and a complete synthetic saved-run roundtrip with
 failure cases for missing repeat/backend/provenance/timeout, changed frozen
 inputs, old-suite fallback, and altered run-level fingerprint/compiler identity.
 Python bytecode compilation and `git diff --check` passed. `graphify update .`
-completed. `python3 tools/check_layout.py` passed after transfer on main. The
-Linux native comparison was attempted with the full selected 1,080-case set,
-but every first-repeat result was rejected before instruction execution because
-the pinned code region is execute-only and native-v2 requires readable regions.
-The run failed closed; physical hardware remains `not_run`. See
-[ISSUE-034](../KNOWN_ISSUES.md#issue-034-s2-42e-execute-only-code-not-admitted-by-native-v2).
-Parent S2-42 and dependencies S2-21,
+completed. `python3 tools/check_layout.py` passed on main after the failed-run
+evidence was transferred. The initial native Linux comparison rejected all
+1,080 cases before instruction execution because code mappings were execute-only;
+native-v2 now maps them with host RX backing and retains logical permissions
+for pre-step admission. Full Linux native rerun is pending and ISSUE-034 remains
+open. Physical hardware remains `not_run`. Parent S2-42 and dependencies S2-21,
 S2-39, and S2-40 remain open. See the [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42q--56-handwritten-mov-memoryaddressing-controls),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42q-56-handwritten-mov-memoryaddressing-controls).

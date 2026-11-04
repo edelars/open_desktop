@@ -761,7 +761,11 @@ struct MappingPlan {
     page_size: u64,
     start: u64,
     length: usize,
+    /// Host protections used by the tracee after fixture initialization.
     pages: BTreeMap<u64, i32>,
+    /// Fixture permissions before host-page projection. These remain the
+    /// authority for pre-step admission, including execute-only code bytes.
+    logical_pages: BTreeMap<u64, MemoryPermissions>,
     initial: Vec<(u64, Vec<u8>)>,
 }
 
@@ -771,6 +775,7 @@ impl MappingPlan {
             return Err("unsupported system page size".into());
         }
         let mut pages = BTreeMap::new();
+        let mut logical_pages = BTreeMap::new();
         let mut initial = vec![];
         for region in &fixture.memory {
             let start = region.guest_address.get();
@@ -778,9 +783,11 @@ impl MappingPlan {
                 .checked_add(u64::from(region.length))
                 .ok_or("mapping range overflow")?;
             let permissions = region.permissions;
-            if !permissions.read || (permissions.write && permissions.execute) {
+            if (permissions.write && permissions.execute)
+                || (!permissions.read && (permissions.write || !permissions.execute))
+            {
                 return Err(
-                    "native regions must be readable and cannot be writable+executable".into(),
+                    "native regions must be readable or immutable execute-only, and cannot be writable+executable".into(),
                 );
             }
             if start < LOW_ADDRESS + page_size || end > HIGH_ADDRESS {
@@ -788,6 +795,9 @@ impl MappingPlan {
                     "native mappings must fit the supported low canonical address range".into(),
                 );
             }
+            // The tracer needs readable code bytes for snapshots. Logical
+            // execute-only access is still enforced by admission before each
+            // guest step; RX is only the host backing for immutable code.
             let protection = libc::PROT_READ
                 | if permissions.write {
                     libc::PROT_WRITE
@@ -801,14 +811,15 @@ impl MappingPlan {
                 };
             let mut page = start & !(page_size - 1);
             while page < end {
-                if pages
-                    .insert(page, protection)
-                    .is_some_and(|previous| previous != protection)
+                if logical_pages
+                    .insert(page, permissions)
+                    .is_some_and(|previous| previous != permissions)
                 {
                     return Err(
                         "logical regions sharing a host page require identical permissions".into(),
                     );
                 }
+                pages.insert(page, protection);
                 page += page_size;
             }
             initial.push((
@@ -826,6 +837,7 @@ impl MappingPlan {
             start,
             length: (end - start) as usize,
             pages,
+            logical_pages,
             initial,
         })
     }
@@ -3820,6 +3832,111 @@ mod tests {
                 .unwrap_err()
                 .contains("identical permissions")
         );
+    }
+
+    #[test]
+    fn execute_only_code_uses_rx_host_backing_but_keeps_logical_permissions() {
+        let mut loaded = fixture(&[0x48, 0x8b, 0x03]);
+        loaded.fixture.memory[0].permissions = MemoryPermissions {
+            read: false,
+            write: false,
+            execute: true,
+        };
+        let plan = MappingPlan::new(&loaded.fixture, 4096).unwrap();
+        assert_eq!(plan.pages[&0x100000], libc::PROT_READ | libc::PROT_EXEC);
+        assert_eq!(
+            plan.logical_pages[&0x100000],
+            loaded.fixture.memory[0].permissions
+        );
+        assert!(admits_range(
+            &loaded.fixture,
+            0x100000,
+            3,
+            AccessKind::Fetch
+        ));
+        assert!(!admits_range(
+            &loaded.fixture,
+            0x100000,
+            1,
+            AccessKind::Read
+        ));
+        assert!(!admits_range(
+            &loaded.fixture,
+            0x100000,
+            1,
+            AccessKind::Write
+        ));
+
+        // A readable executable region has the same host RX protection but
+        // cannot share the page with logical execute-only code.
+        loaded
+            .fixture
+            .memory
+            .push(region("readable-code", 0x100010, &[0x90], false, true));
+        assert!(
+            MappingPlan::new(&loaded.fixture, 4096)
+                .unwrap_err()
+                .contains("identical permissions")
+        );
+    }
+
+    #[test]
+    fn execute_only_code_rejects_data_reads_and_writes_before_a_step() {
+        let mut loaded = fixture(&[0x8a, 0x03]);
+        loaded.fixture.memory[0].permissions = MemoryPermissions {
+            read: false,
+            write: false,
+            execute: true,
+        };
+        let mut actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        actual.gpr[3] = 0x100000;
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(
+            admission(&loaded.fixture, &mut decoder, &actual)
+                .unwrap_err()
+                .contains("outside fixture range or permission")
+        );
+
+        // The same in-range source byte is admitted when its logical mapping
+        // is readable, proving the execute-only rejection is permission-based.
+        loaded.fixture.memory[0].permissions.read = true;
+        let mut readable_decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(admission(&loaded.fixture, &mut readable_decoder, &actual).is_ok());
+
+        loaded.fixture.memory[0] = region("code", 0x100000, &[0x88, 0x03], false, true);
+        loaded.fixture.memory[0].permissions = MemoryPermissions {
+            read: false,
+            write: false,
+            execute: true,
+        };
+        let mut actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        actual.gpr[3] = 0x100001;
+        let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        assert!(
+            admission(&loaded.fixture, &mut decoder, &actual)
+                .unwrap_err()
+                .contains("outside fixture range or permission")
+        );
+    }
+
+    #[test]
+    fn page_plan_rejects_write_only_and_nonaccessible_regions() {
+        for permissions in [
+            MemoryPermissions {
+                read: false,
+                write: true,
+                execute: false,
+            },
+            MemoryPermissions {
+                read: false,
+                write: false,
+                execute: false,
+            },
+        ] {
+            let mut loaded = fixture(&[0x48, 0x8b, 0x03]);
+            loaded.fixture.memory[0].permissions = permissions;
+            assert!(MappingPlan::new(&loaded.fixture, 4096).is_err());
+        }
     }
 
     #[test]
