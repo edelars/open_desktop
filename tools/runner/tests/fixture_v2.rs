@@ -11003,6 +11003,148 @@ fn rep_fault_boundary_cli_and_al_reducer_preserve_only_destination_mismatch() {
     assert!(rejected.reduced_fixture.is_none());
 }
 
+fn rep_fault_synthetic_mismatch(
+    candidate: &Fixture,
+    template: &RunResult,
+    original: &Fixture,
+    original_digest: &str,
+) -> Result<RunResult, String> {
+    let bytes = candidate.to_json().map_err(|error| error.to_string())?;
+    let digest = if candidate == original {
+        original_digest.to_string()
+    } else {
+        od_testkit::sha256_hex(&bytes)
+    };
+    let expected = rep_fault_oracle(candidate, &digest)?;
+    let mut result = template.clone();
+    result.input_sha256 = digest;
+    result.case_id = candidate.case_id.clone();
+    result.outcome = expected.outcome;
+    result.instructions_executed = Observation::Available {
+        value: expected.instructions_executed,
+    };
+    let Observation::Available { value } = &mut result.snapshot else {
+        return Err("interpreter result snapshot unavailable".into());
+    };
+    value.state = expected.state;
+    value.rflags_defined = expected.rflags_defined;
+    value.memory = expected.memory;
+    value.exception = Observation::Available {
+        value: Some(expected.exception),
+    };
+    let data = value
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "data")
+        .ok_or("data region missing")?;
+    let mut destination = data
+        .bytes_hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            u8::from_str_radix(
+                std::str::from_utf8(pair).map_err(|error| error.to_string())?,
+                16,
+            )
+            .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    destination[0] ^= 1;
+    data.bytes_hex = destination
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok(result)
+}
+
+#[test]
+fn rep_fault_reducer_rejects_wrong_fault_flaky_callbacks_and_budget_exhaustion() {
+    let raw = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_42l_rep_stosb_canonical48_gp.case.json"
+    );
+    let (loaded, template) = run(raw, "interpreter", 0);
+    let fixture = loaded.fixture;
+    let digest = loaded.input_sha256;
+
+    let wrong_fault = reduce_rep_fault_fixture(&fixture, &digest, 20, |candidate| {
+        let mut result = rep_fault_synthetic_mismatch(candidate, &template, &fixture, &digest)?;
+        let Observation::Available { value } = &mut result.snapshot else {
+            return Err("interpreter result snapshot unavailable".into());
+        };
+        let Observation::Available {
+            value: Some(exception),
+        } = &mut value.exception
+        else {
+            return Err("interpreter exception unavailable".into());
+        };
+        exception.vector = 14;
+        Ok(result)
+    })
+    .unwrap();
+    assert_eq!(wrong_fault.stop, RepFaultReductionStop::CallbackError);
+    assert_eq!(wrong_fault.actual_callbacks, 2);
+    assert!(wrong_fault.stop_detail.is_some());
+    assert!(wrong_fault.initial_fingerprint.is_none());
+
+    let mut calls = 0;
+    let flaky_initial = reduce_rep_fault_fixture(&fixture, &digest, 20, |candidate| {
+        calls += 1;
+        let mut result = rep_fault_synthetic_mismatch(candidate, &template, &fixture, &digest)?;
+        if calls == 2 {
+            snapshot_mut(&mut result)
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "data")
+                .unwrap()
+                .bytes_hex
+                .replace_range(0..2, "00");
+        }
+        Ok(result)
+    })
+    .unwrap();
+    assert_eq!(flaky_initial.stop, RepFaultReductionStop::FlakyInitial);
+    assert_eq!(flaky_initial.actual_callbacks, 2);
+    assert!(flaky_initial.reduced_fixture.is_none());
+
+    let mut calls = 0;
+    let flaky_candidate = reduce_rep_fault_fixture(&fixture, &digest, 20, |candidate| {
+        calls += 1;
+        let mut result = rep_fault_synthetic_mismatch(candidate, &template, &fixture, &digest)?;
+        if calls == 4 {
+            snapshot_mut(&mut result)
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "data")
+                .unwrap()
+                .bytes_hex
+                .replace_range(0..2, "00");
+        }
+        Ok(result)
+    })
+    .unwrap();
+    assert_eq!(
+        flaky_candidate.stop,
+        RepFaultReductionStop::FlakyCandidate,
+        "{:?}",
+        flaky_candidate.stop_detail
+    );
+    assert_eq!(flaky_candidate.actual_callbacks, 4);
+    assert!(flaky_candidate.reduced_fixture.is_none());
+
+    let exhausted = reduce_rep_fault_fixture(&fixture, &digest, 4, |candidate| {
+        rep_fault_synthetic_mismatch(candidate, &template, &fixture, &digest)
+    })
+    .unwrap();
+    assert_eq!(
+        exhausted.stop,
+        RepFaultReductionStop::CallbackBudgetExhausted
+    );
+    assert_eq!(exhausted.actual_callbacks, 4);
+    assert_eq!(exhausted.initial_results.len(), 2);
+    assert_eq!(exhausted.final_results.len(), 2);
+    assert!(exhausted.final_fingerprint.is_some());
+}
+
 #[test]
 fn rep_stosb_success_reducer_is_al_only_repeatable_and_fails_closed_on_drift() {
     let raw = include_bytes!("../../../tests/fixtures/x86/stage2/s2_19a_rep_stosb_one.case.json");

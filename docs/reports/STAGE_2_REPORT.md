@@ -17667,14 +17667,40 @@ Independent Sol/high review found no blocking findings.
 Native and physical execution of this high-boundary mapping are `not_run`;
 native admission rejects this mapping, while other mapped STOSB cases remain a
 separate native-admitted scope. S2-42 and dependencies S2-21/S2-39/S2-40 remain
-open. There are no dedicated regressions for budget exhaustion, callback
-flakiness, or a wrong fault class; progress-drift rejection and synthetic
-preservation of the exact destination-byte mismatch are tested. The normal
+open. S2-42aj adds focused wrong-fault, flaky-initial, flaky-candidate, and
+callback-budget exhaustion regressions without production or CPU changes; see
+the checked sub-slice below. Progress-drift rejection and synthetic
+preservation of the exact destination-byte mismatch remain covered. The normal
 literal fixture returns `no_initial_mismatch`, so real interpreter defect
 reduction is unproven.
 
 See the [S2-42l protocol](../testing/S2_42L_REP_FAULT_REDUCER.md) and
 [Stage 2 plan](../plans/STAGE_2.md#s2-42l-rep-stosb-partial-progress-gp-reducer).
+
+### S2-42aj — S2-42l callback failure regressions
+
+Added a separate checked integration sub-slice covering a wrong exception
+vector (`CallbackError`, 2 callbacks), semantically different initial callback
+results (`FlakyInitial`, 2), different candidate callback results
+(`FlakyCandidate`, 4), and budget exhaustion at the minimum budget of four
+(`CallbackBudgetExhausted`, 4 total: two initial and two final confirmations).
+The budget case also checks that the final mismatch fingerprint is retained.
+Focused command `cargo test -p od-runner --test fixture_v2
+rep_fault_reducer_rejects_wrong_fault_flaky_callbacks_and_budget_exhaustion
+--offline` passed (1/1). No reducer, CPU, native-admission, or fixture changes
+were needed. `cargo fmt --all -- --check`,
+`cargo check --workspace --all-targets --offline`, and `git diff --check`
+passed. The S2-42aj links and anchors resolve. `python3 tools/check_layout.py`
+still exits with existing repository findings: the worktree's `.git` entry is
+unmapped and several links target absent `work/` evidence artifacts (including
+stage2-42e/42h/42i/42r and native acceptance runs); none point to S2-42aj files.
+After the test edit, code-only Graphify incremental refresh re-extracted two
+changed code files and produced 10,594 nodes and 30,922 edges; a follow-up query
+returned the new regression and `reduce_rep_fault_fixture`. Semantic extraction
+of documentation was skipped because no Graphify LLM key is configured.
+
+See the [S2-42l protocol](../testing/S2_42L_REP_FAULT_REDUCER.md) and
+[Stage 2 plan](../plans/STAGE_2.md#s2-42aj-s2-42l-callback-failure-regressions).
 
 ## S2-27g — exact Long64 SWAPGS
 

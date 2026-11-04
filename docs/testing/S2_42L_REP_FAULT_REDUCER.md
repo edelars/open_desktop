@@ -73,9 +73,25 @@ that the reducer keeps that precise mismatch through AL-only reduction. This
 synthetic callback is reducer evidence, not evidence of a CPU defect. A normal
 CLI reducer run on the literal fixture currently reports `no_initial_mismatch`.
 
-The reducer rejects invalid, unstable, budget-exhausted, and wrong-fault
-callbacks, but this slice has no dedicated regression for budget exhaustion,
-callback flakiness, or a wrong fault class. Progress-drift rejection and
-synthetic preservation of the exact destination-byte mismatch are covered. The
+The S2-42aj checked follow-up adds a focused integration regression for the
+remaining callback failure paths. A synthetic wrong fault is rejected as
+`CallbackError` after two initial callbacks; differing initial results stop as
+`FlakyInitial` after two callbacks; differing candidate results stop as
+`FlakyCandidate` after four callbacks; and a budget of four ends as
+`CallbackBudgetExhausted` after two initial plus two final callbacks, with the
+final mismatch confirmed. The test does not change reducer or CPU behavior.
+Progress-drift rejection and synthetic preservation of the exact
+destination-byte mismatch remain covered by the original S2-42l test. The
 normal fixture's `no_initial_mismatch` does not demonstrate reduction of a real
 interpreter defect.
+
+### S2-42aj checked follow-up
+
+Focused command and result:
+
+```text
+cargo test -p od-runner --test fixture_v2 rep_fault_reducer_rejects_wrong_fault_flaky_callbacks_and_budget_exhaustion --offline
+1 passed; 0 failed
+```
+
+This is a separate checked follow-up, S2-42aj; see the [Stage 2 plan](../plans/STAGE_2.md#s2-42aj-s2-42l-callback-failure-regressions).

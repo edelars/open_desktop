@@ -727,6 +727,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42k | Bounded forward JZ/JNZ NOP-deletion reducer | Preserves the same MOV-RBX branch target via instruction map/rel8 recomputation; 10 reducer tests + replay integration; local fixture `NoInitialMismatch`, synthetic opposite-path reduction; native/physical `not_run`; [protocol](../testing/S2_42K_BRANCH_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer) |
 | [x] | S2-42ah | Native adapter for bounded JZ/JNZ NOP-deletion reducer | Backend-parametrized result validation; synthetic opposite-path reduction runs under Interpreter and NativeX86 callback identities and checks target relocation/rel8/state/stop/mask/counts; candidate/final backend swaps fail closed; actual native NOP shrinking remains unverified; physical acceptance `not_run`; [protocol](../testing/S2_42AH_NATIVE_BRANCH_REDUCER.md), [acceptance](../reports/S2_42AH_LINUX_ACCEPTANCE.md) |
 | [x] | S2-42l | REP STOSB partial-progress #GP reducer | Literal #GP(0) fixture plus bounded AL-only fault reducer/replay; exact RCX/RDI/memory progress and unchanged RIP/retirement; native/physical `not_run`; [protocol](../testing/S2_42L_REP_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42l--rep-stosb-partial-progress-gp-reducer) |
+| [x] | S2-42aj | S2-42l callback failure regressions | Wrong fault, flaky initial/candidate callback, and minimum-budget exhaustion checked in focused runner integration test; no production CPU/reducer or native-admission changes; [protocol](../testing/S2_42L_REP_FAULT_REDUCER.md#s2-42aj-checked-follow-up), [report](../reports/STAGE_2_REPORT.md#s2-42aj--s2-42l-callback-failure-regressions) |
 | [x] | S2-42ai | Successful REP STOSB AL-only reducer and native adapter | Count 1–8, DF=0/1, independent fill oracle, exact destination mismatch offsets/canaries; synthetic reduction and failure regressions; bounded Linux x86_64 RX fixture smoke/replay passed with `no_initial_mismatch` after two callbacks, no candidate shrinking; `execution_kind=unknown`, physical Mac `not_run`; [protocol](../testing/S2_42AI_REP_STOSB_REDUCER.md), [acceptance](../reports/S2_42AI_LINUX_ACCEPTANCE.md), [report](../reports/STAGE_2_REPORT.md#s2-42ai--successful-rep-stosb-reducer-and-native-adapter) |
 | [x] | S2-42m | Deterministic CVTSI2SD interpreter corpus | 1,024 generated + 9 literal controls; all 1,033 fixtures ×2 passed integer-only binary64 oracle; native profile closed and recorded `not_run_profile_closed`; [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus) |
 | [x] | S2-42n | Bounded exact MOV qword memory interpreter reducer | RAX-only reduction for literal `48 89 03`; independent byte-store oracle, complete mapping/mask preservation, callback journal and replay; synthetic stable mismatch and drift/failure/budget regressions; local fixture `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42N_MOV_MEMORY_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42n--bounded-mov-qword-memory-reducer) |
@@ -8844,6 +8845,22 @@ physical запуски `not_run`; общий S2-42 и зависимости S2
 
 См. [протокол S2-42l](../testing/S2_42L_REP_FAULT_REDUCER.md) и
 [отчёт](../reports/STAGE_2_REPORT.md#s2-42l--rep-stosb-partial-progress-gp-reducer).
+
+### S2-42aj. S2-42l callback failure regressions
+
+**Статус:** отдельный checked sub-slice завершён. Фокусированный тест
+`cargo test -p od-runner --test fixture_v2
+rep_fault_reducer_rejects_wrong_fault_flaky_callbacks_and_budget_exhaustion
+--offline` прошёл: 1/1. Wrong fault class останавливается как
+`CallbackError` после двух initial callbacks; нестабильная начальная пара —
+`FlakyInitial` после двух; нестабильная пара кандидата — `FlakyCandidate`
+после четырёх; budget `4` — `CallbackBudgetExhausted` после двух начальных и
+двух финальных подтверждений, fingerprint финального mismatch сохранён.
+Reducer, CPU и native admission не менялись. Общие format/workspace/layout/link
+и Graphify проверки записаны в [отчёте](../reports/STAGE_2_REPORT.md#s2-42aj--s2-42l-callback-failure-regressions).
+
+См. [протокол](../testing/S2_42L_REP_FAULT_REDUCER.md#s2-42aj-checked-follow-up)
+и [отчёт](../reports/STAGE_2_REPORT.md#s2-42aj--s2-42l-callback-failure-regressions).
 
 ### S2-42ai. Successful REP STOSB bounded reducer and native adapter
 
