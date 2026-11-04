@@ -17374,6 +17374,48 @@ physical execution `not_run`; it does not close parent S2-42 or S2-21/S2-39/S2-4
 See [protocol](../testing/S2_42_REDUCER_CONTRACT.md) and
 [plan](../plans/STAGE_2.md#s2-42f-proposed-schema-v2-reducer-acceptance-contract).
 
+## S2-42g — bounded qword GPR PUSH/POP reducer
+
+Added an interpreter-callback reducer for exact one-instruction qword GPR
+PUSH/POP fixtures in `s2-long-integer-v1`. Its independent little-endian
+byte-stack oracle verifies the complete integer state, defined flags, retirement,
+and all mapped code/stack bytes. It handles the pre-decrement source value for
+`PUSH RSP` and the final popped value for `POP RSP`. Reduction changes only the
+selected PUSH source GPR or the eight POP input bytes; code, layout and profile
+remain fixed. Strict profile/opcode admission, repeat confirmation, mismatch
+fingerprinting, budget bounds, raw fixture hashing and callback evidence are
+part of the reducer.
+
+Eight focused `od-testkit` tests and the runner replay integration test passed.
+`cargo fmt --all -- --check`, `cargo check -p od-runner --all-targets --offline`,
+and `python3 tools/check_layout.py` passed on main. Local PUSH RAX and POP RSP
+smoke runs returned `no_initial_mismatch` after two interpreter callbacks;
+there was no real interpreter mismatch to reduce. The replay integration test
+executes saved reducer/original argv with the recorded absolute executable and
+working directory, then checks reduced-fixture replay shape. It does not claim
+a real reduced architectural mismatch. Sol/high review was clean after two
+replay fixes. Native and physical hardware remain `not_run`; parent S2-42 and
+S2-21/S2-39/S2-40 remain open. See [protocol](../testing/S2_42G_STACK_REDUCER.md)
+and [plan](../plans/STAGE_2.md#s2-42g-bounded-qword-gpr-pushpop-reducer).
+
+## S2-42h — deterministic qword GPR PUSH/POP corpus
+
+Added 1,024 deterministic schema-v2 fixtures plus 32 handwritten controls for
+the 32 qword register PUSH/POP operation forms. Inputs exercise RSP aliasing,
+stack-span edges, unaligned accesses and canaries. `stage2_corpus_support.py`
+holds the shared strict JSON, hash and file-set operations; the S2-42e MOV
+manifest and CLI behavior remain unchanged.
+
+All 1,056 cases passed local interpreter execution against an independent
+byte-stack oracle. Focused Python suites passed (S2-42h: 8; S2-42e regression:
+9), and `cargo build --offline -p od-runner`, Python compilation,
+`python3 tools/check_layout.py`, `git diff --check` and Graphify update passed
+on main. The remote Linux/native oracle and physical Mac acceptance were not
+run (`not_run`). This corpus does not implement native execution or close parent
+S2-42, which still needs generic reducer coverage, REP/FP groups, dependencies
+S2-21/S2-39/S2-40 and physical acceptance. See [protocol](../testing/S2_42H_STACK_CORPUS.md)
+and [plan](../plans/STAGE_2.md#s2-42h-deterministic-qword-gpr-pushpop-corpus).
+
 ## S2-27g — exact Long64 SWAPGS
 
 Implemented exact bare `0F 01 F8` execution under explicit `SwapgsV1` with

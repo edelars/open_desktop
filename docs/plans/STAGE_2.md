@@ -718,6 +718,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42d | Bounded native XORPD reducer/replay | Native callback uses existing native-v2 executor and its ptrace-supervised disposable tracee; Linux hardware and physical Mac mini remain separate; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42d--bounded-native-xorpd-reducerreplay) |
 | [x] | S2-42e | Deterministic MOV memory/addressing corpus | 1,024 manifest-bound schema-v2 cases; four widths, load/store and seven admitted address forms; interpreter and independent oracle passed; saved evidence binds fixture/schema/profile/backend/build/machine and preflight failures replace stale success; remote Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42e--deterministic-mov-memory-corpus) |
 | [x] | S2-42f | Proposed schema-v2 reducer acceptance contract | Documentation only; no generic reducer or hardware acceptance; parent S2-42 remains open; [protocol](../testing/S2_42_REDUCER_CONTRACT.md), [report](../reports/STAGE_2_REPORT.md#s2-42f--schema-v2-reducer-acceptance-contract) |
+| [x] | S2-42g | Bounded qword GPR PUSH/POP interpreter reducer | Eight focused reducer tests + runnable replay integration; original local fixtures report `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42G_STACK_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42g--bounded-qword-gpr-pushpop-reducer) |
+| [x] | S2-42h | Deterministic qword GPR PUSH/POP corpus | 1,024 generated + 32 handwritten controls; all 1,056 interpreter/oracle cases matched; Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42H_STACK_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42h--deterministic-qword-gpr-pushpop-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -8551,6 +8553,45 @@ coverage matrix. Исполняемый generic schema-v2 reducer не доба�
 
 См. [контракт reducer](../testing/S2_42_REDUCER_CONTRACT.md) и
 [отчёт](../reports/STAGE_2_REPORT.md#s2-42f--schema-v2-reducer-acceptance-contract).
+
+### S2-42g. Bounded qword GPR PUSH/POP reducer
+
+**Статус:** реализован bounded schema-v2 interpreter callback reducer для
+одиночных qword GPR PUSH/POP в `s2-long-integer-v1`. Oracle проверяет полный
+integer state, defined flags, retirement и обе memory regions; для `PUSH RSP`
+использует старый RSP, а `POP RSP` оставляет popped value после предварительного
+increment. Reduction меняет только source GPR или восемь байтов по old RSP;
+layout/code/profile фиксированы. Сравнение callback и mismatch fingerprint
+подтверждаются повторно, raw input digest и replay argv/cwd записываются в
+evidence.
+
+Восемь focused testkit tests, replay integration test, fmt, runner all-target
+check и layout прошли на main. Две локальные CLI smoke fixtures завершились
+`no_initial_mismatch`; реального interpreter mismatch для сокращения не было.
+Replay test исполняет записанную команду с фактическим executable/cwd и
+сохранённым fixture shape, но не доказывает реальный reduction. Native и physical
+hardware остаются `not_run`. Общая S2-42 и dependencies S2-21/S2-39/S2-40
+остаются открыты.
+
+См. [протокол S2-42g](../testing/S2_42G_STACK_REDUCER.md) и
+[отчёт](../reports/STAGE_2_REPORT.md#s2-42g--bounded-qword-gpr-pushpop-reducer).
+
+### S2-42h. Deterministic qword GPR PUSH/POP corpus
+
+Добавлено 1,024 deterministic fixtures (четыре фиксированных seed по 256) и
+32 handwritten controls для 32 комбинаций operation/register, включая RSP
+aliasing, края stack span и unaligned canary cases. Shared helper
+`stage2_corpus_support.py` содержит только общую строгую обработку JSON, hashes
+и file set; существующий 42e формат и CLI сохранены.
+
+Все 1,056 cases прошли interpreter с независимым byte-stack oracle без
+расхождений. Python suites 42h и 42e прошли 8/8 и 9/9; `od-runner` build,
+Python compilation, diff-check, layout и Graphify update прошли. Linux/native и
+physical execution не запускались (`not_run`). S2-42 остаётся открытым для
+обобщённого reducer, REP/FP groups и родительских зависимостей.
+
+См. [протокол S2-42h](../testing/S2_42H_STACK_CORPUS.md) и
+[отчёт](../reports/STAGE_2_REPORT.md#s2-42h--deterministic-qword-gpr-pushpop-corpus).
 
 ### S2-43. Диагностический interpreter и граница JIT
 
