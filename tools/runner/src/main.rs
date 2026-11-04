@@ -39,6 +39,9 @@ fn main() -> ExitCode {
         Some("--reduce-push-pop") => {
             return test_cli::reduce_push_pop(&args[1..]);
         }
+        Some("--reduce-mov-memory") => {
+            return test_cli::reduce_mov_memory(&args[1..]);
+        }
         Some("--reduce-rep-fault") => {
             return test_cli::reduce_rep_fault(&args[1..]);
         }

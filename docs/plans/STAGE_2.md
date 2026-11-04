@@ -725,6 +725,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42k | Bounded forward JZ/JNZ NOP-deletion reducer | Preserves the same MOV-RBX branch target via instruction map/rel8 recomputation; 10 reducer tests + replay integration; local fixture `NoInitialMismatch`, synthetic opposite-path reduction; native/physical `not_run`; [protocol](../testing/S2_42K_BRANCH_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer) |
 | [x] | S2-42l | REP STOSB partial-progress #GP reducer | Literal #GP(0) fixture plus bounded AL-only fault reducer/replay; exact RCX/RDI/memory progress and unchanged RIP/retirement; native/physical `not_run`; [protocol](../testing/S2_42L_REP_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42l--rep-stosb-partial-progress-gp-reducer) |
 | [x] | S2-42m | Deterministic CVTSI2SD interpreter corpus | 1,024 generated + 9 literal controls; all 1,033 fixtures ×2 passed integer-only binary64 oracle; native profile closed and recorded `not_run_profile_closed`; [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus) |
+| [x] | S2-42n | Bounded exact MOV qword memory interpreter reducer | RAX-only reduction for literal `48 89 03`; independent byte-store oracle, complete mapping/mask preservation, callback journal and replay; synthetic stable mismatch and drift/failure/budget regressions; local fixture `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42N_MOV_MEMORY_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42n--bounded-mov-qword-memory-reducer) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -8708,6 +8709,31 @@ physical и JIT не заявляются. S2-39/S2-40 и общий S2-42 ос�
 
 См. [протокол S2-42m](../testing/S2_42M_CVTSI2SD_CORPUS.md) и
 [отчёт](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus).
+
+### S2-42n. Bounded MOV qword memory reducer
+
+**Статус:** добавлен отдельный bounded interpreter reducer для schema-v2
+Long64 профиля `s2-long-integer-v1` и точных байтов `48 89 03` (`MOV qword
+ptr [RBX], RAX`). Fixture допускает одну RX code region и полностью observed RW
+data region с canaries вокруг qword destination; изменяется только RAX. Oracle
+независимо записывает его little-endian bytes и вычисляет RIP/retirement, не
+используя decoder или interpreter. Fingerprint сохраняет только точные
+destination byte offsets, когда остальные наблюдаемые поля полностью совпадают.
+
+Все исходные/candidate/final результаты требуют идентичных пар. Schedule очищает
+установленные биты RAX от старшего к младшему и ограничен 132 callbacks включая
+повторное финальное подтверждение. Evidence сохраняет исходные bytes/digest,
+каждый callback result и journal, expected results, fixture/result hashes,
+fingerprints, budget и replay metadata. Четыре testkit regressions проверяют
+oracle, synthetic stable mismatch reduction, лишний memory drift, callback
+failure, flaky initial results и budget exhaustion; две runner regressions
+проверяют synthetic reduction и replay исходной CLI команды. Литеральная
+fixture сообщает `no_initial_mismatch` после двух callbacks. Native и physical
+исполнение `not_run`; реальный mismatch не обнаружен. S2-42 и зависимости
+S2-21/S2-39/S2-40 остаются открыты.
+
+См. [протокол S2-42n](../testing/S2_42N_MOV_MEMORY_REDUCER.md) и
+[отчёт](../reports/STAGE_2_REPORT.md#s2-42n--bounded-mov-qword-memory-reducer).
 
 ### S2-43. Диагностический interpreter и граница JIT
 

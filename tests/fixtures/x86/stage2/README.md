@@ -9225,3 +9225,11 @@ unverified. Physical x86 acceptance was not performed. See the
 for inherited Intel SDM Rev. 093 sources and the
 [plan](../../../../docs/plans/STAGE_2.md#s2-38ba--exact-legacy-long64-cvtdq2ps-xmm0-m128-rax-with-unmasked-exceptions)
 for implementation and acceptance scope.
+
+### S2-42n exact MOV qword memory reducer fixture
+
+`s2_42n_mov_qword_rbx_rax.case.json` is the literal schema-v2 anchor for
+`48 89 03` in `s2-long-integer-v1`. It has a three-byte RX code mapping, a
+fully observed RW data region, RBX at an interior qword with canaries, and a
+one-instruction stop at `entry+3`. Its reducer changes RAX only. See the
+[S2-42n protocol](../../../../docs/testing/S2_42N_MOV_MEMORY_REDUCER.md).

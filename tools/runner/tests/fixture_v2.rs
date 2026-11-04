@@ -1,5 +1,6 @@
 //! Real CLI/interpreter checks; expected values are hand-calculated from Intel SDM 093.
 use od_testkit::HexU64;
+use od_testkit::mov_memory_reducer::{MovMemoryReductionStop, reduce_mov_memory_fixture};
 use od_testkit::rep_fault_reducer::{
     RepFaultReductionStop, reduce_rep_fault_fixture, rep_fault_oracle,
 };
@@ -14,6 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const LOAD_ADD_STORE: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/mov_load_add_store.case.json");
+const S2_42N_MOV_MEMORY: &[u8] =
+    include_bytes!("../../../tests/fixtures/x86/stage2/s2_42n_mov_qword_rbx_rax.case.json");
 const FMULP_PC64_INEXACT: &[u8] =
     include_bytes!("../../../tests/fixtures/x86/stage2/s2_30da_fmulp_pc64_inexact_pop.case.json");
 const FSUBP_PC24_INEXACT: &[u8] =
@@ -49275,4 +49278,140 @@ fn mulps_m128_unmasked_cli_executes_literals_and_denies_closed_backends() {
             assert!(matches!(denied.snapshot, Observation::Unavailable { .. }));
         }
     }
+}
+
+#[test]
+fn s2_42n_mov_memory_cli_reports_no_initial_mismatch_and_replays_exact_input() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let relative = format!(
+        "work/stage2/s2-42n-mov-memory-reducer/replay-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let fixture_path = root.join("tests/fixtures/x86/stage2/s2_42n_mov_qword_rbx_rax.case.json");
+    let reducer = Command::new(env!("CARGO_BIN_EXE_od-runner"))
+        .args([
+            "--reduce-mov-memory",
+            fixture_path.to_str().unwrap(),
+            "--output-dir",
+            &relative,
+        ])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert_eq!(
+        reducer.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&reducer.stderr)
+    );
+    let report_path = root.join(&relative).join("report.json");
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(&report_path).unwrap()).unwrap();
+    assert_eq!(report["stop_reason"], "no_initial_mismatch");
+    assert_eq!(report["actual_callbacks"], 2);
+    assert_eq!(report["native"], "not_run");
+    assert_eq!(report["physical_hardware"], "not_run");
+    assert!(report["reduced_sha256"].is_null());
+
+    let replay_argv: Vec<String> =
+        serde_json::from_value(report["replay"]["argv_original"].clone()).unwrap();
+    let replay_cwd = report["replay"]["working_directory"].as_str().unwrap();
+    let replay = Command::new(&replay_argv[0])
+        .args(&replay_argv[1..])
+        .current_dir(replay_cwd)
+        .output()
+        .unwrap();
+    assert_eq!(
+        replay.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let replay_result = RunResult::from_json(&replay.stdout).unwrap();
+    assert_eq!(
+        replay_result.input_sha256,
+        report["original_sha256"].as_str().unwrap()
+    );
+    let saved: RunResult = serde_json::from_slice(
+        &fs::read(root.join(&relative).join("initial-1.result.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replay_result, saved);
+
+    let reducer_argv: Vec<String> =
+        serde_json::from_value(report["replay"]["argv_reducer"].clone()).unwrap();
+    let reducer_replay = Command::new(&reducer_argv[0])
+        .args(&reducer_argv[1..])
+        .current_dir(replay_cwd)
+        .output()
+        .unwrap();
+    assert_eq!(
+        reducer_replay.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&reducer_replay.stderr)
+    );
+    assert!(String::from_utf8_lossy(&reducer_replay.stdout).contains("NoInitialMismatch"));
+    fs::remove_dir_all(root.join(relative)).unwrap();
+}
+
+#[test]
+fn s2_42n_mov_memory_synthetic_stable_mismatch_reduces_only_rax() {
+    let (loaded, baseline) = run(S2_42N_MOV_MEMORY, "interpreter", 0);
+    let digest = loaded.input_sha256.clone();
+    let template = baseline.clone();
+    let reduction = reduce_mov_memory_fixture(&loaded.fixture, &digest, 132, |candidate| {
+        let mut result = template.clone();
+        let candidate_digest = if candidate == &loaded.fixture {
+            digest.clone()
+        } else {
+            od_testkit::sha256_hex(&candidate.to_json().unwrap())
+        };
+        let expected =
+            od_testkit::mov_memory_reducer::mov_memory_oracle(candidate, &candidate_digest)
+                .unwrap();
+        result.input_sha256 = candidate_digest;
+        result.outcome = Outcome::StopAddress {};
+        result.instructions_executed = Observation::Available { value: HexU64(1) };
+        let observed = snapshot_mut(&mut result);
+        observed.state = expected.state;
+        observed.rflags_defined = expected.rflags_defined;
+        observed.memory = expected.memory;
+        let data = observed
+            .memory
+            .iter_mut()
+            .find(|region| region.region_id == "data")
+            .unwrap();
+        let mut bytes: Vec<u8> = data
+            .bytes_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        bytes[8] ^= 1;
+        data.bytes_hex = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        Ok(result)
+    })
+    .unwrap();
+    assert_eq!(
+        reduction.stop,
+        MovMemoryReductionStop::Reduced,
+        "{:?}",
+        reduction.stop_detail
+    );
+    assert_eq!(
+        reduction
+            .final_fingerprint
+            .unwrap()
+            .wrong_destination_byte_offsets,
+        [0]
+    );
+    assert_eq!(
+        reduction.reduced_fixture.unwrap().initial_state.gpr[0].get(),
+        0
+    );
 }

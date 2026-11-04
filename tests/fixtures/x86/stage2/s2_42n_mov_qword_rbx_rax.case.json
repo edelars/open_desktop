@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_42n_mov_qword_rbx_rax",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten exact MOV qword ptr [RBX], RAX schema-v2 reducer anchor.",
+    "specification": "Intel 64 and IA-32 Architectures Software Developer's Manual, MOV r/m64,r64 encoding 48 89 /r.",
+    "specification_version": "Intel SDM revision 093; project S2-42n"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0123456789abcdef", "0x0000000000000003", "0xdeadbeeffedcba98", "0x0000000000300008",
+      "0x0000000000300080", "0x0000000000300080", "0x0000000000200009", "0x0000000000200000",
+      "0x0123456789abcdef", "0xfedcba9876543210", "0x8877665544332211", "0xaabbccddeeff0011",
+      "0x1122112211221122", "0x3344334433443344", "0x778899aabbccddee", "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x00000000000008d7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 3,
+      "permissions": { "read": true, "write": false, "execute": true },
+      "initial_bytes_hex": "488903",
+      "comparison_mask_hex": "ffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000300000",
+      "length": 24,
+      "permissions": { "read": true, "write": true, "execute": false },
+      "initial_bytes_hex": "a0a1a2a3a4a5a6a7b0b1b2b3b4b5b6b7c0c1c2c3c4c5c6c7",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100003",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

@@ -11,6 +11,7 @@ pub mod generate;
 mod hex_u64;
 pub mod memory;
 pub mod minimize;
+pub mod mov_memory_reducer;
 pub mod native_xorpd;
 pub mod rep_fault_reducer;
 pub mod result;

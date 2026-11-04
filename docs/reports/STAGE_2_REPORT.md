@@ -24292,3 +24292,37 @@ found no remaining findings. Initial Sol/high review found
 validator bypasses for `not_run` pass status, CPUID FXSR/SSE,
 canonical/overlapping observation spans, and raw MXCSR_MASK consistency. This
 follow-up closes those and adds regression coverage. Parent S2-39 remains open.
+
+## S2-42n — bounded MOV qword memory reducer
+
+Added an interpreter-only schema-v2 reducer for exact Long64
+`s2-long-integer-v1` bytes `48 89 03` (`MOV qword ptr [RBX], RAX`). Admission
+requires one RX three-byte code region, one fully observed non-executable RW
+data region with canaries around the RBX destination, budget one, and stop at
+`entry+3`. Candidate changes are limited to RAX. The independent oracle writes
+the eight little-endian source bytes and checks complete state, retirement,
+code/data bytes and canaries. The fingerprint records only destination-relative
+byte offsets when every other observed field matches exactly.
+
+The callback schedule clears RAX bits high-to-low and caps the entire run at
+132 callbacks including two initial runs, up to 64 paired proposals and two
+final confirmations. Each callback result, journal record, fixture/result
+digest, independent expected result, mismatch fingerprint, provenance and
+replay command is retained. Four testkit regressions cover the literal byte
+oracle, synthetic stable mismatch reduction, extra data drift, callback error,
+flaky initial pair and budget exhaustion. Runner regressions cover synthetic
+reduction and replay of the exact source fixture. The literal CLI fixture
+returned `no_initial_mismatch` after two interpreter callbacks; no real CPU
+mismatch was observed. Focused tests (`od-testkit` 4/4 and runner fixture
+regressions 2/2), runner all-target check and format passed. `tools/check_layout.py`
+reports the linked worktree `.git` pointer as an unmapped root file; per the
+worktree setup note this layout check is to be repeated after transfer on main.
+Independent Sol/high review is clean after updating saved reducer replay to use
+the preserved original fixture and a fresh output directory.
+The full 585-test runner fixture suite did not complete: it reached 522 tests,
+then `divpd_m128_unmasked_memory_commits_events_atomically_and_keeps_lane_precedence`
+remained active past 60 seconds; the run was stopped after about 120 seconds.
+That suite is unverified for this slice.
+Native and physical execution remain `not_run`; parent S2-42 and S2-21/S2-39/
+S2-40 remain open. See the [protocol](../testing/S2_42N_MOV_MEMORY_REDUCER.md)
+and [plan](../plans/STAGE_2.md#s2-42n-bounded-mov-qword-memory-reducer).
