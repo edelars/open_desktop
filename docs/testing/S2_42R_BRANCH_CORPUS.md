@@ -8,8 +8,13 @@ address is the branch target when taken and the next instruction otherwise.
 
 **Status:** the full 1,056-case corpus has passed two local interpreter runs per
 case and saved-result verification (2,112 exact executions; corpus digest
-`4394020ce98b7cd70e7219fb656e4557d992b766e4626e2ce07c8176e024d26c`). Physical
-Linux x86 native acceptance and physical Mac acceptance remain `not_run`.
+`4394020ce98b7cd70e7219fb656e4557d992b766e4626e2ce07c8176e024d26c`).
+Subsequent Linux x86_64 native acceptance passed all 1,056 cases twice at
+source fingerprint
+`ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; 2,112
+saved results per backend matched. Evidence: [summary](../../work/stage2-42r-oracle/s2-42r-summary.json)
+and `work/stage2-42r-oracle/stage2-20261104-115710-057e3506/`. Physical Mac
+acceptance remains `not_run`.
 
 ## Corpus and independent expected state
 

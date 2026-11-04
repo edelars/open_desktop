@@ -86,6 +86,9 @@ canaries, strict bundle verification, saved-result identity and provenance
 types, and fail-closed summary behavior including a symlinked corpus path. A
 local macOS interpreter run executed all 1,060 fixtures and matched their
 independent expected results. This is interpreter evidence only.
-The Linux native SSH comparison and physical Mac acceptance have not been run
-and remain `not_run`; corpus generation does not imply native or physical
-correctness, and S2-42 remains open.
+Subsequent Linux x86_64 native acceptance passed all 1,060 cases twice at source
+fingerprint
+`ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; 2,120
+saved results per backend matched. Evidence: [summary](../../work/stage2-42i-oracle/s2-42i-summary.json)
+and `work/stage2-42i-oracle/stage2-20261104-115224-e036b506/`. Physical Mac
+acceptance remains `not_run`. S2-42 remains open.
