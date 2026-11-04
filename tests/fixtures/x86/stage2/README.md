@@ -9370,3 +9370,14 @@ distinct generated inputs; all 1,026 passed twice locally with strict saved
 replay. Native is denied before backend execution. No atomicity or hardware
 claim is made. See the
 [S2-42w protocol](../../../../docs/testing/S2_42W_XCHG_MEMORY_CORPUS.md).
+
+### S2-42x register XADD corpus
+
+s2_42x_xadd_qword_register_controls/ contains 16 pinned boundary controls for
+exact 48 0F C1 C0 (XADD RAX,RAX). The 1,024 generated architectural inputs are
+unique and cover 64-bit wrap, signed overflow, and arithmetic flag boundaries.
+The independent oracle checks the doubled RAX result, ADD flags, all GPRs,
+defined RFLAGS, RIP, retirement, and unchanged execute-only code. All 1,040
+cases passed twice locally with saved replay verification. Native is denied
+before backend execution. See the
+[S2-42x protocol](../../../../docs/testing/S2_42X_XADD_REGISTER_CORPUS.md).

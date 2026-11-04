@@ -24591,3 +24591,26 @@ claims. S2-21/S2-39/S2-40 and parent S2-42 remain open. See the
 [protocol](../testing/S2_42W_XCHG_MEMORY_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42w--local-qword-memory-xchg-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42w-qword-memory-xchg-corpus).
+
+## S2-42x — qword register XADD alias corpus
+
+S2-42x covers only the S2-21b alias encoding 48 0F C1 C0 (XADD RAX,RAX).
+Sixteen pinned controls exercise arithmetic boundaries, and 1,024 generated
+inputs are unique across full architectural inputs. The independent integer
+oracle computes the wrapping sum and ADD flags using defined mask 0x8d5.
+Snapshots verify all GPRs, defined RFLAGS, unchanged execute-only code,
+RIP+4, one retired instruction, stop, and no exception.
+
+All 1,040 cases passed twice on the local interpreter (2,080 executions).
+Strict saved replay verification passed. Focused tests passed 12/12;
+the corpus digest is
+4a00b60c859916115e407f22c5a0be586d9381bdbb3ecd08bb3f6572f749120e.
+Tests also reject wrong wire schema/types, unexpected fields, source/host
+provenance mismatches, malformed saved records, unstable repeats, interrupted
+runs, and timeouts with partial-output evidence. The explicit native request
+records blocked/not_started before backend execution. Native and physical
+execution remain not_run. This one alias form does not close S2-21 or parent
+S2-42. See the
+[protocol](../testing/S2_42X_XADD_REGISTER_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42x--qword-register-xadd-alias-corpus),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42x-register-xadd-corpus).

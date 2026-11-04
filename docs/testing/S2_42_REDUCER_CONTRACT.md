@@ -235,7 +235,7 @@ completion requires a separate executable slice and recorded results satisfying
 the applicable rows. Parent S2-42 remains open until its dependencies and all
 selected mandatory groups have the required evidence.
 
-## Current coverage map — S2-42r/s/t/u/v/w update
+## Current coverage map — S2-42r/s/t/u/v/w/x update
 
 The S2-42f snapshot above is retained as the historical contract-time view.
 This table records the current implementation and evidence after S2-42q/r/s/t/u; it
@@ -250,7 +250,7 @@ does not imply hardware acceptance.
 | Integer stack and branches | S2-42g/h stack reducers/corpus; S2-42k forward JZ/JNZ reducer; S2-42r JZ/JNZ rel8 corpus with 32 controls and 1,024 generated inputs | S2-42r: all 1,056 cases passed twice; 1,024 distinct architectural inputs and synthetic saved-run debug/release roundtrips verified | Actual native/physical `not_run` | Cross-group execution, rel32/indirect/fault branches, and remaining mandatory forms |
 | Positive REP and continuation | S2-42i positive STOSB corpus; S2-42s checkpoint/replay for counts 1024/1025/2048/2049 and DF=0/1 | S2-42s passed 8×2 executions across 32 phases, exact-once write journal, serialized replay, defined-flags comparison | Native/physical `not_run` | Other REP widths/address sizes, fault/restart cases, and required native corpus remain open |
 | REP faults and FP | S2-42l partial-progress fault reducer; S2-42o one bounded SQRTSS SNaN fault reducer | Exact local fault/reducer evidence is scoped to each slice | Native/physical `not_run`; broader FP acceptance remains open | Broader fault, partial-progress, FP state and save/restore requirements |
-| Atomic/fence and additional mandatory ISA | S2-42t local LOCK XADD; S2-42u bare qword memory CMPXCHG; S2-42v both qword register CMPXCHG encodings; S2-42w bare qword memory XCHG at the S2-21a split boundary | S2-42t's 1,056, S2-42u's 1,026, S2-42v's 1,040, and S2-42w's 1,026 inputs each passed twice locally with independent full-state oracles and strict saved replay; 42u/v/w retain process provenance and interruption evidence | Native requests explicitly blocked before backend; actual native and physical acceptance not_run | S2-21 atomic contract, ISSUE-017 LOCK questions, and S2-40 inventory remain open; these local corpora do not establish SMP/hardware atomicity or general memory ordering |
+| Atomic/fence and additional mandatory ISA | S2-42t LOCK memory XADD; S2-42u memory CMPXCHG; S2-42v register CMPXCHG; S2-42w memory XCHG; S2-42x register XADD RAX,RAX | S2-42t/u/v/w/x each passed twice locally with independent full-state oracles, strict saved replay and provenance; x covers 16 pinned controls + 1,024 unique generated cases | Native requests explicitly blocked before backend; native and physical evidence not_run | S2-21 atomic contract, ISSUE-017 LOCK questions, and S2-40 inventory remain open; local corpora do not establish SMP/hardware atomicity or general memory ordering |
 
 Parent S2-42 remains open, as do dependencies S2-21, S2-39 and S2-40. Physical
 hardware acceptance is `not_run`. S2-42q closes the handwritten-boundary gap
@@ -259,6 +259,7 @@ branch corpus; and S2-42s adds local REP work-limit checkpoint/replay evidence.
 S2-42t adds local private-RAM LOCK XADD arithmetic coverage while explicitly
 preserving native denial; S2-42u adds a local CMPXCHG split-region corpus;
 S2-42v covers both qword register CMPXCHG forms and their aliases; S2-42w adds
-a separate XCHG split-region corpus that preserves every defined RFLAGS bit.
-All three explicitly deny native execution. None closes the parent
-reducer/corpus requirement.
+a separate XCHG split-region corpus that preserves every defined RFLAGS bit;
+S2-42x adds the qword register XADD alias and its arithmetic flags. These
+corpora explicitly deny native execution. None closes the parent reducer/corpus
+requirement.

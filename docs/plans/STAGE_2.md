@@ -20295,3 +20295,23 @@ focused S2-21a tests. S2-21 and parent S2-42 remain open. See the
 [protocol](../testing/S2_42W_XCHG_MEMORY_CORPUS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42w-qword-memory-xchg-corpus),
 and [report](../reports/STAGE_2_REPORT.md#s2-42w--local-qword-memory-xchg-corpus).
+| [x] | S2-42x | qword register-register XADD alias corpus | 16 pinned boundary controls + 1,024 unique generated inputs for 48 0F C1 C0 (XADD RAX,RAX); 1,040×2 passed locally with strict saved replay and exact provenance; native blocked/not_started; S2-21/39/40 and parent S2-42 remain open; [protocol](../testing/S2_42X_XADD_REGISTER_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42x--qword-register-xadd-alias-corpus) |
+
+### S2-42x — qword register XADD alias corpus
+
+Adds 16 pinned arithmetic-boundary controls and 1,024 deterministic generated
+inputs for the exact S2-21b bytes 48 0F C1 C0 (XADD RAX,RAX). The independent
+integer oracle computes the wrapping 64-bit doubling result and ADD flags
+under the defined mask 0x8d5. Full checks cover all GPRs, defined RFLAGS,
+execute-only code bytes, RIP+4, one retirement, stop, and no exception.
+
+All 1,040 cases passed twice on the local interpreter with strict saved replay
+and runner/source provenance. Focused regression tests passed 12/12, including
+exact wire-field types, runner identity mismatches, malformed saved evidence,
+repeat instability, interruption, and timeout diagnostics. The explicit
+native request records blocked/not_started before backend invocation. Native
+and physical execution remain not_run. This alias-only corpus does not close
+S2-21 or parent S2-42. See the
+[protocol](../testing/S2_42X_XADD_REGISTER_CORPUS.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42x-register-xadd-corpus),
+and [report](../reports/STAGE_2_REPORT.md#s2-42x--qword-register-xadd-alias-corpus).
