@@ -9439,3 +9439,15 @@ from RAX.bit63, plus preserved flags/state and retirement. All 2,080 cases
 passed twice locally with strict saved replay. Native is denied before backend
 execution. See the
 [S2-42ac protocol](../../../../docs/testing/S2_42AC_SIGN_EXTENSION_CORPUS.md).
+
+
+### S2-42ad IDIV BL #DE corpus
+
+`s2_42ad_idiv_bl_fault_controls/` contains eight pinned controls for exact
+`F6 FB` (IDIV BL). The corpus adds 1,024 unique generated fault inputs, split
+evenly between signed divisor zero and quotient overflow. The integer oracle
+uses signed AX/BL division truncated toward zero and rejects valid quotient
+neighbors. All 1,032 cases passed twice locally with unchanged full state,
+#DE vector 0, and zero retirement; strict saved replay passed. Native fault
+delivery remains blocked before backend. See the
+[S2-42ad protocol](../../../../docs/testing/S2_42AD_IDIV_BL_ERROR_CORPUS.md).

@@ -24721,3 +24721,24 @@ This selected corpus does not close S2-15a or parent S2-42. See the
 [protocol](../testing/S2_42AC_SIGN_EXTENSION_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42ac--cdqe-cqo-sign-extension-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ac-sign-extension-corpus).
+
+
+## S2-42ad — IDIV BL divide-error corpus
+
+S2-42ad covers exact Long64 `F6 FB` (`IDIV BL`) #DE cases. Eight pinned
+controls and 1,024 unique generated inputs are split evenly between a zero
+signed divisor and signed quotient overflow. The independent integer oracle
+interprets AX as signed 16-bit, BL as signed 8-bit, and truncates division
+toward zero; it rejects valid neighboring quotients at `-128`, `127`, and
+`-127`. Expected state preserves all GPRs, RFLAGS/definedness, RIP, and code,
+observes #DE vector 0 with unavailable error code and fault address, and
+requires zero retired instructions.
+
+Nine focused tests passed. All 1,032 cases passed twice locally; strict saved
+replay passed with corpus digest
+`bc58b424c0fb27e0421d0f8ea393560eaa468879b7a4cedc09758d8de8dd6560`.
+Native execution is blocked before backend invocation, so no native or physical
+#DE delivery is claimed. The slice does not close S2-14, S2-20, or parent S2-42.
+See the [protocol](../testing/S2_42AD_IDIV_BL_ERROR_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42ad--idiv-bl-divide-error-corpus), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ad-idiv-bl-error-corpus).
