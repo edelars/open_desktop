@@ -70,7 +70,8 @@ use od_isa::execute::{
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
 use od_testkit::branch_reducer::{
-    BRANCH_REDUCER_DEFAULT_BUDGET, BRANCH_REDUCER_MAX_BUDGET, BranchReductionStop, branch_oracle,
+    BRANCH_ORACLE_VERSION, BRANCH_REDUCER_DEFAULT_BUDGET, BRANCH_REDUCER_MAX_BUDGET,
+    BRANCH_REDUCER_VERSION, BranchReductionStop, branch_oracle,
     reduce_branch_fixture_with_input_digest,
 };
 use od_testkit::case::{Fixture, LoadedFixture};
@@ -182,6 +183,7 @@ fn reduce_branch_nops_inner(args: &[String]) -> Result<ExitCode, String> {
     fs::create_dir(callbacks.join("candidates")).map_err(|error| error.to_string())?;
     write_new(output_path.join("original.case.json"), &original_bytes)?;
     let mut sequence = 0usize;
+    let mut callback_repeats = HashMap::<String, usize>::new();
     let reduction = reduce_branch_fixture_with_input_digest(
         &loaded.fixture,
         &loaded.input_sha256,
@@ -205,6 +207,8 @@ fn reduce_branch_nops_inner(args: &[String]) -> Result<ExitCode, String> {
                 }
                 relative
             };
+            let repeat = callback_repeats.entry(digest.clone()).or_default();
+            *repeat += 1;
             let run_result = (|| -> Result<_, String> {
                 let candidate_loaded =
                     v2::Fixture::from_json(&bytes).map_err(|error| error.to_string())?;
@@ -218,6 +222,7 @@ fn reduce_branch_nops_inner(args: &[String]) -> Result<ExitCode, String> {
                         sequence,
                         &serde_json::json!({
                             "sequence": sequence, "fixture_sha256": digest, "fixture": fixture_path,
+                            "repeat": *repeat,
                             "backend": "interpreter", "status": "harness_error", "error": error
                         }),
                     )?;
@@ -233,6 +238,7 @@ fn reduce_branch_nops_inner(args: &[String]) -> Result<ExitCode, String> {
                 sequence,
                 &serde_json::json!({
                     "sequence": sequence, "fixture_sha256": digest, "fixture": fixture_path,
+                    "repeat": *repeat,
                     "backend": "interpreter", "status": "completed", "result": result_path,
                     "result_sha256": sha256_hex(&result_bytes)
                 }),
@@ -258,7 +264,111 @@ fn reduce_branch_nops_inner(args: &[String]) -> Result<ExitCode, String> {
             &fixture.to_json().map_err(|error| error.to_string())?,
         )?;
     }
-    let report = serde_json::to_vec_pretty(&reduction).map_err(|error| error.to_string())?;
+    let expected_original_bytes = serde_json::to_vec_pretty(&reduction.expected_original)
+        .map_err(|error| error.to_string())?;
+    let expected_original_digest = sha256_hex(&expected_original_bytes);
+    write_new(
+        output_path.join("expected-original.json"),
+        &expected_original_bytes,
+    )?;
+    let expected_reduced_digest = if let Some(expected) = &reduction.expected_reduced {
+        let bytes = serde_json::to_vec_pretty(expected).map_err(|error| error.to_string())?;
+        let digest = sha256_hex(&bytes);
+        write_new(output_path.join("expected-reduced.json"), &bytes)?;
+        Some(digest)
+    } else {
+        None
+    };
+    let runner_executable = std::env::current_exe()
+        .map_err(|error| format!("could not locate current runner executable: {error}"))?
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize runner executable: {error}"))?
+        .display()
+        .to_string();
+    let replay_working_directory = std::env::current_dir()
+        .and_then(fs::canonicalize)
+        .map_err(|error| format!("could not canonicalize replay working directory: {error}"))?
+        .display()
+        .to_string();
+    let original_replay_argv = vec![
+        runner_executable.clone(),
+        "--fixture".to_string(),
+        output_path.join("original.case.json").display().to_string(),
+        "--engine".to_string(),
+        "interpreter".to_string(),
+        "--json".to_string(),
+    ];
+    let reduced_replay_argv = reduction.reduced_fixture.as_ref().map(|_| {
+        vec![
+            runner_executable.clone(),
+            "--fixture".to_string(),
+            output_path.join("reduced.case.json").display().to_string(),
+            "--engine".to_string(),
+            "interpreter".to_string(),
+            "--json".to_string(),
+        ]
+    });
+    let reducer_invocation_argv = std::env::args().collect::<Vec<_>>();
+    let initial_result_digests = reduction
+        .initial_results
+        .iter()
+        .map(|result| {
+            result
+                .to_json()
+                .map(|bytes| sha256_hex(&bytes))
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let final_result_digests = reduction
+        .final_results
+        .iter()
+        .map(|result| {
+            result
+                .to_json()
+                .map(|bytes| sha256_hex(&bytes))
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let reduced_fixture_digest = reduction
+        .reduced_fixture
+        .as_ref()
+        .map(|fixture| {
+            fixture
+                .to_json()
+                .map(|bytes| sha256_hex(&bytes))
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    let report = serde_json::json!({
+        "report_version": 1,
+        "reducer_version": BRANCH_REDUCER_VERSION,
+        "oracle_version": BRANCH_ORACLE_VERSION,
+        "profile": loaded.fixture.profile,
+        "source_fixture": input_path,
+        "original_sha256": sha256_hex(&original_bytes),
+        "reduced_sha256": reduced_fixture_digest,
+        "source_revision": local_revision(),
+        "toolchain": local_rustc_version(),
+        "machine": {"host_os": std::env::consts::OS, "host_arch": std::env::consts::ARCH},
+        "backend": "interpreter",
+        "cost_metric": "total_nop_count",
+        "result_sha256": {
+            "initial": initial_result_digests,
+            "final": final_result_digests,
+            "expected_original": expected_original_digest,
+            "expected_reduced": expected_reduced_digest
+        },
+        "replay": {
+            "working_directory": replay_working_directory,
+            "environment_overrides": {},
+            "original": {"argv": original_replay_argv, "fixture": "original.case.json", "fixture_sha256": sha256_hex(&original_bytes)},
+            "reduced": reduced_replay_argv.map(|argv| serde_json::json!({"argv": argv, "fixture": "reduced.case.json", "fixture_sha256": reduced_fixture_digest})),
+            "reducer_argv": reducer_invocation_argv,
+            "canonical_executable": runner_executable
+        },
+        "reduction": reduction
+    });
+    let report = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
     write_new(output_path.join("report.json"), &report)?;
     println!(
         "branch NOP reducer: {:?}; callbacks={}; output={}",
@@ -268,9 +378,11 @@ fn reduce_branch_nops_inner(args: &[String]) -> Result<ExitCode, String> {
     );
     Ok(match reduction.stop {
         BranchReductionStop::UnsupportedMismatch => ExitCode::from(EXIT_UNSUPPORTED),
-        BranchReductionStop::CallbackError | BranchReductionStop::FinalConfirmationFailed => {
-            ExitCode::from(EXIT_HARNESS_FAILURE)
-        }
+        BranchReductionStop::FlakyInitial
+        | BranchReductionStop::FlakyCandidate
+        | BranchReductionStop::CandidateBudgetExhausted
+        | BranchReductionStop::CallbackError
+        | BranchReductionStop::FinalConfirmationFailed => ExitCode::from(EXIT_HARNESS_FAILURE),
         _ => ExitCode::SUCCESS,
     })
 }

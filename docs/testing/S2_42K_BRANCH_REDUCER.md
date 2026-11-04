@@ -46,3 +46,14 @@ The command should report `NoInitialMismatch` after two interpreter callbacks.
 It writes the original fixture, callback records/results, and reducer report
 under the selected fresh child directory. The fixture is a correctness smoke
 case only; it does not claim a CPU defect or native backend result.
+
+The report stores each proposal's source/candidate digest, group and NOP cost,
+independent expected result, callback result digests/outcomes/counts, decision
+and rejection reason, plus old/new offsets and addresses for the retained Jcc
+and both MOV instruction identities. It records the reducer/oracle versions,
+source revision, toolchain, machine/backend and exact reducer invocation. The
+`replay` object records canonical runner argv, working directory, fixture paths
+and digests for original and (when available) reduced replay; the current
+interpreter command requires no environment overrides. The integration test
+executes the saved original replay argv from the recorded working directory and
+compares its architectural result with the saved callback result.

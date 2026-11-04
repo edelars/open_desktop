@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 
 pub const BRANCH_REDUCER_DEFAULT_BUDGET: usize = 260;
 pub const BRANCH_REDUCER_MAX_BUDGET: usize = 260;
+pub const BRANCH_REDUCER_VERSION: &str = "s2-42k-branch-nop-v1";
+pub const BRANCH_ORACLE_VERSION: &str = "s2-42k-jcc-full-state-oracle-v1";
 const MAX_NOP_COUNT: usize = 128;
 const ZF: u64 = 1 << 6;
 
@@ -78,12 +80,52 @@ pub struct BranchReduction {
     pub expected_reduced: Option<BranchExpectedResult>,
     pub initial_fingerprint: Option<BranchMismatchFingerprint>,
     pub final_fingerprint: Option<BranchMismatchFingerprint>,
+    pub candidate_attempts: Vec<BranchCandidateAttempt>,
     pub actual_callbacks: usize,
     pub candidate_proposals: usize,
     pub candidate_runs: usize,
     pub accepted_candidates: usize,
     pub original_nops: usize,
     pub final_nops: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BranchCandidateAttempt {
+    pub sequence: usize,
+    pub source_sha256: String,
+    pub candidate_sha256: String,
+    pub deleted_nop_group: String,
+    pub nops_before: usize,
+    pub nops_after: usize,
+    pub expected_result: BranchExpectedResult,
+    pub result_sha256: Vec<String>,
+    pub observed_outcomes: Vec<Outcome>,
+    pub observed_instruction_counts: Vec<Observation<HexU64>>,
+    pub observed_fingerprint: Option<BranchMismatchFingerprint>,
+    pub instruction_map: Vec<BranchInstructionRelocation>,
+    pub decision: BranchCandidateDecision,
+    pub reason: String,
+    pub callbacks: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BranchInstructionRelocation {
+    pub instruction: String,
+    pub source_offset: usize,
+    pub candidate_offset: usize,
+    pub source_address: HexU64,
+    pub candidate_address: HexU64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchCandidateDecision {
+    Accepted,
+    Rejected,
+    Flaky,
+    Error,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,9 +155,15 @@ enum InstructionIdentity {
 
 enum CandidateDecision {
     Accept,
-    Reject,
+    Reject(String),
     Flaky(String),
     Error(String),
+}
+
+struct CandidateEvaluation {
+    decision: CandidateDecision,
+    results: Vec<RunResult>,
+    fingerprint: Option<BranchMismatchFingerprint>,
 }
 
 /// Run a deterministic NOP-deletion schedule while the exact opposite branch
@@ -152,6 +200,7 @@ where
         expected_reduced: None,
         initial_fingerprint: None,
         final_fingerprint: None,
+        candidate_attempts: Vec::new(),
         actual_callbacks: 0,
         candidate_proposals: 0,
         candidate_runs: 0,
@@ -238,14 +287,75 @@ where
                 return Err("NOP candidate did not strictly decrease instruction count".into());
             }
             report.candidate_proposals += 1;
-            report.candidate_runs += 1;
-            match try_candidate(&candidate, &initial_fingerprint, &mut execute, &mut report)? {
+            let source_digest = if current == *original {
+                original_input_sha256.to_string()
+            } else {
+                sha256_hex(&current.to_json().map_err(|error| error.to_string())?)
+            };
+            let candidate_digest =
+                sha256_hex(&candidate.to_json().map_err(|error| error.to_string())?);
+            let expected_candidate = branch_oracle(&candidate, &candidate_digest)?;
+            let callbacks_before = report.actual_callbacks;
+            let evaluation =
+                try_candidate(&candidate, &initial_fingerprint, &mut execute, &mut report)?;
+            let candidate_callback_count = report.actual_callbacks - callbacks_before;
+            report.candidate_runs += candidate_callback_count;
+            let (decision_status, reason) = match &evaluation.decision {
+                CandidateDecision::Accept => (
+                    BranchCandidateDecision::Accepted,
+                    "two stable executions preserve the original mismatch fingerprint".to_string(),
+                ),
+                CandidateDecision::Reject(reason) => {
+                    (BranchCandidateDecision::Rejected, reason.clone())
+                }
+                CandidateDecision::Flaky(reason) => {
+                    (BranchCandidateDecision::Flaky, reason.clone())
+                }
+                CandidateDecision::Error(reason) => {
+                    (BranchCandidateDecision::Error, reason.clone())
+                }
+            };
+            report.candidate_attempts.push(BranchCandidateAttempt {
+                sequence: report.candidate_proposals,
+                source_sha256: source_digest,
+                candidate_sha256: candidate_digest,
+                deleted_nop_group: nop_group_name(group).to_string(),
+                nops_before: current_template.total_nops(),
+                nops_after: candidate_template.total_nops(),
+                expected_result: expected_candidate,
+                result_sha256: evaluation
+                    .results
+                    .iter()
+                    .map(|result| {
+                        result
+                            .to_json()
+                            .map(|bytes| sha256_hex(&bytes))
+                            .map_err(|error| error.to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                observed_outcomes: evaluation
+                    .results
+                    .iter()
+                    .map(|result| result.outcome.clone())
+                    .collect(),
+                observed_instruction_counts: evaluation
+                    .results
+                    .iter()
+                    .map(|result| result.instructions_executed.clone())
+                    .collect(),
+                observed_fingerprint: evaluation.fingerprint.clone(),
+                instruction_map: instruction_relocations(current_template, candidate_template)?,
+                decision: decision_status,
+                reason,
+                callbacks: candidate_callback_count,
+            });
+            match evaluation.decision {
                 CandidateDecision::Accept => {
                     current = candidate;
                     current_template = candidate_template;
                     report.accepted_candidates += 1;
                 }
-                CandidateDecision::Reject => break,
+                CandidateDecision::Reject(_) => break,
                 CandidateDecision::Flaky(detail) => {
                     report.stop = BranchReductionStop::FlakyCandidate;
                     report.stop_detail = Some(detail);
@@ -625,6 +735,54 @@ fn instruction_address_map(template: Template) -> BTreeMap<InstructionIdentity, 
     ])
 }
 
+fn instruction_relocations(
+    source: Template,
+    candidate: Template,
+) -> Result<Vec<BranchInstructionRelocation>, String> {
+    let source_map = instruction_address_map(source);
+    let candidate_map = instruction_address_map(candidate);
+    [
+        (InstructionIdentity::Branch, "jcc"),
+        (InstructionIdentity::MovRax, "mov_rax"),
+        (InstructionIdentity::MovRbx, "mov_rbx_target"),
+    ]
+    .into_iter()
+    .map(|(identity, label)| {
+        let source_offset = *source_map
+            .get(&identity)
+            .ok_or("source instruction map is incomplete")?;
+        let candidate_offset = *candidate_map
+            .get(&identity)
+            .ok_or("candidate instruction map is incomplete")?;
+        Ok(BranchInstructionRelocation {
+            instruction: label.to_string(),
+            source_offset,
+            candidate_offset,
+            source_address: HexU64(
+                source
+                    .base
+                    .checked_add(source_offset as u64)
+                    .ok_or("source address overflows")?,
+            ),
+            candidate_address: HexU64(
+                candidate
+                    .base
+                    .checked_add(candidate_offset as u64)
+                    .ok_or("candidate address overflows")?,
+            ),
+        })
+    })
+    .collect()
+}
+
+fn nop_group_name(group: NopGroup) -> &'static str {
+    match group {
+        NopGroup::BeforeRax => "before_rax",
+        NopGroup::BetweenMoves => "between_moves",
+        NopGroup::AfterRbx => "after_rbx",
+    }
+}
+
 impl Template {
     fn total_nops(self) -> usize {
         self.a_nops + self.b_nops + self.c_nops
@@ -735,32 +893,67 @@ fn try_candidate<F>(
     expected: &BranchMismatchFingerprint,
     execute: &mut F,
     report: &mut BranchReduction,
-) -> Result<CandidateDecision, String>
+) -> Result<CandidateEvaluation, String>
 where
     F: FnMut(&Fixture) -> Result<RunResult, String>,
 {
     let digest = sha256_hex(&candidate.to_json().map_err(|error| error.to_string())?);
     let first = match invoke(execute, candidate, &mut report.actual_callbacks) {
         Ok(result) => result,
-        Err(error) => return Ok(CandidateDecision::Error(error)),
+        Err(error) => {
+            return Ok(CandidateEvaluation {
+                decision: CandidateDecision::Error(error),
+                results: Vec::new(),
+                fingerprint: None,
+            });
+        }
     };
     let second = match invoke(execute, candidate, &mut report.actual_callbacks) {
         Ok(result) => result,
-        Err(error) => return Ok(CandidateDecision::Error(error)),
+        Err(error) => {
+            return Ok(CandidateEvaluation {
+                decision: CandidateDecision::Error(error),
+                results: vec![first],
+                fingerprint: None,
+            });
+        }
     };
     if !same_semantic_result(&first, &second) {
-        return Ok(CandidateDecision::Flaky(
-            "candidate callback results differ semantically".into(),
-        ));
+        return Ok(CandidateEvaluation {
+            decision: CandidateDecision::Flaky(
+                "candidate callback results differ semantically".into(),
+            ),
+            results: vec![first, second],
+            fingerprint: None,
+        });
     }
-    match fingerprint_pair(candidate, &digest, &first, &second) {
+    let (decision, fingerprint) = match fingerprint_pair(candidate, &digest, &first, &second) {
         Ok((Some(left), Some(right))) if left == right && left == *expected => {
-            Ok(CandidateDecision::Accept)
+            (CandidateDecision::Accept, Some(left))
         }
-        Ok((None, None)) => Ok(CandidateDecision::Reject),
-        Ok((Some(_), Some(_))) | Ok(_) => Ok(CandidateDecision::Reject),
-        Err(error) => Ok(CandidateDecision::Error(error)),
-    }
+        Ok((None, None)) => (
+            CandidateDecision::Reject(
+                "candidate no longer reproduces an opposite-path mismatch".into(),
+            ),
+            None,
+        ),
+        Ok((Some(left), Some(right))) if left != right => (
+            CandidateDecision::Flaky("candidate branch fingerprints differ between repeats".into()),
+            None,
+        ),
+        Ok((Some(_), Some(_))) | Ok(_) => (
+            CandidateDecision::Reject(
+                "candidate mismatch fingerprint differs from the original".into(),
+            ),
+            None,
+        ),
+        Err(error) => (CandidateDecision::Error(error), None),
+    };
+    Ok(CandidateEvaluation {
+        decision,
+        results: vec![first, second],
+        fingerprint,
+    })
 }
 
 fn invoke<F>(
@@ -967,6 +1160,34 @@ mod tests {
         .unwrap();
         assert_eq!(reduction.stop, BranchReductionStop::Reduced);
         assert_eq!(reduction.accepted_candidates, 3);
+        assert_eq!(reduction.candidate_runs, 6);
+        assert_eq!(reduction.candidate_attempts.len(), 3);
+        assert_eq!(
+            reduction.candidate_attempts[0].decision,
+            super::BranchCandidateDecision::Accepted
+        );
+        assert_eq!(reduction.candidate_attempts[0].callbacks, 2);
+        assert_eq!(reduction.candidate_attempts[0].nops_before, 3);
+        assert_eq!(reduction.candidate_attempts[0].nops_after, 2);
+        assert_eq!(
+            reduction.candidate_attempts[0].instruction_map[2].instruction,
+            "mov_rbx_target"
+        );
+        assert_eq!(
+            reduction.candidate_attempts[0].instruction_map[2].source_offset,
+            14
+        );
+        assert_eq!(
+            reduction.candidate_attempts[0].instruction_map[2].candidate_offset,
+            13
+        );
+        assert_eq!(reduction.candidate_attempts[0].result_sha256.len(), 2);
+        assert_eq!(reduction.candidate_attempts[0].observed_outcomes.len(), 2);
+        assert!(
+            reduction.candidate_attempts[0]
+                .observed_fingerprint
+                .is_some()
+        );
         let reduced = reduction.reduced_fixture.unwrap();
         let template = super::validate_branch_fixture(&reduced).unwrap();
         assert_eq!(template.total_nops(), 0);
