@@ -154,7 +154,7 @@ fn supervised_native_child_args(fixture_path: &std::path::Path) -> [std::ffi::Os
 
 fn reduce_native_xorpd_cli(args: &[String]) -> ExitCode {
     match reduce_native_xorpd_inner(args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             eprintln!("native XORPD reducer: {error}");
             ExitCode::from(3)
@@ -162,7 +162,7 @@ fn reduce_native_xorpd_cli(args: &[String]) -> ExitCode {
     }
 }
 
-fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
+fn reduce_native_xorpd_inner(args: &[String]) -> Result<ExitCode, String> {
     use od_testkit::native_xorpd::{
         NATIVE_XORPD_REDUCER_DEFAULT_BUDGET, NATIVE_XORPD_REDUCER_MAX_BUDGET,
         NativeXorpdReductionStop, reduce_native_xorpd_fixture_with_native_input_digest,
@@ -219,20 +219,42 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
         .join("../..")
         .join(&output_relative);
     validate_native_reducer_output(std::path::Path::new(&output_relative), "s2-42d-xorpd")?;
+    std::fs::create_dir_all(output_path.parent().ok_or("output path has no parent")?)
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir(&output_path)
+        .map_err(|e| format!("output must be a new directory: {e}"))?;
+    let output_path = output_path
+        .canonicalize()
+        .map_err(|e| format!("could not canonicalize output directory: {e}"))?;
+    let candidate_dir = output_path.join("callbacks/candidates");
+    std::fs::create_dir_all(&candidate_dir).map_err(|e| e.to_string())?;
+    let original_path = output_path.join("original.case.json");
+    write_evidence(&original_path, &original_bytes)?;
+    let mut saved_candidate_digests = std::collections::BTreeSet::new();
     let reduction = reduce_native_xorpd_fixture_with_native_input_digest(
         &original.fixture,
         &original.input_sha256,
         budget,
         |candidate| {
             let loaded = load_reducer_candidate(&original, candidate)?;
-            Ok(execute(&loaded))
+            let candidate_bytes = if candidate == &original.fixture {
+                original_bytes.clone()
+            } else {
+                candidate.to_json().map_err(|error| error.to_string())?
+            };
+            let candidate_digest = od_testkit::sha256_hex(&candidate_bytes);
+            let candidate_path = if candidate == &original.fixture {
+                original_path.clone()
+            } else {
+                let path = candidate_dir.join(format!("{candidate_digest}.case.json"));
+                if saved_candidate_digests.insert(candidate_digest) {
+                    write_evidence(&path, &candidate_bytes)?;
+                }
+                path
+            };
+            Ok(run_supervised_fixture(&loaded, &candidate_path))
         },
     )?;
-    std::fs::create_dir_all(output_path.parent().ok_or("output path has no parent")?)
-        .map_err(|e| e.to_string())?;
-    std::fs::create_dir(&output_path)
-        .map_err(|e| format!("output must be a new directory: {e}"))?;
-    write_evidence(&output_path.join("original.case.json"), &original_bytes)?;
     let mut initial_result_hashes = Vec::new();
     for (index, result) in reduction.initial_results.iter().enumerate() {
         let bytes = result.to_json().map_err(|e| e.to_string())?;
@@ -313,7 +335,24 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
             output_path.display()
         );
     }
-    Ok(())
+    Ok(native_xorpd_reducer_exit_code(&reduction.stop))
+}
+
+fn native_xorpd_reducer_exit_code(
+    stop: &od_testkit::native_xorpd::NativeXorpdReductionStop,
+) -> ExitCode {
+    use od_testkit::native_xorpd::NativeXorpdReductionStop;
+
+    match stop {
+        NativeXorpdReductionStop::Reduced
+        | NativeXorpdReductionStop::NoReduction
+        | NativeXorpdReductionStop::NoInitialMismatch => ExitCode::SUCCESS,
+        NativeXorpdReductionStop::FlakyInitial
+        | NativeXorpdReductionStop::FlakyCandidate
+        | NativeXorpdReductionStop::CandidateBudgetExhausted
+        | NativeXorpdReductionStop::CallbackError
+        | NativeXorpdReductionStop::FinalConfirmationFailed => ExitCode::from(5),
+    }
 }
 
 fn reduce_native_mov_memory_cli(args: &[String]) -> ExitCode {
@@ -3007,12 +3046,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn supervised_native_runner_uses_direct_child_dispatch() {
+    fn native_xorpd_reducer_dispatches_candidates_to_supervised_fixture_child() {
         let fixture_path = std::path::Path::new("work/callback.case.json");
         let args = supervised_native_child_args(fixture_path);
 
         assert_eq!(args[0], "--native-v2-child");
         assert_eq!(args[1], fixture_path.as_os_str());
+    }
+
+    #[test]
+    fn native_xorpd_reducer_exit_status_requires_a_complete_stop() {
+        use od_testkit::native_xorpd::NativeXorpdReductionStop;
+
+        for stop in [
+            NativeXorpdReductionStop::Reduced,
+            NativeXorpdReductionStop::NoReduction,
+            NativeXorpdReductionStop::NoInitialMismatch,
+        ] {
+            assert_eq!(native_xorpd_reducer_exit_code(&stop), ExitCode::SUCCESS);
+        }
+        for stop in [
+            NativeXorpdReductionStop::FlakyInitial,
+            NativeXorpdReductionStop::FlakyCandidate,
+            NativeXorpdReductionStop::CandidateBudgetExhausted,
+            NativeXorpdReductionStop::CallbackError,
+            NativeXorpdReductionStop::FinalConfirmationFailed,
+        ] {
+            assert_eq!(native_xorpd_reducer_exit_code(&stop), ExitCode::from(5));
+        }
     }
 
     #[test]

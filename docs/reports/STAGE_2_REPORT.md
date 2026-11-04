@@ -17302,12 +17302,25 @@ See the [S2-42c protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md) and
 ## S2-42d — bounded native XORPD reducer/replay
 
 Added a separate `od-x86-runner --reduce-native-xorpd` command. Its callback
-uses the existing native-v2 executor directly, so each run retains normal
-fixture admission, tracee supervision, observation and result validation.
+uses the shared `run_supervised_fixture` path, so each run retains normal
+fixture admission, child-process supervision, observation and result validation.
 The `od-testkit` reducer now has a native-backend API while the existing
 `od-runner --reduce-native-xorpd` remains interpreter-only. XMM0–XMM15 proposal
 schedule, bytewise-XOR oracle comparison, mismatch-position fingerprint, two-run
 stability and non-XMM state checks are shared reducer logic.
+
+The S2-42d supervision hardening writes the original and each distinct candidate
+fixture to the output directory before dispatching it to the supervised child.
+Incomplete reducer stops now return exit code 5 after the report and available
+evidence have been written; completed stops return 0. Focused unit regressions
+cover exit classification and child dispatch. Formatting and offline Linux-target
+checks passed; 11 focused `od-testkit` tests and 221 Linux `native_v2` tests passed.
+Two Linux x86_64 literal S2-40b asymmetric fixtures completed bounded native
+smokes with two matching initial callbacks each, `no_initial_mismatch`, and a
+successful saved native replay. Both confirmed the independent oracle state and
+unchanged code memory. No candidate shrinking was exercised; execution kind is
+unknown and physical Mac mini acceptance remains `not_run`. See the [Linux
+acceptance record](S2_42D_LINUX_ACCEPTANCE.md).
 
 Evidence output binds the original and optional reduced fixture, result pairs,
 fixture/result hashes, original/reduced oracle states, initial/final fingerprints, run budget and
@@ -17319,14 +17332,17 @@ flakiness, callback failure and architectural state drift. The existing
 interpreter corpus verifier tests passed (5). `cargo fmt --all -- --check`,
 `cargo check --workspace --all-targets --offline`, and Linux-target
 `cargo check -p od-x86-runner --target x86_64-unknown-linux-gnu --tests --offline`
-passed. The Linux-target runner test binary could not be linked with the local
-macOS linker, so x86-runner runtime tests were not executed. Linux-target
-regression tests compile, covering original raw digests for whitespace/reordered
-keys, over-limit input rejection and shell quoting for spaces/apostrophes.
+passed in the earlier local Darwin validation. Its Linux-target runner test
+binary could not be linked with the local macOS linker, so x86-runner runtime
+tests were not executed in that validation. Linux-target regression tests
+compiled, covering original raw digests for whitespace/reordered keys,
+over-limit input rejection and shell quoting for spaces/apostrophes. The later
+Linux x86_64 acceptance above ran the native-v2 runtime tests and bounded
+reducer/replay.
 `python3 tools/check_layout.py` reports the linked worktree `.git` pointer as an
-unmapped root file (an existing worktree-layout condition). Native Linux replay and
-physical Mac mini execution are `not_run`; synthetic checks are not CPU or
-hardware evidence. S2-42 remains open because S2-21/S2-39/S2-40, additional
+unmapped root file (an existing worktree-layout condition). Physical Mac mini
+execution remains `not_run`; synthetic checks are not CPU or hardware evidence.
+S2-42 remains open because S2-21/S2-39/S2-40, additional
 corpus groups and hardware acceptance are still outstanding. See [protocol](../testing/S2_42D_NATIVE_XORPD_REDUCER.md),
 [plan](../plans/STAGE_2.md#s2-42d-bounded-native-xorpd-reducerreplay), and
 [test format](../testing/TEST_CASE_FORMAT.md#s2-42d-bounded-native-xorpd-xmm-input-reducer).

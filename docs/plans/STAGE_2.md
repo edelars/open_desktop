@@ -715,7 +715,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
 | [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; six handwritten controls plus 1,024 generated cases; 1,030 cases ×2 passed on interpreter and Linux x86_64 native at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; physical Mac acceptance `not_run`; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
-| [x] | S2-42d | Bounded native XORPD reducer/replay | Native callback uses existing native-v2 executor and its ptrace-supervised disposable tracee; Linux hardware and physical Mac mini remain separate; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42d--bounded-native-xorpd-reducerreplay) |
+| [x] | S2-42d | Bounded native XORPD reducer/replay | Supervised native callback and fail-closed exit classification implemented; two Linux x86_64 literal-fixture smokes/replays passed with `no_initial_mismatch`; no candidate shrinking, execution kind unknown, physical Mac mini remains not_run; S2-42 remains open; [acceptance](../reports/S2_42D_LINUX_ACCEPTANCE.md) · [report](../reports/STAGE_2_REPORT.md#s2-42d--bounded-native-xorpd-reducerreplay) |
 | [x] | S2-42e | Deterministic MOV memory/addressing corpus | 1,024 generated + 56 pinned controls; four widths, load/store and seven admitted address forms; all 1,080 cases ×2 passed interpreter and Linux native with saved-run verification at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; execute-only RX backing is structurally limited to one admitted register↔memory MOV; ISSUE-034 resolved; physical acceptance `not_run`; S2-42 and dependencies remain open; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42e--deterministic-mov-memory-corpus) |
 | [x] | S2-42f | Proposed schema-v2 reducer acceptance contract | Documentation only; no generic reducer or hardware acceptance; parent S2-42 remains open; [protocol](../testing/S2_42_REDUCER_CONTRACT.md), [report](../reports/STAGE_2_REPORT.md#s2-42f--schema-v2-reducer-acceptance-contract) |
 | [x] | S2-42g | Bounded qword GPR PUSH/POP interpreter reducer | Eight focused reducer tests + runnable replay integration; original local fixtures report `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42G_STACK_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42g--bounded-qword-gpr-pushpop-reducer) |
@@ -8556,9 +8556,11 @@ adds a separate native callback path; the existing `od-runner
 --reduce-native-xorpd` remains interpreter-only. The deterministic XMM0–XMM15
 proposal schedule, mismatch-position fingerprint, bytewise oracle predicate and
 repeat acceptance stay in `od-testkit`. The native runner owns execution and
-uses the existing native-v2 executor for every callback, retaining exact profile
-admission, tracee supervision, state capture and result validation. Each initial,
-candidate and final value is confirmed by two independent native runs.
+uses the shared `run_supervised_fixture` path for every callback, retaining exact
+profile admission, child-process supervision, state capture and result validation.
+The original fixture and each distinct candidate are written to the evidence
+directory before supervised child dispatch. Each initial, candidate and final
+value is confirmed by two independent native runs.
 
 The 4..5120 run budget includes two initial and two final runs. Only initial
 XMM0–XMM15 change; profile, code/layout, mode/features, MXCSR and all other
@@ -8568,9 +8570,15 @@ A correct initial native result produces `no_initial_mismatch` with no reduced
 fixture. Evidence binds original/reduced fixture and result hashes, oracle XMM0,
 initial/final results and fingerprints, original/reduced oracle states, budget/progress,
 provenance and replay commands. A reduced fixture is replayable through the existing interpreter/native
-comparison command. Synthetic callbacks check orchestration only. Linux native
-execution and physical Mac mini acceptance remain `not_run`; the parent S2-42
-stays open for S2-21/S2-39/S2-40 and the remaining corpus/hardware requirements.
+comparison command. Synthetic callbacks check orchestration only. Linux x86_64
+acceptance ran both literal S2-40b asymmetric fixtures through two identical
+native callbacks and saved native replay; both returned `no_initial_mismatch`,
+so no candidate shrinking was exercised. The remote source hashes matched the
+local sources; `execution_kind=unknown`. Physical Mac mini acceptance remains
+`not_run`. The CLI writes evidence and its report before returning: complete stops
+(`Reduced`, `NoReduction`, `NoInitialMismatch`) use exit code 0; incomplete or
+failed reducer stops use exit code 5.
+See the [Linux acceptance record](../reports/S2_42D_LINUX_ACCEPTANCE.md).
 See [S2-42d protocol](../testing/S2_42D_NATIVE_XORPD_REDUCER.md) and
 [report](../reports/STAGE_2_REPORT.md#s2-42d--bounded-native-xorpd-reducerreplay).
 
