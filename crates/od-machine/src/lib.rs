@@ -2,6 +2,7 @@
 
 mod bus;
 mod identity_memory_adapter;
+mod page_walk;
 mod physical_memory;
 
 pub use bus::{
@@ -10,6 +11,12 @@ pub use bus::{
 };
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};
+
+pub use page_walk::{
+    EffectivePermissions, GuestLinearAddress, Long64ProbeConfig, NonCanonicalAddress,
+    PageFaultProbe, PageFaultReason, PageTableLevel, ProbeAccessError, ProbeConfigError,
+    ProbeError, ProbeOutcome, ProbeReport, Translation4K, WalkEntry, WalkTrace, probe_long64_4k,
+};
 
 pub use physical_memory::{
     GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap, MemoryAccessError,
