@@ -1,0 +1,341 @@
+//! Diagnostic flat identity bridge from `od-isa::GuestMemory` to production
+//! `MachineBus`. Linear addresses are treated as physical addresses here.
+//! This intentionally performs no paging, permission checks, or full Long64
+//! machine integration; `page_privilege` is retained in the trace so callers
+//! can verify the CPU contract context while this diagnostic mode is active.
+
+use crate::{GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MemoryRegionKind};
+use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError, PrivilegeLevel};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiagnosticFlatAccess {
+    pub kind: AccessKind,
+    pub page_privilege: PrivilegeLevel,
+}
+
+/// Diagnostic flat identity adapter. Production memory and device ownership
+/// remain in `MachineBus`; this adapter creates no parallel map or backing.
+pub struct IdentityMemoryAdapter<'a> {
+    bus: &'a mut MachineBus,
+    committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+    last_access: Option<DiagnosticFlatAccess>,
+}
+
+impl<'a> IdentityMemoryAdapter<'a> {
+    pub fn new(
+        bus: &'a mut MachineBus,
+        committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+    ) -> Self {
+        Self {
+            bus,
+            committed_write,
+            last_access: None,
+        }
+    }
+
+    pub const fn last_access(&self) -> Option<DiagnosticFlatAccess> {
+        self.last_access
+    }
+
+    fn record(&mut self, kind: AccessKind, context: AccessContext) {
+        self.last_access = Some(DiagnosticFlatAccess {
+            kind,
+            page_privilege: context.page_privilege(),
+        });
+    }
+
+    fn error(error: impl std::fmt::Display) -> MemoryError {
+        // Machine/backend failures are not architectural faults. In particular,
+        // identity translation does not turn holes into #PF.
+        MemoryError::Backend(error.to_string())
+    }
+}
+
+impl GuestMemory for IdentityMemoryAdapter<'_> {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        self.record(AccessKind::Fetch, context);
+        let physical = GuestPhysicalAddress::new(address);
+        if self.bus.memory_kind(physical, 1).map_err(Self::error)? == MemoryRegionKind::Mmio {
+            return Err(Self::error("instruction fetch from MMIO is unsupported"));
+        }
+        let mut byte = [0];
+        self.bus
+            .read_flat_bytes(physical, &mut byte)
+            .map_err(Self::error)?;
+        Ok(byte[0])
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        self.record(AccessKind::Read, context);
+        self.bus
+            .read_flat_bytes(GuestPhysicalAddress::new(address), destination)
+            .map_err(Self::error)
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        self.record(AccessKind::Write, context);
+        self.bus
+            .write_flat_bytes(
+                GuestPhysicalAddress::new(address),
+                source,
+                &mut *self.committed_write,
+            )
+            .map_err(Self::error)
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _address: u64,
+        context: AccessContext,
+        _size: od_isa::OperandSize,
+        _replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        self.record(AccessKind::Write, context);
+        Err(Self::error(
+            "atomic memory operations are unsupported in diagnostic flat mode",
+        ))
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _address: u64,
+        context: AccessContext,
+        _size: od_isa::OperandSize,
+        _addend: u64,
+    ) -> Result<u64, MemoryError> {
+        self.record(AccessKind::Write, context);
+        Err(Self::error(
+            "atomic memory operations are unsupported in diagnostic flat mode",
+        ))
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _address: u64,
+        context: AccessContext,
+        _size: od_isa::OperandSize,
+        _expected: u64,
+        _replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        self.record(AccessKind::Write, context);
+        Err(Self::error(
+            "atomic memory operations are unsupported in diagnostic flat mode",
+        ))
+    }
+
+    fn mfence(&mut self, context: AccessContext) -> Result<(), MemoryError> {
+        self.record(AccessKind::Read, context);
+        Err(Self::error(
+            "memory fences are unsupported in diagnostic flat mode",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BusDevice, DeviceAccess, DeviceError, MachineMemoryMap, MemoryRegionSpec, RamLimits,
+    };
+    use od_isa::OperandSize;
+    use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+    use std::cell::Cell;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct DeviceState {
+        calls: usize,
+        value: u64,
+    }
+
+    struct CountingDevice(Arc<Mutex<DeviceState>>);
+
+    impl BusDevice for CountingDevice {
+        fn read(&mut self, access: crate::DeviceAccess) -> Result<u64, DeviceError> {
+            let mut state = self.0.lock().unwrap();
+            state.calls += 1;
+            if access.offset >= 8 {
+                return Err(DeviceError::UnknownOffset);
+            }
+            Ok(state.value)
+        }
+
+        fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+            let mut state = self.0.lock().unwrap();
+            state.calls += 1;
+            if access.offset >= 8 {
+                return Err(DeviceError::UnknownOffset);
+            }
+            state.value = value;
+            Ok(())
+        }
+    }
+
+    fn setup() -> (MachineBus, Arc<Mutex<DeviceState>>) {
+        let state = Arc::new(Mutex::new(DeviceState::default()));
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(
+                    GuestPhysicalRange::new(GuestPhysicalAddress::new(0x1000), 0x100).unwrap(),
+                    MemoryRegionKind::Ram,
+                ),
+                MemoryRegionSpec::new(
+                    GuestPhysicalRange::new(GuestPhysicalAddress::new(0x2000), 0x100).unwrap(),
+                    MemoryRegionKind::Mmio,
+                ),
+            ],
+        )
+        .unwrap();
+        let bus = MachineBus::new(
+            map,
+            RamLimits::new(0x100),
+            vec![Box::new(CountingDevice(Arc::clone(&state)))],
+            vec![crate::MmioBinding {
+                region_start: GuestPhysicalAddress::new(0x2000),
+                device_index: 0,
+            }],
+            vec![],
+        )
+        .unwrap();
+        (bus, state)
+    }
+
+    fn context(origin: AccessOrigin) -> AccessContext {
+        AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin,
+        }
+    }
+
+    #[test]
+    fn diagnostic_flat_routes_ram_fetch_read_write_and_descriptor_context() {
+        let (mut bus, _) = setup();
+        let mut commits = Vec::new();
+        let mut callback = |range| commits.push(range);
+        let mut memory = IdentityMemoryAdapter::new(&mut bus, &mut callback);
+        memory
+            .write(0x1000, context(AccessOrigin::Explicit), &[0x90, 0xc3])
+            .unwrap();
+        assert_eq!(
+            memory.fetch(0x1000, context(AccessOrigin::Explicit)),
+            Ok(0x90)
+        );
+        let mut data = [0; 2];
+        memory
+            .read(0x1000, context(AccessOrigin::DescriptorTable), &mut data)
+            .unwrap();
+        assert_eq!(data, [0x90, 0xc3]);
+        assert_eq!(
+            memory.last_access(),
+            Some(DiagnosticFlatAccess {
+                kind: AccessKind::Read,
+                page_privilege: PrivilegeLevel::Ring0,
+            })
+        );
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].start(), GuestPhysicalAddress::new(0x1000));
+    }
+
+    #[test]
+    fn failures_leave_read_destination_and_ram_write_callback_unchanged() {
+        let (mut bus, _) = setup();
+        let commits = Cell::new(0);
+        let mut callback = |_| commits.set(commits.get() + 1);
+        let mut memory = IdentityMemoryAdapter::new(&mut bus, &mut callback);
+        let mut destination = [0xa5; 4];
+        let error = memory
+            .read(0x10fe, context(AccessOrigin::Explicit), &mut destination)
+            .unwrap_err();
+        assert!(matches!(error, MemoryError::Backend(_)));
+        assert_eq!(destination, [0xa5; 4]);
+        assert!(
+            memory
+                .write(0x10fe, context(AccessOrigin::Explicit), &[1, 2, 3, 4])
+                .is_err()
+        );
+        assert_eq!(commits.get(), 0);
+    }
+
+    #[test]
+    fn mmio_width_is_one_device_operation_and_fetch_is_rejected() {
+        let (mut bus, state) = setup();
+        let commits = Cell::new(0);
+        let mut callback = |_| commits.set(commits.get() + 1);
+        let mut memory = IdentityMemoryAdapter::new(&mut bus, &mut callback);
+        memory
+            .write(
+                0x2000,
+                context(AccessOrigin::Explicit),
+                &[0x78, 0x56, 0x34, 0x12],
+            )
+            .unwrap();
+        assert_eq!(state.lock().unwrap().calls, 1);
+        let mut readback = [0; 4];
+        memory
+            .read(0x2000, context(AccessOrigin::Explicit), &mut readback)
+            .unwrap();
+        assert_eq!(state.lock().unwrap().calls, 2);
+        assert_eq!(readback, [0x78, 0x56, 0x34, 0x12]);
+        assert!(matches!(
+            memory.fetch(0x2000, context(AccessOrigin::Explicit)),
+            Err(MemoryError::Backend(_))
+        ));
+        assert_eq!(state.lock().unwrap().calls, 2);
+        assert_eq!(commits.get(), 0);
+    }
+
+    #[test]
+    fn device_error_has_no_effect_and_successful_mmio_write_has_no_ram_callback() {
+        let (mut bus, state) = setup();
+        let commits = Cell::new(0);
+        let mut callback = |_| commits.set(commits.get() + 1);
+        let mut memory = IdentityMemoryAdapter::new(&mut bus, &mut callback);
+        assert!(
+            memory
+                .write(0x2008, context(AccessOrigin::Explicit), &[1])
+                .is_err()
+        );
+        assert_eq!(state.lock().unwrap().calls, 1);
+        assert_eq!(commits.get(), 0);
+        memory
+            .write(0x1000, context(AccessOrigin::Explicit), &[0x5a])
+            .unwrap();
+        assert_eq!(commits.get(), 1);
+        assert_eq!(state.lock().unwrap().calls, 1);
+    }
+
+    #[test]
+    fn unsupported_atomic_and_fence_operations_fail_before_effects() {
+        let (mut bus, _) = setup();
+        let commits = Cell::new(0);
+        let mut callback = |_| commits.set(commits.get() + 1);
+        let mut memory = IdentityMemoryAdapter::new(&mut bus, &mut callback);
+        let ctx = context(AccessOrigin::Explicit);
+        assert!(matches!(
+            memory.atomic_exchange_integer(0x1000, ctx, OperandSize::Dword, 1),
+            Err(MemoryError::Backend(_))
+        ));
+        assert!(matches!(
+            memory.atomic_fetch_add_integer(0x1000, ctx, OperandSize::Dword, 1),
+            Err(MemoryError::Backend(_))
+        ));
+        assert!(matches!(
+            memory.atomic_compare_exchange_integer(0x1000, ctx, OperandSize::Dword, 0, 1),
+            Err(MemoryError::Backend(_))
+        ));
+        assert!(matches!(memory.mfence(ctx), Err(MemoryError::Backend(_))));
+        assert_eq!(commits.get(), 0);
+    }
+}

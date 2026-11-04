@@ -172,6 +172,16 @@ pub struct MachineBus {
 }
 
 impl MachineBus {
+    pub(crate) fn memory_kind(
+        &self,
+        address: GuestPhysicalAddress,
+        len: u64,
+    ) -> Result<MemoryRegionKind, BusAccessError> {
+        self.memory
+            .locate_region_kind(address, len)
+            .map_err(map_memory_error)
+    }
+
     pub fn new(
         map: MachineMemoryMap,
         ram_limits: RamLimits,
@@ -409,6 +419,71 @@ impl MachineBus {
                 device_index: binding.device_index,
                 source,
             })
+    }
+
+    pub(crate) fn read_flat_bytes(
+        &mut self,
+        address: GuestPhysicalAddress,
+        output: &mut [u8],
+    ) -> Result<(), BusAccessError> {
+        let len = u64::try_from(output.len()).map_err(|_| BusAccessError::AddressOverflow)?;
+        let kind = self
+            .memory
+            .locate_region_kind(address, len)
+            .map_err(map_memory_error)?;
+        match kind {
+            MemoryRegionKind::Ram => self
+                .memory
+                .read_bytes(address, output)
+                .map_err(BusAccessError::Memory),
+            MemoryRegionKind::Mmio => {
+                let width = access_width(output.len()).ok_or(BusAccessError::UnsupportedWidth)?;
+                let value = self.read_physical(address, width)?;
+                output.copy_from_slice(&value.to_le_bytes()[..output.len()]);
+                Ok(())
+            }
+            kind => Err(BusAccessError::Memory(MemoryAccessError::UnreadableRegion(
+                kind,
+            ))),
+        }
+    }
+
+    pub(crate) fn write_flat_bytes(
+        &mut self,
+        address: GuestPhysicalAddress,
+        input: &[u8],
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<(), BusAccessError> {
+        let len = u64::try_from(input.len()).map_err(|_| BusAccessError::AddressOverflow)?;
+        let kind = self
+            .memory
+            .locate_region_kind(address, len)
+            .map_err(map_memory_error)?;
+        match kind {
+            MemoryRegionKind::Ram => self
+                .memory
+                .write_bytes(address, input, committed_write)
+                .map_err(BusAccessError::Memory),
+            MemoryRegionKind::Mmio => {
+                let width = access_width(input.len()).ok_or(BusAccessError::UnsupportedWidth)?;
+                let mut bytes = [0; 8];
+                bytes[..input.len()].copy_from_slice(input);
+                self.write_physical(address, width, u64::from_le_bytes(bytes), committed_write)
+            }
+            kind => Err(BusAccessError::Memory(MemoryAccessError::ReadOnlyRegion(
+                kind,
+            ))),
+        }
+    }
+}
+
+fn access_width(len: usize) -> Option<AccessWidth> {
+    match len {
+        1 => Some(AccessWidth::Byte),
+        2 => Some(AccessWidth::Word),
+        4 => Some(AccessWidth::Dword),
+        8 => Some(AccessWidth::Qword),
+        _ => None,
     }
 }
 

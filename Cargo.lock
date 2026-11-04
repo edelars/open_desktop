@@ -111,6 +111,9 @@ dependencies = [
 [[package]]
 name = "od-machine"
 version = "0.1.0"
+dependencies = [
+ "od-isa",
+]
 
 [[package]]
 name = "od-runner"
