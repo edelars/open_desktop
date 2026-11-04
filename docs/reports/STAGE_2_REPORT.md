@@ -24792,7 +24792,9 @@ definedness and single-instruction retirement. The documented Intel SDM
 revision 093 behavior leaves OF/SF/AF/PF undefined; comparison uses mask
 `0x443` and does not treat undefined flag outputs as architectural evidence.
 
-Six focused tests passed. The corpus contains 4,160 cases; all 8,320 interpreter
+Seven focused tests passed. A synthetic invalid UTF-8 second-repeat regression
+confirms the first successful result is retained with raw output diagnostics and
+the failed attempt is listed. The corpus contains 4,160 cases; all 8,320 interpreter
 executions passed. Strict corpus verification and saved-result replay passed
 with digest `064e7ef0ce111fed8604b6bb7050c82fd480e12ff060dc20dde8a5b4067fec4b`.
 The runner built offline. Native evidence is `not_run/not_selected` even though

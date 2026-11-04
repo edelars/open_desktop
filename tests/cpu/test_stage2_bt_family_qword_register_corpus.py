@@ -185,6 +185,23 @@ class BitFamilyQwordCorpusTests(unittest.TestCase):
             self.assertIn("stderr_hex=fe", result["processes"][1]["stderr"])
             self.assertEqual(saved["missing_attempts"], [{"case_id": ident, "repeat": 2}])
 
+            calls = 0
+            def success_then_utf16_json(command, **_kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return corpus.subprocess.CompletedProcess(command, 0, stdout=json.dumps(seen).encode(), stderr=b"")
+                return corpus.subprocess.CompletedProcess(command, 0, stdout=json.dumps(seen).encode("utf-16-le"), stderr=b"")
+            utf16_output = root / "utf16-results.json"
+            with mock.patch.object(corpus, "verify_corpus", return_value=manifest), \
+                    mock.patch.object(corpus, "command_identity", return_value=(identity, MACHINE)), \
+                    mock.patch.object(corpus.subprocess, "run", side_effect=success_then_utf16_json):
+                with self.assertRaises(CorpusError): corpus.run_interpreter(bundle, utf16_output, runner)
+            utf16_saved = json.loads(utf16_output.read_bytes())
+            self.assertEqual(utf16_saved["results"][0]["repeats"][0], seen)
+            self.assertIn("failure", utf16_saved["results"][0]["repeats"][1])
+            self.assertEqual(utf16_saved["missing_attempts"], [{"case_id": ident, "repeat": 2}])
+
 
 if __name__ == "__main__":
     unittest.main()

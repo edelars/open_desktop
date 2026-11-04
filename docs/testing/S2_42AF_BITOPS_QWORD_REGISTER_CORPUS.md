@@ -53,7 +53,9 @@ The generated bundle and two-repeat interpreter evidence are stored under
 ignored `work/stage2/s2-42af-bt-family-qword-register-corpus/`. Evidence
 binds ordered fixture digests, manifest, runner/source identity, machine and
 build metadata, command/cwd/environment, stdout, full snapshots, and repeat
-identity. Interrupted runs preserve completed attempts and list missing ones.
+identity. Captured process output is decoded strictly as UTF-8 before JSON
+parsing. Interrupted or malformed-output runs preserve completed attempts,
+record available process diagnostics, and list missing/failed repeats.
 
 Native evidence is `not_run/not_selected`. Although the runner recognizes the
 existing register operation, native acceptance for this new corpus is outside

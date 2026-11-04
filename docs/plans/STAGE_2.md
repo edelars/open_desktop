@@ -20471,7 +20471,7 @@ preservation, the corresponding non-modifying/set/reset/complement operation,
 full state, and one retirement. OF/SF/AF/PF remain undefined and are excluded
 from the comparison mask.
 
-Six focused tests passed. All 4,160 cases passed twice locally (8,320
+Seven focused tests passed. All 4,160 cases passed twice locally (8,320
 executions); corpus verification and saved-result replay passed with digest
 `064e7ef0ce111fed8604b6bb7050c82fd480e12ff060dc20dde8a5b4067fec4b`. Native
 evidence is `not_run/not_selected`; this corpus is excluded from the five

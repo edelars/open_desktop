@@ -359,8 +359,8 @@ def run_interpreter(directory, result_path, executable):
                     row["processes"].append(record); process_recorded = True
                     raise CorpusError(diagnostic) from e
                 record = {"returncode": proc.returncode, "stdout": stdout, "stderr": stderr, "command": cmd, "cwd": str(ROOT.resolve()), "environment": env, "timeout_diagnosis": None}; row["processes"].append(record); process_recorded = True
-                if proc.returncode: raise CorpusError(f"runner exited {proc.returncode}: {proc.stderr.strip()}")
-                observation = json.loads(proc.stdout, object_pairs_hook=strict_object)
+                if proc.returncode: raise CorpusError(f"runner exited {proc.returncode}: {stderr.strip()}")
+                observation = json.loads(stdout, object_pairs_hook=strict_object)
                 if not isinstance(observation, dict): raise CorpusError("runner output must be one JSON object")
                 b, m = observation.get("build"), observation.get("machine"); validate_provenance(b, m, "interpreter result")
                 if build is None: build, runner_machine = b, m
