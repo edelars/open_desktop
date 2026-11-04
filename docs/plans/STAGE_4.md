@@ -209,7 +209,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-05. MMIO и port I/O bus
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Где:** `crates/od-machine/src/`; CPU IN/OUT semantics — в `od-isa`.
 - **Сделать:** минимальные read/write interfaces устройств; ширины, alignment, register side effects, unknown offsets и недопустимые spanning accesses. Различать RAM и device transaction, не превращать MMIO в обычный byte slice.
 - **Проверка:** маленькое собственное тестовое устройство считает обращения; один guest access имеет ровно предусмотренные side effects, включая fault/retry и invalid width.

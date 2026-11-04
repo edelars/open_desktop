@@ -47,6 +47,25 @@ little-endian encoding.
 является только локальным уведомлением о committed bytes; он ещё не подключён к
 JIT code-dependency invalidation и не доказывает S4-15—S4-16.
 
+## Синхронная MMIO/PIO bus
+
+`MachineBus` переиспользует одну `MachineMemoryMap` и один `PhysicalMemory`;
+второй backing или независимая карта физических regions не создаются. MMIO
+binding может ссылаться только на полный `MemoryRegionKind::Mmio`, а PIO имеет
+отдельную карту `PortRange` в пространстве `0..65536` с checked endpoint.
+
+`BusDevice` получает один `DeviceAccess` с `IoSpace`, offset и `AccessWidth`.
+Доступы `Byte/Word/Dword/Qword` маскируют значение до ширины; PIO Qword в этом
+срезе запрещён. Шина проверяет width, overflow и полное попадание в одно окно до
+вызова устройства. Она не разбивает смешанный или cross-window access и не
+повторяет device operation.
+
+Ошибки построения карты, доступа шины и самого устройства разделены. Ошибка
+устройства должна быть возвращена до guest-visible изменения или внешнего
+эффекта; это проверено тестовым устройством. MMIO/PIO writes не вызывают RAM
+committed-write callback. CPU `IN/OUT`, I/O privilege checks, guest exceptions
+и преобразование linear address остаются в `od-isa` и CPU bridge.
+
 ## Следующие зависимости
 
 Следующий допустимый срез — MMIO/PIO bus и CPU bridge. `GuestMemory` из

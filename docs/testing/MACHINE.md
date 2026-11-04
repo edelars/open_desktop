@@ -2,9 +2,9 @@
 
 ## Область
 
-Эта методика покрывает S4-02—S4-04: валидируемую physical map, production RAM
-owner и committed-write notification. Она не проверяет paging, guest exceptions,
-MMIO/PIO, APIC, JIT, firmware или Linux.
+Эта методика покрывает S4-02—S4-05: валидируемую physical map, production RAM
+owner, committed-write notification и синхронную MMIO/PIO bus. Она не проверяет
+paging, guest exceptions, APIC, JIT, firmware или Linux.
 
 ## Локальный набор
 
@@ -28,6 +28,10 @@ git diff --check
 7. ровно одно уведомление после успешной полной RAM-записи;
 8. обычные guest-byte accesses, пересекающие детерминированную 16 KiB границу,
    без предположения о host page size.
+9. MMIO widths 1/2/4/8, PIO widths 1/2/4 и отказ PIO Qword;
+10. PIO endpoint `65536`, oversized range rejection и overlap/binding checks;
+11. unknown/misaligned/read-only device accesses без device side effects;
+12. отказ до dispatch для cross-window access без partial RAM/device effects.
 
 ## Интерпретация
 

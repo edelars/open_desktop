@@ -5,8 +5,9 @@
 Гостевая RAM/MMU/TLB, bus, устройства, vCPU scheduler и виртуальное время. Использует нижние контракты CPU/JIT и storage; host-примитивы получает через узкие интерфейсы.
 
 Статус: локальный срез S4-02—S4-04 реализует валидируемую guest physical map,
-production-owned RAM backing и checked physical byte/scalar accesses с
-committed-write notification. MMU/page walker, MMIO/PIO, vCPU, devices, JIT
-integration и Linux boot ещё не реализованы. Читать ../AGENTS.md и
+ production-owned RAM backing, checked physical byte/scalar accesses с
+ committed-write notification и минимальный синхронный MMIO/PIO bus boundary.
+ MMU/page walker, UART/APIC/PCI, vCPU, JIT integration и Linux boot ещё не
+ реализованы. Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости
 добавлять вместе с фактическим использованием.
