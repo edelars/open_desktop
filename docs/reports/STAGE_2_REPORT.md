@@ -25011,9 +25011,23 @@ child manifests share source fingerprint
 `5f710e209f2772ba9df37d8e232dc0736fb086015a7b74d4d1e9b5f30a9d7f9d`.
 Aggregate run `20261104T143258Z-ff9f411e`; machine-readable summary and child
 evidence are at `work/stage2-42-linux-five-suites/20261104T143258Z-ff9f411e/`.
-The other 27 lettered suites are explicitly unselected. Physical Mac remains
-`not_run`; this bounded acceptance does not close the generic reducer
-requirements or parent S2-42. See the
+
+The same five-suite acceptance passed again on current main
+`25728c4efd1a6626b1216fe3fd02b9ec61eaa809`, with source fingerprint
+`c278050bcf28fb2a8333f934abb7138f0d3dc5e0cf0d99bbdb4515c638621929`.
+Run `20261104T192025Z-0b2ff8f5` verified the same 5,282 cases twice per
+backend; the aggregate SHA-256 is
+`861ced7d97ba3dc3b55b8f749e07c3f086c5f3830e67f54949f76fe24b6fca57`.
+Its saved summary and five child manifests are under
+`work/stage2-42-linux-five-suites/20261104T192025Z-0b2ff8f5/`. The run used a
+clean bundle checkout at `/home/senya/projects/open_desktop-s2-42-five`; the
+existing `/home/senya/projects/open_desktop` checkout was left untouched because
+it was at `0a0640b5a7d54b13b3024146b5c9068f0f15bb5d` with five modified files.
+The Linux host was an Intel Core i5-3210M running x86_64 kernel
+`7.0.0-38-generic`; the local interpreter ran on an Apple M3 Max under macOS
+26.7.1. Both toolchains were Rust 1.99.x. The other 27 lettered suites are
+explicitly unselected. Physical Mac remains `not_run`; this bounded acceptance
+does not close the generic reducer requirements or parent S2-42. See the
 [protocol](../testing/S2_42_LINUX_FIVE_SUITE_ACCEPTANCE.md) and
 [plan](../plans/STAGE_2.md#s2-42-собрать-общий-corpus-reducer-и-harness).
 

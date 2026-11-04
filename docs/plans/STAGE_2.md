@@ -8499,11 +8499,16 @@ CPU-only S2-27d и статический Ubuntu mapping не являются p
 
 **Linux test-group baseline:** the initial Linux x86_64 `native_v2::tests` run had 50 failures on both parent `286b70c` and S2-42e `0a0640b`. ISSUE-035 was resolved on 2026-11-04: source files matching main revision `64290d2b643ff69912a5c9b3969081e9dbbe8bca` passed `cargo test --offline -p od-x86-runner native_v2::tests -- --nocapture` with 217 tests and 0 failures (19 filtered). The Linux checkout started at `0a0640b`; its exact code-only source patch and full transcript are `work/stage2-42e-oracle/native-v2-issue035-source.patch` and `work/stage2-42e-oracle/native-v2-issue035-resolved.log`. This clears the Linux unit-test baseline; it does not implement the required combined S2-42 command or close parent S2-42. Physical Mac acceptance remains `not_run`.
 
-**Ограниченная combined acceptance:** одна документированная команда для
-выбранного S2-42c/e/h/i/r набора прошла с локальным macOS interpreter и Linux
-x86_64 native backend: 5,282 cases ×2 на каждом backend. Run ID, fingerprint,
-child evidence и оставшиеся границы
-указаны в [S2-42 Linux five-suite protocol](../testing/S2_42_LINUX_FIVE_SUITE_ACCEPTANCE.md).
+**Ограниченная combined acceptance:** документированная команда для
+выбранного S2-42c/e/h/i/r набора прошла дважды с локальным macOS interpreter
+и Linux x86_64 native backend: по 5,282 cases ×2 на каждом backend. Первый run
+`20261104T143258Z-ff9f411e` использовал fingerprint
+`5f710e209f2772ba9df37d8e232dc0736fb086015a7b74d4d1e9b5f30a9d7f9d`; второй
+run `20261104T192025Z-0b2ff8f5` повторил acceptance на main
+`25728c4efd1a6626b1216fe3fd02b9ec61eaa809` с fingerprint
+`c278050bcf28fb2a8333f934abb7138f0d3dc5e0cf0d99bbdb4515c638621929`.
+Evidence и подробные границы приведены в
+[S2-42 Linux five-suite protocol](../testing/S2_42_LINUX_FIVE_SUITE_ACCEPTANCE.md).
 Остальные 27 lettered suites и generic reducer requirements остаются вне
 этой приёмки; parent S2-42 остаётся открытым. Требуемое meaning-preserving
 сокращение mismatch остаётся критерием. S2-42ag smoke на буквальной MOV fixture
