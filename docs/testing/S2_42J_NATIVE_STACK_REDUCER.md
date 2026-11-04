@@ -22,6 +22,12 @@ symlink traversal are rejected. Native callbacks use the existing native-v2
 supervisor, admission checks, and disposable tracee. No CPU semantics or native
 admission rules were changed in this slice.
 
+The runner exits successfully for `Reduced`, `NoReduction`, and
+`NoInitialMismatch`. Flaky callbacks, unsupported/unavailable execution,
+mapping failures, timeouts, callback errors, and exhausted or failed final
+confirmation return a nonzero harness status after writing the report and all
+callback evidence collected before the stop.
+
 The public interpreter API remains
 `reduce_stack_fixture_with_input_digest`. Its native counterpart is
 `reduce_stack_fixture_with_native_input_digest`; both call one private reducer

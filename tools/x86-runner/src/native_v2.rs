@@ -297,7 +297,7 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
 
 fn reduce_native_stack_cli(args: &[String]) -> ExitCode {
     match reduce_native_stack_inner(args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             eprintln!("native stack reducer: {error}");
             ExitCode::from(3)
@@ -305,7 +305,7 @@ fn reduce_native_stack_cli(args: &[String]) -> ExitCode {
     }
 }
 
-fn reduce_native_stack_inner(args: &[String]) -> Result<(), String> {
+fn reduce_native_stack_inner(args: &[String]) -> Result<ExitCode, String> {
     use od_testkit::stack_reducer::{
         STACK_REDUCER_DEFAULT_BUDGET, STACK_REDUCER_MAX_BUDGET, StackReductionStop,
         reduce_stack_fixture_with_native_input_digest, stack_oracle,
@@ -600,7 +600,24 @@ fn reduce_native_stack_inner(args: &[String]) -> Result<(), String> {
             output_path.display()
         );
     }
-    Ok(())
+    Ok(native_stack_reducer_exit_code(&reduction.stop))
+}
+
+fn native_stack_reducer_exit_code(
+    stop: &od_testkit::stack_reducer::StackReductionStop,
+) -> ExitCode {
+    use od_testkit::stack_reducer::StackReductionStop;
+
+    match stop {
+        StackReductionStop::Reduced
+        | StackReductionStop::NoReduction
+        | StackReductionStop::NoInitialMismatch => ExitCode::SUCCESS,
+        StackReductionStop::FlakyInitial
+        | StackReductionStop::FlakyCandidate
+        | StackReductionStop::CandidateBudgetExhausted
+        | StackReductionStop::CallbackError
+        | StackReductionStop::FinalConfirmationFailed => ExitCode::from(5),
+    }
 }
 
 fn write_native_stack_callback_record(
@@ -2213,6 +2230,32 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_stack_reducer_stop_status_requires_confirmed_completion() {
+        use od_testkit::stack_reducer::StackReductionStop;
+
+        for stop in [
+            StackReductionStop::Reduced,
+            StackReductionStop::NoReduction,
+            StackReductionStop::NoInitialMismatch,
+        ] {
+            assert_eq!(native_stack_reducer_exit_code(&stop), ExitCode::SUCCESS);
+        }
+
+        // Unsupported native execution and mapping denial are converted by the
+        // shared reducer into CallbackError; flaky and exhausted confirmation
+        // states are failures as well, even though their evidence is retained.
+        for stop in [
+            StackReductionStop::FlakyInitial,
+            StackReductionStop::FlakyCandidate,
+            StackReductionStop::CandidateBudgetExhausted,
+            StackReductionStop::CallbackError,
+            StackReductionStop::FinalConfirmationFailed,
+        ] {
+            assert_eq!(native_stack_reducer_exit_code(&stop), ExitCode::from(5));
+        }
+    }
 
     #[test]
     fn reducer_preserves_raw_digest_for_original_and_canonicalizes_candidates() {
