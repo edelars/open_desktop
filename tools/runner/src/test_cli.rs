@@ -347,7 +347,7 @@ fn reduce_branch_nops_inner(args: &[String]) -> Result<ExitCode, String> {
         "source_fixture": input_path,
         "original_sha256": sha256_hex(&original_bytes),
         "reduced_sha256": reduced_fixture_digest,
-        "source_revision": local_revision(),
+        "source_revision": local_revision_at(&workspace_root()),
         "toolchain": local_rustc_version(),
         "machine": {"host_os": std::env::consts::OS, "host_arch": std::env::consts::ARCH},
         "backend": "interpreter",
@@ -1557,6 +1557,38 @@ fn local_revision() -> String {
         return "unavailable".into();
     };
     let dirty = command_output("git", &["status", "--porcelain", "--untracked-files=no"])
+        .is_some_and(|status| !status.is_empty());
+    if dirty {
+        format!("{revision}+dirty")
+    } else {
+        revision
+    }
+}
+
+fn local_revision_at(repository_root: &std::path::Path) -> String {
+    if let Some(revision) = option_env!("OPEN_DESKTOP_GIT_REVISION") {
+        return revision.to_string();
+    }
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repository_root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success());
+    let Some(revision) = output
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return "unavailable".into();
+    };
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .current_dir(repository_root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
         .is_some_and(|status| !status.is_empty());
     if dirty {
         format!("{revision}+dirty")

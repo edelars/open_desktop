@@ -99,6 +99,7 @@ pub struct BranchCandidateAttempt {
     pub nops_before: usize,
     pub nops_after: usize,
     pub expected_result: BranchExpectedResult,
+    pub expected_result_sha256: String,
     pub result_sha256: Vec<String>,
     pub observed_outcomes: Vec<Outcome>,
     pub observed_instruction_counts: Vec<Observation<HexU64>>,
@@ -295,6 +296,9 @@ where
             let candidate_digest =
                 sha256_hex(&candidate.to_json().map_err(|error| error.to_string())?);
             let expected_candidate = branch_oracle(&candidate, &candidate_digest)?;
+            let expected_candidate_sha256 = sha256_hex(
+                &serde_json::to_vec(&expected_candidate).map_err(|error| error.to_string())?,
+            );
             let callbacks_before = report.actual_callbacks;
             let evaluation =
                 try_candidate(&candidate, &initial_fingerprint, &mut execute, &mut report)?;
@@ -323,15 +327,11 @@ where
                 nops_before: current_template.total_nops(),
                 nops_after: candidate_template.total_nops(),
                 expected_result: expected_candidate,
+                expected_result_sha256: expected_candidate_sha256,
                 result_sha256: evaluation
                     .results
                     .iter()
-                    .map(|result| {
-                        result
-                            .to_json()
-                            .map(|bytes| sha256_hex(&bytes))
-                            .map_err(|error| error.to_string())
-                    })
+                    .map(run_result_digest)
                     .collect::<Result<Vec<_>, _>>()?,
                 observed_outcomes: evaluation
                     .results
@@ -888,6 +888,14 @@ fn same_semantic_result(left: &RunResult, right: &RunResult) -> bool {
         && left.snapshot == right.snapshot
 }
 
+fn run_result_digest(result: &RunResult) -> Result<String, String> {
+    let bytes = match result.to_json() {
+        Ok(bytes) => bytes,
+        Err(_) => serde_json::to_vec(result).map_err(|error| error.to_string())?,
+    };
+    Ok(sha256_hex(&bytes))
+}
+
 fn try_candidate<F>(
     candidate: &Fixture,
     expected: &BranchMismatchFingerprint,
@@ -1304,6 +1312,36 @@ mod tests {
             .unwrap();
         assert_eq!(reduction.stop, BranchReductionStop::UnsupportedMismatch);
         assert_eq!(reduction.actual_callbacks, 2);
+    }
+
+    #[test]
+    fn malformed_candidate_result_keeps_attempt_and_partial_result_hashes() {
+        let fixture = template_fixture(BranchOpcode::Jz, true, 1, 0, 0);
+        let digest = sha256_hex(JE_TAKEN);
+        let reduction =
+            reduce_branch_fixture_with_input_digest(&fixture, &digest, 6, |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                let template = super::validate_branch_fixture(candidate).unwrap();
+                let path = super::opposite(super::expected_path(candidate, template));
+                let mut result = synthetic_result(candidate, &candidate_digest, path);
+                if candidate != &fixture {
+                    result.schema_version = 0;
+                }
+                Ok(result)
+            })
+            .unwrap();
+        assert_eq!(reduction.stop, BranchReductionStop::CallbackError);
+        assert_eq!(reduction.candidate_attempts.len(), 1);
+        assert_eq!(
+            reduction.candidate_attempts[0].decision,
+            super::BranchCandidateDecision::Error
+        );
+        assert_eq!(reduction.candidate_attempts[0].result_sha256.len(), 2);
+        assert_eq!(reduction.candidate_attempts[0].callbacks, 2);
     }
 
     #[test]
