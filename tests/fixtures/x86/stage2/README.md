@@ -9333,3 +9333,18 @@ last-valid qword in the 128-byte mapping. All 1,056 cases matched the complete
 local interpreter snapshot twice. This is private synchronous RAM coverage;
 native admission blocks the form, and no hardware atomicity/ordering claim is
 made. See the [S2-42t protocol](../../../../docs/testing/S2_42T_LOCK_XADD_CORPUS.md).
+
+### S2-42u exact qword memory CMPXCHG corpus
+
+[`s2_42u_cmpxchg_qword_memory_controls/`](s2_42u_cmpxchg_qword_memory_controls/)
+contains two pinned handwritten controls for exact `48 0F B1 18`
+(`CMPXCHG qword [RAX], RBX`): one equal and one mismatch. The qword at
+`0x2003` crosses the adjacent data regions at `0x2007`, matching the S2-21e
+fixture layout. The deterministic corpus adds 1,024 distinct generated
+inputs. The eight generated memory classes balance equal stores and mismatch
+comparisons with CF=0/1 and OF=0/1. All 1,026 cases matched complete
+independent local-interpreter snapshots twice, with strict saved-run
+verification and process cwd/environment provenance. Interrupted runs retain
+completed cases and list missing repeats. Native is denied before backend
+invocation and recorded `not_run`. This makes no atomicity or hardware claim.
+See the [S2-42u protocol](../../../../docs/testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md).

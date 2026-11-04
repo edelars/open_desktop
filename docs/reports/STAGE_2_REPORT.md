@@ -24499,3 +24499,46 @@ S2-21f alias/split-region fixture without replacing it. Actual native and
 physical evidence remain `not_run`; S2-21, ISSUE-017 and parent S2-42 stay
 open. The focused suite passed **10/10**, Python compilation and `cargo build
 --offline -p od-runner` passed, and Graphify was updated. See the [protocol](../testing/S2_42T_LOCK_XADD_CORPUS.md), [plan](../plans/STAGE_2.md#s2-42t--local-lock-xadd-qword-corpus), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42t-lock-xadd-qword-corpus).
+
+## S2-42u — exact qword memory CMPXCHG corpus
+
+S2-42u covers the exact bare effective-REX.W bytes `48 0F B1 18`
+(`CMPXCHG qword [RAX], RBX`) from S2-21e. The instruction uses a four-byte
+execute-only mapping at `0x100000`; its operand begins at `0x2003` and crosses
+the adjacent private data mappings split at `0x2007`, matching the existing
+S2-21e fixture geometry. Two pinned handwritten controls cover equal and
+mismatch. The generated corpus adds 1,024 unique architectural inputs across
+four fixed seeds.
+
+Each seed contributes 32 cases from each of eight memory-value classes:
+RAX/equal, 0, 1, RAX−1, RAX+1, signed maximum, signed minimum, and −1. The
+generated set therefore has 128 equal stores, 896 mismatches, and complete
+`(CF,ZF,OF)` coverage: `(0,1,0)` 128 times, `(0,0,0)` 384 times, `(1,0,0)`
+384 times, and `(1,0,1)` 128 times.
+
+An independent integer-only oracle computes subtraction flags and the
+CMPXCHG equal/mismatch register and memory updates. It compares complete GPR,
+RIP and defined-RFLAGS state, both full data mappings including canaries,
+unchanged code bytes, one retired instruction, stop outcome and no exception.
+The strict bundle verifier pins the static control fixtures/snapshots and all
+generated fixture/expected digests. Saved-run verification checks two stable
+interpreter repeats, frozen command/exit/stdout/stderr records, executable
+hash, source revision, compiler/build/target, machine provenance, explicit
+working directory, and the exact sanitized environment passed to the child
+runner. Timed-out attempts preserve available partial stdout/stderr and a
+separate timeout diagnosis. The run checkpoints each completed case; an
+interrupted repeat remains in the partial summary and all unattempted repeats
+are listed explicitly.
+
+All 1,026 cases passed twice on the local interpreter (2,052 executions), and
+the saved evidence verifier passed. Focused Python tests passed **11/11**,
+including equal/mismatch flag-class counts, environment tampering and
+KeyboardInterrupt partial-evidence recovery;
+`cargo build --offline -p od-runner` passed. The explicit native command wrote
+`status=blocked`, `native_x86=not_run_form_not_admitted`, and
+`backend_execution=not_started` before any backend invocation. Native and
+physical execution remain `not_run`. This private synchronous interpreter
+corpus does not establish CMPXCHG atomicity, SMP behavior, memory ordering, or
+full S2-21 acceptance; S2-21/S2-39/S2-40 and parent S2-42 remain open. See the
+[protocol](../testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md), [plan](../plans/STAGE_2.md#s2-42u--exact-bare-rexw-qword-memory-cmpxchg-corpus),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42u-exact-qword-memory-cmpxchg-corpus).

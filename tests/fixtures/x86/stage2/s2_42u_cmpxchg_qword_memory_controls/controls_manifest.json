@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "profile": "s2-long-integer-v1",
+  "control_count": 2,
+  "fixtures": [
+    {
+      "case_id": "s2_42u_cmpxchg_qword_memory_equal",
+      "fixture_sha256": "a08dbc7ae112a37475ca29b95a4e3ef49ff54e33fbab6625edefc066544a5087",
+      "expected_sha256": "48af866246c6f908eda6ac41913bf7a94e7f41bd5d0341a1a3589d2992e32b6b"
+    },
+    {
+      "case_id": "s2_42u_cmpxchg_qword_memory_mismatch",
+      "fixture_sha256": "45d5d2ea5e70b501484101c9f8e8001d4a7029ffe66a16c0608069b91e241347",
+      "expected_sha256": "3c09b0875894ddde4e1f226d1b30b49d29317dd017e2a42f9f165f04bcaf79d1"
+    }
+  ],
+  "expected_sha256": "80cc06bc5f9c3f1f32a1a19f179c057bdef9dbdcf04e694eb70f2f50602c2457"
+}
