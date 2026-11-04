@@ -12,6 +12,18 @@
 
 ## Записи
 
+<a id="issue-034-s2-42e-execute-only-code-not-admitted-by-native-v2"></a>
+
+### ISSUE-034 — S2-42e execute-only code is not admitted by native-v2
+
+- **Дата обнаружения:** 2026-11-04.
+- **Компонент:** Linux x86_64 native-v2 memory mapping and the S2-42e/S2-42q MOV corpus acceptance command.
+- **Статус:** открытое ограничение native admission; ошибка CPU-семантики не установлена.
+- **Суть и последствия:** Все 1,080 выбранных S2-42e cases (56 pinned controls + 1,024 generated) имеют code region с правами `read=false, write=false, execute=true`. `tools/x86-runner/src/native_v2.rs::MappingPlan::new` требует readable regions и возвращает `unsupported` до выполнения инструкции. Поэтому обязательная Linux/native suite завершилась `failed`; никакая из этих 1,080 инструкций на host CPU не исполнялась, и S2-42e не имеет native acceptance.
+- **Основание:** 2026-11-04 команда `python3 tests/cpu/generate_stage2_mov_memory_corpus.py --run-oracle --host 192.168.1.39 --user senya --remote-root /home/senya/projects/open_desktop` на Linux x86_64, checkout `main` commit `9fa135a6f3e792347052f0d3de2545e1b199eb6a`, source fingerprint `d740ae2b8b341138ce1149514ecf594df67138973bea4aa8fff78bf3e288a118`. Summary: [S2-42e run](../work/stage2-42e-oracle/s2-42e-summary.json); detailed first-repeat records: `work/stage2-42e-oracle/stage2-20261104-102111-498cc626/`. The profile intentionally pins execute-only code in the [S2-42e protocol](testing/S2_42E_MOV_MEMORY_CORPUS.md#s2-42q-handwritten-boundary-controls); local interpreter evidence does not substitute for native execution.
+- **Следующий шаг:** архитектурно определить способ нативно представлять execute-only code permissions on supported Linux x86_64 hosts without weakening the fixture's permission contract; otherwise keep the native suite fail-closed and revise its admission/acceptance plan explicitly. Do not omit cases or relabel unsupported outcomes as passed.
+
+
 <a id="issue-033-s2-37cq-comiss-mixed-event-handling-audit"></a>
 
 ### ISSUE-033 — S2-37cq COMISS mixed-event handling needs audit
