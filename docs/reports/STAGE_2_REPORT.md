@@ -24479,3 +24479,23 @@ evidence roundtrips passed for both debug and release, with negative tests for
 provenance and process mutations. Actual native execution and physical
 acceptance remain `not_run`. S2-42 and dependencies S2-21/S2-39/S2-40 remain
 open. See the [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [plan](../plans/STAGE_2.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42r-jzjnz-rel8-branch-corpus).
+
+## S2-42t — local LOCK XADD qword corpus
+
+S2-42t covers only `F0 48 0F C1 03` (`LOCK XADD qword [RBX],RAX`) on private
+synchronous `FlatMemory`: 32 static arithmetic-boundary controls at byte
+offsets 1 and 120 plus 1,024 generated cases with unique architectural inputs.
+The independent integer oracle checks wrapping result, old-memory value in
+RAX, carry/overflow/auxiliary-carry/sign/zero/parity, preserved state,
+retirement, stop RIP and all code/data canaries. All 1,056 inputs matched the
+complete local interpreter snapshot twice; strict bundle and saved replay
+verification passed.
+
+Native admission deliberately excludes this form. An explicit native request
+fails before backend execution and records `blocked/not_started`; the local
+interpreter corpus does not claim native-ready status, SMP/hardware atomicity,
+split-lock behavior, or general LOCK ordering. This supplements the existing
+S2-21f alias/split-region fixture without replacing it. Actual native and
+physical evidence remain `not_run`; S2-21, ISSUE-017 and parent S2-42 stay
+open. The focused suite passed **10/10**, Python compilation and `cargo build
+--offline -p od-runner` passed, and Graphify was updated. See the [protocol](../testing/S2_42T_LOCK_XADD_CORPUS.md), [plan](../plans/STAGE_2.md#s2-42t--local-lock-xadd-qword-corpus), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42t-lock-xadd-qword-corpus).

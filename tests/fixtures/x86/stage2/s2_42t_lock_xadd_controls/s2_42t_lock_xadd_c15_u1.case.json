@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_42t_lock_xadd_c15_u1",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "S2-42t handwritten LOCK XADD boundary/control matrix.",
+    "specification": "Intel SDM revision 093, Vol. 2D XADD and Vol. 2A LOCK prefix; bounded project S2-42t profile.",
+    "specification_version": "Intel SDM revision 093; project S2-42t"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xfedcba9876543210",
+      "0x1122334455667788",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200001",
+      "0x5566778899aabbcc",
+      "0x8877665544332211",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0xaabbccddeeff0011",
+      "0xfedcba9876543210",
+      "0x0123456789abcdef",
+      "0x9988776655443322",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 5,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "f0480fc103",
+      "comparison_mask_hex": "ffffffffff"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000200000",
+      "length": 128,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "a5efcdab8967452301a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "comparison_mask_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100005",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

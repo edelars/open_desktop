@@ -731,6 +731,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42q | 56 handwritten MOV memory/addressing controls in S2-42e harness | Adds exactly 4×2×7 literal controls before unchanged 1,024 generated cases; static full snapshots and pinned strict manifest; all 56 passed twice on local interpreter; native/physical `not_run`; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42q--56-handwritten-mov-memory-controls) |
 | [x] | S2-42r | Deterministic JZ/JNZ rel8 branch corpus | 32 literal controls + 1,024 generated cases with unique architectural inputs; all 1,056×2 passed local interpreter and saved evidence verifier; native/physical `not_run`; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus) |
 | [x] | S2-42s | REP STOSB work-limit checkpoint/replay evidence | Eight handwritten count 1024/1025/2048/2049 × DF controls; 8×2 local executions, 32 phase snapshots, successful-store journal and masked undefined-AF checks; native/physical `not_run`; parent S2-42 and dependencies S2-21/39/40 remain open; [protocol](../testing/S2_42S_REP_CHECKPOINT.md), [report](../reports/STAGE_2_REPORT.md#s2-42s--rep-stosb-work-limit-checkpointreplay) |
+| [x] | S2-42t | Local LOCK XADD qword [RBX],RAX corpus | 32 pinned arithmetic-boundary controls + 1,024 unique generated inputs; all 1,056×2 passed local interpreter and saved replay verification; explicit native blocked before backend because form is not admitted; S2-21, ISSUE-017 and parent S2-42 remain open; [protocol](../testing/S2_42T_LOCK_XADD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42t--local-lock-xadd-qword-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -20218,3 +20219,19 @@ synthetic native evidence checks passed for debug and release build profiles.
 Actual native and physical execution remain `not_run`. This bounded rel8 slice
 does not cover rel32, indirect branches, fault cases, or complete S2-42. See
 the [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-42r-jzjnz-rel8-branch-corpus), and [test report](../reports/STAGE_2_REPORT.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus).
+
+### S2-42t — local LOCK XADD qword corpus
+
+Adds 32 pinned controls and 1,024 deterministic generated cases for the exact
+instruction `F0 48 0F C1 03` (`LOCK XADD qword [RBX],RAX`) over private
+synchronous `FlatMemory`. The controls exercise wrapping carry, signed
+overflow, auxiliary carry, zero/sign/parity flags at unaligned offset 1 and
+aligned last-valid offset 120. All 1,024 generated cases have distinct
+architectural inputs. Full-state expected results include old M in RAX,
+updated memory, preserved registers/flags, one retirement, complete code/data
+canaries, and stop RIP. All 1,056 cases passed twice on the local interpreter;
+saved replay verification also passed. An explicit native request is rejected
+before backend execution with a machine-readable blocked result because this
+form is not admitted by the current native profile. No SMP, hardware atomicity,
+split-lock or general ordering claim is made. S2-21, ISSUE-017, and parent
+S2-42 remain open. See the [protocol](../testing/S2_42T_LOCK_XADD_CORPUS.md), [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-42t-lock-xadd-qword-corpus), and [test report](../reports/STAGE_2_REPORT.md#s2-42t--local-lock-xadd-qword-corpus).

@@ -1,0 +1,1509 @@
+{
+  "profile": "s2-long-integer-v1",
+  "cases": [
+    {
+      "case_id": "s2_42t_lock_xadd_c00_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000000",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000446",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a50000000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c00_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000000",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000446",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50000000000000000"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c01_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000000",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000402",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a50100000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c01_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000000",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000402",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50100000000000000"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c02_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000001",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000402",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a50100000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c02_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000001",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000402",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50100000000000000"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c03_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0xffffffffffffffff",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000457",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a50000000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c03_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0xffffffffffffffff",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000457",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50000000000000000"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c04_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000001",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000457",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a50000000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c04_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000001",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000457",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50000000000000000"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c05_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0xffffffffffffffff",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000493",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5feffffffffffffffa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c05_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0xffffffffffffffff",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000493",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5feffffffffffffff"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c06_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x7fffffffffffffff",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000c96",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a50000000000000080a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c06_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x7fffffffffffffff",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000c96",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50000000000000080"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c07_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x8000000000000000",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000c07",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5ffffffffffffff7fa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c07_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x8000000000000000",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000c07",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5ffffffffffffff7f"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c08_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x8000000000000000",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000c47",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a50000000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c08_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x8000000000000000",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000c47",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50000000000000000"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c09_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x7fffffffffffffff",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000c92",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5feffffffffffffffa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c09_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x7fffffffffffffff",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000c92",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5feffffffffffffff"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c10_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x000000000000000f",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000412",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a51000000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c10_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x000000000000000f",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000412",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a51000000000000000"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c11_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000010",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000407",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a50f00000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c11_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000010",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000407",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50f00000000000000"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c12_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x00000000000000ff",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000416",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a50001000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c12_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x00000000000000ff",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000416",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a50001000000000000"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c13_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000100",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000407",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5ff00000000000000a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c13_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0000000000000100",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000407",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5ff00000000000000"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c14_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0xaaaaaaaaaaaaaaaa",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000486",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5ffffffffffffffffa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c14_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0xaaaaaaaaaaaaaaaa",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000486",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5ffffffffffffffff"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c15_u1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0123456789abcdef",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200001",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000486",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5ffffffffffffffffa5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42t_lock_xadd_c15_a120",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0x0123456789abcdef",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200078",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100005",
+        "rflags": "0x0000000000000486",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "f0480fc103"
+        },
+        {
+          "region_id": "data",
+          "guest_address": "0x0000000000200000",
+          "bytes_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5ffffffffffffffff"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    }
+  ]
+}

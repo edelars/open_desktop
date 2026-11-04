@@ -235,10 +235,10 @@ completion requires a separate executable slice and recorded results satisfying
 the applicable rows. Parent S2-42 remains open until its dependencies and all
 selected mandatory groups have the required evidence.
 
-## Current coverage map — S2-42r/s update
+## Current coverage map — S2-42r/s/t update
 
 The S2-42f snapshot above is retained as the historical contract-time view.
-This table records the current implementation and evidence after S2-42q/r/s; it
+This table records the current implementation and evidence after S2-42q/r/s/t; it
 does not rewrite the earlier snapshot. Local implementation evidence, native
 execution evidence, and remaining scope are separate columns so a local pass
 does not imply hardware acceptance.
@@ -250,10 +250,11 @@ does not imply hardware acceptance.
 | Integer stack and branches | S2-42g/h stack reducers/corpus; S2-42k forward JZ/JNZ reducer; S2-42r JZ/JNZ rel8 corpus with 32 controls and 1,024 generated inputs | S2-42r: all 1,056 cases passed twice; 1,024 distinct architectural inputs and synthetic saved-run debug/release roundtrips verified | Actual native/physical `not_run` | Cross-group execution, rel32/indirect/fault branches, and remaining mandatory forms |
 | Positive REP and continuation | S2-42i positive STOSB corpus; S2-42s checkpoint/replay for counts 1024/1025/2048/2049 and DF=0/1 | S2-42s passed 8×2 executions across 32 phases, exact-once write journal, serialized replay, defined-flags comparison | Native/physical `not_run` | Other REP widths/address sizes, fault/restart cases, and required native corpus remain open |
 | REP faults and FP | S2-42l partial-progress fault reducer; S2-42o one bounded SQRTSS SNaN fault reducer | Exact local fault/reducer evidence is scoped to each slice | Native/physical `not_run`; broader FP acceptance remains open | Broader fault, partial-progress, FP state and save/restore requirements |
-| Atomic/fence and additional mandatory ISA | No completion claimed by S2-42s | `not_run` | `not_run` | S2-21 atomic/fence and S2-40 inventory requirements remain open |
+| Atomic/fence and additional mandatory ISA | S2-42t local corpus for exact `LOCK XADD qword [RBX],RAX` on private synchronous FlatMemory; distinct from S2-21f `[RAX],RAX` alias/split fixture | All 1,056 inputs passed twice on local interpreter; strict saved replay passed; explicit native request records blocked/not_started before backend | Native form not admitted; actual native and physical acceptance `not_run` | S2-21 atomic/fence, ISSUE-017 LOCK ordering/capability/alignment questions, and S2-40 inventory remain open; no SMP/hardware atomicity claims |
 
 Parent S2-42 remains open, as do dependencies S2-21, S2-39 and S2-40. Physical
 hardware acceptance is `not_run`. S2-42q closes the handwritten-boundary gap
 for already admitted MOV memory/addressing forms; S2-42r adds a bounded rel8
 branch corpus; and S2-42s adds local REP work-limit checkpoint/replay evidence.
-None closes the parent reducer/corpus requirement.
+S2-42t adds local private-RAM LOCK XADD arithmetic coverage while explicitly
+preserving native denial. None closes the parent reducer/corpus requirement.

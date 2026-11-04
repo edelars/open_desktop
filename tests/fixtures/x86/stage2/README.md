@@ -9322,3 +9322,14 @@ entry offsets to provide 1,024 distinct architectural inputs. All 1,056 cases
 matched the independent full-state oracle twice on the local interpreter.
 Native and physical acceptance remain `not_run`; see the
 [S2-42r protocol](../../../../docs/testing/S2_42R_BRANCH_CORPUS.md).
+
+### S2-42t LOCK XADD qword corpus
+
+[`s2_42t_lock_xadd_controls/`](s2_42t_lock_xadd_controls/) contains 32 static
+arithmetic-boundary controls for `F0 48 0F C1 03`, with full expected
+snapshots. The corpus adds 1,024 deterministic inputs with unique architectural
+state; operand offsets 1 and 120 cover an unaligned access and the aligned
+last-valid qword in the 128-byte mapping. All 1,056 cases matched the complete
+local interpreter snapshot twice. This is private synchronous RAM coverage;
+native admission blocks the form, and no hardware atomicity/ordering claim is
+made. See the [S2-42t protocol](../../../../docs/testing/S2_42T_LOCK_XADD_CORPUS.md).
