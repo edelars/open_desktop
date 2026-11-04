@@ -742,6 +742,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42ab | DIV BL `#DE` local fault corpus | Eight pinned controls + 1,024 unique generated fault cases, evenly split between divisor zero and byte quotient overflow; 1,032×2 passed with unchanged full state, #DE vector 0, and zero retirement; strict saved replay; native blocked before backend; S2-20a/S2-14 behavior only, no native fault-delivery claim; [protocol](../testing/S2_42AB_DIV_BL_ERROR_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42ab--div-bl-divide-error-corpus) |
 | [x] | S2-42ac | CDQE/CQO local sign-extension corpus | 16 pinned controls + 1,024 unique generated inputs per exact form `48 98` and `48 99`; 2,080×2 passed with CDQE high-half source isolation, CQO RDX fill, full-state/flags preservation and strict replay; native blocked/not_started; S2-15a/S2-02 scope only; [protocol](../testing/S2_42AC_SIGN_EXTENSION_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42ac--cdqe-cqo-sign-extension-corpus) |
 | [x] | S2-42ad | IDIV BL `#DE` local fault corpus | Eight pinned controls + 1,024 unique generated signed-divide faults, balanced between zero divisor and quotient overflow; 1,032×2 passed with truncation-toward-zero oracle, unchanged full state, #DE vector 0 and zero retirement; strict saved replay; native blocked before backend; no native fault-delivery claim; [protocol](../testing/S2_42AD_IDIV_BL_ERROR_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42ad--idiv-bl-divide-error-corpus) |
+| [x] | S2-42ae | qword register BSF/BSR local corpus | Four exact RAX←RCX/RAX forms; 32 pinned controls + 1,024 unique generated states per form; 4,128 cases ×2 passed with Intel SDM Rev.093 zero-source, PF and cleared-flag semantics; strict replay; native `not_run/not_selected`; [protocol](../testing/S2_42AE_BSF_BSR_REGISTER_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42ae--qword-register-bsfbsr-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -20435,3 +20436,22 @@ physical fault-delivery claim is made. See the
 [protocol](../testing/S2_42AD_IDIV_BL_ERROR_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42ad--idiv-bl-divide-error-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ad-idiv-bl-error-corpus).
+
+### S2-42ae — qword register BSF/BSR corpus
+
+Adds a local corpus for four exact Long64 forms: BSF/BSR RAX,RCX and
+BSF/BSR RAX,RAX. Each form has eight pinned controls and 1,024 unique
+numbered-seed inputs. The independent integer oracle checks the selected bit
+index, alias source-before-destination behavior, zero-source destination
+preservation, ZF, source parity in PF, cleared CF/OF/SF/AF, full state, and
+single-instruction retirement. The selected Intel SDM revision 093 defines
+these flag effects; `0x8d5` is the defined arithmetic mask.
+
+Six focused tests passed. All 4,128 cases passed twice locally (8,256
+executions); strict corpus verification and saved-result replay passed with
+digest `f0f54741d86ebfa0e00ebb3b270f5bbb7e3d5ab94d79ced13498261346a9477f`.
+Native evidence is `not_run/not_selected`; this corpus is not part of the five
+native suites and does not claim physical acceptance. See the
+[protocol](../testing/S2_42AE_BSF_BSR_REGISTER_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42ae--qword-register-bsfbsr-corpus), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ae-qword-register-bsfbsr-corpus).

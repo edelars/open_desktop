@@ -3002,12 +3002,14 @@ oracle. S2-15c подтверждён только локально.
 16/32/64-bit widths. BSF находит индекс младшего установленного source bit,
 BSR — старшего. При нулевом source устанавливается ZF и destination
 сохраняется; при ненулевом source записывается найденный индекс и ZF
-сбрасывается. Остальные арифметические flags undefined; 32-bit destination
-write обнуляет верхние 32 бита. Memory и F3-prefixed forms остаются вне этого
-среза.
+сбрасывается. В выбранной Intel SDM revision 093 семантике PF задаётся чётностью
+source, CF/OF/SF/AF очищаются; 32-bit destination write обнуляет верхние 32
+бита. Memory и F3-prefixed forms остаются вне этого среза.
 
-Семантика сверена с Intel SDM revision 093, Vol.2A: BSF pp. 3-107–3-108,
-BSR pp. 3-109–3-110. Семнадцать handwritten fixtures содержат literal
+Семантика сверена с [Intel SDM revision 093, Vol.2A](https://cdrdv2.intel.com/v1/dl/getContent/671199): BSF pp. 3-107–3-108,
+BSR pp. 3-109–3-110. Эта формулировка исправляет прежнее утверждение отчёта о неопределённых
+флагах и совпадает с текущими декодером, интерпретатором, provenance фикстур
+и масками native admission. Семнадцать handwritten fixtures содержат literal
 full-state answers и покрывают zero/nonzero inputs, края каждого width,
 extended registers и aliases. После review замечания generator изменён так,
 что ожидаемые destination и RFLAGS заданы явными independently hand-calculated
@@ -24742,3 +24744,28 @@ Native execution is blocked before backend invocation, so no native or physical
 See the [protocol](../testing/S2_42AD_IDIV_BL_ERROR_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42ad--idiv-bl-divide-error-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ad-idiv-bl-error-corpus).
+
+## S2-42ae — qword register BSF/BSR corpus
+
+S2-42ae covers four exact Long64 forms with RAX as destination and RCX or RAX
+as source: BSF and BSR register-register, including source/destination aliases.
+The 32 pinned controls cover zero, single-bit boundaries, all-ones, alternating
+and mixed values. Each form adds 1,024 unique generated input states. The
+independent integer oracle checks bit-index results, source-before-destination
+aliasing, zero-source destination preservation, ZF, PF source parity, cleared
+CF/OF/SF/AF, preserved remaining state, and one retirement.
+
+The selected [Intel SDM revision 093, Volume 2A](https://cdrdv2.intel.com/v1/dl/getContent/671199)
+defines the S2-15d flag behavior. This integration also corrects the older
+S2-15d report sentence that called the other arithmetic flags undefined; the
+current decoder and native-admission mask agree with Rev.093 (`defined=0x8d5`,
+`undefined=0`).
+
+Six focused tests passed. All 4,128 cases passed twice locally (8,256
+executions); corpus verification and saved-result replay passed with digest
+`f0f54741d86ebfa0e00ebb3b270f5bbb7e3d5ab94d79ced13498261346a9477f`.
+Native evidence is `not_run/not_selected`, and physical execution is `not_run`.
+`python3 tools/check_layout.py` passed on integrated main. This bounded corpus
+does not close S2-15d, parent S2-42, or broader BSF/BSR coverage. See the [protocol](../testing/S2_42AE_BSF_BSR_REGISTER_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42ae--qword-register-bsfbsr-corpus), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ae-qword-register-bsfbsr-corpus).

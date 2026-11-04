@@ -92,11 +92,12 @@ saved replay context. Native execution is `not_run/not_selected`; physical
 execution is `not_run`.
 
 Focused generator tests (six tests), runner offline build, corpus verification,
-saved-result replay verification and `git diff --check` passed. The layout
-checker did not pass: `python3 tools/check_layout.py` reported the root `.git`
-entry as unmapped in this assigned worktree. No root-level files or layout
-entries were added by this slice. `graphify update .` completed (14,597 nodes,
-34,883 edges, 371 communities); its output is ignored by Git.
+saved-result replay verification and `git diff --check` passed. The isolated
+assigned worktree made `tools/check_layout.py` report its `.git` file as
+unmapped; after transfer, `python3 tools/check_layout.py` passed on main
+(`Layout OK: 48 required directories, 6 crate scaffolds, 14 instruction scopes`).
+No root-level files or layout entries were added. `graphify update .` completed
+(14,597 nodes, 34,883 edges, 371 communities); its output is ignored by Git.
 
 This corpus is limited to the four exact forms above and does not close
 S2-15d, parent S2-42, physical acceptance or broader BSF/BSR coverage.

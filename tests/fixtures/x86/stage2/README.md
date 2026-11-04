@@ -9451,3 +9451,13 @@ neighbors. All 1,032 cases passed twice locally with unchanged full state,
 #DE vector 0, and zero retirement; strict saved replay passed. Native fault
 delivery remains blocked before backend. See the
 [S2-42ad protocol](../../../../docs/testing/S2_42AD_IDIV_BL_ERROR_CORPUS.md).
+
+### S2-42ae qword register BSF/BSR corpus
+
+`s2_42ae_bsf_bsr_qword_controls/` contains 32 pinned controls for exact
+qword BSF/BSR RAX,RCX and RAX,RAX forms. The corpus adds 1,024 unique states
+per form. Its independent integer oracle follows Intel SDM Rev.093: zero source
+preserves destination, PF reports source parity, CF/OF/SF/AF clear. All 4,128
+cases passed twice locally with strict saved replay. Native evidence is
+`not_run/not_selected`. See the
+[S2-42ae protocol](../../../../docs/testing/S2_42AE_BSF_BSR_REGISTER_CORPUS.md).
