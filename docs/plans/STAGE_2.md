@@ -726,6 +726,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42l | REP STOSB partial-progress #GP reducer | Literal #GP(0) fixture plus bounded AL-only fault reducer/replay; exact RCX/RDI/memory progress and unchanged RIP/retirement; native/physical `not_run`; [protocol](../testing/S2_42L_REP_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42l--rep-stosb-partial-progress-gp-reducer) |
 | [x] | S2-42m | Deterministic CVTSI2SD interpreter corpus | 1,024 generated + 9 literal controls; all 1,033 fixtures ×2 passed integer-only binary64 oracle; native profile closed and recorded `not_run_profile_closed`; [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus) |
 | [x] | S2-42n | Bounded exact MOV qword memory interpreter reducer | RAX-only reduction for literal `48 89 03`; independent byte-store oracle, complete mapping/mask preservation, callback journal and replay; synthetic stable mismatch and drift/failure/budget regressions; local fixture `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42N_MOV_MEMORY_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42n--bounded-mov-qword-memory-reducer) |
+| [x] | S2-42o | Bounded SQRTSS SNaN #XM interpreter reducer | One exact register instruction; descending nonzero-payload reduction, independent full-state/#XM predicate, callback journal and replay; synthetic IE omission and XMM0 corruption; literal `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42o--sqrtss-snan-fault-reducer) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -20109,3 +20110,27 @@ inherited Intel SDM Rev. 093 sources and precise acceptance boundaries are in th
 [CPU contract](../specs/CPU_CONTRACT.md#s2-38ba--exact-cvtdq2ps-m128-memory-profile-with-unmasked-exceptions),
 [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ba-cvtdq2ps-m128-memory-unmasked-profile)
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-38ba--cvtdq2ps-m128-memory-unmasked-profile).
+
+### S2-42o bounded SQRTSS SNaN #XM interpreter reducer
+
+Add a local-only schema-v2 reducer for the exact Long64 register profile
+`s2-long-sqrtss-registers-v1`, `F3 0F 51 C1`, with XMM1.low32 positive SNaN,
+MXCSR.IE unmasked, all other exception masks set, SSE controls enabled, budget
+one, and stop at `entry+4`. Only the 22-bit nonzero SNaN payload may change;
+proposals clear bits in descending order without producing zero payload.
+
+The independent expected state sets MXCSR.IE, preserves prior sticky bits and
+all other XMM/GPR/RFLAGS/code state, leaves RIP at the faulting entry, retires
+zero instructions, and reports #XM(19) without architectural error code/address.
+The mismatch fingerprint contains only differing bit locations in
+XMM0.low32 and/or MXCSR.IE. Callback results are paired for the original,
+every proposal, and final confirmation, with a hard maximum of 48 calls.
+Evidence preserves full callback result/journal/digests, provenance, build and
+machine data, expected states, and replay commands using a fresh output path.
+The literal fixture reports `no_initial_mismatch` on the local interpreter.
+Synthetic stable IE omission and destination corruption reduce successfully;
+validator-vs-reducer behavior, wrong-fault, flakiness, budget, and replay are
+regression-covered. Native/physical execution remain `not_run`; broader FP
+acceptance and the parent S2-42 remain open. See
+[protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md) and
+[report](../reports/STAGE_2_REPORT.md#s2-42o--sqrtss-snan-fault-reducer).

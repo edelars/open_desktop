@@ -98,6 +98,10 @@ use od_testkit::result::{
     Backend, BuildMetadata, CompletionStatus, CpuSnapshot, ExitReason, GprSnapshot,
     MachineMetadata, Observation, RESULT_SCHEMA_VERSION, RunResult,
 };
+use od_testkit::sqrtss_fault_reducer::{
+    SQRTSS_FAULT_REDUCER_DEFAULT_BUDGET, SQRTSS_FAULT_REDUCER_MAX_CALLBACKS,
+    SQRTSS_FAULT_REDUCER_VERSION, SqrtssFaultReductionStop, reduce_sqrtss_fault_fixture,
+};
 use od_testkit::stack_reducer::{
     STACK_REDUCER_DEFAULT_BUDGET, STACK_REDUCER_MAX_BUDGET, StackReductionStop,
     reduce_stack_fixture_with_input_digest, stack_oracle,
@@ -814,6 +818,310 @@ pub fn reduce_rep_fault(args: &[String]) -> ExitCode {
             ExitCode::from(EXIT_INVALID_INPUT)
         }
     }
+}
+
+pub fn reduce_sqrtss_fault(args: &[String]) -> ExitCode {
+    match reduce_sqrtss_fault_inner(args) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("SQRTSS fault reducer: {error}");
+            ExitCode::from(EXIT_INVALID_INPUT)
+        }
+    }
+}
+
+fn reduce_sqrtss_fault_inner(args: &[String]) -> Result<ExitCode, String> {
+    let mut input_path = None;
+    let mut output_dir = None;
+    let mut call_budget = SQRTSS_FAULT_REDUCER_DEFAULT_BUDGET;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--limit" => {
+                index += 1;
+                call_budget = args
+                    .get(index)
+                    .ok_or("--limit requires an integer")?
+                    .parse()
+                    .map_err(|_| "--limit must be an integer")?;
+            }
+            "--output-dir" => {
+                index += 1;
+                output_dir = Some(
+                    args.get(index)
+                        .ok_or("--output-dir requires a path")?
+                        .clone(),
+                );
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown SQRTSS fault reducer option: {value}"));
+            }
+            value if input_path.is_none() => input_path = Some(value.to_string()),
+            value => return Err(format!("unexpected SQRTSS fault reducer argument: {value}")),
+        }
+        index += 1;
+    }
+    let input_path = input_path
+        .ok_or("usage: od-runner --reduce-sqrtss-fault <fixture> [--limit N] [--output-dir DIR]")?;
+    if !(4..=SQRTSS_FAULT_REDUCER_MAX_CALLBACKS).contains(&call_budget) {
+        return Err(format!(
+            "--limit must be 4..={SQRTSS_FAULT_REDUCER_MAX_CALLBACKS}"
+        ));
+    }
+    let output_relative = std::path::PathBuf::from(output_dir.unwrap_or_else(|| {
+        format!(
+            "work/stage2/s2-42o-sqrtss-fault/{}",
+            std::path::Path::new(&input_path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )
+    }));
+    validate_sqrtss_fault_output_dir(&output_relative)?;
+    let output_path = workspace_root().join(&output_relative);
+    let original_bytes =
+        read_file_bounded(&input_path, v2::MAX_FIXTURE_JSON_BYTES, "fixture JSON")?;
+    let loaded = v2::Fixture::from_json(&original_bytes)
+        .map_err(|e| format!("invalid strict-schema fixture: {e}"))?;
+    let expected_original =
+        serde_json::to_vec_pretty(&od_testkit::sqrtss_fault_reducer::sqrtss_fault_oracle(
+            &loaded.fixture,
+            &loaded.input_sha256,
+        )?)
+        .map_err(|e| e.to_string())?;
+    fs::create_dir_all(
+        output_path
+            .parent()
+            .ok_or("output directory has no parent")?,
+    )
+    .map_err(|e| format!("could not create output parent: {e}"))?;
+    fs::create_dir(&output_path)
+        .map_err(|e| format!("could not create fresh output directory: {e}"))?;
+    let output_path = fs::canonicalize(&output_path).map_err(|e| e.to_string())?;
+    let callbacks_dir = output_path.join("callbacks");
+    let candidates_dir = callbacks_dir.join("candidates");
+    let expected_candidates_dir = output_path.join("expected-candidates");
+    fs::create_dir(&callbacks_dir).map_err(|e| e.to_string())?;
+    fs::create_dir(&candidates_dir).map_err(|e| e.to_string())?;
+    fs::create_dir(&expected_candidates_dir).map_err(|e| e.to_string())?;
+    write_new(output_path.join("original.case.json"), &original_bytes)?;
+    write_new(
+        output_path.join("expected-original.json"),
+        &expected_original,
+    )?;
+
+    let mut sequence = 0usize;
+    let mut repeats = HashMap::<String, usize>::new();
+    let mut saved = HashSet::<String>::new();
+    let mut saved_expected = HashSet::<String>::new();
+    let reduction = reduce_sqrtss_fault_fixture(
+        &loaded.fixture,
+        &loaded.input_sha256,
+        call_budget,
+        |candidate| {
+            sequence += 1;
+            let is_original = candidate == &loaded.fixture;
+            let bytes = if is_original {
+                original_bytes.clone()
+            } else {
+                candidate.to_json().map_err(|e| e.to_string())?
+            };
+            let digest = sha256_hex(&bytes);
+            let fixture_rel = if is_original {
+                std::path::PathBuf::from("original.case.json")
+            } else {
+                std::path::PathBuf::from("callbacks/candidates").join(format!("{digest}.case.json"))
+            };
+            if !is_original && saved.insert(digest.clone()) {
+                write_new(output_path.join(&fixture_rel), &bytes)?;
+            }
+            let repeat = repeats.entry(digest.clone()).or_default();
+            *repeat += 1;
+            let candidate_loaded = if is_original {
+                loaded.clone()
+            } else {
+                v2::Fixture::from_json(&bytes).map_err(|e| e.to_string())?
+            };
+            let expected = od_testkit::sqrtss_fault_reducer::sqrtss_fault_oracle(
+                &candidate_loaded.fixture,
+                &candidate_loaded.input_sha256,
+            )?;
+            let expected_bytes = serde_json::to_vec_pretty(&expected).map_err(|e| e.to_string())?;
+            let expected_rel = if is_original {
+                std::path::PathBuf::from("expected-original.json")
+            } else {
+                std::path::PathBuf::from("expected-candidates").join(format!("{digest}.json"))
+            };
+            if !is_original && saved_expected.insert(digest.clone()) {
+                write_new(output_path.join(&expected_rel), &expected_bytes)?;
+            }
+            let result = match run_sqrtss_fault_interpreter(&candidate_loaded) {
+                Ok(result) => result,
+                Err(error) => {
+                    let record = serde_json::json!({"sequence":sequence,"fixture_sha256":digest,"fixture":fixture_rel,"repeat":repeat,"backend":"interpreter","status":"harness_error","error":error});
+                    write_callback_record(&callbacks_dir, sequence, &record)?;
+                    return Err(error);
+                }
+            };
+            let shape_error = result.validate().err().map(|e| e.to_string());
+            let result_bytes = serialize_v2_result_raw(&result)?;
+            let result_rel = std::path::PathBuf::from("callbacks")
+                .join(format!("run-{sequence:06}.result.json"));
+            write_new(output_path.join(&result_rel), &result_bytes)?;
+            let record = serde_json::json!({"sequence":sequence,"fixture_sha256":digest,"fixture":fixture_rel,"repeat":repeat,"backend":result.backend,"status":if shape_error.is_some(){"invalid_result"}else{"completed"},"validation_error":shape_error,"outcome":result.outcome,"result_sha256":sha256_hex(&result_bytes),"result":result_rel,"result_value":result,"expected_sha256":sha256_hex(&expected_bytes),"expected_result":expected_rel});
+            write_callback_record(&callbacks_dir, sequence, &record)?;
+            Ok(result)
+        },
+    )?;
+    for (index, result) in reduction.initial_results.iter().enumerate() {
+        write_new(
+            output_path.join(format!("initial-{}.result.json", index + 1)),
+            &serialize_v2_result_raw(result)?,
+        )?;
+    }
+    for (index, result) in reduction.final_results.iter().enumerate() {
+        write_new(
+            output_path.join(format!("final-{}.result.json", index + 1)),
+            &serialize_v2_result_raw(result)?,
+        )?;
+    }
+    let reduced_bytes = reduction
+        .reduced_fixture
+        .as_ref()
+        .map(|f| f.to_json().map_err(|e| e.to_string()))
+        .transpose()?;
+    let mut expected_reduced_sha256 = None;
+    if let Some(bytes) = &reduced_bytes {
+        write_new(output_path.join("reduced.case.json"), bytes)?;
+        let expected = serde_json::to_vec_pretty(
+            reduction
+                .expected_reduced
+                .as_ref()
+                .ok_or("missing reduced oracle")?,
+        )
+        .map_err(|e| e.to_string())?;
+        expected_reduced_sha256 = Some(sha256_hex(&expected));
+        write_new(output_path.join("expected-reduced.json"), &expected)?;
+    }
+    let runner = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .display()
+        .to_string();
+    let original_artifact = output_path.join("original.case.json");
+    let argv_original = vec![
+        runner.clone(),
+        "--fixture".into(),
+        original_artifact.display().to_string(),
+        "--engine".into(),
+        "interpreter".into(),
+        "--json".into(),
+    ];
+    let argv_reduced = reduced_bytes.as_ref().map(|_| {
+        vec![
+            runner.clone(),
+            "--fixture".into(),
+            output_path.join("reduced.case.json").display().to_string(),
+            "--engine".into(),
+            "interpreter".into(),
+            "--json".into(),
+        ]
+    });
+    let fresh_replay_dir = output_relative.join("replay-fresh");
+    let argv_reducer = vec![
+        runner.clone(),
+        "--reduce-sqrtss-fault".into(),
+        original_artifact.display().to_string(),
+        "--limit".into(),
+        call_budget.to_string(),
+        "--output-dir".into(),
+        fresh_replay_dir.display().to_string(),
+    ];
+    let report = serde_json::json!({
+        "report_version":1,"reducer":SQRTSS_FAULT_REDUCER_VERSION,"profile":"s2-long-sqrtss-registers-v1",
+        "source_fixture":input_path,"source_fixture_sha256":sha256_hex(&original_bytes),"provenance":loaded.fixture.provenance,
+        "source_revision":local_revision_at(&workspace_root()),"toolchain":local_rustc_version(),
+        "build_metadata":reduction.initial_results.first().map(|r|&r.build),"machine_metadata":reduction.initial_results.first().map(|r|&r.machine),
+        "controls":loaded.fixture.sqrtss_controls,"mxcsr_supported_bits":"0x0000ffbf","original_payload":reduction.initial_payload,"reduced_payload":reduction.final_payload,
+        "stop_reason":reduction.stop,"stop_detail":reduction.stop_detail,"initial_fingerprint":reduction.initial_fingerprint,"final_fingerprint":reduction.final_fingerprint,
+        "call_budget":call_budget,"actual_callbacks":reduction.actual_callbacks,"candidate_proposals":reduction.candidate_proposals,"accepted_candidates":reduction.accepted_candidates,
+        "expected_original_sha256":sha256_hex(&expected_original),"expected_reduced_sha256":expected_reduced_sha256,
+        "callback_results":reduction.initial_results.iter().chain(&reduction.final_results).map(|r|serialize_v2_result_raw(r).map(|b|sha256_hex(&b))).collect::<Result<Vec<_>,_>>()?,
+        "replay":{"working_directory":std::env::current_dir().map_err(|e|e.to_string())?.canonicalize().map_err(|e|e.to_string())?,"argv_original":argv_original,"argv_reduced":argv_reduced,"argv_reducer_fresh_output":argv_reducer,"fresh_output_destination":fresh_replay_dir},
+        "native_execution":"not_run","physical_execution":"not_run",
+        "output_files":{"original_fixture":"original.case.json","expected_original":"expected-original.json","expected_candidates":"expected-candidates/","callback_journal":"callbacks/","reduced_fixture":reduced_bytes.is_some(),"expected_reduced":expected_reduced_sha256.is_some()}
+    });
+    write_new(
+        output_path.join("report.json"),
+        &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+    )?;
+    println!(
+        "SQRTSS fault reducer: {:?}; callbacks={}; output={}",
+        reduction.stop,
+        reduction.actual_callbacks,
+        output_path.display()
+    );
+    Ok(
+        if matches!(
+            reduction.stop,
+            SqrtssFaultReductionStop::CallbackBudgetExhausted
+                | SqrtssFaultReductionStop::CallbackError
+                | SqrtssFaultReductionStop::FlakyInitial
+                | SqrtssFaultReductionStop::FlakyCandidate
+                | SqrtssFaultReductionStop::FinalConfirmationFailed
+        ) {
+            ExitCode::from(EXIT_HARNESS_FAILURE)
+        } else {
+            ExitCode::SUCCESS
+        },
+    )
+}
+
+fn validate_sqrtss_fault_output_dir(path: &std::path::Path) -> Result<(), String> {
+    use std::path::Component;
+    let parts = path.components().collect::<Vec<_>>();
+    let allowed = ["work", "stage2", "s2-42o-sqrtss-fault"];
+    if parts.len() <= allowed.len()
+        || parts.iter().any(|p| !matches!(p, Component::Normal(_)))
+        || parts
+            .iter()
+            .take(allowed.len())
+            .zip(allowed)
+            .any(|(p, expected)| *p != Component::Normal(std::ffi::OsStr::new(expected)))
+    {
+        return Err(
+            "--output-dir must be a new child directory under work/stage2/s2-42o-sqrtss-fault"
+                .into(),
+        );
+    }
+    let mut prefix = workspace_root();
+    for part in parts {
+        prefix.push(part.as_os_str());
+        match fs::symlink_metadata(&prefix) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!(
+                    "--output-dir contains symlink {}",
+                    prefix.display()
+                ));
+            }
+            Ok(_) => (),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+            Err(e) => return Err(format!("could not inspect output path: {e}")),
+        }
+    }
+    Ok(())
+}
+
+fn run_sqrtss_fault_interpreter(loaded: &v2::LoadedFixture) -> Result<v2::RunResult, String> {
+    let mut memory =
+        od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).map_err(|e| e.to_string())?;
+    Ok(execute_fixture_v2(loaded, &mut memory))
+}
+
+fn serialize_v2_result_raw(result: &v2::RunResult) -> Result<Vec<u8>, String> {
+    serde_json::to_vec_pretty(result)
+        .map_err(|e| format!("could not serialize raw callback result: {e}"))
 }
 
 fn reduce_rep_fault_inner(args: &[String]) -> Result<ExitCode, String> {
@@ -19601,6 +19909,257 @@ mod rep_fault_reducer_evidence_tests {
                 .unwrap()
                 .fixture,
             changed
+        );
+    }
+}
+
+#[cfg(test)]
+mod sqrtss_fault_reducer_tests {
+    use super::*;
+
+    const FIXTURE: &[u8] =
+        include_bytes!("../../../tests/fixtures/x86/stage2/s2_42o_sqrtss_snan_fault.case.json");
+
+    fn loaded() -> v2::LoadedFixture {
+        v2::Fixture::from_json(FIXTURE).unwrap()
+    }
+
+    fn run_raw(fixture: &v2::Fixture, digest: &str) -> v2::RunResult {
+        let loaded = v2::LoadedFixture {
+            fixture: fixture.clone(),
+            input_sha256: digest.into(),
+        };
+        let mut memory = od_testkit::memory::FlatMemory::from_fixture(fixture).unwrap();
+        execute_fixture_v2(&loaded, &mut memory)
+    }
+
+    fn fault(result: &mut v2::RunResult) -> &mut od_testkit::v2::Snapshot {
+        match &mut result.snapshot {
+            Observation::Available { value } => value,
+            Observation::Unavailable { .. } => panic!("missing snapshot"),
+        }
+    }
+
+    fn sse_snan_with_payload(payload: u32) -> v2::Fixture {
+        let mut fixture = loaded().fixture;
+        let sse = fixture.initial_state.sse.as_mut().unwrap();
+        let mut bytes = (0..16)
+            .map(|i| u8::from_str_radix(&sse.xmm[1][i * 2..i * 2 + 2], 16).unwrap())
+            .collect::<Vec<_>>();
+        bytes[..4].copy_from_slice(&(0x7f80_0000 | payload).to_le_bytes());
+        sse.xmm[1] = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        fixture
+    }
+
+    #[test]
+    fn stable_ie_omission_is_reduced_and_strict_validator_still_rejects_it() {
+        let fixture = sse_snan_with_payload(0x200005);
+        let digest = od_testkit::sha256_hex(&fixture.to_json().unwrap());
+        let baseline = run_raw(&fixture, &digest);
+        baseline
+            .validate_for(&v2::LoadedFixture {
+                fixture: fixture.clone(),
+                input_sha256: digest.clone(),
+            })
+            .unwrap();
+        let mut omitted = baseline.clone();
+        fault(&mut omitted).state.sse.as_mut().unwrap().mxcsr.0 &= !1;
+        omitted.validate().unwrap();
+        assert!(
+            omitted
+                .validate_for(&v2::LoadedFixture {
+                    fixture: fixture.clone(),
+                    input_sha256: digest.clone()
+                })
+                .is_err()
+        );
+        let reduction = od_testkit::sqrtss_fault_reducer::reduce_sqrtss_fault_fixture(
+            &fixture,
+            &digest,
+            48,
+            |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    od_testkit::sha256_hex(&candidate.to_json().unwrap())
+                };
+                let mut result = run_raw(candidate, &candidate_digest);
+                fault(&mut result).state.sse.as_mut().unwrap().mxcsr.0 &= !1;
+                Ok(result)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reduction.stop,
+            SqrtssFaultReductionStop::Reduced,
+            "{:?}",
+            reduction.stop_detail
+        );
+        assert_eq!(reduction.final_payload, Some(1));
+        assert_eq!(
+            reduction.initial_fingerprint.unwrap().differing_bits,
+            ["mxcsr.ie"]
+        );
+        assert_eq!(reduction.actual_callbacks, 8);
+    }
+
+    #[test]
+    fn stable_destination_corruption_has_exact_bit_fingerprint() {
+        let fixture = sse_snan_with_payload(0x200001);
+        let digest = od_testkit::sha256_hex(&fixture.to_json().unwrap());
+        let reduction = od_testkit::sqrtss_fault_reducer::reduce_sqrtss_fault_fixture(
+            &fixture,
+            &digest,
+            48,
+            |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    od_testkit::sha256_hex(&candidate.to_json().unwrap())
+                };
+                let mut result = run_raw(candidate, &candidate_digest);
+                let state = &mut fault(&mut result).state;
+                let sse = state.sse.as_mut().unwrap();
+                let mut bytes = (0..16)
+                    .map(|i| u8::from_str_radix(&sse.xmm[0][i * 2..i * 2 + 2], 16).unwrap())
+                    .collect::<Vec<_>>();
+                bytes[0] ^= 1 << 5;
+                sse.xmm[0] = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                Ok(result)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reduction.stop,
+            SqrtssFaultReductionStop::Reduced,
+            "{:?}",
+            reduction.stop_detail
+        );
+        assert_eq!(reduction.final_payload, Some(1));
+        assert_eq!(
+            reduction.initial_fingerprint.unwrap().differing_bits,
+            ["xmm0.low32.bit5"]
+        );
+    }
+
+    #[test]
+    fn raw_evidence_serialization_keeps_malformed_results_available_for_failure_reports() {
+        let loaded = loaded();
+        let mut result = run_raw(&loaded.fixture, &loaded.input_sha256);
+        result.schema_version = 99;
+        assert!(result.validate().is_err());
+        let bytes = super::serialize_v2_result_raw(&result).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(saved["schema_version"], 99);
+        assert_eq!(
+            od_testkit::sha256_hex(&bytes),
+            od_testkit::sha256_hex(&super::serialize_v2_result_raw(&result).unwrap())
+        );
+    }
+
+    #[test]
+    fn wrong_fault_flaky_and_callback_budget_fail_closed() {
+        let fixture = sse_snan_with_payload(0x200001);
+        let digest = od_testkit::sha256_hex(&fixture.to_json().unwrap());
+        let wrong = od_testkit::sqrtss_fault_reducer::reduce_sqrtss_fault_fixture(
+            &fixture,
+            &digest,
+            48,
+            |candidate| {
+                let cd = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    od_testkit::sha256_hex(&candidate.to_json().unwrap())
+                };
+                let mut result = run_raw(candidate, &cd);
+                fault(&mut result).exception = Observation::Available {
+                    value: Some(od_testkit::result::ExceptionSnapshot {
+                        vector: 6,
+                        error_code: Observation::Unavailable {
+                            reason: "not applicable".into(),
+                        },
+                        faulting_rip: candidate.initial_state.rip,
+                        fault_address: Observation::Unavailable {
+                            reason: "no address".into(),
+                        },
+                    }),
+                };
+                Ok(result)
+            },
+        )
+        .unwrap();
+        assert_eq!(wrong.stop, SqrtssFaultReductionStop::CallbackError);
+        let mut calls = 0;
+        let flaky = od_testkit::sqrtss_fault_reducer::reduce_sqrtss_fault_fixture(
+            &fixture,
+            &digest,
+            48,
+            |candidate| {
+                calls += 1;
+                let cd = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    od_testkit::sha256_hex(&candidate.to_json().unwrap())
+                };
+                let mut result = run_raw(candidate, &cd);
+                if calls == 2 {
+                    fault(&mut result).state.sse.as_mut().unwrap().mxcsr.0 &= !1;
+                }
+                Ok(result)
+            },
+        )
+        .unwrap();
+        assert_eq!(flaky.stop, SqrtssFaultReductionStop::FlakyInitial);
+        let bounded = od_testkit::sqrtss_fault_reducer::reduce_sqrtss_fault_fixture(
+            &fixture,
+            &digest,
+            4,
+            |candidate| {
+                let cd = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    od_testkit::sha256_hex(&candidate.to_json().unwrap())
+                };
+                let mut result = run_raw(candidate, &cd);
+                fault(&mut result).state.sse.as_mut().unwrap().mxcsr.0 &= !1;
+                Ok(result)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            bounded.stop,
+            SqrtssFaultReductionStop::CallbackBudgetExhausted
+        );
+        assert_eq!(bounded.actual_callbacks, 4);
+
+        let high96 = od_testkit::sqrtss_fault_reducer::reduce_sqrtss_fault_fixture(
+            &fixture,
+            &digest,
+            48,
+            |candidate| {
+                let cd = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    od_testkit::sha256_hex(&candidate.to_json().unwrap())
+                };
+                let mut result = run_raw(candidate, &cd);
+                let sse = fault(&mut result).state.sse.as_mut().unwrap();
+                sse.mxcsr.0 &= !1;
+                let mut bytes = (0..16)
+                    .map(|i| u8::from_str_radix(&sse.xmm[0][i * 2..i * 2 + 2], 16).unwrap())
+                    .collect::<Vec<_>>();
+                bytes[7] ^= 1;
+                sse.xmm[0] = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                Ok(result)
+            },
+        )
+        .unwrap();
+        assert_eq!(high96.stop, SqrtssFaultReductionStop::CallbackError);
+        assert!(
+            high96
+                .stop_detail
+                .unwrap()
+                .contains("architectural state outside")
         );
     }
 }

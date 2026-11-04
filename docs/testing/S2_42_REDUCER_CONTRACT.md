@@ -211,7 +211,7 @@ implemented.
 | Stack | Push/pop width, source/destination alias with stack/base registers, pre/post stack update, retained stack bytes and fault atomicity | Future; `not_run` |
 | Branches/instruction deletion | Forward/backward/taken/untaken edges, target/end/entry retention, deleted-target rejection, displacement bounds, RIP-relative references and invalid interior targets | Future; `not_run` |
 | REP | Zero count, DF directions, widths/address sizes, completion versus explicit stop/work limit, fault at first/later iteration, committed bytes and intentional resume/definedness | Future; `not_run` |
-| FP and FP faults | Admitted operand classes and boundaries, rounding/masks/sticky status, gates and fault ordering, destination suppression, complete observed FP state, saved/restored state where required | Future; `not_run`; depends on relevant S2-39 evidence |
+| FP and FP faults | Admitted operand classes and boundaries, rounding/masks/sticky status, gates and fault ordering, destination suppression, complete observed FP state, saved/restored state where required | S2-42o: bounded local-interpreter SQRTSS SNaN #XM reducer for one exact register form; native/physical `not_run`, broader FP acceptance open; depends on relevant S2-39 evidence |
 | Atomic/fence | Admitted LOCK/form combinations, atomic access contract, alignment/fault ordering and single-vCPU side effects | Future; `not_run`; depends on relevant S2-21 evidence |
 | Additional mandatory ISA | Forms and feature requirements established by S2-40 inventory, with an independent observation method | Future; `not_run` |
 

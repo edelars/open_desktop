@@ -24326,3 +24326,30 @@ That suite is unverified for this slice.
 Native and physical execution remain `not_run`; parent S2-42 and S2-21/S2-39/
 S2-40 remain open. See the [protocol](../testing/S2_42N_MOV_MEMORY_REDUCER.md)
 and [plan](../plans/STAGE_2.md#s2-42n-bounded-mov-qword-memory-reducer).
+
+## S2-42o — SQRTSS SNaN fault reducer
+
+Added a bounded interpreter-only reducer for the exact schema-v2 register
+profile `s2-long-sqrtss-registers-v1`, Long64 `F3 0F 51 C1`, with an unmasked
+positive SNaN in XMM1.low32. The independent oracle expects #XM(19), no
+architectural error code/address, zero retirement, unchanged RIP/GPR/RFLAGS/code
+and XMM source state, with MXCSR.IE set and prior sticky bits preserved. Only
+the nonzero SNaN payload is reduced, in descending bit order; sign, exponent,
+quiet bit, mappings and masks remain fixed. The maximum schedule is 48 callbacks.
+
+The reducer uses shape validation and explicit identity, provenance, controls,
+fault, and complete-state checks because shared `validate_for` correctly rejects
+the intended architectural mismatch. Synthetic stable IE omission and XMM0
+low-dword corruption reduce with exact fingerprints; strict-validator rejection,
+wrong fault, high96 drift, flakiness, callback-budget behavior, and malformed-result evidence serialization pass. The literal local
+fixture reports `no_initial_mismatch` after two interpreter callbacks. Replay
+uses saved input bytes and a fresh output directory; native and physical
+execution are `not_run`.
+
+All 504 `od-testkit` tests passed. Four focused runner reducer regressions and
+one replay integration passed; runner all-target check, formatting, local
+documentation-link checks and Graphify update passed. `tools/check_layout.py`
+was attempted and reports the linked-worktree `.git` pointer as an unmapped
+root file; rerun that check on main after transfer. The full runner fixture
+suite was not run. The broader FP acceptance and parent S2-42 remain open. See the [S2-42o protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md) and
+[plan](../plans/STAGE_2.md#s2-42o-bounded-sqrtss-snan-xm-interpreter-reducer).

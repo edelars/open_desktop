@@ -9233,3 +9233,13 @@ for implementation and acceptance scope.
 fully observed RW data region, RBX at an interior qword with canaries, and a
 one-instruction stop at `entry+3`. Its reducer changes RAX only. See the
 [S2-42n protocol](../../../../docs/testing/S2_42N_MOV_MEMORY_REDUCER.md).
+
+### S2-42o SQRTSS SNaN fault reducer
+
+`s2_42o_sqrtss_snan_fault.case.json` is the literal register-only anchor for
+`F3 0F 51 C1` in `s2-long-sqrtss-registers-v1`. XMM1.low32 is positive binary32
+SNaN `0x7f800001`; MXCSR is `0x1f00` (IE unmasked, other exception masks set,
+DAZ/FTZ clear), and the fixture expects #XM with zero retirement at entry.
+Only SNaN payload bits are eligible for reduction. The
+[S2-42o protocol](../../../../docs/testing/S2_42O_SQRTSS_FAULT_REDUCER.md)
+defines the full snapshot predicate and replay evidence.
