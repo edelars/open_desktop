@@ -17323,6 +17323,26 @@ corpus groups and hardware acceptance are still outstanding. See [protocol](../t
 [plan](../plans/STAGE_2.md#s2-42d-bounded-native-xorpd-reducerreplay), and
 [test format](../testing/TEST_CASE_FORMAT.md#s2-42d-bounded-native-xorpd-xmm-input-reducer).
 
+## S2-42f — schema-v2 reducer acceptance contract
+
+Added a documentation-only contract for future bounded schema-v2 reducers.
+It distinguishes the existing schema-v1 minimizer and XORPD-specific reducer
+from the still-unimplemented generic reducer, and defines preservation rules
+for instruction form, layout, branch targets, memory, exit/fault class, and
+partial progress. It also specifies candidate rejection, mismatch fingerprints,
+repeat confirmation, evidence/replay requirements, and a coverage matrix for
+memory, stack, branches, REP, FP, atomic/fence, and additional mandatory ISA
+groups. Existing fixture formats and CPU contracts remain authoritative; no
+fixture fields, CLI support, reducer behavior, or backend admission changed.
+
+The protocol passed independent Sol/high review with no findings. Its 13 local
+links and anchors and `git diff --check` passed in the author worktree. After
+transfer, `python3 tools/check_layout.py` passed and `graphify update .` rebuilt
+the local graph. The document explicitly labels unimplemented groups and
+physical execution `not_run`; it does not close parent S2-42 or S2-21/S2-39/S2-40.
+See [protocol](../testing/S2_42_REDUCER_CONTRACT.md) and
+[plan](../plans/STAGE_2.md#s2-42f-proposed-schema-v2-reducer-acceptance-contract).
+
 ## S2-27g — exact Long64 SWAPGS
 
 Implemented exact bare `0F 01 F8` execution under explicit `SwapgsV1` with
