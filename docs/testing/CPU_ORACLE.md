@@ -248,9 +248,14 @@ The Linux x86_64 transport uses `PTRACE_GETFPREGS`/`PTRACE_SETFPREGS` on the
 stopped tracee, modifies only the XMM and MXCSR fields, checks initial
 readback, and takes final SSE readback independently from GPR state. This is an
 OS ptrace register structure and not guest FXSAVE serialization. Pure codec,
-strict admission and interpreter/literal comparisons are portable; the Linux
-transport has compile-only coverage on this Mac. Physical execution remains
-`not_run`; existing x87/SSE and FXSAVE profiles, JIT and C adapter stay denied.
+strict admission and interpreter/literal comparisons are portable. In the
+historical S2-40b scope, this Mac had compile-only coverage for the Linux
+transport and physical execution was `not_run`; the later bounded Linux native
+acceptance for S2-42c/e/h/i/r is recorded in the
+[five-suite acceptance](S2_42_LINUX_FIVE_SUITE_ACCEPTANCE.md). It selects only
+those five suites (27 others remain unselected), leaves physical Mac acceptance
+`not_run`, and does not close parent S2-42. Existing x87/SSE and FXSAVE profiles,
+JIT and C adapter stay denied.
 
 ## S2-41a privileged LGDT protocol
 
