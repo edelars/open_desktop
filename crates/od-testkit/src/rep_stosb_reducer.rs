@@ -339,7 +339,9 @@ pub fn rep_stosb_oracle(fixture: &Fixture, digest: &str) -> Result<RepStosbExpec
         outcome: Outcome::StopAddress {},
         instructions_executed: HexU64(1),
         state,
-        rflags_defined: fixture.rflags_mask,
+        // Definedness is an architectural property of successful STOSB execution,
+        // independent of which flag values the fixture asks the comparator to check.
+        rflags_defined: HexU64(od_isa::INTEGER_FLAGS),
         memory,
     })
 }

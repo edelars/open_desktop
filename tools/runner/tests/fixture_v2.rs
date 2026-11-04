@@ -11022,6 +11022,48 @@ fn rep_stosb_success_reducer_is_al_only_repeatable_and_fails_closed_on_drift() {
     assert_eq!(wrap_expected.state.gpr[1], HexU64(0));
     assert_eq!(wrap_expected.state.gpr[7], HexU64(u64::MAX));
 
+    // The comparison mask may be narrower than the architectural definedness
+    // reported by a successful instruction. Even mask=0 must preserve that fact.
+    let mut subset_mask = original.clone();
+    subset_mask.rflags_mask = HexU64(0);
+    let subset_expected = rep_stosb_oracle(&subset_mask, &original_digest).unwrap();
+    assert_eq!(
+        subset_expected.rflags_defined,
+        HexU64(od_isa::INTEGER_FLAGS)
+    );
+    let subset_reduction =
+        reduce_rep_stosb_fixture(&subset_mask, &original_digest, 4, |candidate| {
+            let digest = if candidate == &subset_mask {
+                original_digest.clone()
+            } else {
+                od_testkit::sha256_hex(&candidate.to_json().map_err(|e| e.to_string())?)
+            };
+            let expected = rep_stosb_oracle(candidate, &digest)?;
+            let mut result = template.clone();
+            result.case_id = candidate.case_id.clone();
+            result.input_sha256 = digest;
+            result.outcome = expected.outcome;
+            result.instructions_executed = Observation::Available {
+                value: expected.instructions_executed,
+            };
+            let Observation::Available { value } = &mut result.snapshot else {
+                return Err("snapshot unavailable".into());
+            };
+            value.state = expected.state;
+            value.rflags_defined = expected.rflags_defined;
+            value.memory = expected.memory;
+            Ok(result)
+        })
+        .unwrap();
+    assert_eq!(
+        subset_reduction.stop,
+        RepStosbReductionStop::NoInitialMismatch
+    );
+    assert_eq!(
+        subset_reduction.expected_original.rflags_defined,
+        HexU64(od_isa::INTEGER_FLAGS)
+    );
+
     let reduction = reduce_rep_stosb_fixture(&original, &original_digest, 20, |candidate| {
         let digest = if candidate == &original {
             original_digest.clone()
