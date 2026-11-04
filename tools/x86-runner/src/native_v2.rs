@@ -47,6 +47,9 @@ pub(crate) fn dispatch(args: &[String]) -> Option<ExitCode> {
     if args.first().map(String::as_str) == Some("--reduce-native-xorpd") {
         return Some(reduce_native_xorpd_cli(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("--reduce-native-push-pop") {
+        return Some(reduce_native_stack_cli(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("--native-v2-child") {
         return Some(if args.len() == 2 {
             match load(&args[1]) {
@@ -194,7 +197,7 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
     let output_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join(&output_relative);
-    validate_native_reducer_output(std::path::Path::new(&output_relative))?;
+    validate_native_reducer_output(std::path::Path::new(&output_relative), "s2-42d-xorpd")?;
     let reduction = reduce_native_xorpd_fixture_with_native_input_digest(
         &original.fixture,
         &original.input_sha256,
@@ -292,6 +295,326 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn reduce_native_stack_cli(args: &[String]) -> ExitCode {
+    match reduce_native_stack_inner(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("native stack reducer: {error}");
+            ExitCode::from(3)
+        }
+    }
+}
+
+fn reduce_native_stack_inner(args: &[String]) -> Result<(), String> {
+    use od_testkit::stack_reducer::{
+        STACK_REDUCER_DEFAULT_BUDGET, STACK_REDUCER_MAX_BUDGET, StackReductionStop,
+        reduce_stack_fixture_with_native_input_digest, stack_oracle,
+    };
+
+    let mut input = None;
+    let mut output = None;
+    let mut budget = STACK_REDUCER_DEFAULT_BUDGET;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--limit" => {
+                i += 1;
+                budget = args
+                    .get(i)
+                    .ok_or("--limit requires a count")?
+                    .parse()
+                    .map_err(|_| "--limit must be an integer")?;
+            }
+            "--output-dir" => {
+                i += 1;
+                output = Some(args.get(i).ok_or("--output-dir requires a path")?.clone());
+            }
+            option if option.starts_with('-') => return Err(format!("unknown option: {option}")),
+            path if input.is_none() => input = Some(path.to_owned()),
+            path => return Err(format!("unexpected argument: {path}")),
+        }
+        i += 1;
+    }
+    if !(4..=STACK_REDUCER_MAX_BUDGET).contains(&budget) {
+        return Err(format!("--limit must be 4..={STACK_REDUCER_MAX_BUDGET}"));
+    }
+    let input_path = input.ok_or(
+        "usage: od-x86-runner --reduce-native-push-pop CASE.json [--limit N] [--output-dir DIR]",
+    )?;
+    let original_bytes = read_reducer_input(&input_path)?;
+    let original = Fixture::from_json(&original_bytes)
+        .map_err(|e| format!("invalid strict-schema fixture: {e}"))?;
+    stack_oracle(&original.fixture, &original.input_sha256)?;
+    let output_relative = output.unwrap_or_else(|| {
+        format!(
+            "work/stage2/s2-42j-native-stack/{}",
+            std::path::Path::new(&input_path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )
+    });
+    let repository_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output_path = repository_root.join(&output_relative);
+    validate_native_reducer_output(
+        std::path::Path::new(&output_relative),
+        "s2-42j-native-stack",
+    )?;
+    let working_directory = std::env::current_dir()
+        .map_err(|e| format!("could not read working directory: {e}"))?
+        .canonicalize()
+        .map_err(|e| format!("could not canonicalize working directory: {e}"))?;
+    std::fs::create_dir_all(output_path.parent().ok_or("output path has no parent")?)
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir(&output_path)
+        .map_err(|e| format!("output must be a new directory: {e}"))?;
+    let output_path = output_path
+        .canonicalize()
+        .map_err(|e| format!("could not canonicalize output directory: {e}"))?;
+    let callback_dir = output_path.join("callbacks");
+    let candidate_dir = callback_dir.join("candidates");
+    std::fs::create_dir(&callback_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir(&candidate_dir).map_err(|e| e.to_string())?;
+    write_evidence(&output_path.join("original.case.json"), &original_bytes)?;
+
+    let mut callback_sequence = 0usize;
+    let mut callback_repeats = BTreeMap::<String, usize>::new();
+    let mut saved_candidate_digests = std::collections::BTreeSet::<String>::new();
+    let reduction = reduce_stack_fixture_with_native_input_digest(
+        &original.fixture,
+        &original.input_sha256,
+        budget,
+        |candidate| {
+            callback_sequence += 1;
+            let is_original = candidate == &original.fixture;
+            let candidate_bytes = if is_original {
+                original_bytes.clone()
+            } else {
+                candidate.to_json().map_err(|e| e.to_string())?
+            };
+            let candidate_sha256 = od_testkit::sha256_hex(&candidate_bytes);
+            let candidate_relative = if is_original {
+                std::path::PathBuf::from("original.case.json")
+            } else {
+                std::path::PathBuf::from("callbacks/candidates")
+                    .join(format!("{candidate_sha256}.case.json"))
+            };
+            if !is_original && saved_candidate_digests.insert(candidate_sha256.clone()) {
+                write_evidence(&output_path.join(&candidate_relative), &candidate_bytes)?;
+            }
+            let repeat = {
+                let count = callback_repeats
+                    .entry(candidate_sha256.clone())
+                    .or_default();
+                *count += 1;
+                *count
+            };
+            let loaded_candidate = match load_reducer_candidate(&original, candidate) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    let record = serde_json::json!({
+                        "sequence": callback_sequence,
+                        "fixture_sha256": candidate_sha256,
+                        "fixture": candidate_relative,
+                        "repeat": repeat,
+                        "backend": "native_x86",
+                        "status": "invalid_candidate",
+                        "error": error
+                    });
+                    write_native_stack_callback_record(&callback_dir, callback_sequence, &record)?;
+                    return Err(error);
+                }
+            };
+            let result = execute(&loaded_candidate);
+            let result_bytes = match result.to_json() {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let record = serde_json::json!({
+                        "sequence": callback_sequence,
+                        "fixture_sha256": candidate_sha256,
+                        "fixture": candidate_relative,
+                        "repeat": repeat,
+                        "backend": "native_x86",
+                        "status": "serialization_error",
+                        "error": error.to_string()
+                    });
+                    write_native_stack_callback_record(&callback_dir, callback_sequence, &record)?;
+                    return Err(error.to_string());
+                }
+            };
+            let result_relative = std::path::PathBuf::from("callbacks")
+                .join(format!("run-{callback_sequence:06}.result.json"));
+            write_evidence(&output_path.join(&result_relative), &result_bytes)?;
+            let status = match &result.outcome {
+                Outcome::StopAddress {} => "completed",
+                Outcome::Unsupported { .. } => "unsupported",
+                Outcome::TimedOut { .. } => "timed_out",
+                Outcome::Signaled { .. } => "signaled",
+                Outcome::HarnessError { .. } => "harness_error",
+                Outcome::Exception { .. } => "exception",
+                _ => "non_stop_outcome",
+            };
+            let record = serde_json::json!({
+                "sequence": callback_sequence,
+                "fixture_sha256": candidate_sha256,
+                "fixture": candidate_relative,
+                "repeat": repeat,
+                "backend": result.backend,
+                "status": status,
+                "outcome": result.outcome,
+                "result_sha256": od_testkit::sha256_hex(&result_bytes),
+                "result": result_relative
+            });
+            write_native_stack_callback_record(&callback_dir, callback_sequence, &record)?;
+            Ok(result)
+        },
+    )?;
+
+    let mut initial_result_hashes = Vec::new();
+    for (index, result) in reduction.initial_results.iter().enumerate() {
+        let bytes = result.to_json().map_err(|e| e.to_string())?;
+        initial_result_hashes.push(od_testkit::sha256_hex(&bytes));
+        write_evidence(
+            &output_path.join(format!("initial-{}.result.json", index + 1)),
+            &bytes,
+        )?;
+    }
+    let mut final_result_hashes = Vec::new();
+    for (index, result) in reduction.final_results.iter().enumerate() {
+        let bytes = result.to_json().map_err(|e| e.to_string())?;
+        final_result_hashes.push(od_testkit::sha256_hex(&bytes));
+        write_evidence(
+            &output_path.join(format!("final-{}.result.json", index + 1)),
+            &bytes,
+        )?;
+    }
+    let expected_original_bytes =
+        serde_json::to_vec_pretty(&reduction.expected_original).map_err(|e| e.to_string())?;
+    write_evidence(
+        &output_path.join("expected-original.json"),
+        &expected_original_bytes,
+    )?;
+    let reduced_bytes = reduction
+        .reduced_fixture
+        .as_ref()
+        .map(|fixture| fixture.to_json().map_err(|e| e.to_string()))
+        .transpose()?;
+    let mut expected_reduced_hash = None;
+    if let Some(bytes) = &reduced_bytes {
+        write_evidence(&output_path.join("reduced.case.json"), bytes)?;
+        let expected = reduction
+            .expected_reduced
+            .as_ref()
+            .ok_or("reduced fixture has no final independent oracle result")?;
+        let expected_bytes = serde_json::to_vec_pretty(expected).map_err(|e| e.to_string())?;
+        expected_reduced_hash = Some(od_testkit::sha256_hex(&expected_bytes));
+        write_evidence(&output_path.join("expected-reduced.json"), &expected_bytes)?;
+    }
+    let runner_executable = std::env::current_exe()
+        .map_err(|e| format!("could not locate current runner executable: {e}"))?
+        .canonicalize()
+        .map_err(|e| format!("could not canonicalize runner executable: {e}"))?
+        .display()
+        .to_string();
+    let original_artifact = output_path.join("original.case.json");
+    let replay_original_argv = vec![
+        runner_executable.clone(),
+        "--fixture".into(),
+        original_artifact.display().to_string(),
+        "--json".into(),
+    ];
+    let replay_reduced_argv = reduced_bytes.as_ref().map(|_| {
+        vec![
+            runner_executable.clone(),
+            "--fixture".into(),
+            output_path.join("reduced.case.json").display().to_string(),
+            "--json".into(),
+        ]
+    });
+    let reducer_argv = vec![
+        runner_executable.clone(),
+        "--reduce-native-push-pop".into(),
+        input_path.clone(),
+        "--limit".into(),
+        budget.to_string(),
+        "--output-dir".into(),
+        output_relative.clone(),
+    ];
+    let shell_command = |argv: &[String]| {
+        argv.iter()
+            .map(|argument| shell_quote(argument))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let report = serde_json::json!({
+        "report_version": 1,
+        "reducer": "od-testkit-native-stack-qword-push-pop-v1",
+        "profile": v2::PROFILE,
+        "operation": reduction.operation,
+        "backend": "native_x86",
+        "stop_reason": reduction.stop,
+        "stop_detail": reduction.stop_detail,
+        "source_fixture": input_path,
+        "original_sha256": od_testkit::sha256_hex(&original_bytes),
+        "reduced_sha256": reduced_bytes.as_ref().map(|bytes| od_testkit::sha256_hex(bytes)),
+        "initial_result_sha256": initial_result_hashes,
+        "final_result_sha256": final_result_hashes,
+        "expected_original_sha256": od_testkit::sha256_hex(&expected_original_bytes),
+        "expected_reduced_sha256": expected_reduced_hash,
+        "initial_fingerprint": reduction.initial_fingerprint,
+        "final_fingerprint": reduction.final_fingerprint,
+        "call_budget": budget,
+        "actual_native_runs": reduction.actual_callbacks,
+        "candidate_proposals": reduction.candidate_proposals,
+        "candidate_pairs": reduction.candidate_runs,
+        "accepted_candidates": reduction.accepted_candidates,
+        "initial_hamming_weight": reduction.initial_hamming_weight,
+        "final_hamming_weight": reduction.final_hamming_weight,
+        "provenance": original.fixture.provenance,
+        "build": reduction.initial_results.first().map(|result| &result.build),
+        "machine": reduction.initial_results.first().map(|result| &result.machine),
+        "working_directory": working_directory,
+        "reducer_argv": reducer_argv,
+        "reducer_command": shell_command(&reducer_argv),
+        "replay_original_argv": replay_original_argv,
+        "replay_original": shell_command(&replay_original_argv),
+        "replay_reduced_argv": replay_reduced_argv,
+        "replay_reduced": replay_reduced_argv.as_ref().map(|argv| shell_command(argv)),
+        "native_execution": "existing native-v2 executor with supervised disposable tracee",
+        "physical_mac_mini": "not_run",
+    });
+    write_evidence(
+        &output_path.join("report.json"),
+        &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+    )?;
+    if reduction.stop == StackReductionStop::NoInitialMismatch {
+        println!(
+            "native stack reducer: no_initial_mismatch; no reduced fixture; {}",
+            output_path.display()
+        );
+    } else {
+        println!(
+            "native stack reducer: {:?}; native_runs={}; {}",
+            reduction.stop,
+            reduction.actual_callbacks,
+            output_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn write_native_stack_callback_record(
+    callback_dir: &std::path::Path,
+    sequence: usize,
+    record: &serde_json::Value,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
+    write_evidence(
+        &callback_dir.join(format!("run-{sequence:06}.record.json")),
+        &bytes,
+    )
+}
+
 fn read_reducer_input(path: &str) -> Result<Vec<u8>, String> {
     let file = std::fs::File::open(path).map_err(|e| format!("could not read fixture: {e}"))?;
     let mut bytes = Vec::new();
@@ -325,17 +648,22 @@ fn load_reducer_candidate(
     Fixture::from_json(&bytes).map_err(|e| format!("candidate failed strict validation: {e}"))
 }
 
-fn validate_native_reducer_output(path: &std::path::Path) -> Result<(), String> {
+fn validate_native_reducer_output(
+    path: &std::path::Path,
+    expected_subdirectory: &str,
+) -> Result<(), String> {
     use std::path::Component;
     let parts = path.components().collect::<Vec<_>>();
     if parts.len() < 4
         || parts.iter().any(|p| !matches!(p, Component::Normal(_)))
-        || ["work", "stage2", "s2-42d-xorpd"]
+        || ["work", "stage2", expected_subdirectory]
             .iter()
             .zip(parts.iter())
             .any(|(expected, actual)| *actual != Component::Normal(std::ffi::OsStr::new(expected)))
     {
-        return Err("--output-dir must be a new child under work/stage2/s2-42d-xorpd".into());
+        return Err(format!(
+            "--output-dir must be a new child under work/stage2/{expected_subdirectory}"
+        ));
     }
     let mut prefix = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for component in parts {

@@ -79,6 +79,44 @@ pub fn reduce_stack_fixture_with_input_digest<F>(
     original: &Fixture,
     original_input_sha256: &str,
     call_budget: usize,
+    execute: F,
+) -> Result<StackReduction, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    reduce_stack_fixture_with_backend(
+        original,
+        original_input_sha256,
+        call_budget,
+        Backend::Interpreter,
+        execute,
+    )
+}
+
+/// Native-x86 callback variant used by the isolated physical x86 runner.
+pub fn reduce_stack_fixture_with_native_input_digest<F>(
+    original: &Fixture,
+    original_input_sha256: &str,
+    call_budget: usize,
+    execute: F,
+) -> Result<StackReduction, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    reduce_stack_fixture_with_backend(
+        original,
+        original_input_sha256,
+        call_budget,
+        Backend::NativeX86,
+        execute,
+    )
+}
+
+fn reduce_stack_fixture_with_backend<F>(
+    original: &Fixture,
+    original_input_sha256: &str,
+    call_budget: usize,
+    expected_backend: Backend,
     mut execute: F,
 ) -> Result<StackReduction, String>
 where
@@ -137,36 +175,36 @@ where
         .extend([first.clone(), second.clone()]);
     if !same_semantic_result(&first, &second) {
         report.stop = StackReductionStop::FlakyInitial;
-        report.stop_detail = Some("initial interpreter results differ semantically".into());
+        report.stop_detail = Some("initial backend results differ semantically".into());
         return Ok(report);
     }
     let original_digest = original_input_sha256;
-    let initial_fp =
-        match mismatch_fingerprint(original, original_digest, &first).and_then(|first_fp| {
-            mismatch_fingerprint(original, original_digest, &second)
+    let initial_fp = match mismatch_fingerprint(original, original_digest, &first, expected_backend)
+        .and_then(|first_fp| {
+            mismatch_fingerprint(original, original_digest, &second, expected_backend)
                 .map(|second_fp| (first_fp, second_fp))
         }) {
-            Ok((Some(first_fp), Some(second_fp))) if first_fp == second_fp => first_fp,
-            Ok((Some(_), Some(_))) => {
-                report.stop = StackReductionStop::FlakyInitial;
-                report.stop_detail = Some("initial mismatch fingerprints differ".into());
-                return Ok(report);
-            }
-            Ok((None, None)) => {
-                report.stop = StackReductionStop::NoInitialMismatch;
-                return Ok(report);
-            }
-            Ok(_) => {
-                report.stop = StackReductionStop::FlakyInitial;
-                report.stop_detail = Some("only one initial result preserves a mismatch".into());
-                return Ok(report);
-            }
-            Err(error) => {
-                report.stop = StackReductionStop::CallbackError;
-                report.stop_detail = Some(error);
-                return Ok(report);
-            }
-        };
+        Ok((Some(first_fp), Some(second_fp))) if first_fp == second_fp => first_fp,
+        Ok((Some(_), Some(_))) => {
+            report.stop = StackReductionStop::FlakyInitial;
+            report.stop_detail = Some("initial mismatch fingerprints differ".into());
+            return Ok(report);
+        }
+        Ok((None, None)) => {
+            report.stop = StackReductionStop::NoInitialMismatch;
+            return Ok(report);
+        }
+        Ok(_) => {
+            report.stop = StackReductionStop::FlakyInitial;
+            report.stop_detail = Some("only one initial result preserves a mismatch".into());
+            return Ok(report);
+        }
+        Err(error) => {
+            report.stop = StackReductionStop::CallbackError;
+            report.stop_detail = Some(error);
+            return Ok(report);
+        }
+    };
     report.initial_fingerprint = Some(initial_fp.clone());
 
     let mut current = original.clone();
@@ -190,7 +228,13 @@ where
         })?;
         report.candidate_proposals += 1;
         report.candidate_runs += 1;
-        match try_candidate(&candidate, &initial_fp, &mut execute, &mut report)? {
+        match try_candidate(
+            &candidate,
+            &initial_fp,
+            expected_backend,
+            &mut execute,
+            &mut report,
+        )? {
             CandidateDecision::Accept => {
                 current = candidate;
                 report.accepted_candidates += 1;
@@ -250,11 +294,13 @@ where
         report.stop_detail = Some("final interpreter results differ semantically".into());
         return Ok(report);
     }
-    let final_fingerprints = mismatch_fingerprint(&current, &current_digest, &final_first)
-        .and_then(|first_fp| {
-            mismatch_fingerprint(&current, &current_digest, &final_second)
-                .map(|second_fp| (first_fp, second_fp))
-        });
+    let final_fingerprints =
+        mismatch_fingerprint(&current, &current_digest, &final_first, expected_backend).and_then(
+            |first_fp| {
+                mismatch_fingerprint(&current, &current_digest, &final_second, expected_backend)
+                    .map(|second_fp| (first_fp, second_fp))
+            },
+        );
     match final_fingerprints {
         Ok((Some(first_fp), Some(second_fp)))
             if first_fp == second_fp && first_fp == initial_fp =>
@@ -437,8 +483,9 @@ fn mismatch_fingerprint(
     fixture: &Fixture,
     digest: &str,
     result: &RunResult,
+    expected_backend: Backend,
 ) -> Result<Option<StackMismatchFingerprint>, String> {
-    validate_callback_result(fixture, digest, result)?;
+    validate_callback_result(fixture, digest, result, expected_backend)?;
     if !matches!(result.outcome, Outcome::StopAddress {})
         || result.instructions_executed != (Observation::Available { value: HexU64(1) })
     {
@@ -507,13 +554,16 @@ fn validate_callback_result(
     fixture: &Fixture,
     digest: &str,
     result: &RunResult,
+    expected_backend: Backend,
 ) -> Result<(), String> {
     if result.profile != Profile::LongIntegerV1
-        || result.backend != Backend::Interpreter
+        || result.backend != expected_backend
         || result.case_id != fixture.case_id
         || result.input_sha256 != digest
     {
-        return Err("callback result identity does not match its exact fixture".into());
+        return Err(format!(
+            "callback result identity does not match its exact fixture and {expected_backend:?} backend"
+        ));
     }
     let loaded = LoadedFixture {
         fixture: fixture.clone(),
@@ -521,7 +571,7 @@ fn validate_callback_result(
     };
     result
         .validate_for(&loaded)
-        .map_err(|error| format!("invalid interpreter result: {error}"))
+        .map_err(|error| format!("invalid {expected_backend:?} result: {error}"))
 }
 
 enum CandidateDecision {
@@ -534,6 +584,7 @@ enum CandidateDecision {
 fn try_candidate<F>(
     candidate: &Fixture,
     expected: &StackMismatchFingerprint,
+    expected_backend: Backend,
     execute: &mut F,
     report: &mut StackReduction,
 ) -> Result<CandidateDecision, String>
@@ -551,12 +602,14 @@ where
     };
     if !same_semantic_result(&first, &second) {
         return Ok(CandidateDecision::Flaky(
-            "candidate interpreter results differ semantically".into(),
+            "candidate backend results differ semantically".into(),
         ));
     }
-    let pair = mismatch_fingerprint(candidate, &digest, &first).and_then(|first_fp| {
-        mismatch_fingerprint(candidate, &digest, &second).map(|second_fp| (first_fp, second_fp))
-    });
+    let pair =
+        mismatch_fingerprint(candidate, &digest, &first, expected_backend).and_then(|first_fp| {
+            mismatch_fingerprint(candidate, &digest, &second, expected_backend)
+                .map(|second_fp| (first_fp, second_fp))
+        });
     Ok(match pair {
         Ok((Some(first_fp), Some(second_fp))) if first_fp == second_fp && first_fp == *expected => {
             CandidateDecision::Accept
@@ -723,14 +776,19 @@ mod tests {
         Fixture::from_json(bytes).unwrap().fixture
     }
 
-    fn synthetic_result(fixture: &Fixture, digest: &str, corrupt: bool) -> RunResult {
+    fn synthetic_result(
+        fixture: &Fixture,
+        digest: &str,
+        backend: Backend,
+        corrupt: bool,
+    ) -> RunResult {
         let expected = stack_oracle(fixture, digest).unwrap();
         let value = json!({
             "schema_version": SCHEMA_VERSION,
             "case_id": fixture.case_id,
             "input_sha256": digest,
             "profile": fixture.profile,
-            "backend": Backend::Interpreter,
+            "backend": backend,
             "outcome": Outcome::StopAddress {},
             "instructions_executed": {"status": "available", "value": expected.instructions_executed},
             "snapshot": {"status": "available", "value": {
@@ -822,7 +880,12 @@ mod tests {
                 } else {
                     sha256_hex(&candidate.to_json().unwrap())
                 };
-                Ok(synthetic_result(candidate, &candidate_digest, true))
+                Ok(synthetic_result(
+                    candidate,
+                    &candidate_digest,
+                    Backend::Interpreter,
+                    true,
+                ))
             },
         )
         .unwrap();
@@ -847,12 +910,211 @@ mod tests {
             } else {
                 sha256_hex(&candidate.to_json().unwrap())
             };
-            Ok(synthetic_result(candidate, &candidate_digest, false))
+            Ok(synthetic_result(
+                candidate,
+                &candidate_digest,
+                Backend::Interpreter,
+                false,
+            ))
         })
         .unwrap();
         assert_eq!(reduction.stop, StackReductionStop::NoInitialMismatch);
         assert_eq!(reduction.actual_callbacks, 2);
         assert!(reduction.reduced_fixture.is_none());
+    }
+
+    #[test]
+    fn exact_native_results_keep_the_original_raw_digest() {
+        let mut raw = b" \n".to_vec();
+        raw.extend_from_slice(PUSH_RAX);
+        raw.extend_from_slice(b"\n ");
+        let loaded_fixture = Fixture::from_json(&raw).unwrap();
+        let digest = sha256_hex(&raw);
+        let reduction = super::reduce_stack_fixture_with_native_input_digest(
+            &loaded_fixture.fixture,
+            &digest,
+            4,
+            |candidate| {
+                let candidate_digest = if candidate == &loaded_fixture.fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                Ok(synthetic_result(
+                    candidate,
+                    &candidate_digest,
+                    Backend::NativeX86,
+                    false,
+                ))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(reduction.stop, StackReductionStop::NoInitialMismatch);
+        assert_eq!(reduction.expected_original.input_sha256, digest);
+        assert_eq!(reduction.initial_results.len(), 2);
+        assert!(
+            reduction
+                .initial_results
+                .iter()
+                .all(|result| result.backend == Backend::NativeX86)
+        );
+        assert!(reduction.reduced_fixture.is_none());
+    }
+
+    #[test]
+    fn native_reducer_rejects_interpreter_results_before_fingerprinting() {
+        let fixture = loaded(PUSH_RAX);
+        let digest = sha256_hex(PUSH_RAX);
+        let reduction = super::reduce_stack_fixture_with_native_input_digest(
+            &fixture,
+            &digest,
+            4,
+            |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                Ok(synthetic_result(
+                    candidate,
+                    &candidate_digest,
+                    Backend::Interpreter,
+                    false,
+                ))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(reduction.stop, StackReductionStop::CallbackError);
+        assert_eq!(reduction.actual_callbacks, 2);
+        assert!(reduction.initial_fingerprint.is_none());
+        assert!(reduction.reduced_fixture.is_none());
+        assert!(
+            reduction
+                .stop_detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("NativeX86")
+        );
+    }
+
+    #[test]
+    fn native_reducer_repeats_and_preserves_stable_native_mismatch() {
+        let fixture = loaded(PUSH_RAX);
+        let digest = sha256_hex(PUSH_RAX);
+        let mut callback_backends = Vec::new();
+        let reduction = super::reduce_stack_fixture_with_native_input_digest(
+            &fixture,
+            &digest,
+            super::STACK_REDUCER_MAX_BUDGET,
+            |candidate| {
+                callback_backends.push(Backend::NativeX86);
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                Ok(synthetic_result(
+                    candidate,
+                    &candidate_digest,
+                    Backend::NativeX86,
+                    true,
+                ))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(reduction.stop, StackReductionStop::Reduced);
+        assert_eq!(reduction.actual_callbacks, callback_backends.len());
+        assert!(
+            callback_backends
+                .iter()
+                .all(|backend| *backend == Backend::NativeX86)
+        );
+        assert_eq!(reduction.initial_results.len(), 2);
+        assert_eq!(reduction.final_results.len(), 2);
+        assert!(
+            reduction
+                .initial_results
+                .iter()
+                .chain(&reduction.final_results)
+                .all(|result| result.backend == Backend::NativeX86)
+        );
+        assert!(reduction.initial_fingerprint.is_some());
+        assert_eq!(reduction.initial_fingerprint, reduction.final_fingerprint);
+    }
+
+    #[test]
+    fn native_unsupported_mapping_and_timeout_results_do_not_preserve_a_mismatch() {
+        let fixture = loaded(PUSH_RAX);
+        let digest = sha256_hex(PUSH_RAX);
+        for outcome in [
+            serde_json::json!({"kind":"unsupported","reason":"native execution unavailable"}),
+            serde_json::json!({"kind":"unsupported","reason":"mapping denied for stack region"}),
+            serde_json::json!({"kind":"timed_out","reason":"fixture deadline exceeded"}),
+        ] {
+            let reduction = super::reduce_stack_fixture_with_native_input_digest(
+                &fixture,
+                &digest,
+                4,
+                |candidate| {
+                    let candidate_digest = if candidate == &fixture {
+                        digest.clone()
+                    } else {
+                        sha256_hex(&candidate.to_json().unwrap())
+                    };
+                    let mut value = serde_json::to_value(synthetic_result(
+                        candidate,
+                        &candidate_digest,
+                        Backend::NativeX86,
+                        true,
+                    ))
+                    .unwrap();
+                    value["outcome"] = outcome.clone();
+                    value["instructions_executed"] = serde_json::json!({"status":"unavailable","reason":"no completed instruction"});
+                    value["snapshot"] = serde_json::json!({"status":"unavailable","reason":"native execution did not complete"});
+                    Ok(serde_json::from_value(value).unwrap())
+                },
+            )
+            .unwrap();
+
+            assert_eq!(reduction.stop, StackReductionStop::CallbackError);
+            assert!(reduction.initial_fingerprint.is_none());
+            assert!(reduction.reduced_fixture.is_none());
+        }
+    }
+
+    #[test]
+    fn native_malformed_result_identity_does_not_preserve_a_mismatch() {
+        let fixture = loaded(PUSH_RAX);
+        let digest = sha256_hex(PUSH_RAX);
+        let reduction = super::reduce_stack_fixture_with_native_input_digest(
+            &fixture,
+            &digest,
+            4,
+            |candidate| {
+                let wrong_digest = sha256_hex(b"different raw fixture");
+                Ok(synthetic_result(
+                    candidate,
+                    &wrong_digest,
+                    Backend::NativeX86,
+                    true,
+                ))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(reduction.stop, StackReductionStop::CallbackError);
+        assert!(reduction.initial_fingerprint.is_none());
+        assert!(reduction.reduced_fixture.is_none());
+        assert!(
+            reduction
+                .stop_detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("exact fixture")
+        );
     }
 
     #[test]
@@ -893,7 +1155,12 @@ mod tests {
             } else {
                 sha256_hex(&candidate.to_json().unwrap())
             };
-            Ok(synthetic_result(candidate, &candidate_digest, true))
+            Ok(synthetic_result(
+                candidate,
+                &candidate_digest,
+                Backend::Interpreter,
+                true,
+            ))
         })
         .unwrap();
         assert_eq!(reduction.stop, StackReductionStop::CandidateBudgetExhausted);
