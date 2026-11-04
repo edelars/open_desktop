@@ -721,6 +721,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42g | Bounded qword GPR PUSH/POP interpreter reducer | Eight focused reducer tests + runnable replay integration; original local fixtures report `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42G_STACK_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42g--bounded-qword-gpr-pushpop-reducer) |
 | [x] | S2-42h | Deterministic qword GPR PUSH/POP corpus | 1,024 generated + 32 handwritten controls; all 1,056 interpreter/oracle cases matched; Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42H_STACK_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42h--deterministic-qword-gpr-pushpop-corpus) |
 | [x] | S2-42i | Deterministic positive REP STOSB corpus | 1,024 generated + 36 handwritten cases for count 0–8 and DF=0/1; all 1,060 interpreter/oracle cases matched; Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42i--deterministic-rep-stosb-corpus) |
+| [x] | S2-42k | Bounded forward JZ/JNZ NOP-deletion reducer | Preserves the same MOV-RBX branch target via instruction map/rel8 recomputation; 10 reducer tests + replay integration; local fixture `NoInitialMismatch`, synthetic opposite-path reduction; native/physical `not_run`; [protocol](../testing/S2_42K_BRANCH_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -8615,6 +8616,33 @@ forms остаются отдельными требованиями; parent S2-
 
 См. [протокол S2-42i](../testing/S2_42I_REP_STOSB_CORPUS.md) и
 [отчёт](../reports/STAGE_2_REPORT.md#s2-42i--deterministic-rep-stosb-corpus).
+
+### S2-42k. Bounded forward JZ/JNZ NOP-deletion reducer
+
+**Статус:** добавлен interpreter-only reducer для строго заданного single-page
+forward JZ/JNZ rel8 шаблона с двумя сохранёнными MOV anchors и NOP padding.
+Reducer удаляет только целые NOP, строит instruction-identity map, пересчитывает
+rel8 на тот же `MOV RBX` target и обновляет bytes/code length/full mask/stop.
+Независимый oracle читает ZF bit 6 напрямую и вычисляет оба branch paths,
+register state и retirement без decoder/interpreter helper.
+
+Mismatch predicate намеренно узок: повторяемый opposite branch path, `A` отличается
+от initial RAX, и всё наблюдаемое состояние соответствует независимому oracle.
+Proposal journal хранит expected result, cost, relocation map, acceptance/rejection,
+outcome/result hashes и instruction counts. Replay metadata включает exact argv,
+binary, cwd, input digests, profile и reducer/oracle/source versions; malformed
+callback сохраняет partial failure evidence.
+
+На main прошли 10 reducer tests, replay integration, весь `od-testkit` набор
+(495), runner all-targets check, fmt, diff-check и layout. Точная локальная
+fixture показала `NoInitialMismatch` после двух interpreter callbacks; synthetic
+opposite-path tests подтвердили NOP reduction с сохранением target identity.
+Реального interpreter mismatch не было. Native/physical acceptance остаются
+`not_run`; backward/indirect/RIP-relative/fault/progress reducers остаются вне
+этого среза, а S2-42 и зависимости открыты.
+
+См. [протокол S2-42k](../testing/S2_42K_BRANCH_REDUCER.md) и
+[отчёт](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer).
 
 ### S2-43. Диагностический interpreter и граница JIT
 

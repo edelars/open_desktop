@@ -17438,6 +17438,36 @@ controlled continuation, larger counts and other string forms remain open, as
 do parent S2-42 and S2-21/S2-39/S2-40. See [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md)
 and [plan](../plans/STAGE_2.md#s2-42i-deterministic-positive-rep-stosb-corpus).
 
+## S2-42k — bounded forward JZ/JNZ NOP-deletion reducer
+
+Added an interpreter-only reducer for a strict single-page template containing
+forward `JZ`/`JNZ rel8`, two retained `MOV r64, imm64` anchors and NOP padding.
+The deterministic schedule deletes whole NOP instructions only. It preserves
+the entry branch and both MOV instructions, maps retained instruction identity,
+recomputes rel8 to the same `MOV RBX` target, and updates code bytes, full mask,
+length and stop address. Its independent oracle reads ZF directly and calculates
+the expected taken/fallthrough state and retirement without calling decoder or
+interpreter helpers.
+
+The preservation predicate is restricted to a repeated opposite branch path
+whose complete observed result matches the independent alternate-path oracle;
+arbitrary drift and fault outcomes are rejected. Each candidate record retains
+expected state, cost change, relocation map, decision/reason, result hashes and
+instruction counts. Replay records exact argv, binary, cwd, input digests,
+profile and reducer/oracle/source revision metadata. Malformed callback results
+retain partial failure evidence rather than aborting report serialization.
+
+On main, 10 focused reducer tests, one replay integration test and all 495
+`od-testkit` tests passed. `cargo fmt --all -- --check`, runner all-targets check,
+`python3 tools/check_layout.py`, and `git diff --check` passed. The real local JZ
+fixture produced `NoInitialMismatch` after two interpreter callbacks; synthetic
+opposite-path tests exercised actual NOP deletion and target preservation, but
+there was no real mismatch to reduce. Native and physical execution remain
+`not_run`; the bounded slice does not cover backward/indirect/RIP-relative or
+fault/progress reductions. Parent S2-42 and its S2-21/S2-39/S2-40 dependencies
+remain open. See [protocol](../testing/S2_42K_BRANCH_REDUCER.md) and
+[plan](../plans/STAGE_2.md#s2-42k-bounded-forward-jzjnz-nop-deletion-reducer).
+
 ## S2-27g — exact Long64 SWAPGS
 
 Implemented exact bare `0F 01 F8` execution under explicit `SwapgsV1` with
