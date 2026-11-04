@@ -1,5 +1,13 @@
 # S2-42j — native-v2 qword PUSH/POP reducer
 
+**Linux runtime:** two bounded native runs on 2026-11-04 used literal S2-17a
+PUSH RAX and POP RSP fixtures. Both returned `no_initial_mismatch` after two
+identical callbacks; saved original replay returned `native_x86` /
+`stop_address`. No mismatch reduction was exercised; see the
+[acceptance report](../reports/S2_42J_LINUX_ACCEPTANCE.md). Raw
+`execution_kind=unknown` is preserved and physical Mac acceptance remains
+`not_run`.
+
 This slice adds a native-v2 callback adapter for the bounded S2-42g reducer.
 The reducer's admitted input remains the exact `s2-long-integer-v1` qword GPR
 `PUSH`/`POP` profile. Only the selected PUSH source value or the eight bytes
@@ -55,6 +63,8 @@ confirmation calls; `initial-*.result.json` and `final-*.result.json` are also
 written as summary artifacts. A reduced fixture and independent expected
 results are present only when the reducer confirms a stable mismatch.
 
-Native execution is `not_run` on non-Linux/non-x86_64 hosts, including the
-physical Mac mini. A Linux target compile check does not count as hardware
-execution or physical acceptance.
+Native execution remains `not_run` on non-Linux/non-x86_64 hosts. The bounded
+Linux runtime result above is limited to two literal inputs and does not
+exercise reducer candidate shrinking. It does not establish physical Mac
+acceptance; raw `execution_kind=unknown` is preserved. A Linux target compile
+check alone does not count as runtime execution.

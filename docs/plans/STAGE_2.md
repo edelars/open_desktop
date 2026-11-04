@@ -721,7 +721,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42g | Bounded qword GPR PUSH/POP interpreter reducer | Eight focused reducer tests + runnable replay integration; original local fixtures report `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42G_STACK_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42g--bounded-qword-gpr-pushpop-reducer) |
 | [x] | S2-42h | Deterministic qword GPR PUSH/POP corpus | 1,024 generated + 32 handwritten controls; all 1,056 cases ×2 passed interpreter and Linux x86_64 native at final fingerprint; physical acceptance `not_run`; parent S2-42 and dependencies remain open; [protocol](../testing/S2_42H_STACK_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42h--deterministic-qword-gpr-pushpop-corpus) |
 | [x] | S2-42i | Deterministic positive REP STOSB corpus | 1,024 generated + 36 handwritten cases for count 0–8 and DF=0/1; all 1,060 cases ×2 passed interpreter and Linux x86_64 native at final fingerprint; physical acceptance `not_run`; parent S2-42 and dependencies remain open; [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42i--deterministic-rep-stosb-corpus) |
-| [x] | S2-42j | Native qword GPR PUSH/POP reducer adapter | `NativeX86` identity checked on every callback; 13 focused reducer tests and Linux-target all-target check; incomplete native outcomes save evidence and return nonzero; Linux runtime/physical `not_run`; [protocol](../testing/S2_42J_NATIVE_STACK_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42j--native-qword-gpr-pushpop-reducer-adapter) |
+| [x] | S2-42j | Native qword GPR PUSH/POP reducer adapter | `NativeX86` identity checked on every callback; 13 focused reducer tests and Linux-target all-target check; bounded Linux smoke/replay passed for PUSH RAX and POP RSP; no mismatch reduction; physical acceptance `not_run`; [protocol](../testing/S2_42J_NATIVE_STACK_REDUCER.md), [acceptance](../reports/S2_42J_LINUX_ACCEPTANCE.md), [report](../reports/STAGE_2_REPORT.md#s2-42j--native-qword-gpr-pushpop-reducer-adapter) |
 | [x] | S2-42k | Bounded forward JZ/JNZ NOP-deletion reducer | Preserves the same MOV-RBX branch target via instruction map/rel8 recomputation; 10 reducer tests + replay integration; local fixture `NoInitialMismatch`, synthetic opposite-path reduction; native/physical `not_run`; [protocol](../testing/S2_42K_BRANCH_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer) |
 | [x] | S2-42l | REP STOSB partial-progress #GP reducer | Literal #GP(0) fixture plus bounded AL-only fault reducer/replay; exact RCX/RDI/memory progress and unchanged RIP/retirement; native/physical `not_run`; [protocol](../testing/S2_42L_REP_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42l--rep-stosb-partial-progress-gp-reducer) |
 | [x] | S2-42m | Deterministic CVTSI2SD interpreter corpus | 1,024 generated + 9 literal controls; all 1,033 fixtures ×2 passed integer-only binary64 oracle; native profile closed and recorded `not_run_profile_closed`; [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus) |
@@ -8695,11 +8695,15 @@ flaky callback, exhausted budget и другие incomplete stops сохраня
 
 13 focused testkit tests, Linux x86_64 `od-x86-runner` all-targets compile,
 `od-runner` all-targets check, formatting, layout, diff-check и Graphify update
-прошли на main. Tests используют synthetic callbacks; Linux native runtime/
-ptrace и physical Mac acceptance не выполнялись (`not_run`). Этот adapter не
-закрывает hardware criteria или parent S2-42 / S2-21 / S2-39 / S2-40.
+прошли на main. Tests используют synthetic callbacks. On 2026-11-04 bounded
+Linux native smoke/replay passed for literal PUSH RAX and POP RSP inputs; both
+reported `no_initial_mismatch` after two identical callbacks, so candidate
+shrinking was not exercised. `execution_kind=unknown` and physical Mac
+acceptance `not_run`; this adapter/runtime slice does not close parent S2-42 /
+S2-21 / S2-39 / S2-40.
 
 См. [протокол S2-42j](../testing/S2_42J_NATIVE_STACK_REDUCER.md) и
+[Linux acceptance](../reports/S2_42J_LINUX_ACCEPTANCE.md), и
 [отчёт](../reports/STAGE_2_REPORT.md#s2-42j--native-qword-gpr-pushpop-reducer-adapter).
 
 ### S2-42k. Bounded forward JZ/JNZ NOP-deletion reducer

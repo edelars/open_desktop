@@ -17489,10 +17489,13 @@ exhaustion and other incomplete/error stop reasons preserve the report and
 return nonzero; successful outcomes return zero. Thirteen focused testkit tests,
 Linux x86_64 `od-x86-runner` all-targets compilation, `od-runner` all-targets
 check, formatting, layout, diff-check and Graphify update passed on main. Tests
-use synthetic callbacks only. Linux native execution/ptrace and physical Mac
-acceptance remain `not_run`; this adapter does not complete the hardware or
-parent S2-42 requirements. See [protocol](../testing/S2_42J_NATIVE_STACK_REDUCER.md)
-and [plan](../plans/STAGE_2.md#s2-42j-native-qword-gpr-pushpop-reducer-adapter).
+use synthetic callbacks only. The bounded Linux native smoke/replay subsequently
+passed for literal PUSH RAX and POP RSP fixtures; both reported
+`no_initial_mismatch` after two identical callbacks, without exercising
+candidate shrinking. `execution_kind` remains `unknown`; physical Mac acceptance
+remains `not_run`. See the [protocol](../testing/S2_42J_NATIVE_STACK_REDUCER.md),
+[Linux acceptance](S2_42J_LINUX_ACCEPTANCE.md), and
+[plan](../plans/STAGE_2.md#s2-42j-native-qword-gpr-pushpop-reducer-adapter).
 
 ## S2-42k — bounded forward JZ/JNZ NOP-deletion reducer
 
