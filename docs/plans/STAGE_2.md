@@ -740,6 +740,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42z | Long64 JZ/JNZ near rel32 corpus | 32 pinned controls + 1,024 unique generated cases for exact 0F 84/85 rel32, covering ZF taken/fallthrough and signed displacement boundaries; all 1,056×2 passed locally with strict saved replay; native blocked/not_started; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42Z_JCC_REL32_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42z--long64-jzjnz-near-rel32-corpus) |
 | [x] | S2-42aa | BSWAP EAX/RAX local corpus | 16 pinned controls + 1,024 unique generated inputs per width for exact `0F C8` and `48 0F C8`; all 2,080 cases ×2 passed locally with zero-extension, preserved flags/full state and strict saved replay; native blocked/not_started; parent S2-42 and S2-15/21/39/40 remain open; [protocol](../testing/S2_42AA_BSWAP_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42aa--deterministic-bswap-eaxrax-corpus) |
 | [x] | S2-42ab | DIV BL `#DE` local fault corpus | Eight pinned controls + 1,024 unique generated fault cases, evenly split between divisor zero and byte quotient overflow; 1,032×2 passed with unchanged full state, #DE vector 0, and zero retirement; strict saved replay; native blocked before backend; S2-20a/S2-14 behavior only, no native fault-delivery claim; [protocol](../testing/S2_42AB_DIV_BL_ERROR_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42ab--div-bl-divide-error-corpus) |
+| [x] | S2-42ac | CDQE/CQO local sign-extension corpus | 16 pinned controls + 1,024 unique generated inputs per exact form `48 98` and `48 99`; 2,080×2 passed with CDQE high-half source isolation, CQO RDX fill, full-state/flags preservation and strict replay; native blocked/not_started; S2-15a/S2-02 scope only; [protocol](../testing/S2_42AC_SIGN_EXTENSION_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42ac--cdqe-cqo-sign-extension-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -20396,3 +20397,21 @@ claim is made. See the
 [protocol](../testing/S2_42AB_DIV_BL_ERROR_CORPUS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ab-div-bl-error-corpus),
 and [report](../reports/STAGE_2_REPORT.md#s2-42ab--div-bl-divide-error-corpus).
+
+### S2-42ac — CDQE/CQO sign-extension corpus
+
+Adds 16 pinned controls and 1,024 unique generated states for each exact
+S2-15a form: `48 98` (CDQE) and `48 99` (CQO). The independent integer oracle
+checks CDQE sign extension from EAX.bit31 while varying the initial high half
+of RAX, and CQO's all-zero/all-one RDX from RAX.bit63 while preserving the full
+RAX. Both forms preserve other GPRs, flags/definedness, memory and code, advance
+RIP by two, retire once, and stop normally.
+
+All 2,080 cases passed twice locally (4,160 successful executions); strict
+saved replay checks exact schemas, runner/source/host identity, fixture bytes,
+and repeat stability. Seven focused tests passed. Native execution is blocked
+before backend; native and physical results remain not_run. This corpus is
+limited to these S2-15a forms and does not close parent S2-42. See the
+[protocol](../testing/S2_42AC_SIGN_EXTENSION_CORPUS.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ac-sign-extension-corpus),
+and [report](../reports/STAGE_2_REPORT.md#s2-42ac--cdqe-cqo-sign-extension-corpus).

@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_42ac_cqo_c04",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Pinned S2-42ac control: exact opcode bytes and architectural input are defined in generator source.",
+    "specification": "Intel SDM revision 093, Vol. 2A: exact long64 bytes 48 99 (CQO). CDQE sign-extends EAX to RAX; CQO fills RDX with the sign bit of RAX. These exact opcode forms leave flags unchanged.",
+    "specification_version": "Intel SDM revision 093; project S2-42ac"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xffffffffffffffff",
+      "0x020406080a0c0e10",
+      "0x5a5a5a5aa5a5a5a5",
+      "0x04080c1014181c20",
+      "0x050a0f14191e2328",
+      "0x060c12181e242a30",
+      "0x070e151c232a3138",
+      "0x0810182028303840",
+      "0x09121b242d363f48",
+      "0x0a141e28323c4650",
+      "0x0b16212c37424d58",
+      "0x0c1824303c485460",
+      "0x0d1a2734414e5b68",
+      "0x0e1c2a3846546270",
+      "0x0f1e2d3c4b5a6978",
+      "0x1020304050607080"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000046"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 2,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "4899",
+      "comparison_mask_hex": "ffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100002",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

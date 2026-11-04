@@ -24700,3 +24700,24 @@ no remote host was contacted. This result does not establish native or physical
 S2-42. See the [protocol](../testing/S2_42AB_DIV_BL_ERROR_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42ab--div-bl-divide-error-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ab-div-bl-error-corpus).
+
+
+## S2-42ac — CDQE/CQO sign-extension corpus
+
+S2-42ac covers exact S2-15a Long64 encodings `48 98` (CDQE) and `48 99`
+(CQO). Each form has 16 pinned controls and 1,024 unique generated inputs. The
+independent integer oracle checks that CDQE uses only EAX.bit31 and sets RAX's
+high half by sign extension despite arbitrary initial high32; CQO preserves the
+full RAX and fills RDX from RAX.bit63. All other GPRs, flags and definedness,
+memory and code remain unchanged; each instruction advances RIP by two, retires
+once, stops normally, and raises no exception.
+
+All 2,080 cases passed twice locally (4,160 successful executions), with strict
+saved replay. Seven focused tests passed, including unique per-form generated
+states, exact result schemas, coordinated revision-tampering rejection, and
+repeat stability. The native request records `not_run_form_not_admitted` and
+`backend_execution=not_started`; native and physical execution remain not_run.
+This selected corpus does not close S2-15a or parent S2-42. See the
+[protocol](../testing/S2_42AC_SIGN_EXTENSION_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42ac--cdqe-cqo-sign-extension-corpus), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ac-sign-extension-corpus).

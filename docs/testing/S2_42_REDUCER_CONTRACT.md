@@ -235,7 +235,7 @@ completion requires a separate executable slice and recorded results satisfying
 the applicable rows. Parent S2-42 remains open until its dependencies and all
 selected mandatory groups have the required evidence.
 
-## Current coverage map — S2-42r/s/t/u/v/w/x/y/z/aa/ab update
+## Current coverage map — S2-42r/s/t/u/v/w/x/y/z/aa/ab/ac update
 
 The S2-42f snapshot above is retained as the historical contract-time view.
 This table records the current implementation and evidence after S2-42q/r/s/t/u; it
@@ -250,7 +250,7 @@ does not imply hardware acceptance.
 | Integer stack and branches | S2-42g/h stack reducers/corpus; S2-42k forward JZ/JNZ reducer; S2-42r JZ/JNZ rel8 corpus; S2-42z Long64 JZ/JNZ rel32 corpus | S2-42r and S2-42z: 1,056 cases each passed twice locally with independent branch oracles and strict saved replay | Native/physical `not_run`; 42z explicitly blocked before backend | Cross-group execution, other branch conditions/forms, fault branches, and remaining mandatory forms |
 | Positive REP and continuation | S2-42i positive STOSB corpus; S2-42s checkpoint/replay for counts 1024/1025/2048/2049 and DF=0/1 | S2-42s passed 8×2 executions across 32 phases, exact-once write journal, serialized replay, defined-flags comparison | Native/physical `not_run` | Other REP widths/address sizes, fault/restart cases, and required native corpus remain open |
 | REP, integer faults, and FP | S2-42l REP STOSB partial-progress fault reducer; S2-42o SQRTSS SNaN fault reducer; S2-42ab DIV BL #DE corpus | S2-42ab: 8 pinned + 1,024 unique generated faults, 1,032×2 local runs, strict saved replay, vector 0 and zero retirement | Native DIV BL fault delivery explicitly blocked before backend; physical `not_run` | Broader fault classes, partial-progress, FP state and save/restore requirements |
-| Atomic/fence and additional mandatory ISA | S2-42t LOCK memory XADD; S2-42u memory CMPXCHG; S2-42v register CMPXCHG; S2-42w memory XCHG; S2-42x register XADD RAX,RAX; S2-42y bare memory XADD; S2-42aa BSWAP EAX/RAX | S2-42t/u/v/w/x/y/aa passed twice locally with independent oracles, strict saved replay and provenance; x covers 16 controls + 1,024 unique cases; y covers 8 controls + 1,024 unique cases across the 0x300100 split; aa covers 16 controls + 1,024 unique inputs per width | Native requests explicitly blocked before backend; native and physical evidence not_run | S2-21 atomic contract, ISSUE-017 LOCK questions, and S2-40 inventory remain open; local corpora do not establish SMP/hardware atomicity or general memory ordering |
+| Atomic/fence and additional mandatory ISA | S2-42t LOCK memory XADD; S2-42u memory CMPXCHG; S2-42v register CMPXCHG; S2-42w memory XCHG; S2-42x register XADD RAX,RAX; S2-42y bare memory XADD; S2-42aa BSWAP EAX/RAX; S2-42ac CDQE/CQO | S2-42t/u/v/w/x/y/aa/ac passed twice locally with independent oracles, strict saved replay and provenance; x covers 16 controls + 1,024 unique cases; y covers 8 controls + 1,024 unique cases across the 0x300100 split; aa covers 16 controls + 1,024 unique inputs per width; ac covers 16 controls + 1,024 unique inputs per form | Native requests explicitly blocked before backend; native and physical evidence not_run | S2-21 atomic contract, ISSUE-017 LOCK questions, and S2-40 inventory remain open; local corpora do not establish SMP/hardware atomicity or general memory ordering |
 
 Parent S2-42 remains open, as do dependencies S2-21, S2-39 and S2-40. Physical
 hardware acceptance is `not_run`. S2-42q closes the handwritten-boundary gap
@@ -263,6 +263,7 @@ a separate XCHG split-region corpus that preserves every defined RFLAGS bit;
 S2-42x adds the qword register XADD alias and its arithmetic flags; S2-42y
 adds bare qword memory XADD over a split private-memory operand; S2-42z adds
 local JZ/JNZ rel32 coverage; S2-42aa adds BSWAP EAX/RAX with EAX zero-extension;
-S2-42ab adds bounded local DIV BL #DE evidence. These corpora explicitly deny
-native execution; the XADD corpora make no SMP or hardware atomicity claim.
-None closes the parent reducer/corpus requirement.
+S2-42ab adds bounded local DIV BL #DE evidence; S2-42ac adds CDQE/CQO sign
+extension. These corpora explicitly deny native execution; the XADD corpora make
+no SMP or hardware atomicity claim. None closes the parent reducer/corpus
+requirement.

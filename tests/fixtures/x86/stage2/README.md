@@ -9428,3 +9428,14 @@ Expected state preserves registers, flags, RIP, and code, observes #DE vector 0,
 and retires no instruction. Native is blocked before backend; no hardware #DE
 claim is made. See the
 [S2-42ab protocol](../../../../docs/testing/S2_42AB_DIV_BL_ERROR_CORPUS.md).
+
+
+### S2-42ac CDQE/CQO corpus
+
+s2_42ac_sign_extension_controls/ contains 16 pinned controls each for exact
+48 98 (CDQE) and 48 99 (CQO). The corpus adds 1,024 unique generated inputs
+per form. Its integer oracle checks CDQE from EAX.bit31 and CQO's RDX sign fill
+from RAX.bit63, plus preserved flags/state and retirement. All 2,080 cases
+passed twice locally with strict saved replay. Native is denied before backend
+execution. See the
+[S2-42ac protocol](../../../../docs/testing/S2_42AC_SIGN_EXTENSION_CORPUS.md).
