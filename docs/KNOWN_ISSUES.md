@@ -14,14 +14,25 @@
 
 <a id="issue-034-s2-42e-execute-only-code-not-admitted-by-native-v2"></a>
 
-### ISSUE-034 — S2-42e execute-only code native acceptance is pending
+### ISSUE-034 — S2-42e execute-only code native acceptance
+
+- **Дата обнаружения:** 2026-11-04; разрешено 2026-11-04.
+- **Компонент:** Linux x86_64 native-v2 mapping and S2-42e/S2-42q MOV acceptance.
+- **Статус:** разрешено для bounded S2-42e positive MOV profile; hardware execute-only enforcement remains unclaimed.
+- **Суть:** Initial `MappingPlan` rejected all fixtures with immutable logical execute-only code before instruction execution. The runner now projects to host RX only for one exact `LongIntegerV1` register↔memory MOV in one executable region, with budget 1, exact decoded next RIP, `StopAddress`, and successful existing initial admission. Fixture logical permissions remain authoritative for initial and per-step access checks. This does not claim hardware execute-only enforcement or guest `#PF` delivery.
+- **Проверка и evidence:** Linux x86_64 run at source fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49` passed all 1,080 selected cases twice on interpreter and native; saved-run verification passed for 2,160 results per backend. Summary: [S2-42e run](../work/stage2-42e-oracle/s2-42e-summary.json); full records: `work/stage2-42e-oracle/stage2-20261104-120215-67d38a75/`. The initial closed failure remains in `work/stage2-42e-oracle/stage2-20261104-102111-498cc626/`. The behavior and limits are described in [CPU_ORACLE](testing/CPU_ORACLE.md) and the [S2-42e protocol](testing/S2_42E_MOV_MEMORY_CORPUS.md).
+- **Граница:** physical Mac acceptance and hardware execute-only fault delivery remain `not_run`; those are separate acceptance work.
+
+<a id="issue-035-linux-native-v2-broad-test-failures"></a>
+
+### ISSUE-035 — Linux native_v2 broad test group has baseline failures
 
 - **Дата обнаружения:** 2026-11-04.
-- **Компонент:** Linux x86_64 native-v2 mapping and S2-42e/S2-42q MOV acceptance.
-- **Статус:** открыто; mapping compatibility fix implemented, full native acceptance rerun pending.
-- **Суть и последствия:** The 1,080-case selection was rejected before execution because every fixture uses immutable logical execute-only code while the old `MappingPlan` required readable regions. The runner now projects to host RX only for an exact single-instruction LongInteger MOV code region whose initial access passes current pre-step admission; other profiles remain rejected before trace. Logical permissions remain available to admission. This is not hardware execute-only enforcement and does not claim guest `#PF`; native acceptance remains unverified until the unchanged suite passes after transfer.
-- **Основание:** The 2026-11-04 Linux x86_64 run at source fingerprint `d740ae2b8b341138ce1149514ecf594df67138973bea4aa8fff78bf3e288a118` returned `unsupported` for all 1,080 first-repeat native results; no guest instruction executed. Evidence: [S2-42e summary](../work/stage2-42e-oracle/s2-42e-summary.json) and run records `work/stage2-42e-oracle/stage2-20261104-102111-498cc626/`. The execute-only contract is pinned in [S2-42e](testing/S2_42E_MOV_MEMORY_CORPUS.md#s2-42q-handwritten-boundary-controls).
-- **Следующий шаг:** transfer the mapping fix, rerun the complete 1,080-case suite twice on Linux x86_64, and close this issue only if saved-run verification reports a pass. Otherwise retain the failed evidence and keep native acceptance open.
+- **Компонент:** `tools/x86-runner`, Linux x86_64 `native_v2` unit-test group.
+- **Статус:** открыто; 50 broad test failures reproduce unchanged on the parent baseline.
+- **Суть и последствия:** `cargo test --offline -p od-x86-runner native_v2::tests -- --nocapture` does not pass as a group. On parent `286b70c`, 163 tests passed and 50 failed; on final S2-42e `0a0640b`, 167 passed and the same 50 named tests failed. Set comparison found 50 common failures, with no baseline-only or final-only failures. The five focused execute-only mapping regressions pass. Observed failures include older fixture/profile validation errors and stale denial-reason expectations; the full logs preserve exact names and diagnostics.
+- **Основание:** Linux x86_64 host `192.168.1.39`, user `senya`; baseline transcript [native-v2-baseline.log](../work/stage2-42e-oracle/native-v2-baseline.log) and current transcript [native-v2-final.log](../work/stage2-42e-oracle/native-v2-final.log). The final mapping acceptance is independently recorded in [S2-42e evidence](../work/stage2-42e-oracle/stage2-20261104-120215-67d38a75/).
+- **Следующий шаг:** audit the 50 common failures by fixture and expected outcome, correct stale fixtures/assertions or resolve any confirmed runtime defects, then rerun the full Linux `native_v2::tests` group.
 
 <a id="issue-033-s2-37cq-comiss-mixed-event-handling-audit"></a>
 
@@ -65,10 +76,10 @@
 
 - **Дата обнаружения:** 2026-11-01; исправлено 2026-11-03.
 - **Компонент:** `tools/x86-runner`, Linux x86_64-only `native_v2` backend.
-- **Статус:** compile blocker решён 2026-11-03. Linux runtime/native admission execution, ptrace oracle execution и hardware acceptance остаются `not_run` на Darwin arm64 host.
+- **Статус:** Linux compile blocker решён 2026-11-03. Пять согласованных S2-42 suites прошли Linux native runtime; общий `native_v2::tests` остаётся с 50 baseline failures (ISSUE-035). Отдельный S2-39k ptrace oracle и physical hardware остаются `not_run`.
 - **Основание и последствия:** ранее `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline` обнаруживал два неполных Linux-only initializer-а в `native_v2.rs`: `Snapshot` и тестовый `Fixture`. Каждый не задавал 142 текущих optional control fields schema-v2. Все поля теперь явно заданы как `None`; наблюдаемое состояние, native admission policy и семантика не менялись. `serde_json` 1.0.151 уже присутствует в зависимостях runner и успешно компилируется для Linux target; отдельная dependency правка не потребовалась.
-- **Воспроизведение и результат:** указанная cross-target команда после исправления завершается успешно для `--all-targets --offline`. Это подтверждает успешную type-check проверку Linux x86_64 targets, но не линкует final runner binary и не подтверждает Linux runtime, ptrace, native admission execution или hardware behavior.
-- **Следующий шаг:** выполнить Linux native admission regression tests и S2-39k ptrace run на подходящей Linux x86_64 системе; hardware acceptance требует отдельно описанной физической среды и evidence. Не трактовать успешный cross-target type-check как выполнение этих проверок.
+- **Воспроизведение и результат:** указанная cross-target команда после исправления завершается успешно для `--all-targets --offline`; сама по себе она подтверждает только type-check. Отдельные пять согласованных S2-42 native suites запущены на Linux x86_64, а broad `native_v2::tests` дал одинаковые 50 baseline failures до/после mapping fix (ISSUE-035). S2-39k ptrace oracle не выполнялся; запуск suites не подтверждает hardware behavior.
+- **Следующий шаг:** устранить широкие baseline failures по ISSUE-035 и отдельно выполнить S2-39k; hardware acceptance требует собственной физической среды и evidence. Не трактовать cross-target type-check как runtime или hardware acceptance.
 - **S2-30cl:** `D9 F8` добавлен в существующий native x87-deny regression matrix. После устранения compile blocker тест проходит Linux target type-check; runtime execution остаётся `not_run`. См. [S2-30cl report](reports/S2_30CL_X87_FPREM.md).
 - **S2-30cm:** `D9 F5` добавлен в тот же Linux-only native x87-deny matrix. После устранения compile blocker тест проходит Linux target type-check; runtime execution остаётся `not_run`. См. [S2-30cm report](reports/S2_30CM_X87_FPREM1.md).
 - **S2-37dj:** прежнее cross-target compile препятствие устранено. Тест denial для `ADDSD` m64 проходит Linux target type-check, но на Darwin arm64 host не запускался. См. [S2-37dj report](reports/S2_37DJ_ADDSD_MEMORY.md).

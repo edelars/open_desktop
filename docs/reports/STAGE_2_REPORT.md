@@ -17287,9 +17287,15 @@ or missing native batches, timeout evidence retention, and subprocesses that
 close output pipes or leave descendants holding them. Python harness tests
 passed (22); relevant Rust verifier tests passed (5). Formatting and workspace
 offline check passed. These are simulated orchestration checks; no native CPU,
-Linux hardware or physical/Mac mini execution occurred (`not_run`). The new
-S2-42c harness does not implement a native reducer; S2-42 remains open because
-S2-21/S2-39/S2-40 and other corpus groups/physical acceptance remain pending.
+Linux hardware or physical/Mac mini execution occurred when this orchestration
+slice was first authored. The subsequent authorized Linux x86_64 acceptance ran
+1,030 cases (six pinned plus 1,024 generated) twice; all 2,060 interpreter and
+2,060 native results matched at source fingerprint
+`ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`. Evidence:
+`work/stage2-oracle/stage2-20261104-114313-f534c328/manifest.json`. Physical
+Mac mini acceptance remains `not_run`. The new S2-42c harness does not implement
+a native reducer; S2-42 remains open because S2-21/S2-39/S2-40 and other corpus
+groups/physical acceptance remain pending.
 See the [S2-42c protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md) and
 [Stage 2 plan](../plans/STAGE_2.md).
 
@@ -17349,17 +17355,24 @@ Sol/high re-review found no remaining findings. `cargo build --offline
 orchestration command sends the complete corpus to the
 existing Linux x86_64 native oracle, performs two repeats for interpreter and
 native, writes machine-readable success/failure evidence, and fails closed when
-a required result/backend is missing. The Linux native command was attempted on
-2026-11-04 at source fingerprint
-`d740ae2b8b341138ce1149514ecf594df67138973bea4aa8fff78bf3e288a118`; all 1,080
-first-repeat native results failed closed as `unsupported` before guest
-execution because native-v2 required readable mappings. The runner mapping
-fix now gives immutable logical execute-only code host RX backing for tracer
-snapshots while preserving logical permissions for pre-step admission. This
-does not claim hardware execute-only enforcement or guest `#PF`. A full
-1,080-case native rerun is pending; ISSUE-034 stays open until saved evidence
-passes. Physical Mac acceptance remains `not_run`. The change does not alter
-CPU semantics, fixture schema or runner CLI; S2-42 remains open
+a required result/backend is missing. The first Linux native attempt used source fingerprint
+`d740ae2b8b341138ce1149514ecf594df67138973bea4aa8fff78bf3e288a118` and failed
+closed before execution because native-v2 required readable mappings; those
+historical records remain under `work/stage2-42e-oracle/stage2-20261104-102111-498cc626/`.
+The final runner projects code to host RX only for one exact register↔memory
+MOV in the single-instruction `LongIntegerV1` slice, while logical permissions
+remain authoritative before and during stepping. This does not claim hardware
+execute-only enforcement or guest `#PF`. On 2026-11-04 the unchanged 1,080-case
+selection passed twice on interpreter and Linux native at source fingerprint
+`ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; all 2,160
+saved results per backend matched, and saved-run verification passed. Evidence:
+[summary](../../work/stage2-42e-oracle/s2-42e-summary.json) and
+`work/stage2-42e-oracle/stage2-20261104-120215-67d38a75/`. Five focused Linux
+mapping/admission regressions passed. The complete `native_v2::tests` group
+still has 50 failures with exactly the same test names on parent `286b70c` and
+final `0a0640b`; see [ISSUE-035](../KNOWN_ISSUES.md#issue-035-linux-native-v2-broad-test-failures).
+Physical Mac acceptance remains `not_run`. The change does not alter CPU
+semantics, fixture schema or runner CLI; S2-42 remains open
 for additional memory/stack/REP/FP groups, generic reduction, S2-21/S2-39/S2-40
 dependencies and physical acceptance. See [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md)
 and [plan](../plans/STAGE_2.md#s2-42e-deterministic-mov-memory-corpus).
@@ -17420,8 +17433,11 @@ All 1,056 cases passed local interpreter execution against an independent
 byte-stack oracle. Focused Python suites passed (S2-42h: 8; S2-42e regression:
 9), and `cargo build --offline -p od-runner`, Python compilation,
 `python3 tools/check_layout.py`, `git diff --check` and Graphify update passed
-on main. The remote Linux/native oracle and physical Mac acceptance were not
-run (`not_run`). This corpus does not implement native execution or close parent
+on main. Subsequent Linux x86_64 native acceptance passed all 1,056 cases twice
+at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`;
+2,112 results per backend matched. Evidence: [summary](../../work/stage2-42h-oracle/s2-42h-summary.json)
+and `work/stage2-42h-oracle/stage2-20261104-114744-b11b1061/`. Physical Mac
+acceptance remains `not_run`. This corpus does not implement native execution or close parent
 S2-42, which still needs generic reducer coverage, REP/FP groups, dependencies
 S2-21/S2-39/S2-40 and physical acceptance. See [protocol](../testing/S2_42H_STACK_CORPUS.md)
 and [plan](../plans/STAGE_2.md#s2-42h-deterministic-qword-gpr-pushpop-corpus).
@@ -17442,8 +17458,12 @@ After transfer, Python suites passed (S2-42i: 8; S2-42h: 8; S2-42e: 9),
 Graphify update passed. Saved-run verification binds each fixture/result to
 schema/profile/backend/build/machine; corpus-path preflight failures and invalid
 saved-result identities replace stale success summaries. Independent Sol/high
-review cleared both findings. Remote Linux/native and physical Mac runs were not performed
-(`not_run`). The slice changes no CPU/schema/admission code. Fault/restart,
+review cleared both findings. Subsequent Linux x86_64 native acceptance passed
+all 1,060 cases twice at fingerprint
+`ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; 2,120
+results per backend matched. Evidence: [summary](../../work/stage2-42i-oracle/s2-42i-summary.json)
+and `work/stage2-42i-oracle/stage2-20261104-115224-e036b506/`. Physical Mac
+acceptance remains `not_run`. The slice changes no CPU/schema/admission code. Fault/restart,
 controlled continuation, larger counts and other string forms remain open, as
 do parent S2-42 and S2-21/S2-39/S2-40. See [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md)
 and [plan](../plans/STAGE_2.md#s2-42i-deterministic-positive-rep-stosb-corpus).
@@ -24395,9 +24415,13 @@ fixture tests passed. `cargo fmt --all -- --check` and
 `cargo check -p od-runner --all-targets --offline` passed. The documentation
 link/anchor check passed. `tools/check_layout.py` was attempted and reports the
 linked-worktree `.git` pointer as an unmapped root file; this structural check
-must be repeated after transfer on main. Graphify AST update passed. No remote
-native or physical CPU execution was performed: native and hardware status are
-`not_run` on Darwin arm64. This adds six handwritten cases and does not close
+must be repeated after transfer on main. Graphify AST update passed. No remote native or physical CPU execution was
+performed when this slice was first recorded on Darwin arm64. The later
+authorized Linux x86_64 S2-42c acceptance passed all 1,030 cases twice at
+fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`,
+including all six controls on both backends; evidence is at
+`work/stage2-oracle/stage2-20261104-114313-f534c328/manifest.json`. Physical
+hardware remains `not_run`. This adds six handwritten cases and does not close
 full S2-42 or perform hardware acceptance. See the [protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md),
 [plan](../plans/STAGE_2.md#s2-42p--six-handwritten-xorpd-controls), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42p-six-handwritten-native-xorpd-controls).
@@ -24438,12 +24462,15 @@ mocked remote orchestration, and a complete synthetic saved-run roundtrip with
 failure cases for missing repeat/backend/provenance/timeout, changed frozen
 inputs, old-suite fallback, and altered run-level fingerprint/compiler identity.
 Python bytecode compilation and `git diff --check` passed. `graphify update .`
-completed. `python3 tools/check_layout.py` passed on main after the failed-run
-evidence was transferred. The initial native Linux comparison rejected all
-1,080 cases before instruction execution because code mappings were execute-only;
-native-v2 now maps them with host RX backing and retains logical permissions
-for pre-step admission. Full Linux native rerun is pending and ISSUE-034 remains
-open. Physical hardware remains `not_run`. Parent S2-42 and dependencies S2-21,
+completed. `python3 tools/check_layout.py` passed on main after evidence transfer.
+The initial Linux run rejected all 1,080 cases before execution because code
+mappings were execute-only. The final runner now permits host RX backing only
+for the exact one-instruction register↔memory MOV gate while preserving logical
+permissions. The unchanged 1,080-case suite passed twice on interpreter and
+Linux native at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`;
+saved-run verification passed, including all 56 pinned controls. See the
+[S2-42e final evidence](../../work/stage2-42e-oracle/s2-42e-summary.json). ISSUE-034
+is resolved. Physical hardware remains `not_run`. Parent S2-42 and dependencies S2-21,
 S2-39, and S2-40 remain open. See the [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42q--56-handwritten-mov-memoryaddressing-controls),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42q-56-handwritten-mov-memoryaddressing-controls).
@@ -24488,8 +24515,12 @@ Saved-run verification binds frozen inputs, process status, run fingerprint,
 runner revision, compiler provenance, CPU profile and debug/release build
 configuration. Focused Python tests passed (12/12); positive synthetic native
 evidence roundtrips passed for both debug and release, with negative tests for
-provenance and process mutations. Actual native execution and physical
-acceptance remain `not_run`. S2-42 and dependencies S2-21/S2-39/S2-40 remain
+provenance and process mutations. Subsequent Linux x86_64 native acceptance
+passed all 1,056 cases twice at fingerprint
+`ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; 2,112
+results per backend matched. Evidence: [summary](../../work/stage2-42r-oracle/s2-42r-summary.json)
+and `work/stage2-42r-oracle/stage2-20261104-115710-057e3506/`. Physical
+acceptance remains `not_run`. S2-42 and dependencies S2-21/S2-39/S2-40 remain
 open. See the [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [plan](../plans/STAGE_2.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42r-jzjnz-rel8-branch-corpus).
 
 ## S2-42t — local LOCK XADD qword corpus

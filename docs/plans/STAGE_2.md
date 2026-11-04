@@ -714,22 +714,22 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
-| [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; initial 22 mocked harness tests; S2-42p adds the six missing handwritten controls; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
+| [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; six handwritten controls plus 1,024 generated cases; 1,030 cases ×2 passed on interpreter and Linux x86_64 native at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; physical Mac acceptance `not_run`; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
 | [x] | S2-42d | Bounded native XORPD reducer/replay | Native callback uses existing native-v2 executor and its ptrace-supervised disposable tracee; Linux hardware and physical Mac mini remain separate; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42d--bounded-native-xorpd-reducerreplay) |
-| [x] | S2-42e | Deterministic MOV memory/addressing corpus | 1,024 manifest-bound schema-v2 cases; four widths, load/store and seven admitted address forms; interpreter and independent oracle passed; saved evidence binds fixture/schema/profile/backend/build/machine and preflight failures replace stale success; Linux native attempted 2026-11-04 and failed closed before execution because execute-only code was not admitted; native-v2 mapping fix now uses host RX backing with logical pre-step checks, but full 1,080-case rerun is pending; physical acceptance `not_run`; ISSUE-034 remains open; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42e--deterministic-mov-memory-corpus) |
+| [x] | S2-42e | Deterministic MOV memory/addressing corpus | 1,024 generated + 56 pinned controls; four widths, load/store and seven admitted address forms; all 1,080 cases ×2 passed interpreter and Linux native with saved-run verification at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; execute-only RX backing is structurally limited to one admitted register↔memory MOV; ISSUE-034 resolved; physical acceptance `not_run`; S2-42 and dependencies remain open; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42e--deterministic-mov-memory-corpus) |
 | [x] | S2-42f | Proposed schema-v2 reducer acceptance contract | Documentation only; no generic reducer or hardware acceptance; parent S2-42 remains open; [protocol](../testing/S2_42_REDUCER_CONTRACT.md), [report](../reports/STAGE_2_REPORT.md#s2-42f--schema-v2-reducer-acceptance-contract) |
 | [x] | S2-42g | Bounded qword GPR PUSH/POP interpreter reducer | Eight focused reducer tests + runnable replay integration; original local fixtures report `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42G_STACK_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42g--bounded-qword-gpr-pushpop-reducer) |
-| [x] | S2-42h | Deterministic qword GPR PUSH/POP corpus | 1,024 generated + 32 handwritten controls; all 1,056 interpreter/oracle cases matched; Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42H_STACK_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42h--deterministic-qword-gpr-pushpop-corpus) |
-| [x] | S2-42i | Deterministic positive REP STOSB corpus | 1,024 generated + 36 handwritten cases for count 0–8 and DF=0/1; all 1,060 interpreter/oracle cases matched; Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42i--deterministic-rep-stosb-corpus) |
+| [x] | S2-42h | Deterministic qword GPR PUSH/POP corpus | 1,024 generated + 32 handwritten controls; all 1,056 cases ×2 passed interpreter and Linux x86_64 native at final fingerprint; physical acceptance `not_run`; parent S2-42 and dependencies remain open; [protocol](../testing/S2_42H_STACK_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42h--deterministic-qword-gpr-pushpop-corpus) |
+| [x] | S2-42i | Deterministic positive REP STOSB corpus | 1,024 generated + 36 handwritten cases for count 0–8 and DF=0/1; all 1,060 cases ×2 passed interpreter and Linux x86_64 native at final fingerprint; physical acceptance `not_run`; parent S2-42 and dependencies remain open; [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42i--deterministic-rep-stosb-corpus) |
 | [x] | S2-42j | Native qword GPR PUSH/POP reducer adapter | `NativeX86` identity checked on every callback; 13 focused reducer tests and Linux-target all-target check; incomplete native outcomes save evidence and return nonzero; Linux runtime/physical `not_run`; [protocol](../testing/S2_42J_NATIVE_STACK_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42j--native-qword-gpr-pushpop-reducer-adapter) |
 | [x] | S2-42k | Bounded forward JZ/JNZ NOP-deletion reducer | Preserves the same MOV-RBX branch target via instruction map/rel8 recomputation; 10 reducer tests + replay integration; local fixture `NoInitialMismatch`, synthetic opposite-path reduction; native/physical `not_run`; [protocol](../testing/S2_42K_BRANCH_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer) |
 | [x] | S2-42l | REP STOSB partial-progress #GP reducer | Literal #GP(0) fixture plus bounded AL-only fault reducer/replay; exact RCX/RDI/memory progress and unchanged RIP/retirement; native/physical `not_run`; [protocol](../testing/S2_42L_REP_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42l--rep-stosb-partial-progress-gp-reducer) |
 | [x] | S2-42m | Deterministic CVTSI2SD interpreter corpus | 1,024 generated + 9 literal controls; all 1,033 fixtures ×2 passed integer-only binary64 oracle; native profile closed and recorded `not_run_profile_closed`; [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus) |
 | [x] | S2-42n | Bounded exact MOV qword memory interpreter reducer | RAX-only reduction for literal `48 89 03`; independent byte-store oracle, complete mapping/mask preservation, callback journal and replay; synthetic stable mismatch and drift/failure/budget regressions; local fixture `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42N_MOV_MEMORY_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42n--bounded-mov-qword-memory-reducer) |
 | [x] | S2-42o | Bounded SQRTSS SNaN #XM interpreter reducer | One exact register instruction; descending nonzero-payload reduction, independent full-state/#XM predicate, callback journal and replay; synthetic IE omission and XMM0 corruption; literal `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42o--sqrtss-snan-fault-reducer) |
-| [x] | S2-42p | Six handwritten XORPD controls in S2-42c harness | Adds four literal boundaries alongside two exact S2-40b controls; separate strict control identity/hash manifest; 1,024 generated + 6 handwritten, two repeats; local interpreter passed; native/physical `not_run`; [protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md), [report](../reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls) |
-| [x] | S2-42q | 56 handwritten MOV memory/addressing controls in S2-42e harness | Adds exactly 4×2×7 literal controls before unchanged 1,024 generated cases; static full snapshots and pinned strict manifest; all 56 passed twice on local interpreter; initial Linux native attempt rejected all cases before execution; native-v2 mapping fix implemented with full suite rerun pending; physical `not_run`; ISSUE-034; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42q--56-handwritten-mov-memory-controls) |
-| [x] | S2-42r | Deterministic JZ/JNZ rel8 branch corpus | 32 literal controls + 1,024 generated cases with unique architectural inputs; all 1,056×2 passed local interpreter and saved evidence verifier; native/physical `not_run`; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus) |
+| [x] | S2-42p | Six handwritten XORPD controls in S2-42c harness | Four literal boundaries alongside two exact S2-40b controls; separate strict identity/hash manifest; all six matched full snapshots twice on interpreter and Linux native as part of the passed 1,030-case S2-42c suite; physical acceptance `not_run`; [protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md), [report](../reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls) |
+| [x] | S2-42q | 56 handwritten MOV memory/addressing controls in S2-42e harness | Adds exactly 4×2×7 literal controls before unchanged 1,024 generated cases; all 56 controls matched full snapshots twice on interpreter and Linux native within the passed 1,080-case suite; ISSUE-034 resolved; physical acceptance `not_run`; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42q--56-handwritten-mov-memory-controls) |
+| [x] | S2-42r | Deterministic JZ/JNZ rel8 branch corpus | 32 literal controls + 1,024 generated cases; all 1,056 cases ×2 passed interpreter and Linux x86_64 native at final fingerprint; physical acceptance `not_run`; parent S2-42 and dependencies remain open; [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus) |
 | [x] | S2-42s | REP STOSB work-limit checkpoint/replay evidence | Eight handwritten count 1024/1025/2048/2049 × DF controls; 8×2 local executions, 32 phase snapshots, successful-store journal and masked undefined-AF checks; native/physical `not_run`; parent S2-42 and dependencies S2-21/39/40 remain open; [protocol](../testing/S2_42S_REP_CHECKPOINT.md), [report](../reports/STAGE_2_REPORT.md#s2-42s--rep-stosb-work-limit-checkpointreplay) |
 | [x] | S2-42t | Local LOCK XADD qword [RBX],RAX corpus | 32 pinned arithmetic-boundary controls + 1,024 unique generated inputs; all 1,056×2 passed local interpreter and saved replay verification; explicit native blocked before backend because form is not admitted; S2-21, ISSUE-017 and parent S2-42 remain open; [protocol](../testing/S2_42T_LOCK_XADD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42t--local-lock-xadd-qword-corpus) |
 | [x] | S2-42u | Exact bare REX.W qword memory CMPXCHG corpus | Two pinned equal/mismatch controls + 1,024 unique generated inputs for `48 0F B1 18`; generated classes cover equal/mismatch, CF=0/1 and OF=0/1; all 1,026×2 passed local interpreter and saved replay verification with cwd/environment provenance; interruption checkpoints preserve completed attempts and list missing repeats; native explicitly denied before backend; parent S2-42 and dependencies S2-21/39/40 remain open; [protocol](../testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42u--exact-qword-memory-cmpxchg-corpus) |
@@ -8512,8 +8512,7 @@ missing, mismatch, native unavailable и timeout переводят manifest в 
 успех, manifest/profile/hash rejection, malformed result, missing/failed native
 batch, сохранение case 1 при timeout case 2, closed-pipes и descendant-held-pipe
 timeouts; 5 соответствующих Rust verifier tests; formatting и offline workspace
-check. На машине разработки эти ответы синтетические: native/physical
-execution `not_run`. См. [S2-42c evidence protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md)
+check. На момент первоначальной записи ответы были синтетические. Последующая разрешённая Linux x86_64 приёмка выполнила весь S2-42c selection: 1,030 cases ×2 прошли interpreter и native при fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; все шесть controls также прошли на обоих backends. Physical acceptance остаётся `not_run`. См. [S2-42c evidence protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md)
 и [отчёт](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness).
 
 ### S2-42d. Bounded native XORPD reducer/replay
@@ -8557,13 +8556,16 @@ result, backend, build и machine без исполнения; ошибки pref
 oracle mode записывают fail-closed summary и не оставляют устаревший `passed`.
 Негативные regressions покрывают повреждённый/missing corpus и mismatched
 identity. Однокомандный Linux x86_64 interpreter/native orchestration определён
-и fail-closed при отсутствии backend. Native run 2026-11-04 отказал для всех
-1,080 cases до исполнения: native-v2 mapping не принимал logical execute-only
-code. Runner теперь использует host RX backing для чтения code tracer-ом и
-сохраняет logical permissions для программной pre-step admission; это не
-hardware execute-only enforcement или guest `#PF` claim. Полный native rerun
-после переноса fix ещё ожидает выполнения (ISSUE-034 остаётся открытым).
-Физическое Mac acceptance остаётся `not_run`. CPU/schema не менялись. S2-42 остаётся
+и fail-closed при отсутствии backend. Первоначальный native run 2026-11-04
+отказал для всех 1,080 cases до исполнения: native-v2 mapping не принимал
+logical execute-only code. После ограниченного fix host RX backing разрешён
+только для exact single-instruction register↔memory MOV с сохранением logical
+permissions в admission; это не hardware execute-only enforcement или guest
+`#PF` claim. Все 1,080 cases затем прошли два interpreter и два native повтора
+на Linux x86_64 при fingerprint
+`ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; saved-run
+verification прошёл для 2,160 результатов на backend. ISSUE-034 решена в этих
+границах. Physical Mac acceptance остаётся `not_run`. CPU/schema не менялись. S2-42 остаётся
 открытой: этот профильный corpus не закрывает stack/REP/FP groups, общий reducer,
 зависимости S2-21/S2-39/S2-40 или физическую приёмку.
 
@@ -8613,9 +8615,12 @@ aliasing, края stack span и unaligned canary cases. Shared helper
 и file set; существующий 42e формат и CLI сохранены.
 
 Все 1,056 cases прошли interpreter с независимым byte-stack oracle без
-расхождений. Python suites 42h и 42e прошли 8/8 и 9/9; `od-runner` build,
-Python compilation, diff-check, layout и Graphify update прошли. Linux/native и
-physical execution не запускались (`not_run`). S2-42 остаётся открытым для
+расхождений. Полный selection также прошёл дважды на Linux x86_64 для
+interpreter и native при fingerprint
+`ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`. Python
+suites 42h и 42e прошли 8/8 и 9/9; `od-runner` build, Python compilation,
+diff-check, layout и Graphify update прошли. Physical execution остаётся
+`not_run`. S2-42 остаётся открытым для
 обобщённого reducer, REP/FP groups и родительских зависимостей.
 
 См. [протокол S2-42h](../testing/S2_42H_STACK_CORPUS.md) и
@@ -8634,9 +8639,11 @@ byte-fill oracle проверяет весь integer state, flags/definedness, r
 42i/42h/42e после переноса прошли 8/8, 8/8 и 9/9 tests; `od-runner` build,
 py_compile, layout, diff-check и Graphify update прошли. Saved evidence строго
 связывает fixture/result/schema/profile/backend/build/machine; corpus-path
-preflight and saved-result identity failures write a failed summary. Remote
-Linux/native и physical Mac
-execution не запускались (`not_run`). CPU/schema/native admission не менялись.
+preflight and saved-result identity failures write a failed summary. Полный
+1,060-case selection прошёл дважды на Linux x86_64 для interpreter и native
+при fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`;
+saved evidence verifier прошёл. Physical Mac execution остаётся `not_run`.
+CPU/schema/native admission не менялись.
 REP fault/restart, controlled continuation, большие counts и прочие string
 forms остаются отдельными требованиями; parent S2-42 остаётся открытым.
 
@@ -20178,8 +20185,10 @@ only. It does not close full S2-42 or perform hardware acceptance.
 
 Focused Python harness tests and bytecode compilation pass. Runner fixture
 checks and Rust formatting pass; all six controls were executed twice through
-the local interpreter. Native Linux comparison and physical hardware
-acceptance remain `not_run` on the Darwin arm64 development host. See the [S2-42c protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md),
+the local interpreter. The later authorized Linux x86_64 S2-42c acceptance
+passed 1,030 cases twice on interpreter and native at fingerprint
+`ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; physical
+hardware acceptance remains `not_run`. See the [S2-42c protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42p-six-handwritten-native-xorpd-controls)
 and [report](../reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls).
 
@@ -20200,9 +20209,12 @@ independent complete snapshot before cross-backend comparison. Saved-run
 verification checks 2,160 ordered case/repeat records, all backend results,
 process outcomes and provenance. The 56 controls matched their expected full
 snapshots in both local interpreter repeats (112 executions); focused Python
-tests mock all remote orchestration. Native/Linux and physical hardware
-evidence remain `not_run`. S2-42 and dependencies S2-21/S2-39/S2-40 remain
-open. See the [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md),
+tests mock all remote orchestration. The subsequent Linux x86_64 S2-42e/q
+acceptance passed all 1,080 cases twice, including all 56 controls on both
+interpreter and native at fingerprint
+`ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; saved-run
+verification passed. Physical hardware remains `not_run`. S2-42 and dependencies
+S2-21/S2-39/S2-40 remain open. See the [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42q-56-handwritten-mov-memoryaddressing-controls),
 and [report](../reports/STAGE_2_REPORT.md#s2-42q--56-handwritten-mov-memory-controls).
 
@@ -20232,7 +20244,9 @@ retired instruction; the oracle independently uses ZF bit 6 and signed
 next-RIP-relative arithmetic, and verifies full state plus unchanged code.
 All 1,056 cases passed twice on the local interpreter; strict saved local and
 synthetic native evidence checks passed for debug and release build profiles.
-Actual native and physical execution remain `not_run`. This bounded rel8 slice
+The subsequent Linux x86_64 native acceptance passed all 1,056 cases twice at
+fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`;
+physical execution remains `not_run`. This bounded rel8 slice
 does not cover rel32, indirect branches, fault cases, or complete S2-42. See
 the [protocol](../testing/S2_42R_BRANCH_CORPUS.md), [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-42r-jzjnz-rel8-branch-corpus), and [test report](../reports/STAGE_2_REPORT.md#s2-42r--deterministic-jzjnz-rel8-branch-corpus).
 
