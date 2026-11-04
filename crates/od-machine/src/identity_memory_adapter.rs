@@ -147,8 +147,9 @@ mod tests {
     use crate::{
         BusDevice, DeviceAccess, DeviceError, MachineMemoryMap, MemoryRegionSpec, RamLimits,
     };
-    use od_isa::OperandSize;
-    use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+    use od_isa::execute::{RunConfig, RunExit, run};
+    use od_isa::memory::{AccessContext, AccessOrigin, InstructionMode, PrivilegeLevel};
+    use od_isa::{LongModeState, OperandSize, Register};
     use std::cell::Cell;
     use std::sync::{Arc, Mutex};
 
@@ -337,5 +338,88 @@ mod tests {
         ));
         assert!(matches!(memory.mfence(ctx), Err(MemoryError::Backend(_))));
         assert_eq!(commits.get(), 0);
+    }
+
+    #[test]
+    fn interpreter_executes_through_production_bus_then_faults_without_retirement() {
+        const CODE: u64 = 0x1000;
+        const DATA: u64 = 0x1080;
+        const UNMAPPED: u64 = 0x3000;
+        let (mut bus, _) = setup();
+        // MOV RAX, [RBX]; MOV [RBX], RCX; MOV RCX, [RDX]. The last operand
+        // deliberately targets a hole after two successfully retired ops.
+        let program: [u8; 9] = [0x48, 0x8b, 0x03, 0x48, 0x89, 0x0b, 0x48, 0x8b, 0x0a];
+        for (offset, byte) in program.into_iter().enumerate() {
+            bus.write_physical(
+                GuestPhysicalAddress::new(CODE + offset as u64),
+                crate::AccessWidth::Byte,
+                u64::from(byte),
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = 0x0123_4567_89ab_cdefu64;
+        bus.write_physical(
+            GuestPhysicalAddress::new(DATA),
+            crate::AccessWidth::Qword,
+            original,
+            |_| {},
+        )
+        .unwrap();
+
+        let mut state = LongModeState::default();
+        state.rip = CODE;
+        state.gpr[Register::Rbx as usize] = DATA;
+        state.gpr[Register::Rdx as usize] = UNMAPPED;
+        state.gpr[Register::Rcx as usize] = 0xfedc_ba98_7654_3210;
+        let replacement = state.gpr[Register::Rcx as usize];
+        let commits = std::cell::RefCell::new(Vec::new());
+        let mut callback = |range| commits.borrow_mut().push(range);
+        let mut memory = IdentityMemoryAdapter::new(&mut bus, &mut callback);
+        let first = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 2,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert_eq!(first.exit, RunExit::InstructionBudgetExhausted);
+        assert_eq!(first.instructions_executed, 2);
+        assert_eq!(state.rip, CODE + 6);
+        assert_eq!(state.gpr[Register::Rax as usize], original);
+        assert_eq!(state.gpr[Register::Rcx as usize], replacement);
+
+        let cpu_before_fault = state.clone();
+        let ram_before_fault = replacement.to_le_bytes();
+        let second = run(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            || false,
+        );
+        assert!(matches!(
+            second.exit,
+            RunExit::MemoryError(od_isa::memory::MemoryError::Backend(_))
+        ));
+        assert_eq!(second.instructions_executed, 0);
+        assert_eq!(state, cpu_before_fault);
+        assert_eq!(state.rip, CODE + 6);
+        let mut ram_after_fault = [0; 8];
+        memory
+            .bus
+            .read_flat_bytes(GuestPhysicalAddress::new(DATA), &mut ram_after_fault)
+            .unwrap();
+        assert_eq!(ram_after_fault, ram_before_fault);
+        let committed = commits.borrow();
+        assert_eq!(committed.len(), 1);
+        assert_eq!(committed[0].start(), GuestPhysicalAddress::new(DATA));
+        assert_eq!(committed[0].len(), 8);
     }
 }
