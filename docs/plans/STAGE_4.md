@@ -225,7 +225,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-07. Сделать uncached page walker
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Где:** `crates/od-machine/src/`, CPU context contract в `od-isa`.
 - **Сделать:** начать с требуемого 4-level Long64 и 4 KiB pages; обходить guest page tables через physical API. Отдельно разобрать canonical linear addresses, physical width и reserved fields. Начальные CR state fixtures должны быть архитектурно допустимы.
 - **Проверка:** независимо заданные таблицы и ожидаемые адреса, переход через каждый уровень, missing entries, high addresses, некорректные bits. Ожидаемый результат нельзя вычислять тем же walker.

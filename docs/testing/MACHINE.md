@@ -2,10 +2,10 @@
 
 ## Область
 
-Эта методика покрывает S4-02—S4-06: валидируемую physical map, production RAM
-owner, committed-write notification, синхронную MMIO/PIO bus и диагностический
-CPU memory bridge. Она не проверяет paging, guest exceptions, APIC, JIT,
-firmware или Linux.
+Эта методика покрывает S4-02—S4-07: валидируемую physical map, production RAM
+owner, committed-write notification, синхронную MMIO/PIO bus, диагностический
+CPU memory bridge и uncached translation probe. Она не проверяет CPU-integrated
+paging, guest exception delivery, APIC, JIT, firmware или Linux.
 
 ## Локальный набор
 
@@ -37,12 +37,18 @@ git diff --check
     `IdentityMemoryAdapter`: fetch/load/store, unmapped fault, CPU state/RIP,
     retirement, RAM и committed callback;
 14. explicit rejection atomic/fence operations в diagnostic flat mode.
+15. four-level 4 KiB literal page tables: geometry, canonicality before reads,
+    physical36/CR3, present/reserved/PS, cumulative permissions, WP/NXE,
+    literal PFEC, trace, table-read errors and no A/D mutation;
+16. PTE mutation and CR3 changes are observed on the next call, proving no TLB
+    or translation cache in the probe.
 
 ## Интерпретация
 
 Успешные локальные тесты подтверждают только перечисленный Rust-контракт и
 flat identity integration.
-Они не являются physical x86 evidence и не подтверждают, что guest 4 KiB
+и pure translation probe. Они не являются physical x86 evidence и не
+подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не
 являются автоматически архитектурными `#PF`.
 

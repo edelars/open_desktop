@@ -1,11 +1,11 @@
-# Контракт машины: физическая память, срез S4-02—S4-04
+# Контракт машины: physical memory, bus, bridge and translation probe
 
 **Статус:** локально принят ограниченный срез; это не контракт полной VM и не
 подтверждение MMU, устройств, загрузки Linux или JIT-интеграции.
 
 Нормативная карта платы и будущие boot reservations остаются в
 [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md) и в принятом manifest S4-00. Этот документ
-фиксирует только уже реализованную границу production-owned guest physical RAM.
+фиксирует уже реализованные bounded-срезы S4-02—S4-07.
 
 ## Адреса и карта
 
@@ -83,6 +83,23 @@ fetch/load/store, faulting load, RIP/CPU state, retirement, RAM и callback.
 
 ## Следующие зависимости
 
-Следующий допустимый срез — uncached page walker. `GuestMemory` из
-`od-isa` принимает linear addresses и остаётся отдельным контрактом; прямое
-реализование этого trait на `PhysicalMemory` до page walker запрещено.
+## Диагностический uncached translation probe
+
+`probe_long64_4k` читает вручную заданный snapshot `cr0/cr3/cr4/efer` и четыре
+уровня page tables из `PhysicalMemory`. Поддержанный probe scope — canonical48,
+physical36, four-level Long64 и 4 KiB pages без TLB, cache, huge pages, A/D
+updates или чтения конечного операнда. Конфигурация отклоняется fail-closed,
+включая `CR0.ET == 0`, неподдержанные control bits и недопустимый CR3.
+
+Результат разделяет `Translated` и диагностические причины: noncanonical
+address, unsupported page size/configuration, table read failure, nonpresent,
+reserved-bit и protection outcomes. Trace содержит только реально прочитанные
+entries; canonicality проверяется до чтения таблиц. PFEC — literal поле probe,
+а не доставка vector 14, запись CR2 или выбор `#GP/#SS`. Эффективные US/RW/XD,
+WP и NXE проверяются в заявленном профиле, но A/D bytes остаются неизменными.
+
+Этот probe не подключён к CPU execution path и не закрывает S4-08/S4-09. Для
+`GuestMemory` по-прежнему действует отдельный linear-address contract; adapter
+S4-06 остаётся явно flat identity mode.
+
+Следующий допустимый срез — precise page-fault construction and CPU delivery.
