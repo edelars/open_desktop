@@ -9265,3 +9265,36 @@ repetitions and check each control's exact XMM0 plus full backend comparison.
 This adds six handwritten cases only; S2-42 remains open and no hardware
 acceptance is claimed. See the [S2-42c protocol](../../../../docs/testing/S2_42C_XORPD_CORPUS_HARNESS.md)
 and [S2-42p report](../../../../docs/reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls).
+
+### S2-42q 56 handwritten MOV memory/addressing controls
+
+[`s2_42q_mov_hand_controls.manifest.json`](s2_42q_mov_hand_controls.manifest.json)
+pins the ordered 56-control Cartesian product: widths 8/16/32/64, load/store,
+and base, disp8, disp32, SIB, RIP-relative, address32, and REX.B forms. Each
+control has a literal `.case.json` fixture and `.expected.json` full snapshot in
+[`s2_42q_mov_hand/`](s2_42q_mov_hand/). The manifest records source ID, both
+file paths and SHA-256 digests, width, direction, form, effective address, and
+boundary tags. Its control-set digest is pinned in the strict verifier.
+
+These controls cover the first and last valid spans, unaligned widths, positive
+and negative displacements, RIP-relative instruction lengths, address32 SIB
+truncation with high RBX bits set, and REX.B through R8. Ordinary SIB uses
+scale 4 (`SIB=8b`); address32 uses scale 1 (`SIB=0b`); both use RCX=3. The code
+mapping is execute-only and all bytes in both code and data mappings are
+compared. Expected snapshots preserve the fixed GPR/RFLAGS inputs, check load
+aliasing and zero extension, and verify complete store output and canaries.
+
+The S2-42e command runs these 56 literal controls first, then the unchanged
+1,024 generated fixtures, for 1,080 total inputs and exactly two repeats per
+backend. Local interpreter controls matched twice (112 executions). Remote
+native and physical hardware evidence remain `not_run`; see the
+[S2-42e/S2-42q protocol](../../../../docs/testing/S2_42E_MOV_MEMORY_CORPUS.md)
+and [S2-42q report](../../../../docs/reports/STAGE_2_REPORT.md#s2-42q--56-handwritten-mov-memory-controls).
+
+Current saved-run acceptance requires the explicit `mov-memory-corpus` suite;
+historical generated-only `integer` evidence cannot pass it. Verification checks
+the exact regular, non-symlink `fixtures/` and `hand-controls/` file sets and
+compares all 1,080 frozen inputs byte-for-byte with their verified sources and
+SHA-256 digests. Result records and backend output bind to the run source
+fingerprint and to local/remote Rust compiler versions recorded in machine
+provenance. The saved-run CLI reports the current per-backend result count.

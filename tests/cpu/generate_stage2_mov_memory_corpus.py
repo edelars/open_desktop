@@ -9,6 +9,7 @@ one-instruction transfers; it does not decode or execute x86 instructions.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -24,6 +25,7 @@ from stage2_corpus_support import (
     verify_file_set,
     write_file_set,
 )
+import s2_42q_mov_controls as mov_hand
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -388,7 +390,170 @@ def _verify_result(result: dict[str, Any], expected: dict[str, Any], label: str)
         raise CorpusError(f"{label}: malformed execution result: {error}") from error
 
 
-def verify_oracle_run(corpus_directory: Path, run_directory: Path) -> dict[str, Any]:
+def verify_mov_oracle_run(corpus_directory: Path, run_directory: Path) -> dict[str, Any]:
+    """Verify the exact 56-control + 1024-generated selected S2-42q run."""
+    manifest = verify_directory(corpus_directory)
+    controls, hand_fixtures, hand_expected, hand_manifest, hand_manifest_sha = mov_hand.verify_controls()
+    expected_document = json.loads((corpus_directory / EXPECTED_NAME).read_bytes(), object_pairs_hook=_strict_object)
+    run_manifest = json.loads((run_directory / "manifest.json").read_bytes(), object_pairs_hook=_strict_object)
+    if not isinstance(run_manifest, dict):
+        raise CorpusError("MOV oracle run manifest must be an object")
+    if (run_manifest.get("suite") != "mov-memory-corpus" or run_manifest.get("status") != "passed"
+            or type(run_manifest.get("repeats")) is not int or run_manifest["repeats"] != 2
+            or run_manifest.get("profile") != PROFILE):
+        raise CorpusError("MOV interpreter/native oracle did not pass exactly two repeats")
+    generated_expected = expected_document.get("cases") if isinstance(expected_document, dict) else None
+    if not isinstance(generated_expected, list) or len(generated_expected) != 1024:
+        raise CorpusError("MOV generated expected snapshots are incomplete")
+    expected_by_id = dict(hand_expected)
+    expected_by_id.update({item["case_id"]: item for item in generated_expected})
+    ordered_ids = [item["case_id"] for item in controls]
+    ordered_ids.extend(item["case_id"] for item in manifest["case_digests"])
+    if len(ordered_ids) != 1080 or len(set(ordered_ids)) != 1080 or len(expected_by_id) != 1080:
+        raise CorpusError("MOV selected input identity set is not exactly 1080 unique cases")
+    expected_digests = {item["case_id"]: item["sha256"] for item in manifest["case_digests"]}
+    expected_digests.update({item["case_id"]: item["fixture_sha256"] for item in controls})
+    expected_sources = {item["case_id"]: item["fixture_path"] for item in controls}
+    expected_sources.update({item["case_id"]: f"{item['case_id']}.case.json" for item in manifest["case_digests"]})
+    frozen_sources = {
+        "fixtures": {item["case_id"]: corpus_directory / f"{item['case_id']}.case.json"
+                     for item in manifest["case_digests"]},
+        "hand-controls": {item["case_id"]: mov_hand.ROOT / item["fixture_path"]
+                          for item in controls},
+    }
+    for group_name, sources in frozen_sources.items():
+        group_directory = run_directory / group_name
+        if group_directory.is_symlink() or not group_directory.is_dir():
+            raise CorpusError(f"MOV frozen input directory is missing or unsafe: {group_name}")
+        expected_names = {f"{case_id}.case.json" for case_id in sources}
+        entries = list(group_directory.iterdir())
+        if ({path.name for path in entries} != expected_names
+                or any(path.is_symlink() or not path.is_file() for path in entries)):
+            raise CorpusError(f"MOV frozen input set is missing, extra, or unsafe: {group_name}")
+        for case_id, source_path in sources.items():
+            frozen_path = group_directory / f"{case_id}.case.json"
+            frozen_raw = frozen_path.read_bytes()
+            if (frozen_raw != source_path.read_bytes()
+                    or hashlib.sha256(frozen_raw).hexdigest() != expected_digests[case_id]):
+                raise CorpusError(f"MOV frozen input bytes or digest differ: {case_id}")
+    expected_run_id = hashlib.sha256(
+        (manifest["corpus_digest"] + "\n" + hand_manifest["control_set_digest"] + "\n"
+         + "\n".join(ordered_ids)).encode()).hexdigest()
+    counts = run_manifest.get("case_counts")
+    if counts != {"generated_count": 1024, "handwritten_count": 56, "total_count": 1080}:
+        raise CorpusError("MOV selected-run count identity differs")
+    if run_manifest.get("selected_run_id") != expected_run_id:
+        raise CorpusError("MOV selected-run identity does not bind corpus, controls and ordered case IDs")
+    commands = run_manifest.get("commands")
+    if (not isinstance(commands, list) or not commands
+            or any(not isinstance(command, dict) or command.get("returncode") != 0
+                   or "error" in command for command in commands)):
+        raise CorpusError("MOV run contains a missing, failed, or timed-out orchestration command")
+    corpus_record = run_manifest.get("corpus_manifest")
+    hand_record = run_manifest.get("hand_control_manifest")
+    if (not isinstance(corpus_record, dict) or corpus_record.get("corpus_digest") != manifest["corpus_digest"]
+            or corpus_record.get("case_count") != 1024
+            or corpus_record.get("sha256") != _sha256((corpus_directory / MANIFEST_NAME).read_bytes())
+            or not isinstance(hand_record, dict) or hand_record.get("control_set_digest") != hand_manifest["control_set_digest"]
+            or hand_record.get("case_count") != 56 or hand_record.get("sha256") != hand_manifest_sha):
+        raise CorpusError("MOV corpus or handwritten manifest provenance differs")
+    fingerprint = run_manifest.get("source_fingerprint")
+    machines_record = run_manifest.get("machines")
+    if (not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+            or not isinstance(machines_record, dict)
+            or not isinstance(machines_record.get("local"), dict)
+            or not isinstance(machines_record["local"].get("rustc"), str)
+            or not machines_record["local"]["rustc"]
+            or not isinstance(machines_record.get("remote_rustc"), str)
+            or not machines_record["remote_rustc"]):
+        raise CorpusError("MOV run-level source or compiler provenance is incomplete")
+    expected_revision = f"sha256:{fingerprint}"
+    expected_compilers = {"interpreter": machines_record["local"]["rustc"],
+                          "native_x86": machines_record["remote_rustc"]}
+    inputs = run_manifest.get("inputs")
+    if not isinstance(inputs, list) or len(inputs) != 1080:
+        raise CorpusError("MOV selected input manifest must have exactly 1080 ordered records")
+    for index, entry in enumerate(inputs):
+        case_id = ordered_ids[index]
+        group = "handwritten" if index < 56 else "generated"
+        if (not isinstance(entry, dict) or entry.get("case_id") != case_id
+                or entry.get("schema_version") != 2 or entry.get("profile") != PROFILE
+                or entry.get("fixture_sha256") != expected_digests[case_id]
+                or entry.get("group") != group
+                or not isinstance(entry.get("fixture_path"), str)
+                or Path(entry["fixture_path"]).is_absolute()
+                or ".." in Path(entry["fixture_path"]).parts
+                or Path(entry["fixture_path"]).name != f"{case_id}.case.json"
+                or Path(entry["fixture_path"]).parent.name != ("hand-controls" if group == "handwritten" else "fixtures")
+                or entry.get("filename") != f"{case_id}.case.json"):
+            raise CorpusError(f"MOV selected input identity, digest, order or group differs: {case_id}")
+        if group == "handwritten" and entry.get("source_fixture_path") != expected_sources[case_id]:
+            raise CorpusError(f"MOV handwritten source identity differs: {case_id}")
+    records = run_manifest.get("fixtures")
+    expected_record_order = [(case_id, repeat) for repeat in (1, 2) for case_id in ordered_ids]
+    if not isinstance(records, list) or len(records) != len(expected_record_order):
+        raise CorpusError("MOV run must contain exactly 1080 times 2 repeat records")
+    for record, (case_id, repeat) in zip(records, expected_record_order, strict=True):
+        if (not isinstance(record, dict) or record.get("case_id") != case_id or record.get("repeat") != repeat
+                or record.get("schema_version") != 2 or record.get("fixture_sha256") != expected_digests[case_id]
+                or record.get("differences") != {"interpreter_vs_native": 0}
+                or record.get("stable_repeat") is not (repeat > 1)):
+            raise CorpusError(f"MOV run result provenance or repeat identity differs: {case_id} repeat {repeat}")
+        builds, machines = record.get("build"), record.get("machines")
+        if not isinstance(builds, dict) or not isinstance(machines, dict):
+            raise CorpusError(f"MOV run result lacks build or machine provenance: {case_id}")
+        if any(not isinstance(builds.get(backend), dict)
+               or builds[backend].get("revision") != expected_revision
+               or builds[backend].get("compiler") != expected_compilers[backend]
+               for backend in ("interpreter", "native_x86")):
+            raise CorpusError(f"MOV result record is not bound to run-level source/compiler provenance: {case_id}")
+        for backend in ("interpreter", "native_x86"):
+            case_directory = run_directory / f"repeat-{repeat:02d}" / case_id
+            result_path = case_directory / f"{backend}.json"
+            process_path = case_directory / f"{backend}.process.json"
+            if (result_path.is_symlink() or process_path.is_symlink() or not result_path.is_file()
+                    or not process_path.is_file()):
+                raise CorpusError(f"MOV {backend} result or process evidence is missing or unsafe: {case_id}")
+            process_evidence = json.loads(process_path.read_bytes(), object_pairs_hook=_strict_object)
+            if not isinstance(process_evidence, dict) or process_evidence.get("returncode") != 0:
+                raise CorpusError(f"MOV {backend} process failed or timed out: {case_id} repeat {repeat}")
+            result = json.loads(result_path.read_bytes(), object_pairs_hook=_strict_object)
+            if (not isinstance(result, dict) or result.get("schema_version") != 2
+                    or result.get("case_id") != case_id or result.get("input_sha256") != expected_digests[case_id]
+                    or result.get("profile") != PROFILE or result.get("backend") != backend
+                    or result.get("build") != builds.get(backend) or result.get("machine") != machines.get(backend)):
+                raise CorpusError(f"MOV {backend} result identity or provenance differs: {case_id} repeat {repeat}")
+            build = result.get("build")
+            if (not isinstance(build, dict) or any(not isinstance(build.get(key), str) or not build[key]
+                    for key in ("revision", "compiler", "target", "profile"))
+                    or build.get("revision") != expected_revision
+                    or build.get("compiler") != expected_compilers[backend]):
+                raise CorpusError(f"MOV {backend} build identity is incomplete: {case_id}")
+            machine = result.get("machine")
+            if (not isinstance(machine, dict) or not machine.get("host_os") or not machine.get("host_arch")
+                    or (backend == "native_x86" and (machine.get("host_os") != "linux"
+                                                      or machine.get("host_arch") != "x86_64"))):
+                raise CorpusError(f"MOV {backend} machine identity is incomplete or unsupported: {case_id}")
+            _verify_result(result, expected_by_id[case_id], f"{backend} {case_id} repeat {repeat}")
+    for backend in ("interpreter", "native_x86"):
+        observed_results = list(run_directory.glob(f"repeat-*/**/{backend}.json"))
+        if len(observed_results) != 2160:
+            raise CorpusError(f"MOV saved run has an extra or missing {backend} result file")
+    return {
+        "status": "passed", "profile": PROFILE,
+        "corpus_digest": manifest["corpus_digest"],
+        "control_set_digest": hand_manifest["control_set_digest"],
+        "selected_run_id": expected_run_id,
+        "generated_count": 1024, "handwritten_count": 56, "total_count": 1080,
+        "repeat_count": 2, "result_record_count": 2160, "backend_result_count_per_backend": 2160,
+        "independent_mov_oracle": "matched_full_gpr_rip_rflags_retirement_memory_canaries",
+        "interpreter": "matched", "native_x86": "matched_linux_x86_64",
+        "physical_mac_acceptance": "not_run", "oracle_manifest": str(run_directory / "manifest.json"),
+    }
+
+
+def verify_legacy_oracle_run(corpus_directory: Path, run_directory: Path) -> dict[str, Any]:
+    """Verify the historical generated-only oracle format; never used for acceptance."""
     manifest = verify_directory(corpus_directory)
     expected_document = json.loads(
         (corpus_directory / EXPECTED_NAME).read_bytes(), object_pairs_hook=_strict_object
@@ -487,16 +652,23 @@ def verify_oracle_run(corpus_directory: Path, run_directory: Path) -> dict[str, 
     }
 
 
+def verify_oracle_run(corpus_directory: Path, run_directory: Path) -> dict[str, Any]:
+    """Verify only the current, exact S2-42q selected acceptance run."""
+    run_manifest = json.loads((run_directory / "manifest.json").read_bytes(), object_pairs_hook=_strict_object)
+    if not isinstance(run_manifest, dict) or run_manifest.get("suite") != "mov-memory-corpus":
+        raise CorpusError("current MOV acceptance requires suite=mov-memory-corpus and all 1080 selected inputs")
+    return verify_mov_oracle_run(corpus_directory, run_directory)
+
+
 def run_oracle(corpus_directory: Path, host: str, user: str, remote_root: str,
                output_root: Path) -> tuple[int, Path | None, str, str]:
     output_root.mkdir(parents=True, exist_ok=True)
     prior = {entry.resolve() for entry in output_root.iterdir() if entry.is_dir()}
-    fixtures = sorted(corpus_directory.glob("*.case.json"))
     command = [
         sys.executable, str(ROOT / "tests/cpu/stage2_oracle.py"), "--host", host,
         "--user", user, "--remote-root", remote_root, "--repeats", "2",
+        "--suite", "mov-memory-corpus", "--mov-memory-corpus", str(corpus_directory.resolve()),
         "--output-root", str(output_root.resolve().relative_to(ROOT)),
-        *(str(path.resolve().relative_to(ROOT)) for path in fixtures),
     ]
     process = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
     created = [entry for entry in output_root.iterdir() if entry.is_dir() and entry.resolve() not in prior]
@@ -532,6 +704,9 @@ def main() -> int:
             summary_path.write_bytes(_json_bytes({
                 "status": "failed",
                 "profile": PROFILE,
+                "generated_count": 1024,
+                "handwritten_count": mov_hand.CONTROL_COUNT,
+                "total_count": 1024 + mov_hand.CONTROL_COUNT,
                 "physical_mac_acceptance": "not_run",
                 "error": "S2-42e oracle run did not complete",
             }))
@@ -549,7 +724,7 @@ def main() -> int:
             summary = verify_oracle_run(corpus, args.verify_oracle_run)
             summary_path.write_bytes(_json_bytes(summary))
             print(f"machine-readable summary: {summary_path}")
-            print(f"verified {summary['result_count_per_backend']} saved interpreter and native results")
+            print(f"verified {summary['backend_result_count_per_backend']} saved interpreter and native results per backend")
             return 0
         if args.run_oracle:
             return_code, run_directory, stdout, stderr = run_oracle(
@@ -559,7 +734,10 @@ def main() -> int:
                 "status": "failed",
                 "profile": PROFILE,
                 "corpus_digest": manifest["corpus_digest"],
-                "case_count": len(FIXED_SEEDS) * CASES_PER_SEED,
+                "generated_count": 1024,
+                "handwritten_count": mov_hand.CONTROL_COUNT,
+                "total_count": 1080,
+                "case_count": 1080,
                 "physical_mac_acceptance": "not_run",
                 "oracle_stdout": stdout[-4000:],
                 "oracle_stderr": stderr[-4000:],
@@ -578,7 +756,7 @@ def main() -> int:
             if return_code != 0 or summary.get("status") != "passed":
                 print("S2-42e oracle failed or native evidence is missing", file=sys.stderr)
                 return 1
-            print(f"matched {summary['result_count_per_backend']} interpreter and native results")
+            print(f"matched {summary['backend_result_count_per_backend']} interpreter and native results per backend")
             return 0
         print(f"verified {len(FIXED_SEEDS) * CASES_PER_SEED} generated cases; corpus digest {manifest['corpus_digest']}")
     except (CorpusError, OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
@@ -586,12 +764,15 @@ def main() -> int:
             summary: dict[str, Any] = {
                 "status": "failed",
                 "profile": PROFILE,
+                "generated_count": 1024,
+                "handwritten_count": mov_hand.CONTROL_COUNT,
+                "total_count": 1080,
                 "physical_mac_acceptance": "not_run",
                 "error": str(error),
             }
             if manifest is not None:
                 summary["corpus_digest"] = manifest["corpus_digest"]
-                summary["case_count"] = len(manifest["case_digests"])
+                summary["case_count"] = 1080
             try:
                 summary_path.parent.mkdir(parents=True, exist_ok=True)
                 summary_path.write_bytes(_json_bytes(summary))

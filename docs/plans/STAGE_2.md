@@ -728,6 +728,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42n | Bounded exact MOV qword memory interpreter reducer | RAX-only reduction for literal `48 89 03`; independent byte-store oracle, complete mapping/mask preservation, callback journal and replay; synthetic stable mismatch and drift/failure/budget regressions; local fixture `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42N_MOV_MEMORY_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42n--bounded-mov-qword-memory-reducer) |
 | [x] | S2-42o | Bounded SQRTSS SNaN #XM interpreter reducer | One exact register instruction; descending nonzero-payload reduction, independent full-state/#XM predicate, callback journal and replay; synthetic IE omission and XMM0 corruption; literal `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42o--sqrtss-snan-fault-reducer) |
 | [x] | S2-42p | Six handwritten XORPD controls in S2-42c harness | Adds four literal boundaries alongside two exact S2-40b controls; separate strict control identity/hash manifest; 1,024 generated + 6 handwritten, two repeats; local interpreter passed; native/physical `not_run`; [protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md), [report](../reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls) |
+| [x] | S2-42q | 56 handwritten MOV memory/addressing controls in S2-42e harness | Adds exactly 4×2×7 literal controls before unchanged 1,024 generated cases; static full snapshots and pinned strict manifest; all 56 passed twice on local interpreter; native/physical `not_run`; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42q--56-handwritten-mov-memory-controls) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -20162,3 +20163,26 @@ the local interpreter. Native Linux comparison and physical hardware
 acceptance remain `not_run` on the Darwin arm64 development host. See the [S2-42c protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42p-six-handwritten-native-xorpd-controls)
 and [report](../reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls).
+
+### S2-42q — 56 handwritten MOV memory/addressing controls
+
+**Status:** implemented as a focused extension to the S2-42e acceptance
+command. It adds 56 literal controls in fixed width/direction/address-form
+order before the unchanged 1,024-case generated corpus. Fixtures and full
+expected snapshots are static files; a separate strict manifest binds both
+file hashes, exact source IDs, effective addresses and boundary tags, with its
+canonical control digest pinned by the verifier. The code mapping is
+execute-only. Ordinary SIB and address32 SIB retain their separate scale and
+index contracts.
+
+The combined selected set is 1,080 cases and requires two interpreter and two
+Linux x86_64 native results per case. Each backend result must match the
+independent complete snapshot before cross-backend comparison. Saved-run
+verification checks 2,160 ordered case/repeat records, all backend results,
+process outcomes and provenance. The 56 controls matched their expected full
+snapshots in both local interpreter repeats (112 executions); focused Python
+tests mock all remote orchestration. Native/Linux and physical hardware
+evidence remain `not_run`. S2-42 and dependencies S2-21/S2-39/S2-40 remain
+open. See the [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42q-56-handwritten-mov-memoryaddressing-controls),
+and [report](../reports/STAGE_2_REPORT.md#s2-42q--56-handwritten-mov-memory-controls).

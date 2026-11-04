@@ -24391,3 +24391,47 @@ native or physical CPU execution was performed: native and hardware status are
 full S2-42 or perform hardware acceptance. See the [protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md),
 [plan](../plans/STAGE_2.md#s2-42p--six-handwritten-xorpd-controls), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42p-six-handwritten-native-xorpd-controls).
+
+## S2-42q — 56 handwritten MOV memory controls
+
+S2-42q closes the handwritten-boundary gap for the existing S2-42e MOV
+memory/addressing profile. It adds exactly 56 literal controls: four widths,
+two directions, and seven already admitted addressing forms. Each fixture and
+complete expected snapshot is checked in as static JSON. A separate versioned
+manifest binds ordered source IDs, fixture/expected paths and exact SHA-256
+digests, effective addresses, and boundary tags; the canonical control-set
+digest is pinned by the verifier. The verifier rejects extra/missing files,
+symlinks, path changes, duplicate identities, tampered bytes, rehashed
+manifest changes, incorrect encodings, and effective addresses outside the
+128-byte data mapping. Execute-only code permissions are pinned.
+
+The S2-42e command now selects controls first and then the unchanged 1,024-case
+generated corpus. The selected identity binds both digests and all 1,080
+ordered IDs. Each backend result must independently match all GPRs, RIP,
+RFLAGS/definedness, retirement, full code/data memory, and store canaries.
+Saved-run verification requires 2,160 ordered case/repeat records, exactly two
+interpreter and two native result files per case, successful process evidence,
+and complete build/machine provenance bound to the run source fingerprint and
+local/remote Rust compiler versions. It also verifies exact regular non-symlink
+`fixtures/` and `hand-controls/` sets and compares all 1,080 frozen case bytes
+with their verified sources and SHA-256 digests. Current acceptance requires
+`suite=mov-memory-corpus`; historical generated-only `integer` runs cannot
+satisfy it. Failed preflight replaces any previous success summary before
+input verification. The saved-run CLI prints the current per-backend result
+count field.
+
+The 56 literal fixtures were executed twice through the local interpreter;
+all 112 executions matched their static full snapshots. The focused mocked
+Python corpus/harness/control suites passed (44 tests), including strict
+control tampering, fixed order and byte vectors, shared wrong backend outputs,
+mocked remote orchestration, and a complete synthetic saved-run roundtrip with
+failure cases for missing repeat/backend/provenance/timeout, changed frozen
+inputs, old-suite fallback, and altered run-level fingerprint/compiler identity.
+Python bytecode compilation and `git diff --check` passed. `graphify update .`
+completed. `python3 tools/check_layout.py` was attempted in the linked worktree
+and stopped at the known unmapped `.git` pointer; repeat the layout check after
+transfer on the main checkout. No native Linux comparison or physical hardware
+run was made; both remain `not_run`. Parent S2-42 and dependencies S2-21,
+S2-39, and S2-40 remain open. See the [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42q--56-handwritten-mov-memoryaddressing-controls),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42q-56-handwritten-mov-memoryaddressing-controls).

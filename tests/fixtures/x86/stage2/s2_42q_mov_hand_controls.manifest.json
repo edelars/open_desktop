@@ -1,0 +1,896 @@
+{
+  "manifest_version": 1,
+  "profile": "s2-long-integer-v1",
+  "control_count": 56,
+  "controls": [
+    {
+      "case_id": "s2_42q_mov_08_load_base",
+      "source_id": "s2-42q:s2_42q_mov_08_load_base",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_base.case.json",
+      "fixture_sha256": "ea999c8afd382d2b82ff64344fdd1078f5c9f8a40c3062baf472360c30d343c1",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_base.expected.json",
+      "expected_sha256": "fc63716b9d4b3de70666d93bdbc48e4827995d39df55a3de21f3dd3a16bd0546",
+      "width": 8,
+      "direction": "load",
+      "form": "base",
+      "effective_address": "0x0000000000200000",
+      "boundary_tags": [
+        "first_valid_span"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_load_disp8",
+      "source_id": "s2-42q:s2_42q_mov_08_load_disp8",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_disp8.case.json",
+      "fixture_sha256": "6f3760d0c0b0fccd24b498ff8aa4f4a5fe4f601fc448b8853cc052b06d5ae5b4",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_disp8.expected.json",
+      "expected_sha256": "317a80c81edce343b54296ba9d535368480a9efc7a48d055084bd4b7ccc6e197",
+      "width": 8,
+      "direction": "load",
+      "form": "disp8",
+      "effective_address": "0x0000000000200001",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_disp8"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_load_disp32",
+      "source_id": "s2-42q:s2_42q_mov_08_load_disp32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_disp32.case.json",
+      "fixture_sha256": "cf40e784522504cc94b6cdd167b24eb208e1172e1c664cb87c6bd518bcc3c1bb",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_disp32.expected.json",
+      "expected_sha256": "5fbfbe3b44eb220cfdf30dce3d73346f151fc5784169a229de37dcc0367503b3",
+      "width": 8,
+      "direction": "load",
+      "form": "disp32",
+      "effective_address": "0x000000000020007f",
+      "boundary_tags": [
+        "last_valid_span",
+        "negative_disp32"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_load_sib",
+      "source_id": "s2-42q:s2_42q_mov_08_load_sib",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_sib.case.json",
+      "fixture_sha256": "9e02c1c56785f1bd149a8d0025968b611ad14243e8137abec1a5af611e10ef17",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_sib.expected.json",
+      "expected_sha256": "186a220fff712f1a9da1be70cb78aa9329ce0a40efb32381082461991a8031b1",
+      "width": 8,
+      "direction": "load",
+      "form": "sib",
+      "effective_address": "0x0000000000200007",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_sib_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_load_rip_relative",
+      "source_id": "s2-42q:s2_42q_mov_08_load_rip_relative",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_rip_relative.case.json",
+      "fixture_sha256": "945e989cd3b6173270f5025e3ed9742f745a277ee805515c818ff91e8c9f669e",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_rip_relative.expected.json",
+      "expected_sha256": "556f9d83bf786d694c4a14866adfa28e7dedbee7986c630ad5e087555321c7bf",
+      "width": 8,
+      "direction": "load",
+      "form": "rip_relative",
+      "effective_address": "0x000000000020001f",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_rip_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_load_address32",
+      "source_id": "s2-42q:s2_42q_mov_08_load_address32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_address32.case.json",
+      "fixture_sha256": "06219f6897370ac9c07015932ae274c7e9471b3f5bfd8ab43116d9d823471f32",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_address32.expected.json",
+      "expected_sha256": "6e95f803704e71fcb0524e4788645cdb7cb044ed7276fb2224888563b52062e1",
+      "width": 8,
+      "direction": "load",
+      "form": "address32",
+      "effective_address": "0x000000000020007f",
+      "boundary_tags": [
+        "last_valid_span",
+        "address32_high_bit_truncation"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_load_rex_b",
+      "source_id": "s2-42q:s2_42q_mov_08_load_rex_b",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_rex_b.case.json",
+      "fixture_sha256": "ea704fa278f8b1ef282adec08f1f41d55f61a4e4843d1c6390f634ec40c9740f",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_load_rex_b.expected.json",
+      "expected_sha256": "9a42dd7e8e8c47d4829edb6fef60e58bce9cb1153bfc15491742e0ae9fb89099",
+      "width": 8,
+      "direction": "load",
+      "form": "rex_b",
+      "effective_address": "0x000000000020003f",
+      "boundary_tags": [
+        "unaligned_access",
+        "rex_b_extended_base"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_store_base",
+      "source_id": "s2-42q:s2_42q_mov_08_store_base",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_base.case.json",
+      "fixture_sha256": "9aa090792a37a3bab0d8cec8df2ffd2d2ea1a7c4396d3af020f98e538c1e7b65",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_base.expected.json",
+      "expected_sha256": "cdd56064a5ce62b31e98d88b35c06edbcf046a24c9bce8b473c48dcbba7f4bab",
+      "width": 8,
+      "direction": "store",
+      "form": "base",
+      "effective_address": "0x0000000000200000",
+      "boundary_tags": [
+        "first_valid_span"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_store_disp8",
+      "source_id": "s2-42q:s2_42q_mov_08_store_disp8",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_disp8.case.json",
+      "fixture_sha256": "b30cad265dda6a5569b4631c363bdc43bf40ebdce3112aceb692391fe5d1e875",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_disp8.expected.json",
+      "expected_sha256": "a521e55f3231715efab43c56b01bfcc1e41fff305f0570c0908d4881f1930aa6",
+      "width": 8,
+      "direction": "store",
+      "form": "disp8",
+      "effective_address": "0x0000000000200001",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_disp8"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_store_disp32",
+      "source_id": "s2-42q:s2_42q_mov_08_store_disp32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_disp32.case.json",
+      "fixture_sha256": "5eb6f8634be5935ffe9fab1125d061bc448188dac341ad39d1f8aa94976c7a4b",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_disp32.expected.json",
+      "expected_sha256": "b6012a303700f99d50248b7533351dd1f9489c9c059aa58e2fca8ee2d088c47b",
+      "width": 8,
+      "direction": "store",
+      "form": "disp32",
+      "effective_address": "0x000000000020007f",
+      "boundary_tags": [
+        "last_valid_span",
+        "positive_disp32"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_store_sib",
+      "source_id": "s2-42q:s2_42q_mov_08_store_sib",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_sib.case.json",
+      "fixture_sha256": "2979be64e613829a82103e0abdbf62be2f78beeceed6f469d9a8f85cfe29f794",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_sib.expected.json",
+      "expected_sha256": "34a698fb64f7b91c6b1fec3e223574e551cd036293b2eb583d05f7e902c20355",
+      "width": 8,
+      "direction": "store",
+      "form": "sib",
+      "effective_address": "0x0000000000200007",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_sib_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_store_rip_relative",
+      "source_id": "s2-42q:s2_42q_mov_08_store_rip_relative",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_rip_relative.case.json",
+      "fixture_sha256": "ab30da18f9a5d03d17469a2bf1fad7ba052db6f93d3dd1c14b71f2faf1149c0b",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_rip_relative.expected.json",
+      "expected_sha256": "7be2b614cbb005d463745275f6064def4c23620077c0b34273820cb6a87621a5",
+      "width": 8,
+      "direction": "store",
+      "form": "rip_relative",
+      "effective_address": "0x000000000020001f",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_rip_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_store_address32",
+      "source_id": "s2-42q:s2_42q_mov_08_store_address32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_address32.case.json",
+      "fixture_sha256": "bc51dda0f860f094caed5693ca115f4815de634d1077861a7ccf5889c7f10cc6",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_address32.expected.json",
+      "expected_sha256": "f89da09f3121aa5e54953fd9e5241e3bee7a3a38cf4a09a119a422b3ddebf773",
+      "width": 8,
+      "direction": "store",
+      "form": "address32",
+      "effective_address": "0x000000000020007f",
+      "boundary_tags": [
+        "last_valid_span",
+        "address32_high_bit_truncation"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_08_store_rex_b",
+      "source_id": "s2-42q:s2_42q_mov_08_store_rex_b",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_rex_b.case.json",
+      "fixture_sha256": "0ce1dcd641bef847efabcf37ab9ffc5ffa544c155bb2643a32f4ebb0646b5fdc",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_08_store_rex_b.expected.json",
+      "expected_sha256": "56f69614da96ec010e97d05d29802a4030d2b1276aea83a827ef7f0489f5317b",
+      "width": 8,
+      "direction": "store",
+      "form": "rex_b",
+      "effective_address": "0x000000000020003f",
+      "boundary_tags": [
+        "unaligned_access",
+        "rex_b_extended_base"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_load_base",
+      "source_id": "s2-42q:s2_42q_mov_16_load_base",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_base.case.json",
+      "fixture_sha256": "a2658c37c1d5ce171ca0144bd390dc5069f60458ae9e9ffcac109a9c6ad44038",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_base.expected.json",
+      "expected_sha256": "61d1c9a96466c8c9aef1acc4ed8280748a32895efa7175b942c496d9e43ed34a",
+      "width": 16,
+      "direction": "load",
+      "form": "base",
+      "effective_address": "0x0000000000200000",
+      "boundary_tags": [
+        "first_valid_span"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_load_disp8",
+      "source_id": "s2-42q:s2_42q_mov_16_load_disp8",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_disp8.case.json",
+      "fixture_sha256": "8cde585ee5903859f604f46e8411aa15d06e7eea066693fe7158756998ebfcee",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_disp8.expected.json",
+      "expected_sha256": "2457cd029b88331c5e034eb5c0b1dd38625e8213fcf76328a19f92a5271c5874",
+      "width": 16,
+      "direction": "load",
+      "form": "disp8",
+      "effective_address": "0x0000000000200001",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_disp8"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_load_disp32",
+      "source_id": "s2-42q:s2_42q_mov_16_load_disp32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_disp32.case.json",
+      "fixture_sha256": "26a98775cefc3f017dd028e4065a93fd345df33732df3e08764f35431474d273",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_disp32.expected.json",
+      "expected_sha256": "021ebef0104fd4bff262b743c9fbe44d489523e4850bcc60b5b61f327f559877",
+      "width": 16,
+      "direction": "load",
+      "form": "disp32",
+      "effective_address": "0x000000000020007e",
+      "boundary_tags": [
+        "last_valid_span",
+        "negative_disp32"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_load_sib",
+      "source_id": "s2-42q:s2_42q_mov_16_load_sib",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_sib.case.json",
+      "fixture_sha256": "d55d1f3dc0c9d6780b8d4b42a9b408b583fc3bca8bde269c080fc2aede4bdc2a",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_sib.expected.json",
+      "expected_sha256": "63b0328fa2fd742f4eac68ca2cb8dc1c890e09a266832a09649275273a62602f",
+      "width": 16,
+      "direction": "load",
+      "form": "sib",
+      "effective_address": "0x0000000000200007",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_sib_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_load_rip_relative",
+      "source_id": "s2-42q:s2_42q_mov_16_load_rip_relative",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_rip_relative.case.json",
+      "fixture_sha256": "3a1adb4da19cb96e51ca9d3f901aec87b1fdaa1202ab55aac18499abc4c313c0",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_rip_relative.expected.json",
+      "expected_sha256": "e7b2beabe8b07e506fe46514527a17c8d621843f2f303abc15370bb44ae7cfb9",
+      "width": 16,
+      "direction": "load",
+      "form": "rip_relative",
+      "effective_address": "0x000000000020001f",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_rip_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_load_address32",
+      "source_id": "s2-42q:s2_42q_mov_16_load_address32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_address32.case.json",
+      "fixture_sha256": "87cb69af9fa62618b23c576bfb0f01baea926197ced179342f08697a90c60115",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_address32.expected.json",
+      "expected_sha256": "40a406ca73a9478228a8ebf1f7104ee9dbb5b218d77cfc0331a1c3b042e91d45",
+      "width": 16,
+      "direction": "load",
+      "form": "address32",
+      "effective_address": "0x000000000020007e",
+      "boundary_tags": [
+        "last_valid_span",
+        "address32_high_bit_truncation"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_load_rex_b",
+      "source_id": "s2-42q:s2_42q_mov_16_load_rex_b",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_rex_b.case.json",
+      "fixture_sha256": "ff8adc0e9440e98b06ff808e8cef7992a283bd9dcc9b617bc9bacdf81e0a9e9b",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_load_rex_b.expected.json",
+      "expected_sha256": "f4c3b0c515b75f9c11ee26a09d2d6e8fdd8d24c30cbff0d965a1993644c9c653",
+      "width": 16,
+      "direction": "load",
+      "form": "rex_b",
+      "effective_address": "0x000000000020003f",
+      "boundary_tags": [
+        "unaligned_access",
+        "rex_b_extended_base"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_store_base",
+      "source_id": "s2-42q:s2_42q_mov_16_store_base",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_base.case.json",
+      "fixture_sha256": "2128223a4a31a302d3957bd58dd37e47ad3ffcc64ea0a7f7e5ff603a34f597ab",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_base.expected.json",
+      "expected_sha256": "8907172f14f4190574675d66cc29ebe74668b6aa2f96b604b54200cf492bdc4a",
+      "width": 16,
+      "direction": "store",
+      "form": "base",
+      "effective_address": "0x0000000000200000",
+      "boundary_tags": [
+        "first_valid_span"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_store_disp8",
+      "source_id": "s2-42q:s2_42q_mov_16_store_disp8",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_disp8.case.json",
+      "fixture_sha256": "3abc58b2764e30dc46bd9988125040ef497b6c49c70b7fc449933a92aa0192d1",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_disp8.expected.json",
+      "expected_sha256": "58bec37c4d2ce08d485cd9402feae8720c26a9333293982577702b3329b70eb7",
+      "width": 16,
+      "direction": "store",
+      "form": "disp8",
+      "effective_address": "0x0000000000200001",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_disp8"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_store_disp32",
+      "source_id": "s2-42q:s2_42q_mov_16_store_disp32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_disp32.case.json",
+      "fixture_sha256": "a4913797f69355c29f06a64558bb749602dae312f7a140673063243e524ecf67",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_disp32.expected.json",
+      "expected_sha256": "82f33780cc5be8ceb2b5bccffabecdfe3a4fc668345fc88a5642f51593daf8f4",
+      "width": 16,
+      "direction": "store",
+      "form": "disp32",
+      "effective_address": "0x000000000020007e",
+      "boundary_tags": [
+        "last_valid_span",
+        "positive_disp32"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_store_sib",
+      "source_id": "s2-42q:s2_42q_mov_16_store_sib",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_sib.case.json",
+      "fixture_sha256": "613b71c8485cdebca60d1ddf16cd6811c2d5eb01f87455c7de4c39f7c5fda353",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_sib.expected.json",
+      "expected_sha256": "ed4c9d7a934553546b122468164239bfbc3fb4513d3b62afd68e55d8063ee02d",
+      "width": 16,
+      "direction": "store",
+      "form": "sib",
+      "effective_address": "0x0000000000200007",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_sib_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_store_rip_relative",
+      "source_id": "s2-42q:s2_42q_mov_16_store_rip_relative",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_rip_relative.case.json",
+      "fixture_sha256": "cd61d8e9a1df69ec960a75ce902b2e5703fcf22016976272ca7f50243bdda855",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_rip_relative.expected.json",
+      "expected_sha256": "47209c2d23e5e1099246503fd35972431cd017402433fc0c9d4a973d393612a1",
+      "width": 16,
+      "direction": "store",
+      "form": "rip_relative",
+      "effective_address": "0x000000000020001f",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_rip_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_store_address32",
+      "source_id": "s2-42q:s2_42q_mov_16_store_address32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_address32.case.json",
+      "fixture_sha256": "c52c68e5b9ce64f79b5a52bcb103e380bb1e7344f8fbb4c2f3c85b2bdf3666b8",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_address32.expected.json",
+      "expected_sha256": "829164039314525ec18467fc3e144d2b3798ebc8a65836ed1114011cd4410ec9",
+      "width": 16,
+      "direction": "store",
+      "form": "address32",
+      "effective_address": "0x000000000020007e",
+      "boundary_tags": [
+        "last_valid_span",
+        "address32_high_bit_truncation"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_16_store_rex_b",
+      "source_id": "s2-42q:s2_42q_mov_16_store_rex_b",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_rex_b.case.json",
+      "fixture_sha256": "bce73f250184747afd5e2fbf6a0728821bb07eda110db77c9de1306f0da55d2f",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_16_store_rex_b.expected.json",
+      "expected_sha256": "747919dc7c831fa3e3e298017145a9cd573a9f9a4bbb9910d8c9acb554735fcf",
+      "width": 16,
+      "direction": "store",
+      "form": "rex_b",
+      "effective_address": "0x000000000020003f",
+      "boundary_tags": [
+        "unaligned_access",
+        "rex_b_extended_base"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_load_base",
+      "source_id": "s2-42q:s2_42q_mov_32_load_base",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_base.case.json",
+      "fixture_sha256": "bf27d019b9d946cca3be47e8d15d7de40cfbe1f34a02fb94bcefa748264e3dac",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_base.expected.json",
+      "expected_sha256": "bf1b2a3a13963891a698ba1f318d9709bc0ccbe1197ce36d39ae37a88dd1c006",
+      "width": 32,
+      "direction": "load",
+      "form": "base",
+      "effective_address": "0x0000000000200000",
+      "boundary_tags": [
+        "first_valid_span"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_load_disp8",
+      "source_id": "s2-42q:s2_42q_mov_32_load_disp8",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_disp8.case.json",
+      "fixture_sha256": "22d9cda726e5562f6afe3652d7ce560943f36ca7da9d5b0567703f26e66fda95",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_disp8.expected.json",
+      "expected_sha256": "0313ed62caf3b0277b50b6b67b2e52f5ae5a6b74c228cda848bca9ceb3962e20",
+      "width": 32,
+      "direction": "load",
+      "form": "disp8",
+      "effective_address": "0x0000000000200001",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_disp8"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_load_disp32",
+      "source_id": "s2-42q:s2_42q_mov_32_load_disp32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_disp32.case.json",
+      "fixture_sha256": "44afabbde5fca6f2b5d90911e60021621feb795956c98a32046b85d096a6d2a1",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_disp32.expected.json",
+      "expected_sha256": "2d64686f383caf6767f78be5c5043dc734a3584bc7157f0f52a8258fb2cfb1d1",
+      "width": 32,
+      "direction": "load",
+      "form": "disp32",
+      "effective_address": "0x000000000020007c",
+      "boundary_tags": [
+        "last_valid_span",
+        "negative_disp32"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_load_sib",
+      "source_id": "s2-42q:s2_42q_mov_32_load_sib",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_sib.case.json",
+      "fixture_sha256": "4758886a310c3a6f6309838492cb8533c1e85d2fde9b10bb4052778dbff079e2",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_sib.expected.json",
+      "expected_sha256": "3cd8aa92ef0db8744bcf3ffab3fbf22c36f81616b26cfcb4c15b5722aa4e1dcc",
+      "width": 32,
+      "direction": "load",
+      "form": "sib",
+      "effective_address": "0x0000000000200007",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_sib_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_load_rip_relative",
+      "source_id": "s2-42q:s2_42q_mov_32_load_rip_relative",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_rip_relative.case.json",
+      "fixture_sha256": "4db121307c8be79bbca60059570c4c4544f31c5b5f396e79130a8c0bd5705e4a",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_rip_relative.expected.json",
+      "expected_sha256": "827857a8e7133013d71b7eb14177064876f50d4fff2382a300261c3c50ebe89c",
+      "width": 32,
+      "direction": "load",
+      "form": "rip_relative",
+      "effective_address": "0x000000000020001f",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_rip_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_load_address32",
+      "source_id": "s2-42q:s2_42q_mov_32_load_address32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_address32.case.json",
+      "fixture_sha256": "bb4ee78ccbc97584d73a063ab7e0ab09815171cddba5e76a33720020cb115efb",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_address32.expected.json",
+      "expected_sha256": "d40ce1fe42b7c8797d33e6e7e8538ea97ed00a5138e9fe3563e983258101b170",
+      "width": 32,
+      "direction": "load",
+      "form": "address32",
+      "effective_address": "0x000000000020007c",
+      "boundary_tags": [
+        "last_valid_span",
+        "address32_high_bit_truncation"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_load_rex_b",
+      "source_id": "s2-42q:s2_42q_mov_32_load_rex_b",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_rex_b.case.json",
+      "fixture_sha256": "d26f8daf61cf953178f19efeaee10a66c7769ea5a93a557cac73a3dc8cc71c10",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_load_rex_b.expected.json",
+      "expected_sha256": "c5b76af7da38c735e207c0e8090dd670e3fb2113b2ade005c57de03bd6d236aa",
+      "width": 32,
+      "direction": "load",
+      "form": "rex_b",
+      "effective_address": "0x000000000020003f",
+      "boundary_tags": [
+        "unaligned_access",
+        "rex_b_extended_base"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_store_base",
+      "source_id": "s2-42q:s2_42q_mov_32_store_base",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_base.case.json",
+      "fixture_sha256": "0a577f6cc28177d2aaa9c2a5f0a2c19c80abcb5b22c7664f712ceecbc05599e0",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_base.expected.json",
+      "expected_sha256": "a5ea6c5d0707654d4c9ea9b1077069059ccd89223ecd707d3b763f369a9d65ff",
+      "width": 32,
+      "direction": "store",
+      "form": "base",
+      "effective_address": "0x0000000000200000",
+      "boundary_tags": [
+        "first_valid_span"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_store_disp8",
+      "source_id": "s2-42q:s2_42q_mov_32_store_disp8",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_disp8.case.json",
+      "fixture_sha256": "5a17075215530c89b624e764cbdb818fc192185639997695b6c1462d86d04522",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_disp8.expected.json",
+      "expected_sha256": "0223a10ed187ab53035aa064df761d3f3173c6ad82cb85e0b7667d8a120e0afd",
+      "width": 32,
+      "direction": "store",
+      "form": "disp8",
+      "effective_address": "0x0000000000200001",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_disp8"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_store_disp32",
+      "source_id": "s2-42q:s2_42q_mov_32_store_disp32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_disp32.case.json",
+      "fixture_sha256": "4c1610e57826a5bbead2214445df171cf505353add461dd7a3257c804edcd75f",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_disp32.expected.json",
+      "expected_sha256": "236913e5dca952c30b733b21ab717eeacb6321be2791ec0bafb4efb149db9e0f",
+      "width": 32,
+      "direction": "store",
+      "form": "disp32",
+      "effective_address": "0x000000000020007c",
+      "boundary_tags": [
+        "last_valid_span",
+        "positive_disp32"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_store_sib",
+      "source_id": "s2-42q:s2_42q_mov_32_store_sib",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_sib.case.json",
+      "fixture_sha256": "9133dd0f3f6d7d2f0a9c805e881b182f3f635159021646b6a0446223c0f2921e",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_sib.expected.json",
+      "expected_sha256": "ea7521cfe77dba2c17358827f219e1e5b6848d788c59819fab0168eb47314e74",
+      "width": 32,
+      "direction": "store",
+      "form": "sib",
+      "effective_address": "0x0000000000200007",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_sib_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_store_rip_relative",
+      "source_id": "s2-42q:s2_42q_mov_32_store_rip_relative",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_rip_relative.case.json",
+      "fixture_sha256": "3dc2bbae8f28fd8a13cb34dc2b08fdb9d68844e0a5fcb2bbd5727084cb0753c7",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_rip_relative.expected.json",
+      "expected_sha256": "e7e2b5d03c15e6877468cb8b60fbcfb9103c305b3ad339ed3622b0c99b076d77",
+      "width": 32,
+      "direction": "store",
+      "form": "rip_relative",
+      "effective_address": "0x000000000020001f",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_rip_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_store_address32",
+      "source_id": "s2-42q:s2_42q_mov_32_store_address32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_address32.case.json",
+      "fixture_sha256": "4716cd816bd297a6339b0392f9999475463c4013d1fbe73e8d6ae07a7dd32dce",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_address32.expected.json",
+      "expected_sha256": "e92d28a3e8f963c41f223ab37d94a3793248b806afeeae178be862754f5a58e5",
+      "width": 32,
+      "direction": "store",
+      "form": "address32",
+      "effective_address": "0x000000000020007c",
+      "boundary_tags": [
+        "last_valid_span",
+        "address32_high_bit_truncation"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_32_store_rex_b",
+      "source_id": "s2-42q:s2_42q_mov_32_store_rex_b",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_rex_b.case.json",
+      "fixture_sha256": "0db81e9abc7e5df1eabd07a99c3e8bf08d5ba29d5542e8f017bd040643560d03",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_32_store_rex_b.expected.json",
+      "expected_sha256": "e340fe5034d6715abf86dddc1c3fe8a060a68b7311c24901c37e8a4438c34a29",
+      "width": 32,
+      "direction": "store",
+      "form": "rex_b",
+      "effective_address": "0x000000000020003f",
+      "boundary_tags": [
+        "unaligned_access",
+        "rex_b_extended_base"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_load_base",
+      "source_id": "s2-42q:s2_42q_mov_64_load_base",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_base.case.json",
+      "fixture_sha256": "8a4c3dfdd04f19452cd3a72d516c47d15a0d2fc1ad4db22136948a854ab91db2",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_base.expected.json",
+      "expected_sha256": "d748ebffc72d01289d295115e845758f500478d1e65d1305f2c88e1b2792e0a0",
+      "width": 64,
+      "direction": "load",
+      "form": "base",
+      "effective_address": "0x0000000000200000",
+      "boundary_tags": [
+        "first_valid_span"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_load_disp8",
+      "source_id": "s2-42q:s2_42q_mov_64_load_disp8",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_disp8.case.json",
+      "fixture_sha256": "842b1e50a2e157d5cdda82f87522615c962823fa2715985387d54a2d76b17652",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_disp8.expected.json",
+      "expected_sha256": "9fc744bfd3ff07388358dd71a5fe874e5c502869f311a380c69936817873dc2d",
+      "width": 64,
+      "direction": "load",
+      "form": "disp8",
+      "effective_address": "0x0000000000200001",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_disp8"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_load_disp32",
+      "source_id": "s2-42q:s2_42q_mov_64_load_disp32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_disp32.case.json",
+      "fixture_sha256": "706f1e5e1a21c54d41d66626d37518078a0f17f59913a9dc6cf3ed2f41f697f3",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_disp32.expected.json",
+      "expected_sha256": "5874d66e55633f6596226589789dc6e53e96bff6f79bd6d2ec4403534a1a05a9",
+      "width": 64,
+      "direction": "load",
+      "form": "disp32",
+      "effective_address": "0x0000000000200078",
+      "boundary_tags": [
+        "last_valid_span",
+        "negative_disp32"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_load_sib",
+      "source_id": "s2-42q:s2_42q_mov_64_load_sib",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_sib.case.json",
+      "fixture_sha256": "c2c235b9ba5f56655c48b96606fe98f2494b5fdb33bbb713ade785297f33eb07",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_sib.expected.json",
+      "expected_sha256": "0f1a8a31caf87cdc2ed139f5439045fdccb1441944254f1eb6058ac48c75e66e",
+      "width": 64,
+      "direction": "load",
+      "form": "sib",
+      "effective_address": "0x0000000000200007",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_sib_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_load_rip_relative",
+      "source_id": "s2-42q:s2_42q_mov_64_load_rip_relative",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_rip_relative.case.json",
+      "fixture_sha256": "00cb6b7b3bd3587aee8771edecb63f23d6a7d25da2346cce33fc404386459003",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_rip_relative.expected.json",
+      "expected_sha256": "54fbd4ff6cb9c79cdb4ce0dfd7496d1719e6759e5b993a55d4d448866a95bd36",
+      "width": 64,
+      "direction": "load",
+      "form": "rip_relative",
+      "effective_address": "0x000000000020001f",
+      "boundary_tags": [
+        "unaligned_access",
+        "positive_rip_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_load_address32",
+      "source_id": "s2-42q:s2_42q_mov_64_load_address32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_address32.case.json",
+      "fixture_sha256": "5168473f75b0d5cee8da0236bdff20b443a5cf83e96b8ffb6cee29ae31870142",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_address32.expected.json",
+      "expected_sha256": "0240245b517072232cc0782b29ea6ce4b50fee0bb92e2297d04ab5af031a1194",
+      "width": 64,
+      "direction": "load",
+      "form": "address32",
+      "effective_address": "0x0000000000200078",
+      "boundary_tags": [
+        "last_valid_span",
+        "address32_high_bit_truncation"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_load_rex_b",
+      "source_id": "s2-42q:s2_42q_mov_64_load_rex_b",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_rex_b.case.json",
+      "fixture_sha256": "c1645a08ab877c104439fbd659b91a30d0203f22084c7fb985ca988582ad78d3",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_load_rex_b.expected.json",
+      "expected_sha256": "c7cc23359b56e663260ef27ea535e172b36cba7f17387362aab0b26b6a44036a",
+      "width": 64,
+      "direction": "load",
+      "form": "rex_b",
+      "effective_address": "0x000000000020003f",
+      "boundary_tags": [
+        "unaligned_access",
+        "rex_b_extended_base"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_store_base",
+      "source_id": "s2-42q:s2_42q_mov_64_store_base",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_base.case.json",
+      "fixture_sha256": "dae0ffd0b7b58c14cc7e13834ea109faf605389e50b0bf25d4d74bc97a6007ed",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_base.expected.json",
+      "expected_sha256": "ee589e88134f3addcba5c6198a246830053ce2181e426bfebd81e8787d03c1dc",
+      "width": 64,
+      "direction": "store",
+      "form": "base",
+      "effective_address": "0x0000000000200000",
+      "boundary_tags": [
+        "first_valid_span"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_store_disp8",
+      "source_id": "s2-42q:s2_42q_mov_64_store_disp8",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_disp8.case.json",
+      "fixture_sha256": "88f234c4edefb190263ffd0693aeef1ea7881b35dc590fe445c0adb1c7259cd0",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_disp8.expected.json",
+      "expected_sha256": "09512f6e0741e17b0016b352a42a47a20b2bbfdc429a925a68cdfeb44561ed74",
+      "width": 64,
+      "direction": "store",
+      "form": "disp8",
+      "effective_address": "0x0000000000200001",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_disp8"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_store_disp32",
+      "source_id": "s2-42q:s2_42q_mov_64_store_disp32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_disp32.case.json",
+      "fixture_sha256": "c0eb1fd423367d36f00488ac39b9a79b56ed0f03057c428174c1434f90741f0e",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_disp32.expected.json",
+      "expected_sha256": "f3d872c5a02f453eb34bb90c55af4c9c0f87b795e2f246571a954ed5ccde9910",
+      "width": 64,
+      "direction": "store",
+      "form": "disp32",
+      "effective_address": "0x0000000000200078",
+      "boundary_tags": [
+        "last_valid_span",
+        "positive_disp32"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_store_sib",
+      "source_id": "s2-42q:s2_42q_mov_64_store_sib",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_sib.case.json",
+      "fixture_sha256": "0c3e36feb36f6d5ce5427924e2c262f4c5b8d0abaa17843e9d27ead46288cffb",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_sib.expected.json",
+      "expected_sha256": "b8356e8e7e73070060573fdee018ab5ee5b102b6cca226802dabd736595cc26e",
+      "width": 64,
+      "direction": "store",
+      "form": "sib",
+      "effective_address": "0x0000000000200007",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_sib_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_store_rip_relative",
+      "source_id": "s2-42q:s2_42q_mov_64_store_rip_relative",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_rip_relative.case.json",
+      "fixture_sha256": "7bd87a24a81601657b96a43411203636abfcbe171e49292070ad7b949ccaf204",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_rip_relative.expected.json",
+      "expected_sha256": "d1818181afea99cc95dd0efeb3620556bb7ba466c1fb6dca1ea72c6968a577d9",
+      "width": 64,
+      "direction": "store",
+      "form": "rip_relative",
+      "effective_address": "0x000000000020001f",
+      "boundary_tags": [
+        "unaligned_access",
+        "negative_rip_disp"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_store_address32",
+      "source_id": "s2-42q:s2_42q_mov_64_store_address32",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_address32.case.json",
+      "fixture_sha256": "d85dfe1b71fecd8e221e9102e859b0d0eb50b46a33f5aa320021a3f787b23d5b",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_address32.expected.json",
+      "expected_sha256": "e6fa7f2320ff03d757c30bf66003a7cd170276ce1d0cb35e0b9e0608a0722583",
+      "width": 64,
+      "direction": "store",
+      "form": "address32",
+      "effective_address": "0x0000000000200078",
+      "boundary_tags": [
+        "last_valid_span",
+        "address32_high_bit_truncation"
+      ]
+    },
+    {
+      "case_id": "s2_42q_mov_64_store_rex_b",
+      "source_id": "s2-42q:s2_42q_mov_64_store_rex_b",
+      "fixture_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_rex_b.case.json",
+      "fixture_sha256": "cba7421c4db5567dbef4880d99fb6dc6e166d8d4919b71206578a4299d63a28c",
+      "expected_path": "tests/fixtures/x86/stage2/s2_42q_mov_hand/s2_42q_mov_64_store_rex_b.expected.json",
+      "expected_sha256": "ccdcd90312bf2df6a6733deb6d2c29ff9e2f4f1f8b4898c62cfb39dc1b640034",
+      "width": 64,
+      "direction": "store",
+      "form": "rex_b",
+      "effective_address": "0x000000000020003f",
+      "boundary_tags": [
+        "unaligned_access",
+        "rex_b_extended_base"
+      ]
+    }
+  ],
+  "control_set_digest": "6f1d9c2d1dcbd55b1ec05acf6ffd5aa41a1685385b1aa6672e8cb1a8ad60f1d2"
+}

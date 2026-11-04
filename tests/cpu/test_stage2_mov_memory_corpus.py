@@ -220,11 +220,14 @@ class MovMemoryCorpusTests(unittest.TestCase):
             ) as oracle_call:
                 self.assertEqual(module.main(), 1)
             command = oracle_call.call_args.args[0]
-            self.assertEqual(sum(argument.endswith(".case.json") for argument in command), 1024)
+            self.assertIn("--suite", command)
+            self.assertIn("mov-memory-corpus", command)
             summary = json.loads((output / "s2-42e-summary.json").read_bytes())
             self.assertEqual(summary["status"], "failed")
             self.assertEqual(summary["physical_mac_acceptance"], "not_run")
-            self.assertEqual(summary["case_count"], 1024)
+            self.assertEqual(summary["generated_count"], 1024)
+            self.assertEqual(summary["handwritten_count"], 56)
+            self.assertEqual(summary["total_count"], 1080)
             self.assertEqual(summary["oracle_stderr"], "native unavailable")
 
     def test_preflight_missing_or_tampered_corpus_replaces_stale_pass_without_digest(self) -> None:
@@ -264,7 +267,7 @@ class MovMemoryCorpusTests(unittest.TestCase):
             root = Path(temporary)
             corpus, run, corpus_manifest, _ = self._write_valid_saved_run(root)
             with patch.object(module, "verify_directory", return_value=corpus_manifest):
-                summary = module.verify_oracle_run(corpus, run)
+                summary = module.verify_legacy_oracle_run(corpus, run)
             self.assertEqual(summary["status"], "passed")
             self.assertEqual(summary["result_count_per_backend"], 2)
             self.assertEqual(summary["native_x86"], "matched_linux_x86_64")
@@ -291,10 +294,10 @@ class MovMemoryCorpusTests(unittest.TestCase):
                     (run / "manifest.json").write_bytes(module._json_bytes(changed))
                     with patch.object(module, "verify_directory", return_value=corpus_manifest):
                         with self.assertRaises(module.CorpusError):
-                            module.verify_oracle_run(corpus, run)
+                            module.verify_legacy_oracle_run(corpus, run)
                     (run / "manifest.json").write_bytes(module._json_bytes(_))
 
-    def test_saved_evidence_cli_verifies_without_starting_backends(self) -> None:
+    def test_saved_legacy_evidence_is_not_current_acceptance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             corpus, run, corpus_manifest, _ = self._write_valid_saved_run(root)
@@ -304,11 +307,11 @@ class MovMemoryCorpusTests(unittest.TestCase):
             with patch.object(module.sys, "argv", argv), patch.object(
                 module, "verify_directory", return_value=corpus_manifest
             ), patch.object(module, "run_oracle") as run_oracle:
-                self.assertEqual(module.main(), 0)
+                self.assertEqual(module.main(), 1)
             run_oracle.assert_not_called()
             summary = json.loads((output / "s2-42e-summary.json").read_bytes())
-            self.assertEqual(summary["status"], "passed")
-            self.assertEqual(summary["corpus_digest"], corpus_manifest["corpus_digest"])
+            self.assertEqual(summary["status"], "failed")
+            self.assertIn("error", summary)
 
     def test_result_identity_and_selected_backend_machine_mismatches_are_rejected(self) -> None:
         for field, bad_value in (
@@ -325,7 +328,7 @@ class MovMemoryCorpusTests(unittest.TestCase):
                 native_path.write_bytes(module._json_bytes(result))
                 with patch.object(module, "verify_directory", return_value=corpus_manifest):
                     with self.assertRaises(module.CorpusError):
-                        module.verify_oracle_run(corpus, run)
+                        module.verify_legacy_oracle_run(corpus, run)
 
         for corruption in ("result-build", "result-machine", "record-machine"):
             with self.subTest(machine_binding=corruption), tempfile.TemporaryDirectory() as temporary:
@@ -346,7 +349,7 @@ class MovMemoryCorpusTests(unittest.TestCase):
                     (run / "manifest.json").write_bytes(module._json_bytes(run_manifest))
                 with patch.object(module, "verify_directory", return_value=corpus_manifest):
                     with self.assertRaises(module.CorpusError):
-                        module.verify_oracle_run(corpus, run)
+                        module.verify_legacy_oracle_run(corpus, run)
 
     def test_malformed_saved_json_replaces_stale_pass_summary_with_failure(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / "work") as temporary:
@@ -390,7 +393,7 @@ class MovMemoryCorpusTests(unittest.TestCase):
                 self.assertEqual(module.main(), 1)
             summary = json.loads(summary_path.read_bytes())
             self.assertEqual(summary["status"], "failed")
-            self.assertIn("Expecting value", summary["error"])
+            self.assertIn("current MOV acceptance", summary["error"])
 
 
 if __name__ == "__main__":

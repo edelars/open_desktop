@@ -1,0 +1,46 @@
+{
+  "case_id": "s2_42q_mov_08_store_disp8",
+  "state": {
+    "mode": "long64",
+    "gpr": [
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200081",
+      "0x0000000000300080",
+      "0x0000000000300080",
+      "0x0000000000200040",
+      "0x0000000000200050",
+      "0x0123456789abcdef",
+      "0xfedcba9876543210",
+      "0x8877665544332211",
+      "0xaabbccddeeff0011",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000300003",
+    "rflags": "0x00000000000008d7",
+    "rflags_defined": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000300000",
+      "bytes_hex": "884380"
+    },
+    {
+      "region_id": "data",
+      "guest_address": "0x0000000000200000",
+      "bytes_hex": "1011547698badcfe0f2d4b6987a5c3e11032547698badcfe0f2d4b6987a5c3e11032547698badcfe0f2d4b6987a5c3e11032547698badcfe0f2d4b6987a5c3e11032547698badcfe0f2d4b6987a5c3e11032547698badcfe0f2d4b6987a5c3e11032547698badcfe0f2d4b6987a5c3e11032547698badcfe0f2d4b6987a5c3e1"
+    }
+  ],
+  "outcome": {
+    "kind": "stop_address"
+  },
+  "instructions_executed": {
+    "status": "available",
+    "value": "0x0000000000000001"
+  }
+}

@@ -20,6 +20,8 @@ import uuid
 from pathlib import Path
 
 import stage1_oracle as oracle
+import generate_stage2_mov_memory_corpus as mov_corpus
+import s2_42q_mov_controls as mov_hand
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = "s2-long-integer-v1"
@@ -49,6 +51,7 @@ DEFAULT_CASES = tuple(
     f"tests/fixtures/x86/stage2/hw_{name}.case.json"
     for name in ("mov_load_add_store", "mov_width_aliasing", "mov_rex_rip_relative")
 )
+MOV_MEMORY_CORPUS = Path("work/stage2/s2-42e-mov-memory")
 Stage2Error = oracle.Stage1Error
 
 
@@ -274,6 +277,94 @@ def prepare_xorpd_hand_controls(output: Path) -> tuple[list[tuple[Path, dict, st
         cases.append((frozen_path, fixture, item["sha256"]))
     (output / "xorpd-hand-controls-manifest.json").write_bytes(raw)
     return cases, value, manifest_sha256
+
+
+def prepare_mov_memory_suite(corpus_root: Path, output: Path) -> tuple[
+        list[tuple[Path, dict, str]], dict[str, dict], dict[str, dict], dict, str, dict, str]:
+    """Freeze controls first, then the unchanged manifest-ordered S2-42e corpus."""
+    corpus_manifest = mov_corpus.verify_directory(corpus_root)
+    corpus_manifest_raw = (corpus_root / mov_corpus.MANIFEST_NAME).read_bytes()
+    corpus_expected = read_json((corpus_root / mov_corpus.EXPECTED_NAME).read_bytes())
+    if not isinstance(corpus_expected, dict) or corpus_expected.get("profile") != PROFILE:
+        raise Stage2Error("MOV generated expected results have an unsupported profile")
+    generated_expected = corpus_expected.get("cases")
+    if not isinstance(generated_expected, list) or len(generated_expected) != 1024:
+        raise Stage2Error("MOV generated expected-result count differs from the pinned corpus")
+    generated_expected_by_id = {item.get("case_id"): item for item in generated_expected
+                                if isinstance(item, dict)}
+    if len(generated_expected_by_id) != 1024:
+        raise Stage2Error("MOV generated expected results contain duplicate identities")
+    controls, hand_fixtures, hand_expected, hand_manifest, hand_manifest_sha = mov_hand.verify_controls()
+    frozen = output / "fixtures"
+    frozen.mkdir()
+    hand_frozen = output / "hand-controls"
+    hand_frozen.mkdir()
+    cases: list[tuple[Path, dict, str]] = []
+    expected_by_id = dict(hand_expected)
+    for item in controls:
+        case_id = item["case_id"]
+        fixture = hand_fixtures[case_id]
+        raw = (ROOT / item["fixture_path"]).read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest != item["fixture_sha256"]:
+            raise Stage2Error(f"MOV handwritten fixture changed after verification: {case_id}")
+        frozen_path = hand_frozen / Path(item["fixture_path"]).name
+        frozen_path.write_bytes(raw)
+        cases.append((frozen_path, fixture, digest))
+    source_dir = corpus_root
+    generated = []
+    for item in corpus_manifest["case_digests"]:
+        case_id, digest = item["case_id"], item["sha256"]
+        if case_id not in generated_expected_by_id:
+            raise Stage2Error(f"MOV generated case lacks independent expected snapshot: {case_id}")
+        source = source_dir / f"{case_id}.case.json"
+        raw = source.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != digest:
+            raise Stage2Error(f"MOV generated fixture changed after verification: {case_id}")
+        fixture = read_json(raw)
+        if fixture.get("case_id") != case_id or fixture.get("profile") != PROFILE:
+            raise Stage2Error(f"MOV generated fixture identity differs: {case_id}")
+        frozen_path = frozen / source.name
+        frozen_path.write_bytes(raw)
+        generated.append((frozen_path, fixture, digest))
+        expected_by_id[case_id] = generated_expected_by_id[case_id]
+    if len(cases) != 56 or len(generated) != 1024 or len(expected_by_id) != 1080:
+        raise Stage2Error("MOV selected suite does not have exactly 56 controls plus 1024 generated cases")
+    (output / "mov-generated-manifest.json").write_bytes(corpus_manifest_raw)
+    (output / "mov-hand-controls-manifest.json").write_bytes((ROOT / mov_hand.MANIFEST_PATH).read_bytes())
+    selected = cases + generated
+    return (selected, expected_by_id, {item["case_id"]: item for item in controls},
+            corpus_manifest, hashlib.sha256(corpus_manifest_raw).hexdigest(),
+            hand_manifest, hand_manifest_sha)
+
+
+def validate_mov_expected(result: dict, expected: dict, label: str) -> None:
+    """Require each backend result to match its independent full MOV snapshot."""
+    try:
+        if (result.get("case_id") != expected["case_id"] or result.get("outcome") != expected["outcome"]
+                or result.get("instructions_executed") != expected["instructions_executed"]):
+            raise Stage2Error(f"{label}: case, exit or exact retirement differs from the independent MOV result")
+        observed = result["snapshot"]
+        if not isinstance(observed, dict) or observed.get("status") != "available":
+            raise Stage2Error(f"{label}: full MOV snapshot is unavailable")
+        actual = observed["value"]
+        state, wanted_state = actual["state"], expected["state"]
+        for field in ("mode", "gpr", "rip", "rflags"):
+            if state.get(field) != wanted_state[field]:
+                raise Stage2Error(f"{label}: {field} differs from the independent MOV snapshot")
+        if actual.get("rflags_defined") != wanted_state["rflags_defined"]:
+            raise Stage2Error(f"{label}: RFLAGS definedness differs from the independent MOV snapshot")
+        memory = actual.get("memory")
+        if not isinstance(memory, list) or len(memory) != len(expected["memory"]):
+            raise Stage2Error(f"{label}: complete code/data snapshot is unavailable")
+        for got, wanted in zip(memory, expected["memory"], strict=True):
+            if any(got.get(field) != wanted[field] for field in ("region_id", "guest_address", "bytes_hex")):
+                raise Stage2Error(f"{label}: complete memory or canary bytes differ")
+        exception = actual.get("exception")
+        if not isinstance(exception, dict) or exception.get("status") != "available" or exception.get("value") is not None:
+            raise Stage2Error(f"{label}: successful MOV exception observation is missing or nonempty")
+    except (KeyError, TypeError, AttributeError, IndexError) as error:
+        raise Stage2Error(f"{label}: malformed MOV execution result: {error}") from error
 
 
 def validate_xorpd_hand_expected(result: dict, expected_xmm0: str, label: str) -> None:
@@ -599,8 +690,10 @@ def legacy_evidence(path: Path, fingerprint: str) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", nargs="*", help="explicit v2 files/directories; default: three hardware fixtures")
-    parser.add_argument("--suite", choices=("integer", "xorpd-native-corpus"), default="integer",
+    parser.add_argument("--suite", choices=("integer", "xorpd-native-corpus", "mov-memory-corpus"), default="integer",
                         help="strict selected suite; integer remains the default")
+    parser.add_argument("--mov-memory-corpus", default=str(MOV_MEMORY_CORPUS),
+                        help="verified S2-42e generated corpus used by mov-memory-corpus")
     parser.add_argument("--host", default="192.168.1.14")
     parser.add_argument("--user", default="senya")
     parser.add_argument("--remote-root", default="/home/senya/projects/open_desktop-stage1")
@@ -610,10 +703,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.repeats < 2:
         parser.error("--repeats must be at least 2")
-    if args.suite == "xorpd-native-corpus" and args.repeats != 2:
-        parser.error("the strict XORPD corpus suite requires exactly two repeats")
-    if args.suite == "xorpd-native-corpus" and args.cases:
-        parser.error("the strict XORPD corpus suite uses the recorded S2-42a corpus; positional cases are not accepted")
+    if args.suite in ("xorpd-native-corpus", "mov-memory-corpus") and args.repeats != 2:
+        parser.error("the strict selected corpus suite requires exactly two repeats")
+    if args.suite in ("xorpd-native-corpus", "mov-memory-corpus") and args.cases:
+        parser.error("strict corpus suites do not accept positional fixtures")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.host) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", args.user):
         parser.error("--host and --user must be plain SSH host/user names")
     if (not args.remote_root.startswith("/") or args.remote_root == "/"
@@ -631,6 +724,8 @@ def main(argv=None) -> int:
     manifest = {"run_id": run_id, "status": "running", "suite": args.suite, "profile": profile,
                 "scope": ("Six pinned handwritten XORPD controls followed by the recorded 1024-case S2-42a corpus: strict interpreter and physical Linux x86 native, twice; no v2 JIT"
                           if args.suite == "xorpd-native-corpus" else
+                          "56 pinned handwritten MOV controls followed by the unchanged 1024-case S2-42e corpus: strict interpreter and physical Linux x86 native, twice; no v2 JIT"
+                          if args.suite == "mov-memory-corpus" else
                           "Selected v2 CPU fixtures: interpreter vs physical Linux x86 native; no v2 JIT"),
                 "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "target": f"{args.user}@{args.host}", "remote_root": args.remote_root,
@@ -641,6 +736,7 @@ def main(argv=None) -> int:
     try:
         corpus_manifest = None
         hand_expected = {}
+        mov_expected = {}
         if args.suite == "xorpd-native-corpus":
             generated_cases, corpus_manifest, corpus_manifest_digest = prepare_xorpd_corpus(
                 ROOT / XORPD_CORPUS_ROOT, output)
@@ -655,20 +751,40 @@ def main(argv=None) -> int:
                 "case_count": len(hand_cases), "physical_native": "not_run"}
             manifest["case_counts"] = {"generated": len(generated_cases),
                 "handwritten": len(hand_cases), "total": len(cases)}
+        elif args.suite == "mov-memory-corpus":
+            (cases, mov_expected, hand_controls, corpus_manifest, corpus_manifest_digest,
+             hand_manifest, hand_manifest_digest) = prepare_mov_memory_suite(
+                Path(args.mov_memory_corpus).resolve(), output)
+            hand_expected = {case_id: True for case_id in hand_controls}
+            manifest["corpus_manifest"] = {"path": str(Path(args.mov_memory_corpus) / "manifest.json"),
+                "sha256": corpus_manifest_digest, "case_count": 1024,
+                "corpus_digest": corpus_manifest["corpus_digest"], "physical_native": "not_run"}
+            manifest["hand_control_manifest"] = {"path": str(mov_hand.MANIFEST_PATH),
+                "sha256": hand_manifest_digest, "control_set_digest": hand_manifest["control_set_digest"],
+                "case_count": 56, "physical_native": "not_run"}
+            manifest["case_counts"] = {"generated_count": 1024, "handwritten_count": 56, "total_count": 1080}
+            selected_ids = [fixture["case_id"] for _, fixture, _ in cases]
+            manifest["selected_run_id"] = hashlib.sha256(
+                (corpus_manifest["corpus_digest"] + "\n" + hand_manifest["control_set_digest"] + "\n"
+                 + "\n".join(selected_ids)).encode()).hexdigest()
         else:
             cases = prepare_cases(args.cases or list(DEFAULT_CASES), output)
         manifest["inputs"] = [{"case_id": fixture["case_id"], "filename": path.name,
             "fixture_path": str(path.relative_to(ROOT)), "fixture_sha256": digest,
             "seed": fixture.get("seed"), "schema_version": 2, "profile": profile,
             **({"group": "handwritten" if fixture["case_id"] in hand_expected else "generated"}
-               if args.suite == "xorpd-native-corpus" else {})}
+               if args.suite in ("xorpd-native-corpus", "mov-memory-corpus") else {}),
+            **({"source_fixture_path": hand_controls[fixture["case_id"]]["fixture_path"]}
+               if args.suite == "mov-memory-corpus" and fixture["case_id"] in hand_controls else {})}
             for path, fixture, digest in cases]
         manifest["reproduce_argv"] = [sys.executable, "tests/cpu/stage2_oracle.py", "--host", args.host,
             "--user", args.user, "--remote-root", args.remote_root, "--repeats", str(args.repeats)]
         if args.stage1_manifest:
             manifest["reproduce_argv"].extend(["--stage1-manifest", args.stage1_manifest])
-        if args.suite == "xorpd-native-corpus":
+        if args.suite in ("xorpd-native-corpus", "mov-memory-corpus"):
             manifest["reproduce_argv"].extend(["--suite", args.suite])
+            if args.suite == "mov-memory-corpus":
+                manifest["reproduce_argv"].extend(["--mov-memory-corpus", args.mov_memory_corpus])
         else:
             manifest["reproduce_argv"].extend(str(path.relative_to(ROOT)) for path, _, _ in cases)
         manifest["harness_sha256"] = {name: hashlib.sha256((ROOT / "tests/cpu" / name).read_bytes()).hexdigest()
@@ -722,7 +838,7 @@ def main(argv=None) -> int:
         for repeat in range(1, args.repeats + 1):
             repeat_dir = output / f"repeat-{repeat:02d}"
             repeat_dir.mkdir()
-            if args.suite == "xorpd-native-corpus":
+            if args.suite in ("xorpd-native-corpus", "mov-memory-corpus"):
                 manifest["corpus_manifest"]["physical_native"] = "running"
                 manifest["hand_control_manifest"]["physical_native"] = "running"
                 evidence.save()
@@ -742,7 +858,10 @@ def main(argv=None) -> int:
                 validate_result(native, fixture, digest, "native_x86", revision, remote_rustc,
                                 "native result", profile)
                 if fixture["case_id"] in hand_expected:
-                    validate_xorpd_hand_expected(native, hand_expected[fixture["case_id"]], "native result")
+                    if args.suite == "xorpd-native-corpus":
+                        validate_xorpd_hand_expected(native, hand_expected[fixture["case_id"]], "native result")
+                if args.suite == "mov-memory-corpus":
+                    validate_mov_expected(native, mov_expected[fixture["case_id"]], "native result")
                 argv = [str(runner), "--fixture", str(path), "--engine", "interpreter", "--json"]
                 process = evidence.run(argv, env=env, timeout=max(60.0, fixture["wall_timeout_ms"] / 1000 + 30))
                 local_path = directory / "interpreter.json"
@@ -756,7 +875,10 @@ def main(argv=None) -> int:
                 validate_result(local, fixture, digest, "interpreter", revision, local_info["rustc"],
                                 "interpreter result", profile)
                 if fixture["case_id"] in hand_expected:
-                    validate_xorpd_hand_expected(local, hand_expected[fixture["case_id"]], "interpreter result")
+                    if args.suite == "xorpd-native-corpus":
+                        validate_xorpd_hand_expected(local, hand_expected[fixture["case_id"]], "interpreter result")
+                if args.suite == "mov-memory-corpus":
+                    validate_mov_expected(local, mov_expected[fixture["case_id"]], "interpreter result")
                 compare(evidence, runner, local_path, native_path, path, fixture, digest,
                         directory / "interpreter-vs-native.json", env)
                 if repeat > 1:
@@ -767,7 +889,7 @@ def main(argv=None) -> int:
                 manifest["fixtures"].append({"repeat": repeat, "case_id": fixture["case_id"],
                     "fixture_sha256": digest, "seed": fixture.get("seed"), "schema_version": 2,
                     **({"group": "handwritten" if fixture["case_id"] in hand_expected else "generated"}
-                       if args.suite == "xorpd-native-corpus" else {}),
+                       if args.suite in ("xorpd-native-corpus", "mov-memory-corpus") else {}),
                     "build": {"interpreter": local["build"], "native_x86": native["build"]},
                     "machines": {"interpreter": local["machine"], "native_x86": native["machine"]},
                     "snapshot_fields": {engine: {"gpr": 16, "rip": True, "rflags": True,
@@ -784,7 +906,7 @@ def main(argv=None) -> int:
                 or evidence.ssh(target, fingerprint_command, "final remote fingerprint").strip() != fingerprint):
             raise Stage2Error("runner sources changed during the selected suite")
         manifest.pop("active_case", None)
-        if args.suite == "xorpd-native-corpus":
+        if args.suite in ("xorpd-native-corpus", "mov-memory-corpus"):
             manifest["corpus_manifest"]["physical_native"] = "executed_and_matched"
             manifest["hand_control_manifest"]["physical_native"] = "executed_and_matched"
         manifest["status"] = "passed"
@@ -794,9 +916,12 @@ def main(argv=None) -> int:
         if args.suite == "xorpd-native-corpus":
             counts = manifest["case_counts"]
             print(f"cases: generated={counts['generated']} handwritten={counts['handwritten']} total={counts['total']}")
+        elif args.suite == "mov-memory-corpus":
+            counts = manifest["case_counts"]
+            print(f"cases: generated={counts['generated_count']} handwritten={counts['handwritten_count']} total={counts['total_count']}")
         return 0
     except (Stage2Error, OSError, KeyError, TypeError, ValueError) as error:
-        if (args.suite == "xorpd-native-corpus" and "corpus_manifest" in manifest
+        if (args.suite in ("xorpd-native-corpus", "mov-memory-corpus") and "corpus_manifest" in manifest
                 and manifest["corpus_manifest"]["physical_native"] == "running"):
             manifest["corpus_manifest"]["physical_native"] = "failed"
             manifest["hand_control_manifest"]["physical_native"] = "failed"

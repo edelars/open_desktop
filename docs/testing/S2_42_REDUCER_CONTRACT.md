@@ -234,3 +234,24 @@ against the existing contracts and local link/layout checks. Implementation
 completion requires a separate executable slice and recorded results satisfying
 the applicable rows. Parent S2-42 remains open until its dependencies and all
 selected mandatory groups have the required evidence.
+
+## Current coverage map — S2-42q update
+
+The S2-42f snapshot above is retained as the historical contract-time view.
+This table records the current implementation and evidence after S2-42q; it
+does not rewrite the earlier snapshot. Local implementation evidence, native
+execution evidence, and remaining scope are separate columns so a local pass
+does not imply hardware acceptance.
+
+| Group | Implemented coverage | Local evidence | Native/hardware evidence | Remaining scope |
+|---|---|---|---|---|
+| MOV memory/addressing | S2-42e: 1,024 generated cases; S2-42q: 56 static controls across four widths, load/store and seven admitted forms; combined strict acceptance and saved-run verifier | All 56 controls matched independent full snapshots twice (112 interpreter executions); S2-42e reports its 1,024 interpreter/oracle cases matched | Linux/native and physical hardware `not_run` for the S2-42q selected set | Execute all 1,080 cases twice on required native backend; complete broader S2-42 profile |
+| XORPD | S2-42a/c and S2-42p: 1,024 generated plus six pinned handwritten controls and bounded reducer work | Handwritten local interpreter controls passed twice; see slice report | Linux/native and physical hardware `not_run` in the current evidence | Required native execution and broader S2-42 profile |
+| Integer stack, branch, and positive REP | S2-42g/h, S2-42k, and S2-42i reducers/corpora | Their slice reports record local fixture/reducer checks and generated corpus results | Native/physical status remains `not_run` where not explicitly reported | Cross-group execution and remaining mandatory forms |
+| REP faults and FP | S2-42l partial-progress fault reducer; S2-42o one bounded SQRTSS SNaN fault reducer | Exact local fault/reducer evidence is scoped to each slice | Native/physical `not_run`; broader FP acceptance remains open | Broader fault, partial-progress, FP state and save/restore requirements |
+| Atomic/fence and additional mandatory ISA | No completion claimed by S2-42q | `not_run` | `not_run` | S2-21 atomic/fence and S2-40 inventory requirements remain open |
+
+Parent S2-42 remains open, as do dependencies S2-21, S2-39 and S2-40. Physical
+hardware acceptance is `not_run`. The S2-42q control work closes only the
+handwritten-boundary gap for the already admitted MOV memory/addressing forms;
+it does not close the parent reducer/corpus requirement.
