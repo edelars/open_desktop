@@ -9348,3 +9348,15 @@ verification and process cwd/environment provenance. Interrupted runs retain
 completed cases and list missing repeats. Native is denied before backend
 invocation and recorded `not_run`. This makes no atomicity or hardware claim.
 See the [S2-42u protocol](../../../../docs/testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md).
+
+### S2-42w qword memory XCHG corpus
+
+s2_42w_xchg_qword_memory_controls/ contains two pinned controls for exact
+48 87 00 (XCHG qword [RAX],RAX). RAX=0x200ffe is the original address and
+replacement, with the qword split across adjacent data regions at 0x201000.
+The oracle verifies the returned old memory value, exchanged bytes, unchanged
+GPRs and RFLAGS, all canaries, RIP, retirement and stop. The corpus adds 1,024
+distinct generated inputs; all 1,026 passed twice locally with strict saved
+replay. Native is denied before backend execution. No atomicity or hardware
+claim is made. See the
+[S2-42w protocol](../../../../docs/testing/S2_42W_XCHG_MEMORY_CORPUS.md).

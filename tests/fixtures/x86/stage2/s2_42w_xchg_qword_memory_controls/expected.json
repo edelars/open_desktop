@@ -1,0 +1,109 @@
+{
+  "profile": "s2-long-integer-v1",
+  "cases": [
+    {
+      "case_id": "s2_42w_xchg_qword_memory_control0",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0xdeadbeef01234567",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200000",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100003",
+        "rflags": "0x0000000000000cd7",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "488700"
+        },
+        {
+          "region_id": "data_left",
+          "guest_address": "0x0000000000200ff8",
+          "bytes_hex": "a5a5a5a5a5a5fe0f"
+        },
+        {
+          "region_id": "data_right",
+          "guest_address": "0x0000000000201000",
+          "bytes_hex": "200000000000a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    },
+    {
+      "case_id": "s2_42w_xchg_qword_memory_control1",
+      "state": {
+        "mode": "long64",
+        "gpr": [
+          "0xf00dface89abcdef",
+          "0x1122334455667788",
+          "0xdeadbeeffedcba98",
+          "0x0000000000200000",
+          "0x5566778899aabbcc",
+          "0x8877665544332211",
+          "0x0000000000200004",
+          "0x0000000000200010",
+          "0xaabbccddeeff0011",
+          "0xfedcba9876543210",
+          "0x0123456789abcdef",
+          "0x9988776655443322",
+          "0x1122112211221122",
+          "0x3344334433443344",
+          "0x778899aabbccddee",
+          "0xffffffffffffffff"
+        ],
+        "rip": "0x0000000000100003",
+        "rflags": "0x0000000000000cd7",
+        "rflags_defined": "0x0000000000000cd7"
+      },
+      "memory": [
+        {
+          "region_id": "code",
+          "guest_address": "0x0000000000100000",
+          "bytes_hex": "488700"
+        },
+        {
+          "region_id": "data_left",
+          "guest_address": "0x0000000000200ff8",
+          "bytes_hex": "a5a5a5a5a5a5fe0f"
+        },
+        {
+          "region_id": "data_right",
+          "guest_address": "0x0000000000201000",
+          "bytes_hex": "200000000000a5a5"
+        }
+      ],
+      "outcome": {
+        "kind": "stop_address"
+      },
+      "instructions_executed": {
+        "status": "available",
+        "value": "0x0000000000000001"
+      },
+      "exception": null
+    }
+  ]
+}

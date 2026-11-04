@@ -24542,3 +24542,29 @@ corpus does not establish CMPXCHG atomicity, SMP behavior, memory ordering, or
 full S2-21 acceptance; S2-21/S2-39/S2-40 and parent S2-42 remain open. See the
 [protocol](../testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md), [plan](../plans/STAGE_2.md#s2-42u--exact-bare-rexw-qword-memory-cmpxchg-corpus),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42u-exact-qword-memory-cmpxchg-corpus).
+
+## S2-42w — local qword memory XCHG corpus
+
+S2-42w covers exactly the existing S2-21a bytes 48 87 00
+(XCHG qword [RAX],RAX). RAX is fixed at 0x200ffe and is both the
+pre-instruction effective address and replacement value. The operand crosses
+adjacent private memory regions at 0x201000; the independent integer oracle
+checks that final RAX receives the old memory value, the split qword receives
+the old RAX bytes, all other GPRs and every defined RFLAGS bit remain
+unchanged, canaries and code are preserved, RIP advances by three, exactly one
+instruction retires, and execution stops without exception.
+
+The corpus contains two pinned controls and 1,024 unique generated inputs.
+All 1,026 cases passed twice on the local interpreter (2,052 executions);
+strict saved replay verification passed. Focused tests passed 12/12,
+Python compilation and diff check passed. The corpus digest is
+d9de9cc24c6926bcccd3b1d36a577e949a380f34afa174583046e59761c4a455.
+An explicit native request records status=blocked,
+native_x86=not_run_form_not_admitted, and backend_execution=not_started
+before any backend invocation. Native and physical execution remain not_run.
+This corpus does not prove internal atomic call count, no-mutation on backend
+error, SMP behavior, or hardware atomicity; S2-21a's focused tests own those
+claims. S2-21/S2-39/S2-40 and parent S2-42 remain open. See the
+[protocol](../testing/S2_42W_XCHG_MEMORY_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42w--local-qword-memory-xchg-corpus), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42w-qword-memory-xchg-corpus).

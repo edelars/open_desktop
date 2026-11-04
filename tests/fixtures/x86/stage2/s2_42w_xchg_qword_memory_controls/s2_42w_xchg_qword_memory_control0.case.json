@@ -1,0 +1,79 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_42w_xchg_qword_memory_control0",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten exact-byte S2-21a XCHG controls with fixed registers and literal old memory.",
+    "specification": "Intel SDM revision 093, Vol. 2D XCHG: REX.W + 87 /r exchanges the old memory qword with the pre-instruction RAX value; flags are unchanged. Bounded local S2-42w profile. The old memory value is returned in RAX and is not dereferenced.",
+    "specification_version": "Intel SDM revision 093; project S2-42w"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000200ffe",
+      "0x1122334455667788",
+      "0xdeadbeeffedcba98",
+      "0x0000000000200000",
+      "0x5566778899aabbcc",
+      "0x8877665544332211",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0xaabbccddeeff0011",
+      "0xfedcba9876543210",
+      "0x0123456789abcdef",
+      "0x9988776655443322",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 3,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "488700",
+      "comparison_mask_hex": "ffffff"
+    },
+    {
+      "region_id": "data_left",
+      "guest_address": "0x0000000000200ff8",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "a5a5a5a5a5a56745",
+      "comparison_mask_hex": "ffffffffffffffff"
+    },
+    {
+      "region_id": "data_right",
+      "guest_address": "0x0000000000201000",
+      "length": 8,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "execute": false
+      },
+      "initial_bytes_hex": "2301efbeaddea5a5",
+      "comparison_mask_hex": "ffffffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100003",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

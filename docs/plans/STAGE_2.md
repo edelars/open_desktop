@@ -733,6 +733,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42s | REP STOSB work-limit checkpoint/replay evidence | Eight handwritten count 1024/1025/2048/2049 × DF controls; 8×2 local executions, 32 phase snapshots, successful-store journal and masked undefined-AF checks; native/physical `not_run`; parent S2-42 and dependencies S2-21/39/40 remain open; [protocol](../testing/S2_42S_REP_CHECKPOINT.md), [report](../reports/STAGE_2_REPORT.md#s2-42s--rep-stosb-work-limit-checkpointreplay) |
 | [x] | S2-42t | Local LOCK XADD qword [RBX],RAX corpus | 32 pinned arithmetic-boundary controls + 1,024 unique generated inputs; all 1,056×2 passed local interpreter and saved replay verification; explicit native blocked before backend because form is not admitted; S2-21, ISSUE-017 and parent S2-42 remain open; [protocol](../testing/S2_42T_LOCK_XADD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42t--local-lock-xadd-qword-corpus) |
 | [x] | S2-42u | Exact bare REX.W qword memory CMPXCHG corpus | Two pinned equal/mismatch controls + 1,024 unique generated inputs for `48 0F B1 18`; generated classes cover equal/mismatch, CF=0/1 and OF=0/1; all 1,026×2 passed local interpreter and saved replay verification with cwd/environment provenance; interruption checkpoints preserve completed attempts and list missing repeats; native explicitly denied before backend; parent S2-42 and dependencies S2-21/39/40 remain open; [protocol](../testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42u--exact-qword-memory-cmpxchg-corpus) |
+| [x] | S2-42w | Local qword memory XCHG corpus | Two pinned old-memory controls + 1,024 unique generated inputs for exact 48 87 00 (XCHG qword [RAX],RAX); all 1,026×2 passed local interpreter and strict saved replay; explicit native request blocked before backend; no atomicity/SMP claim; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42W_XCHG_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42w--local-qword-memory-xchg-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -20254,3 +20255,23 @@ does not establish CMPXCHG atomicity, S2-21, or parent S2-42 acceptance. See
 the [protocol](../testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md), [fixture
 notes](../../tests/fixtures/x86/stage2/README.md#s2-42u-exact-qword-memory-cmpxchg-corpus),
 and [report](../reports/STAGE_2_REPORT.md#s2-42u--exact-qword-memory-cmpxchg-corpus).
+
+### S2-42w — local qword memory XCHG corpus
+
+Adds two pinned controls and 1,024 generated cases for exact S2-21a bytes
+48 87 00 (XCHG qword [RAX],RAX). Initial RAX is fixed at 0x200ffe, so the
+qword crosses adjacent private memory regions at 0x201000. The independent
+oracle uses pre-instruction RAX both as the effective address and replacement,
+then returns the old memory qword in RAX. It checks all GPRs, every defined
+RFLAGS bit, full memory regions and canaries, unchanged code, RIP+3, one
+retirement, stop, and no exception.
+
+All 1,026 cases passed twice on the local interpreter with strict saved replay
+verification and process provenance. The explicit native request records
+blocked/not_started before backend execution; native and physical evidence
+remain not_run. The corpus does not establish atomic call count, rollback on
+error, SMP behavior, or hardware atomicity; those claims remain under the
+focused S2-21a tests. S2-21 and parent S2-42 remain open. See the
+[protocol](../testing/S2_42W_XCHG_MEMORY_CORPUS.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42w-qword-memory-xchg-corpus),
+and [report](../reports/STAGE_2_REPORT.md#s2-42w--local-qword-memory-xchg-corpus).

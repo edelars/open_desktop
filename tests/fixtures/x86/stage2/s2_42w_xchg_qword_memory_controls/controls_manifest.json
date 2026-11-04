@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "profile": "s2-long-integer-v1",
+  "control_count": 2,
+  "fixtures": [
+    {
+      "case_id": "s2_42w_xchg_qword_memory_control0",
+      "fixture_sha256": "387f95025fe6f9a7a74cca9542eb79622c7d6079eea35c66e08ce956721019c6",
+      "expected_sha256": "9b8c4197e914a33d48cf967d3d18efbd65dce70a77373222b739864cdf8ad2fe"
+    },
+    {
+      "case_id": "s2_42w_xchg_qword_memory_control1",
+      "fixture_sha256": "45fd7f6c6970c20fcb3ff51e9595781aaff935a7b81cec31a55a0fa7e3a0e1d4",
+      "expected_sha256": "e9ca89d66ba1527f7e8cd353a50d2f87747939fdb5f8b5d9795b7ada66bf8219"
+    }
+  ],
+  "expected_sha256": "5a9d57ba691f4e972d3ade071006919ee2d90072485263646e2046575ae17921"
+}
