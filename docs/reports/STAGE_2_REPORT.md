@@ -17438,6 +17438,25 @@ controlled continuation, larger counts and other string forms remain open, as
 do parent S2-42 and S2-21/S2-39/S2-40. See [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md)
 and [plan](../plans/STAGE_2.md#s2-42i-deterministic-positive-rep-stosb-corpus).
 
+## S2-42j — native qword GPR PUSH/POP reducer adapter
+
+Added a native-v2 callback adapter to the existing bounded qword stack reducer.
+The interpreter API remains unchanged; a separate native API requires explicit
+`NativeX86` identity for every initial, candidate and final result. It reuses
+the existing native-v2 fixture admission and supervised tracee executor while
+recording the complete per-callback journal, result/fixture hashes, outcomes,
+provenance and replay information.
+
+Unsupported mappings, timeout, malformed results, unstable callbacks, budget
+exhaustion and other incomplete/error stop reasons preserve the report and
+return nonzero; successful outcomes return zero. Thirteen focused testkit tests,
+Linux x86_64 `od-x86-runner` all-targets compilation, `od-runner` all-targets
+check, formatting, layout, diff-check and Graphify update passed on main. Tests
+use synthetic callbacks only. Linux native execution/ptrace and physical Mac
+acceptance remain `not_run`; this adapter does not complete the hardware or
+parent S2-42 requirements. See [protocol](../testing/S2_42J_NATIVE_STACK_REDUCER.md)
+and [plan](../plans/STAGE_2.md#s2-42j-native-qword-gpr-pushpop-reducer-adapter).
+
 ## S2-42k — bounded forward JZ/JNZ NOP-deletion reducer
 
 Added an interpreter-only reducer for a strict single-page template containing
