@@ -729,6 +729,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42o | Bounded SQRTSS SNaN #XM interpreter reducer | One exact register instruction; descending nonzero-payload reduction, independent full-state/#XM predicate, callback journal and replay; synthetic IE omission and XMM0 corruption; literal `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42o--sqrtss-snan-fault-reducer) |
 | [x] | S2-42p | Six handwritten XORPD controls in S2-42c harness | Adds four literal boundaries alongside two exact S2-40b controls; separate strict control identity/hash manifest; 1,024 generated + 6 handwritten, two repeats; local interpreter passed; native/physical `not_run`; [protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md), [report](../reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls) |
 | [x] | S2-42q | 56 handwritten MOV memory/addressing controls in S2-42e harness | Adds exactly 4×2×7 literal controls before unchanged 1,024 generated cases; static full snapshots and pinned strict manifest; all 56 passed twice on local interpreter; native/physical `not_run`; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42q--56-handwritten-mov-memory-controls) |
+| [x] | S2-42s | REP STOSB work-limit checkpoint/replay evidence | Eight handwritten count 1024/1025/2048/2049 × DF controls; 8×2 local executions, 32 phase snapshots, successful-store journal and masked undefined-AF checks; native/physical `not_run`; parent S2-42 and dependencies S2-21/39/40 remain open; [protocol](../testing/S2_42S_REP_CHECKPOINT.md), [report](../reports/STAGE_2_REPORT.md#s2-42s--rep-stosb-work-limit-checkpointreplay) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -20186,3 +20187,18 @@ evidence remain `not_run`. S2-42 and dependencies S2-21/S2-39/S2-40 remain
 open. See the [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42q-56-handwritten-mov-memoryaddressing-controls),
 and [report](../reports/STAGE_2_REPORT.md#s2-42q--56-handwritten-mov-memory-controls).
+
+### S2-42s — REP STOSB work-limit checkpoint/replay
+
+Adds eight static `TEST RAX,RAX; REP STOSB` cases across counts 1024, 1025,
+2048, and 2049 with both DF directions. Each case is run twice from clean
+state. The integration test saves serialized CPU/memory checkpoints, defined
+flag masks, complete phase snapshots, and an exact-once successful-store
+journal; replay restores those serialized values rather than reusing live
+objects. Completion at exactly the work limit is recorded as `stop_address`.
+RFLAGS comparison follows the `0x0cc7` definedness mask, so TEST's undefined AF
+value is not treated as an architectural result. The focused target passed
+8×2 executions across 32 phases; the S2-19i undefined-AF regression, od-testkit
+all-target offline check, and workspace formatting check also passed. Native
+and physical execution remain `not_run`; this bounded checkpoint slice does
+not complete S2-42 or its S2-21/S2-39/S2-40 dependencies. See the [protocol](../testing/S2_42S_REP_CHECKPOINT.md), [fixtures](../../tests/fixtures/x86/stage2/README.md#s2-42s-rep-stosb-work-limit-checkpointreplay), and [test report](../reports/STAGE_2_REPORT.md#s2-42s--rep-stosb-work-limit-checkpointreplay).

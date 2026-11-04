@@ -24435,3 +24435,25 @@ run was made; both remain `not_run`. Parent S2-42 and dependencies S2-21,
 S2-39, and S2-40 remain open. See the [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42q--56-handwritten-mov-memoryaddressing-controls),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42q-56-handwritten-mov-memoryaddressing-controls).
+
+## S2-42s — REP STOSB work-limit checkpoint/replay
+
+S2-42s adds eight static cases for `TEST RAX,RAX; REP STOSB`: counts 1024,
+1025, 2048, and 2049 with DF=0 and DF=1. The first phase uses the existing
+fresh-entry API; continuation phases use the exact returned flags-definedness
+mask and serialized CPU/memory state. Each of the eight cases ran twice from
+clean state, producing 32 phase snapshots. A test-only memory wrapper records
+only successful stores, and every expected destination was written exactly
+once in DF order. At count 1024, completion takes precedence over the work
+limit and exits at `stop_address`.
+
+Literal and replay comparisons check the returned definedness mask is exactly
+`0x0cc7` and compare RFLAGS only on those defined bits; an alternate concrete
+AF value is accepted while changes to defined flags or the mask are rejected.
+The S2-19i undefined-AF regression passed (1/1), as did the S2-42s integration
+target (8×2 runs, 32 phases), `cargo check -p od-testkit --all-targets --offline`,
+and `cargo fmt --all -- --check`. Frozen fixture and replay sidecars were
+validated, including tampering, missing phases/repeats, and duplicate/missing
+stores. Native and physical execution remain `not_run`; this local bounded
+checkpoint test does not claim the 1,000-case native requirement. Parent S2-42
+and dependencies S2-21/S2-39/S2-40 remain open. See the [protocol](../testing/S2_42S_REP_CHECKPOINT.md), [plan](../plans/STAGE_2.md#s2-42s--rep-stosb-work-limit-checkpointreplay), and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42s-rep-stosb-work-limit-checkpointreplay).

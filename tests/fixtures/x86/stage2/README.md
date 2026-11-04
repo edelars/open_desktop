@@ -9298,3 +9298,16 @@ compares all 1,080 frozen inputs byte-for-byte with their verified sources and
 SHA-256 digests. Result records and backend output bind to the run source
 fingerprint and to local/remote Rust compiler versions recorded in machine
 provenance. The saved-run CLI reports the current per-backend result count.
+
+### S2-42s REP STOSB work-limit checkpoint/replay
+
+Eight static fixtures cover `TEST RAX,RAX; REP STOSB` at counts 1024, 1025,
+2048, and 2049 with DF clear/set. The associated od-testkit integration test
+runs every case twice, restores each continuation from serialized CPU and
+memory state, records the defined-flags mask, and journals each successful
+store so duplicate writes cannot hide behind identical final memory. Exact
+limit completion expects `stop_address`; undefined AF is excluded by mask
+`0x0cc7`. Fixture snapshots and manifest are in
+[`s2_42s_rep_checkpoint/`](s2_42s_rep_checkpoint/), with the full contract in
+[`S2_42S_REP_CHECKPOINT.md`](../../../../docs/testing/S2_42S_REP_CHECKPOINT.md).
+Native/physical evidence is `not_run`.
