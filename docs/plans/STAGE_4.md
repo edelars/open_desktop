@@ -185,7 +185,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-02. Описать единую карту машины
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Где:** `crates/od-machine/src/`, `MACHINE_CONTRACT.md`, уточнения `VIRTUAL_BOARD.md`.
 - **Сделать:** валидируемые RAM/ROM/reserved/MMIO ranges и отдельная PIO map; адреса устройств и boot reservations из одного resolved manifest. Определить порядок lookup и запрет неоднозначных пересечений.
 - **Проверка:** пустые/переполненные диапазоны, overlap, край physical width, alias только там, где он явно разрешён, невозможная конфигурация RAM и устройств.
@@ -193,7 +193,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-03. Реализовать production RAM owner
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Где:** `crates/od-machine/src/`; host-specific allocation лишь при необходимости через разрешённую host-границу.
 - **Сделать:** один владелец backing, checked offsets, время жизни и ограничение размера; определить reset/zeroing и отказ при нехватке ресурсов. Не выдавать unrestricted pointers внешним consumers.
 - **Проверка:** границы RAM, выравнивание, независимые 4 KiB guest pages внутри 16 KiB host page, освобождение после последнего разрешённого handle, отказ allocation без guest exception.
@@ -201,7 +201,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-04. Physical accesses и уведомление о записях
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Где:** `crates/od-machine/src/`, согласованный interface с `od-jit`.
 - **Сделать:** checked physical read/write, разрешённые widths, little-endian данные, raw bytes для loader; уведомление о реально committed byte ranges. Определить поведение holes/ROM и ownership write transaction.
 - **Проверка:** первая/последняя byte, overflow, range spanning, rejected writes без ложного commit, loader write и alias write через один notification path.
