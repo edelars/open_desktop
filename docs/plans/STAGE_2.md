@@ -712,7 +712,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39j | Successful CPL3 FXSAVE64 oracle protocol | Protocol review and layout/link checks recorded; originally protocol-only. S2-39k Linux native A/B/A/B passed on 2026-11-04; raw `execution_kind=unknown`, separately established physical acceptance remains open; [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [x] | S2-39k | Bounded executable CPL3 FXSAVE64 oracle | Linux-only isolated ptrace tracee + raw evidence validator; rejected attempts preserve partial output and earlier repetitions; pre-entry setup failures remain `not_run`. Linked-binary/ABI inspection and one Linux x86_64 A/B/A/B acceptance passed on 2026-11-04 (4/4 observations, exit 0); raw `execution_kind=unknown`, separate physical Mac acceptance and parent S2-39 remain open. [Implementation](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle); [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
-| [x] | S2-40c | Статический inventory FPU save/restore alternatives под neutral x86-64-v1 | Docs-only; S2-39k Linux A/B/A/B reconciled; exact source/image/debug mapping reproduction remains open in [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable); parent S2-39/40 remain open |
+| [x] | S2-40c | Статический inventory FPU save/restore alternatives под neutral x86-64-v1 | Docs-only; S2-39k Linux A/B/A/B reconciled; four binary/package digests reverified in main checkout by S2-40d; source/signature provenance and source/image mapping reproduction remain open in [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable); parent S2-39/40 remain open |
+| [x] | S2-40d | Read-only recheck of available Ubuntu kernel artifact digests | Four recorded package/binary digests match files in main checkout; source archives, signed indexes and APT provenance are absent; no signature authentication, source mapping, build-ID/section-equality reproduction, runtime or boot claim; [report](../reports/S2_40D_ARTIFACT_DIGEST_RECHECK.md) |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
 | [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; six handwritten controls plus 1,024 generated cases; 1,030 cases ×2 passed on interpreter and Linux x86_64 native at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; physical Mac acceptance `not_run`; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
@@ -8408,12 +8409,26 @@ records the existing `FNINIT`/CR0/CR4 initialization, the FXSAVE MXCSR-mask
 probe, the recorded `boot_cpu_data+0x43` mask `0x04` XSAVE-versus-FXSAVE64
 save/restore alternative, and a separate `boot_cpu_data+0x88` mask `0x40`
 FPU-workaround test. The selected target excludes XSAVE/OSXSAVE/AVX and keeps
-OSXSAVE clear; this inventory does not expand target features. It is static
-documentation only: ignored source/image/debug ELF artifacts are absent from
-the isolated checkout, so recorded hashes, build ID, section equality, exact
-bytes, DWARF mappings, and predicates could not be recomputed. It does not
-claim boot-time alternative selection, the workaround's operation, Linux boot,
-or physical CPU behavior.
+OSXSAVE clear; this inventory does not expand target features. S2-40d
+reverified the kernel package, `vmlinuz`, extracted ELF and debug-ELF SHA-256
+digests from the read-only main checkout. Signed indexes, source archives and
+APT provenance are absent, so signature/source authentication, source mapping,
+build-ID and section-equality reproduction, exact instruction re-decode and
+DWARF mapping remain open under [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable).
+This does not claim boot-time alternative selection, the workaround's
+operation, Linux boot, or physical CPU behavior.
+
+#### S2-40d. Recheck available Ubuntu artifact digests
+
+The [S2-40d evidence report](../reports/S2_40D_ARTIFACT_DIGEST_RECHECK.md)
+records the exact read-only `sha256sum` command and output for the kernel image
+package, extracted `vmlinuz`, image-derived ELF and matching debug ELF in the
+main checkout. All four values match the committed profile/map. This confirms
+artifact digests only. It does not reproduce signed repository/source
+provenance, source-to-binary mapping, build-ID/section equality, instruction
+bytes or DWARF mapping, nor any runtime selection or boot behavior. Source and
+signature reproduction remains open under ISSUE-036; parent S2-39/40 remain
+open.
 
 The S2-40a FXSAVE matrix and deferred hardware row are reconciled with the
 S2-39j/k plan and reports. S2-39j remains the normative protocol; S2-39k has a

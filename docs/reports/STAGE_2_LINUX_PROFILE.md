@@ -935,14 +935,14 @@ The committed mapping records package SHA-256
 image-derived ELF SHA-256
 `ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f`, build ID
 `338e542e384c46228f7a378babc0f9bb2b6a5997`, and matching debug-ELF SHA-256
-`7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`. These
-values are present in the tracked report/map, but the corresponding source
-archives, image package, extracted image/ELF, debug ELF, signed indexes, and
-provenance files are absent from `work/vms/s2-00-ubuntu-26.04.1/` in this
-checkout. The logged hashes/build ID are therefore not re-computed here. Exact
-bytes, DWARF line mappings, alternative predicates, section equality, and
-signature provenance remain recorded historical claims pending artifact
-restoration and reproduction; see [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable).
+`7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f`. A
+read-only check in the main checkout reverified the package, `vmlinuz`, ELF and
+debug-ELF digests; the exact command and output are recorded in
+[S2-40d](S2_40D_ARTIFACT_DIGEST_RECHECK.md). This confirms those four binary
+artifact identities. The source archives, signed indexes and `apt-provenance.json`
+were absent, so signature/source provenance, build-ID and 38 allocated-section
+equality, exact bytes, DWARF line mappings and alternative predicates were not
+reproduced. See [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable).
 
 No source/image/debug artifact was created or modified by this slice. Runtime
 alternative selection, Linux boot, initramfs/module/userspace coverage, and

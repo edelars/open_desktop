@@ -17031,6 +17031,19 @@ and S2-42 remain open. See [CPU contract](../specs/CPU_CONTRACT.md#s2-40b--bound
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-40b-native-xorpd-xmm0-xmm1),
 and [test format](../testing/TEST_CASE_FORMAT.md#s2-40b-native-sse-only-xorpd-profile).
 
+## S2-40d — Ubuntu kernel artifact digest recheck
+
+Read-only `sha256sum` verification in the main checkout matched the recorded
+digests for the Ubuntu kernel image package, extracted `vmlinuz`, image-derived
+ELF and debug ELF. Exact command, output and the ten available artifacts are
+listed in the [S2-40d evidence report](S2_40D_ARTIFACT_DIGEST_RECHECK.md).
+This confirms those four artifact identities only. Source archives, signed
+indexes and `apt-provenance.json` were absent, so signed source provenance,
+build-ID/section-equality reproduction and source/DWARF/alternative mapping
+remain open under [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable).
+No signature authentication, runtime selection, Linux boot or physical
+acceptance is claimed. The image/VM and source files were not modified.
+
 ## S2-38b — точечные SSE2 prerequisite gates для XORPD
 
 Добавлен отдельный schema-v2 profile `s2-long-xorpd-prerequisites-v1` для
