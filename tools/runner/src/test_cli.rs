@@ -69,6 +69,10 @@ use od_isa::execute::{
     run_with_subss_register_controls,
 };
 use od_isa::{CpuState, ExecutionResult, interpret};
+use od_testkit::branch_reducer::{
+    BRANCH_REDUCER_DEFAULT_BUDGET, BRANCH_REDUCER_MAX_BUDGET, BranchReductionStop, branch_oracle,
+    reduce_branch_fixture_with_input_digest,
+};
 use od_testkit::case::{Fixture, LoadedFixture};
 use od_testkit::compare::{
     CompareError, ComparisonReport, compare_results as compare_result_values,
@@ -99,6 +103,208 @@ const EXIT_HARNESS_FAILURE: u8 = 5;
 const NATIVE_XORPD_WORK_DIR: &str = "work/stage2/s2-42a-xorpd";
 const NATIVE_XORPD_REDUCE_WORK_DIR: &str = "work/stage2/s2-42b-xorpd";
 const STACK_REDUCE_WORK_DIR: &str = "work/stage2/s2-42g-stack";
+const BRANCH_REDUCE_WORK_DIR: &str = "work/stage2/s2-42k-branch";
+
+pub fn reduce_branch_nops(args: &[String]) -> ExitCode {
+    match reduce_branch_nops_inner(args) {
+        Ok(code) => code,
+        Err(error) => invalid_input(&error),
+    }
+}
+
+fn reduce_branch_nops_inner(args: &[String]) -> Result<ExitCode, String> {
+    use od_testkit::v2;
+
+    let mut input_path = None;
+    let mut output_dir = None;
+    let mut call_budget = BRANCH_REDUCER_DEFAULT_BUDGET;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--limit" => {
+                index += 1;
+                call_budget = args
+                    .get(index)
+                    .ok_or("--limit requires an integer")?
+                    .parse()
+                    .map_err(|_| "--limit must be an integer")?;
+            }
+            "--output-dir" => {
+                index += 1;
+                output_dir = Some(
+                    args.get(index)
+                        .ok_or("--output-dir requires a path")?
+                        .clone(),
+                );
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown branch reducer option: {value}"));
+            }
+            value if input_path.is_none() => input_path = Some(value.to_string()),
+            value => return Err(format!("unexpected branch reducer argument: {value}")),
+        }
+        index += 1;
+    }
+    let input_path = input_path
+        .ok_or("usage: od-runner --reduce-branch-nops <fixture> [--limit N] [--output-dir DIR]")?;
+    if !(4..=BRANCH_REDUCER_MAX_BUDGET).contains(&call_budget) {
+        return Err(format!("--limit must be 4..={BRANCH_REDUCER_MAX_BUDGET}"));
+    }
+    let output_dir = output_dir.unwrap_or_else(|| {
+        format!(
+            "{BRANCH_REDUCE_WORK_DIR}/{}",
+            std::path::Path::new(&input_path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )
+    });
+    let output_relative = std::path::Path::new(&output_dir);
+    validate_branch_output_dir(output_relative)?;
+    let output_path = workspace_root().join(output_relative);
+    let original_bytes =
+        read_file_bounded(&input_path, v2::MAX_FIXTURE_JSON_BYTES, "fixture JSON")?;
+    let loaded = v2::Fixture::from_json(&original_bytes)
+        .map_err(|error| format!("invalid strict-schema fixture: {error}"))?;
+    branch_oracle(&loaded.fixture, &loaded.input_sha256)?;
+    fs::create_dir_all(
+        output_path
+            .parent()
+            .ok_or("output directory has no parent")?,
+    )
+    .map_err(|error| format!("could not create output parent: {error}"))?;
+    fs::create_dir(&output_path)
+        .map_err(|error| format!("could not create fresh output directory: {error}"))?;
+    let output_path = fs::canonicalize(&output_path)
+        .map_err(|error| format!("could not canonicalize output directory: {error}"))?;
+    let callbacks = output_path.join("callbacks");
+    fs::create_dir(&callbacks).map_err(|error| error.to_string())?;
+    fs::create_dir(callbacks.join("candidates")).map_err(|error| error.to_string())?;
+    write_new(output_path.join("original.case.json"), &original_bytes)?;
+    let mut sequence = 0usize;
+    let reduction = reduce_branch_fixture_with_input_digest(
+        &loaded.fixture,
+        &loaded.input_sha256,
+        call_budget,
+        |candidate| {
+            sequence += 1;
+            let is_original = candidate == &loaded.fixture;
+            let bytes = if is_original {
+                original_bytes.clone()
+            } else {
+                candidate.to_json().map_err(|error| error.to_string())?
+            };
+            let digest = sha256_hex(&bytes);
+            let fixture_path = if is_original {
+                std::path::PathBuf::from("original.case.json")
+            } else {
+                let relative = std::path::PathBuf::from("callbacks/candidates")
+                    .join(format!("{digest}.case.json"));
+                if !output_path.join(&relative).exists() {
+                    write_new(output_path.join(&relative), &bytes)?;
+                }
+                relative
+            };
+            let run_result = (|| -> Result<_, String> {
+                let candidate_loaded =
+                    v2::Fixture::from_json(&bytes).map_err(|error| error.to_string())?;
+                run_push_pop_interpreter(&candidate_loaded)
+            })();
+            let result = match run_result {
+                Ok(result) => result,
+                Err(error) => {
+                    write_callback_record(
+                        &callbacks,
+                        sequence,
+                        &serde_json::json!({
+                            "sequence": sequence, "fixture_sha256": digest, "fixture": fixture_path,
+                            "backend": "interpreter", "status": "harness_error", "error": error
+                        }),
+                    )?;
+                    return Err(error);
+                }
+            };
+            let result_bytes = result.to_json().map_err(|error| error.to_string())?;
+            let result_path = std::path::PathBuf::from("callbacks")
+                .join(format!("run-{sequence:06}.result.json"));
+            write_new(output_path.join(&result_path), &result_bytes)?;
+            write_callback_record(
+                &callbacks,
+                sequence,
+                &serde_json::json!({
+                    "sequence": sequence, "fixture_sha256": digest, "fixture": fixture_path,
+                    "backend": "interpreter", "status": "completed", "result": result_path,
+                    "result_sha256": sha256_hex(&result_bytes)
+                }),
+            )?;
+            Ok(result)
+        },
+    )?;
+    for (index, result) in reduction.initial_results.iter().enumerate() {
+        write_new(
+            output_path.join(format!("initial-{}.result.json", index + 1)),
+            &result.to_json().map_err(|error| error.to_string())?,
+        )?;
+    }
+    for (index, result) in reduction.final_results.iter().enumerate() {
+        write_new(
+            output_path.join(format!("final-{}.result.json", index + 1)),
+            &result.to_json().map_err(|error| error.to_string())?,
+        )?;
+    }
+    if let Some(fixture) = &reduction.reduced_fixture {
+        write_new(
+            output_path.join("reduced.case.json"),
+            &fixture.to_json().map_err(|error| error.to_string())?,
+        )?;
+    }
+    let report = serde_json::to_vec_pretty(&reduction).map_err(|error| error.to_string())?;
+    write_new(output_path.join("report.json"), &report)?;
+    println!(
+        "branch NOP reducer: {:?}; callbacks={}; output={}",
+        reduction.stop,
+        reduction.actual_callbacks,
+        output_path.display()
+    );
+    Ok(match reduction.stop {
+        BranchReductionStop::UnsupportedMismatch => ExitCode::from(EXIT_UNSUPPORTED),
+        BranchReductionStop::CallbackError | BranchReductionStop::FinalConfirmationFailed => {
+            ExitCode::from(EXIT_HARNESS_FAILURE)
+        }
+        _ => ExitCode::SUCCESS,
+    })
+}
+
+fn validate_branch_output_dir(path: &std::path::Path) -> Result<(), String> {
+    use std::path::Component;
+    let components = path.components().collect::<Vec<_>>();
+    let allowed = ["work", "stage2", "s2-42k-branch"];
+    if components.len() <= allowed.len()
+        || components
+            .iter()
+            .any(|part| !matches!(part, Component::Normal(_)))
+        || components
+            .iter()
+            .take(allowed.len())
+            .zip(allowed)
+            .any(|(part, expected)| *part != Component::Normal(std::ffi::OsStr::new(expected)))
+    {
+        return Err(format!(
+            "--output-dir must be a new child directory under {BRANCH_REDUCE_WORK_DIR}"
+        ));
+    }
+    let mut prefix = workspace_root();
+    for component in components {
+        prefix.push(component.as_os_str());
+        if prefix.exists() && prefix.is_symlink() {
+            return Err("--output-dir must not traverse symlinks".into());
+        }
+    }
+    if workspace_root().join(path).exists() {
+        return Err("--output-dir must not already exist".into());
+    }
+    Ok(())
+}
 
 pub fn generate_native_xorpd_corpus(args: &[String]) -> ExitCode {
     if !args.is_empty() {

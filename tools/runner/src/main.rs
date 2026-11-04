@@ -39,6 +39,9 @@ fn main() -> ExitCode {
         Some("--reduce-push-pop") => {
             return test_cli::reduce_push_pop(&args[1..]);
         }
+        Some("--reduce-branch-nops") => {
+            return test_cli::reduce_branch_nops(&args[1..]);
+        }
         Some("--convert-fixture-v1") => return test_cli::convert_fixture_v1(&args[1..]),
         Some("--minimize") => return test_cli::minimize_fixture(&args[1..]),
         Some("--fixture") => return test_cli::run_fixture(&args[1..]),

@@ -2,6 +2,7 @@
 //!
 //! This crate is test infrastructure. Production runtime crates must not depend on it.
 
+pub mod branch_reducer;
 pub mod case;
 pub mod compare;
 mod error;
