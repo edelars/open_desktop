@@ -6145,11 +6145,15 @@ mod tests {
             let ordinary = fixture(&code);
             let actual = ordinary.fixture.initial_state.to_cpu().unwrap();
             let mut decoder = FlatMemory::from_fixture(&ordinary.fixture).unwrap();
-            assert!(
-                admission(&ordinary.fixture, &mut decoder, &actual)
-                    .unwrap_err()
-                    .contains("x87 instruction is not admitted"),
-                "{code:02x?}"
+            let error = admission(&ordinary.fixture, &mut decoder, &actual).unwrap_err();
+            let expected_error = if code == [0xdb, 0x28] {
+                "native instruction is not in data-transfer/integer arithmetic/direct-branch allowlist"
+            } else {
+                "x87 instruction is not admitted by the native backend"
+            };
+            assert_eq!(
+                error, expected_error,
+                "{code:02x?}: expected the specific native denial"
             );
         }
         for opcode in [0xdb, 0xdf] {
@@ -6158,10 +6162,9 @@ mod tests {
                 let ordinary = fixture(&code);
                 let actual = ordinary.fixture.initial_state.to_cpu().unwrap();
                 let mut decoder = FlatMemory::from_fixture(&ordinary.fixture).unwrap();
-                assert!(
-                    admission(&ordinary.fixture, &mut decoder, &actual)
-                        .unwrap_err()
-                        .contains("x87 instruction is not admitted"),
+                let error = admission(&ordinary.fixture, &mut decoder, &actual).unwrap_err();
+                assert_eq!(
+                    error, "x87 instruction is not admitted by the native backend",
                     "{code:02x?}"
                 );
             }
