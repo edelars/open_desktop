@@ -17,6 +17,7 @@ fn stack_reducer_records_runnable_original_and_reduced_shape_replays() {
     let workspace = manifest_dir.join("../..");
     let workspace = workspace.canonicalize().unwrap();
     let fixture = workspace.join("tests/fixtures/x86/stage2/s2_17a_push_rax.case.json");
+    let fixture_directory = fixture.parent().unwrap();
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -28,10 +29,10 @@ fn stack_reducer_records_runnable_original_and_reduced_shape_replays() {
         .unwrap();
 
     let reducer = Command::new(&executable)
-        .current_dir(&workspace)
+        .current_dir(fixture_directory)
         .args([
             "--reduce-push-pop",
-            fixture.to_str().unwrap(),
+            fixture.file_name().unwrap().to_str().unwrap(),
             "--limit",
             "4",
             "--output-dir",
@@ -53,7 +54,7 @@ fn stack_reducer_records_runnable_original_and_reduced_shape_replays() {
         std::path::Path::new(working_directory)
             .canonicalize()
             .unwrap(),
-        workspace
+        fixture_directory
     );
     let argv_original = replay["argv_original"]
         .as_array()
@@ -86,5 +87,26 @@ fn stack_reducer_records_runnable_original_and_reduced_shape_replays() {
     let reduced_result: serde_json::Value = serde_json::from_slice(&reduced.stdout).unwrap();
     assert_eq!(reduced_result["case_id"], "s2_17a_push_rax");
 
+    let mut reducer_argv = replay["argv_reducer"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(std::path::Path::new(&reducer_argv[0]), executable);
+    assert_eq!(
+        reducer_argv[2],
+        fixture.file_name().unwrap().to_str().unwrap()
+    );
+    let replay_output_relative = format!("{output_relative}-replayed");
+    reducer_argv[6] = replay_output_relative.clone();
+    let reducer_replay = run_recorded_argv(&reducer_argv, working_directory);
+    assert!(
+        reducer_replay.status.success(),
+        "recorded reducer replay failed: {}",
+        String::from_utf8_lossy(&reducer_replay.stderr)
+    );
+
     fs::remove_dir_all(output_dir).unwrap();
+    fs::remove_dir_all(workspace.join(replay_output_relative)).unwrap();
 }

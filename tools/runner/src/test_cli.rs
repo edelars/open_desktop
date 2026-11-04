@@ -738,7 +738,8 @@ fn reduce_push_pop_inner(args: &[String]) -> Result<ExitCode, String> {
         .map(|argument| shell_quote(argument))
         .collect::<Vec<_>>()
         .join(" ");
-    let replay_working_directory = fs::canonicalize(workspace_root())
+    let replay_working_directory = std::env::current_dir()
+        .and_then(fs::canonicalize)
         .map_err(|error| format!("could not canonicalize replay working directory: {error}"))?;
     let report = serde_json::json!({
         "report_version": 1,
