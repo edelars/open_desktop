@@ -12,7 +12,7 @@ address-size-32 формы; общий REP/JIT/native profile
 policy остаётся ограниченной и описана в ISSUE-020/021; hardware priority не
 устанавливается.
 
-**Дата:** 30 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–k add local-only FS/GS-base, selector, descriptor-load, VERW/GDT, exact FS/GS.base composition and null DS/ES selector cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures, two S2-22i/j composition fixtures and four S2-22k null DS/ES fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b/S2-20d UD2 fixtures are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Ubuntu Generic `amd64` now has a selected synthetic reference target `od-x86-64-v1-neutral-v0.1` in the [CPU contract](../specs/CPU_CONTRACT.md); implementation, complete MSR/entry manifest, and observed guest boot remain open. S2-40a documentation matrix records the Generic amd64 x86-64-v1 floor and evidence boundaries; S2-26/39/40/41/42 remain open. Stage 2 remains open under broader roadmap criteria. Open issues are ISSUE-011/012/013/014/015/016/017/018/019/020/021/023/025/027; resolved ISSUE-022/024/026 are intentionally excluded. Acceptance criteria are unchanged.
+**Дата:** 30 октября 2026 года. **Статус:** выполняется; S2-00–14 приняты в указанных границах. Baseline integer forms строки S2-15 в CPU contract локально покрыты срезами S2-15a–h и register-register XCHG из S2-10. S2-16a–e локально покрывают direct relative Jcc/JMP, SETcc, CMOVcc и ограниченные register/memory-target near indirect JMP; S2-17a–t покрывают ограниченные GPR и memory PUSH/POP, near CALL/RET, а также выбранные PUSHF/POPF forms — см. [отчёт](../reports/STAGE_2_REPORT.md). S2-15 onward through S2-21g remains open until the shared physical Mac mini acceptance substage. S2-22a–k add local-only FS/GS-base, selector, descriptor-load, VERW/GDT, exact FS/GS.base composition and null DS/ES selector cases; S2-22 itself remains open. Existing deferred-pool accounting remains 614 physically selected fixtures; the 11 S2-22h load fixtures, two S2-22i/j composition fixtures and four S2-22k null DS/ES fixtures are local-only and are not native-eligible. Across the string-operation slices, native admission includes 21 mapped cases and rejects 10 local-only fault cases; all S2-20a/S2-20c divide-error fixtures and the S2-20b/S2-20d UD2 fixtures are excluded from native acceptance selection and execution. Detailed accounting of the initial 558 and subsequent additions is retained in the Stage 2 report. S2-17c/d/e combined-fault priority for a noncanonical CALL target with invalid stack remains unresolved in ISSUE-013; no dual-fault fixture is included. Combined RSP commit policy for memory-destination POP store fault remains open in ISSUE-014. FS/GS forms outside the exact local-only profiles remain unsupported. S2-21a–g cover the documented bounded forms; other widths, LOCK forms and fences remain open in S2-21. F3-prefixed LZCNT/TZCNT remain outside baseline. Ubuntu Generic `amd64` now has a selected synthetic reference target `od-x86-64-v1-neutral-v0.1` in the [CPU contract](../specs/CPU_CONTRACT.md); implementation, complete MSR/entry manifest, and observed guest boot remain open. S2-40a/40c documentation records the Generic amd64 x86-64-v1 floor, FPU alternatives and evidence boundaries; S2-26/39/40/41/42 remain open. Stage 2 remains open under broader roadmap criteria. Open issues are ISSUE-011/012/013/014/015/016/017/018/019/020/021/023/025/027/036; resolved ISSUE-022/024/026 are intentionally excluded. Acceptance criteria are unchanged.
 
 План рассчитан на модель, которой нужны небольшие последовательные задания, явные ограничения и проверяемый результат. Выполнять одну задачу `S2-NN` за раз. Большую группу внутри задачи делить на перечисленные подшаги; не реализовывать весь этап одним изменением.
 
@@ -712,6 +712,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39j | Successful CPL3 FXSAVE64 oracle protocol | Protocol review and layout/link checks recorded; originally protocol-only. S2-39k Linux native A/B/A/B passed on 2026-11-04; raw `execution_kind=unknown`, separately established physical acceptance remains open; [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [x] | S2-39k | Bounded executable CPL3 FXSAVE64 oracle | Linux-only isolated ptrace tracee + raw evidence validator; rejected attempts preserve partial output and earlier repetitions; pre-entry setup failures remain `not_run`. Linked-binary/ABI inspection and one Linux x86_64 A/B/A/B acceptance passed on 2026-11-04 (4/4 observations, exit 0); raw `execution_kind=unknown`, separate physical Mac acceptance and parent S2-39 remain open. [Implementation](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle); [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
+| [x] | S2-40c | Статический inventory FPU save/restore alternatives под neutral x86-64-v1 | Docs-only; S2-39k Linux A/B/A/B reconciled; exact source/image/debug mapping reproduction remains open in [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable); parent S2-39/40 remain open |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
 | [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; six handwritten controls plus 1,024 generated cases; 1,030 cases ×2 passed on interpreter and Linux x86_64 native at fingerprint `ccfd49a28ea6ddf804f2124dab30b0e569b7e1666a8808e0296b12f642f96f49`; physical Mac acceptance `not_run`; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
@@ -8378,6 +8379,29 @@ selector differences или полный Linux profile; эти вопросы о
 reachability отделена от observed execution; (4) физические проверки собраны
 в едином списке `not_run`; (5) родительские задачи остаются открытыми. Это
 documentation-only result; CPU tests и hardware checks не выполнялись.
+
+#### S2-40c. Static FPU save/restore alternatives under neutral x86-64-v1
+
+**Status:** documentation-only inventory complete; exact source/image/debug
+artifact reproduction remains unresolved in [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable).
+
+The [Linux profile report](../reports/STAGE_2_LINUX_PROFILE.md#s2-40c--static-fpu-saverestore-alternatives-under-neutral-x86-64-v1)
+records the existing `FNINIT`/CR0/CR4 initialization, the FXSAVE MXCSR-mask
+probe, the recorded `boot_cpu_data+0x43` mask `0x04` XSAVE-versus-FXSAVE64
+save/restore alternative, and a separate `boot_cpu_data+0x88` mask `0x40`
+FPU-workaround test. The selected target excludes XSAVE/OSXSAVE/AVX and keeps
+OSXSAVE clear; this inventory does not expand target features. It is static
+documentation only: ignored source/image/debug ELF artifacts are absent from
+the isolated checkout, so recorded hashes, build ID, section equality, exact
+bytes, DWARF mappings, and predicates could not be recomputed. It does not
+claim boot-time alternative selection, the workaround's operation, Linux boot,
+or physical CPU behavior.
+
+The S2-40a FXSAVE matrix and deferred hardware row are reconciled with the
+S2-39j/k plan and reports. S2-39j remains the normative protocol; S2-39k has a
+Linux x86_64 A/B/A/B acceptance run with 4/4 observations and raw
+`execution_kind=unknown`. This does not establish physical-Mac acceptance or
+close parent S2-39/40.
 
 ## 10. Системная проверка и приёмка
 
