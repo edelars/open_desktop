@@ -62,7 +62,9 @@ python3 tests/cpu/generate_stage2_stack_corpus.py --run-oracle \
 
 It invokes the existing `tests/cpu/stage2_oracle.py` for all 1,056 cases with
 two interpreter and two Linux x86_64 native repetitions, then checks every
-result against the independent stack oracle and the full comparison mask.
+result's schema version, profile, backend, exact fixture digest, build and
+machine provenance against its run-manifest entry before comparing it against
+the independent stack oracle and full comparison mask.
 Missing input/result/backend, nonzero status, a host other than Linux x86_64,
 malformed snapshot, mismatch, or missing repetition returns nonzero and writes
 `s2-42h-summary.json` with `status: failed`. Evidence remains under

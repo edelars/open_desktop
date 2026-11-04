@@ -278,14 +278,42 @@ def write_directory(directory: Path) -> None:
     write_file_set(directory, materialize())
 
 
-def _verify_result(result: Any, expected: dict[str, Any], label: str) -> None:
+def _verify_result(result: Any, expected: dict[str, Any], fixture_sha256: str,
+                   backend: str, expected_build: Any, expected_machine: Any,
+                   label: str) -> None:
     try:
-        if not isinstance(result, dict) or result.get("case_id") != expected["case_id"]:
-            raise CorpusError(f"{label}: case identity differs")
+        if not isinstance(result, dict):
+            raise CorpusError(f"{label}: result must be an object")
+        identity = {
+            "schema_version": 2,
+            "case_id": expected["case_id"],
+            "input_sha256": fixture_sha256,
+            "profile": PROFILE,
+            "backend": backend,
+        }
+        if type(result.get("schema_version")) is not int or result.get("schema_version") != 2:
+            raise CorpusError(f"{label}: schema_version does not match the selected fixture")
+        for field, wanted in identity.items():
+            if field == "schema_version":
+                continue
+            if result.get(field) != wanted:
+                raise CorpusError(f"{label}: {field} does not match fixture/backend identity")
         if result.get("outcome") != expected["outcome"]:
             raise CorpusError(f"{label}: execution outcome differs")
         if result.get("instructions_executed") != expected["instructions_executed"]:
             raise CorpusError(f"{label}: exact one-instruction retirement differs")
+        build = result.get("build")
+        if not isinstance(build, dict) or any(not build.get(field) for field in ("revision", "compiler", "target", "profile")):
+            raise CorpusError(f"{label}: build provenance is incomplete")
+        if not isinstance(expected_build, dict) or build != expected_build:
+            raise CorpusError(f"{label}: build provenance differs from the run manifest")
+        machine = result.get("machine")
+        if not isinstance(machine, dict) or any(not machine.get(field) for field in ("host_os", "host_arch")):
+            raise CorpusError(f"{label}: machine provenance is incomplete")
+        if not isinstance(expected_machine, dict) or machine != expected_machine:
+            raise CorpusError(f"{label}: machine provenance differs from the run manifest")
+        if backend == "native_x86" and (machine.get("host_os") != "linux" or machine.get("host_arch") != "x86_64"):
+            raise CorpusError(f"{label}: native result is not from Linux x86_64 hardware")
         snapshot = result.get("snapshot")
         if not isinstance(snapshot, dict) or snapshot.get("status") != "available":
             raise CorpusError(f"{label}: full snapshot is unavailable")
@@ -318,7 +346,8 @@ def verify_oracle_run(corpus_directory: Path, run_directory: Path) -> dict[str, 
     manifest = verify_directory(corpus_directory)
     expected_document = json.loads((corpus_directory / EXPECTED_NAME).read_bytes(), object_pairs_hook=strict_object)
     run_manifest = json.loads((run_directory / "manifest.json").read_bytes(), object_pairs_hook=strict_object)
-    if not isinstance(run_manifest, dict) or run_manifest.get("status") != "passed" or run_manifest.get("repeats") != 2:
+    if (not isinstance(run_manifest, dict) or run_manifest.get("status") != "passed"
+            or run_manifest.get("repeats") != 2 or run_manifest.get("profile") != PROFILE):
         raise CorpusError("interpreter/native oracle did not pass two repeats")
     cases = expected_document.get("cases") if isinstance(expected_document, dict) else None
     inputs, records = run_manifest.get("inputs"), run_manifest.get("fixtures")
@@ -332,7 +361,10 @@ def verify_oracle_run(corpus_directory: Path, run_directory: Path) -> dict[str, 
         raise CorpusError("oracle input manifest has malformed entries")
     if {entry.get("case_id") for entry in inputs} != set(expected_by_id):
         raise CorpusError("oracle input identities do not match generated fixtures")
-    if any(entry.get("profile") != PROFILE or entry.get("fixture_sha256") != digest_by_id.get(entry.get("case_id")) for entry in inputs):
+    if any(type(entry.get("schema_version")) is not int or entry.get("schema_version") != 2
+           or entry.get("profile") != PROFILE
+           or entry.get("fixture_sha256") != digest_by_id.get(entry.get("case_id"))
+           for entry in inputs):
         raise CorpusError("oracle input profile or exact fixture digest differs")
     if len(records) != 2 * len(cases):
         raise CorpusError("oracle manifest omitted repeat records")
@@ -341,17 +373,26 @@ def verify_oracle_run(corpus_directory: Path, run_directory: Path) -> dict[str, 
         if not isinstance(record, dict):
             raise CorpusError("oracle result record must be an object")
         case_id, repeat = record.get("case_id"), record.get("repeat")
-        if case_id not in expected_by_id or type(repeat) is not int or repeat not in (1, 2) or (case_id, repeat) in seen:
+        if (not isinstance(case_id, str) or case_id not in expected_by_id
+                or type(repeat) is not int or repeat not in (1, 2) or (case_id, repeat) in seen):
             raise CorpusError("oracle manifest has an unexpected or duplicate result identity")
+        if (type(record.get("schema_version")) is not int or record.get("schema_version") != 2
+                or record.get("fixture_sha256") != digest_by_id[case_id]
+                or record.get("differences") != {"interpreter_vs_native": 0}
+                or record.get("stable_repeat") is not (repeat > 1)):
+            raise CorpusError("oracle result record does not bind the expected fixture and repeat comparison")
+        builds, machines = record.get("build"), record.get("machines")
+        if not isinstance(builds, dict) or not isinstance(machines, dict):
+            raise CorpusError("oracle result record lacks backend build or machine identity")
         seen.add((case_id, repeat))
         for backend in ("interpreter", "native_x86"):
             path = run_directory / f"repeat-{repeat:02d}" / case_id / f"{backend}.json"
             result = json.loads(path.read_bytes(), object_pairs_hook=strict_object)
-            _verify_result(result, expected_by_id[case_id], f"{backend} {case_id} repeat {repeat}")
-            if backend == "native_x86":
-                machine = result.get("machine")
-                if not isinstance(machine, dict) or machine.get("host_os") != "linux" or machine.get("host_arch") != "x86_64":
-                    raise CorpusError("native result is not from Linux x86_64 hardware")
+            _verify_result(
+                result, expected_by_id[case_id], digest_by_id[case_id], backend,
+                builds.get(backend), machines.get(backend),
+                f"{backend} {case_id} repeat {repeat}",
+            )
     if len(seen) != 2 * len(cases):
         raise CorpusError("oracle repeat matrix is incomplete")
     return {
@@ -399,6 +440,7 @@ def main() -> int:
     parser.add_argument("--oracle-output-root", type=Path, default=DEFAULT_ORACLE_ROOT)
     args = parser.parse_args()
     corpus = args.verify if args.verify is not None else (args.output_dir or DEFAULT_CORPUS)
+    summary_path = args.oracle_output_root / "s2-42h-summary.json"
     try:
         if args.verify is None:
             write_directory(corpus)
@@ -420,7 +462,6 @@ def main() -> int:
             except (CorpusError, OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError,
                     AttributeError, IndexError, ValueError) as error:
                 summary["error"] = str(error)
-        summary_path = args.oracle_output_root / "s2-42h-summary.json"
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         summary_path.write_bytes(json_bytes(summary))
         print(f"machine-readable summary: {summary_path}")
@@ -429,7 +470,23 @@ def main() -> int:
             return 1
         print(f"matched {summary['result_count_per_backend']} interpreter and native results")
         return 0
-    except (CorpusError, OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (CorpusError, OSError, UnicodeError, json.JSONDecodeError, ValueError, RecursionError) as error:
+        if args.run_oracle:
+            summary: dict[str, Any] = {
+                "status": "failed",
+                "profile": PROFILE,
+                "case_count": TOTAL_CASE_COUNT,
+                "physical_mac_acceptance": "not_run",
+                "error": str(error),
+            }
+            try:
+                summary_path.parent.mkdir(parents=True, exist_ok=True)
+                summary_path.write_bytes(json_bytes(summary))
+                print(f"machine-readable summary: {summary_path}")
+            except OSError as write_error:
+                print(f"could not write failed machine summary: {write_error}", file=sys.stderr)
+            print("S2-42h corpus preflight failed", file=sys.stderr)
+            return 1
         parser.error(str(error))
     return 0
 

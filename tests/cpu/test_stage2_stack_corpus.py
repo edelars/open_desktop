@@ -15,6 +15,14 @@ SPEC = importlib.util.spec_from_file_location("stage2_stack_corpus", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
+TEST_BUILD = {
+    "revision": "synthetic-revision", "compiler": "synthetic-compiler",
+    "target": "synthetic-target", "profile": module.PROFILE,
+}
+TEST_MACHINES = {
+    "interpreter": {"host_os": "darwin", "host_arch": "arm64"},
+    "native_x86": {"host_os": "linux", "host_arch": "x86_64"},
+}
 
 
 class StackCorpusTests(unittest.TestCase):
@@ -117,6 +125,25 @@ class StackCorpusTests(unittest.TestCase):
             self.assertEqual(summary["physical_mac_acceptance"], "not_run")
             self.assertEqual(summary["oracle_stderr"], "native unavailable")
 
+    def test_selected_suite_preflight_failure_replaces_stale_success(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT / "work") as temporary:
+            root = Path(temporary)
+            corpus, output = root / "corpus", root / "oracle"
+            module.write_directory(corpus)
+            next(corpus.glob("*.case.json")).unlink()
+            output.mkdir()
+            summary_path = output / "s2-42h-summary.json"
+            summary_path.write_text('{"status":"passed"}')
+            argv = ["generate_stage2_stack_corpus.py", "--verify", str(corpus),
+                    "--run-oracle", "--oracle-output-root", str(output)]
+            with patch.object(module.sys, "argv", argv), patch.object(module, "run_oracle") as run_oracle:
+                self.assertEqual(module.main(), 1)
+            run_oracle.assert_not_called()
+            summary = json.loads(summary_path.read_bytes())
+            self.assertEqual(summary["status"], "failed")
+            self.assertNotIn("corpus_digest", summary)
+            self.assertIn("missing or unexpected", summary["error"])
+
     def test_two_repeat_result_verifier_accepts_a_complete_synthetic_matrix(self) -> None:
         fixture, expected = module.generate_fixture(module.FIXED_SEEDS[0], 0)
         fixture_digest = module.sha256(module.json_bytes(fixture))
@@ -125,11 +152,16 @@ class StackCorpusTests(unittest.TestCase):
             "case_digests": [{"case_id": fixture["case_id"], "sha256": fixture_digest}],
         }
         result_manifest = {
-            "status": "passed", "repeats": 2,
-            "inputs": [{"case_id": fixture["case_id"], "profile": module.PROFILE,
+            "status": "passed", "repeats": 2, "profile": module.PROFILE,
+            "inputs": [{"case_id": fixture["case_id"], "schema_version": 2, "profile": module.PROFILE,
                         "fixture_sha256": fixture_digest}],
-            "fixtures": [{"case_id": fixture["case_id"], "repeat": repeat}
-                         for repeat in (1, 2)],
+            "fixtures": [{
+                "case_id": fixture["case_id"], "repeat": repeat,
+                "schema_version": 2, "fixture_sha256": fixture_digest,
+                "build": {"interpreter": TEST_BUILD, "native_x86": TEST_BUILD},
+                "machines": TEST_MACHINES,
+                "differences": {"interpreter_vs_native": 0}, "stable_repeat": repeat > 1,
+            } for repeat in (1, 2)],
         }
         with tempfile.TemporaryDirectory() as temporary:
             corpus, run = Path(temporary) / "corpus", Path(temporary) / "run"
@@ -140,7 +172,10 @@ class StackCorpusTests(unittest.TestCase):
             for repeat in (1, 2):
                 for backend in ("interpreter", "native_x86"):
                     result = {
-                        "case_id": expected["case_id"], "outcome": expected["outcome"],
+                        "schema_version": 2, "case_id": expected["case_id"],
+                        "input_sha256": fixture_digest, "profile": module.PROFILE,
+                        "backend": backend, "build": TEST_BUILD,
+                        "machine": TEST_MACHINES[backend], "outcome": expected["outcome"],
                         "instructions_executed": expected["instructions_executed"],
                         "snapshot": {"status": "available", "value": {
                             "state": expected["state"],
@@ -156,10 +191,25 @@ class StackCorpusTests(unittest.TestCase):
                     (directory / f"{backend}.json").write_bytes(module.json_bytes(result))
             with patch.object(module, "verify_directory", return_value=corpus_manifest):
                 summary = module.verify_oracle_run(corpus, run)
-        self.assertEqual(summary["status"], "passed")
-        self.assertEqual(summary["repeat_count"], 2)
-        self.assertEqual(summary["result_count_per_backend"], 2)
-        self.assertEqual(summary["physical_mac_acceptance"], "not_run")
+            self.assertEqual(summary["status"], "passed")
+            self.assertEqual(summary["repeat_count"], 2)
+            self.assertEqual(summary["result_count_per_backend"], 2)
+            self.assertEqual(summary["physical_mac_acceptance"], "not_run")
+            native_result = run / "repeat-01" / fixture["case_id"] / "native_x86.json"
+            original_result = json.loads(native_result.read_bytes())
+            for field, bad_value in (
+                ("schema_version", 1),
+                ("case_id", "other-case"),
+                ("input_sha256", "0" * 64),
+                ("profile", "other-profile"),
+                ("backend", "interpreter"),
+            ):
+                result = dict(original_result)
+                result[field] = bad_value
+                native_result.write_bytes(module.json_bytes(result))
+                with patch.object(module, "verify_directory", return_value=corpus_manifest):
+                    with self.assertRaisesRegex(module.CorpusError, field):
+                        module.verify_oracle_run(corpus, run)
 
     def test_malformed_result_replaces_stale_success_summary(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / "work") as temporary:
@@ -171,13 +221,22 @@ class StackCorpusTests(unittest.TestCase):
             run = root / "run"
             (run / "repeat-01" / expected[0]["case_id"]).mkdir(parents=True)
             (run / "manifest.json").write_text(json.dumps({
-                "status": "passed", "repeats": 2,
-                "inputs": [{"case_id": item["case_id"], "profile": module.PROFILE,
+                "status": "passed", "repeats": 2, "profile": module.PROFILE,
+                "inputs": [{"case_id": item["case_id"], "schema_version": 2, "profile": module.PROFILE,
                             "fixture_sha256": item["sha256"]} for item in manifest["case_digests"]],
-                "fixtures": [{"case_id": item["case_id"], "repeat": repeat}
+                "fixtures": [{"case_id": item["case_id"], "repeat": repeat,
+                              "schema_version": 2, "fixture_sha256": item["sha256"],
+                              "build": {"interpreter": TEST_BUILD, "native_x86": TEST_BUILD},
+                              "machines": TEST_MACHINES,
+                              "differences": {"interpreter_vs_native": 0},
+                              "stable_repeat": repeat > 1}
                              for repeat in (1, 2) for item in manifest["case_digests"]],
             }))
-            malformed = {"case_id": expected[0]["case_id"], "outcome": expected[0]["outcome"],
+            malformed = {"schema_version": 2, "case_id": expected[0]["case_id"],
+                         "input_sha256": manifest["case_digests"][0]["sha256"],
+                         "profile": module.PROFILE, "backend": "interpreter",
+                         "build": TEST_BUILD, "machine": TEST_MACHINES["interpreter"],
+                         "outcome": expected[0]["outcome"],
                          "instructions_executed": expected[0]["instructions_executed"],
                          "snapshot": {"status": "available", "value": {"state": None}}}
             result = run / "repeat-01" / expected[0]["case_id"] / "interpreter.json"
