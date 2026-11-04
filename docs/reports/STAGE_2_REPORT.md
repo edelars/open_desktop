@@ -24656,3 +24656,26 @@ This selected branch corpus does not close parent S2-42. See the
 [protocol](../testing/S2_42Z_JCC_REL32_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42z--long64-jzjnz-near-rel32-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42z-jcc-rel32-corpus).
+
+
+## S2-42aa — deterministic BSWAP EAX/RAX corpus
+
+S2-42aa covers exactly the existing S2-15b BSWAP forms: 0F C8 (BSWAP EAX)
+and 48 0F C8 (BSWAP RAX). Each width has 16 pinned controls and 1,024 unique
+generated architectural inputs. A standalone integer oracle serializes the old
+operand into little-endian bytes, reverses them, and checks the result. For
+EAX, it verifies the high half of RAX is zeroed; for RAX, all 64 bits are
+replaced. Both forms preserve full RFLAGS and all other GPRs, leave execute-only
+code unchanged, retire once, stop normally, and raise no exception.
+
+All 2,080 cases passed twice locally (4,160 attempts). Strict saved replay
+passed with exact stdout, fixture/corpus digests, executable identity, source
+revision, build, host, command, working directory, and selected environment
+checks. Eleven focused tests passed, including unique low32 operands per width,
+exact integer evidence counts, malformed-JSON checkpoint preservation, and
+revision mutation. The explicit native request records `not_run_form_not_admitted`
+and `backend_execution=not_started`; native and physical execution remain
+not_run. This selected corpus does not close S2-15b or parent S2-42. See the
+[protocol](../testing/S2_42AA_BSWAP_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42aa--deterministic-bswap-eaxrax-corpus), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42aa-bswap-corpus).

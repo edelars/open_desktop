@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_42aa_bswap_32_c09",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten S2-42aa exact encoding, width=32, register value and boundary identity.",
+    "specification": "Intel SDM revision 093, Vol. 2A BSWAP: opcode 0F C8+rd reverses bytes in a 32-bit GPR; REX.W + 0F C8 reverses bytes in a 64-bit GPR. A 32-bit GPR write zero-extends to 64 bits. BSWAP preserves flags.",
+    "specification_version": "Intel SDM revision 093, Vol. 2A BSWAP; Vol. 1 §3.4.1.1; project S2-15b/S2-42aa"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0xacd83f63aabbccdd",
+      "0x182b3a4d5c6f7e81",
+      "0xdeadbeeffedcba98",
+      "0xaabbccddeeff0011",
+      "0x5566778899aabbcc",
+      "0x8877665544332211",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0xaabbccddeeff0011",
+      "0xfedcba9876543210",
+      "0x0123456789abcdef",
+      "0x9988776655443322",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000417"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 2,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "0fc8",
+      "comparison_mask_hex": "ffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100002",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

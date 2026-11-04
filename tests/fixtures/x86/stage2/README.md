@@ -9405,3 +9405,14 @@ architectural inputs. All 1,056 cases passed twice locally with independent
 signed next-RIP-relative oracle and strict saved replay. Native is denied before
 backend execution. See the
 [S2-42z protocol](../../../../docs/testing/S2_42Z_JCC_REL32_CORPUS.md).
+
+
+### S2-42aa BSWAP corpus
+
+s2_42aa_bswap_register_controls/ contains 16 pinned controls each for exact
+0F C8 (BSWAP EAX) and 48 0F C8 (BSWAP RAX). The corpus adds 1,024 unique
+generated inputs per width. The independent byte-reversal oracle checks EAX
+zero-extension, full RAX results, preserved flags and other GPRs, unchanged
+code, and retirement. All 2,080 cases passed twice locally with strict saved
+replay. Native is denied before backend execution. See the
+[S2-42aa protocol](../../../../docs/testing/S2_42AA_BSWAP_CORPUS.md).

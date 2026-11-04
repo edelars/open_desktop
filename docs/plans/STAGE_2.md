@@ -737,7 +737,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42w | Local qword memory XCHG corpus | Two pinned old-memory controls + 1,024 unique generated inputs for exact 48 87 00 (XCHG qword [RAX],RAX); all 1,026×2 passed local interpreter and strict saved replay; explicit native request blocked before backend; no atomicity/SMP claim; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42W_XCHG_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42w--local-qword-memory-xchg-corpus) |
 | [x] | S2-42x | qword register-register XADD alias corpus | 16 pinned boundary controls + 1,024 unique generated inputs for 48 0F C1 C0 (XADD RAX,RAX); 1,040×2 passed locally with strict saved replay and exact provenance; native blocked/not_started; S2-21/39/40 and parent S2-42 remain open; [protocol](../testing/S2_42X_XADD_REGISTER_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42x--qword-register-xadd-alias-corpus) |
 | [x] | S2-42y | bare qword memory XADD alias corpus | 8 pinned controls + 1,024 unique generated inputs for exact S2-21d bytes 48 0F C1 00 (XADD qword [RAX],RAX) across adjacent regions at 0x300100; 1,032×2 passed locally with strict saved replay; native blocked/not_started; no SMP/hardware atomicity claim; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42Y_XADD_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42y--bare-qword-memory-xadd-alias-corpus) |
-| [x] | S2-42z | Long64 JZ/JNZ near rel32 corpus | 32 pinned controls + 1,024 unique generated cases for exact 0F 84/85 rel32, covering ZF taken/fallthrough and signed displacement boundaries; all 1,056×2 passed locally with strict saved replay; native blocked/not_started; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42Z_JCC_REL32_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42z--long64-jzjnz-near-rel32-corpus) || [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
+| [x] | S2-42z | Long64 JZ/JNZ near rel32 corpus | 32 pinned controls + 1,024 unique generated cases for exact 0F 84/85 rel32, covering ZF taken/fallthrough and signed displacement boundaries; all 1,056×2 passed locally with strict saved replay; native blocked/not_started; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42Z_JCC_REL32_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42z--long64-jzjnz-near-rel32-corpus) |
+| [x] | S2-42aa | BSWAP EAX/RAX local corpus | 16 pinned controls + 1,024 unique generated inputs per width for exact `0F C8` and `48 0F C8`; all 2,080 cases ×2 passed locally with zero-extension, preserved flags/full state and strict saved replay; native blocked/not_started; parent S2-42 and S2-15/21/39/40 remain open; [protocol](../testing/S2_42AA_BSWAP_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42aa--deterministic-bswap-eaxrax-corpus) || [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
 Проверки и генерация добавляются с каждой группой; S2-42 объединяет готовые наборы, а не откладывает тесты до конца. Независимые ветки допустимо выполнять последовательно в удобном порядке после их prerequisites. Критический первый срез: `00 → 01 → 02 → 03/04 → 05 → 06 → 07 → 08 → 09`.
@@ -20353,3 +20354,23 @@ remain not_run. This bounded JZ/JNZ corpus does not close parent S2-42. See the
 [protocol](../testing/S2_42Z_JCC_REL32_CORPUS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42z-jcc-rel32-corpus),
 and [report](../reports/STAGE_2_REPORT.md#s2-42z--long64-jzjnz-near-rel32-corpus).
+
+### S2-42aa — deterministic BSWAP EAX/RAX corpus
+
+Adds 16 pinned controls and 1,024 generated unique architectural inputs for
+each exact S2-15b form: 0F C8 (BSWAP EAX) and 48 0F C8 (BSWAP RAX). The
+independent byte-reversal oracle checks little-endian byte order, EAX zero
+extension into RAX[63:32], full RAX replacement for the 64-bit form, preserved
+RFLAGS and other GPRs, unchanged execute-only code, one retirement, and normal
+stop.
+
+All 2,080 cases passed twice locally (4,160 attempts) with strict saved replay,
+exact stdout, runner identity, source revision, host, command, and environment
+provenance. Eleven focused tests passed, including unique low32 EAX inputs,
+strict integer evidence counts, malformed JSON checkpoint preservation, and
+revision mutation. Native was denied before backend execution; native and
+physical evidence remain not_run. This selected BSWAP corpus does not close
+S2-15b or parent S2-42. See the
+[protocol](../testing/S2_42AA_BSWAP_CORPUS.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42aa-bswap-corpus),
+and [report](../reports/STAGE_2_REPORT.md#s2-42aa--deterministic-bswap-eaxrax-corpus).
