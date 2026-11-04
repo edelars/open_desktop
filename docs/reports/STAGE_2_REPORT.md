@@ -17508,6 +17508,35 @@ Native, physical and JIT acceptance are not claimed; parent S2-42 and
 S2-39/S2-40 remain open. See [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md)
 and [plan](../plans/STAGE_2.md#s2-42m-deterministic-cvtsi2sd-interpreter-corpus).
 
+## S2-42l — REP STOSB partial-progress #GP reducer
+
+Added literal Long64 fixture for exact bytes `F3 AA`, with address-size 64,
+`RCX=3`, and `RDI=0x00007fff_ffff_fffe`. Two stores commit before the next
+element crosses the canonical boundary and raises architectural #GP(0).
+Evidence records `RCX=1`, `RDI=0x00008000_0000_0000`, memory bytes `FE FE`, RIP
+at the instruction entry, zero retirement, and no fault address.
+
+The bounded AL-only reducer preserves the fixed count, address, instruction,
+layout, and initial state; it only clears selected AL bits, with corresponding
+expected destination bytes. It requires the same #GP(0) and exact partial
+progress, captures full callback results and journal/digest, and supports replay.
+Author validation passed `fixture_v2` (583), `od-testkit` (500), workspace
+offline check, formatting, CLI execution and raw-fixture digest preservation.
+Post-transfer, the complete `od-testkit` suite (500 tests), focused CLI
+regression, formatting, and `tools/check_layout.py` also passed on main.
+Independent Sol/high review found no blocking findings.
+Native and physical execution of this high-boundary mapping are `not_run`;
+native admission rejects this mapping, while other mapped STOSB cases remain a
+separate native-admitted scope. S2-42 and dependencies S2-21/S2-39/S2-40 remain
+open. There are no dedicated regressions for budget exhaustion, callback
+flakiness, or a wrong fault class; progress-drift rejection and synthetic
+preservation of the exact destination-byte mismatch are tested. The normal
+literal fixture returns `no_initial_mismatch`, so real interpreter defect
+reduction is unproven.
+
+See the [S2-42l protocol](../testing/S2_42L_REP_FAULT_REDUCER.md) and
+[Stage 2 plan](../plans/STAGE_2.md#s2-42l-rep-stosb-partial-progress-gp-reducer).
+
 ## S2-27g — exact Long64 SWAPGS
 
 Implemented exact bare `0F 01 F8` execution under explicit `SwapgsV1` with

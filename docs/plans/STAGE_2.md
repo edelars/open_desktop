@@ -723,6 +723,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42i | Deterministic positive REP STOSB corpus | 1,024 generated + 36 handwritten cases for count 0–8 and DF=0/1; all 1,060 interpreter/oracle cases matched; Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42i--deterministic-rep-stosb-corpus) |
 | [x] | S2-42j | Native qword GPR PUSH/POP reducer adapter | `NativeX86` identity checked on every callback; 13 focused reducer tests and Linux-target all-target check; incomplete native outcomes save evidence and return nonzero; Linux runtime/physical `not_run`; [protocol](../testing/S2_42J_NATIVE_STACK_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42j--native-qword-gpr-pushpop-reducer-adapter) |
 | [x] | S2-42k | Bounded forward JZ/JNZ NOP-deletion reducer | Preserves the same MOV-RBX branch target via instruction map/rel8 recomputation; 10 reducer tests + replay integration; local fixture `NoInitialMismatch`, synthetic opposite-path reduction; native/physical `not_run`; [protocol](../testing/S2_42K_BRANCH_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer) |
+| [x] | S2-42l | REP STOSB partial-progress #GP reducer | Literal #GP(0) fixture plus bounded AL-only fault reducer/replay; exact RCX/RDI/memory progress and unchanged RIP/retirement; native/physical `not_run`; [protocol](../testing/S2_42L_REP_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42l--rep-stosb-partial-progress-gp-reducer) |
 | [x] | S2-42m | Deterministic CVTSI2SD interpreter corpus | 1,024 generated + 9 literal controls; all 1,033 fixtures ×2 passed integer-only binary64 oracle; native profile closed and recorded `not_run_profile_closed`; [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
@@ -8664,6 +8665,28 @@ opposite-path tests подтвердили NOP reduction с сохранение
 
 См. [протокол S2-42k](../testing/S2_42K_BRANCH_REDUCER.md) и
 [отчёт](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer).
+
+### S2-42l. REP STOSB partial-progress #GP reducer
+
+**Статус:** добавлен literal fixture для `F3 AA` в Long64 с адресом
+`0x00007fff_ffff_ffff` и начальным `RDI=...fffe`, `RCX=3`. Две записи
+успешны, затем следующий элемент пересекает canonical boundary и даёт #GP(0):
+`RCX=1`, `RDI=0x00008000_0000_0000`, память содержит `FE FE`, RIP остаётся
+на entry, retirement равен нулю, fault address отсутствует.
+
+Добавлен ограниченный reducer с независимой проверкой этого fault class и
+частичного прогресса, полным result/journal/digest и replay. Меняются только
+AL и соответствующие записанные байты; layout, count, адреса, команда и
+начальное состояние фиксированы. Проверки автора: `fixture_v2` 583/583,
+`od-testkit` 500/500, workspace offline check, форматирование и CLI replay;
+независимое Sol/high review не нашло блокеров. После переноса на main также
+повторены полный набор `od-testkit` (500 тестов), focused CLI regression,
+форматирование и layout check. Native и
+physical запуски `not_run`; общий S2-42 и зависимости S2-21/39/40 остаются
+открытыми.
+
+См. [протокол S2-42l](../testing/S2_42L_REP_FAULT_REDUCER.md) и
+[отчёт](../reports/STAGE_2_REPORT.md#s2-42l--rep-stosb-partial-progress-gp-reducer).
 
 ### S2-42m. Deterministic CVTSI2SD interpreter corpus
 

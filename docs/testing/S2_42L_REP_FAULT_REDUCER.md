@@ -9,8 +9,9 @@ next destination is noncanonical and raises architectural `#GP(0)`.
 
 The implementation changes no CPU behavior, fixture schema, or backend
 admission. It excludes injected faults and requires the literal architectural
-exception. Native and physical execution remain `not_run`; native admission
-does not accept this high-boundary mapping.
+exception. Native and physical execution of this high-boundary mapping remain
+`not_run`; native admission does not accept this mapping. This does not close
+native admission for other mapped STOSB cases in `s2-long-integer-v1`.
 
 This follows the fault-specific predicate in the
 [S2-42f reducer contract](S2_42_REDUCER_CONTRACT.md) and the REP progress
@@ -71,3 +72,10 @@ destination byte while preserving the exact exception and progress. It checks
 that the reducer keeps that precise mismatch through AL-only reduction. This
 synthetic callback is reducer evidence, not evidence of a CPU defect. A normal
 CLI reducer run on the literal fixture currently reports `no_initial_mismatch`.
+
+The reducer rejects invalid, unstable, budget-exhausted, and wrong-fault
+callbacks, but this slice has no dedicated regression for budget exhaustion,
+callback flakiness, or a wrong fault class. Progress-drift rejection and
+synthetic preservation of the exact destination-byte mismatch are covered. The
+normal fixture's `no_initial_mismatch` does not demonstrate reduction of a real
+interpreter defect.
