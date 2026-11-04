@@ -739,6 +739,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42y | bare qword memory XADD alias corpus | 8 pinned controls + 1,024 unique generated inputs for exact S2-21d bytes 48 0F C1 00 (XADD qword [RAX],RAX) across adjacent regions at 0x300100; 1,032×2 passed locally with strict saved replay; native blocked/not_started; no SMP/hardware atomicity claim; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42Y_XADD_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42y--bare-qword-memory-xadd-alias-corpus) |
 | [x] | S2-42z | Long64 JZ/JNZ near rel32 corpus | 32 pinned controls + 1,024 unique generated cases for exact 0F 84/85 rel32, covering ZF taken/fallthrough and signed displacement boundaries; all 1,056×2 passed locally with strict saved replay; native blocked/not_started; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42Z_JCC_REL32_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42z--long64-jzjnz-near-rel32-corpus) |
 | [x] | S2-42aa | BSWAP EAX/RAX local corpus | 16 pinned controls + 1,024 unique generated inputs per width for exact `0F C8` and `48 0F C8`; all 2,080 cases ×2 passed locally with zero-extension, preserved flags/full state and strict saved replay; native blocked/not_started; parent S2-42 and S2-15/21/39/40 remain open; [protocol](../testing/S2_42AA_BSWAP_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42aa--deterministic-bswap-eaxrax-corpus) |
+| [x] | S2-42ab | DIV BL `#DE` local fault corpus | Eight pinned controls + 1,024 unique generated fault cases, evenly split between divisor zero and byte quotient overflow; 1,032×2 passed with unchanged full state, #DE vector 0, and zero retirement; strict saved replay; native blocked before backend; S2-20a/S2-14 behavior only, no native fault-delivery claim; [protocol](../testing/S2_42AB_DIV_BL_ERROR_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42ab--div-bl-divide-error-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -20375,3 +20376,23 @@ S2-15b or parent S2-42. See the
 [protocol](../testing/S2_42AA_BSWAP_CORPUS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42aa-bswap-corpus),
 and [report](../reports/STAGE_2_REPORT.md#s2-42aa--deterministic-bswap-eaxrax-corpus).
+
+### S2-42ab — DIV BL divide-error corpus
+
+Adds eight pinned controls and 1,024 unique generated fault inputs for exact
+Long64 `F6 F3` (`DIV BL`), evenly split between divisor-zero and unsigned-byte
+quotient overflow. The independent integer predicate admits only `BL == 0` or
+`AX // BL > 255`; valid divisions, including `AX = BL * 256 - 1`, are rejected
+from the fault corpus. Full snapshots require unchanged GPRs/RFLAGS/definedness,
+faulting RIP, unchanged code, #DE vector 0, unavailable error code/address,
+and zero retirement.
+
+All 1,032 cases passed twice locally; strict saved replay and eight focused
+tests passed, including coordinated revision tampering, exact schema/version,
+malformed stdout checkpoint preservation, and rejecting boolean vector values.
+The native request is blocked before backend invocation because this fault
+delivery is not admitted. No remote host was contacted and no hardware #DE
+claim is made. See the
+[protocol](../testing/S2_42AB_DIV_BL_ERROR_CORPUS.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ab-div-bl-error-corpus),
+and [report](../reports/STAGE_2_REPORT.md#s2-42ab--div-bl-divide-error-corpus).

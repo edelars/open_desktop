@@ -9416,3 +9416,15 @@ zero-extension, full RAX results, preserved flags and other GPRs, unchanged
 code, and retirement. All 2,080 cases passed twice locally with strict saved
 replay. Native is denied before backend execution. See the
 [S2-42aa protocol](../../../../docs/testing/S2_42AA_BSWAP_CORPUS.md).
+
+
+### S2-42ab DIV BL #DE corpus
+
+s2_42ab_div_bl_fault_controls/ contains eight pinned controls for exact
+`F6 F3` (DIV BL), covering divisor zero and byte quotient overflow. The corpus
+adds 1,024 unique generated fault inputs, 512 per class. All 1,032 cases passed
+twice locally with an independent integer predicate and strict saved replay.
+Expected state preserves registers, flags, RIP, and code, observes #DE vector 0,
+and retires no instruction. Native is blocked before backend; no hardware #DE
+claim is made. See the
+[S2-42ab protocol](../../../../docs/testing/S2_42AB_DIV_BL_ERROR_CORPUS.md).

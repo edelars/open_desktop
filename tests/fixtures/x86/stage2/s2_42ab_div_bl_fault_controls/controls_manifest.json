@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "profile": "s2-long-integer-v1",
+  "control_count": 8,
+  "fixtures": [
+    {
+      "case_id": "s2_42ab_div_bl_fault_c00",
+      "fixture_sha256": "2a45b9abcff5cf05445c0cb28c34b8649d0eee0f9d3e1d6b5c789207b0decaeb",
+      "expected_sha256": "c22602adb5e938a038e25756d9a205c99c1e152597bedec2111cbcd4a1f482a4"
+    },
+    {
+      "case_id": "s2_42ab_div_bl_fault_c01",
+      "fixture_sha256": "4b437155d52d9583f2ec52b40e812b39362cbc2bdecbf929f1962352e7f2818c",
+      "expected_sha256": "a8f194f2e57cde75fdf96cbcd9d97be329ace1aedd892321e565e8f17b1d2093"
+    },
+    {
+      "case_id": "s2_42ab_div_bl_fault_c02",
+      "fixture_sha256": "3d39101e7a5ad4332bfea807d5799127a8f94ed7c001093ab55056d7c7818175",
+      "expected_sha256": "025e94ee2cdc0cdbc3e2d9585048b62cb3613e2fd8f27a0e542cf53d0732c7ad"
+    },
+    {
+      "case_id": "s2_42ab_div_bl_fault_c03",
+      "fixture_sha256": "bfc2f417e3643f35d9006a2169c7acfbd2b4987df01f80b8cec6a8fa8fcba39d",
+      "expected_sha256": "2ae140cf3ef2080fd430a6062115e45a3904acf8da0ffdcc71f96ad93e6b5c05"
+    },
+    {
+      "case_id": "s2_42ab_div_bl_fault_c04",
+      "fixture_sha256": "9e1e7e00f3fa21e01088906d363492987f3e07154acac1b29d1500333fdb6069",
+      "expected_sha256": "d6b2e34288fcfa93deae06322d9c62932eba66dfe83456f4304d6c58de86e63f"
+    },
+    {
+      "case_id": "s2_42ab_div_bl_fault_c05",
+      "fixture_sha256": "92da0c8f36ee8f2d6b3d393acd39a75a205ddf752773227202a98906055f6872",
+      "expected_sha256": "063fb7c78821f206c0e84d25e66b846ef5c2f140a4f4559d89e9ef2583531b54"
+    },
+    {
+      "case_id": "s2_42ab_div_bl_fault_c06",
+      "fixture_sha256": "3637682f089a1de44af17fc5ebd5ad80e14abedc873a2f3f7ce89d6957ee3cc2",
+      "expected_sha256": "54a2a029a267374226a4304a2beefbd21ccedbfdc5f61050e9f27b187521479e"
+    },
+    {
+      "case_id": "s2_42ab_div_bl_fault_c07",
+      "fixture_sha256": "453f4fa39374c306d947c07e826e19d53c8a9ff12c3efdace5209c96ebfade9a",
+      "expected_sha256": "5c8e4021a2ed62f6c3e0a1631f622861801efda0bc0901c1c00958c89d3e0f39"
+    }
+  ],
+  "expected_sha256": "272eaef929430a5772a9634799f60428dd916b56c58d7c087e9ea5be8ae9a766"
+}

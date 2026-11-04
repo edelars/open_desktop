@@ -24679,3 +24679,24 @@ not_run. This selected corpus does not close S2-15b or parent S2-42. See the
 [protocol](../testing/S2_42AA_BSWAP_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42aa--deterministic-bswap-eaxrax-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42aa-bswap-corpus).
+
+
+## S2-42ab — DIV BL divide-error corpus
+
+S2-42ab covers only exact Long64 `F6 F3` (`DIV BL`) #DE cases. Eight pinned
+controls and 1,024 unique generated inputs cover divisor zero and unsigned-byte
+quotient overflow in a balanced split. The independent predicate accepts only
+`BL == 0` or `AX // BL > 255`; successful division boundaries are rejected as
+invalid fault inputs. The expected state keeps all GPRs, RFLAGS/definedness,
+RIP, and code unchanged, observes #DE vector 0 with unavailable error code and
+fault address, and requires zero retired instructions.
+
+All 1,032 cases passed twice locally (2,064 attempts). Strict saved replay
+passed; eight focused tests cover exact schema/version, coordinated revision
+tampering, malformed stdout checkpoint preservation, and integer-only vector
+validation. The native request is explicitly blocked before backend execution;
+no remote host was contacted. This result does not establish native or physical
+#DE delivery, broader fault priority, or completion of S2-20a/S2-14 or parent
+S2-42. See the [protocol](../testing/S2_42AB_DIV_BL_ERROR_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42ab--div-bl-divide-error-corpus), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ab-div-bl-error-corpus).
