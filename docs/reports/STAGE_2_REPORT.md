@@ -17487,6 +17487,27 @@ fault/progress reductions. Parent S2-42 and its S2-21/S2-39/S2-40 dependencies
 remain open. See [protocol](../testing/S2_42K_BRANCH_REDUCER.md) and
 [plan](../plans/STAGE_2.md#s2-42k-bounded-forward-jzjnz-nop-deletion-reducer).
 
+## S2-42m — deterministic CVTSI2SD interpreter corpus
+
+Added 1,024 fixed-seed fixtures plus nine literal controls for the exact
+interpreter-only profile `s2-long-cvtsi2sd-r32-exact-v1` and opcode
+`F2 0F 2A C0`. The independent signed-i32-to-binary64 oracle constructs result
+bits from integer sign, exponent and significand shifts; no host floating-point
+operation or production CPU helper is used. Comparisons include all GPR/XMM
+state, preserved XMM0.high64, RFLAGS/definedness, MXCSR/control fields, code
+bytes, stop outcome and retirement.
+
+On main, all 1,033 fixtures passed two local interpreter executions and the
+saved-results verifier rechecked fixture/result digests, schema/profile/backend,
+runner build/machine identity and full result state. Six focused Python tests,
+Python compilation, `cargo build --offline -p od-runner`, generation, exact
+manifest verification, layout, diff-check and Graphify update passed. This
+profile is explicitly closed to native execution: `--native` fails nonzero and
+successful interpreter evidence records `native=not_run_profile_closed`.
+Native, physical and JIT acceptance are not claimed; parent S2-42 and
+S2-39/S2-40 remain open. See [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md)
+and [plan](../plans/STAGE_2.md#s2-42m-deterministic-cvtsi2sd-interpreter-corpus).
+
 ## S2-27g — exact Long64 SWAPGS
 
 Implemented exact bare `0F 01 F8` execution under explicit `SwapgsV1` with

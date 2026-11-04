@@ -723,6 +723,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42i | Deterministic positive REP STOSB corpus | 1,024 generated + 36 handwritten cases for count 0–8 and DF=0/1; all 1,060 interpreter/oracle cases matched; Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42i--deterministic-rep-stosb-corpus) |
 | [x] | S2-42j | Native qword GPR PUSH/POP reducer adapter | `NativeX86` identity checked on every callback; 13 focused reducer tests and Linux-target all-target check; incomplete native outcomes save evidence and return nonzero; Linux runtime/physical `not_run`; [protocol](../testing/S2_42J_NATIVE_STACK_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42j--native-qword-gpr-pushpop-reducer-adapter) |
 | [x] | S2-42k | Bounded forward JZ/JNZ NOP-deletion reducer | Preserves the same MOV-RBX branch target via instruction map/rel8 recomputation; 10 reducer tests + replay integration; local fixture `NoInitialMismatch`, synthetic opposite-path reduction; native/physical `not_run`; [protocol](../testing/S2_42K_BRANCH_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer) |
+| [x] | S2-42m | Deterministic CVTSI2SD interpreter corpus | 1,024 generated + 9 literal controls; all 1,033 fixtures ×2 passed integer-only binary64 oracle; native profile closed and recorded `not_run_profile_closed`; [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -8663,6 +8664,27 @@ opposite-path tests подтвердили NOP reduction с сохранение
 
 См. [протокол S2-42k](../testing/S2_42K_BRANCH_REDUCER.md) и
 [отчёт](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer).
+
+### S2-42m. Deterministic CVTSI2SD interpreter corpus
+
+**Статус:** добавлен local corpus для exact профиля
+`s2-long-cvtsi2sd-r32-exact-v1`, только `F2 0F 2A C0`, Long64, one mapping,
+budget 1, stop на `entry+4`. Он содержит 1,024 fixed-seed fixtures и девять
+literal controls. Независимый oracle строит signed i32→binary64 bits целочисленной
+арифметикой; host floating point и production CPU helpers не используются.
+Проверяется полный GPR/XMM state (включая сохранение XMM0.high64), flags,
+definedness, MXCSR, controls, code bytes, exit и retirement.
+
+Все 1,033 fixtures прошли по два interpreter запуска, а saved-result verifier
+повторно проверил fixture/result digests, schema/profile/backend/build/machine и
+полное состояние. Шесть Python tests, py_compile, runner build, generation,
+manifest verification, layout, diff-check и Graphify update прошли на main.
+Профиль явно закрыт для native: `--native` завершает работу с ненулевым кодом,
+а successful interpreter summary пишет `native=not_run_profile_closed`. Native,
+physical и JIT не заявляются. S2-39/S2-40 и общий S2-42 остаются открытыми.
+
+См. [протокол S2-42m](../testing/S2_42M_CVTSI2SD_CORPUS.md) и
+[отчёт](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus).
 
 ### S2-43. Диагностический interpreter и граница JIT
 
