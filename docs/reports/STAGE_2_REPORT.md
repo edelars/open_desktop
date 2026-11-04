@@ -24614,3 +24614,24 @@ S2-42. See the
 [protocol](../testing/S2_42X_XADD_REGISTER_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42x--qword-register-xadd-alias-corpus),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42x-register-xadd-corpus).
+
+
+## S2-42y — bare qword memory XADD alias corpus
+
+S2-42y covers the exact bare S2-21d encoding 48 0F C1 00 (XADD qword
+[RAX],RAX), with LOCK absent. Eight pinned controls and 1,024 unique generated
+inputs use initial RAX=0x3000fb, so the qword operand crosses adjacent private
+regions at 0x300100. The independent oracle checks the old memory value in RAX,
+the wrapping sum in memory, ADD flags, all other GPRs, defined RFLAGS, canaries,
+RIP+4, one retirement, stop, and no exception.
+
+All 1,032 cases passed twice locally (2,064 executions), and strict saved replay
+passed. Focused tests passed 11/11, including exact outer/snapshot schemas and
+rejection of malformed frozen stdout during saved replay. The explicit native
+request records blocked/not_started before backend execution. Native and physical
+execution remain not_run. This result does not establish one-call atomicity,
+rollback, SMP behavior, hardware atomicity, or broader memory ordering, and it
+does not close S2-21 or parent S2-42. See the
+[protocol](../testing/S2_42Y_XADD_MEMORY_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42y--bare-qword-memory-xadd-alias-corpus), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42y-bare-memory-xadd-corpus).

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "profile": "s2-long-integer-v1",
+  "control_count": 8,
+  "fixtures": [
+    {
+      "case_id": "s2_42y_xadd_qword_memory_c00",
+      "fixture_sha256": "41fa46f4245b543531747bc8992e6915bde34177c8ba4bac3306fd3ea4ae4736",
+      "expected_sha256": "551728a078ef3e1875dea81b70d0b0fee2b784fad00474e262540bd47fe80261"
+    },
+    {
+      "case_id": "s2_42y_xadd_qword_memory_c01",
+      "fixture_sha256": "4ce9cb4682e15f2886257bc5e0b762fd51518b9cadd8908929b8cb8ba912a94f",
+      "expected_sha256": "060ee6ad19671e09aac7bbd4d9efef873b516038bcb6f8e18fedc05b06ffe6de"
+    },
+    {
+      "case_id": "s2_42y_xadd_qword_memory_c02",
+      "fixture_sha256": "e360be4f5080c2428e9a689b43e94b020dbfbe8b74d0ea2282b58c30372af2ef",
+      "expected_sha256": "42e45a769a8bc727b3a72726d9e52fb2a9f5005b5de1d063506622faf19a986b"
+    },
+    {
+      "case_id": "s2_42y_xadd_qword_memory_c03",
+      "fixture_sha256": "f8d56c83275a7e1326ec401e87a1ae7e955f39edef0b2ac46ac2542ee02b6963",
+      "expected_sha256": "428a048464488f2a48fdaec9df179f3a3b461ac0d98ab55069f73698109ff81a"
+    },
+    {
+      "case_id": "s2_42y_xadd_qword_memory_c04",
+      "fixture_sha256": "63fcff2ab093264232973b58de33cebbf39c904ead8029189475a302ab2808a7",
+      "expected_sha256": "8d4cb93568a48f6f3222419ca38368f42ffb85511c7e948e3dbcb8ac19553236"
+    },
+    {
+      "case_id": "s2_42y_xadd_qword_memory_c05",
+      "fixture_sha256": "c35af1709c72f5ecfa93600d914bfdd38370ca99d10a15ebf2a21fd5d1373b9f",
+      "expected_sha256": "8b7223d8bd6cd35581c14203e19eb53030e891e7353ae3b219f1ffe2942b0e36"
+    },
+    {
+      "case_id": "s2_42y_xadd_qword_memory_c06",
+      "fixture_sha256": "5794e41b6938dbf0e86d38f438ea3ccc847e4b4c8393fc2422a5bd5125ffbe8b",
+      "expected_sha256": "61ca1ba8dbacd1814d6a3024b10f0a7084275025b227c1c0566019fccc617c52"
+    },
+    {
+      "case_id": "s2_42y_xadd_qword_memory_c07",
+      "fixture_sha256": "ed46a7a9a425359de7f119c817573ea032bbcd158f84af912d67354cd64ab653",
+      "expected_sha256": "1ca7e31429b47e639ff167ddaeb104277bf9314fc800eebbae1c19bb442a5165"
+    }
+  ],
+  "expected_sha256": "7376fa69e82a7a4858eb62855312953535fac130ff3e3285ea1ef1b6dc2d58c8"
+}

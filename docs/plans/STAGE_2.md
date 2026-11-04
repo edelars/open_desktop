@@ -735,6 +735,8 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42u | Exact bare REX.W qword memory CMPXCHG corpus | Two pinned equal/mismatch controls + 1,024 unique generated inputs for `48 0F B1 18`; generated classes cover equal/mismatch, CF=0/1 and OF=0/1; all 1,026×2 passed local interpreter and saved replay verification with cwd/environment provenance; interruption checkpoints preserve completed attempts and list missing repeats; native explicitly denied before backend; parent S2-42 and dependencies S2-21/39/40 remain open; [protocol](../testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42u--exact-qword-memory-cmpxchg-corpus) |
 | [x] | S2-42v | qword register CMPXCHG corpus | 16 pinned controls across both S2-21c encodings + 1,024 unique generated inputs; equal/mismatch and CF/PF/AF/ZF/SF/OF boundaries; all 1,040×2 passed locally with strict saved replay; native blocked before backend; S2-21/39/40 and parent S2-42 remain open; [protocol](../testing/S2_42V_CMPXCHG_REGISTER_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42v--register-cmpxchg-local-corpus) |
 | [x] | S2-42w | Local qword memory XCHG corpus | Two pinned old-memory controls + 1,024 unique generated inputs for exact 48 87 00 (XCHG qword [RAX],RAX); all 1,026×2 passed local interpreter and strict saved replay; explicit native request blocked before backend; no atomicity/SMP claim; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42W_XCHG_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42w--local-qword-memory-xchg-corpus) |
+| [x] | S2-42x | qword register-register XADD alias corpus | 16 pinned boundary controls + 1,024 unique generated inputs for 48 0F C1 C0 (XADD RAX,RAX); 1,040×2 passed locally with strict saved replay and exact provenance; native blocked/not_started; S2-21/39/40 and parent S2-42 remain open; [protocol](../testing/S2_42X_XADD_REGISTER_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42x--qword-register-xadd-alias-corpus) |
+| [x] | S2-42y | bare qword memory XADD alias corpus | 8 pinned controls + 1,024 unique generated inputs for exact S2-21d bytes 48 0F C1 00 (XADD qword [RAX],RAX) across adjacent regions at 0x300100; 1,032×2 passed locally with strict saved replay; native blocked/not_started; no SMP/hardware atomicity claim; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42Y_XADD_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42y--bare-qword-memory-xadd-alias-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -20295,7 +20297,6 @@ focused S2-21a tests. S2-21 and parent S2-42 remain open. See the
 [protocol](../testing/S2_42W_XCHG_MEMORY_CORPUS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42w-qword-memory-xchg-corpus),
 and [report](../reports/STAGE_2_REPORT.md#s2-42w--local-qword-memory-xchg-corpus).
-| [x] | S2-42x | qword register-register XADD alias corpus | 16 pinned boundary controls + 1,024 unique generated inputs for 48 0F C1 C0 (XADD RAX,RAX); 1,040×2 passed locally with strict saved replay and exact provenance; native blocked/not_started; S2-21/39/40 and parent S2-42 remain open; [protocol](../testing/S2_42X_XADD_REGISTER_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42x--qword-register-xadd-alias-corpus) |
 
 ### S2-42x — qword register XADD alias corpus
 
@@ -20315,3 +20316,21 @@ S2-21 or parent S2-42. See the
 [protocol](../testing/S2_42X_XADD_REGISTER_CORPUS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42x-register-xadd-corpus),
 and [report](../reports/STAGE_2_REPORT.md#s2-42x--qword-register-xadd-alias-corpus).
+
+### S2-42y — bare qword memory XADD alias corpus
+
+Adds eight pinned controls and 1,024 deterministic generated cases for exact
+48 0F C1 00 (XADD qword [RAX],RAX), with LOCK absent. Initial RAX=0x3000fb
+places the operand across adjacent private regions at 0x300100. The independent
+integer oracle checks final RAX against old memory and final memory against the
+wrapping old-memory-plus-old-RAX sum, with defined ADD flags and full state.
+
+All 1,032 cases passed twice locally with strict saved replay and provenance.
+Focused regression tests passed 11/11, including strict outer and snapshot
+schemas and rejection of malformed frozen stdout during replay. Native execution
+is explicitly denied before backend invocation; native and physical results
+remain not_run. This corpus makes no atomic-call, rollback, SMP, or hardware
+atomicity claim and does not close S2-21 or parent S2-42. See the
+[protocol](../testing/S2_42Y_XADD_MEMORY_CORPUS.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42y-bare-memory-xadd-corpus),
+and [report](../reports/STAGE_2_REPORT.md#s2-42y--bare-qword-memory-xadd-alias-corpus).

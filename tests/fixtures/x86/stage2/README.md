@@ -9381,3 +9381,16 @@ defined RFLAGS, RIP, retirement, and unchanged execute-only code. All 1,040
 cases passed twice locally with saved replay verification. Native is denied
 before backend execution. See the
 [S2-42x protocol](../../../../docs/testing/S2_42X_XADD_REGISTER_CORPUS.md).
+
+
+### S2-42y bare memory XADD corpus
+
+s2_42y_xadd_qword_memory_controls/ contains eight pinned controls for exact
+48 0F C1 00 (XADD qword [RAX],RAX), with LOCK absent. Initial RAX=0x3000fb
+places the operand across adjacent regions at 0x300100. The corpus adds 1,024
+unique generated cases; all 1,032 passed twice locally with strict saved replay.
+The independent oracle checks the old-memory/new-register alias, wrapping sum,
+flags, full state, canaries, RIP, and retirement. Native execution is denied
+before backend invocation. No atomic-call, rollback, SMP, or hardware atomicity
+claim is made. See the
+[S2-42y protocol](../../../../docs/testing/S2_42Y_XADD_MEMORY_CORPUS.md).
