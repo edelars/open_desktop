@@ -66,8 +66,23 @@ binding может ссылаться только на полный `MemoryRegi
 committed-write callback. CPU `IN/OUT`, I/O privilege checks, guest exceptions
 и преобразование linear address остаются в `od-isa` и CPU bridge.
 
+## Диагностический CPU memory bridge
+
+`IdentityMemoryAdapter` реализует `od_isa::GuestMemory` поверх существующего
+`MachineBus` в явно названном flat identity mode: `linear == physical`. Он
+предназначен для проверки подключения интерпретатора к production RAM owner и
+не заявляет paging, TLB, CR3, CR2, A/D effects или полную Long64 machine.
+
+Adapter использует `AccessContext::page_privilege()`, сохраняет complete-or-no-
+change для одного RAM access, отклоняет fetch из MMIO и неподдержанные atomic/
+fence операции до эффектов. Ошибки machine/bus возвращаются как
+non-architectural `MemoryError::Backend`; adapter не создаёт `#PF`, не доставляет
+исключения и не хранит вторую карту памяти. Integration regression запускает
+существующий `od_isa::execute::run` через этот adapter и проверяет успешные
+fetch/load/store, faulting load, RIP/CPU state, retirement, RAM и callback.
+
 ## Следующие зависимости
 
-Следующий допустимый срез — MMIO/PIO bus и CPU bridge. `GuestMemory` из
+Следующий допустимый срез — uncached page walker. `GuestMemory` из
 `od-isa` принимает linear addresses и остаётся отдельным контрактом; прямое
 реализование этого trait на `PhysicalMemory` до page walker запрещено.

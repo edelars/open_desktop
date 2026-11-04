@@ -2,9 +2,10 @@
 
 ## Область
 
-Эта методика покрывает S4-02—S4-05: валидируемую physical map, production RAM
-owner, committed-write notification и синхронную MMIO/PIO bus. Она не проверяет
-paging, guest exceptions, APIC, JIT, firmware или Linux.
+Эта методика покрывает S4-02—S4-06: валидируемую physical map, production RAM
+owner, committed-write notification, синхронную MMIO/PIO bus и диагностический
+CPU memory bridge. Она не проверяет paging, guest exceptions, APIC, JIT,
+firmware или Linux.
 
 ## Локальный набор
 
@@ -32,10 +33,15 @@ git diff --check
 10. PIO endpoint `65536`, oversized range rejection и overlap/binding checks;
 11. unknown/misaligned/read-only device accesses без device side effects;
 12. отказ до dispatch для cross-window access без partial RAM/device effects.
+13. execution regression через `od_isa::execute::run` и
+    `IdentityMemoryAdapter`: fetch/load/store, unmapped fault, CPU state/RIP,
+    retirement, RAM и committed callback;
+14. explicit rejection atomic/fence operations в diagnostic flat mode.
 
 ## Интерпретация
 
-Успешные локальные тесты подтверждают только перечисленный Rust-контракт.
+Успешные локальные тесты подтверждают только перечисленный Rust-контракт и
+flat identity integration.
 Они не являются physical x86 evidence и не подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не
 являются автоматически архитектурными `#PF`.

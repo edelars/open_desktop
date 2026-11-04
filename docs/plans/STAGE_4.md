@@ -217,7 +217,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-06. Соединить CPU memory contract с машиной
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
 - **Где:** `crates/od-isa/src/`, `crates/od-machine/src/`, локальные contract tests.
 - **Сделать:** adapter получает access kind, privilege/context и выполняет fetch/read/write через machine memory. Сохранить complete-or-no-change одного вызова `GuestMemory`; при необходимом изменении контракта сначала согласовать всех callers и тесты.
 - **Проверка:** разные fetch/read/write permissions, RAM/MMIO routing, host error не становится `#PF`, fault возвращается без заранее изменённого CPU destination.
