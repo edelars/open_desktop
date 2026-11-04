@@ -686,20 +686,28 @@ fn reduce_push_pop_inner(args: &[String]) -> Result<ExitCode, String> {
         expected_reduced_sha256 = Some(sha256_hex(&expected_bytes));
         write_new(output_path.join("expected-reduced.json"), &expected_bytes)?;
     }
+    let runner_executable = std::env::current_exe()
+        .map_err(|error| format!("could not locate current runner executable: {error}"))?
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize runner executable: {error}"))?
+        .display()
+        .to_string();
     let original_artifact = output_path.join("original.case.json");
     let replay_original = format!(
-        "od-runner --fixture {} --engine interpreter --json",
+        "{} --fixture {} --engine interpreter --json",
+        shell_quote(&runner_executable),
         shell_quote(&original_artifact.display().to_string())
     );
     let reduced_artifact = output_path.join("reduced.case.json");
     let replay_reduced = reduced_bytes.as_ref().map(|_| {
         format!(
-            "od-runner --fixture {} --engine interpreter --json",
+            "{} --fixture {} --engine interpreter --json",
+            shell_quote(&runner_executable),
             shell_quote(&reduced_artifact.display().to_string())
         )
     });
     let argv_original = vec![
-        "od-runner".to_string(),
+        runner_executable.clone(),
         "--fixture".to_string(),
         original_artifact.display().to_string(),
         "--engine".to_string(),
@@ -708,7 +716,7 @@ fn reduce_push_pop_inner(args: &[String]) -> Result<ExitCode, String> {
     ];
     let argv_reduced = reduced_bytes.as_ref().map(|_| {
         vec![
-            "od-runner".to_string(),
+            runner_executable.clone(),
             "--fixture".to_string(),
             reduced_artifact.display().to_string(),
             "--engine".to_string(),
@@ -717,7 +725,7 @@ fn reduce_push_pop_inner(args: &[String]) -> Result<ExitCode, String> {
         ]
     });
     let argv_reducer = vec![
-        "od-runner".to_string(),
+        runner_executable,
         "--reduce-push-pop".to_string(),
         input_path.clone(),
         "--limit".to_string(),
