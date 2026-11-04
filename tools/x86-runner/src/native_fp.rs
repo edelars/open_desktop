@@ -65,6 +65,7 @@ pub(crate) fn native_profile_local_only(profile: od_testkit::v2::Profile) -> boo
             | od_testkit::v2::Profile::LongCmppsMemoryRaxV1
             | od_testkit::v2::Profile::LongMinsdMemoryRaxV1
             | od_testkit::v2::Profile::LongMaxpdMemoryUnmaskedRaxV1
+            | od_testkit::v2::Profile::LongMaxpsMemoryRaxV1
             | od_testkit::v2::Profile::LongMaxpsMemoryUnmaskedRaxV1
             | od_testkit::v2::Profile::LongMinpsMemoryUnmaskedRaxV1
             | od_testkit::v2::Profile::LongMaxsdMemoryRaxV1
@@ -298,6 +299,9 @@ mod tests {
 
     #[test]
     fn s2_38t_maxps_memory_profile_is_native_local_only() {
+        assert!(super::native_profile_local_only(
+            od_testkit::v2::Profile::LongMaxpsMemoryRaxV1
+        ));
         assert!(super::native_profile_local_only(
             od_testkit::v2::Profile::LongMaxpsMemoryUnmaskedRaxV1
         ));

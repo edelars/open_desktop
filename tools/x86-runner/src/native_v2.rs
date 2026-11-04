@@ -5686,9 +5686,17 @@ mod tests {
             }
         ]);
         let loaded = Fixture::from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(crate::native_fp::native_profile_local_only(
+            loaded.fixture.profile
+        ));
         let result = execute(&loaded);
-        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.outcome, Outcome::Unsupported { ref reason }
+            if reason == "this profile is local-only; native state does not observe every profile field"));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
+        assert!(matches!(
+            result.instructions_executed,
+            Observation::Unavailable { .. }
+        ));
     }
 
     #[test]
