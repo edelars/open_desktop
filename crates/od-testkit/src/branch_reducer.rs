@@ -1192,66 +1192,180 @@ mod tests {
     fn synthetic_opposite_branch_reduces_padding_without_changing_target_identity() {
         let fixture = template_fixture(BranchOpcode::Jz, true, 1, 1, 1);
         let digest = sha256_hex(JE_TAKEN);
-        let reduction = reduce_branch_fixture_with_input_digest(
-            &fixture,
-            &digest,
-            BRANCH_REDUCER_MAX_BUDGET,
-            |candidate| {
-                let candidate_digest = if candidate == &fixture {
-                    digest.clone()
-                } else {
-                    sha256_hex(&candidate.to_json().unwrap())
+        for backend in [Backend::Interpreter, Backend::NativeX86] {
+            let reduction = super::reduce_branch_fixture_with_backend_input_digest(
+                &fixture,
+                &digest,
+                BRANCH_REDUCER_MAX_BUDGET,
+                backend,
+                |candidate| {
+                    let candidate_digest = if candidate == &fixture {
+                        digest.clone()
+                    } else {
+                        sha256_hex(&candidate.to_json().unwrap())
+                    };
+                    let expected_path = super::expected_path(
+                        candidate,
+                        super::validate_branch_fixture(candidate).unwrap(),
+                    );
+                    Ok(synthetic_result_backend(
+                        candidate,
+                        &candidate_digest,
+                        super::opposite(expected_path),
+                        backend,
+                    ))
+                },
+            )
+            .unwrap();
+
+            assert_eq!(reduction.stop, BranchReductionStop::Reduced);
+            assert_eq!(reduction.actual_callbacks, 10);
+            assert_eq!(reduction.candidate_proposals, 3);
+            assert_eq!(reduction.accepted_candidates, 3);
+            assert_eq!(reduction.candidate_runs, 6);
+            assert_eq!(reduction.candidate_attempts.len(), 3);
+            assert!(
+                reduction
+                    .initial_results
+                    .iter()
+                    .chain(&reduction.final_results)
+                    .all(|result| result.backend == backend)
+            );
+            assert!(reduction.candidate_attempts.iter().all(|attempt| {
+                attempt.callbacks == 2
+                    && attempt.result_sha256.len() == 2
+                    && attempt.observed_outcomes.len() == 2
+                    && attempt.observed_fingerprint.is_some()
+                    && attempt.decision == super::BranchCandidateDecision::Accepted
+            }));
+            let mut source = fixture.clone();
+            let mut source_digest = digest.clone();
+            for (index, attempt) in reduction.candidate_attempts.iter().enumerate() {
+                assert_eq!(attempt.sequence, index + 1);
+                assert_eq!(attempt.source_sha256, source_digest);
+                let source_template = super::validate_branch_fixture(&source).unwrap();
+                let group = match attempt.deleted_nop_group.as_str() {
+                    "before_rax" => super::NopGroup::BeforeRax,
+                    "between_moves" => super::NopGroup::BetweenMoves,
+                    "after_rbx" => super::NopGroup::AfterRbx,
+                    other => panic!("unexpected NOP group {other}"),
                 };
-                let expected_path = super::expected_path(
-                    candidate,
-                    super::validate_branch_fixture(candidate).unwrap(),
+                let candidate = super::delete_group_nop(&source, source_template, group).unwrap();
+                let candidate_bytes =
+                    super::decode_hex(&candidate.memory[0].initial_bytes_hex).unwrap();
+                let source_bytes = super::decode_hex(&source.memory[0].initial_bytes_hex).unwrap();
+                let candidate_digest = sha256_hex(&candidate.to_json().unwrap());
+                assert_eq!(attempt.candidate_sha256, candidate_digest);
+
+                let target = attempt
+                    .instruction_map
+                    .iter()
+                    .find(|relocation| relocation.instruction == "mov_rbx_target")
+                    .unwrap();
+                let branch = attempt
+                    .instruction_map
+                    .iter()
+                    .find(|relocation| relocation.instruction == "jcc")
+                    .unwrap();
+                assert_eq!(
+                    &source_bytes[target.source_offset..target.source_offset + 2],
+                    &[0x48, 0xbb]
                 );
-                Ok(synthetic_result(
-                    candidate,
-                    &candidate_digest,
-                    super::opposite(expected_path),
-                ))
-            },
-        )
-        .unwrap();
-        assert_eq!(reduction.stop, BranchReductionStop::Reduced);
-        assert_eq!(reduction.accepted_candidates, 3);
-        assert_eq!(reduction.candidate_runs, 6);
-        assert_eq!(reduction.candidate_attempts.len(), 3);
-        assert_eq!(
-            reduction.candidate_attempts[0].decision,
-            super::BranchCandidateDecision::Accepted
-        );
-        assert_eq!(reduction.candidate_attempts[0].callbacks, 2);
-        assert_eq!(reduction.candidate_attempts[0].nops_before, 3);
-        assert_eq!(reduction.candidate_attempts[0].nops_after, 2);
-        assert_eq!(
-            reduction.candidate_attempts[0].instruction_map[2].instruction,
-            "mov_rbx_target"
-        );
-        assert_eq!(
-            reduction.candidate_attempts[0].instruction_map[2].source_offset,
-            14
-        );
-        assert_eq!(
-            reduction.candidate_attempts[0].instruction_map[2].candidate_offset,
-            13
-        );
-        assert_eq!(reduction.candidate_attempts[0].result_sha256.len(), 2);
-        assert_eq!(reduction.candidate_attempts[0].observed_outcomes.len(), 2);
-        assert!(
-            reduction.candidate_attempts[0]
-                .observed_fingerprint
-                .is_some()
-        );
-        let reduced = reduction.reduced_fixture.unwrap();
-        let template = super::validate_branch_fixture(&reduced).unwrap();
-        assert_eq!(template.total_nops(), 0);
-        assert_eq!(template.a, 0xfeed_face_cafe_beef);
-        assert_eq!(
-            reduced.stop_rip.unwrap().get(),
-            fixture.initial_state.rip.get() + 22
-        );
+                assert_eq!(
+                    &candidate_bytes[target.candidate_offset..target.candidate_offset + 2],
+                    &[0x48, 0xbb]
+                );
+                assert_eq!(
+                    &source_bytes[target.source_offset..target.source_offset + 10],
+                    &candidate_bytes[target.candidate_offset..target.candidate_offset + 10]
+                );
+                assert_eq!(branch.source_offset, 0);
+                assert_eq!(branch.candidate_offset, 0);
+                assert_eq!(
+                    target.candidate_offset,
+                    branch.candidate_offset + 2 + candidate_bytes[1] as usize
+                );
+                assert_eq!(
+                    target.source_address.get(),
+                    source.initial_state.rip.get() + target.source_offset as u64
+                );
+                assert_eq!(
+                    target.candidate_address.get(),
+                    candidate.initial_state.rip.get() + target.candidate_offset as u64
+                );
+                assert_eq!(candidate_bytes.len() + 1, source_bytes.len());
+                assert_eq!(candidate.memory[0].length as usize, candidate_bytes.len());
+                assert_eq!(
+                    candidate.memory[0].comparison_mask_hex,
+                    "ff".repeat(candidate_bytes.len())
+                );
+                assert_eq!(
+                    candidate.stop_rip,
+                    Some(crate::HexU64(
+                        candidate.initial_state.rip.get() + candidate_bytes.len() as u64
+                    ))
+                );
+                assert_eq!(candidate.initial_state, source.initial_state);
+                assert_eq!(candidate.instruction_budget, source.instruction_budget);
+                assert_eq!(candidate.profile, source.profile);
+                assert_eq!(candidate.expected_exit, source.expected_exit);
+                assert_eq!(candidate.memory[0].region_id, source.memory[0].region_id);
+                assert_eq!(
+                    candidate.memory[0].permissions,
+                    source.memory[0].permissions
+                );
+                assert_eq!(
+                    candidate.memory[0].guest_address,
+                    source.memory[0].guest_address
+                );
+
+                source = candidate;
+                source_digest = candidate_digest;
+            }
+            assert_eq!(
+                reduction.initial_fingerprint,
+                reduction.candidate_attempts[0].observed_fingerprint
+            );
+            assert_eq!(reduction.final_fingerprint, reduction.initial_fingerprint);
+            assert!(
+                reduction.candidate_attempts.iter().all(|attempt| {
+                    attempt.observed_fingerprint == reduction.initial_fingerprint
+                })
+            );
+
+            let reduced = reduction.reduced_fixture.unwrap();
+            let template = super::validate_branch_fixture(&reduced).unwrap();
+            assert_eq!(template.total_nops(), 0);
+            assert_eq!(template.a, 0xfeed_face_cafe_beef);
+            assert_eq!(template.b, 0xaabb_ccdd_0123_4567);
+            assert_eq!(reduced.initial_state, fixture.initial_state);
+            assert_eq!(reduced.instruction_budget, fixture.instruction_budget);
+            assert_eq!(reduced.profile, fixture.profile);
+            let reduced_code = super::decode_hex(&reduced.memory[0].initial_bytes_hex).unwrap();
+            assert_eq!(reduced_code.len(), 22);
+            assert_eq!(reduced.memory[0].length, 22);
+            assert_eq!(reduced.memory[0].comparison_mask_hex, "ff".repeat(22));
+            assert_eq!(
+                reduced.stop_rip,
+                Some(crate::HexU64(fixture.initial_state.rip.get() + 22))
+            );
+            let target_offset = 2 + usize::from(reduced_code[1]);
+            assert_eq!(
+                &reduced_code[target_offset..target_offset + 2],
+                &[0x48, 0xbb]
+            );
+            assert_eq!(reduced_code[1], 10);
+            assert_eq!(reduction.initial_results[0].input_sha256, digest);
+            let reduced_digest = sha256_hex(&reduced.to_json().unwrap());
+            for result in &reduction.initial_results {
+                assert_eq!(result.backend, backend);
+                assert_eq!(result.input_sha256, digest);
+            }
+            for result in &reduction.final_results {
+                assert_eq!(result.backend, backend);
+                assert_eq!(result.input_sha256, reduced_digest);
+            }
+        }
     }
 
     #[test]
@@ -1342,6 +1456,97 @@ mod tests {
         )
         .unwrap();
         assert_eq!(wrong_backend.stop, BranchReductionStop::UnsupportedMismatch);
+    }
+
+    #[test]
+    fn native_backend_swaps_fail_closed_on_candidate_and_final_confirmation() {
+        let fixture = template_fixture(BranchOpcode::Jz, true, 1, 0, 0);
+        let digest = sha256_hex(JE_TAKEN);
+
+        let mut candidate_calls = 0;
+        let candidate_swap = super::reduce_branch_fixture_with_backend_input_digest(
+            &fixture,
+            &digest,
+            BRANCH_REDUCER_MAX_BUDGET,
+            Backend::NativeX86,
+            |candidate| {
+                candidate_calls += 1;
+                let result_backend = if candidate_calls <= 2 {
+                    Backend::NativeX86
+                } else {
+                    Backend::Interpreter
+                };
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                let template = super::validate_branch_fixture(candidate).unwrap();
+                Ok(synthetic_result_backend(
+                    candidate,
+                    &candidate_digest,
+                    super::opposite(super::expected_path(candidate, template)),
+                    result_backend,
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(candidate_swap.stop, BranchReductionStop::CallbackError);
+        assert_eq!(candidate_swap.actual_callbacks, 4);
+        assert_eq!(candidate_swap.candidate_runs, 2);
+        assert_eq!(candidate_swap.candidate_attempts.len(), 1);
+        assert_eq!(
+            candidate_swap.candidate_attempts[0].decision,
+            super::BranchCandidateDecision::Error
+        );
+        assert!(candidate_swap.reduced_fixture.is_none());
+
+        let mut final_calls = 0;
+        let final_swap = super::reduce_branch_fixture_with_backend_input_digest(
+            &fixture,
+            &digest,
+            BRANCH_REDUCER_MAX_BUDGET,
+            Backend::NativeX86,
+            |candidate| {
+                final_calls += 1;
+                let result_backend = if final_calls <= 4 {
+                    Backend::NativeX86
+                } else {
+                    Backend::Interpreter
+                };
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                let template = super::validate_branch_fixture(candidate).unwrap();
+                Ok(synthetic_result_backend(
+                    candidate,
+                    &candidate_digest,
+                    super::opposite(super::expected_path(candidate, template)),
+                    result_backend,
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            final_swap.stop,
+            BranchReductionStop::FinalConfirmationFailed
+        );
+        assert_eq!(final_swap.actual_callbacks, 6);
+        assert_eq!(final_swap.candidate_runs, 2);
+        assert_eq!(final_swap.candidate_attempts.len(), 1);
+        assert_eq!(
+            final_swap.candidate_attempts[0].decision,
+            super::BranchCandidateDecision::Accepted
+        );
+        assert!(
+            final_swap
+                .final_results
+                .iter()
+                .all(|result| result.backend == Backend::Interpreter)
+        );
+        assert!(final_swap.reduced_fixture.is_none());
     }
 
     #[test]

@@ -17536,13 +17536,20 @@ existing supervised `--native-v2-child` path and journals each callback's
 fixture/result hashes, backend, status, and result path. Report data retains
 candidate decisions, relocation maps, raw original input identity, and replay
 executable/arguments/cwd. Synthetic tests cover accepted native identity and
-rejection of an interpreter result requested as native.
+rejection of an interpreter result requested as native. The opposite-path NOP
+reduction scenario now runs with synthetic `Interpreter` and `NativeX86`
+callback results and checks all three accepted proposals, same-`MOV RBX`
+target relocation, rel8, input-state preservation, stop/code length/mask,
+callback counts, and fingerprints. Candidate-phase and final-confirmation
+backend swaps fail closed.
 
-Branch reducer tests passed 11/11, Linux x86_64 `native_v2::tests` passed
+Branch reducer tests passed 12/12, Linux x86_64 `native_v2::tests` passed
 220/220, and Linux-target check/formatting passed. A bounded Linux run of the
 literal S2-42k JZ fixture returned `no_initial_mismatch` after two native
 callbacks; saved-original replay returned `native_x86` / `stop_address`. No
-candidate pair was proposed, so branch NOP shrinking remains unverified.
+candidate pair was proposed, so actual native branch NOP shrinking remains
+unverified. The synthetic callbacks do not establish native execution behavior
+for a mismatching branch.
 `execution_kind` is `unknown`; physical Mac acceptance remains `not_run`.
 Native admission, CPU/JIT behavior, and parent S2-42 are unchanged. See the
 [protocol](../testing/S2_42AH_NATIVE_BRANCH_REDUCER.md),

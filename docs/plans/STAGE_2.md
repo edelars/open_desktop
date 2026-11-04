@@ -723,7 +723,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42i | Deterministic positive REP STOSB corpus | 1,024 generated + 36 handwritten cases for count 0–8 and DF=0/1; all 1,060 cases ×2 passed interpreter and Linux x86_64 native at final fingerprint; physical acceptance `not_run`; parent S2-42 and dependencies remain open; [protocol](../testing/S2_42I_REP_STOSB_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42i--deterministic-rep-stosb-corpus) |
 | [x] | S2-42j | Native qword GPR PUSH/POP reducer adapter | `NativeX86` identity checked on every callback; 13 focused reducer tests and Linux-target all-target check; bounded Linux smoke/replay passed for PUSH RAX and POP RSP; no mismatch reduction; physical acceptance `not_run`; [protocol](../testing/S2_42J_NATIVE_STACK_REDUCER.md), [acceptance](../reports/S2_42J_LINUX_ACCEPTANCE.md), [report](../reports/STAGE_2_REPORT.md#s2-42j--native-qword-gpr-pushpop-reducer-adapter) |
 | [x] | S2-42k | Bounded forward JZ/JNZ NOP-deletion reducer | Preserves the same MOV-RBX branch target via instruction map/rel8 recomputation; 10 reducer tests + replay integration; local fixture `NoInitialMismatch`, synthetic opposite-path reduction; native/physical `not_run`; [protocol](../testing/S2_42K_BRANCH_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42k--bounded-forward-jzjnz-nop-deletion-reducer) |
-| [x] | S2-42ah | Native adapter for bounded JZ/JNZ NOP-deletion reducer | Backend-parametrized result validation, synthetic preservation/wrong-backend cases, Linux `native_v2::tests` 220/220, branch reducer tests 11/11; bounded Linux smoke/replay on literal S2-42k JZ fixture passed with no initial mismatch; no NOP shrinking exercised; physical acceptance `not_run`; [protocol](../testing/S2_42AH_NATIVE_BRANCH_REDUCER.md), [acceptance](../reports/S2_42AH_LINUX_ACCEPTANCE.md) |
+| [x] | S2-42ah | Native adapter for bounded JZ/JNZ NOP-deletion reducer | Backend-parametrized result validation; synthetic opposite-path reduction runs under Interpreter and NativeX86 callback identities and checks target relocation/rel8/state/stop/mask/counts; candidate/final backend swaps fail closed; actual native NOP shrinking remains unverified; physical acceptance `not_run`; [protocol](../testing/S2_42AH_NATIVE_BRANCH_REDUCER.md), [acceptance](../reports/S2_42AH_LINUX_ACCEPTANCE.md) |
 | [x] | S2-42l | REP STOSB partial-progress #GP reducer | Literal #GP(0) fixture plus bounded AL-only fault reducer/replay; exact RCX/RDI/memory progress and unchanged RIP/retirement; native/physical `not_run`; [protocol](../testing/S2_42L_REP_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42l--rep-stosb-partial-progress-gp-reducer) |
 | [x] | S2-42m | Deterministic CVTSI2SD interpreter corpus | 1,024 generated + 9 literal controls; all 1,033 fixtures ×2 passed integer-only binary64 oracle; native profile closed and recorded `not_run_profile_closed`; [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus) |
 | [x] | S2-42n | Bounded exact MOV qword memory interpreter reducer | RAX-only reduction for literal `48 89 03`; independent byte-store oracle, complete mapping/mask preservation, callback journal and replay; synthetic stable mismatch and drift/failure/budget regressions; local fixture `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42N_MOV_MEMORY_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42n--bounded-mov-qword-memory-reducer) |
@@ -8741,13 +8741,18 @@ interpreter entry point. The new native CLI reuses the existing supervised
 `--native-v2-child` executor, checks `NativeX86` identity on every result, and
 writes callback records, candidate/result hashes, relocation evidence, and
 replay argv/cwd. Added synthetic native-result preservation and wrong-backend
-regression cases. The branch reducer tests passed 11/11; Linux x86_64
-`native_v2::tests` passed 220/220; Linux-target `cargo check` and formatting
-passed. A bounded native run of the literal S2-42k JZ fixture passed with
+regression cases. The synthetic opposite-path reducer now runs for both
+`Interpreter` and `NativeX86` result identities and verifies accepted
+relocation across the same `MOV RBX` target; candidate and final backend swaps
+fail closed. Focused branch reducer tests passed 12/12 after these additions;
+Linux x86_64 `native_v2::tests` passed 220/220; Linux-target `cargo check` and
+formatting passed. A bounded native run of the literal S2-42k JZ fixture passed with
 `no_initial_mismatch` after two callbacks, and saved replay ended at
-`stop_address`. No candidate pair was proposed, so actual branch NOP shrinking
-remains unverified. `execution_kind=unknown`; physical Mac acceptance is
-`not_run`. The adapter does not change admission or CPU/JIT behavior, and
+`stop_address`. No candidate pair was proposed, so actual native branch NOP
+shrinking remains unverified; synthetic callbacks do not establish native
+execution behavior for a mismatching branch. `execution_kind` remains
+`unknown`; physical Mac acceptance remains `not_run`. The adapter does not
+change admission or CPU/JIT behavior, and
 parent S2-42 plus S2-21/S2-39/S2-40 remain open.
 
 See the [S2-42ah protocol](../testing/S2_42AH_NATIVE_BRANCH_REDUCER.md) and

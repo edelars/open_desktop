@@ -10,6 +10,19 @@ requires every callback result to identify `NativeX86` and pass the existing
 schema-v2 result validation. A wrong backend, unsupported result, timeout,
 malformed identity, or callback failure cannot preserve a mismatch.
 
+The synthetic opposite-path reduction scenario runs with both `Interpreter`
+and `NativeX86` callback identities. It accepts the same three NOP deletions
+for each backend and checks callback counts, full input-state preservation,
+code length/mask/stop updates, rel8 recomputation, and the relocation of the
+same `MOV RBX` instruction. Synthetic swaps to the interpreter backend during
+candidate and final confirmation fail closed. This is reducer and identity
+validation evidence; it does not show that native execution reproduces a real
+branch mismatch or performs NOP shrinking.
+
+The focused `branch_reducer::tests` group passed 12/12 after this synthetic
+NativeX86 addition; the command and source hash are in the linked verification
+record.
+
 The CLI is:
 
 ```sh
@@ -39,8 +52,9 @@ baseline. Native results only establish behavior on the Linux x86_64 runner.
 The bounded Linux x86_64 smoke on the literal S2-42k JZ fixture passed with
 `no_initial_mismatch` after two identical native callbacks. The saved-original
 replay returned `native_x86` / `stop_address` with exit 0. No candidate was
-proposed, so native NOP shrinking of a mismatching branch fixture remains
-unverified. Source/binary hashes, test commands, callback hashes and the exact
+proposed, so actual native NOP shrinking of a mismatching branch fixture remains
+unverified. The synthetic callback scenario is separate from this native run.
+Source/binary hashes, test commands, callback hashes and the exact
 local evidence path are in the
 [acceptance report](../reports/S2_42AH_LINUX_ACCEPTANCE.md) and its linked
 ignored `work/` verification record. Raw `execution_kind` remains `unknown`;

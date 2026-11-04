@@ -23,7 +23,7 @@ fixture; it does not exercise branch NOP shrinking or demonstrate a CPU defect.
   `4ced29b08ddc09626173d0892d34786bb6821263f458d25649de5cfba771f2a4`.
   Embedded revision is unavailable; exact source hashes are preserved.
 - `cargo test --offline -p od-testkit branch_reducer::tests -- --nocapture`:
-  11 passed, 0 failed.
+  12 passed, 0 failed, including synthetic NativeX86 candidate/final coverage.
 - Linux `cargo test --offline -p od-x86-runner native_v2::tests`:
   220 passed, 0 failed (19 filtered).
 - Linux-target `cargo check` and `cargo fmt --all -- --check` passed.
