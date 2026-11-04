@@ -2590,10 +2590,23 @@ mod tests {
                 "00112233448888888899aabbccddeeff",
             ),
         ] {
-            let loaded = Fixture::from_json(
+            let mut loaded = Fixture::from_json(
                 &std::fs::read(directory.join(format!("{name}.case.json"))).unwrap(),
             )
             .unwrap();
+            // This retirement test exercises REP semantics; execute-only code
+            // is covered separately by the exact single-MOV mapping gate.
+            loaded
+                .fixture
+                .memory
+                .iter_mut()
+                .find(|region| region.region_id == "code")
+                .unwrap()
+                .permissions
+                .read = true;
+            let serialized = loaded.fixture.to_json().unwrap();
+            let loaded = Fixture::from_json(&serialized)
+                .unwrap_or_else(|error| panic!("{name} after RX permission update: {error}"));
             let result = execute(&loaded);
             assert_eq!(
                 result.outcome,
@@ -3438,10 +3451,10 @@ mod tests {
             .join("../../tests/fixtures/x86/stage2");
         let mut admitted = 0;
         for name in [
-            "s2_17m_push_mem_base",
-            "s2_17m_push_mem_rsp_predecrement",
-            "s2_17m_pop_mem_base",
-            "s2_17m_pop_mem_rsp_postincrement",
+            "s2_17m_push_base",
+            "s2_17m_push_rsp_source",
+            "s2_17m_pop_base",
+            "s2_17m_pop_rsp_post_increment",
         ] {
             let loaded = Fixture::from_json(
                 &std::fs::read(directory.join(format!("{name}.case.json"))).unwrap(),
@@ -3791,17 +3804,23 @@ mod tests {
     fn ret_imm16_fixtures_admit_stack_targets_and_cleanup_paths() {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/x86/stage2");
-        for (name, expected_retired) in [
-            ("s2_17f_ret_imm0", 1),
-            ("s2_17f_ret_imm_small", 1),
-            ("s2_17f_ret_imm_max", 1),
-            ("s2_17f_ret_imm_nested_cleanup", 3),
-            ("s2_17f_ret_imm_budget", 1),
+        for (name, expected_retired, expected_stop) in [
+            ("s2_17f_ret_imm0", 1, None),
+            ("s2_17f_ret_imm_small", 1, None),
+            ("s2_17f_ret_imm_max", 1, None),
+            ("s2_17f_ret_imm_nested_cleanup", 5, Some(0x100019)),
+            ("s2_17f_ret_imm_budget", 1, None),
         ] {
             let loaded = Fixture::from_json(
                 &std::fs::read(directory.join(format!("{name}.case.json"))).unwrap(),
             )
             .unwrap();
+            if let Some(expected_stop) = expected_stop {
+                assert_eq!(
+                    loaded.fixture.stop_rip.map(HexU64::get),
+                    Some(expected_stop)
+                );
+            }
             let mut actual = loaded.fixture.initial_state.to_cpu().unwrap();
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             let mut retired = 0;
@@ -5240,7 +5259,7 @@ mod tests {
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert_eq!(
             admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
-            "REP SCAS is outside the native execution profile"
+            "REP string comparison is outside the native execution profile"
         );
     }
 
@@ -5303,7 +5322,7 @@ mod tests {
             let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
             assert_eq!(
                 admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
-                "REP SCAS is outside the native execution profile",
+                "REP string comparison is outside the native execution profile",
                 "{fixture_name}"
             );
         }
@@ -5504,6 +5523,7 @@ mod tests {
         let code = [0x8e, 0xe0];
         let mut input = fixture(&code).fixture;
         input.profile = v2::Profile::LongFsLoadV1;
+        input.instruction_budget = 1;
         input.initial_state.fs_base = Some(HexU64(0xffff_8000_0000_1000));
         input.initial_state.fs_selector = Some(HexU64(0x33));
         input.initial_state.gdtr_base = Some(HexU64(0x20_0000));
@@ -5561,6 +5581,7 @@ mod tests {
         let code = [0x8e, 0xd8];
         let mut input = fixture(&code).fixture;
         input.profile = v2::Profile::LongNullDsEsV1;
+        input.instruction_budget = 1;
         input.initial_state.ds_selector = Some(HexU64(0x2b));
         input.initial_state.es_selector = Some(HexU64(0x30));
         input.initial_state.ds_unusable = Some(false);
@@ -5866,6 +5887,37 @@ mod tests {
 
     #[test]
     fn x87_instructions_are_rejected_by_native_profile_and_instruction_admission() {
+        let mut strict_schema_successes = 0;
+        for bytes in [[0xd9, 0xe0], [0xd9, 0xe1]] {
+            let mut input = fixture(&bytes).fixture;
+            input.profile = v2::Profile::LongX87StateV1;
+            input.instruction_budget = 1;
+            input.initial_state.x87 = Some(v2::X87Snapshot::from(
+                &od_isa::state::X87State::fixture_seed(),
+            ));
+            let loaded = Fixture::from_json(&input.to_json().unwrap())
+                .unwrap_or_else(|error| panic!("strict x87 schema rejected {bytes:02x?}: {error}"));
+            assert!(matches!(
+                execute(&loaded).outcome,
+                Outcome::Unsupported { .. }
+            ));
+            strict_schema_successes += 1;
+        }
+        assert_eq!(strict_schema_successes, 2);
+
+        let mut strict_invalid = fixture(&[0xd9, 0xff]).fixture;
+        strict_invalid.profile = v2::Profile::LongX87StateV1;
+        strict_invalid.instruction_budget = 1;
+        strict_invalid.initial_state.x87 = Some(v2::X87Snapshot::from(
+            &od_isa::state::X87State::fixture_seed(),
+        ));
+        assert_eq!(
+            Fixture::from_json(&strict_invalid.to_json().unwrap())
+                .unwrap_err()
+                .to_string(),
+            "invalid memory.code: x87 state profile admits one instruction or an exact listed composition"
+        );
+
         for code in [
             [0xdb, 0x00],
             [0xdb, 0x10],
@@ -6074,101 +6126,30 @@ mod tests {
             [0xd8, 0xdf],
             [0xdd, 0xe9],
         ] {
-            let mut input = fixture(&code).fixture;
-            input.profile = v2::Profile::LongX87StateV1;
-            input.instruction_budget = 1;
-            input.initial_state.x87 = Some(v2::X87Snapshot::from(
-                &od_isa::state::X87State::fixture_seed(),
-            ));
-            input.initial_state.rip = HexU64(0x1000);
-            input.memory[0].guest_address = HexU64(0x1000);
-            input.memory[0].length = 2;
-            input.memory[0].initial_bytes_hex = code
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
-            input.memory[0].comparison_mask_hex = "ffff".into();
-            if matches!(
-                code,
-                [0xd8, 0xe0]
-                    | [0xd8, 0xf1]
-                    | [0xd8, 0xf9]
-                    | [0xd8, 0xe8]
-                    | [0xdc, 0xf9]
-                    | [0xdc, 0xe0]
-                    | [0xdc, 0xe8]
-                    | [0xde, 0xe0]
-                    | [0xde, 0xc8]
-                    | [0xde, 0xe8]
-                    | [0xdb, 0x18]
-                    | [0xd9, 0xe4]
-                    | [0xd8, 0xd1]
-                    | [0xd8, 0xd8]
-                    | [0xd8, 0xd9]
-                    | [0xd8, 0xda]
-                    | [0xd8, 0xdb]
-                    | [0xd8, 0xdc]
-                    | [0xd8, 0xdd]
-                    | [0xd8, 0xde]
-                    | [0xd8, 0xdf]
-                    | [0xdd, 0xe9]
-                    | [0xda, 0xe9]
-            ) {
-                input.expected_exit = v2::ExpectedExit::Unsupported;
-                input.stop_rip = None;
-            } else {
-                input.stop_rip = Some(HexU64(0x1002));
-            }
-            let json = input
-                .to_json()
-                .unwrap_or_else(|error| panic!("code={code:02x?}: {error:?}"));
-            let loaded = Fixture::from_json(&json)
-                .unwrap_or_else(|error| panic!("code={code:02x?}: {error:?}"));
-            assert!(matches!(
-                execute(&loaded).outcome,
-                Outcome::Unsupported { .. }
-            ));
-
-            let old_profile = fixture(&code);
-            let actual = old_profile.fixture.initial_state.to_cpu().unwrap();
-            let mut decoder = FlatMemory::from_fixture(&old_profile.fixture).unwrap();
-            let error = admission(&old_profile.fixture, &mut decoder, &actual).unwrap_err();
-            assert!(error.contains("x87 instruction is not admitted"));
+            // Exercise native admission with the ordinary LongInteger state
+            // before checking whether the stricter x87 schema admits this
+            // encoding.
+            let ordinary = fixture(&code);
+            let actual = ordinary.fixture.initial_state.to_cpu().unwrap();
+            let mut decoder = FlatMemory::from_fixture(&ordinary.fixture).unwrap();
+            assert!(
+                admission(&ordinary.fixture, &mut decoder, &actual)
+                    .unwrap_err()
+                    .contains("x87 instruction is not admitted"),
+                "{code:02x?}"
+            );
         }
         for opcode in [0xdb, 0xdf] {
             for modrm in (0xe8u8..=0xef).chain(0xf0..=0xf7) {
                 let code = [opcode, modrm];
-                let mut input = fixture(&code).fixture;
-                input.profile = v2::Profile::LongX87StateV1;
-                input.instruction_budget = 1;
-                input.initial_state.x87 = Some(v2::X87Snapshot::from(
-                    &od_isa::state::X87State::fixture_seed(),
-                ));
-                input.initial_state.rip = HexU64(0x1000);
-                input.memory[0].guest_address = HexU64(0x1000);
-                input.memory[0].length = 2;
-                input.memory[0].initial_bytes_hex = code
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>();
-                input.memory[0].comparison_mask_hex = "ffff".into();
-                input.stop_rip = Some(HexU64(0x1002));
-                let loaded = Fixture::from_json(&input.to_json().unwrap())
-                    .unwrap_or_else(|error| panic!("{code:02x?}: {error:?}"));
-                assert!(matches!(
-                    execute(&loaded).outcome,
-                    Outcome::Unsupported { .. }
-                ));
-                let actual = loaded
-                    .fixture
-                    .initial_state
-                    .to_cpu_for(loaded.fixture.profile)
-                    .unwrap();
-                let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
-                let error = admission(&loaded.fixture, &mut decoder, &actual).unwrap_err();
+                let ordinary = fixture(&code);
+                let actual = ordinary.fixture.initial_state.to_cpu().unwrap();
+                let mut decoder = FlatMemory::from_fixture(&ordinary.fixture).unwrap();
                 assert!(
-                    error.contains("x87 instruction is not admitted"),
-                    "{code:02x?}: {error}"
+                    admission(&ordinary.fixture, &mut decoder, &actual)
+                        .unwrap_err()
+                        .contains("x87 instruction is not admitted"),
+                    "{code:02x?}"
                 );
             }
         }
@@ -8091,8 +8072,11 @@ mod tests {
         for bytes in ["660f57c0", "660f57c2", "660f57d1", "660f56c1"] {
             let mut wrong = loaded.fixture.clone();
             wrong.memory[0].initial_bytes_hex = bytes.into();
-            let mut decoder = FlatMemory::from_fixture(&wrong).unwrap();
-            assert!(admission(&wrong, &mut decoder, &actual).is_err(), "{bytes}");
+            let serialized = wrong.to_json().unwrap();
+            assert!(
+                Fixture::from_json(&serialized).is_err(),
+                "strict native XORPD schema accepted mutated encoding {bytes}"
+            );
         }
     }
 
@@ -8148,7 +8132,7 @@ mod tests {
         let mut decoder = FlatMemory::from_fixture(&loaded.fixture).unwrap();
         assert_eq!(
             admission(&loaded.fixture, &mut decoder, &actual).unwrap_err(),
-            "STI is denied by the native runner profile"
+            "STI/HLT is denied by the native runner profile"
         );
     }
 
