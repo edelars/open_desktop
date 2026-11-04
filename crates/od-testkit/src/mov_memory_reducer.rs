@@ -70,6 +70,44 @@ pub fn reduce_mov_memory_fixture<F>(
     original: &Fixture,
     original_input_sha256: &str,
     call_budget: usize,
+    execute: F,
+) -> Result<MovMemoryReduction, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    reduce_mov_memory_fixture_with_backend(
+        original,
+        original_input_sha256,
+        call_budget,
+        Backend::Interpreter,
+        execute,
+    )
+}
+
+/// Native-X86 adapter for the same bounded reducer and independent MOV oracle.
+pub fn reduce_mov_memory_fixture_with_native_backend<F>(
+    original: &Fixture,
+    original_input_sha256: &str,
+    call_budget: usize,
+    execute: F,
+) -> Result<MovMemoryReduction, String>
+where
+    F: FnMut(&Fixture) -> Result<RunResult, String>,
+{
+    reduce_mov_memory_fixture_with_backend(
+        original,
+        original_input_sha256,
+        call_budget,
+        Backend::NativeX86,
+        execute,
+    )
+}
+
+fn reduce_mov_memory_fixture_with_backend<F>(
+    original: &Fixture,
+    original_input_sha256: &str,
+    call_budget: usize,
+    expected_backend: Backend,
     mut execute: F,
 ) -> Result<MovMemoryReduction, String>
 where
@@ -124,14 +162,16 @@ where
         report.stop_detail = Some("initial interpreter results differ semantically".into());
         return Ok(report);
     }
-    let first_fp = match mismatch_fingerprint(original, original_input_sha256, &first) {
-        Ok(value) => value,
-        Err(error) => return callback_error(&mut report, error),
-    };
-    let second_fp = match mismatch_fingerprint(original, original_input_sha256, &second) {
-        Ok(value) => value,
-        Err(error) => return callback_error(&mut report, error),
-    };
+    let first_fp =
+        match mismatch_fingerprint(original, original_input_sha256, &first, expected_backend) {
+            Ok(value) => value,
+            Err(error) => return callback_error(&mut report, error),
+        };
+    let second_fp =
+        match mismatch_fingerprint(original, original_input_sha256, &second, expected_backend) {
+            Ok(value) => value,
+            Err(error) => return callback_error(&mut report, error),
+        };
     if first_fp != second_fp {
         report.stop = MovMemoryReductionStop::FlakyInitial;
         report.stop_detail = Some("initial mismatch fingerprints differ".into());
@@ -174,11 +214,11 @@ where
             report.stop_detail = Some("candidate interpreter results differ semantically".into());
             return Ok(report);
         }
-        let first_fp = match mismatch_fingerprint(&candidate, &digest, &first) {
+        let first_fp = match mismatch_fingerprint(&candidate, &digest, &first, expected_backend) {
             Ok(value) => value,
             Err(error) => return callback_error(&mut report, error),
         };
-        let second_fp = match mismatch_fingerprint(&candidate, &digest, &second) {
+        let second_fp = match mismatch_fingerprint(&candidate, &digest, &second, expected_backend) {
             Ok(value) => value,
             Err(error) => return callback_error(&mut report, error),
         };
@@ -222,14 +262,16 @@ where
         report.stop_detail = Some("final interpreter results differ semantically".into());
         return Ok(report);
     }
-    let final_first_fp = match mismatch_fingerprint(&current, &final_digest, &final_first) {
-        Ok(value) => value,
-        Err(error) => return final_error(&mut report, error),
-    };
-    let final_second_fp = match mismatch_fingerprint(&current, &final_digest, &final_second) {
-        Ok(value) => value,
-        Err(error) => return final_error(&mut report, error),
-    };
+    let final_first_fp =
+        match mismatch_fingerprint(&current, &final_digest, &final_first, expected_backend) {
+            Ok(value) => value,
+            Err(error) => return final_error(&mut report, error),
+        };
+    let final_second_fp =
+        match mismatch_fingerprint(&current, &final_digest, &final_second, expected_backend) {
+            Ok(value) => value,
+            Err(error) => return final_error(&mut report, error),
+        };
     if final_first_fp.as_ref() != Some(&initial_fp) || final_second_fp.as_ref() != Some(&initial_fp)
     {
         report.stop = MovMemoryReductionStop::FinalConfirmationFailed;
@@ -370,8 +412,9 @@ fn mismatch_fingerprint(
     fixture: &Fixture,
     digest: &str,
     result: &RunResult,
+    expected_backend: Backend,
 ) -> Result<Option<MovMemoryFingerprint>, String> {
-    validate_callback_result(fixture, digest, result)?;
+    validate_callback_result(fixture, digest, result, expected_backend)?;
     if result.outcome != (Outcome::StopAddress {})
         || result.instructions_executed != (Observation::Available { value: HexU64(1) })
     {
@@ -460,22 +503,23 @@ fn validate_callback_result(
     fixture: &Fixture,
     digest: &str,
     result: &RunResult,
+    expected_backend: Backend,
 ) -> Result<(), String> {
     if result.profile != Profile::LongIntegerV1
-        || result.backend != Backend::Interpreter
+        || result.backend != expected_backend
         || result.case_id != fixture.case_id
         || result.input_sha256 != digest
     {
-        return Err(
-            "callback result identity does not match its fixture/interpreter backend".into(),
-        );
+        return Err(format!(
+            "callback result identity does not match its fixture/{expected_backend:?} backend"
+        ));
     }
     result
         .validate_for(&LoadedFixture {
             fixture: fixture.clone(),
             input_sha256: digest.to_string(),
         })
-        .map_err(|error| format!("invalid interpreter result: {error}"))
+        .map_err(|error| format!("invalid {expected_backend:?} result: {error}"))
 }
 
 fn same_semantic_result(a: &RunResult, b: &RunResult) -> bool {
@@ -537,7 +581,10 @@ fn encode_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{MovMemoryReductionStop, decode_hex, mov_memory_oracle, reduce_mov_memory_fixture};
+    use super::{
+        MovMemoryReductionStop, decode_hex, mov_memory_oracle, reduce_mov_memory_fixture,
+        reduce_mov_memory_fixture_with_native_backend,
+    };
     use crate::result::Backend;
     use crate::sha256_hex;
     use crate::v2::{Fixture, Outcome, RunResult, SCHEMA_VERSION};
@@ -550,6 +597,16 @@ mod tests {
     }
 
     fn result(fixture: &Fixture, digest: &str, damage: bool, extra_drift: bool) -> RunResult {
+        result_for_backend(fixture, digest, damage, extra_drift, Backend::Interpreter)
+    }
+
+    fn result_for_backend(
+        fixture: &Fixture,
+        digest: &str,
+        damage: bool,
+        extra_drift: bool,
+        backend: Backend,
+    ) -> RunResult {
         let expected = mov_memory_oracle(fixture, digest).unwrap();
         let mut memory = expected.memory;
         if damage || extra_drift {
@@ -566,7 +623,7 @@ mod tests {
         }
         serde_json::from_value(json!({
             "schema_version": SCHEMA_VERSION, "case_id": fixture.case_id, "input_sha256": digest,
-            "profile": fixture.profile, "backend": Backend::Interpreter, "outcome": Outcome::StopAddress {},
+            "profile": fixture.profile, "backend": backend, "outcome": Outcome::StopAddress {},
             "instructions_executed": {"status":"available","value":expected.instructions_executed},
             "snapshot": {"status":"available","value":{"state":expected.state,"rflags_defined":expected.rflags_defined,"memory":memory,"exception":{"status":"available","value":null}}},
             "build":{"revision":"test","target":"test","profile":"test","compiler":"test"},
@@ -672,5 +729,42 @@ mod tests {
         })
         .unwrap();
         assert_eq!(flaky.stop, MovMemoryReductionStop::FlakyInitial);
+    }
+
+    #[test]
+    fn native_adapter_requires_native_x86_callback_identity() {
+        let fixture = fixture();
+        let digest = sha256_hex(FIXTURE);
+        let native =
+            reduce_mov_memory_fixture_with_native_backend(&fixture, &digest, 132, |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                Ok(result_for_backend(
+                    candidate,
+                    &candidate_digest,
+                    false,
+                    false,
+                    Backend::NativeX86,
+                ))
+            })
+            .unwrap();
+        assert_eq!(native.stop, MovMemoryReductionStop::NoInitialMismatch);
+        assert_eq!(native.actual_callbacks, 2);
+
+        let wrong_backend =
+            reduce_mov_memory_fixture_with_native_backend(&fixture, &digest, 132, |candidate| {
+                let candidate_digest = if candidate == &fixture {
+                    digest.clone()
+                } else {
+                    sha256_hex(&candidate.to_json().unwrap())
+                };
+                Ok(result(candidate, &candidate_digest, false, false))
+            })
+            .unwrap();
+        assert_eq!(wrong_backend.stop, MovMemoryReductionStop::CallbackError);
+        assert!(wrong_backend.reduced_fixture.is_none());
     }
 }

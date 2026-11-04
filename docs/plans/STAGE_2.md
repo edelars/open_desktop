@@ -8428,7 +8428,22 @@ child evidence и оставшиеся границы
 указаны в [S2-42 Linux five-suite protocol](../testing/S2_42_LINUX_FIVE_SUITE_ACCEPTANCE.md).
 Остальные 27 lettered suites и generic reducer requirements остаются вне
 этой приёмки; parent S2-42 остаётся открытым. Требуемое meaning-preserving
-сокращение mismatch остаётся отдельным критерием.
+сокращение mismatch остаётся критерием. S2-42ag smoke на буквальной MOV fixture
+получил `no_initial_mismatch`, поэтому native shrinking ошибки там не
+проверялся.
+
+### S2-42ag — supervised native MOV qword memory reducer
+
+**Статус:** native adapter существующего S2-42n reducer использует общий
+native-v2 admission и supervisor; interpreter API и admission не расширялись.
+На Linux x86_64 `native_v2::tests` прошёл 220/220; локальные testkit reducer
+tests — 5/5. Smoke на буквальной S2-42n fixture завершился
+`no_initial_mismatch` после двух одинаковых supervised native callbacks; replay
+сохранённого original fixture завершился `stop_address`. Детали и hashes в
+[S2-42ag protocol and acceptance](../testing/S2_42AG_NATIVE_MOV_MEMORY_REDUCER.md).
+Срез не закрыл родителя S2-42 и не выявил CPU mismatch. Поскольку буквальная
+fixture не содержала mismatch, actual native reduction остаётся не проверен;
+physical Mac remains `not_run`.
 
 ### S2-42a. Deterministic corpus для native XORPD
 

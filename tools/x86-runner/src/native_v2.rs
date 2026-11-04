@@ -47,6 +47,9 @@ pub(crate) fn dispatch(args: &[String]) -> Option<ExitCode> {
     if args.first().map(String::as_str) == Some("--reduce-native-xorpd") {
         return Some(reduce_native_xorpd_cli(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("--reduce-native-mov-memory") {
+        return Some(reduce_native_mov_memory_cli(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("--reduce-native-push-pop") {
         return Some(reduce_native_stack_cli(&args[1..]));
     }
@@ -67,68 +70,83 @@ pub(crate) fn dispatch(args: &[String]) -> Option<ExitCode> {
         return None;
     }
     let loaded = load(&args[1]).ok()?;
-    let mut command = Command::new(match std::env::current_exe() {
-        Ok(path) => path,
-        Err(e) => {
-            return Some(emit(empty_result(
-                &loaded,
-                Outcome::HarnessError {
-                    reason: e.to_string(),
-                },
+    Some(emit(run_supervised_fixture(
+        &loaded,
+        std::path::Path::new(&args[1]),
+    )))
+}
+
+fn run_supervised_fixture(loaded: &LoadedFixture, fixture_path: &std::path::Path) -> RunResult {
+    let result = match std::env::current_exe() {
+        Ok(executable) => {
+            let mut command = Command::new(executable);
+            command.args(supervised_native_child_args(fixture_path));
+            let limits = ProcessLimits::fixture_default(Duration::from_millis(u64::from(
+                loaded.fixture.wall_timeout_ms,
             )));
-        }
-    });
-    command.arg("--native-v2-child").arg(&args[1]);
-    let limits = ProcessLimits::fixture_default(Duration::from_millis(u64::from(
-        loaded.fixture.wall_timeout_ms,
-    )));
-    let result = match run_supervised(&mut command, limits) {
-        Ok(output) => match output.termination {
-            Termination::Exited {
-                code: Some(0 | 4 | 5),
-            } => {
-                match RunResult::from_json(&output.stdout).and_then(|r| {
-                    r.validate_for(&loaded)?;
-                    Ok(r)
-                }) {
-                    Ok(result) if result.backend == Backend::NativeX86 => result,
-                    _ => empty_result(
-                        &loaded,
-                        Outcome::HarnessError {
-                            reason: "native tracer returned an invalid or inconsistent result"
-                                .into(),
+            match run_supervised(&mut command, limits) {
+                Ok(output) => match output.termination {
+                    Termination::Exited {
+                        code: Some(0 | 4 | 5),
+                    } => {
+                        match RunResult::from_json(&output.stdout).and_then(|r| {
+                            r.validate_for(loaded)?;
+                            Ok(r)
+                        }) {
+                            Ok(result) if result.backend == Backend::NativeX86 => result,
+                            _ => empty_result(
+                                loaded,
+                                Outcome::HarnessError {
+                                    reason:
+                                        "native tracer returned an invalid or inconsistent result"
+                                            .into(),
+                                },
+                            ),
+                        }
+                    }
+                    Termination::TimedOut => empty_result(
+                        loaded,
+                        Outcome::TimedOut {
+                            reason: "supervised native tracer exceeded wall timeout".into(),
                         },
                     ),
-                }
+                    Termination::Signaled { signal } => empty_result(
+                        loaded,
+                        Outcome::Signaled {
+                            signal: signal as u32,
+                            reason: "native tracer terminated by host signal".into(),
+                        },
+                    ),
+                    other => empty_result(
+                        loaded,
+                        Outcome::HarnessError {
+                            reason: format!("native tracer failed: {other:?}"),
+                        },
+                    ),
+                },
+                Err(error) => empty_result(
+                    loaded,
+                    Outcome::HarnessError {
+                        reason: error.to_string(),
+                    },
+                ),
             }
-            Termination::TimedOut => empty_result(
-                &loaded,
-                Outcome::TimedOut {
-                    reason: "supervised native tracer exceeded wall timeout".into(),
-                },
-            ),
-            Termination::Signaled { signal } => empty_result(
-                &loaded,
-                Outcome::Signaled {
-                    signal: signal as u32,
-                    reason: "native tracer terminated by host signal".into(),
-                },
-            ),
-            other => empty_result(
-                &loaded,
-                Outcome::HarnessError {
-                    reason: format!("native tracer failed: {other:?}"),
-                },
-            ),
-        },
+        }
         Err(error) => empty_result(
-            &loaded,
+            loaded,
             Outcome::HarnessError {
                 reason: error.to_string(),
             },
         ),
     };
-    Some(emit(result))
+    result
+}
+
+fn supervised_native_child_args(fixture_path: &std::path::Path) -> [std::ffi::OsString; 2] {
+    [
+        "--native-v2-child".into(),
+        fixture_path.as_os_str().to_owned(),
+    ]
 }
 
 fn reduce_native_xorpd_cli(args: &[String]) -> ExitCode {
@@ -295,6 +313,362 @@ fn reduce_native_xorpd_inner(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn reduce_native_mov_memory_cli(args: &[String]) -> ExitCode {
+    match reduce_native_mov_memory_inner(args) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("native MOV memory reducer: {error}");
+            ExitCode::from(3)
+        }
+    }
+}
+
+fn reduce_native_mov_memory_inner(args: &[String]) -> Result<ExitCode, String> {
+    use od_testkit::mov_memory_reducer::{
+        MOV_MEMORY_REDUCER_DEFAULT_BUDGET, MOV_MEMORY_REDUCER_MAX_BUDGET, MovMemoryReductionStop,
+        mov_memory_oracle, reduce_mov_memory_fixture_with_native_backend,
+    };
+
+    let mut input = None;
+    let mut output = None;
+    let mut budget = MOV_MEMORY_REDUCER_DEFAULT_BUDGET;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--limit" => {
+                i += 1;
+                budget = args
+                    .get(i)
+                    .ok_or("--limit requires a count")?
+                    .parse()
+                    .map_err(|_| "--limit must be an integer")?;
+            }
+            "--output-dir" => {
+                i += 1;
+                output = Some(args.get(i).ok_or("--output-dir requires a path")?.clone());
+            }
+            option if option.starts_with('-') => return Err(format!("unknown option: {option}")),
+            path if input.is_none() => input = Some(path.to_owned()),
+            path => return Err(format!("unexpected argument: {path}")),
+        }
+        i += 1;
+    }
+    if !(4..=MOV_MEMORY_REDUCER_MAX_BUDGET).contains(&budget) {
+        return Err(format!(
+            "--limit must be 4..={MOV_MEMORY_REDUCER_MAX_BUDGET}"
+        ));
+    }
+    let input_path = input.ok_or(
+        "usage: od-x86-runner --reduce-native-mov-memory CASE.json [--limit N] [--output-dir DIR]",
+    )?;
+    let original_bytes = read_reducer_input(&input_path)?;
+    let original = Fixture::from_json(&original_bytes)
+        .map_err(|error| format!("invalid strict-schema fixture: {error}"))?;
+    let expected_original =
+        mov_memory_oracle(&original.fixture, &original.input_sha256).map_err(|error| {
+            format!("fixture is outside the exact MOV memory reducer profile: {error}")
+        })?;
+    let output_relative = output.unwrap_or_else(|| {
+        format!(
+            "work/stage2/s2-42ag-native-mov-memory/{}",
+            std::path::Path::new(&input_path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )
+    });
+    let repository_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output_path = repository_root.join(&output_relative);
+    validate_native_reducer_output(
+        std::path::Path::new(&output_relative),
+        "s2-42ag-native-mov-memory",
+    )?;
+    let working_directory = std::env::current_dir()
+        .map_err(|error| format!("could not read working directory: {error}"))?
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize working directory: {error}"))?;
+    std::fs::create_dir_all(output_path.parent().ok_or("output path has no parent")?)
+        .map_err(|error| error.to_string())?;
+    std::fs::create_dir(&output_path)
+        .map_err(|error| format!("output must be a new directory: {error}"))?;
+    let output_path = output_path
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize output directory: {error}"))?;
+    let callback_dir = output_path.join("callbacks");
+    let candidate_dir = callback_dir.join("candidates");
+    std::fs::create_dir(&callback_dir).map_err(|error| error.to_string())?;
+    std::fs::create_dir(&candidate_dir).map_err(|error| error.to_string())?;
+    write_evidence(&output_path.join("original.case.json"), &original_bytes)?;
+    let expected_original_bytes =
+        serde_json::to_vec_pretty(&expected_original).map_err(|error| error.to_string())?;
+    write_evidence(
+        &output_path.join("expected-original.json"),
+        &expected_original_bytes,
+    )?;
+
+    let mut callback_sequence = 0usize;
+    let mut callback_repeats = BTreeMap::<String, usize>::new();
+    let mut saved_candidate_digests = std::collections::BTreeSet::<String>::new();
+    let reduction = reduce_mov_memory_fixture_with_native_backend(
+        &original.fixture,
+        &original.input_sha256,
+        budget,
+        |candidate| {
+            callback_sequence += 1;
+            let is_original = candidate == &original.fixture;
+            let candidate_bytes = if is_original {
+                original_bytes.clone()
+            } else {
+                candidate.to_json().map_err(|error| error.to_string())?
+            };
+            let candidate_sha256 = od_testkit::sha256_hex(&candidate_bytes);
+            let candidate_relative = if is_original {
+                std::path::PathBuf::from("original.case.json")
+            } else {
+                std::path::PathBuf::from("callbacks/candidates")
+                    .join(format!("{candidate_sha256}.case.json"))
+            };
+            let expected_relative = if is_original {
+                std::path::PathBuf::from("expected-original.json")
+            } else {
+                std::path::PathBuf::from("callbacks/candidates")
+                    .join(format!("{candidate_sha256}.expected.json"))
+            };
+            let expected_bytes = serde_json::to_vec_pretty(
+                &mov_memory_oracle(candidate, &candidate_sha256)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            if !is_original && saved_candidate_digests.insert(candidate_sha256.clone()) {
+                write_evidence(&output_path.join(&candidate_relative), &candidate_bytes)?;
+                write_evidence(&output_path.join(&expected_relative), &expected_bytes)?;
+            }
+            let repeat = {
+                let count = callback_repeats
+                    .entry(candidate_sha256.clone())
+                    .or_default();
+                *count += 1;
+                *count
+            };
+            let loaded_candidate = match load_reducer_candidate(&original, candidate) {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    let record = serde_json::json!({
+                        "sequence": callback_sequence,
+                        "fixture_sha256": candidate_sha256,
+                        "fixture": candidate_relative,
+                        "expected": expected_relative,
+                        "repeat": repeat,
+                        "backend": "native_x86",
+                        "status": "invalid_candidate",
+                        "error": error
+                    });
+                    write_native_callback_record(&callback_dir, callback_sequence, &record)?;
+                    return Err(error);
+                }
+            };
+            let candidate_path = output_path.join(&candidate_relative);
+            let result = run_supervised_fixture(&loaded_candidate, &candidate_path);
+            let result_bytes = match result.to_json() {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let record = serde_json::json!({
+                        "sequence": callback_sequence,
+                        "fixture_sha256": candidate_sha256,
+                        "fixture": candidate_relative,
+                        "expected": expected_relative,
+                        "repeat": repeat,
+                        "backend": "native_x86",
+                        "status": "serialization_error",
+                        "error": error.to_string()
+                    });
+                    write_native_callback_record(&callback_dir, callback_sequence, &record)?;
+                    return Err(error.to_string());
+                }
+            };
+            let result_relative = std::path::PathBuf::from("callbacks")
+                .join(format!("run-{callback_sequence:06}.result.json"));
+            write_evidence(&output_path.join(&result_relative), &result_bytes)?;
+            let status = match &result.outcome {
+                Outcome::StopAddress {} => "completed",
+                Outcome::Unsupported { .. } => "unsupported",
+                Outcome::TimedOut { .. } => "timed_out",
+                Outcome::Signaled { .. } => "signaled",
+                Outcome::HarnessError { .. } => "harness_error",
+                Outcome::Exception { .. } => "exception",
+                _ => "non_stop_outcome",
+            };
+            let record = serde_json::json!({
+                "sequence": callback_sequence,
+                "fixture_sha256": candidate_sha256,
+                "fixture": candidate_relative,
+                "expected_sha256": od_testkit::sha256_hex(&expected_bytes),
+                "expected": expected_relative,
+                "repeat": repeat,
+                "backend": result.backend,
+                "status": status,
+                "outcome": result.outcome,
+                "result_sha256": od_testkit::sha256_hex(&result_bytes),
+                "result": result_relative
+            });
+            write_native_callback_record(&callback_dir, callback_sequence, &record)?;
+            Ok(result)
+        },
+    )?;
+
+    let mut initial_result_hashes = Vec::new();
+    for (index, result) in reduction.initial_results.iter().enumerate() {
+        let bytes = result.to_json().map_err(|error| error.to_string())?;
+        initial_result_hashes.push(od_testkit::sha256_hex(&bytes));
+        write_evidence(
+            &output_path.join(format!("initial-{}.result.json", index + 1)),
+            &bytes,
+        )?;
+    }
+    let mut final_result_hashes = Vec::new();
+    for (index, result) in reduction.final_results.iter().enumerate() {
+        let bytes = result.to_json().map_err(|error| error.to_string())?;
+        final_result_hashes.push(od_testkit::sha256_hex(&bytes));
+        write_evidence(
+            &output_path.join(format!("final-{}.result.json", index + 1)),
+            &bytes,
+        )?;
+    }
+    let reduced_bytes = reduction
+        .reduced_fixture
+        .as_ref()
+        .map(|fixture| fixture.to_json().map_err(|error| error.to_string()))
+        .transpose()?;
+    let mut expected_reduced_sha256 = None;
+    if let Some(bytes) = &reduced_bytes {
+        write_evidence(&output_path.join("reduced.case.json"), bytes)?;
+        let expected = reduction
+            .expected_reduced
+            .as_ref()
+            .ok_or("reduced fixture has no final independent oracle result")?;
+        let expected_bytes =
+            serde_json::to_vec_pretty(expected).map_err(|error| error.to_string())?;
+        expected_reduced_sha256 = Some(od_testkit::sha256_hex(&expected_bytes));
+        write_evidence(&output_path.join("expected-reduced.json"), &expected_bytes)?;
+    }
+    let runner_executable = std::env::current_exe()
+        .map_err(|error| format!("could not locate current runner executable: {error}"))?
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize runner executable: {error}"))?
+        .display()
+        .to_string();
+    let original_artifact = output_path.join("original.case.json");
+    let replay_original_argv = vec![
+        runner_executable.clone(),
+        "--fixture".into(),
+        original_artifact.display().to_string(),
+        "--json".into(),
+    ];
+    let replay_reduced_argv = reduced_bytes.as_ref().map(|_| {
+        vec![
+            runner_executable.clone(),
+            "--fixture".into(),
+            output_path.join("reduced.case.json").display().to_string(),
+            "--json".into(),
+        ]
+    });
+    let replay_nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let replay_reducer_output =
+        std::path::Path::new(&output_relative).join(format!("replay-{replay_nonce}"));
+    let reducer_argv = vec![
+        runner_executable.clone(),
+        "--reduce-native-mov-memory".into(),
+        original_artifact.display().to_string(),
+        "--limit".into(),
+        budget.to_string(),
+        "--output-dir".into(),
+        replay_reducer_output.display().to_string(),
+    ];
+    let shell_command = |argv: &[String]| {
+        argv.iter()
+            .map(|argument| shell_quote(argument))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let report = serde_json::json!({
+        "report_version": 1,
+        "reducer": "od-testkit-s2-42ag-native-mov-memory-v1",
+        "profile": v2::PROFILE,
+        "operation": "MOV qword ptr [RBX], RAX (48 89 03)",
+        "backend": "native_x86",
+        "stop_reason": reduction.stop,
+        "stop_detail": reduction.stop_detail,
+        "source_fixture": input_path,
+        "original_sha256": od_testkit::sha256_hex(&original_bytes),
+        "reduced_sha256": reduced_bytes.as_ref().map(|bytes| od_testkit::sha256_hex(bytes)),
+        "initial_result_sha256": initial_result_hashes,
+        "final_result_sha256": final_result_hashes,
+        "expected_original_sha256": od_testkit::sha256_hex(&expected_original_bytes),
+        "expected_reduced_sha256": expected_reduced_sha256,
+        "initial_fingerprint": reduction.initial_fingerprint,
+        "final_fingerprint": reduction.final_fingerprint,
+        "call_budget": budget,
+        "actual_native_runs": reduction.actual_callbacks,
+        "callback_records": callback_sequence,
+        "candidate_proposals": reduction.candidate_proposals,
+        "candidate_pairs": reduction.candidate_runs,
+        "accepted_candidates": reduction.accepted_candidates,
+        "initial_hamming_weight": reduction.initial_hamming_weight,
+        "final_hamming_weight": reduction.final_hamming_weight,
+        "provenance": original.fixture.provenance,
+        "build": reduction.initial_results.first().map(|result| &result.build),
+        "machine": reduction.initial_results.first().map(|result| &result.machine),
+        "working_directory": working_directory,
+        "reducer_argv": reducer_argv,
+        "reducer_command": shell_command(&reducer_argv),
+        "replay_reducer_output": replay_reducer_output,
+        "replay_original_argv": replay_original_argv,
+        "replay_original": shell_command(&replay_original_argv),
+        "replay_reduced_argv": replay_reduced_argv,
+        "replay_reduced": replay_reduced_argv.as_ref().map(|argv| shell_command(argv)),
+        "native_execution": "existing native-v2 profile admission with supervised disposable tracee",
+        "physical_mac_mini": "not_run"
+    });
+    write_evidence(
+        &output_path.join("report.json"),
+        &serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
+    )?;
+    if reduction.stop == MovMemoryReductionStop::NoInitialMismatch {
+        println!(
+            "native MOV memory reducer: no_initial_mismatch; no reduced fixture; {}",
+            output_path.display()
+        );
+    } else {
+        println!(
+            "native MOV memory reducer: {:?}; native_runs={}; {}",
+            reduction.stop,
+            reduction.actual_callbacks,
+            output_path.display()
+        );
+    }
+    Ok(native_mov_memory_reducer_exit_code(&reduction.stop))
+}
+
+fn native_mov_memory_reducer_exit_code(
+    stop: &od_testkit::mov_memory_reducer::MovMemoryReductionStop,
+) -> ExitCode {
+    use od_testkit::mov_memory_reducer::MovMemoryReductionStop;
+
+    match stop {
+        MovMemoryReductionStop::Reduced
+        | MovMemoryReductionStop::NoReduction
+        | MovMemoryReductionStop::NoInitialMismatch => ExitCode::SUCCESS,
+        MovMemoryReductionStop::FlakyInitial
+        | MovMemoryReductionStop::FlakyCandidate
+        | MovMemoryReductionStop::CallbackBudgetExhausted
+        | MovMemoryReductionStop::CallbackError
+        | MovMemoryReductionStop::FinalConfirmationFailed => ExitCode::from(5),
+    }
+}
+
 fn reduce_native_stack_cli(args: &[String]) -> ExitCode {
     match reduce_native_stack_inner(args) {
         Ok(code) => code,
@@ -421,7 +795,7 @@ fn reduce_native_stack_inner(args: &[String]) -> Result<ExitCode, String> {
                         "status": "invalid_candidate",
                         "error": error
                     });
-                    write_native_stack_callback_record(&callback_dir, callback_sequence, &record)?;
+                    write_native_callback_record(&callback_dir, callback_sequence, &record)?;
                     return Err(error);
                 }
             };
@@ -438,7 +812,7 @@ fn reduce_native_stack_inner(args: &[String]) -> Result<ExitCode, String> {
                         "status": "serialization_error",
                         "error": error.to_string()
                     });
-                    write_native_stack_callback_record(&callback_dir, callback_sequence, &record)?;
+                    write_native_callback_record(&callback_dir, callback_sequence, &record)?;
                     return Err(error.to_string());
                 }
             };
@@ -465,7 +839,7 @@ fn reduce_native_stack_inner(args: &[String]) -> Result<ExitCode, String> {
                 "result_sha256": od_testkit::sha256_hex(&result_bytes),
                 "result": result_relative
             });
-            write_native_stack_callback_record(&callback_dir, callback_sequence, &record)?;
+            write_native_callback_record(&callback_dir, callback_sequence, &record)?;
             Ok(result)
         },
     )?;
@@ -620,7 +994,7 @@ fn native_stack_reducer_exit_code(
     }
 }
 
-fn write_native_stack_callback_record(
+fn write_native_callback_record(
     callback_dir: &std::path::Path,
     sequence: usize,
     record: &serde_json::Value,
@@ -2310,6 +2684,57 @@ fn execute(loaded: &LoadedFixture) -> RunResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supervised_native_runner_uses_direct_child_dispatch() {
+        let fixture_path = std::path::Path::new("work/callback.case.json");
+        let args = supervised_native_child_args(fixture_path);
+
+        assert_eq!(args[0], "--native-v2-child");
+        assert_eq!(args[1], fixture_path.as_os_str());
+    }
+
+    #[test]
+    fn native_mov_memory_reducer_exit_status_requires_confirmed_completion() {
+        use od_testkit::mov_memory_reducer::MovMemoryReductionStop;
+
+        for stop in [
+            MovMemoryReductionStop::Reduced,
+            MovMemoryReductionStop::NoReduction,
+            MovMemoryReductionStop::NoInitialMismatch,
+        ] {
+            assert_eq!(
+                native_mov_memory_reducer_exit_code(&stop),
+                ExitCode::SUCCESS
+            );
+        }
+        for stop in [
+            MovMemoryReductionStop::FlakyInitial,
+            MovMemoryReductionStop::FlakyCandidate,
+            MovMemoryReductionStop::CallbackBudgetExhausted,
+            MovMemoryReductionStop::CallbackError,
+            MovMemoryReductionStop::FinalConfirmationFailed,
+        ] {
+            assert_eq!(
+                native_mov_memory_reducer_exit_code(&stop),
+                ExitCode::from(5)
+            );
+        }
+    }
+
+    #[test]
+    fn s2_42n_exact_mov_fixture_reuses_current_native_admission() {
+        let loaded = Fixture::from_json(include_bytes!(
+            "../../../tests/fixtures/x86/stage2/s2_42n_mov_qword_rbx_rax.case.json"
+        ))
+        .unwrap();
+        assert_eq!(loaded.fixture.profile, v2::Profile::LongIntegerV1);
+        let _plan = MappingPlan::new(&loaded.fixture, 4096).unwrap();
+        let mut memory = FlatMemory::from_fixture(&loaded.fixture).unwrap();
+        let actual = loaded.fixture.initial_state.to_cpu().unwrap();
+        admission(&loaded.fixture, &mut memory, &actual).unwrap();
+        assert_eq!(loaded.fixture.memory[0].initial_bytes_hex, "488903");
+    }
 
     #[test]
     fn native_stack_reducer_stop_status_requires_confirmed_completion() {

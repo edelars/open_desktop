@@ -24867,3 +24867,18 @@ The other 27 lettered suites are explicitly unselected. Physical Mac remains
 requirements or parent S2-42. See the
 [protocol](../testing/S2_42_LINUX_FIVE_SUITE_ACCEPTANCE.md) and
 [plan](../plans/STAGE_2.md#s2-42-собрать-общий-corpus-reducer-и-harness).
+
+## S2-42ag — supervised native MOV qword memory reducer
+
+The native adapter passed on Linux x86_64 without changing native admission.
+The `native_v2::tests` group passed 220 tests, the focused supervised child
+dispatch test passed 1, and local MOV reducer tests passed 5. On the literal
+S2-42n fixture, two supervised native callbacks returned identical results;
+the reducer reported `no_initial_mismatch`. Replaying its saved
+`original.case.json` returned `native_x86` / `stop_address` with exit 0.
+No CPU mismatch was found, and the fixture produced no candidate pairs or
+reduced fixture; native reduction of an actual mismatch remains unverified.
+Evidence and boundaries are documented in the
+[protocol and acceptance record](../testing/S2_42AG_NATIVE_MOV_MEMORY_REDUCER.md).
+Parent S2-42, the remaining lettered suites and physical Mac acceptance remain
+open or unrun.
