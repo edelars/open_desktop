@@ -930,6 +930,17 @@ cargo test -p od-testkit --offline rep_stosb
 cargo test -p od-x86-runner --offline rep_stosb_native_admission
 ```
 
+### S2-42ai successful REP STOSB reducer input
+
+The bounded successful reducer reuses mapped S2-19a `F3 AA` fixtures and
+accepts only Long64, count 1–8, either DF value, one instruction budget, exact
+`stop_rip=entry+2`, and a fully observed data mapping covering every byte in
+the REP span. Zero-count, fault, partial-progress, work-limit, extra-prefix,
+and unmapped destinations are rejected. The reducer changes AL only and treats
+every untouched data byte as a canary. Native execution continues through the
+existing exact native-v2 admission; this reducer does not widen that gate.
+See [S2-42ai reducer protocol](../../../../docs/testing/S2_42AI_REP_STOSB_REDUCER.md).
+
 ## Tracked REP restart fixtures S2-19i
 
 Six schema-v2 fixtures compose `TEST RAX,RAX` with REP STOSB, LODSB, and MOVSB

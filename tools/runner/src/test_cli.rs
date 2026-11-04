@@ -94,6 +94,10 @@ use od_testkit::rep_fault_reducer::{
     REP_FAULT_REDUCER_DEFAULT_BUDGET, REP_FAULT_REDUCER_MAX_BUDGET, RepFaultReductionStop,
     reduce_rep_fault_fixture,
 };
+use od_testkit::rep_stosb_reducer::{
+    REP_STOSB_REDUCER_DEFAULT_BUDGET, REP_STOSB_REDUCER_MAX_BUDGET, RepStosbReductionStop,
+    reduce_rep_stosb_fixture, rep_stosb_oracle,
+};
 use od_testkit::result::{
     Backend, BuildMetadata, CompletionStatus, CpuSnapshot, ExitReason, GprSnapshot,
     MachineMetadata, Observation, RESULT_SCHEMA_VERSION, RunResult,
@@ -117,6 +121,7 @@ const EXIT_HARNESS_FAILURE: u8 = 5;
 const NATIVE_XORPD_WORK_DIR: &str = "work/stage2/s2-42a-xorpd";
 const NATIVE_XORPD_REDUCE_WORK_DIR: &str = "work/stage2/s2-42b-xorpd";
 const REP_FAULT_REDUCE_WORK_DIR: &str = "work/stage2/s2-42l-rep-fault";
+const REP_STOSB_REDUCE_WORK_DIR: &str = "work/stage2/s2-42ai-rep-stosb";
 const STACK_REDUCE_WORK_DIR: &str = "work/stage2/s2-42g-stack";
 const BRANCH_REDUCE_WORK_DIR: &str = "work/stage2/s2-42k-branch";
 const MOV_MEMORY_REDUCE_WORK_DIR: &str = "work/stage2/s2-42n-mov-memory-reducer";
@@ -1117,6 +1122,293 @@ fn run_sqrtss_fault_interpreter(loaded: &v2::LoadedFixture) -> Result<v2::RunRes
     let mut memory =
         od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).map_err(|e| e.to_string())?;
     Ok(execute_fixture_v2(loaded, &mut memory))
+}
+
+pub fn reduce_rep_stosb(args: &[String]) -> ExitCode {
+    match reduce_rep_stosb_inner(args) {
+        Ok(code) => code,
+        Err(error) => invalid_input(&error),
+    }
+}
+
+fn reduce_rep_stosb_inner(args: &[String]) -> Result<ExitCode, String> {
+    let mut input = None;
+    let mut output = None;
+    let mut budget = REP_STOSB_REDUCER_DEFAULT_BUDGET;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--limit" => {
+                i += 1;
+                budget = args
+                    .get(i)
+                    .ok_or("--limit requires an integer")?
+                    .parse()
+                    .map_err(|_| "--limit must be an integer")?;
+            }
+            "--output-dir" => {
+                i += 1;
+                output = Some(args.get(i).ok_or("--output-dir requires a path")?.clone());
+            }
+            option if option.starts_with('-') => {
+                return Err(format!("unknown REP STOSB reducer option: {option}"));
+            }
+            value if input.is_none() => input = Some(value.to_string()),
+            value => return Err(format!("unexpected REP STOSB reducer argument: {value}")),
+        }
+        i += 1;
+    }
+    if !(4..=REP_STOSB_REDUCER_MAX_BUDGET).contains(&budget) {
+        return Err(format!(
+            "--limit must be 4..={REP_STOSB_REDUCER_MAX_BUDGET}"
+        ));
+    }
+    let input = input
+        .ok_or("usage: od-runner --reduce-rep-stosb <fixture> [--limit N] [--output-dir DIR]")?;
+    let output_relative = std::path::PathBuf::from(output.unwrap_or_else(|| {
+        format!(
+            "{REP_STOSB_REDUCE_WORK_DIR}/{}",
+            std::path::Path::new(&input)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )
+    }));
+    validate_rep_stosb_output_dir(&output_relative)?;
+    let output_path = workspace_root().join(&output_relative);
+    let original_bytes = read_file_bounded(&input, v2::MAX_FIXTURE_JSON_BYTES, "fixture JSON")?;
+    let loaded = v2::Fixture::from_json(&original_bytes)
+        .map_err(|e| format!("invalid strict-schema fixture: {e}"))?;
+    let expected_bytes =
+        serde_json::to_vec_pretty(&rep_stosb_oracle(&loaded.fixture, &loaded.input_sha256)?)
+            .map_err(|e| e.to_string())?;
+    fs::create_dir_all(
+        output_path
+            .parent()
+            .ok_or("output directory has no parent")?,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::create_dir(&output_path).map_err(|e| format!("output must be a new directory: {e}"))?;
+    let output_path = fs::canonicalize(&output_path).map_err(|e| e.to_string())?;
+    let callbacks = output_path.join("callbacks");
+    let candidates = callbacks.join("candidates");
+    fs::create_dir(&callbacks).map_err(|e| e.to_string())?;
+    fs::create_dir(&candidates).map_err(|e| e.to_string())?;
+    write_new(output_path.join("original.case.json"), &original_bytes)?;
+    write_new(output_path.join("expected-original.json"), &expected_bytes)?;
+    let mut sequence = 0usize;
+    let mut repeats = HashMap::<String, usize>::new();
+    let mut saved = HashSet::<String>::new();
+    let reduction = reduce_rep_stosb_fixture(
+        &loaded.fixture,
+        &loaded.input_sha256,
+        budget,
+        |candidate| {
+            sequence += 1;
+            let is_original = candidate == &loaded.fixture;
+            let bytes = if is_original {
+                original_bytes.clone()
+            } else {
+                candidate.to_json().map_err(|e| e.to_string())?
+            };
+            let digest = sha256_hex(&bytes);
+            let fixture_path = if is_original {
+                std::path::PathBuf::from("original.case.json")
+            } else {
+                std::path::PathBuf::from("callbacks/candidates").join(format!("{digest}.case.json"))
+            };
+            let expected_path = if is_original {
+                std::path::PathBuf::from("expected-original.json")
+            } else {
+                std::path::PathBuf::from("callbacks/candidates")
+                    .join(format!("{digest}.expected.json"))
+            };
+            let expected = serde_json::to_vec_pretty(&rep_stosb_oracle(candidate, &digest)?)
+                .map_err(|e| e.to_string())?;
+            if !is_original && saved.insert(digest.clone()) {
+                write_new(output_path.join(&fixture_path), &bytes)?;
+                write_new(output_path.join(&expected_path), &expected)?;
+            }
+            let repeat = repeats.entry(digest.clone()).or_default();
+            *repeat += 1;
+            let run = if is_original {
+                run_rep_stosb_interpreter(&loaded)
+            } else {
+                match v2::Fixture::from_json(&bytes) {
+                    Ok(candidate_loaded) => run_rep_stosb_interpreter(&candidate_loaded),
+                    Err(e) => Err(format!("candidate failed strict validation: {e}")),
+                }
+            };
+            let result = match run {
+                Ok(r) => r,
+                Err(error) => {
+                    write_callback_record(
+                        &callbacks,
+                        sequence,
+                        &serde_json::json!({"sequence":sequence,"fixture_sha256":digest,"fixture":fixture_path,"repeat":repeat,"backend":"interpreter","status":"harness_error","error":error}),
+                    )?;
+                    return Err(error);
+                }
+            };
+            let result_bytes = result.to_json().map_err(|e| e.to_string())?;
+            let result_path = std::path::PathBuf::from("callbacks")
+                .join(format!("run-{sequence:06}.result.json"));
+            write_new(output_path.join(&result_path), &result_bytes)?;
+            let status = if result.backend != Backend::Interpreter {
+                "wrong_backend"
+            } else {
+                match &result.outcome {
+                    v2::Outcome::StopAddress {} => "completed",
+                    v2::Outcome::Unsupported { .. } => "unsupported",
+                    v2::Outcome::TimedOut { .. } => "timed_out",
+                    v2::Outcome::Signaled { .. } => "signaled",
+                    v2::Outcome::HarnessError { .. } => "harness_error",
+                    v2::Outcome::Exception {} => "exception",
+                    _ => "non_stop_outcome",
+                }
+            };
+            write_callback_record(
+                &callbacks,
+                sequence,
+                &serde_json::json!({"sequence":sequence,"fixture_sha256":digest,"fixture":fixture_path,"expected_sha256":sha256_hex(&expected),"expected":expected_path,"repeat":repeat,"backend":result.backend,"status":status,"outcome":result.outcome,"result_sha256":sha256_hex(&result_bytes),"result":result_path}),
+            )?;
+            Ok(result)
+        },
+    )?;
+    for (label, results) in [
+        ("initial", &reduction.initial_results),
+        ("final", &reduction.final_results),
+    ] {
+        for (i, r) in results.iter().enumerate() {
+            write_new(
+                output_path.join(format!("{label}-{}.result.json", i + 1)),
+                &r.to_json().map_err(|e| e.to_string())?,
+            )?;
+        }
+    }
+    let reduced_bytes = reduction
+        .reduced_fixture
+        .as_ref()
+        .map(|f| {
+            if f == &loaded.fixture {
+                Ok(original_bytes.clone())
+            } else {
+                f.to_json().map_err(|e| e.to_string())
+            }
+        })
+        .transpose()?;
+    if let Some(bytes) = &reduced_bytes {
+        write_new(output_path.join("reduced.case.json"), bytes)?;
+        write_new(
+            output_path.join("expected-reduced.json"),
+            &serde_json::to_vec_pretty(
+                reduction
+                    .expected_reduced
+                    .as_ref()
+                    .ok_or("reduced fixture lacks oracle result")?,
+            )
+            .map_err(|e| e.to_string())?,
+        )?;
+    }
+    let executable = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .display()
+        .to_string();
+    let original_replay = vec![
+        executable.clone(),
+        "--fixture".into(),
+        output_path.join("original.case.json").display().to_string(),
+        "--engine".into(),
+        "interpreter".into(),
+        "--json".into(),
+    ];
+    let reduced_replay = reduced_bytes.as_ref().map(|_| {
+        vec![
+            executable.clone(),
+            "--fixture".into(),
+            output_path.join("reduced.case.json").display().to_string(),
+            "--engine".into(),
+            "interpreter".into(),
+            "--json".into(),
+        ]
+    });
+    let replay_nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let replay_reducer_output = output_relative.join(format!("replay-{replay_nonce}"));
+    let reducer_argv = vec![
+        executable,
+        "--reduce-rep-stosb".into(),
+        output_path.join("original.case.json").display().to_string(),
+        "--limit".into(),
+        budget.to_string(),
+        "--output-dir".into(),
+        replay_reducer_output.display().to_string(),
+    ];
+    let report = serde_json::json!({"report_version":1,"reducer":od_testkit::rep_stosb_reducer::REP_STOSB_REDUCER_VERSION,"profile":v2::PROFILE,"operation":"REP STOSB (F3 AA), Long64, count 1..=8","backend":"interpreter","stop_reason":reduction.stop,"stop_detail":reduction.stop_detail,"source_fixture":input,"original_sha256":sha256_hex(&original_bytes),"reduced_sha256":reduced_bytes.as_ref().map(|b|sha256_hex(b)),"initial_fingerprint":reduction.initial_fingerprint,"final_fingerprint":reduction.final_fingerprint,"callback_budget":budget,"actual_callbacks":reduction.actual_callbacks,"callback_records":"callbacks/","candidate_proposals":reduction.candidate_proposals,"candidate_runs":reduction.candidate_runs,"accepted_candidates":reduction.accepted_candidates,"initial_hamming_weight":reduction.initial_hamming_weight,"final_hamming_weight":reduction.final_hamming_weight,"replay":{"working_directory":std::env::current_dir().map_err(|e|e.to_string())?.canonicalize().map_err(|e|e.to_string())?,"reducer_argv":reducer_argv,"replay_reducer_output":replay_reducer_output,"original_argv":original_replay,"reduced_argv":reduced_replay},"native":"not_run"});
+    write_new(
+        output_path.join("report.json"),
+        &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+    )?;
+    println!(
+        "REP STOSB interpreter reducer: {:?}; callbacks={}; {}",
+        reduction.stop,
+        reduction.actual_callbacks,
+        output_path.display()
+    );
+    Ok(match reduction.stop {
+        RepStosbReductionStop::Reduced
+        | RepStosbReductionStop::NoReduction
+        | RepStosbReductionStop::NoInitialMismatch => ExitCode::SUCCESS,
+        _ => ExitCode::from(EXIT_HARNESS_FAILURE),
+    })
+}
+
+fn run_rep_stosb_interpreter(loaded: &v2::LoadedFixture) -> Result<v2::RunResult, String> {
+    let mut memory =
+        od_testkit::memory::FlatMemory::from_fixture(&loaded.fixture).map_err(|e| e.to_string())?;
+    let result = execute_fixture_v2(loaded, &mut memory);
+    result
+        .validate_for(loaded)
+        .map_err(|e| format!("invalid interpreter result: {e}"))?;
+    Ok(result)
+}
+
+fn validate_rep_stosb_output_dir(path: &std::path::Path) -> Result<(), String> {
+    use std::path::Component;
+    let allowed = ["work", "stage2", "s2-42ai-rep-stosb"];
+    let parts = path.components().collect::<Vec<_>>();
+    if parts.len() <= allowed.len()
+        || parts.iter().any(|p| !matches!(p, Component::Normal(_)))
+        || parts
+            .iter()
+            .take(allowed.len())
+            .zip(allowed)
+            .any(|(p, a)| *p != Component::Normal(std::ffi::OsStr::new(a)))
+    {
+        return Err(format!(
+            "--output-dir must be a new child under {REP_STOSB_REDUCE_WORK_DIR}"
+        ));
+    }
+    let mut prefix = workspace_root();
+    for part in parts {
+        prefix.push(part.as_os_str());
+        match fs::symlink_metadata(&prefix) {
+            Ok(m) if m.file_type().is_symlink() => {
+                return Err(format!(
+                    "--output-dir contains symlink {}",
+                    prefix.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
 }
 
 fn serialize_v2_result_raw(result: &v2::RunResult) -> Result<Vec<u8>, String> {

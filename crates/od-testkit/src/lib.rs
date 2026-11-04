@@ -14,6 +14,7 @@ pub mod minimize;
 pub mod mov_memory_reducer;
 pub mod native_xorpd;
 pub mod rep_fault_reducer;
+pub mod rep_stosb_reducer;
 pub mod result;
 pub mod sqrtss_fault_reducer;
 pub mod stack_reducer;

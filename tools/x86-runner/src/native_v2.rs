@@ -50,6 +50,9 @@ pub(crate) fn dispatch(args: &[String]) -> Option<ExitCode> {
     if args.first().map(String::as_str) == Some("--reduce-native-mov-memory") {
         return Some(reduce_native_mov_memory_cli(&args[1..]));
     }
+    if args.first().map(String::as_str) == Some("--reduce-native-rep-stosb") {
+        return Some(reduce_native_rep_stosb_cli(&args[1..]));
+    }
     if args.first().map(String::as_str) == Some("--reduce-native-push-pop") {
         return Some(reduce_native_stack_cli(&args[1..]));
     }
@@ -709,6 +712,253 @@ fn native_mov_memory_reducer_exit_code(
         | MovMemoryReductionStop::CallbackError
         | MovMemoryReductionStop::FinalConfirmationFailed => ExitCode::from(5),
     }
+}
+
+fn reduce_native_rep_stosb_cli(args: &[String]) -> ExitCode {
+    match reduce_native_rep_stosb_inner(args) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("native REP STOSB reducer: {error}");
+            ExitCode::from(3)
+        }
+    }
+}
+
+fn reduce_native_rep_stosb_inner(args: &[String]) -> Result<ExitCode, String> {
+    use od_testkit::rep_stosb_reducer::{
+        REP_STOSB_REDUCER_DEFAULT_BUDGET, REP_STOSB_REDUCER_MAX_BUDGET, RepStosbReductionStop,
+        reduce_rep_stosb_fixture_native, rep_stosb_oracle,
+    };
+    let mut input = None;
+    let mut output = None;
+    let mut budget = REP_STOSB_REDUCER_DEFAULT_BUDGET;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--limit" => {
+                i += 1;
+                budget = args
+                    .get(i)
+                    .ok_or("--limit requires a count")?
+                    .parse()
+                    .map_err(|_| "--limit must be an integer")?;
+            }
+            "--output-dir" => {
+                i += 1;
+                output = Some(args.get(i).ok_or("--output-dir requires a path")?.clone());
+            }
+            option if option.starts_with('-') => return Err(format!("unknown option: {option}")),
+            path if input.is_none() => input = Some(path.to_owned()),
+            path => return Err(format!("unexpected argument: {path}")),
+        }
+        i += 1;
+    }
+    if !(4..=REP_STOSB_REDUCER_MAX_BUDGET).contains(&budget) {
+        return Err(format!(
+            "--limit must be 4..={REP_STOSB_REDUCER_MAX_BUDGET}"
+        ));
+    }
+    let input_path = input.ok_or(
+        "usage: od-x86-runner --reduce-native-rep-stosb CASE.json [--limit N] [--output-dir DIR]",
+    )?;
+    let original_bytes = read_reducer_input(&input_path)?;
+    let original = Fixture::from_json(&original_bytes)
+        .map_err(|e| format!("invalid strict-schema fixture: {e}"))?;
+    rep_stosb_oracle(&original.fixture, &original.input_sha256)?;
+    let output_relative = output.unwrap_or_else(|| {
+        format!(
+            "work/stage2/s2-42ai-native-rep-stosb/{}",
+            std::path::Path::new(&input_path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+        )
+    });
+    let repository_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    validate_native_reducer_output(
+        std::path::Path::new(&output_relative),
+        "s2-42ai-native-rep-stosb",
+    )?;
+    let output_path = repository_root.join(&output_relative);
+    let working_directory = std::env::current_dir()
+        .map_err(|e| e.to_string())?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(output_path.parent().ok_or("output path has no parent")?)
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir(&output_path)
+        .map_err(|e| format!("output must be a new directory: {e}"))?;
+    let output_path = output_path.canonicalize().map_err(|e| e.to_string())?;
+    let callbacks = output_path.join("callbacks");
+    let candidates = callbacks.join("candidates");
+    std::fs::create_dir(&callbacks).map_err(|e| e.to_string())?;
+    std::fs::create_dir(&candidates).map_err(|e| e.to_string())?;
+    write_evidence(&output_path.join("original.case.json"), &original_bytes)?;
+    let expected_original = serde_json::to_vec_pretty(&rep_stosb_oracle(
+        &original.fixture,
+        &original.input_sha256,
+    )?)
+    .map_err(|e| e.to_string())?;
+    write_evidence(
+        &output_path.join("expected-original.json"),
+        &expected_original,
+    )?;
+    let mut sequence = 0usize;
+    let mut repeats = BTreeMap::<String, usize>::new();
+    let reduction = reduce_rep_stosb_fixture_native(
+        &original.fixture,
+        &original.input_sha256,
+        budget,
+        |candidate| {
+            sequence += 1;
+            let is_original = candidate == &original.fixture;
+            let bytes = if is_original {
+                original_bytes.clone()
+            } else {
+                candidate.to_json().map_err(|e| e.to_string())?
+            };
+            let digest = od_testkit::sha256_hex(&bytes);
+            let candidate_rel = if is_original {
+                std::path::PathBuf::from("original.case.json")
+            } else {
+                let rel = std::path::PathBuf::from("callbacks/candidates")
+                    .join(format!("{digest}.case.json"));
+                if !output_path.join(&rel).exists() {
+                    write_evidence(&output_path.join(&rel), &bytes)?;
+                }
+                rel
+            };
+            let expected_rel = if is_original {
+                std::path::PathBuf::from("expected-original.json")
+            } else {
+                std::path::PathBuf::from("callbacks/candidates")
+                    .join(format!("{digest}.expected.json"))
+            };
+            let expected = serde_json::to_vec_pretty(&rep_stosb_oracle(candidate, &digest)?)
+                .map_err(|e| e.to_string())?;
+            if !is_original && !output_path.join(&expected_rel).exists() {
+                write_evidence(&output_path.join(&expected_rel), &expected)?;
+            }
+            let repeat = {
+                let x = repeats.entry(digest.clone()).or_default();
+                *x += 1;
+                *x
+            };
+            let loaded = load_reducer_candidate(&original, candidate)?;
+            let native_path = output_path.join(&candidate_rel);
+            let result = run_supervised_fixture(&loaded, &native_path);
+            let result_bytes = result.to_json().map_err(|e| e.to_string())?;
+            let result_rel = std::path::PathBuf::from("callbacks")
+                .join(format!("run-{sequence:06}.result.json"));
+            write_evidence(&output_path.join(&result_rel), &result_bytes)?;
+            let status = if result.backend != Backend::NativeX86 {
+                "wrong_backend"
+            } else {
+                match &result.outcome {
+                    Outcome::StopAddress {} => "completed",
+                    Outcome::Unsupported { .. } => "unsupported",
+                    Outcome::TimedOut { .. } => "timed_out",
+                    Outcome::Signaled { .. } => "signaled",
+                    Outcome::HarnessError { .. } => "harness_error",
+                    Outcome::Exception { .. } => "exception",
+                    _ => "non_stop_outcome",
+                }
+            };
+            write_native_callback_record(
+                &callbacks,
+                sequence,
+                &serde_json::json!({"sequence":sequence,"fixture_sha256":digest,"fixture":candidate_rel,"expected_sha256":od_testkit::sha256_hex(&expected),"expected":expected_rel,"repeat":repeat,"backend":result.backend,"status":status,"outcome":result.outcome,"result_sha256":od_testkit::sha256_hex(&result_bytes),"result":result_rel}),
+            )?;
+            Ok(result)
+        },
+    )?;
+    for (label, rs) in [
+        ("initial", &reduction.initial_results),
+        ("final", &reduction.final_results),
+    ] {
+        for (i, r) in rs.iter().enumerate() {
+            write_evidence(
+                &output_path.join(format!("{label}-{}.result.json", i + 1)),
+                &r.to_json().map_err(|e| e.to_string())?,
+            )?;
+        }
+    }
+    let reduced_bytes = reduction
+        .reduced_fixture
+        .as_ref()
+        .map(|f| {
+            if f == &original.fixture {
+                Ok(original_bytes.clone())
+            } else {
+                f.to_json().map_err(|e| e.to_string())
+            }
+        })
+        .transpose()?;
+    if let Some(bytes) = &reduced_bytes {
+        write_evidence(&output_path.join("reduced.case.json"), bytes)?;
+        write_evidence(
+            &output_path.join("expected-reduced.json"),
+            &serde_json::to_vec_pretty(
+                reduction
+                    .expected_reduced
+                    .as_ref()
+                    .ok_or("reduced fixture lacks oracle result")?,
+            )
+            .map_err(|e| e.to_string())?,
+        )?;
+    }
+    let executable = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .display()
+        .to_string();
+    let original_replay = vec![
+        executable.clone(),
+        "--fixture".into(),
+        output_path.join("original.case.json").display().to_string(),
+        "--json".into(),
+    ];
+    let reduced_replay = reduced_bytes.as_ref().map(|_| {
+        vec![
+            executable.clone(),
+            "--fixture".into(),
+            output_path.join("reduced.case.json").display().to_string(),
+            "--json".into(),
+        ]
+    });
+    let replay_nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let replay_reducer_output =
+        std::path::Path::new(&output_relative).join(format!("replay-{replay_nonce}"));
+    let reducer_argv = vec![
+        executable,
+        "--reduce-native-rep-stosb".into(),
+        output_path.join("original.case.json").display().to_string(),
+        "--limit".into(),
+        budget.to_string(),
+        "--output-dir".into(),
+        replay_reducer_output.display().to_string(),
+    ];
+    let report = serde_json::json!({"report_version":1,"reducer":od_testkit::rep_stosb_reducer::REP_STOSB_REDUCER_VERSION,"backend":"native_x86","profile":v2::PROFILE,"operation":"REP STOSB (F3 AA), Long64, count 1..=8","stop_reason":reduction.stop,"stop_detail":reduction.stop_detail,"source_fixture":input_path,"original_sha256":od_testkit::sha256_hex(&original_bytes),"reduced_sha256":reduced_bytes.as_ref().map(|b|od_testkit::sha256_hex(b)),"initial_fingerprint":reduction.initial_fingerprint,"final_fingerprint":reduction.final_fingerprint,"callback_budget":budget,"actual_native_runs":reduction.actual_callbacks,"callback_records":"callbacks/","candidate_proposals":reduction.candidate_proposals,"candidate_runs":reduction.candidate_runs,"accepted_candidates":reduction.accepted_candidates,"initial_hamming_weight":reduction.initial_hamming_weight,"final_hamming_weight":reduction.final_hamming_weight,"provenance":original.fixture.provenance,"build":reduction.initial_results.first().map(|r|&r.build),"machine":reduction.initial_results.first().map(|r|&r.machine),"working_directory":working_directory,"reducer_argv":reducer_argv,"replay_reducer_output":replay_reducer_output,"replay_original_argv":original_replay,"replay_reduced_argv":reduced_replay,"native_execution":"existing native-v2 admission through supervised --native-v2-child","execution_kind":"unknown","physical_mac_mini":"not_run"});
+    write_evidence(
+        &output_path.join("report.json"),
+        &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+    )?;
+    println!(
+        "native REP STOSB reducer: {:?}; callbacks={}; {}",
+        reduction.stop,
+        reduction.actual_callbacks,
+        output_path.display()
+    );
+    Ok(match reduction.stop {
+        RepStosbReductionStop::Reduced
+        | RepStosbReductionStop::NoReduction
+        | RepStosbReductionStop::NoInitialMismatch => ExitCode::SUCCESS,
+        _ => ExitCode::from(5),
+    })
 }
 
 fn reduce_native_stack_cli(args: &[String]) -> ExitCode {

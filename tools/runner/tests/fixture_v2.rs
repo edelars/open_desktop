@@ -4,6 +4,10 @@ use od_testkit::mov_memory_reducer::{MovMemoryReductionStop, reduce_mov_memory_f
 use od_testkit::rep_fault_reducer::{
     RepFaultReductionStop, reduce_rep_fault_fixture, rep_fault_oracle,
 };
+use od_testkit::rep_stosb_reducer::{
+    RepStosbReductionStop, reduce_rep_stosb_fixture, reduce_rep_stosb_fixture_native,
+    rep_stosb_oracle,
+};
 use od_testkit::result::{Backend, MemoryRegionSnapshot, Observation};
 use od_testkit::v2::{
     CmpsdMemoryRaxControlSnapshot, CmpssMemoryRaxControlSnapshot, ComissUcomissControlSnapshot,
@@ -10986,7 +10990,7 @@ fn rep_fault_boundary_cli_and_al_reducer_preserve_only_destination_mismatch() {
         0x1122_3344_5566_7700
     );
 
-    let mut drift = template;
+    let mut drift = template.clone();
     let Observation::Available { value } = &mut drift.snapshot else {
         panic!("template snapshot unavailable")
     };
@@ -10997,6 +11001,308 @@ fn rep_fault_boundary_cli_and_al_reducer_preserve_only_destination_mismatch() {
     assert_eq!(rejected.stop, RepFaultReductionStop::CallbackError);
     assert!(rejected.initial_fingerprint.is_none());
     assert!(rejected.reduced_fixture.is_none());
+}
+
+#[test]
+fn rep_stosb_success_reducer_is_al_only_repeatable_and_fails_closed_on_drift() {
+    let raw = include_bytes!("../../../tests/fixtures/x86/stage2/s2_19a_rep_stosb_one.case.json");
+    let (loaded, template) = run(raw, "interpreter", 0);
+    let original = loaded.fixture.clone();
+    let original_digest = loaded.input_sha256.clone();
+    let mut decrement_wrap = original.clone();
+    decrement_wrap.initial_state.gpr[7] = HexU64(0);
+    decrement_wrap.initial_state.rflags.0 |= 1 << 10;
+    let data = decrement_wrap
+        .memory
+        .iter_mut()
+        .find(|region| region.region_id == "data")
+        .unwrap();
+    data.guest_address = HexU64(0);
+    let wrap_expected = rep_stosb_oracle(&decrement_wrap, &original_digest).unwrap();
+    assert_eq!(wrap_expected.state.gpr[1], HexU64(0));
+    assert_eq!(wrap_expected.state.gpr[7], HexU64(u64::MAX));
+
+    let reduction = reduce_rep_stosb_fixture(&original, &original_digest, 20, |candidate| {
+        let digest = if candidate == &original {
+            original_digest.clone()
+        } else {
+            od_testkit::sha256_hex(&candidate.to_json().map_err(|e| e.to_string())?)
+        };
+        let expected = rep_stosb_oracle(candidate, &digest)?;
+        let mut result = template.clone();
+        result.case_id = candidate.case_id.clone();
+        result.input_sha256 = digest;
+        result.outcome = expected.outcome;
+        result.instructions_executed = Observation::Available {
+            value: expected.instructions_executed,
+        };
+        let Observation::Available { value } = &mut result.snapshot else {
+            return Err("snapshot unavailable".into());
+        };
+        value.state = expected.state;
+        value.rflags_defined = expected.rflags_defined;
+        value.memory = expected.memory;
+        let data = value
+            .memory
+            .iter_mut()
+            .find(|r| r.region_id == "data")
+            .ok_or("data missing")?;
+        let mut bytes = data
+            .bytes_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        let offset = (candidate.initial_state.gpr[7].get()
+            - candidate
+                .memory
+                .iter()
+                .find(|r| r.region_id == "data")
+                .unwrap()
+                .guest_address
+                .get()) as usize;
+        bytes[offset] ^= 1;
+        data.bytes_hex = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        Ok(result)
+    })
+    .unwrap();
+    assert_eq!(
+        reduction.stop,
+        RepStosbReductionStop::Reduced,
+        "{:?}",
+        reduction.stop_detail
+    );
+    assert_eq!(
+        reduction
+            .initial_fingerprint
+            .unwrap()
+            .wrong_destination_byte_offsets,
+        [2]
+    );
+    assert_eq!(
+        reduction
+            .final_fingerprint
+            .unwrap()
+            .wrong_destination_byte_offsets,
+        [2]
+    );
+    assert_eq!(reduction.final_hamming_weight, Some(0));
+    assert_eq!(
+        reduction.reduced_fixture.unwrap().initial_state.gpr[0],
+        HexU64(0x1122334455667700)
+    );
+    assert_eq!(reduction.actual_callbacks, 8);
+
+    let native_reduction =
+        reduce_rep_stosb_fixture_native(&original, &original_digest, 20, |candidate| {
+            let digest = if candidate == &original {
+                original_digest.clone()
+            } else {
+                od_testkit::sha256_hex(&candidate.to_json().map_err(|e| e.to_string())?)
+            };
+            synthetic_rep_stosb_mismatch(&template, candidate, &digest, Backend::NativeX86)
+        })
+        .unwrap();
+    assert_eq!(native_reduction.stop, RepStosbReductionStop::Reduced);
+    assert_eq!(
+        native_reduction
+            .final_fingerprint
+            .unwrap()
+            .wrong_destination_byte_offsets,
+        [2]
+    );
+    assert_eq!(native_reduction.actual_callbacks, 8);
+
+    for swap_at in [3usize, 7usize] {
+        let mut calls = 0;
+        let swapped =
+            reduce_rep_stosb_fixture_native(&original, &original_digest, 20, |candidate| {
+                calls += 1;
+                let digest = if candidate == &original {
+                    original_digest.clone()
+                } else {
+                    od_testkit::sha256_hex(&candidate.to_json().map_err(|e| e.to_string())?)
+                };
+                let mut result = synthetic_rep_stosb_mismatch(
+                    &template,
+                    candidate,
+                    &digest,
+                    Backend::NativeX86,
+                )?;
+                if calls == swap_at {
+                    result.backend = Backend::Interpreter;
+                }
+                Ok(result)
+            })
+            .unwrap();
+        assert_eq!(
+            swapped.stop,
+            if swap_at == 3 {
+                RepStosbReductionStop::FlakyCandidate
+            } else {
+                RepStosbReductionStop::FinalConfirmationFailed
+            }
+        );
+        assert!(swapped.reduced_fixture.is_none());
+    }
+
+    let mut drift = template.clone();
+    let Observation::Available { value } = &mut drift.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    value.state.gpr[1] = HexU64(9);
+    let rejected =
+        reduce_rep_stosb_fixture(&original, &original_digest, 20, |_| Ok(drift.clone())).unwrap();
+    assert_eq!(rejected.stop, RepStosbReductionStop::CallbackError);
+    assert!(rejected.reduced_fixture.is_none());
+
+    let mut fault = template.clone();
+    fault.outcome = Outcome::Exception {};
+    let rejected_fault =
+        reduce_rep_stosb_fixture(&original, &original_digest, 4, |_| Ok(fault.clone())).unwrap();
+    assert_eq!(rejected_fault.stop, RepStosbReductionStop::CallbackError);
+    assert!(rejected_fault.reduced_fixture.is_none());
+
+    let loaded = od_testkit::v2::Fixture::from_json(raw).unwrap();
+    let wrong_backend =
+        reduce_rep_stosb_fixture_native(&loaded.fixture, &loaded.input_sha256, 4, |_| {
+            Ok(template.clone())
+        })
+        .unwrap();
+    assert_eq!(wrong_backend.stop, RepStosbReductionStop::CallbackError);
+    assert!(wrong_backend.reduced_fixture.is_none());
+
+    let mut bad_canary = template.clone();
+    let Observation::Available { value } = &mut bad_canary.snapshot else {
+        panic!("snapshot unavailable")
+    };
+    let data = value
+        .memory
+        .iter_mut()
+        .find(|r| r.region_id == "data")
+        .unwrap();
+    let mut bytes = data
+        .bytes_hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect::<Vec<_>>();
+    bytes[15] ^= 1;
+    data.bytes_hex = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let canary_drift = reduce_rep_stosb_fixture(&loaded.fixture, &loaded.input_sha256, 4, |_| {
+        Ok(bad_canary.clone())
+    })
+    .unwrap();
+    assert_eq!(canary_drift.stop, RepStosbReductionStop::CallbackError);
+    assert!(canary_drift.reduced_fixture.is_none());
+
+    let mut calls = 0;
+    let flaky = reduce_rep_stosb_fixture(&original, &original_digest, 4, |candidate| {
+        calls += 1;
+        let digest = if candidate == &original {
+            original_digest.clone()
+        } else {
+            od_testkit::sha256_hex(&candidate.to_json().map_err(|e| e.to_string())?)
+        };
+        let mut result =
+            synthetic_rep_stosb_mismatch(&template, candidate, &digest, Backend::Interpreter)?;
+        if calls == 2 {
+            let Observation::Available { value } = &mut result.snapshot else {
+                return Err("snapshot unavailable".into());
+            };
+            value.state.gpr[2].0 ^= 1;
+        }
+        Ok(result)
+    })
+    .unwrap();
+    assert_eq!(flaky.stop, RepStosbReductionStop::FlakyInitial);
+
+    let mut calls = 0;
+    let flaky_candidate = reduce_rep_stosb_fixture(&original, &original_digest, 20, |candidate| {
+        calls += 1;
+        let digest = if candidate == &original {
+            original_digest.clone()
+        } else {
+            od_testkit::sha256_hex(&candidate.to_json().map_err(|e| e.to_string())?)
+        };
+        let mut result =
+            synthetic_rep_stosb_mismatch(&template, candidate, &digest, Backend::Interpreter)?;
+        if calls == 4 {
+            let Observation::Available { value } = &mut result.snapshot else {
+                return Err("snapshot unavailable".into());
+            };
+            value.state.gpr[3].0 ^= 1;
+        }
+        Ok(result)
+    })
+    .unwrap();
+    assert_eq!(flaky_candidate.stop, RepStosbReductionStop::FlakyCandidate);
+
+    let callback_error = reduce_rep_stosb_fixture(&original, &original_digest, 4, |_| {
+        Err("synthetic callback failure".into())
+    })
+    .unwrap();
+    assert_eq!(callback_error.stop, RepStosbReductionStop::CallbackError);
+
+    let budget = reduce_rep_stosb_fixture(&original, &original_digest, 4, |candidate| {
+        let digest = if candidate == &original {
+            original_digest.clone()
+        } else {
+            od_testkit::sha256_hex(&candidate.to_json().map_err(|e| e.to_string())?)
+        };
+        synthetic_rep_stosb_mismatch(&template, candidate, &digest, Backend::Interpreter)
+    })
+    .unwrap();
+    assert_eq!(budget.stop, RepStosbReductionStop::CallbackBudgetExhausted);
+    assert_eq!(budget.actual_callbacks, 4);
+}
+
+fn synthetic_rep_stosb_mismatch(
+    template: &RunResult,
+    candidate: &Fixture,
+    digest: &str,
+    backend: Backend,
+) -> Result<RunResult, String> {
+    let expected = rep_stosb_oracle(candidate, digest)?;
+    let mut result = template.clone();
+    result.case_id = candidate.case_id.clone();
+    result.input_sha256 = digest.into();
+    result.backend = backend;
+    result.outcome = expected.outcome;
+    result.instructions_executed = Observation::Available {
+        value: expected.instructions_executed,
+    };
+    let Observation::Available { value } = &mut result.snapshot else {
+        return Err("snapshot unavailable".into());
+    };
+    value.state = expected.state;
+    value.rflags_defined = expected.rflags_defined;
+    value.memory = expected.memory;
+    let data = value
+        .memory
+        .iter_mut()
+        .find(|r| r.region_id == "data")
+        .ok_or("data missing")?;
+    let mut bytes = data
+        .bytes_hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            u8::from_str_radix(std::str::from_utf8(pair).map_err(|e| e.to_string())?, 16)
+                .map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let base = candidate
+        .memory
+        .iter()
+        .find(|r| r.region_id == "data")
+        .ok_or("fixture data missing")?
+        .guest_address
+        .get();
+    let offset = (candidate.initial_state.gpr[7].get() - base) as usize;
+    bytes[offset] ^= 1;
+    data.bytes_hex = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(result)
 }
 
 #[test]

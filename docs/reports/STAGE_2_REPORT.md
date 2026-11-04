@@ -24972,3 +24972,45 @@ Evidence and boundaries are documented in the
 [protocol and acceptance record](../testing/S2_42AG_NATIVE_MOV_MEMORY_REDUCER.md).
 Parent S2-42, the remaining lettered suites and physical Mac acceptance remain
 open or unrun.
+
+## S2-42ai — successful REP STOSB reducer and native adapter
+
+Added a bounded AL-only reducer for successful Long64 `F3 AA` fixtures with
+count 1–8 and either DF value. The independent byte-fill oracle checks full
+integer state, flags/definedness, stop RIP, one retirement, complete code/data
+snapshots and untouched data canaries. The mismatch fingerprint is the exact
+ordered set of differing destination byte offsets. Two identical callbacks are
+required for the original, each candidate and final confirmation. Unsupported,
+faulting, timed-out, malformed, unstable, wrong-backend, state/progress-drift,
+canary-changing and budget-incomplete callbacks fail closed.
+
+The interpreter API/CLI and backend-parametrized NativeX86 API were added. The
+native CLI reuses the existing native-v2 admission and supervised
+`--native-v2-child` execution; no CPU implementation or admission code changed.
+The synthetic test reduced AL to zero while preserving one exact destination
+offset; it also checks the DF=1/count=1 post-index wrap at address zero and
+rejects state drift, canary corruption and an interpreter result presented as
+NativeX86. It passed with:
+
+- `cargo test --offline -p od-runner --test fixture_v2 rep_stosb_success_reducer_is_al_only_repeatable_and_fails_closed_on_drift`
+- `cargo check --offline -p od-runner --all-targets`
+- `cargo check --offline -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu`
+- `cargo fmt --all -- --check`
+- Literal S2-19a interpreter CLI smoke and saved callback evidence verification:
+  `no_initial_mismatch` after two callbacks; no candidate pair proposed.
+- Graphify code update completed: 14,841 nodes and 35,792 edges; a follow-up
+  query found `RepStosbReductionStop` and the new reducer/oracle nodes.
+
+`python3 tools/check_layout.py` was also run. It reported the worktree's `.git`
+file as an unmapped root item and reported absent ignored `work/` evidence files
+referenced by existing docs; those paths are outside this slice. The authorized
+Linux host has a different current ref and does not contain required base
+24db62b; its existing main checkout was already dirty, so no native smoke was
+run and that checkout was left untouched. No real mismatch is claimed; native
+evidence remains unrun, `execution_kind=unknown`, and physical Mac acceptance
+is `not_run`. S2-42 and dependencies S2-21/39/40 remain open. See the
+[protocol](../testing/S2_42AI_REP_STOSB_REDUCER.md) and
+[plan](../plans/STAGE_2.md#s2-42ai-successful-rep-stosb-bounded-reducer-and-native-adapter).
+Independent Sol/high review found an address-zero DF=1 post-index wrap bug and
+a misplaced fixture note; both were fixed with a wrap regression and moved
+documentation. Follow-up review found no remaining issues.

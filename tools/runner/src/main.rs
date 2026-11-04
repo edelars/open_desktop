@@ -45,6 +45,9 @@ fn main() -> ExitCode {
         Some("--reduce-rep-fault") => {
             return test_cli::reduce_rep_fault(&args[1..]);
         }
+        Some("--reduce-rep-stosb") => {
+            return test_cli::reduce_rep_stosb(&args[1..]);
+        }
         Some("--reduce-sqrtss-fault") => {
             return test_cli::reduce_sqrtss_fault(&args[1..]);
         }
