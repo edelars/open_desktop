@@ -24353,3 +24353,41 @@ was attempted and reports the linked-worktree `.git` pointer as an unmapped
 root file; rerun that check on main after transfer. The full runner fixture
 suite was not run. The broader FP acceptance and parent S2-42 remain open. See the [S2-42o protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md) and
 [plan](../plans/STAGE_2.md#s2-42o-bounded-sqrtss-snan-xm-interpreter-reducer).
+
+## S2-42p — six handwritten XORPD controls
+
+Closed the explicit handwritten-control gap in the S2-42c XORPD harness. The
+selected suite now freezes six handwritten inputs first—the unchanged S2-40b
+asymmetric A/B fixtures and four formerly in-memory boundaries—then the
+unchanged 1,024-case S2-42a generated corpus. Total selection is 1,030 cases.
+The four materialized boundaries are zero/ones, ones/zero, alternating
+`55`/`aa`, and equal operands. The two asymmetric controls retain their
+original fixture bytes and produce exact independent XMM0 values
+`f0e0d0c0b0a090807060504030201000` and
+`5aa50ff0e1d2c3b4e11ec3f0f00f2d5a`.
+
+A separate version-1 handwritten manifest fixes the ordered IDs, source
+identities, fixture hashes, exact XMM inputs, and raw-byte expected XMM0 values;
+its manifest SHA-256 and control-set digest are pinned by the harness. The four
+new fixtures have a dedicated directory checked for missing/extra files. Every
+handwritten result must match the literal expected XMM0 on each backend and the
+existing full-state interpreter/native comparison. Machine-readable evidence
+reports generated=1024, handwritten=6, total=1030, and keeps the generated and
+handwritten digests separate. The S2-42a manifest/digest are unchanged.
+
+The mocked Python suite covers strict control identity/order and source,
+file-set, hash and input tampering; control-first remote invocation and
+nonzero behavior; exact XMM0 expectations; and two interpreter/native repeats.
+All 25 focused Python tests and Python bytecode compilation passed. The updated
+Rust fixture test consumes the four literal fixtures and ran each of the six
+handwritten controls twice through the actual local interpreter; both focused
+fixture tests passed. `cargo fmt --all -- --check` and
+`cargo check -p od-runner --all-targets --offline` passed. The documentation
+link/anchor check passed. `tools/check_layout.py` was attempted and reports the
+linked-worktree `.git` pointer as an unmapped root file; this structural check
+must be repeated after transfer on main. Graphify AST update passed. No remote
+native or physical CPU execution was performed: native and hardware status are
+`not_run` on Darwin arm64. This adds six handwritten cases and does not close
+full S2-42 or perform hardware acceptance. See the [protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md),
+[plan](../plans/STAGE_2.md#s2-42p--six-handwritten-xorpd-controls), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42p-six-handwritten-native-xorpd-controls).

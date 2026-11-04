@@ -9243,3 +9243,25 @@ DAZ/FTZ clear), and the fixture expects #XM with zero retirement at entry.
 Only SNaN payload bits are eligible for reduction. The
 [S2-42o protocol](../../../../docs/testing/S2_42O_SQRTSS_FAULT_REDUCER.md)
 defines the full snapshot predicate and replay evidence.
+
+### S2-42p six handwritten native XORPD controls
+
+`s2_42p_xorpd_hand_controls.manifest.json` is a separate versioned identity
+manifest for the S2-42c XORPD orchestration. It pins six controls in order:
+the unchanged S2-40b asymmetric A/B fixtures, then literal
+`s2_42p_xorpd_zero_ones`, `s2_42p_xorpd_ones_zero`,
+`s2_42p_xorpd_alternating`, and `s2_42p_xorpd_equal` fixtures in
+`s2_42p_xorpd_hand/`. The last four were previously constructed only in the
+Rust runner test. The manifest records their source identity, fixture SHA-256,
+exact XMM0/XMM1 inputs, and independent bytewise-XOR expected XMM0. The harness
+rejects missing or extra files, changed identities/order, fixture tampering,
+and a changed manifest digest.
+
+All six run before the unchanged 1,024-case S2-42a generated corpus. Evidence
+reports generated=1024, handwritten=6, total=1030. The hand controls have their
+own pinned manifest and control-set digest; the S2-42a manifest and digest are
+unchanged. Local interpreter and remote Linux native-v2 execution require two
+repetitions and check each control's exact XMM0 plus full backend comparison.
+This adds six handwritten cases only; S2-42 remains open and no hardware
+acceptance is claimed. See the [S2-42c protocol](../../../../docs/testing/S2_42C_XORPD_CORPUS_HARNESS.md)
+and [S2-42p report](../../../../docs/reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls).

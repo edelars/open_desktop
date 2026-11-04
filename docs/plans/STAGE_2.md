@@ -714,7 +714,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [ ] | S2-41 | Независимо проверить системный профиль | S2-27; machine backend по сценариям |
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
-| [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; 22 mocked harness tests; no CPU execution; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
+| [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; initial 22 mocked harness tests; S2-42p adds the six missing handwritten controls; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
 | [x] | S2-42d | Bounded native XORPD reducer/replay | Native callback uses existing native-v2 executor and its ptrace-supervised disposable tracee; Linux hardware and physical Mac mini remain separate; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42d--bounded-native-xorpd-reducerreplay) |
 | [x] | S2-42e | Deterministic MOV memory/addressing corpus | 1,024 manifest-bound schema-v2 cases; four widths, load/store and seven admitted address forms; interpreter and independent oracle passed; saved evidence binds fixture/schema/profile/backend/build/machine and preflight failures replace stale success; remote Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42e--deterministic-mov-memory-corpus) |
 | [x] | S2-42f | Proposed schema-v2 reducer acceptance contract | Documentation only; no generic reducer or hardware acceptance; parent S2-42 remains open; [protocol](../testing/S2_42_REDUCER_CONTRACT.md), [report](../reports/STAGE_2_REPORT.md#s2-42f--schema-v2-reducer-acceptance-contract) |
@@ -727,6 +727,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42m | Deterministic CVTSI2SD interpreter corpus | 1,024 generated + 9 literal controls; all 1,033 fixtures ×2 passed integer-only binary64 oracle; native profile closed and recorded `not_run_profile_closed`; [protocol](../testing/S2_42M_CVTSI2SD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42m--deterministic-cvtsi2sd-interpreter-corpus) |
 | [x] | S2-42n | Bounded exact MOV qword memory interpreter reducer | RAX-only reduction for literal `48 89 03`; independent byte-store oracle, complete mapping/mask preservation, callback journal and replay; synthetic stable mismatch and drift/failure/budget regressions; local fixture `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42N_MOV_MEMORY_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42n--bounded-mov-qword-memory-reducer) |
 | [x] | S2-42o | Bounded SQRTSS SNaN #XM interpreter reducer | One exact register instruction; descending nonzero-payload reduction, independent full-state/#XM predicate, callback journal and replay; synthetic IE omission and XMM0 corruption; literal `no_initial_mismatch`; native/physical `not_run`; [protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md), [report](../reports/STAGE_2_REPORT.md#s2-42o--sqrtss-snan-fault-reducer) |
+| [x] | S2-42p | Six handwritten XORPD controls in S2-42c harness | Adds four literal boundaries alongside two exact S2-40b controls; separate strict control identity/hash manifest; 1,024 generated + 6 handwritten, two repeats; local interpreter passed; native/physical `not_run`; [protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md), [report](../reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
@@ -20134,3 +20135,30 @@ regression-covered. Native/physical execution remain `not_run`; broader FP
 acceptance and the parent S2-42 remain open. See
 [protocol](../testing/S2_42O_SQRTSS_FAULT_REDUCER.md) and
 [report](../reports/STAGE_2_REPORT.md#s2-42o--sqrtss-snan-fault-reducer).
+
+### S2-42p — six handwritten XORPD controls in the S2-42c harness
+
+**Status:** implemented as a focused harness-completion slice. The S2-42c
+XORPD command now selects six pinned handwritten controls before the unchanged
+1,024-case S2-42a generated corpus: the two exact S2-40b asymmetric fixtures
+and four boundary inputs formerly constructed only in memory by the runner
+test. A separate versioned control manifest pins ordered case identities,
+source identities, exact fixture bytes, input vectors and independent expected
+XMM0 bytes. The four new literal fixtures occupy their own directory, whose
+file set is checked exactly. The S2-42a generated manifest and digest are not
+modified.
+
+The selected harness records generated, handwritten and total counts
+separately, then runs the six controls and generated corpus through the local
+interpreter and remote Linux x86_64 native-v2 harness for exactly two
+repetitions. Each control backend must match its fixed expected XMM0 bytes and
+the normal full-result comparison. Controls run first in both local and remote
+order. Six cases are added; this closes the explicit handwritten-control gap
+only. It does not close full S2-42 or perform hardware acceptance.
+
+Focused Python harness tests and bytecode compilation pass. Runner fixture
+checks and Rust formatting pass; all six controls were executed twice through
+the local interpreter. Native Linux comparison and physical hardware
+acceptance remain `not_run` on the Darwin arm64 development host. See the [S2-42c protocol](../testing/S2_42C_XORPD_CORPUS_HARNESS.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42p-six-handwritten-native-xorpd-controls)
+and [report](../reports/STAGE_2_REPORT.md#s2-42p--six-handwritten-xorpd-controls).

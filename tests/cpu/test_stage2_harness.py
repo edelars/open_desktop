@@ -6,6 +6,7 @@ import copy
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -135,6 +136,70 @@ class Stage2HarnessTests(unittest.TestCase):
         (root / "manifest.json").write_text(json.dumps(manifest))
         return root
 
+    def copy_xorpd_hand_controls(self):
+        source = self.real_root / "tests/fixtures/x86/stage2"
+        target = self.root / "tests/fixtures/x86/stage2"
+        shutil.rmtree(target, ignore_errors=True)
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copy(source / "s2_42p_xorpd_hand_controls.manifest.json", target)
+        shutil.copy(source / "s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json", target)
+        shutil.copy(source / "s2_40b_xorpd_xmm0_xmm1_asymmetric_b.case.json", target)
+        shutil.copytree(source / "s2_42p_xorpd_hand", target / "s2_42p_xorpd_hand")
+
+    def test_xorpd_hand_controls_have_exact_pinned_identity_inputs_and_order(self):
+        self.copy_xorpd_hand_controls()
+        controls, manifest, manifest_sha256 = oracle.prepare_xorpd_hand_controls(self.output)
+        expected_ids = [
+            "s2_40b_xorpd_xmm0_xmm1_asymmetric_a",
+            "s2_40b_xorpd_xmm0_xmm1_asymmetric_b",
+            "s2_42p_xorpd_zero_ones",
+            "s2_42p_xorpd_ones_zero",
+            "s2_42p_xorpd_alternating",
+            "s2_42p_xorpd_equal",
+        ]
+        self.assertEqual([fixture["case_id"] for _, fixture, _ in controls], expected_ids)
+        self.assertEqual(len({(fixture["initial_state"]["sse"]["xmm"][0],
+                               fixture["initial_state"]["sse"]["xmm"][1])
+                              for _, fixture, _ in controls}), 6)
+        self.assertEqual([item["origin"] for item in manifest["controls"][:2]], [
+            "tests/fixtures/x86/stage2/README.md::S2-40b native XORPD asymmetric controls",
+            "tests/fixtures/x86/stage2/README.md::S2-40b native XORPD asymmetric controls",
+        ])
+        self.assertTrue(all("native_xorpd_handwritten_boundaries_match_raw_byte_oracle"
+                            in item["origin"] for item in manifest["controls"][2:]))
+        self.assertEqual(len(controls), oracle.XORPD_HAND_CONTROL_COUNT)
+        self.assertEqual(manifest_sha256, oracle.XORPD_HAND_MANIFEST_SHA256)
+        self.assertEqual((self.output / "hand-controls" / controls[0][0].name).read_bytes(),
+                         controls[0][0].read_bytes())
+
+    def test_xorpd_hand_controls_reject_manifest_file_set_and_input_tampering(self):
+        self.copy_xorpd_hand_controls()
+        manifest_path = self.root / oracle.XORPD_HAND_MANIFEST
+        parsed = json.loads(manifest_path.read_text())
+        parsed["controls"][0]["case_id"] = "arbitrary"
+        manifest_path.write_text(json.dumps(parsed))
+        with self.assertRaisesRegex(oracle.Stage2Error, "manifest digest"):
+            oracle.prepare_xorpd_hand_controls(self.output / "manifest-tamper")
+
+        self.copy_xorpd_hand_controls()
+        hand_dir = self.root / oracle.XORPD_HAND_CONTROL_DIR
+        (hand_dir / "extra.case.json").write_text("{}")
+        with self.assertRaisesRegex(oracle.Stage2Error, "missing or extra files"):
+            oracle.prepare_xorpd_hand_controls(self.output / "extra-file")
+
+        self.copy_xorpd_hand_controls()
+        hand_dir = self.root / oracle.XORPD_HAND_CONTROL_DIR
+        (hand_dir / "s2_42p_xorpd_equal.case.json").unlink()
+        with self.assertRaisesRegex(oracle.Stage2Error, "missing or extra files"):
+            oracle.prepare_xorpd_hand_controls(self.output / "missing-file")
+
+        self.copy_xorpd_hand_controls()
+        hand_dir = self.root / oracle.XORPD_HAND_CONTROL_DIR
+        fixture = hand_dir / "s2_42p_xorpd_zero_ones.case.json"
+        fixture.write_bytes(fixture.read_bytes().replace(b"ffffffff", b"eeeeeeee", 1))
+        with self.assertRaisesRegex(oracle.Stage2Error, "fixture digest mismatch"):
+            oracle.prepare_xorpd_hand_controls(self.output / "fixture-tamper")
+
     def test_recorded_xorpd_corpus_is_frozen_in_manifest_order(self):
         corpus_root = self.write_xorpd_corpus(self.root / "recorded")
         cases, manifest, digest = oracle.prepare_xorpd_corpus(corpus_root, self.output)
@@ -207,6 +272,7 @@ class Stage2HarnessTests(unittest.TestCase):
     def _run_mock_xorpd_suite(self, malformed_native_snapshot=False):
         fingerprint = "f" * 64
         interpreter_calls, batch_calls = [], []
+        control_expected = dict(oracle.XORPD_HAND_EXPECTED)
 
         def prepare(_corpus_root, output):
             fixtures_dir = output / "fixtures"
@@ -225,13 +291,29 @@ class Stage2HarnessTests(unittest.TestCase):
                 cases.append((path, fixture, hashlib.sha256(raw).hexdigest()))
             return cases, {"corpus_digest": "a" * 64}, "b" * 64
 
+        def prepare_controls(output):
+            fixtures_dir = output / "hand-controls"
+            fixtures_dir.mkdir()
+            source = self.real_root / "tests/fixtures/x86/stage2"
+            manifest = json.loads((source / "s2_42p_xorpd_hand_controls.manifest.json").read_text())
+            cases = []
+            for item in manifest["controls"]:
+                path = fixtures_dir / f"{item['case_id']}.case.json"
+                path.write_bytes((source / item["file"]).read_bytes())
+                fixture = json.loads(path.read_bytes())
+                cases.append((path, fixture, hashlib.sha256(path.read_bytes()).hexdigest()))
+            return cases, manifest, oracle.XORPD_HAND_MANIFEST_SHA256
+
         def native_batch(_target, _remote_root, _runner, _fixture_dir, cases, output_dir, *, process_runner):
             batch_calls.append(output_dir.name)
+            batch_calls.append([fixture["case_id"] for _, fixture, _ in cases])
             results = {}
             for index, (path, fixture, digest) in enumerate(cases):
                 result = self.result(fixture, digest, "native_x86", f"sha256:{fingerprint}",
                                     "rustc remote", oracle.XORPD_PROFILE)
-                if malformed_native_snapshot and not batch_calls[:-1] and index == 0:
+                if fixture["case_id"] in control_expected:
+                    result["snapshot"]["value"]["state"]["sse"]["xmm"][0] = control_expected[fixture["case_id"]]
+                if malformed_native_snapshot and output_dir.name == "repeat-01" and index == 0:
                     result["snapshot"]["value"] = None
                 case_dir = output_dir / fixture["case_id"]
                 case_dir.mkdir()
@@ -270,10 +352,13 @@ class Stage2HarnessTests(unittest.TestCase):
                 interpreter_calls.append(fixture["case_id"])
                 result = self.result(fixture, digest, "interpreter", f"sha256:{fingerprint}",
                                      "rustc local", oracle.XORPD_PROFILE)
+                if fixture["case_id"] in control_expected:
+                    result["snapshot"]["value"]["state"]["sse"]["xmm"][0] = control_expected[fixture["case_id"]]
                 return subprocess.CompletedProcess(argv, 0, json.dumps(result), "")
             raise AssertionError(f"unexpected command: {argv}")
 
         with patch.object(oracle, "prepare_xorpd_corpus", side_effect=prepare), \
+             patch.object(oracle, "prepare_xorpd_hand_controls", side_effect=prepare_controls), \
              patch.object(oracle, "run_remote_xorpd_batch", side_effect=native_batch), \
              patch.object(previous, "compare", side_effect=compare_results), \
              patch.object(previous, "source_fingerprint", return_value=fingerprint), \
@@ -291,11 +376,19 @@ class Stage2HarnessTests(unittest.TestCase):
         self.assertEqual(status, 0, manifest)
         self.assertEqual(manifest["status"], "passed")
         self.assertEqual(manifest["corpus_manifest"]["physical_native"], "executed_and_matched")
-        self.assertEqual(batch_calls, ["repeat-01", "repeat-02"])
-        self.assertEqual(len(interpreter_calls), 4)
-        self.assertEqual(len(manifest["fixtures"]), 4)
-        self.assertEqual([row["repeat"] for row in manifest["fixtures"]], [1, 1, 2, 2])
-        self.assertEqual([row["stable_repeat"] for row in manifest["fixtures"]], [False, False, True, True])
+        self.assertEqual(manifest["hand_control_manifest"]["physical_native"], "executed_and_matched")
+        self.assertEqual(manifest["case_counts"], {"generated": 2, "handwritten": 6, "total": 8})
+        self.assertEqual(batch_calls[::2], ["repeat-01", "repeat-02"])
+        self.assertEqual(len(interpreter_calls), 16)
+        expected_order = [*oracle.XORPD_HAND_EXPECTED,
+                          "s2_42a_xorpd_simulated_0", "s2_42a_xorpd_simulated_1"]
+        self.assertEqual(interpreter_calls[:8], expected_order)
+        self.assertEqual(interpreter_calls[8:], expected_order)
+        self.assertEqual(batch_calls[1], expected_order)
+        self.assertEqual(batch_calls[3], expected_order)
+        self.assertEqual(len(manifest["fixtures"]), 16)
+        self.assertEqual([row["repeat"] for row in manifest["fixtures"]], [1] * 8 + [2] * 8)
+        self.assertEqual([row["stable_repeat"] for row in manifest["fixtures"]], [False] * 8 + [True] * 8)
 
     def test_xorpd_malformed_nested_native_result_fails_run_manifest_cleanly(self):
         status, manifest, _, _ = self._run_mock_xorpd_suite(malformed_native_snapshot=True)
@@ -357,6 +450,45 @@ class Stage2HarnessTests(unittest.TestCase):
         self.assertFalse((repeat / "second" / "native_x86.json").exists())
         command = json.loads((self.output / "manifest.json").read_text())["commands"][0]
         self.assertIn(first_record, (self.output / command["stdout"]).read_text())
+
+    def test_xorpd_remote_batch_invokes_cases_in_control_first_order_and_rejects_nonzero(self):
+        paths = [self.case("native-input", f"{name}.case.json", name)
+                 for name in ("control-a", "control-b", "generated-a")]
+        prepared = self.output / "prepared"
+        prepared.mkdir()
+        cases = oracle.prepare_cases([str(path) for path in paths], prepared)
+        fixtures = self.output / "remote-fixtures"
+        fixtures.mkdir()
+
+        def process_runner(argv, *, stdout_consumer, **_kwargs):
+            self.assertIn("control-a.case.json control-b.case.json generated-a.case.json", argv[-1])
+            for path, fixture, _digest in cases:
+                record = {"filename": path.name, "returncode": 0,
+                          "stdout": json.dumps({"case_id": fixture["case_id"]}), "stderr": ""}
+                stdout_consumer(json.dumps(record), True)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        repeat = self.output / "repeat-ordered"
+        repeat.mkdir()
+        with patch.object(previous, "ssh_argv", side_effect=lambda _target, command: ["ssh", command]):
+            results = oracle.run_remote_xorpd_batch("host", "/repo", "runner", str(fixtures),
+                cases, repeat, process_runner=process_runner)
+        self.assertEqual(list(results), [path.name for path, _, _ in cases])
+
+        bad_repeat = self.output / "repeat-failed"
+        bad_repeat.mkdir()
+        def failed_runner(_argv, *, stdout_consumer, **_kwargs):
+            path, fixture, _digest = cases[0]
+            stdout_consumer(json.dumps({"filename": path.name, "returncode": 7,
+                "stdout": "unsupported", "stderr": "native failure"}), True)
+            return subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(previous, "ssh_argv", side_effect=lambda _target, command: ["ssh", command]):
+            with self.assertRaisesRegex(oracle.Stage2Error, "native execution exit 7"):
+                oracle.run_remote_xorpd_batch("host", "/repo", "runner", str(fixtures),
+                    cases, bad_repeat, process_runner=failed_runner)
+        failed_case = bad_repeat / "control-a"
+        self.assertEqual(json.loads((failed_case / "native_x86.process.json").read_text()),
+                         {"returncode": 7})
 
     def test_stream_timeout_applies_after_child_closes_both_pipes(self):
         evidence = oracle.Evidence(self.output, {"commands": []})

@@ -30,6 +30,18 @@ XORPD_SEEDS = (0x243F6A8885A308D3, 0x13198A2E03707344,
 XORPD_CASES_PER_SEED = 256
 XORPD_MANIFEST_VERSION = 1
 XORPD_GENERATOR_VERSION = "od-testkit-native-xorpd-v1"
+XORPD_HAND_MANIFEST = Path("tests/fixtures/x86/stage2/s2_42p_xorpd_hand_controls.manifest.json")
+XORPD_HAND_MANIFEST_SHA256 = "a841b2a9f6715ab56d28e2563efbb983369eee129176d0263c41a159ea1db517"
+XORPD_HAND_CONTROL_COUNT = 6
+XORPD_HAND_CONTROL_DIR = Path("tests/fixtures/x86/stage2/s2_42p_xorpd_hand")
+XORPD_HAND_EXPECTED = {
+    "s2_40b_xorpd_xmm0_xmm1_asymmetric_a": "f0e0d0c0b0a090807060504030201000",
+    "s2_40b_xorpd_xmm0_xmm1_asymmetric_b": "5aa50ff0e1d2c3b4e11ec3f0f00f2d5a",
+    "s2_42p_xorpd_zero_ones": "ffffffffffffffffffffffffffffffff",
+    "s2_42p_xorpd_ones_zero": "ffffffffffffffffffffffffffffffff",
+    "s2_42p_xorpd_alternating": "ffffffffffffffffffffffffffffffff",
+    "s2_42p_xorpd_equal": "00000000000000000000000000000000",
+}
 MAX_FIXTURE_BYTES = 512 * 1024
 MAX_RESULT_BYTES = 256 * 1024
 POST_TIMEOUT_DRAIN_SECONDS = 0.25
@@ -180,6 +192,95 @@ def prepare_xorpd_corpus(corpus_root: Path, output: Path) -> tuple[list[tuple[Pa
         cases.append((frozen_path, fixture, digest))
     (output / "xorpd-corpus-manifest.json").write_bytes(manifest_raw)
     return cases, manifest, hashlib.sha256(manifest_raw).hexdigest()
+
+
+def prepare_xorpd_hand_controls(output: Path) -> tuple[list[tuple[Path, dict, str]], dict, str]:
+    """Freeze the separately pinned six handwritten XORPD controls."""
+    manifest_path = ROOT / XORPD_HAND_MANIFEST
+    raw = manifest_path.read_bytes()
+    manifest_sha256 = hashlib.sha256(raw).hexdigest()
+    if manifest_sha256 != XORPD_HAND_MANIFEST_SHA256:
+        raise Stage2Error("XORPD handwritten control manifest digest mismatch")
+    value = read_json(raw)
+    required = {"manifest_version", "profile", "control_count", "controls", "control_set_digest"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise Stage2Error("XORPD handwritten control manifest has missing or extra fields")
+    controls = value["controls"]
+    if (type(value["manifest_version"]) is not int or value["manifest_version"] != 1
+            or value["profile"] != XORPD_PROFILE
+            or type(value["control_count"]) is not int or value["control_count"] != XORPD_HAND_CONTROL_COUNT
+            or not isinstance(controls, list) or len(controls) != XORPD_HAND_CONTROL_COUNT):
+        raise Stage2Error("XORPD handwritten control manifest has an unsupported version or shape")
+    expected_digest = hashlib.sha256("\n".join(
+        f"{item['case_id']}:{item['file']}:{item['sha256']}:{item['expected_xmm0']}"
+        for item in controls if isinstance(item, dict)
+    ).encode()).hexdigest()
+    if value["control_set_digest"] != expected_digest:
+        raise Stage2Error("XORPD handwritten control set digest mismatch")
+
+    expected_ids = tuple(XORPD_HAND_EXPECTED)
+    actual_ids = tuple(item.get("case_id") if isinstance(item, dict) else None for item in controls)
+    if actual_ids != expected_ids:
+        raise Stage2Error("XORPD handwritten control identity or order mismatch")
+    expected_fields = {"case_id", "file", "sha256", "origin", "expected_xmm0", "input_xmm0", "input_xmm1"}
+    expected_names = {f"{case_id}.case.json" for case_id in expected_ids
+                      if case_id.startswith("s2_42p_")}
+    hand_dir = ROOT / XORPD_HAND_CONTROL_DIR
+    if hand_dir.is_symlink() or not hand_dir.is_dir():
+        raise Stage2Error("XORPD handwritten control directory must be a real directory")
+    entries = list(hand_dir.iterdir())
+    if any(item.is_symlink() for item in entries) or {item.name for item in entries} != expected_names:
+        raise Stage2Error("XORPD handwritten control directory has missing or extra files")
+
+    frozen = output / "hand-controls"
+    frozen.mkdir(parents=True)
+    cases, seen_inputs = [], set()
+    for item in controls:
+        if not isinstance(item, dict) or set(item) != expected_fields:
+            raise Stage2Error("XORPD handwritten control entry has missing or extra fields")
+        case_id = item["case_id"]
+        if (item["expected_xmm0"] != XORPD_HAND_EXPECTED[case_id]
+                or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
+                or not re.fullmatch(r"[0-9a-f]{32}", item["input_xmm0"])
+                or not re.fullmatch(r"[0-9a-f]{32}", item["input_xmm1"])):
+            raise Stage2Error(f"XORPD handwritten control has invalid fixed identity: {case_id}")
+        filename = f"{case_id}.case.json"
+        expected_file = f"{XORPD_HAND_CONTROL_DIR.name}/{filename}" \
+            if case_id.startswith("s2_42p_") else filename
+        if item["file"] != expected_file:
+            raise Stage2Error(f"XORPD handwritten control has unexpected source file: {case_id}")
+        path = ROOT / "tests/fixtures/x86/stage2" / item["file"]
+        if path.is_symlink() or not path.is_file():
+            raise Stage2Error(f"XORPD handwritten control must be a regular fixture file: {filename}")
+        fixture_raw = path.read_bytes()
+        if hashlib.sha256(fixture_raw).hexdigest() != item["sha256"]:
+            raise Stage2Error(f"XORPD handwritten control fixture digest mismatch: {filename}")
+        fixture = read_json(fixture_raw)
+        xmm = fixture.get("initial_state", {}).get("sse", {}).get("xmm")
+        if (fixture.get("schema_version") != 2 or fixture.get("case_id") != case_id
+                or fixture.get("profile") != XORPD_PROFILE or not isinstance(xmm, list) or len(xmm) != 16
+                or xmm[:2] != [item["input_xmm0"], item["input_xmm1"]]):
+            raise Stage2Error(f"XORPD handwritten control input identity mismatch: {filename}")
+        actual_expected = "".join(f"{a ^ b:02x}" for a, b in zip(
+            bytes.fromhex(item["input_xmm0"]), bytes.fromhex(item["input_xmm1"])))
+        if actual_expected != item["expected_xmm0"]:
+            raise Stage2Error(f"XORPD handwritten control raw-byte oracle mismatch: {case_id}")
+        pair = (item["input_xmm0"], item["input_xmm1"])
+        if pair in seen_inputs:
+            raise Stage2Error(f"XORPD handwritten controls contain duplicate input pair: {case_id}")
+        seen_inputs.add(pair)
+        frozen_path = frozen / filename
+        frozen_path.write_bytes(fixture_raw)
+        cases.append((frozen_path, fixture, item["sha256"]))
+    (output / "xorpd-hand-controls-manifest.json").write_bytes(raw)
+    return cases, value, manifest_sha256
+
+
+def validate_xorpd_hand_expected(result: dict, expected_xmm0: str, label: str) -> None:
+    state = result["snapshot"]["value"]["state"]
+    xmm = state.get("sse", {}).get("xmm")
+    if not isinstance(xmm, list) or len(xmm) != 16 or xmm[0] != expected_xmm0:
+        raise Stage2Error(f"{label}: exact handwritten XORPD XMM0 result mismatch")
 
 
 def validate_result(result: dict, fixture: dict, digest: str, backend: str,
@@ -412,13 +513,12 @@ def run_remote_xorpd_batch(target: str, remote_root: str, runner: str, fixture_d
     """Run native cases as flushed JSON lines so timeout evidence is case-granular."""
     batch_code = """import json,os,subprocess,sys
 runner,fixture_dir=sys.argv[1:3]
-for name in sorted(os.listdir(fixture_dir)):
- if not name.endswith('.case.json'): continue
+for name in sys.argv[3:]:
  path=os.path.join(fixture_dir,name)
  p=subprocess.run([runner,'--fixture',path,'--json'],text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
  print(json.dumps({'filename':name,'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr},separators=(',',':')),flush=True)
 """
-    argv = ["python3", "-c", batch_code, runner, fixture_dir]
+    argv = ["python3", "-c", batch_code, runner, fixture_dir, *(path.name for path, _, _ in cases)]
     remote_command = f"cd {shlex.quote(remote_root)} && {shlex.join(argv)}"
     expected = {path.name: (path, fixture, digest) for path, fixture, digest in cases}
     parsed, seen, errors = {}, set(), []
@@ -529,7 +629,7 @@ def main(argv=None) -> int:
     output.mkdir(parents=True)
     profile = XORPD_PROFILE if args.suite == "xorpd-native-corpus" else PROFILE
     manifest = {"run_id": run_id, "status": "running", "suite": args.suite, "profile": profile,
-                "scope": ("Recorded S2-42a XORPD corpus: strict interpreter and physical Linux x86 native, twice; no v2 JIT"
+                "scope": ("Six pinned handwritten XORPD controls followed by the recorded 1024-case S2-42a corpus: strict interpreter and physical Linux x86 native, twice; no v2 JIT"
                           if args.suite == "xorpd-native-corpus" else
                           "Selected v2 CPU fixtures: interpreter vs physical Linux x86 native; no v2 JIT"),
                 "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -540,16 +640,28 @@ def main(argv=None) -> int:
     evidence.save()
     try:
         corpus_manifest = None
+        hand_expected = {}
         if args.suite == "xorpd-native-corpus":
-            cases, corpus_manifest, corpus_manifest_digest = prepare_xorpd_corpus(ROOT / XORPD_CORPUS_ROOT, output)
+            generated_cases, corpus_manifest, corpus_manifest_digest = prepare_xorpd_corpus(
+                ROOT / XORPD_CORPUS_ROOT, output)
+            hand_cases, hand_manifest, hand_manifest_digest = prepare_xorpd_hand_controls(output)
+            cases = hand_cases + generated_cases
+            hand_expected = {item["case_id"]: item["expected_xmm0"] for item in hand_manifest["controls"]}
             manifest["corpus_manifest"] = {"path": str(XORPD_CORPUS_ROOT / "manifest.json"),
-                "sha256": corpus_manifest_digest, "case_count": len(cases),
+                "sha256": corpus_manifest_digest, "case_count": len(generated_cases),
                 "corpus_digest": corpus_manifest["corpus_digest"], "physical_native": "not_run"}
+            manifest["hand_control_manifest"] = {"path": str(XORPD_HAND_MANIFEST),
+                "sha256": hand_manifest_digest, "control_set_digest": hand_manifest["control_set_digest"],
+                "case_count": len(hand_cases), "physical_native": "not_run"}
+            manifest["case_counts"] = {"generated": len(generated_cases),
+                "handwritten": len(hand_cases), "total": len(cases)}
         else:
             cases = prepare_cases(args.cases or list(DEFAULT_CASES), output)
         manifest["inputs"] = [{"case_id": fixture["case_id"], "filename": path.name,
             "fixture_path": str(path.relative_to(ROOT)), "fixture_sha256": digest,
-            "seed": fixture.get("seed"), "schema_version": 2, "profile": profile}
+            "seed": fixture.get("seed"), "schema_version": 2, "profile": profile,
+            **({"group": "handwritten" if fixture["case_id"] in hand_expected else "generated"}
+               if args.suite == "xorpd-native-corpus" else {})}
             for path, fixture, digest in cases]
         manifest["reproduce_argv"] = [sys.executable, "tests/cpu/stage2_oracle.py", "--host", args.host,
             "--user", args.user, "--remote-root", args.remote_root, "--repeats", str(args.repeats)]
@@ -612,6 +724,7 @@ def main(argv=None) -> int:
             repeat_dir.mkdir()
             if args.suite == "xorpd-native-corpus":
                 manifest["corpus_manifest"]["physical_native"] = "running"
+                manifest["hand_control_manifest"]["physical_native"] = "running"
                 evidence.save()
             batch_runner = run_remote_xorpd_batch if args.suite == "xorpd-native-corpus" else oracle.run_remote_batch
             natives = batch_runner(target, args.remote_root, remote_runner, remote_fixtures,
@@ -628,6 +741,8 @@ def main(argv=None) -> int:
                 native = natives[path.name]
                 validate_result(native, fixture, digest, "native_x86", revision, remote_rustc,
                                 "native result", profile)
+                if fixture["case_id"] in hand_expected:
+                    validate_xorpd_hand_expected(native, hand_expected[fixture["case_id"]], "native result")
                 argv = [str(runner), "--fixture", str(path), "--engine", "interpreter", "--json"]
                 process = evidence.run(argv, env=env, timeout=max(60.0, fixture["wall_timeout_ms"] / 1000 + 30))
                 local_path = directory / "interpreter.json"
@@ -640,6 +755,8 @@ def main(argv=None) -> int:
                 local = oracle.parse_result(process.stdout, local_path)
                 validate_result(local, fixture, digest, "interpreter", revision, local_info["rustc"],
                                 "interpreter result", profile)
+                if fixture["case_id"] in hand_expected:
+                    validate_xorpd_hand_expected(local, hand_expected[fixture["case_id"]], "interpreter result")
                 compare(evidence, runner, local_path, native_path, path, fixture, digest,
                         directory / "interpreter-vs-native.json", env)
                 if repeat > 1:
@@ -649,6 +766,8 @@ def main(argv=None) -> int:
                                 directory / f"{engine}-repeat-compare.json", env)
                 manifest["fixtures"].append({"repeat": repeat, "case_id": fixture["case_id"],
                     "fixture_sha256": digest, "seed": fixture.get("seed"), "schema_version": 2,
+                    **({"group": "handwritten" if fixture["case_id"] in hand_expected else "generated"}
+                       if args.suite == "xorpd-native-corpus" else {}),
                     "build": {"interpreter": local["build"], "native_x86": native["build"]},
                     "machines": {"interpreter": local["machine"], "native_x86": native["machine"]},
                     "snapshot_fields": {engine: {"gpr": 16, "rip": True, "rflags": True,
@@ -667,15 +786,20 @@ def main(argv=None) -> int:
         manifest.pop("active_case", None)
         if args.suite == "xorpd-native-corpus":
             manifest["corpus_manifest"]["physical_native"] = "executed_and_matched"
+            manifest["hand_control_manifest"]["physical_native"] = "executed_and_matched"
         manifest["status"] = "passed"
         manifest["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         evidence.save()
         print(f"manifest: {output / 'manifest.json'}")
+        if args.suite == "xorpd-native-corpus":
+            counts = manifest["case_counts"]
+            print(f"cases: generated={counts['generated']} handwritten={counts['handwritten']} total={counts['total']}")
         return 0
     except (Stage2Error, OSError, KeyError, TypeError, ValueError) as error:
         if (args.suite == "xorpd-native-corpus" and "corpus_manifest" in manifest
                 and manifest["corpus_manifest"]["physical_native"] == "running"):
             manifest["corpus_manifest"]["physical_native"] = "failed"
+            manifest["hand_control_manifest"]["physical_native"] = "failed"
         manifest["status"], manifest["error"] = "failed", str(error)
         manifest["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         evidence.save()

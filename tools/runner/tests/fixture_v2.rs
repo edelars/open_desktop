@@ -18539,24 +18539,26 @@ fn local_native_xorpd_fixtures_match_independent_literal_and_preserve_state() {
         ),
     ];
     for (bytes, expected_xmm0) in cases {
-        let (input, result) = run(bytes, "interpreter", 0);
-        assert_eq!(
-            input.fixture.profile,
-            od_testkit::v2::Profile::LongNativeXorpdXmm0Xmm1V1
-        );
-        assert_eq!(count(&result), 1);
-        assert!(matches!(result.outcome, Outcome::StopAddress {}));
-        let observed = snapshot(&result);
-        assert_eq!(observed.state.rip, input.fixture.stop_rip.unwrap());
-        assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
-        assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
-        assert_eq!(observed.state.sse.as_ref().unwrap().xmm[0], expected_xmm0);
-        assert_eq!(observed.state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f80));
-        for register in 1..16 {
+        for _ in 0..2 {
+            let (input, result) = run(bytes, "interpreter", 0);
             assert_eq!(
-                observed.state.sse.as_ref().unwrap().xmm[register],
-                input.fixture.initial_state.sse.as_ref().unwrap().xmm[register]
+                input.fixture.profile,
+                od_testkit::v2::Profile::LongNativeXorpdXmm0Xmm1V1
             );
+            assert_eq!(count(&result), 1);
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            let observed = snapshot(&result);
+            assert_eq!(observed.state.rip, input.fixture.stop_rip.unwrap());
+            assert_eq!(observed.state.gpr, input.fixture.initial_state.gpr);
+            assert_eq!(observed.state.rflags, input.fixture.initial_state.rflags);
+            assert_eq!(observed.state.sse.as_ref().unwrap().xmm[0], expected_xmm0);
+            assert_eq!(observed.state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f80));
+            for register in 1..16 {
+                assert_eq!(
+                    observed.state.sse.as_ref().unwrap().xmm[register],
+                    input.fixture.initial_state.sse.as_ref().unwrap().xmm[register]
+                );
+            }
         }
         let (_, jit_result) = run(bytes, "jit", 4);
         assert!(matches!(jit_result.outcome, Outcome::Unsupported { .. }));
@@ -18565,72 +18567,72 @@ fn local_native_xorpd_fixtures_match_independent_literal_and_preserve_state() {
 
 #[test]
 fn native_xorpd_handwritten_boundaries_match_raw_byte_oracle() {
-    let cases = [
+    let cases: [(&[u8], &str); 4] = [
         (
-            "s2_42a_hand_zero_ones",
-            "00000000000000000000000000000000",
-            "ffffffffffffffffffffffffffffffff",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_42p_xorpd_hand/s2_42p_xorpd_zero_ones.case.json"
+            ),
             "ffffffffffffffffffffffffffffffff",
         ),
         (
-            "s2_42a_hand_ones_zero",
-            "ffffffffffffffffffffffffffffffff",
-            "00000000000000000000000000000000",
-            "ffffffffffffffffffffffffffffffff",
-        ),
-        (
-            "s2_42a_hand_alternating",
-            "55555555555555555555555555555555",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_42p_xorpd_hand/s2_42p_xorpd_ones_zero.case.json"
+            ),
             "ffffffffffffffffffffffffffffffff",
         ),
         (
-            "s2_42a_hand_equal",
-            "0123456789abcdeffedcba9876543210",
-            "0123456789abcdeffedcba9876543210",
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_42p_xorpd_hand/s2_42p_xorpd_alternating.case.json"
+            ),
+            "ffffffffffffffffffffffffffffffff",
+        ),
+        (
+            include_bytes!(
+                "../../../tests/fixtures/x86/stage2/s2_42p_xorpd_hand/s2_42p_xorpd_equal.case.json"
+            ),
             "00000000000000000000000000000000",
         ),
     ];
-    let template = Fixture::from_json(include_bytes!(
-        "../../../tests/fixtures/x86/stage2/s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json"
-    ))
-    .unwrap()
-    .fixture;
-    for (case_id, xmm0, xmm1, expected_xmm0) in cases {
-        let mut fixture = template.clone();
-        fixture.case_id = case_id.into();
-        let sse = fixture.initial_state.sse.as_mut().unwrap();
-        sse.xmm[0] = xmm0.into();
-        sse.xmm[1] = xmm1.into();
-        for register in 2..16 {
-            sse.xmm[register] = format!("{:02x}", register).repeat(16);
-        }
-        let bytes = fixture.to_json().unwrap();
-        let (loaded, result) = run(&bytes, "interpreter", 0);
-        let observed = snapshot(&result);
-        let mut oracle = [0; 16];
-        let lhs = decode_xmm_literal(xmm0);
-        let rhs = decode_xmm_literal(xmm1);
-        for index in 0..16 {
-            oracle[index] = lhs[index] ^ rhs[index];
-        }
-        assert_eq!(encode_xmm_literal(&oracle), expected_xmm0);
-        assert_eq!(observed.state.sse.as_ref().unwrap().xmm[0], expected_xmm0);
-        assert_eq!(observed.state.gpr, loaded.fixture.initial_state.gpr);
-        assert_eq!(observed.state.rflags, loaded.fixture.initial_state.rflags);
-        assert_eq!(observed.state.rip, loaded.fixture.stop_rip.unwrap());
-        assert_eq!(observed.state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f80));
-        for register in 1..16 {
+    let mut inputs = std::collections::BTreeSet::new();
+    for (bytes, expected_xmm0) in cases {
+        let case = Fixture::from_json(bytes).unwrap().fixture;
+        let xmm = &case.initial_state.sse.as_ref().unwrap().xmm;
+        assert!(inputs.insert((xmm[0].clone(), xmm[1].clone())));
+        for _ in 0..2 {
+            let (loaded, result) = run(bytes, "interpreter", 0);
             assert_eq!(
-                observed.state.sse.as_ref().unwrap().xmm[register],
-                loaded.fixture.initial_state.sse.as_ref().unwrap().xmm[register]
+                loaded.fixture.profile,
+                od_testkit::v2::Profile::LongNativeXorpdXmm0Xmm1V1
+            );
+            assert_eq!(count(&result), 1);
+            assert!(matches!(result.outcome, Outcome::StopAddress {}));
+            let observed = snapshot(&result);
+            let xmm = &loaded.fixture.initial_state.sse.as_ref().unwrap().xmm;
+            let mut oracle = [0; 16];
+            let lhs = decode_xmm_literal(&xmm[0]);
+            let rhs = decode_xmm_literal(&xmm[1]);
+            for index in 0..16 {
+                oracle[index] = lhs[index] ^ rhs[index];
+            }
+            assert_eq!(encode_xmm_literal(&oracle), expected_xmm0);
+            assert_eq!(observed.state.sse.as_ref().unwrap().xmm[0], expected_xmm0);
+            assert_eq!(observed.state.gpr, loaded.fixture.initial_state.gpr);
+            assert_eq!(observed.state.rflags, loaded.fixture.initial_state.rflags);
+            assert_eq!(observed.state.rip, loaded.fixture.stop_rip.unwrap());
+            assert_eq!(observed.state.sse.as_ref().unwrap().mxcsr, HexU64(0x1f80));
+            for register in 1..16 {
+                assert_eq!(
+                    observed.state.sse.as_ref().unwrap().xmm[register],
+                    loaded.fixture.initial_state.sse.as_ref().unwrap().xmm[register]
+                );
+            }
+            assert_eq!(
+                observed.memory[0].bytes_hex,
+                loaded.fixture.memory[0].initial_bytes_hex
             );
         }
-        assert_eq!(
-            observed.memory[0].bytes_hex,
-            loaded.fixture.memory[0].initial_bytes_hex
-        );
     }
+    assert_eq!(inputs.len(), cases.len());
 }
 
 fn decode_xmm_literal(value: &str) -> [u8; 16] {

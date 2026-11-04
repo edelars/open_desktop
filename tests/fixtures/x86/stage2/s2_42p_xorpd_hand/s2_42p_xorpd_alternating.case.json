@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_42p_xorpd_alternating",
+  "profile": "s2-long-native-xorpd-xmm0-xmm1-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten S2-42p literal boundary materialized from tools/runner/tests/fixture_v2.rs::native_xorpd_handwritten_boundaries_match_raw_byte_oracle; independent raw-byte XOR expected XMM0.",
+    "specification": "Intel 64 and IA-32 Architectures Software Developer’s Manual, Vol. 2, XORPD; S2-40b native-oracle contract.",
+    "specification_version": "Intel SDM revision 093; S2-40b."
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0000000000000100",
+      "0x0000000000000101",
+      "0x0000000000000102",
+      "0x0000000000000103",
+      "0x0000000000000104",
+      "0x0000000000000105",
+      "0x0000000000000106",
+      "0x0000000000000107",
+      "0x0000000000000108",
+      "0x0000000000000109",
+      "0x000000000000010a",
+      "0x000000000000010b",
+      "0x000000000000010c",
+      "0x000000000000010d",
+      "0x000000000000010e",
+      "0x000000000000010f"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000cd7",
+    "sse": {
+      "xmm": [
+        "55555555555555555555555555555555",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "02020202020202020202020202020202",
+        "03030303030303030303030303030303",
+        "04040404040404040404040404040404",
+        "05050505050505050505050505050505",
+        "06060606060606060606060606060606",
+        "07070707070707070707070707070707",
+        "08080808080808080808080808080808",
+        "09090909090909090909090909090909",
+        "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+        "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+        "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+        "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+        "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+      ],
+      "mxcsr": "0x0000000000001f80",
+      "diagnostic_mxcsr_mask": "0x000000000000ffbf"
+    }
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": true,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "660f57c1",
+      "comparison_mask_hex": "ffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

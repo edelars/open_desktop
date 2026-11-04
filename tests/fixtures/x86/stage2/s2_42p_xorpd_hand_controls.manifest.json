@@ -1,0 +1,62 @@
+{
+  "manifest_version": 1,
+  "profile": "s2-long-native-xorpd-xmm0-xmm1-v1",
+  "control_count": 6,
+  "controls": [
+    {
+      "case_id": "s2_40b_xorpd_xmm0_xmm1_asymmetric_a",
+      "file": "s2_40b_xorpd_xmm0_xmm1_asymmetric_a.case.json",
+      "sha256": "531aea09d8db83b52ae181be15e747229a2e19e8a7d66a6c651333f837fbac04",
+      "origin": "tests/fixtures/x86/stage2/README.md::S2-40b native XORPD asymmetric controls",
+      "expected_xmm0": "f0e0d0c0b0a090807060504030201000",
+      "input_xmm0": "000102030405060708090a0b0c0d0e0f",
+      "input_xmm1": "f0e1d2c3b4a5968778695a4b3c2d1e0f"
+    },
+    {
+      "case_id": "s2_40b_xorpd_xmm0_xmm1_asymmetric_b",
+      "file": "s2_40b_xorpd_xmm0_xmm1_asymmetric_b.case.json",
+      "sha256": "393185f8fede3aef57f95a544ef427e9fd99f8f03100a1935327efe10c7a83cc",
+      "origin": "tests/fixtures/x86/stage2/README.md::S2-40b native XORPD asymmetric controls",
+      "expected_xmm0": "5aa50ff0e1d2c3b4e11ec3f0f00f2d5a",
+      "input_xmm0": "55aa00ff1122334488776655cc33ee99",
+      "input_xmm1": "0f0f0f0ff0f0f0f06969a5a53c3cc3c3"
+    },
+    {
+      "case_id": "s2_42p_xorpd_zero_ones",
+      "file": "s2_42p_xorpd_hand/s2_42p_xorpd_zero_ones.case.json",
+      "sha256": "faad8bcf714b26781fb378906d54b2d857d33ed5b58c5125ea7c9f86c27db87b",
+      "origin": "tools/runner/tests/fixture_v2.rs::native_xorpd_handwritten_boundaries_match_raw_byte_oracle",
+      "expected_xmm0": "ffffffffffffffffffffffffffffffff",
+      "input_xmm0": "00000000000000000000000000000000",
+      "input_xmm1": "ffffffffffffffffffffffffffffffff"
+    },
+    {
+      "case_id": "s2_42p_xorpd_ones_zero",
+      "file": "s2_42p_xorpd_hand/s2_42p_xorpd_ones_zero.case.json",
+      "sha256": "347e18eeeee5a0c7bc5d19a6846219dc80cace782db51d86eed9389ef4ec19f3",
+      "origin": "tools/runner/tests/fixture_v2.rs::native_xorpd_handwritten_boundaries_match_raw_byte_oracle",
+      "expected_xmm0": "ffffffffffffffffffffffffffffffff",
+      "input_xmm0": "ffffffffffffffffffffffffffffffff",
+      "input_xmm1": "00000000000000000000000000000000"
+    },
+    {
+      "case_id": "s2_42p_xorpd_alternating",
+      "file": "s2_42p_xorpd_hand/s2_42p_xorpd_alternating.case.json",
+      "sha256": "49344b39f04c77fca61c59f8cec7f998331766457360f3004c47bdddb3520cf4",
+      "origin": "tools/runner/tests/fixture_v2.rs::native_xorpd_handwritten_boundaries_match_raw_byte_oracle",
+      "expected_xmm0": "ffffffffffffffffffffffffffffffff",
+      "input_xmm0": "55555555555555555555555555555555",
+      "input_xmm1": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "case_id": "s2_42p_xorpd_equal",
+      "file": "s2_42p_xorpd_hand/s2_42p_xorpd_equal.case.json",
+      "sha256": "3a8b1e30520dd3a85faf2dfb23f3337f705fc1872f4948c79dfd9057316f79bf",
+      "origin": "tools/runner/tests/fixture_v2.rs::native_xorpd_handwritten_boundaries_match_raw_byte_oracle",
+      "expected_xmm0": "00000000000000000000000000000000",
+      "input_xmm0": "0123456789abcdeffedcba9876543210",
+      "input_xmm1": "0123456789abcdeffedcba9876543210"
+    }
+  ],
+  "control_set_digest": "dc6b31f8e4028ba3a9e854328afdd2adcc56638b59ff3b88174c75bd4f665c0d"
+}
