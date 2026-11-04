@@ -350,6 +350,8 @@ def _result_field(value: Any, label: str) -> str:
 
 def _verify_result(result: dict[str, Any], expected: dict[str, Any], label: str) -> None:
     try:
+        if not isinstance(result, dict):
+            raise CorpusError(f"{label}: result must be an object")
         if result.get("case_id") != expected["case_id"] or result.get("outcome") != expected["outcome"]:
             raise CorpusError(f"{label}: case identity or outcome differs")
         if result.get("instructions_executed") != expected["instructions_executed"]:
@@ -388,24 +390,35 @@ def _verify_result(result: dict[str, Any], expected: dict[str, Any], label: str)
 
 def verify_oracle_run(corpus_directory: Path, run_directory: Path) -> dict[str, Any]:
     manifest = verify_directory(corpus_directory)
-    expected_document = json.loads((corpus_directory / EXPECTED_NAME).read_bytes())
+    expected_document = json.loads(
+        (corpus_directory / EXPECTED_NAME).read_bytes(), object_pairs_hook=_strict_object
+    )
     run_manifest = json.loads((run_directory / "manifest.json").read_bytes(), object_pairs_hook=_strict_object)
     if not isinstance(run_manifest, dict):
         raise CorpusError("oracle run manifest must be an object")
-    if run_manifest.get("status") != "passed" or run_manifest.get("repeats") != 2:
+    if (run_manifest.get("status") != "passed" or run_manifest.get("repeats") != 2
+            or run_manifest.get("profile") != PROFILE):
         raise CorpusError("interpreter/native oracle did not pass two repeats")
+    if not isinstance(expected_document, dict) or expected_document.get("profile") != PROFILE:
+        raise CorpusError("independent expected results do not match the selected corpus profile")
     cases = expected_document.get("cases")
     inputs = run_manifest.get("inputs")
     results = run_manifest.get("fixtures")
     if not isinstance(cases, list) or not isinstance(inputs, list) or not isinstance(results, list):
         raise CorpusError("oracle manifest case collections must be arrays")
     expected_by_id = {entry["case_id"]: entry for entry in cases}
-    if len(expected_by_id) != len(cases) or len(inputs) != len(cases) or any(not isinstance(entry, dict) for entry in inputs):
+    if (len(expected_by_id) != len(cases) or len(inputs) != len(cases)
+            or any(not isinstance(entry, dict) for entry in inputs)):
         raise CorpusError("oracle input manifest omitted or duplicated generated cases")
     if {entry.get("case_id") for entry in inputs} != set(expected_by_id):
         raise CorpusError("oracle input identities do not match generated fixtures")
     expected_digests = {item["case_id"]: item["sha256"] for item in manifest["case_digests"]}
-    if any(entry.get("profile") != PROFILE or entry.get("fixture_sha256") != expected_digests.get(entry.get("case_id")) for entry in inputs):
+    if any(
+        type(entry.get("schema_version")) is not int or entry.get("schema_version") != 2
+        or entry.get("profile") != PROFILE
+        or entry.get("fixture_sha256") != expected_digests.get(entry.get("case_id"))
+        for entry in inputs
+    ):
         raise CorpusError("oracle input profile or exact fixture digest differs from the corpus manifest")
     if not isinstance(results, list) or len(results) != 2 * len(cases):
         raise CorpusError("oracle manifest omitted repeat records")
@@ -414,22 +427,46 @@ def verify_oracle_run(corpus_directory: Path, run_directory: Path) -> dict[str, 
         if not isinstance(record, dict):
             raise CorpusError("oracle result record must be an object")
         case_id, repeat = record.get("case_id"), record.get("repeat")
-        if case_id not in expected_by_id or type(repeat) is not int or repeat not in (1, 2):
+        if (not isinstance(case_id, str) or case_id not in expected_by_id
+                or type(repeat) is not int or repeat not in (1, 2)):
             raise CorpusError("oracle manifest has an unexpected result identity")
         key = (case_id, repeat)
         if key in seen:
             raise CorpusError("oracle manifest has a duplicate result identity")
+        if (type(record.get("schema_version")) is not int or record.get("schema_version") != 2
+                or record.get("fixture_sha256") != expected_digests[case_id]
+                or record.get("differences") != {"interpreter_vs_native": 0}
+                or record.get("stable_repeat") is not (repeat > 1)):
+            raise CorpusError("oracle result record does not bind the expected fixture and repeat comparison")
+        builds, machines = record.get("build"), record.get("machines")
+        if not isinstance(builds, dict) or not isinstance(machines, dict):
+            raise CorpusError("oracle result record lacks backend build or machine identity")
         seen.add(key)
         for backend in ("interpreter", "native_x86"):
             result_path = run_directory / f"repeat-{repeat:02d}" / case_id / f"{backend}.json"
             result = json.loads(result_path.read_bytes(), object_pairs_hook=_strict_object)
+            if not isinstance(result, dict):
+                raise CorpusError(f"{backend} {case_id} repeat {repeat}: result must be an object")
+            if (type(result.get("schema_version")) is not int or result.get("schema_version") != 2
+                    or result.get("case_id") != case_id
+                    or result.get("input_sha256") != expected_digests[case_id]
+                    or result.get("profile") != PROFILE
+                    or result.get("backend") != backend):
+                raise CorpusError(f"{backend} {case_id} repeat {repeat}: result identity differs from selected input/backend")
+            build = result.get("build")
+            if (not isinstance(build, dict)
+                    or any(not isinstance(build.get(field), str) or not build[field]
+                           for field in ("revision", "compiler", "target", "profile"))
+                    or build != builds.get(backend)):
+                raise CorpusError(f"{backend} {case_id} repeat {repeat}: build provenance differs from run manifest/profile")
+            machine = result.get("machine")
+            if not isinstance(machine, dict) or machine != machines.get(backend):
+                raise CorpusError(f"{backend} {case_id} repeat {repeat}: machine provenance differs from selected backend")
+            if backend == "native_x86" and (
+                machine.get("host_os") != "linux" or machine.get("host_arch") != "x86_64"
+            ):
+                raise CorpusError("native result is not from Linux x86_64 hardware")
             _verify_result(result, expected_by_id[case_id], f"{backend} {case_id} repeat {repeat}")
-            if backend == "native_x86":
-                machine = result.get("machine", {})
-                if not isinstance(machine, dict):
-                    raise CorpusError("native machine provenance must be an object")
-                if machine.get("host_os") != "linux" or machine.get("host_arch") != "x86_64":
-                    raise CorpusError("native result is not from Linux x86_64 hardware")
     if len(seen) != 2 * len(cases):
         raise CorpusError("oracle repeat matrix is incomplete")
     return {
@@ -476,18 +513,44 @@ def main() -> int:
     action.add_argument("--output-dir", type=Path, help="write corpus (default: work/stage2/s2-42e-mov-memory)")
     action.add_argument("--verify", type=Path, metavar="DIR", help="verify generated inputs and digests")
     parser.add_argument("--run-oracle", action="store_true", help="run two existing interpreter and Linux x86 native repeats")
+    parser.add_argument("--verify-oracle-run", type=Path, metavar="DIR",
+                        help="verify saved interpreter/native evidence without rerunning backends")
     parser.add_argument("--host", default="192.168.1.14")
     parser.add_argument("--user", default="senya")
     parser.add_argument("--remote-root", default="/home/senya/projects/open_desktop-stage1")
     parser.add_argument("--oracle-output-root", type=Path, default=DEFAULT_ORACLE_ROOT)
     args = parser.parse_args()
+    if args.run_oracle and args.verify_oracle_run is not None:
+        parser.error("--run-oracle and --verify-oracle-run are mutually exclusive")
+    if args.verify_oracle_run is not None and args.verify is None:
+        parser.error("--verify-oracle-run requires --verify CORPUS_DIR")
     corpus = args.verify if args.verify is not None else (args.output_dir or DEFAULT_CORPUS)
+    summary_path = args.oracle_output_root / "s2-42e-summary.json"
+    if args.run_oracle or args.verify_oracle_run is not None:
+        try:
+            args.oracle_output_root.mkdir(parents=True, exist_ok=True)
+            summary_path.write_bytes(_json_bytes({
+                "status": "failed",
+                "profile": PROFILE,
+                "physical_mac_acceptance": "not_run",
+                "error": "S2-42e oracle run did not complete",
+            }))
+        except OSError as error:
+            print(f"could not initialize failed machine summary: {error}", file=sys.stderr)
+            return 1
+    manifest: dict[str, Any] | None = None
     try:
         if args.verify is not None:
             manifest = verify_directory(corpus)
         else:
             write_directory(corpus)
             manifest = verify_directory(corpus)
+        if args.verify_oracle_run is not None:
+            summary = verify_oracle_run(corpus, args.verify_oracle_run)
+            summary_path.write_bytes(_json_bytes(summary))
+            print(f"machine-readable summary: {summary_path}")
+            print(f"verified {summary['result_count_per_backend']} saved interpreter and native results")
+            return 0
         if args.run_oracle:
             return_code, run_directory, stdout, stderr = run_oracle(
                 corpus, args.host, args.user, args.remote_root, args.oracle_output_root
@@ -509,7 +572,6 @@ def main() -> int:
                     except (CorpusError, OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError,
                             AttributeError, IndexError, ValueError) as error:
                         summary["error"] = str(error)
-            summary_path = args.oracle_output_root / "s2-42e-summary.json"
             summary_path.parent.mkdir(parents=True, exist_ok=True)
             summary_path.write_bytes(_json_bytes(summary))
             print(f"machine-readable summary: {summary_path}")
@@ -519,7 +581,25 @@ def main() -> int:
             print(f"matched {summary['result_count_per_backend']} interpreter and native results")
             return 0
         print(f"verified {len(FIXED_SEEDS) * CASES_PER_SEED} generated cases; corpus digest {manifest['corpus_digest']}")
-    except (CorpusError, OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (CorpusError, OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        if args.run_oracle or args.verify_oracle_run is not None:
+            summary: dict[str, Any] = {
+                "status": "failed",
+                "profile": PROFILE,
+                "physical_mac_acceptance": "not_run",
+                "error": str(error),
+            }
+            if manifest is not None:
+                summary["corpus_digest"] = manifest["corpus_digest"]
+                summary["case_count"] = len(manifest["case_digests"])
+            try:
+                summary_path.parent.mkdir(parents=True, exist_ok=True)
+                summary_path.write_bytes(_json_bytes(summary))
+                print(f"machine-readable summary: {summary_path}")
+            except OSError as write_error:
+                print(f"could not write failed machine summary: {write_error}", file=sys.stderr)
+            print("S2-42e oracle failed before backend execution", file=sys.stderr)
+            return 1
         parser.error(str(error))
     return 0
 

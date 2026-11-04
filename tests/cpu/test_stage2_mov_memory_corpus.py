@@ -15,9 +15,69 @@ SPEC = importlib.util.spec_from_file_location("mov_memory_corpus", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
+TEST_BUILD = {
+    "revision": "synthetic-revision", "compiler": "synthetic-compiler",
+    "target": "synthetic-target", "profile": "debug",
+}
+TEST_BUILD_NAMES = ("interpreter", "native_x86")
+TEST_MACHINES = {
+    "interpreter": {"host_os": "darwin", "host_arch": "arm64"},
+    "native_x86": {"host_os": "linux", "host_arch": "x86_64"},
+}
 
 
 class MovMemoryCorpusTests(unittest.TestCase):
+    def _write_valid_saved_run(self, root: Path) -> tuple[Path, Path, dict, dict]:
+        fixture, expected = module.generate_fixture(module.FIXED_SEEDS[0], 0)
+        digest = module._sha256(module._json_bytes(fixture))
+        corpus = root / "corpus"
+        run = root / "run"
+        corpus.mkdir()
+        run.mkdir()
+        (corpus / module.EXPECTED_NAME).write_bytes(module._json_bytes({
+            "profile": module.PROFILE, "cases": [expected],
+        }))
+        run_manifest = {
+            "status": "passed", "repeats": 2, "profile": module.PROFILE,
+            "inputs": [{
+                "case_id": fixture["case_id"], "schema_version": 2,
+                "profile": module.PROFILE, "fixture_sha256": digest,
+            }],
+            "fixtures": [{
+                "case_id": fixture["case_id"], "repeat": repeat,
+                "schema_version": 2, "fixture_sha256": digest,
+                "build": {backend: TEST_BUILD for backend in TEST_BUILD_NAMES},
+                "machines": TEST_MACHINES,
+                "differences": {"interpreter_vs_native": 0},
+                "stable_repeat": repeat > 1,
+            } for repeat in (1, 2)],
+        }
+        (run / "manifest.json").write_bytes(module._json_bytes(run_manifest))
+        for repeat in (1, 2):
+            for backend in ("interpreter", "native_x86"):
+                result = {
+                    "schema_version": 2, "case_id": fixture["case_id"],
+                    "input_sha256": digest, "profile": module.PROFILE,
+                    "backend": backend, "build": TEST_BUILD,
+                    "machine": TEST_MACHINES[backend],
+                    "outcome": expected["outcome"],
+                    "instructions_executed": expected["instructions_executed"],
+                    "snapshot": {"status": "available", "value": {
+                        "state": expected["state"],
+                        "rflags_defined": expected["state"]["rflags_defined"],
+                        "memory": expected["memory"],
+                        "exception": {"status": "available", "value": None},
+                    }},
+                }
+                result_dir = run / f"repeat-{repeat:02d}" / fixture["case_id"]
+                result_dir.mkdir(parents=True, exist_ok=True)
+                (result_dir / f"{backend}.json").write_bytes(module._json_bytes(result))
+        corpus_manifest = {
+            "corpus_digest": "fixture-bound-corpus-digest",
+            "case_digests": [{"case_id": fixture["case_id"], "sha256": digest}],
+        }
+        return corpus, run, corpus_manifest, run_manifest
+
     def test_fixed_corpus_is_1024_distinct_cases_with_full_matrix(self) -> None:
         first = module.materialize()
         second = module.materialize()
@@ -167,7 +227,128 @@ class MovMemoryCorpusTests(unittest.TestCase):
             self.assertEqual(summary["case_count"], 1024)
             self.assertEqual(summary["oracle_stderr"], "native unavailable")
 
-    def test_malformed_result_replaces_any_stale_pass_summary_with_failure(self) -> None:
+    def test_preflight_missing_or_tampered_corpus_replaces_stale_pass_without_digest(self) -> None:
+        for corruption in ("missing_fixture", "tampered_fixture", "tampered_manifest"):
+            with self.subTest(corruption=corruption), tempfile.TemporaryDirectory(dir=ROOT / "work") as temporary:
+                root = Path(temporary)
+                corpus = root / "corpus"
+                module.write_directory(corpus)
+                if corruption == "missing_fixture":
+                    next(corpus.glob("*.case.json")).unlink()
+                elif corruption == "tampered_fixture":
+                    fixture_path = next(corpus.glob("*.case.json"))
+                    fixture_path.write_bytes(fixture_path.read_bytes() + b" ")
+                else:
+                    manifest_path = corpus / module.MANIFEST_NAME
+                    manifest = json.loads(manifest_path.read_bytes())
+                    manifest["profile"] = "other-profile"
+                    manifest_path.write_bytes(module._json_bytes(manifest))
+                output = root / "oracle"
+                output.mkdir()
+                summary_path = output / "s2-42e-summary.json"
+                summary_path.write_text('{"status":"passed","corpus_digest":"stale"}')
+                argv = ["generate_stage2_mov_memory_corpus.py", "--verify", str(corpus),
+                        "--run-oracle", "--oracle-output-root", str(output)]
+                with patch.object(module.sys, "argv", argv), patch.object(module, "run_oracle") as run_oracle:
+                    self.assertEqual(module.main(), 1)
+                run_oracle.assert_not_called()
+                summary = json.loads(summary_path.read_bytes())
+                self.assertEqual(summary["status"], "failed")
+                self.assertEqual(summary["profile"], module.PROFILE)
+                self.assertEqual(summary["physical_mac_acceptance"], "not_run")
+                self.assertNotIn("corpus_digest", summary)
+                self.assertIn("error", summary)
+
+    def test_saved_evidence_real_result_roundtrip_and_identity_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            corpus, run, corpus_manifest, _ = self._write_valid_saved_run(root)
+            with patch.object(module, "verify_directory", return_value=corpus_manifest):
+                summary = module.verify_oracle_run(corpus, run)
+            self.assertEqual(summary["status"], "passed")
+            self.assertEqual(summary["result_count_per_backend"], 2)
+            self.assertEqual(summary["native_x86"], "matched_linux_x86_64")
+
+            mutations = (
+                ("manifest-profile", "run", "profile", "other-profile"),
+                ("input-schema", "input", "schema_version", 1),
+                ("input-digest", "input", "fixture_sha256", "0" * 64),
+                ("input-profile", "input", "profile", "other-profile"),
+                ("record-schema", "record", "schema_version", 1),
+                ("record-digest", "record", "fixture_sha256", "0" * 64),
+                ("record-differences", "record", "differences", {"interpreter_vs_native": 1}),
+                ("record-stability", "record", "stable_repeat", False),
+            )
+            for label, target, field, bad_value in mutations:
+                with self.subTest(identity=label):
+                    changed = json.loads((run / "manifest.json").read_bytes())
+                    if target == "run":
+                        changed[field] = bad_value
+                    elif target == "input":
+                        changed["inputs"][0][field] = bad_value
+                    else:
+                        changed["fixtures"][1][field] = bad_value
+                    (run / "manifest.json").write_bytes(module._json_bytes(changed))
+                    with patch.object(module, "verify_directory", return_value=corpus_manifest):
+                        with self.assertRaises(module.CorpusError):
+                            module.verify_oracle_run(corpus, run)
+                    (run / "manifest.json").write_bytes(module._json_bytes(_))
+
+    def test_saved_evidence_cli_verifies_without_starting_backends(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            corpus, run, corpus_manifest, _ = self._write_valid_saved_run(root)
+            output = root / "summary"
+            argv = ["generate_stage2_mov_memory_corpus.py", "--verify", str(corpus),
+                    "--verify-oracle-run", str(run), "--oracle-output-root", str(output)]
+            with patch.object(module.sys, "argv", argv), patch.object(
+                module, "verify_directory", return_value=corpus_manifest
+            ), patch.object(module, "run_oracle") as run_oracle:
+                self.assertEqual(module.main(), 0)
+            run_oracle.assert_not_called()
+            summary = json.loads((output / "s2-42e-summary.json").read_bytes())
+            self.assertEqual(summary["status"], "passed")
+            self.assertEqual(summary["corpus_digest"], corpus_manifest["corpus_digest"])
+
+    def test_result_identity_and_selected_backend_machine_mismatches_are_rejected(self) -> None:
+        for field, bad_value in (
+            ("schema_version", 1), ("case_id", "other-case"),
+            ("input_sha256", "0" * 64), ("profile", "other-profile"),
+            ("backend", "interpreter"),
+        ):
+            with self.subTest(result_field=field), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                corpus, run, corpus_manifest, _ = self._write_valid_saved_run(root)
+                native_path = next((run / "repeat-01").glob("*/native_x86.json"))
+                result = json.loads(native_path.read_bytes())
+                result[field] = bad_value
+                native_path.write_bytes(module._json_bytes(result))
+                with patch.object(module, "verify_directory", return_value=corpus_manifest):
+                    with self.assertRaises(module.CorpusError):
+                        module.verify_oracle_run(corpus, run)
+
+        for corruption in ("result-build", "result-machine", "record-machine"):
+            with self.subTest(machine_binding=corruption), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                corpus, run, corpus_manifest, _ = self._write_valid_saved_run(root)
+                result_path = next((run / "repeat-01").glob("*/native_x86.json"))
+                if corruption == "result-build":
+                    result = json.loads(result_path.read_bytes())
+                    result["build"]["revision"] = "unbound-revision"
+                    result_path.write_bytes(module._json_bytes(result))
+                elif corruption == "result-machine":
+                    result = json.loads(result_path.read_bytes())
+                    result["machine"] = TEST_MACHINES["interpreter"]
+                    result_path.write_bytes(module._json_bytes(result))
+                else:
+                    run_manifest = json.loads((run / "manifest.json").read_bytes())
+                    run_manifest["fixtures"][0]["machines"]["native_x86"] = TEST_MACHINES["interpreter"]
+                    (run / "manifest.json").write_bytes(module._json_bytes(run_manifest))
+                with patch.object(module, "verify_directory", return_value=corpus_manifest):
+                    with self.assertRaises(module.CorpusError):
+                        module.verify_oracle_run(corpus, run)
+
+    def test_malformed_saved_json_replaces_stale_pass_summary_with_failure(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / "work") as temporary:
             root = Path(temporary)
             corpus = root / "corpus"
@@ -176,28 +357,27 @@ class MovMemoryCorpusTests(unittest.TestCase):
             manifest = json.loads(generated[module.MANIFEST_NAME])
             expected = json.loads(generated[module.EXPECTED_NAME])["cases"]
             run_directory = root / "run"
-            (run_directory / "repeat-01" / expected[0]["case_id"]).mkdir(parents=True)
+            result_dir = run_directory / "repeat-01" / expected[0]["case_id"]
+            result_dir.mkdir(parents=True)
             (run_directory / "manifest.json").write_text(json.dumps({
                 "status": "passed",
                 "repeats": 2,
+                "profile": module.PROFILE,
                 "inputs": [
-                    {"case_id": item["case_id"], "profile": module.PROFILE,
+                    {"case_id": item["case_id"], "schema_version": 2, "profile": module.PROFILE,
                      "fixture_sha256": item["sha256"]}
                     for item in manifest["case_digests"]
                 ],
                 "fixtures": [
-                    {"case_id": item["case_id"], "repeat": repeat}
+                    {"case_id": item["case_id"], "repeat": repeat, "schema_version": 2,
+                     "fixture_sha256": item["sha256"], "differences": {"interpreter_vs_native": 0},
+                     "stable_repeat": repeat > 1, "build": {"interpreter": TEST_BUILD, "native_x86": TEST_BUILD},
+                     "machines": TEST_MACHINES}
                     for repeat in (1, 2) for item in manifest["case_digests"]
                 ],
             }))
-            malformed = {
-                "case_id": expected[0]["case_id"],
-                "outcome": expected[0]["outcome"],
-                "instructions_executed": expected[0]["instructions_executed"],
-                "snapshot": {"status": "available", "value": {"state": None}},
-            }
             result_path = run_directory / "repeat-01" / expected[0]["case_id"] / "interpreter.json"
-            result_path.write_text(json.dumps(malformed))
+            result_path.write_text('{"schema_version":')
             output = root / "oracle"
             output.mkdir()
             summary_path = output / "s2-42e-summary.json"
@@ -210,7 +390,7 @@ class MovMemoryCorpusTests(unittest.TestCase):
                 self.assertEqual(module.main(), 1)
             summary = json.loads(summary_path.read_bytes())
             self.assertEqual(summary["status"], "failed")
-            self.assertIn("architectural state must be an object", summary["error"])
+            self.assertIn("Expecting value", summary["error"])
 
 
 if __name__ == "__main__":
