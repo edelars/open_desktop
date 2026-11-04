@@ -716,7 +716,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [ ] | S2-42 | Расширить corpus/reducer/harness | S2-21, S2-39, S2-40 |
 | [x] | S2-42c | Strict XORPD corpus harness orchestration | Uses S2-42a manifest/verifier; 22 mocked harness tests; no CPU execution; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42c--xorpd-corpus-harness) |
 | [x] | S2-42d | Bounded native XORPD reducer/replay | Native callback uses existing native-v2 executor and its ptrace-supervised disposable tracee; Linux hardware and physical Mac mini remain separate; S2-42 remains open; [report](../reports/STAGE_2_REPORT.md#s2-42d--bounded-native-xorpd-reducerreplay) |
-| [x] | S2-42e | Deterministic MOV memory/addressing corpus | 1,024 manifest-bound schema-v2 cases; four widths, load/store and seven admitted address forms; interpreter and independent oracle passed; remote Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42e--deterministic-mov-memory-corpus) |
+| [x] | S2-42e | Deterministic MOV memory/addressing corpus | 1,024 manifest-bound schema-v2 cases; four widths, load/store and seven admitted address forms; interpreter and independent oracle passed; saved evidence binds fixture/schema/profile/backend/build/machine and preflight failures replace stale success; remote Linux/native and physical acceptance `not_run`; [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42e--deterministic-mov-memory-corpus) |
 | [x] | S2-42f | Proposed schema-v2 reducer acceptance contract | Documentation only; no generic reducer or hardware acceptance; parent S2-42 remains open; [protocol](../testing/S2_42_REDUCER_CONTRACT.md), [report](../reports/STAGE_2_REPORT.md#s2-42f--schema-v2-reducer-acceptance-contract) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
@@ -8525,8 +8525,13 @@ byte-transfer oracle записывает полный GPR/RIP/RFLAGS/definednes
 побайтно; существующий Rust runner остаётся валидатором fixture schema.
 
 Все 1,024 fixtures прошли strict loading и interpreter execution с совпадением
-независимого oracle; Python tests прошли 5/5. Однокомандный Linux x86_64
-interpreter/native orchestration определён и fail-closed при отсутствии backend,
+независимого oracle; после переноса suites 42e и 42h прошли 9/9 и 8/8 tests.
+Verifier сохранённых run artifacts повторно проверяет identity каждого fixture,
+result, backend, build и machine без исполнения; ошибки preflight в selected
+oracle mode записывают fail-closed summary и не оставляют устаревший `passed`.
+Негативные regressions покрывают повреждённый/missing corpus и mismatched
+identity. Однокомандный Linux x86_64 interpreter/native orchestration определён
+и fail-closed при отсутствии backend,
 но remote Linux/native execution и физическое Mac acceptance не запускались
 (`not_run`). CPU/schema/runner/native admission не менялись. S2-42 остаётся
 открытой: этот профильный corpus не закрывает stack/REP/FP groups, общий reducer,

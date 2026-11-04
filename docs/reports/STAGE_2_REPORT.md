@@ -17333,10 +17333,18 @@ byte-transfer oracle checks full GPR state, next RIP, RFLAGS and definedness,
 retirement, complete mapped memory and canaries without executing or decoding
 the instruction.
 
-The focused Python tests passed (5); all 1,024 fixtures passed strict loading
-and interpreter comparison with the independent oracle. `cargo build --offline
--p od-runner`, Python compilation and `git diff --check` passed in the author
-worktree. The documented orchestration command sends the complete corpus to the
+After the evidence-verification follow-up, the focused MOV tests passed (9) and
+the parallel stack-corpus tests passed (8); all 1,024 fixtures passed strict
+loading and interpreter comparison with the independent oracle. The saved-run
+verifier now binds fixture records and result repetitions to the exact input
+digest, schema, profile, backend, build and machine; its new
+`--verify-oracle-run` mode verifies existing evidence without rerunning a
+backend. Selected-run preflight errors write a failed summary before validation,
+so missing, tampered or malformed inputs cannot leave an old `passed` summary.
+Sol/high re-review found no remaining findings. `cargo build --offline
+-p od-runner`, Python compilation, `python3 tools/check_layout.py`,
+`git diff --check` and Graphify update passed on main. The documented
+orchestration command sends the complete corpus to the
 existing Linux x86_64 native oracle, performs two repeats for interpreter and
 native, writes machine-readable success/failure evidence, and fails closed when
 a required result/backend is missing. That remote Linux/native command and
