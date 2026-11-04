@@ -12,6 +12,7 @@ pub mod memory;
 pub mod minimize;
 pub mod native_xorpd;
 pub mod result;
+pub mod stack_reducer;
 pub mod v2;
 
 #[cfg(test)]
