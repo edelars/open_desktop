@@ -3809,7 +3809,6 @@ mod tests {
             ("s2_17f_ret_imm_small", 1, None),
             ("s2_17f_ret_imm_max", 1, None),
             ("s2_17f_ret_imm_nested_cleanup", 5, Some(0x100019)),
-            ("s2_17f_ret_imm_budget", 1, None),
         ] {
             let loaded = Fixture::from_json(
                 &std::fs::read(directory.join(format!("{name}.case.json"))).unwrap(),
@@ -3838,6 +3837,17 @@ mod tests {
             }
             assert_eq!(retired, expected_retired, "{name}");
         }
+
+        let budget = Fixture::from_json(
+            &std::fs::read(directory.join("s2_17f_ret_imm_budget.case.json")).unwrap(),
+        )
+        .unwrap();
+        let actual = budget.fixture.initial_state.to_cpu().unwrap();
+        let mut decoder = FlatMemory::from_fixture(&budget.fixture).unwrap();
+        assert_eq!(
+            admission(&budget.fixture, &mut decoder, &actual).unwrap_err(),
+            "native RET target outside fixture code/stop boundary"
+        );
 
         for (name, expected_error) in [
             ("s2_17f_ret_imm_noncanonical", "noncanonical"),
@@ -5905,14 +5915,17 @@ mod tests {
         }
         assert_eq!(strict_schema_successes, 2);
 
-        let mut strict_invalid = fixture(&[0xd9, 0xff]).fixture;
-        strict_invalid.profile = v2::Profile::LongX87StateV1;
-        strict_invalid.instruction_budget = 1;
-        strict_invalid.initial_state.x87 = Some(v2::X87Snapshot::from(
+        let mut strict_valid = fixture(&[0xd9, 0xe0]).fixture;
+        strict_valid.profile = v2::Profile::LongX87StateV1;
+        strict_valid.instruction_budget = 1;
+        strict_valid.initial_state.x87 = Some(v2::X87Snapshot::from(
             &od_isa::state::X87State::fixture_seed(),
         ));
+        let mut strict_invalid: serde_json::Value =
+            serde_json::from_slice(&strict_valid.to_json().unwrap()).unwrap();
+        strict_invalid["memory"][0]["initial_bytes_hex"] = "d9ff".into();
         assert_eq!(
-            Fixture::from_json(&strict_invalid.to_json().unwrap())
+            Fixture::from_json(&serde_json::to_vec(&strict_invalid).unwrap())
                 .unwrap_err()
                 .to_string(),
             "invalid memory.code: x87 state profile admits one instruction or an exact listed composition"
@@ -8070,9 +8083,10 @@ mod tests {
         );
 
         for bytes in ["660f57c0", "660f57c2", "660f57d1", "660f56c1"] {
-            let mut wrong = loaded.fixture.clone();
-            wrong.memory[0].initial_bytes_hex = bytes.into();
-            let serialized = wrong.to_json().unwrap();
+            let mut serialized: serde_json::Value =
+                serde_json::from_slice(&loaded.fixture.to_json().unwrap()).unwrap();
+            serialized["memory"][0]["initial_bytes_hex"] = bytes.into();
+            let serialized = serde_json::to_vec(&serialized).unwrap();
             assert!(
                 Fixture::from_json(&serialized).is_err(),
                 "strict native XORPD schema accepted mutated encoding {bytes}"
