@@ -343,8 +343,22 @@ def run_interpreter(directory, result_path, executable):
             cmd = [str(executable.resolve(strict=True)), "--fixture", str(path), "--engine", "interpreter", "--json"]
             process_recorded = False
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=RUNNER_TIMEOUT_SECONDS, cwd=str(ROOT.resolve()), env=child_env)
-                record = {"returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr, "command": cmd, "cwd": str(ROOT.resolve()), "environment": env, "timeout_diagnosis": None}; row["processes"].append(record); process_recorded = True
+                proc = subprocess.run(cmd, capture_output=True, text=False, check=False, timeout=RUNNER_TIMEOUT_SECONDS, cwd=str(ROOT.resolve()), env=child_env)
+                stdout_bytes = proc.stdout or b""
+                stderr_bytes = proc.stderr or b""
+                try:
+                    stdout = stdout_bytes if isinstance(stdout_bytes, str) else stdout_bytes.decode("utf-8")
+                    stderr = stderr_bytes if isinstance(stderr_bytes, str) else stderr_bytes.decode("utf-8")
+                except UnicodeError as e:
+                    diagnostic = (f"captured subprocess output was not valid UTF-8: {e}; "
+                        f"stdout_hex={stdout_bytes.encode('utf-8').hex() if isinstance(stdout_bytes, str) else stdout_bytes.hex()}; "
+                        f"stderr_hex={stderr_bytes.encode('utf-8').hex() if isinstance(stderr_bytes, str) else stderr_bytes.hex()}")
+                    record = {"returncode": proc.returncode, "stdout": output_text(stdout_bytes),
+                        "stderr": output_text(stderr_bytes) + ("\n" if stderr_bytes else "") + diagnostic,
+                        "command": cmd, "cwd": str(ROOT.resolve()), "environment": env, "timeout_diagnosis": None}
+                    row["processes"].append(record); process_recorded = True
+                    raise CorpusError(diagnostic) from e
+                record = {"returncode": proc.returncode, "stdout": stdout, "stderr": stderr, "command": cmd, "cwd": str(ROOT.resolve()), "environment": env, "timeout_diagnosis": None}; row["processes"].append(record); process_recorded = True
                 if proc.returncode: raise CorpusError(f"runner exited {proc.returncode}: {proc.stderr.strip()}")
                 observation = json.loads(proc.stdout, object_pairs_hook=strict_object)
                 if not isinstance(observation, dict): raise CorpusError("runner output must be one JSON object")

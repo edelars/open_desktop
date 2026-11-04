@@ -156,6 +156,35 @@ class BitFamilyQwordCorpusTests(unittest.TestCase):
             self.assertEqual(saved["missing_attempts"][0], {"case_id": ident, "repeat": 2})
             self.assertEqual(saved["native_x86"], "not_run/not_selected")
 
+    def test_invalid_utf8_on_second_repeat_preserves_first_result_and_process_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); bundle = root / "corpus"; self.copy_bundle(bundle)
+            runner = root / "od-runner"; runner.write_bytes(b"runner identity")
+            output = root / "results.json"
+            ident = corpus.control_id("bt", 0); raw = self.files[f"{ident}.case.json"]
+            seen = observation(raw, self.expected[ident]); calls = 0
+            def success_then_invalid_utf8(command, **_kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return corpus.subprocess.CompletedProcess(command, 0, stdout=json.dumps(seen).encode(), stderr=b"")
+                return corpus.subprocess.CompletedProcess(command, 0, stdout=b"\xff", stderr=b"\xfe")
+            manifest = {"case_digests": [self.manifest["case_digests"][0]]}
+            identity = {"executable_sha256": sha256(runner.read_bytes()), "revision": BUILD["revision"]}
+            with mock.patch.object(corpus, "verify_corpus", return_value=manifest), \
+                    mock.patch.object(corpus, "command_identity", return_value=(identity, MACHINE)), \
+                    mock.patch.object(corpus.subprocess, "run", side_effect=success_then_invalid_utf8):
+                with self.assertRaises(CorpusError): corpus.run_interpreter(bundle, output, runner)
+            saved = json.loads(output.read_bytes())
+            result = saved["results"][0]
+            self.assertEqual(saved["status"], "failed")
+            self.assertEqual(result["repeats"][0], seen)
+            self.assertIn("failure", result["repeats"][1])
+            self.assertEqual([row["returncode"] for row in result["processes"]], [0, 0])
+            self.assertIn("stdout_hex=ff", result["processes"][1]["stderr"])
+            self.assertIn("stderr_hex=fe", result["processes"][1]["stderr"])
+            self.assertEqual(saved["missing_attempts"], [{"case_id": ident, "repeat": 2}])
+
 
 if __name__ == "__main__":
     unittest.main()
