@@ -117,6 +117,50 @@ class StackCorpusTests(unittest.TestCase):
             self.assertEqual(summary["physical_mac_acceptance"], "not_run")
             self.assertEqual(summary["oracle_stderr"], "native unavailable")
 
+    def test_two_repeat_result_verifier_accepts_a_complete_synthetic_matrix(self) -> None:
+        fixture, expected = module.generate_fixture(module.FIXED_SEEDS[0], 0)
+        fixture_digest = module.sha256(module.json_bytes(fixture))
+        corpus_manifest = {
+            "corpus_digest": "test-corpus-digest",
+            "case_digests": [{"case_id": fixture["case_id"], "sha256": fixture_digest}],
+        }
+        result_manifest = {
+            "status": "passed", "repeats": 2,
+            "inputs": [{"case_id": fixture["case_id"], "profile": module.PROFILE,
+                        "fixture_sha256": fixture_digest}],
+            "fixtures": [{"case_id": fixture["case_id"], "repeat": repeat}
+                         for repeat in (1, 2)],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            corpus, run = Path(temporary) / "corpus", Path(temporary) / "run"
+            corpus.mkdir()
+            (corpus / module.EXPECTED_NAME).write_bytes(module.json_bytes({"cases": [expected]}))
+            run.mkdir()
+            (run / "manifest.json").write_bytes(module.json_bytes(result_manifest))
+            for repeat in (1, 2):
+                for backend in ("interpreter", "native_x86"):
+                    result = {
+                        "case_id": expected["case_id"], "outcome": expected["outcome"],
+                        "instructions_executed": expected["instructions_executed"],
+                        "snapshot": {"status": "available", "value": {
+                            "state": expected["state"],
+                            "rflags_defined": expected["state"]["rflags_defined"],
+                            "memory": expected["memory"],
+                            "exception": {"status": "available", "value": None},
+                        }},
+                    }
+                    if backend == "native_x86":
+                        result["machine"] = {"host_os": "linux", "host_arch": "x86_64"}
+                    directory = run / f"repeat-{repeat:02d}" / fixture["case_id"]
+                    directory.mkdir(parents=True, exist_ok=True)
+                    (directory / f"{backend}.json").write_bytes(module.json_bytes(result))
+            with patch.object(module, "verify_directory", return_value=corpus_manifest):
+                summary = module.verify_oracle_run(corpus, run)
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(summary["repeat_count"], 2)
+        self.assertEqual(summary["result_count_per_backend"], 2)
+        self.assertEqual(summary["physical_mac_acceptance"], "not_run")
+
     def test_malformed_result_replaces_stale_success_summary(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / "work") as temporary:
             root = Path(temporary)

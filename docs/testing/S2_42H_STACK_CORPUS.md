@@ -74,7 +74,8 @@ The local interpreter run checked all 1,056 fixtures against the independent
 oracle with no mismatches. Focused Python tests cover determinism, distinct
 cases, the complete 32-combination matrix, exact encodings, PUSH RSP/POP RSP
 ordering, first/last and unaligned spans, canaries, manifest tampering, missing
-native failure, and malformed-summary replacement. These checks are local
-interpreter/orchestration evidence; they do not establish Linux native or
-physical Mac execution. S2-42 remains open for other corpus groups, generic
+native failure, and malformed-summary replacement. A complete synthetic
+two-repeat matrix checks the verifier success path; it is orchestration evidence
+only. These checks and the local interpreter run do not establish Linux native
+or physical Mac execution. S2-42 remains open for other corpus groups, generic
 reducers, S2-21/S2-39/S2-40 dependencies, and hardware acceptance.
