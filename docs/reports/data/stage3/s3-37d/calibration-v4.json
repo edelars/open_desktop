@@ -1,0 +1,58 @@
+{
+  "build_source_sha256": "a3e323fd575e3035ba6af7a8dabc074b17e7674a7963c453815e143a3d7c8990",
+  "calibration_checkpoint_count": 128,
+  "calibration_checkpoint_elapsed_ns": 1981008666,
+  "calibration_elapsed_ns": 4150895500,
+  "calibration_epoch_body_elapsed_ns": 11313582,
+  "calibration_epochs": 512,
+  "calibration_fixed_elapsed_ns": 2158573252,
+  "calibration_integrity_sha256": "25d418a3ee502873b848c6bc515e6f31ca95e77b08395d71714a34fcec7cb9cd",
+  "capture_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "80b318a6293da499c7d9287da4d9db8c4e3ff4f6",
+      "source_sha256": "e52e51dfe03ae87197de98538ef114fe5ea896fef4af146e720e92ac2722add2",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "80b318a6293da499c7d9287da4d9db8c4e3ff4f6",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": true
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "case_list_sha256": "b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3",
+  "estimated_epoch_ns": 22096,
+  "max_run_ns": 1800000000000,
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "0ae34cc7bf5d07f28449496f3f4fa27888910a33",
+      "source_sha256": "e442326fbb6f32f8334a40447831d8f3dbf6994699182a03dbe2a0bddd20290a",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "0ae34cc7bf5d07f28449496f3f4fa27888910a33",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "profile": "s3-37d-fifo16-mixed-lifecycle-v4",
+  "recommended_epochs": 29682315,
+  "schedule": "same mixed hit/miss/invalidate/recompile/hit sequence as scored profile; 128 epoch clear and 512 epoch reopen cadence; reject an epoch cap that cannot meet the target duration",
+  "schema": 2,
+  "target_stress_ns": 660000000000,
+  "trace_sha256": "bf8d5efe0c52a47cbb4682f67ea73a82e684d463733aff3be60fed0b280bd5b3",
+  "upper_bound_elapsed_ns": 660000014158
+}

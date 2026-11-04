@@ -1,0 +1,151 @@
+{
+  "cases": [
+    {
+      "candidate_code_bytes": 2360,
+      "candidate_dispatch_matches_interpreter": true,
+      "candidate_has_pending_flag_statepoint": true,
+      "code_sha256": "0e945eaa1daa0e8cf4912f30b77d4e7851179a062ea13ab958729cfa4dd906d4",
+      "eager_code_bytes": 1604,
+      "eager_dispatch_matches_interpreter": true,
+      "id": "writer_replace_jnz_taken",
+      "interpreter_instructions": 3
+    },
+    {
+      "candidate_code_bytes": 2360,
+      "candidate_dispatch_matches_interpreter": true,
+      "candidate_has_pending_flag_statepoint": true,
+      "code_sha256": "0e945eaa1daa0e8cf4912f30b77d4e7851179a062ea13ab958729cfa4dd906d4",
+      "eager_code_bytes": 1604,
+      "eager_dispatch_matches_interpreter": true,
+      "id": "writer_replace_jnz_nop",
+      "interpreter_instructions": 4
+    },
+    {
+      "candidate_code_bytes": 2144,
+      "candidate_dispatch_matches_interpreter": true,
+      "candidate_has_pending_flag_statepoint": true,
+      "code_sha256": "4ebfe58d7dde4ff4fd039acc36d6f5e896eb1c675ef23cc93cf0cca238300ced",
+      "eager_code_bytes": 1672,
+      "eager_dispatch_matches_interpreter": true,
+      "id": "partial_writer_jnz_taken",
+      "interpreter_instructions": 3
+    },
+    {
+      "candidate_code_bytes": 2144,
+      "candidate_dispatch_matches_interpreter": true,
+      "candidate_has_pending_flag_statepoint": true,
+      "code_sha256": "4ebfe58d7dde4ff4fd039acc36d6f5e896eb1c675ef23cc93cf0cca238300ced",
+      "eager_code_bytes": 1672,
+      "eager_dispatch_matches_interpreter": true,
+      "id": "partial_writer_jnz_nop",
+      "interpreter_instructions": 4
+    },
+    {
+      "candidate_code_bytes": 2312,
+      "candidate_dispatch_matches_interpreter": true,
+      "candidate_has_pending_flag_statepoint": true,
+      "code_sha256": "489c5c172839fe0c8b80d02261f7b5623283ed3fb40414b0c4f558b22a13a6ff",
+      "eager_code_bytes": 1468,
+      "eager_dispatch_matches_interpreter": true,
+      "id": "preserving_lea_jz_taken",
+      "interpreter_instructions": 3
+    },
+    {
+      "candidate_code_bytes": 2312,
+      "candidate_dispatch_matches_interpreter": true,
+      "candidate_has_pending_flag_statepoint": true,
+      "code_sha256": "489c5c172839fe0c8b80d02261f7b5623283ed3fb40414b0c4f558b22a13a6ff",
+      "eager_code_bytes": 1468,
+      "eager_dispatch_matches_interpreter": true,
+      "id": "preserving_lea_jz_nop",
+      "interpreter_instructions": 4
+    },
+    {
+      "candidate_code_bytes": 1592,
+      "candidate_dispatch_matches_interpreter": true,
+      "candidate_has_pending_flag_statepoint": true,
+      "code_sha256": "fb60318a1bb3aa9a3331e1827cf897a0e5d06db20d7c6fbc1a237b397ec524ab",
+      "eager_code_bytes": 1136,
+      "eager_dispatch_matches_interpreter": true,
+      "id": "bounded_sub_jnz_loop",
+      "interpreter_instructions": 32
+    }
+  ],
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "c258a6378d9be2b44aae9f53a1f138881bdcabef",
+      "source_sha256": "05bbf71683d237ec3321dc8e12e3cc0fc190f230595f8273a93f303fabeea217",
+      "source_tree_dirty": true,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "c258a6378d9be2b44aae9f53a1f138881bdcabef",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": true
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "profile_id": "s3-29g-native-register-v1-cached-dispatch-v1",
+  "profile_sha256": "3111e601f8fc0736de8ad21d0d7fe8b9d7e704e5403cc50cd5d87998eb690756",
+  "schema": 1,
+  "source_fingerprints": [
+    {
+      "path": "tools/bench/src/cached_flags_compare.rs",
+      "sha256": "16a23525bf1693be7a8cc8f35a4a34568961d0c5e713cfb76677495ebd4291a7"
+    },
+    {
+      "path": "tools/bench/src/main.rs",
+      "sha256": "746503d96206e16ee26e5d7856ecd1d3761ed7e926f73d27b0f9340f21866fd6"
+    },
+    {
+      "path": "tools/bench/src/lib.rs",
+      "sha256": "ec1d7575923a05dda724c88da6c9f43e1d1d81ff675f9cf7ef6102cf9c6d7e27"
+    },
+    {
+      "path": "tools/bench/src/dispatch_cache.rs",
+      "sha256": "eb53797031aae22bcc2d84623f1aa0ab43f671c981c9d46287e479aa55db81cc"
+    },
+    {
+      "path": "tools/bench/build.rs",
+      "sha256": "d850739dfd4fdc47a8442870c3d8f5a44cc8c41294ae7a287901184c95af6055"
+    },
+    {
+      "path": "crates/od-jit/src/dispatch.rs",
+      "sha256": "df75fd628181738b4e8f3b41a5ee8dbc200dcc40bbc73ed924cc9639a5611f0a"
+    },
+    {
+      "path": "crates/od-jit/src/block_compile.rs",
+      "sha256": "3e12420403ce0f3ed1a3b1c5f8f19a97d4be416c67df7e1613a62e25681fd464"
+    },
+    {
+      "path": "crates/od-jit/src/block.rs",
+      "sha256": "bcd47a633975c87fec772e5970e79bc54cef22069a6646fe9ed1b15cd8146432"
+    },
+    {
+      "path": "crates/od-jit/src/block_emitter.rs",
+      "sha256": "003a86dd6321c34f7523eb4300a18268ae2c22c3a17bd6dd7d00f0480153be46"
+    },
+    {
+      "path": "crates/od-jit/src/translation.rs",
+      "sha256": "d016b776bf079b29b6d09f24c06d9f87edaa3153d4b21264a1c87d97e14ef72d"
+    },
+    {
+      "path": "crates/od-host/src/lib.rs",
+      "sha256": "f38a088ea97b0e93934732da2ce86c16f0300eddf247c49cd9fe3ab26b51121f"
+    },
+    {
+      "path": "crates/od-isa/src/execute.rs",
+      "sha256": "0307eb7469b50484658c7740b983ce5e24414d49a3f9db3d6a1bdf63ec2fbbd9"
+    },
+    {
+      "path": "crates/od-isa/src/long_decode.rs",
+      "sha256": "cfdb5e7032100d72702f2be041b0d6acc17b88e85b9fc8aff2032159be9558f4"
+    }
+  ],
+  "timing_started": false
+}

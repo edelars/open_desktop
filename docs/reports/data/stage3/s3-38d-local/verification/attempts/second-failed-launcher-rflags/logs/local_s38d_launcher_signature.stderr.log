@@ -1,0 +1,24 @@
+Executable=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-165038-e116674906/artifacts/open-desktop-launcher-smoke
+Identifier=open-desktop-launcher-smoke-5555494412e77c4e6d023c88a85c08d109d013ec
+Format=Mach-O thin (arm64)
+CodeDirectory v=20500 size=485 flags=0x10002(adhoc,runtime) hashes=8+2 location=embedded
+VersionPlatform=1
+VersionMin=1703936
+VersionSDK=1769472
+Hash type=sha256 size=32
+CandidateCDHash sha256=26f98ca24339950eb35c9d0ac7b3828ab4d435ac
+CandidateCDHashFull sha256=26f98ca24339950eb35c9d0ac7b3828ab4d435acb44b6ccf976c24906b469b78
+Hash choices=sha256
+CMSDigest=26f98ca24339950eb35c9d0ac7b3828ab4d435acb44b6ccf976c24906b469b78
+CMSDigestType=2
+Executable Segment base=0
+Executable Segment limit=49152
+Executable Segment flags=0x1
+Page size=16384
+CDHash=26f98ca24339950eb35c9d0ac7b3828ab4d435ac
+Signature=adhoc
+Info.plist=not bound
+TeamIdentifier=not set
+Runtime Version=27.0.0
+Sealed Resources=none
+Internal requirements count=0 size=12

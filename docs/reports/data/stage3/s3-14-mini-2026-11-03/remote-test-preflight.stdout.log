@@ -1,0 +1,910 @@
+
+running 101 tests
+{"case_id":"s0_09_mov_imm64","input_sha256":"45139dedf0d845010e5773fe4b776919ebb5c0af125680d0e27540dac732a5db","left_backend":"interpreter","right_backend":"interpreter","differences":[]}
+test test_cli::tests::bounded_integer_stores_preserve_sticky_oe_and_observe_fnstsw ... ok
+test test_cli::tests::bounded_integer_stores_admit_sticky_ue_and_observe_fnstsw ... ok
+test test_cli::tests::bounded_integer_stores_preserve_sticky_ze_and_observe_fnstsw ... ok
+test test_cli::tests::fild_m32_literal_fixtures_push_to_st7_and_compose_with_fnstsw ... ok
+test test_cli::tests::fist_m16int_positive_roundback_fixture_preserves_in_range_result_and_observes_pe ... ok
+test test_cli::tests::conversion_preserves_input_and_refuses_existing_output ... ok
+test test_cli::tests::fist_m32int_positive_roundback_fixture_preserves_in_range_result_and_observes_pe ... ok
+test test_cli::tests::fist_m16int_previous_overflow_fixtures_now_store_integer_indefinite ... ok
+test test_cli::tests::fist_m16int_literal_fixtures_cover_no_pop_fnstsw_and_rejections ... ok
+test test_cli::tests::comparison_dispatches_schemas_and_reports_mismatch_or_invalid_binding ... ok
+test test_cli::tests::fist_m32int_signaling_nan_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m16int_infinity_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fist_m32int_signed_zero_cli_fixtures_store_zero_and_observe_status ... ok
+test test_cli::tests::fistp_after_subnormal_load_preserves_de_and_observes_fnstsw ... ok
+test test_cli::tests::fistp_m16int_negative_fraction_fixture_rounds_and_observes_status ... ok
+test test_cli::tests::fistp_m16int_positive_overflow_fixture_stores_indefinite_and_observes_ie ... ok
+test test_cli::tests::fistp_m16int_pseudo_infinity_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m16int_quiet_nan_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m16int_pseudo_nan_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m16int_signed_zero_fixture_stores_word_zero_and_observes_status ... ok
+test test_cli::tests::fistp_m32int_exact_fixture_preserves_incoming_ie_without_pe ... ok
+test test_cli::tests::fistp_m16int_signaling_nan_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m32int_negative_fraction_fixture_rounds_and_observes_status ... ok
+test test_cli::tests::fistp_m32int_infinity_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m32int_positive_overflow_fixture_stores_indefinite_and_observes_ie ... ok
+test test_cli::tests::fistp_m32int_pseudo_infinity_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m32int_pseudo_nan_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m32int_quiet_nan_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m32int_unnormal_fixture_stores_indefinite_and_sets_ie ... ok
+test test_cli::tests::fistp_m32int_signaling_nan_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m64int_infinity_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m16int_literal_fixtures_cover_rounding_edges_and_rejections ... ok
+test test_cli::tests::fistp_m32int_literal_fixtures_store_and_reject_without_commit ... ok
+test test_cli::tests::fistp_m64int_literal_fixtures_cover_qword_boundaries_and_overflow ... ok
+test test_cli::tests::fistp_m64int_pseudo_infinity_fixture_observes_ie_then_clears_it ... ok
+test test_cli::tests::fistp_m64int_negative_fraction_fixture_rounds_and_observes_status ... ok
+test test_cli::tests::fistp_m64int_quiet_nan_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m64int_signaling_nan_fixture_observes_ie_with_fnstsw ... ok
+test test_cli::tests::fistp_m64int_subnormal_fixture_loads_stores_observes_and_clears_status ... ok
+test test_cli::tests::fistp_m64int_signed_zero_fixture_stores_qword_zero_and_observes_status ... ok
+test test_cli::tests::fld1_occupied_destination_fixture_rejects_without_retirement_or_mutation ... ok
+test test_cli::tests::fld1_fldz_schema_fixtures_execute_and_jit_stays_denied ... ok
+test test_cli::tests::fld_fst_m32fp_maximum_finite_fixtures_preserve_exponent_127 ... ok
+test test_cli::tests::fld_fst_m64fp_maximum_finite_fixtures_preserve_exponent_1023 ... ok
+test test_cli::tests::fld_oe_project_fixtures_load_and_observe_sticky_status ... ok
+test test_cli::tests::frndint_fld_pseudo_denormal_literal_sets_de_only_during_arithmetic ... ok
+test test_cli::tests::frndint_large_exact_integer_literal_fnstsw_fixture_preserves_raw_value ... ok
+test test_cli::tests::frndint_loaded_negative_infinity_literal_fixture_preserves_raw_value ... ok
+test test_cli::tests::frndint_loaded_quiet_nan_literal_fixture_preserves_payload_and_status ... ok
+test test_cli::tests::fld_m32fp_literal_fixtures_expand_binary32_values_and_reject_bad_class ... ok
+test test_cli::tests::frndint_loaded_signaling_nan_fnclex_literal_fixture_quiets_and_clears_ie ... ok
+test test_cli::tests::fld_m64fp_literal_fixtures_expand_binary64_and_reject_bad_class ... ok
+test test_cli::tests::frndint_seeded_subnormal_literal_fnstsw_fixture_records_project_state ... ok
+test test_cli::tests::frndint_signed_zero_literal_fnstsw_fixture_preserves_state_and_sign ... ok
+test test_cli::tests::fs_base_profile_cli_result_contains_observed_base_and_alias_load ... ok
+test test_cli::tests::frndint_small_normal_literal_fnstsw_fixture_rounds_to_negative_zero ... ok
+test test_cli::tests::fst_m32fp_binary80_exponent_127_overflow_fixtures_observe_oe_pe_c1 ... ok
+test test_cli::tests::fst_m32fp_binary80_exponent_minus_127_fixtures_observe_minimum_normal_flags ... ok
+test test_cli::tests::fst_m32fp_exact_subnormal_fixtures_preserve_de_and_observe_fnstsw ... ok
+test test_cli::tests::fst_m32fp_quiet_nan_fixtures_preserve_payload_conversion_and_observe_fsw ... ok
+test test_cli::tests::fst_m32fp_signed_infinity_fixtures_store_exact_bytes_and_observe_fsw ... ok
+test test_cli::tests::fst_m32fp_inexact_subnormal_fixtures_observe_ue_pe_with_fnstsw ... ok
+test test_cli::tests::fld_m80fp_literal_fixtures_load_raw_binary80_and_reject_bad_class ... ok
+test test_cli::tests::fst_m32fp_signaling_nan_fixtures_quiet_payload_set_ie_and_observe_fsw ... ok
+test test_cli::tests::fst_m64fp_binary80_exponent_minus_1023_fixtures_observe_minimum_normal_flags ... ok
+test test_cli::tests::fst_m64fp_binary80_subnormal_fixtures_observe_underflow_and_preserve_raw_source ... ok
+test test_cli::tests::fst_m64fp_binary80_exponent_1023_overflow_fixtures_observe_oe_pe_c1 ... ok
+test test_cli::tests::fst_m32fp_signed_zero_fixtures_preserve_or_pop_and_observe_fsw ... ok
+test test_cli::tests::fst_m64fp_exact_subnormal_fixtures_preserve_de_and_observe_fnstsw ... ok
+test test_cli::tests::fst_m64fp_inexact_subnormal_fixtures_observe_ue_pe_and_fnstsw ... ok
+test test_cli::tests::fst_m64fp_literal_fixtures_store_without_pop_and_compose_with_fnstsw ... ok
+test test_cli::tests::fst_m64fp_quiet_nan_fixtures_preserve_payload_conversion_and_observe_fsw ... ok
+test test_cli::tests::fst_m64fp_signaling_nan_fixtures_quiet_payload_and_observe_ie ... ok
+test test_cli::tests::fst_m64fp_signed_zero_fixtures_preserve_or_pop_and_observe_fsw ... ok
+test test_cli::tests::fst_m64fp_signed_infinity_fixtures_store_exact_bytes_and_observe_fsw ... ok
+test test_cli::tests::fstp_m64fp_literal_fixtures_store_then_pop_and_compose_with_fnstsw ... ok
+test test_cli::tests::fstp_m80fp_literal_infinity_fixtures_preserve_raw_sign_and_run_fnstsw ... ok
+test test_cli::tests::fstp_m80fp_literal_qnan_fixtures_preserve_payload_and_run_fnstsw ... ok
+test test_cli::tests::fstp_m80fp_literal_fixtures_store_raw_binary80_and_compose_with_fnstsw ... ok
+test test_cli::tests::fstp_m80fp_literal_zero_fixtures_preserve_sign_and_run_fnstsw ... ok
+test test_cli::tests::interpreter_internal_invariant_failure_is_a_harness_error ... ok
+test test_cli::tests::fstp_m80fp_literal_subnormal_fixtures_preserve_raw_bytes_and_run_fnstsw ... ok
+test test_cli::tests::real_v2_execution_projects_injected_page_fault_and_backend_error_distinctly ... ok
+test test_cli::tests::fstp_m80fp_literal_snan_fixtures_preserve_signaling_bits_and_run_fnstsw ... ok
+test test_cli::tests::fstp_m80fp_literal_sticky_status_fixtures_preserve_ie_de_oe_ue_pe ... ok
+test test_cli::tests::s2_31db_fistp_m64_unnormal_fixture_stores_qword_indefinite_and_pops ... ok
+test test_cli::tests::s2_31da_fistp_m16_unnormal_fixture_stores_word_indefinite_and_pops ... ok
+test test_cli::tests::x87_fadd_fixture_runner_executes_all_register_sources_and_rejects_bad_tag ... ok
+test test_cli::tests::v2_comparison_validates_both_bindings_before_returning_status ... ok
+test test_cli::tests::x87_faddp_fixture_runner_covers_every_index_and_top ... ok
+test test_cli::tests::x87_fucom_literal_fixtures_run_success_and_atomic_rhs_rejection ... ok
+test test_cli::tests::x87_fdivp_fixture_runner_covers_every_index_top_and_inexact_rejection ... ok
+test test_cli::tests::x87_fucomp_literal_fixtures_run_compare_pop_and_atomic_rejection ... ok
+test tests::benchmark_mode_defaults_to_twenty_pairs_and_requires_both_engines ... ok
+test tests::parses_hex_with_separators_and_prefixed_numbers ... ok
+test tests::reads_a_repository_x86_fixture ... ok
+test tests::rejects_multiple_code_sources ... ok
+test tests::rejects_odd_length_hex ... ok
+test test_cli::tests::x87_fucompp_literal_fixtures_run_compare_double_pop_and_atomic_rejection ... ok
+test test_cli::tests::x87_fmulp_fixture_runner_covers_every_index_top_and_square_alias ... ok
+test test_cli::tests::x87_fsubrp_fixture_runner_covers_every_index_top_and_alias_rejection ... ok
+
+test result: ok. 101 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+
+running 4 tests
+test jit_block_child_reports_emitted_code_limit_as_harness_failure ... ok
+test jit_block_child_reports_budget_and_terminal_branch_without_dispatch ... ok
+test jit_block_child_executes_one_mov_and_legacy_jit_remains_available ... ok
+test jit_block_child_has_no_fallback_and_preserves_error_exit_classes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 3 tests
+test dispatch_cli_runs_sequential_blocks_and_reports_taken_and_fallthrough_rips ... ok
+test dispatch_cli_handles_backward_self_loop_interior_budget_and_code_end_priority ... ok
+test dispatch_cli_reports_decode_unsupported_targets_and_preserves_legacy_engines ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 196 tests
+test bswap_cli_fixtures_match_literal_state_and_preserve_flag_definedness ... ok
+test bt_family_cli_fixtures_match_literal_state_and_flag_definedness ... ok
+test bsf_bsr_cli_fixtures_match_literal_state_and_flag_definedness ... ok
+test budget_exit_records_committed_load_before_pending_add_and_store ... ok
+test complete_ud2_cli_fixture_reports_ud_without_state_commit ... ok
+test bt_family_immediate_cli_fixtures_match_literal_state_and_flag_definedness ... ok
+test divide_error_fixtures_preserve_state_and_report_exact_de_metadata ... ok
+test faulting_logic_cli_does_not_commit_undefined_flags_effect ... ok
+test fixture_schema_dispatch_rejects_unknown_versions_and_keeps_legacy_execution ... ok
+test bt_family_immediate_memory_cli_fixtures_match_literal_state_and_flag_definedness ... ok
+test fs_load_commit_is_preserved_when_a_later_instruction_faults_and_self_compares ... ok
+test fs_selector_fixture_zero_extends_and_preserves_segment_state ... ok
+test gs_base_qword_load_fixture_uses_base_and_rax_alias ... ok
+test fs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state ... ok
+test gs_selector_fixture_zero_extends_and_preserves_segment_state ... ok
+test gs_load_fixtures_check_literal_descriptor_results_fault_codes_and_full_state ... ok
+test hand_authored_mov_fixtures_execute_with_full_snapshot_and_exact_input_digest ... ok
+test local_x87_bare_snan_sign_operations_preserve_payloads_and_deny_jit ... ok
+test local_x87_bare_subnormal_sign_operations_preserve_fraction_and_deny_jit ... ok
+test local_x87_fabs_fixture_cli_clears_only_the_st0_sign_and_clears_c1 ... ok
+test local_x87_fabs_invalid_source_fixture_is_atomic_in_the_cli_runner ... ok
+test local_x87_fchs_fixture_cli_flips_only_the_st0_sign_and_clears_c1 ... ok
+test local_x87_fchs_infinity_wrong_tag_fixture_is_atomic_in_the_cli_runner ... ok
+test local_x87_fchs_invalid_source_fixture_is_atomic_in_the_cli_runner ... ok
+test local_x87_fchs_qnan_wrong_tag_fixture_is_atomic_in_the_cli_runner ... ok
+test local_x87_fchs_signed_zero_fixture_cli_preserves_zero_tag_and_payload ... ok
+test local_x87_fchs_snan_wrong_tag_fixture_is_atomic_in_the_cli_runner ... ok
+test local_x87_fchs_subnormal_wrong_tag_fixture_is_atomic_in_the_cli_runner ... ok
+test local_x87_fchs_zero_wrong_tag_fixture_is_atomic_in_the_cli_runner ... ok
+test bt_family_register_memory_cli_fixtures_match_literal_state_and_flag_definedness ... ok
+test direct_control_flow_cli_fixtures_match_literal_branch_targets_and_state ... ok
+test local_x87_fcom_st1_composes_with_fnstsw_ax ... ok
+test local_x87_fcom_st1_invalid_rhs_tag_fixture_is_atomic_with_budget_one ... ok
+test local_x87_fcom_st1_literal_fixtures_set_greater_equal_and_less_conditions ... ok
+test local_x87_fcom_st7_literal_fixture_and_invalid_rhs_tag_are_handled ... ok
+test local_x87_fcmove_snapshots_and_denies_jit ... ok
+test local_x87_fcomi_fixture_observes_flags_and_rejects_bad_rhs_atomically ... ok
+test local_x87_fcomi_indexed_fixtures_cover_self_alias_wrap_and_actual_source_rejects ... ok
+test local_x87_fcom_sti_cli_vectors_cover_every_source_index ... ok
+test local_x87_fcomip_fixture_observes_flags_and_pop_and_rejects_bad_rhs_atomically ... ok
+test local_x87_fcomp_st1_cli_observation_sequence_preserves_popped_status ... ok
+test local_x87_fcompp_fixture_observes_two_entry_pop_and_rejects_bad_rhs_atomically ... ok
+test local_x87_fcmovnb_snapshots_and_denies_jit ... ok
+test local_x87_fcmovb_snapshots_and_denies_jit ... ok
+test local_x87_fcomp_sti_literal_fixtures_compare_then_pop_all_indices ... ok
+test local_x87_ffree_st0_marks_only_physical_top_and_composes_with_top_adjustment ... ok
+test local_x87_fild_m64int_fixtures_load_signed_qword_and_observe_status ... ok
+test local_x87_fistp_m16_subnormal_fixture_observes_pe_with_fnstsw ... ok
+test local_x87_fistp_m32_subnormal_fixture_observes_pe_with_fnstsw ... ok
+test local_x87_fistp_m64_pseudo_nan_fixture_observes_and_clears_ie ... ok
+test local_x87_fld_fabs_fst_fnstsw_zero_fixture_checks_state_and_memory ... ok
+test local_x87_fld_fchs_fst_fnstsw_composition_fixture_checks_state_and_memory ... ok
+test local_x87_fincstp_fdecstp_fnstsw_preserve_opaque_cells_and_deny_jit ... ok
+test local_x87_fld_fst_sti_fnstsw_zero_fixture_checks_state_and_memory ... ok
+test local_x87_fld_fstp_sti_fnstsw_zero_fixture_checks_state_and_memory ... ok
+test local_x87_fld_ftst_fnstsw_zero_fixture_checks_state_and_memory ... ok
+test local_x87_fld_fst_and_fstp_sti_infinity_fixtures_check_state_memory_and_jit_denial ... ok
+test local_x87_fld_fst_and_fstp_sti_qnan_fixtures_check_state_memory_and_jit_denial ... ok
+test local_x87_fld_m32_and_m64_invalid_status_fixtures_reject_before_read_without_commit ... ok
+test local_x87_fld_m32_and_m64_seeded_ue_fnstsw_fixtures_preserve_history ... ok
+test local_x87_ffree_sti_marks_only_indexed_physical_cell_and_denies_jit ... ok
+test local_x87_fld_m32_subnormal_to_m64_stores_preserve_de ... ok
+test local_x87_fld_m32fp_subnormal_fixtures_normalize_and_set_de ... ok
+test local_x87_fld_m64fp_subnormal_fixtures_normalize_and_set_de ... ok
+test local_x87_fld_sign_operation_fst_fnstsw_infinity_fixtures_check_state_memory_and_jit_denial ... ok
+test local_x87_fld_qnan_sign_operations_preserve_payloads_and_deny_jit ... ok
+test local_x87_fld_st0_wrap_producers_atomic_rejects_and_jit_denial ... ok
+test local_x87_fldcw_frndint_fnstsw_composition_uses_loaded_rounding_mode ... ok
+test local_x87_frndint_admits_seeded_oe_and_overflow_composition ... ok
+test local_x87_frndint_admits_seeded_sf_with_ie_and_observes_recomputed_c1 ... ok
+test local_x87_frndint_admits_seeded_ue_and_underflow_composition ... ok
+test local_x87_frndint_admits_seeded_ze_and_preserves_it_in_fnstsw ... ok
+test local_x87_frndint_invalid_tag_fixture_is_atomic ... ok
+test local_x87_fld_sti_indexes_copy_selected_physical_source_and_remain_jit_denied ... ok
+test local_x87_frndint_preserves_de_from_fld_m32_and_m64_subnormals ... ok
+test local_x87_frndint_seeded_de_fnstsw_uses_all_masked_fcw ... ok
+test local_x87_frndint_seeded_pseudo_infinity_fnstsw_fnclex_fixture ... ok
+test local_x87_fnop_preserves_full_snapshot_and_denies_jit ... ok
+test local_x87_frndint_seeded_pseudo_nan_fnstsw_fnclex_fixtures ... ok
+test local_x87_frndint_seeded_unnormal_fnstsw_fnclex_fixture ... ok
+test local_x87_fst_invalid_source_fixture_is_atomic_in_the_cli_runner ... ok
+test local_x87_frndint_tie_and_fnstsw_fixtures_observe_result_and_status ... ok
+test local_x87_fst_m32fp_fixtures_store_binary32_without_pop ... ok
+test local_x87_fldcw_fixture_covers_all_old_and_loaded_control_word_pairs ... ok
+test local_x87_fst_m32fp_signed_zero_fixtures_preserve_or_pop_after_store ... ok
+test local_x87_fstp_invalid_source_fixture_is_atomic_in_the_cli_runner ... ok
+test local_x87_fst_m64fp_signed_zero_fixtures_preserve_or_pop_after_store ... ok
+test local_x87_ftst_empty_tag_fixture_is_atomic_in_the_cli_runner ... ok
+test local_x87_fstp_m32fp_fixtures_store_binary32_then_pop_and_observe_fsw ... ok
+test local_x87_fst_fixture_runner_admits_every_destination_index ... ok
+test local_x87_ftst_fixtures_set_positive_and_negative_condition_codes ... ok
+test local_x87_fucomi_fixture_observes_flags_and_rejects_bad_rhs_atomically ... ok
+test local_x87_fucomip_fixture_observes_flags_and_pop_and_rejects_bad_rhs_atomically ... ok
+test local_x87_fucompp_fixture_observes_two_entry_pop_and_rejects_bad_rhs_atomically ... ok
+test local_x87_fxch_signed_zero_payload_tag_transfer_and_roundtrip ... ok
+test local_x87_fstp_fixture_runner_admits_every_destination_index ... ok
+test local_x87_fxch_st0_i7_and_nonadjacent_cli_forms ... ok
+test local_x87_fxch_st1_cli_wraparound_roundtrip_wrong_tag_and_jit_denial ... ok
+test local_x87_historical_de_fixture_and_combined_status_rejections ... ok
+test local_x87_historical_ie_and_sf_ie_bare_success_fixtures ... ok
+test local_x87_historical_oe_success_and_overflow_producer_fixtures_deny_jit ... ok
+test local_x87_historical_ue_fst_producers_preserve_flags_and_deny_jit ... ok
+test local_x87_fxam_classifies_bounded_normal_and_zero_and_denies_jit ... ok
+test local_x87_historical_pe_bare_fixtures_and_frndint_producers ... ok
+test local_x87_historical_ze_and_all_flags_fixtures_preserve_status_and_deny_jit ... ok
+test local_x87_m32_snan_producers_preserve_historical_ie_through_sign_operations ... ok
+test local_x87_m32_subnormal_producers_preserve_de_through_sign_operations ... ok
+test local_x87_state_profile_preserves_all_raw_state_across_one_nop ... ok
+test local_x87_seeded_fst_sti_snan_fixtures_preserve_raw_bytes_and_deny_jit ... ok
+test local_x87_seeded_fst_sti_subnormal_fixtures_preserve_raw_bytes_and_deny_jit ... ok
+test local_x87_state_profile_runs_fnclex_and_preserves_unaffected_fields ... ok
+test local_x87_state_profile_runs_fninit_with_full_environment_reset ... ok
+test local_x87_state_profile_runs_fnstsw_ax_from_raw_status_word ... ok
+test local_x87_state_profile_runs_only_exact_fadd_and_rejects_inexact_sum_without_commit ... ok
+test locked_qword_memory_xadd_fixture_matches_alias_sum_flags_and_split_canaries ... ok
+test local_x87_state_profile_runs_exact_fsub_sources_and_rejects_i0_atomically ... ok
+test mfence_store_fence_load_fixture_preserves_state_and_observes_completed_store ... ok
+test multiply_divide_cli_fixtures_match_literal_full_state_and_flag_definedness ... ok
+test noncanonical_operand_is_guest_fault_but_unmapped_fixture_ram_is_harness_error ... ok
+test operand_size_prefixed_near_ret_keeps_qword_stack_semantics ... ok
+test popfq_cli_fixtures_match_literal_flags_stack_pointer_and_memory ... ok
+test local_x87_state_profile_runs_exact_fsub_destinations_for_all_top_and_indices ... ok
+test pushfq_cli_fixture_matches_literal_masked_rflags_image ... ok
+test pushfw_cli_fixture_matches_literal_low_flags_word ... ok
+test qword_idiv_overflow_cli_fixture_reports_de_without_state_commit ... ok
+test push_immediate_cli_fixtures_match_literal_signed_boundary_answers ... ok
+test qword_memory_cmpxchg_fixtures_match_both_compare_branches_and_split_canaries ... ok
+test qword_memory_xadd_fixture_matches_alias_sum_flags_and_split_canaries ... ok
+test qword_memory_xchg_fixture_matches_literal_alias_and_split_memory_result ... ok
+test qword_register_xadd_fixture_matches_alias_sum_and_arithmetic_flags ... ok
+test qword_register_cmpxchg_fixtures_match_both_compare_branches ... ok
+test rep_iteration_work_limit_has_a_distinct_cli_outcome_and_restart_snapshot ... ok
+test s2_22i_gs_base_composition_runs_the_literal_two_instruction_profile ... ok
+test s2_22j_fs_base_composition_runs_the_literal_two_instruction_profile ... ok
+test rep_stosb_cli_fixtures_preserve_full_state_and_one_instruction_retirement ... ok
+test local_x87_state_profile_runs_fmul_for_every_top_and_register_index ... ok
+test unsupported_encoding_and_cooperative_deadline_remain_distinct_from_cpu_faults ... ok
+test sign_extension_cli_fixtures_match_literal_state_and_preserve_flag_definedness ... ok
+test v2_jit_denies_binary80_m64_overflow_and_sticky_oe_fixtures_without_fallback ... ok
+test v2_jit_denies_binary80_subnormal_m64_store_fixtures_without_fallback ... ok
+test v2_jit_denies_binary80_to_infinity_overflow_m32_fixtures_without_fallback ... ok
+test v2_jit_denies_binary80_to_minimum_normal_m32_store_fixtures_without_fallback ... ok
+test v2_jit_denies_canonical_infinity_fistp_m16_fixture_without_fallback ... ok
+test v2_jit_denies_binary80_to_minimum_normal_m64_store_fixtures_without_fallback ... ok
+test v2_jit_denies_canonical_infinity_fistp_m32_fixture_without_fallback ... ok
+test v2_jit_denies_canonical_infinity_fistp_m64_fixture_without_fallback ... ok
+test v2_jit_denies_canonical_quiet_nan_fistp_m16_fixture_without_fallback ... ok
+test v2_jit_denies_canonical_quiet_nan_fistp_m32_fixture_without_fallback ... ok
+test v2_jit_denies_canonical_quiet_nan_fistp_m64_fixture_without_fallback ... ok
+test v2_jit_denies_canonical_signaling_nan_fistp_m16_fixture_without_fallback ... ok
+test v2_jit_denies_canonical_signaling_nan_fistp_m32_fixture_without_fallback ... ok
+test v2_jit_denies_canonical_signaling_nan_fistp_m64_fixture_without_fallback ... ok
+test v2_jit_denies_canonical_subnormal_fistp_m16_fixture_without_fallback ... ok
+test v2_jit_denies_canonical_subnormal_fistp_m32_fixture_without_fallback ... ok
+test v2_jit_denies_exact_m32_subnormal_store_fixtures_without_fallback ... ok
+test v2_jit_denies_exact_m64_subnormal_store_fixtures_without_fallback ... ok
+test v2_jit_denies_finite_overflow_fistp_m64_fixture_without_interpreter_fallback ... ok
+test v2_jit_denies_fist_snan_fnstsw_sticky_ie_fixture_without_fallback ... ok
+test v2_jit_denies_fistp_exact_incoming_ie_fixture_without_fallback ... ok
+test v2_jit_denies_fractional_fistp_m16_fixture_without_interpreter_fallback ... ok
+test v2_jit_denies_fractional_fistp_m32_fixture_without_interpreter_fallback ... ok
+test v2_jit_denies_fractional_fistp_m64_fixture_without_interpreter_fallback ... ok
+test v2_jit_denies_fld_subnormal_to_integer_store_fixtures_without_fallback ... ok
+test v2_jit_denies_loaded_infinity_frndint_without_interpreter_fallback ... ok
+test v2_jit_denies_m32_fist_roundback_fixture_without_fallback ... ok
+test v2_jit_denies_m16_fist_overflow_and_roundback_fixtures_without_fallback ... ok
+test v2_jit_denies_m32_fistp_finite_overflow_fixture_without_fallback ... ok
+test v2_jit_denies_m32_max_finite_fld_store_fixtures_without_fallback ... ok
+test v2_jit_denies_m32_qnan_stores_without_interpreter_fallback ... ok
+test v2_jit_denies_m32_infinity_load_without_interpreter_fallback ... ok
+test v2_jit_denies_m32_store_with_preexisting_sticky_ue_without_fallback ... ok
+test v2_jit_denies_m32_snan_stores_without_interpreter_fallback ... ok
+test v2_jit_denies_m32_subnormal_to_m64_stores_without_interpreter_fallback ... ok
+test v2_jit_denies_m64_max_finite_fld_store_fixtures_without_fallback ... ok
+test v2_jit_denies_m64_infinity_qnan_and_snan_loads_without_fallback ... ok
+test v2_jit_denies_m64_qnan_stores_without_interpreter_fallback ... ok
+test v2_jit_denies_m64_snan_stores_without_interpreter_fallback ... ok
+test v2_jit_denies_m80_infinity_load_without_interpreter_fallback ... ok
+test v2_jit_denies_m80_qnan_stores_without_interpreter_fallback ... ok
+test v2_jit_denies_m80_snan_stores_without_interpreter_fallback ... ok
+test v2_jit_denies_m80_special_loads_without_interpreter_fallback ... ok
+test v2_jit_denies_m80_subnormal_stores_without_interpreter_fallback ... ok
+test v2_jit_denies_m80_sticky_status_stores_without_interpreter_fallback ... ok
+test v2_jit_denies_masked_inexact_m64_subnormal_store_fixtures_without_fallback ... ok
+test v2_jit_denies_pseudo_nan_fistp_m64_fixture_without_fallback ... ok
+test v2_jit_denies_masked_inexact_m32_subnormal_store_fixtures_without_fallback ... ok
+test v2_jit_denies_signed_zero_fistp_m16_fixture_without_interpreter_fallback ... ok
+test v2_jit_denies_signed_zero_fist_m32_fixtures_without_interpreter_fallback ... ok
+test v2_jit_denies_signed_zero_fistp_m64_fixture_without_interpreter_fallback ... ok
+test v2_jit_denies_sticky_oe_and_sf_ie_frndint_without_interpreter_fallback ... ok
+test v2_jit_explicitly_denies_bounded_fldcw_without_interpreter_fallback ... ok
+test v2_jit_denies_sticky_oe_and_ze_integer_store_fixtures_without_fallback ... ok
+test v2_jit_has_explicit_unsupported_result_without_interpreter_fallback ... ok
+test verw_gdt_fixtures_check_literal_rights_flags_state_and_descriptor_bytes ... ok
+test setcc_cli_fixtures_match_literal_full_state_and_preserve_flags ... ok
+test logic_cli_fixtures_emit_exact_observations_and_semantic_definedness ... ok
+
+test result: ok. 196 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.29s
+
+
+running 188 tests
+test case::tests::rejects_oversized_json_before_parsing ... ok
+test case::tests::rejects_program_digest_mismatch_and_invalid_offset ... ok
+test case::tests::rejects_unknown_schema_before_execution ... ok
+test case::tests::rejects_memory_or_exception_claims_for_register_only_profile ... ok
+test case::tests::fixture_json_round_trip_preserves_architectural_u64_values ... ok
+test compare::tests::absent_required_state_is_an_error_not_a_match ... ok
+test case::tests::unsupported_scopes_reject_hidden_fields ... ok
+test compare::tests::compares_exception_fault_metadata_when_the_adapter_exposes_it ... ok
+test compare::tests::compares_memory_bytes_using_the_fixture_mask ... ok
+test compare::tests::compares_only_declared_registers_and_flags ... ok
+test compare::tests::compares_native_snapshot_when_hardware_instruction_count_is_unavailable ... ok
+test case::tests::project_cases_match_their_preserved_hex_fixtures ... ok
+test compare::tests::rejects_two_backends_that_agree_on_the_wrong_expected_exit ... ok
+test compare::tests::rejects_different_digest_profile_or_incomplete_results_before_state_compare ... ok
+test execution_tests::address32_word_push_keeps_the_full_64_bit_stack_pointer ... ok
+test execution_tests::addr32_transfers_truncate_start_address_and_keep_each_result_observable ... ok
+test execution_tests::backwards_branches_budget_and_stop_have_precise_boundaries ... ok
+test execution_tests::arithmetic_cross_region_read_and_write_faults_commit_neither_flags_nor_memory ... ok
+test execution_tests::bit_operation_fixtures_match_literal_full_state_and_definedness_answers ... ok
+test execution_tests::bit_immediate_fixtures_match_literal_full_state_and_definedness_answers ... ok
+test execution_tests::bit_immediate_memory_fixtures_match_literal_full_state_and_definedness_answers ... ok
+test execution_tests::bswap_fixtures_match_literal_full_state_answers ... ok
+test execution_tests::c6_c7_and_moffs_have_hand_calculated_registers_and_actual_memory ... ok
+test execution_tests::call_and_ret_stack_faults_leave_state_and_memory_uncommitted ... ok
+test execution_tests::bit_scan_fixtures_match_literal_full_state_and_definedness_answers ... ok
+test execution_tests::call_ret_fixtures_match_literal_state_nested_targets_faults_and_budget ... ok
+test execution_tests::bit_register_memory_fixtures_match_literal_full_state_and_definedness_answers ... ok
+test execution_tests::failed_fetch_and_unsupported_encoding_never_commit_cpu_or_ram ... ok
+test execution_tests::fdiv_st0_sti_runner_checks_every_top_and_source_and_inexact_rejection ... ok
+test execution_tests::cmovcc_fixtures_match_literal_full_state_and_definedness_answers ... ok
+test execution_tests::direct_control_flow_fixtures_match_literal_full_state_and_definedness_answers ... ok
+test execution_tests::fdiv_sti_st0_runner_checks_every_top_and_index_and_atomic_inexact_rejection ... ok
+test execution_tests::fdivr_runner_checks_every_top_and_index_and_atomic_inexact_rejection ... ok
+test execution_tests::fdivr_sti_st0_runner_checks_every_top_and_index_and_atomic_inexact_rejection ... ok
+test execution_tests::fild_m16_literal_fixtures_push_independent_binary80_and_observe_status ... ok
+test execution_tests::fild_m32_literal_fixtures_push_independent_binary80_and_observe_status ... ok
+test execution_tests::fild_m64_literal_fixtures_accept_exact_bytes_and_observe_pushed_status ... ok
+test execution_tests::fnstcw_literal_fixtures_check_raw_store_snapshot_and_fault_boundaries ... ok
+test execution_tests::fnstcw_second_byte_permission_failure_is_atomic_across_fixture_regions ... ok
+test execution_tests::fnstsw_literal_fixtures_check_raw_store_snapshot_composition_and_faults ... ok
+test execution_tests::fs_load_accessed_byte_write_spans_adjacent_gdt_regions_without_full_descriptor_writeback ... ok
+test execution_tests::fsubp_runner_literal_outputs_follow_sti_minus_st0_and_pop ... ok
+test execution_tests::fsubr_runner_literal_outputs_follow_sti_minus_st0_and_alias_is_atomic ... ok
+test execution_tests::fdivrp_runner_checks_every_top_and_index_and_atomic_inexact_rejection ... ok
+test execution_tests::ftst_infinity_project_fixtures_match_literal_full_state_and_memory ... ok
+test execution_tests::fsubr_sti_st0_runner_outputs_use_st0_minus_sti_without_pop ... ok
+test execution_tests::gs_load_accessed_byte_write_spans_adjacent_gdt_regions_without_full_descriptor_writeback ... ok
+test execution_tests::fmul_sti_st0_runner_checks_every_top_and_destination ... ok
+test execution_tests::indirect_jmp_fixtures_reach_new_decode_address_and_preserve_noncanonical_fault_state ... ok
+test execution_tests::indirect_call_fixtures_match_literal_targets_faults_and_budget ... ok
+test execution_tests::lea_produces_unmapped_noncanonical_offsets_without_reading_or_faulting ... ok
+test execution_tests::indirect_memory_jmp_fixtures_read_qword_before_fault_or_target_decode ... ok
+test execution_tests::indirect_memory_call_fixtures_match_literal_full_state_and_fault_order ... ok
+test execution_tests::memory_load_aliases_have_independent_expected_intermediate_values ... ok
+test execution_tests::memory_mov_faults_preserve_precise_state_and_never_partially_store ... ok
+test execution_tests::logic_faults_preserve_definedness_and_all_state_until_retirement ... ok
+test execution_tests::mfence_uses_one_backend_completion_call_and_failure_does_not_retire_it ... ok
+test execution_tests::memory_stack_rexw_overrides_66_for_qword_operands ... ok
+test execution_tests::mov_extensions_cover_high_bytes_rex_aliases_signedness_and_destination_widths ... ok
+test execution_tests::movsb_rejects_prefixes_and_other_string_widths_without_commit ... ok
+test execution_tests::movsb_fixtures_match_literal_state_and_access_order ... ok
+test execution_tests::movsd_rejects_non_w_rex_rep_segment_and_address_prefixes_at_execution_boundary ... ok
+test execution_tests::movsd_fixtures_match_literal_state_and_access_order ... ok
+test execution_tests::movsw_accepts_ignored_misplaced_rex_after_normalization ... ok
+test execution_tests::movsq_fixtures_match_literal_state_and_exact_qword_accesses ... ok
+test execution_tests::old_forms_use_the_same_arithmetic_and_preserve_extra_registers ... ok
+test execution_tests::on_demand_execution_skips_invalid_tail_and_accepts_arbitrary_reached_entry ... ok
+test execution_tests::movsw_fixtures_match_literal_state_and_access_order ... ok
+test execution_tests::pop_memory_bounded_destination_crossing_preserves_ram_and_model_state ... ok
+test execution_tests::pop_memory_store_fault_reports_pf_without_claiming_architectural_cpu_poststate ... ok
+test execution_tests::popfq_fixtures_match_literal_stack_flags_and_definedness_answers ... ok
+test execution_tests::pop_memory_fixtures_use_postincrement_rsp_and_full_literal_state ... ok
+test execution_tests::popfw_fixtures_match_literal_word_stack_flags_and_answers ... ok
+test execution_tests::popfq_out_of_profile_fixture_inputs_return_unsupported_without_commit ... ok
+test execution_tests::popfw_initial_nt_returns_unsupported_without_cpu_or_memory_commit ... ok
+test execution_tests::popfw_nonzero_current_iopl_is_unsupported_before_stack_access ... ok
+test execution_tests::popfw_initial_tf_returns_unsupported_without_cpu_or_memory_commit ... ok
+test execution_tests::popfw_nt_source_returns_unsupported_without_cpu_or_memory_commit ... ok
+test execution_tests::popfw_preserves_unmasked_rflags_bits_locally ... ok
+test execution_tests::popfw_tf_source_returns_unsupported_without_cpu_or_memory_commit ... ok
+test execution_tests::push_immediate_fixtures_match_literal_signed_boundary_answers ... ok
+test execution_tests::push_immediate16_fixtures_match_literal_words_boundaries_and_faults ... ok
+test execution_tests::push_memory_fixtures_read_sources_before_bounded_stack_writes ... ok
+test execution_tests::push_pop16_fixtures_match_literal_state_alias_and_fault_answers ... ok
+test execution_tests::push_pop_noncanonical_stack_ranges_raise_stack_fault_before_memory_access ... ok
+test execution_tests::push_pop_obey_instruction_budget_after_one_committed_instruction ... ok
+test execution_tests::push_pop_fixtures_match_literal_full_state_and_definedness_answers ... ok
+test execution_tests::pushf_rexw_overrides_66_fixture_matches_qword_round_trip ... ok
+test execution_tests::push_pop_stack_faults_and_bounds_leave_state_and_memory_uncommitted ... ok
+test execution_tests::pushf_rexw_round_trip_preserves_unmasked_rflags_and_full_qword_stack_image ... ok
+test execution_tests::pushfq_fixture_matches_literal_masked_rflags_image ... ok
+test execution_tests::pushfw_fixture_matches_literal_low_flags_word ... ok
+test execution_tests::register_xchg_aliases_use_old_values_and_nop_is_not_eax_zero_extension ... ok
+test execution_tests::rep_stosb_fixtures_match_literal_progress_and_access_order ... ok
+test execution_tests::register_stack_rexw_fixtures_match_literal_width_and_prefix_order_answers ... ok
+test execution_tests::rep_stosb_rejects_other_prefix_combinations_without_commit ... ok
+test execution_tests::rep_stosb_stop_and_iteration_work_limit_preserve_restart_state ... ok
+test execution_tests::s2_22a_fs_base_fixture_executes_alias_load_and_observes_profile_state ... ok
+test execution_tests::s2_22b_gs_base_fixture_executes_and_faults_before_commit ... ok
+test execution_tests::s2_22i_later_gs_data_fault_preserves_load_and_canonicality_fault_skips_read ... ok
+test execution_tests::s2_22i_loaded_gs_base_composes_with_exact_qword_load ... ok
+test execution_tests::s2_22j_later_fs_data_fault_preserves_load_and_canonicality_fault_skips_read ... ok
+test execution_tests::s2_22j_loaded_fs_base_composes_with_exact_qword_load ... ok
+test execution_tests::ret_imm16_fixtures_match_literal_adjustment_nested_cleanup_and_faults ... ok
+test execution_tests::arithmetic_fixtures_match_independent_literal_answers_for_every_observable_output ... ok
+test execution_tests::sign_extension_fixtures_match_literal_full_state_answers ... ok
+test execution_tests::stosb_fixtures_match_literal_state_and_write_only_accesses ... ok
+test execution_tests::stosb_rejects_prefixes_without_committing ... ok
+test execution_tests::truncated_push_immediates_fault_during_fetch_without_state_commit ... ok
+test execution_tests::word_pop_memory_bounded_destination_crossing_preserves_ram_and_model_state ... ok
+test execution_tests::word_pop_memory_fixtures_use_two_byte_stack_and_postincrement_destination ... ok
+test execution_tests::word_push_memory_bounded_stack_crossing_preserves_cpu_and_ram ... ok
+test execution_tests::word_push_memory_fixtures_read_prestate_source_and_write_two_bounded_bytes ... ok
+test execution_tests::setcc_fixtures_match_literal_full_state_and_definedness_answers ... ok
+test generate::tests::register_operation_encoder_places_destination_in_modrm_reg_field ... ok
+test generate::tests::seed_and_sequence_reproduce_identical_valid_fixture_bytes ... ok
+test hex_u64::tests::rejects_numbers_uppercase_and_short_values ... ok
+test hex_u64::tests::round_trip_preserves_all_bits_as_fixed_width_hex ... ok
+test memory::tests::adjacent_region_permission_failure_checks_all_bytes_before_commit ... ok
+test memory::tests::atomic_qword_compare_exchange_validates_write_access_on_mismatch ... ok
+test memory::tests::atomic_qword_exchange_validates_adjacent_ranges_before_commit ... ok
+test memory::tests::atomic_qword_fetch_add_validates_adjacent_ranges_before_commit ... ok
+test memory::tests::crossing_failures_leave_ram_and_read_destinations_unchanged ... ok
+test memory::tests::fetch_read_write_permissions_are_independent ... ok
+test memory::tests::injection_is_consumed_only_by_matching_nonoverflowing_access ... ok
+test memory::tests::little_endian_widths_and_injected_architectural_vs_backend_errors ... ok
+test execution_tests::logic_fixtures_match_defined_flags_and_independent_literal_answers ... ok
+test memory::tests::ram_crosses_guest_and_host_page_boundaries_and_adjacent_regions ... ok
+test memory_corpus::tests::s3_26f_store_store_inputs_are_deterministic_unique_and_use_two_addresses ... ok
+test memory_corpus::tests::s3_34a_is_the_original_two_sequence_subset ... ok
+test memory_corpus::tests::unforced_generation_only_selects_original_sequences ... ok
+test execution_tests::shift_rotate_fixtures_match_literal_boundary_answers ... ok
+test minimize::tests::does_not_accept_a_candidate_that_only_fails_once ... ok
+test minimize::tests::rejects_a_flaky_initial_mismatch_before_reduction ... ok
+test minimize::tests::removing_instructions_before_entry_remaps_initial_rip ... ok
+test minimize::tests::too_small_attempt_limit_never_calls_the_oracle ... ok
+test result::tests::completed_native_result_may_leave_hardware_instruction_count_unavailable ... ok
+test result::tests::completed_result_requires_the_core_snapshot ... ok
+test result::tests::ir_block_backend_uses_a_distinct_stable_result_tag ... ok
+test result::tests::ir_dispatch_backend_uses_a_distinct_stable_result_tag ... ok
+test result::tests::observations_reject_unknown_and_conflicting_fields ... ok
+test result::tests::result_memory_is_bounded ... ok
+test result::tests::result_must_match_exact_case_input ... ok
+test result::tests::result_round_trip_keeps_unavailable_distinct_from_zero ... ok
+test tests::sha256_uses_the_standard_lowercase_encoding ... ok
+test minimize::tests::injected_mismatch_is_reproduced_and_instruction_stream_is_reduced ... ok
+test v2::tests::conversion_is_explicit_and_has_its_own_digest ... ok
+test v2::tests::exact_input_and_layout_are_required_and_incomplete_results_never_match ... ok
+test v2::tests::every_gpr_rip_flag_definedness_memory_and_outcome_mismatch_is_observed ... ok
+test v2::tests::exception_comparison_ignores_unavailable_explanations_but_requires_architectural_fields ... ok
+test v2::tests::exception_metadata_is_observed_without_substituting_zero_for_absence ... ok
+test v2::tests::fld_m32_m64_budget_one_normal_unsupported_rejects_oe_only_status ... ok
+test v2::tests::fs_base_profile_is_required_and_old_wire_shape_stays_unchanged ... ok
+test v2::tests::fs_load_state_change_is_allowed_after_retirement_independent_of_terminal_outcome ... ok
+test v2::tests::fs_selector_profile_requires_and_compares_selector_and_base ... ok
+test v2::tests::gs_base_profile_is_required_and_result_compares_gs_base ... ok
+test v2::tests::fs_load_profile_has_an_isolated_wire_shape_and_observes_hidden_cache_state ... ok
+test v2::tests::gs_selector_profile_requires_and_compares_selector_and_base ... ok
+test v2::tests::gs_load_profile_has_an_isolated_wire_shape_and_observes_hidden_cache_state ... ok
+test v2::tests::result_rejects_observed_fs_base_different_from_initial ... ok
+test v2::tests::malformed_versions_fields_profiles_and_state_are_rejected ... ok
+test v2::tests::verw_gdt_profile_requires_canonical_gdtr_and_compares_both_fields ... ok
+test v2::tests::x87_fcmove_schema_admits_only_five_exact_streams_and_reject_profiles ... ok
+test v2::tests::x87_fcmovb_schema_admits_only_indexed_exact_streams_and_operand_rejects ... ok
+test v2::tests::x87_fcmovnb_schema_admits_only_nineteen_exact_streams_and_reject_profiles ... ok
+test v2::tests::x87_fcompp_schema_admits_exact_codes_and_actual_bad_rhs_rejection ... ok
+test v2::tests::x87_ffree_sti_schema_admits_only_the_nineteen_exact_streams ... ok
+test v2::tests::x87_fld_sti_schema_admits_only_indexed_streams_and_bad_sources_reject ... ok
+test v2::tests::x87_fnop_schema_admits_only_the_four_bounded_streams ... ok
+test v2::tests::x87_fucom_schema_admits_exact_codes_and_actual_bad_rhs_rejection ... ok
+test v2::tests::x87_fucomp_schema_admits_exact_codes_and_actual_bad_rhs_rejection ... ok
+test v2::tests::x87_fucompp_schema_admits_exact_codes_and_actual_bad_rhs_rejection ... ok
+test v2::tests::x87_fcomi_family_schema_admits_exact_64_programs_and_narrow_actual_source_rejects ... ok
+test v2::tests::x87_fxam_schema_admits_only_the_seven_requested_streams ... ok
+test memory_corpus::tests::s3_34a_inputs_are_deterministic_unique_and_match_the_frozen_digest ... ok
+test v2::tests::x87_fxch_st1_schema_admits_only_the_three_exact_streams ... ok
+test v2::tests::x87_schema_admits_fdivr_forms_and_inexact_no_stop_case ... ok
+test v2::tests::x87_schema_admits_only_fcom_sti_register_forms_and_two_operand_rejection ... ok
+test v2::tests::x87_state_profile_admits_both_ftst_canonical_infinity_fixtures_without_schema_changes ... ok
+test v2::tests::x87_state_profile_admits_exact_fst_sti_zero_composition_only ... ok
+test v2::tests::x87_state_profile_admits_exact_fstp_sti_zero_composition_only ... ok
+test v2::tests::x87_schema_admits_d9_fst_ftst_fnstcw_and_a_budget_one_source_rejection ... ok
+test v2::tests::x87_state_profile_admits_exact_ftst_zero_composition_only ... ok
+test v2::tests::x87_state_profile_admits_only_exact_fabs_zero_composition ... ok
+test v2::tests::x87_top_adjustment_schema_admits_only_the_six_exact_streams ... ok
+test v2::tests::x87_state_profile_roundtrips_raw_empty_register_payloads_and_compares_mutations ... ok
+test generate::tests::fixed_seed_generates_one_thousand_distinct_valid_cases ... ok
+test v2::tests::x87_state_profile_admits_only_exact_bare_two_byte_operations ... ok
+
+test result: ok. 188 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s
+
+
+running 9 tests
+test supervisor::tests::applies_cpu_address_space_and_core_limits_before_exec ... ok
+test supervisor::tests::kills_a_child_that_exceeds_the_stdout_limit ... ok
+test supervisor::tests::rejects_limits_above_the_runner_caps_before_spawning ... ok
+test supervisor::tests::rejects_an_early_closed_result_channel ... ok
+test supervisor::tests::rejects_corrupt_result_json ... ok
+test supervisor::tests::reports_an_unexpected_child_signal ... ok
+test supervisor::tests::waits_for_normal_child_exit_and_captures_bounded_channels ... ok
+test supervisor::tests::kills_and_waits_for_a_hung_child ... ok
+test supervisor::tests::times_out_when_a_grandchild_keeps_a_pipe_open ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+
+running 112 tests
+test native::fetch_guard_tests::truncated_prefix_at_guard_boundary_returns_decode_error_without_host_fault ... ok
+test native::fetch_guard_tests::isolated_guard_fault_preserves_raw_signal_and_rip_then_normalizes_event ... ok
+test native::fetch_guard_tests::truncated_immediate_at_guard_boundary_returns_decode_error_without_host_fault ... ok
+test native::fetch_guard_tests::isolated_illegal_instruction_preserves_raw_signal_and_rip_then_normalizes_event ... ok
+test native_v2::tests::bit_scan_memory_admission_requires_readable_mapped_source ... ok
+test native_v2::tests::bounded_fist_literal_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::bswap_register_fixtures_are_admitted_without_data_memory_or_flag_effects ... ok
+test native_v2::tests::bsf_bsr_register_fixtures_are_admitted_with_defined_scan_flags ... ok
+test native_v2::tests::bt_family_immediate_memory_fixtures_are_admitted_with_exact_permissions ... ok
+test native_v2::tests::bt_family_register_fixtures_are_admitted_with_semantic_flag_definedness ... ok
+test native_v2::tests::admission_rejects_partial_ranges_readonly_stores_syscalls_and_truncated_code ... ok
+test native_v2::tests::call_ret_fixtures_admit_nested_targets_and_bounded_stack_reads_writes ... ok
+test native_v2::tests::bt_family_register_memory_fixtures_are_admitted_with_exact_permissions ... ok
+test native_v2::tests::bt_family_immediate_register_forms_are_admitted_without_data_accesses ... ok
+test native_v2::tests::cmovcc_literal_fixtures_are_admitted_with_no_flag_effects ... ok
+test native_v2::tests::direct_control_flow_fixtures_are_admitted_only_to_their_selected_target ... ok
+test native_v2::tests::fs_base_profile_and_memory_mov_fail_closed_before_native_trace ... ok
+test native_v2::tests::fs_load_profile_fails_closed_before_tracee_and_legacy_decode_is_rejected ... FAILED
+test native_v2::tests::fs_selector_profile_fails_closed_and_legacy_decode_is_rejected ... ok
+test native_v2::tests::gs_base_profile_fails_closed_before_native_trace ... ok
+test native_v2::tests::gs_load_profile_fails_closed_before_tracee_and_legacy_decode_is_rejected ... ok
+test native_v2::tests::indirect_call_memory_fixtures_admit_live_source_target_and_bounded_stack ... ok
+test native_v2::tests::indirect_call_register_fixtures_admit_selected_targets_and_bounded_stack ... ok
+test native_v2::tests::indirect_jmp_fixtures_admit_register_targets_and_reject_noncanonical_native_fault ... ok
+test native_v2::tests::arithmetic_admission_requires_read_and_write_except_for_cmp ... ok
+test native_v2::tests::indirect_memory_jmp_fixtures_admit_exact_read_and_selected_target ... ok
+test native_v2::tests::mixed_prefix_register_stack_fixtures_admit_bounded_word_and_qword_ranges ... ok
+test native_v2::tests::movsb_native_admission_accepts_bounded_successes_and_rejects_fault_only_cases ... ok
+test native_v2::tests::gs_selector_profile_fails_closed_and_legacy_decode_is_rejected ... ok
+test native_v2::tests::movsd_native_admission_accepts_only_mapped_bare_a5_cases ... ok
+test native_v2::tests::movsw_native_admission_accepts_mapped_cases_and_normalized_ignored_rex ... ok
+test native_v2::tests::movsq_native_admission_checks_qword_ranges_and_rexw_override ... ok
+test native_v2::tests::owned_child_cleanup_kills_and_reaps_stopped_child ... ok
+test native_v2::tests::multiply_divide_admission_bounds_only_explicit_read_operands ... ok
+test native_v2::tests::page_plan_and_admission_reject_host_escape_and_writable_code ... ok
+test native_v2::tests::page_plan_groups_adjacent_logical_regions_and_rejects_incompatible_permissions ... ok
+test native_v2::tests::physical_branch_loop_stops_at_exact_verified_step_budget ... ok
+test native_v2::tests::physical_initial_readback_preserves_all_sixteen_gprs_rsp_rip_and_profile_flags ... ok
+test native_v2::tests::physical_rep_stosb_counts_as_one_instruction_after_all_iterations ... FAILED
+test native_v2::tests::physical_single_steps_capture_extended_gpr_and_actual_memory_without_guest_stack_wrapper ... ok
+test native_v2::tests::pop_memory_fixtures_read_live_stack_and_admit_postincrement_destinations ... ok
+test native_v2::tests::logic_admission_keeps_test_readonly_and_returns_semantic_flag_effects ... ok
+test native_v2::tests::data_transfer_admission_checks_only_real_memory_accesses ... ok
+test native_v2::tests::push_immediate16_fixtures_admit_two_byte_stack_ranges_and_reject_fault_cases ... ok
+test native_v2::tests::push_immediate_literal_fixtures_are_admitted_only_within_bounded_stack_memory ... ok
+test native_v2::tests::push_memory_fixtures_read_qword_sources_and_bound_stack_writes ... ok
+test native_v2::tests::push_pop16_fixtures_admit_word_ranges_and_reject_fault_cases ... ok
+test native_v2::tests::popfq_fixtures_admit_only_readable_stack_and_profile_flag_inputs ... ok
+test native_v2::tests::physical_logic_tracks_undefined_af_until_a_retired_instruction_defines_it ... ok
+test native_v2::tests::rep_stosb_native_admission_accepts_small_mapped_ranges_only ... ok
+test native_v2::tests::push_pop_literal_fixtures_are_admitted_only_within_bounded_stack_memory ... ok
+test native_v2::tests::ret66_fixture_admits_only_bounded_qword_return_target ... ok
+test native_v2::tests::rexw_overrides_operand_override_for_memory_stack_admission ... FAILED
+test native_v2::tests::s2_31az_subnormal_store_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31ba_bs_sticky_status_m80_store_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::ret_imm16_fixtures_admit_stack_targets_and_cleanup_paths ... FAILED
+test native_v2::tests::s2_31bb_max_finite_m32_fld_store_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bc_max_finite_m64_fld_store_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bd_exact_m32_subnormal_store_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bf_masked_inexact_m32_subnormal_store_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31be_exact_m64_subnormal_store_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bh_sticky_ue_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bg_masked_inexact_m64_subnormal_store_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bm_binary80_subnormal_m64_store_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bl_special_binary80_subnormal_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bn_binary80_minimum_normal_m32_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bo_binary80_minimum_normal_m64_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bq_br_binary80_m64_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31bp_binary80_overflow_to_infinity_m32_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cf_masked_signaling_nan_fist_m32_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cg_masked_signaling_nan_fist_m16_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31ch_masked_signaling_nan_fistp_m64_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31ci_fist_snan_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cj_finite_overflow_fistp_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31ci_fistp_exact_incoming_ie_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cj_roundback_fist_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31ck_m16_overflow_and_roundback_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cl_m64_finite_overflow_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cm_cn_co_bounded_integer_fixtures_remain_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cs_subnormal_fistp_m64_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cr_subnormal_fist_m16_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31ct_pseudo_infinity_fistp_m32_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cu_pseudo_infinity_fistp_m16_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cv_pseudo_infinity_fistp_m64_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cw_pseudo_nan_fistp_m32_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cx_pseudo_nan_fistp_m16_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cy_pseudo_nan_fistp_m64_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31cz_unnormal_fistp_m32_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::popfw_fixtures_admit_only_supported_word_inputs ... ok
+test native_v2::tests::s2_31da_unnormal_fistp_m16_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::s2_31db_unnormal_fistp_m64_fixture_remains_outside_native_admission ... FAILED
+test native_v2::tests::pushf_fixtures_admit_only_a_bounded_writable_stack_slot ... ok
+test native_v2::tests::stosb_native_admission_accepts_mapped_cases_and_rejects_faults_and_prefixes ... ok
+test native_v2::tests::terminal_signal_preserves_wtermsig_without_fabricating_snapshot_or_count ... ok
+test native_v2::tests::shift_admission_uses_the_runtime_count_for_flag_definedness ... ok
+test native_v2::tests::wait_deadline_and_cleanup_do_not_leave_a_running_child ... ok
+test native_v2::tests::word_pop_memory_fixtures_admit_exact_stack_and_postincrement_store_ranges ... ok
+test native_v2::tests::word_push_memory_fixtures_admit_exact_source_and_stack_ranges ... ok
+test native_v2::tests::verw_gdt_profile_fails_closed_before_tracee_and_legacy_decode_is_rejected ... ok
+test rep_trace::tests::rep_iteration_traps_do_not_retire_until_rip_advances ... ok
+test native_v2::tests::setcc_literal_fixtures_are_admitted_with_no_flag_effects ... ok
+test supervisor::tests::applies_cpu_address_space_and_core_limits_before_exec ... ok
+test supervisor::tests::kills_a_child_that_exceeds_the_stdout_limit ... ok
+test native_v2::tests::shift_admission_checks_memory_rmw_permissions_and_logical_ranges ... ok
+test supervisor::tests::rejects_corrupt_result_json ... ok
+test supervisor::tests::rejects_an_early_closed_result_channel ... ok
+test supervisor::tests::rejects_limits_above_the_runner_caps_before_spawning ... ok
+test supervisor::tests::reports_an_unexpected_child_signal ... ok
+test supervisor::tests::waits_for_normal_child_exit_and_captures_bounded_channels ... ok
+test supervisor::tests::kills_and_waits_for_a_hung_child ... ok
+test native_v2::tests::x87_instructions_are_rejected_by_native_profile_and_instruction_admission ... FAILED
+test supervisor::tests::times_out_when_a_grandchild_keeps_a_pipe_open ... ok
+
+failures:
+
+---- native_v2::tests::bounded_fist_literal_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::bounded_fist_literal_fixtures_remain_outside_native_admission' (96916) panicked at tools/x86-runner/src/native_v2.rs:2081:65:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- native_v2::tests::fs_load_profile_fails_closed_before_tracee_and_legacy_decode_is_rejected stdout ----
+
+thread 'native_v2::tests::fs_load_profile_fails_closed_before_tracee_and_legacy_decode_is_rejected' (96928) panicked at tools/x86-runner/src/native_v2.rs:3919:58:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "memory.code", reason: "address, budget and stop_rip must match the exact admitted program" }
+
+---- native_v2::tests::physical_rep_stosb_counts_as_one_instruction_after_all_iterations stdout ----
+
+thread 'native_v2::tests::physical_rep_stosb_counts_as_one_instruction_after_all_iterations' (96953) panicked at tools/x86-runner/src/native_v2.rs:1506:13:
+assertion `left == right` failed: s2_19a_rep_stosb_df0: RunResult { schema_version: 2, case_id: "s2_19a_rep_stosb_df0", input_sha256: "118dc8a825048dd24dd30448e731ea987160859080357c9032b08daedc3bd1a8", profile: LongIntegerV1, backend: NativeX86, outcome: Unsupported { reason: "native regions must be readable and cannot be writable+executable" }, instructions_executed: Unavailable { reason: "no verified trace-step count" }, snapshot: Unavailable { reason: "native state was not captured" }, build: BuildMetadata { revision: "unavailable", target: "x86_64-unknown-linux-gnu", profile: "debug", compiler: "rustc version unavailable at build time" }, machine: MachineMetadata { host_os: "linux", host_arch: "x86_64", cpu_model: Some("Intel(R) Core(TM) i5-3210M CPU @ 2.50GHz"), kernel: Some("7.0.0-38-generic"), page_size: Some(4096) } }
+  left: Unsupported { reason: "native regions must be readable and cannot be writable+executable" }
+ right: StopAddress
+
+---- native_v2::tests::rexw_overrides_operand_override_for_memory_stack_admission stdout ----
+
+thread 'native_v2::tests::rexw_overrides_operand_override_for_memory_stack_admission' (96972) panicked at tools/x86-runner/src/native_v2.rs:2351:77:
+called `Result::unwrap()` on an `Err` value: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+
+---- native_v2::tests::s2_31az_subnormal_store_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31az_subnormal_store_fixtures_remain_outside_native_admission' (96973) panicked at tools/x86-runner/src/native_v2.rs:4275:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31ba_bs_sticky_status_m80_store_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31ba_bs_sticky_status_m80_store_fixtures_remain_outside_native_admission' (96974) panicked at tools/x86-runner/src/native_v2.rs:4290:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::ret_imm16_fixtures_admit_stack_targets_and_cleanup_paths stdout ----
+
+thread 'native_v2::tests::ret_imm16_fixtures_admit_stack_targets_and_cleanup_paths' (96971) panicked at tools/x86-runner/src/native_v2.rs:2628:13:
+assertion `left == right` failed: s2_17f_ret_imm_nested_cleanup
+  left: 5
+ right: 3
+
+---- native_v2::tests::s2_31bb_max_finite_m32_fld_store_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bb_max_finite_m32_fld_store_fixtures_remain_outside_native_admission' (96975) panicked at tools/x86-runner/src/native_v2.rs:4304:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bc_max_finite_m64_fld_store_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bc_max_finite_m64_fld_store_fixtures_remain_outside_native_admission' (96976) panicked at tools/x86-runner/src/native_v2.rs:4318:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bd_exact_m32_subnormal_store_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bd_exact_m32_subnormal_store_fixtures_remain_outside_native_admission' (96977) panicked at tools/x86-runner/src/native_v2.rs:4331:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bf_masked_inexact_m32_subnormal_store_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bf_masked_inexact_m32_subnormal_store_fixtures_remain_outside_native_admission' (96979) panicked at tools/x86-runner/src/native_v2.rs:4358:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31be_exact_m64_subnormal_store_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31be_exact_m64_subnormal_store_fixtures_remain_outside_native_admission' (96978) panicked at tools/x86-runner/src/native_v2.rs:4344:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bh_sticky_ue_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bh_sticky_ue_fixture_remains_outside_native_admission' (96981) panicked at tools/x86-runner/src/native_v2.rs:4463:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bg_masked_inexact_m64_subnormal_store_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bg_masked_inexact_m64_subnormal_store_fixtures_remain_outside_native_admission' (96980) panicked at tools/x86-runner/src/native_v2.rs:4450:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bm_binary80_subnormal_m64_store_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bm_binary80_subnormal_m64_store_fixtures_remain_outside_native_admission' (96983) panicked at tools/x86-runner/src/native_v2.rs:4436:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bl_special_binary80_subnormal_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bl_special_binary80_subnormal_fixture_remains_outside_native_admission' (96982) panicked at tools/x86-runner/src/native_v2.rs:4371:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bn_binary80_minimum_normal_m32_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bn_binary80_minimum_normal_m32_fixtures_remain_outside_native_admission' (96984) panicked at tools/x86-runner/src/native_v2.rs:4383:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bo_binary80_minimum_normal_m64_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bo_binary80_minimum_normal_m64_fixtures_remain_outside_native_admission' (96985) panicked at tools/x86-runner/src/native_v2.rs:4396:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bq_br_binary80_m64_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bq_br_binary80_m64_fixtures_remain_outside_native_admission' (96987) panicked at tools/x86-runner/src/native_v2.rs:4423:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31bp_binary80_overflow_to_infinity_m32_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31bp_binary80_overflow_to_infinity_m32_fixtures_remain_outside_native_admission' (96986) panicked at tools/x86-runner/src/native_v2.rs:4409:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cf_masked_signaling_nan_fist_m32_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cf_masked_signaling_nan_fist_m32_fixture_remains_outside_native_admission' (96988) panicked at tools/x86-runner/src/native_v2.rs:4475:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cg_masked_signaling_nan_fist_m16_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cg_masked_signaling_nan_fist_m16_fixture_remains_outside_native_admission' (96989) panicked at tools/x86-runner/src/native_v2.rs:4487:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31ch_masked_signaling_nan_fistp_m64_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31ch_masked_signaling_nan_fistp_m64_fixture_remains_outside_native_admission' (96990) panicked at tools/x86-runner/src/native_v2.rs:4499:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31ci_fist_snan_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31ci_fist_snan_fixture_remains_outside_native_admission' (96991) panicked at tools/x86-runner/src/native_v2.rs:4510:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cj_finite_overflow_fistp_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cj_finite_overflow_fistp_fixture_remains_outside_native_admission' (96993) panicked at tools/x86-runner/src/native_v2.rs:4534:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31ci_fistp_exact_incoming_ie_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31ci_fistp_exact_incoming_ie_fixture_remains_outside_native_admission' (96992) panicked at tools/x86-runner/src/native_v2.rs:4522:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cj_roundback_fist_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cj_roundback_fist_fixture_remains_outside_native_admission' (96994) panicked at tools/x86-runner/src/native_v2.rs:4546:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31ck_m16_overflow_and_roundback_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31ck_m16_overflow_and_roundback_fixtures_remain_outside_native_admission' (96995) panicked at tools/x86-runner/src/native_v2.rs:4690:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cl_m64_finite_overflow_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cl_m64_finite_overflow_fixture_remains_outside_native_admission' (96996) panicked at tools/x86-runner/src/native_v2.rs:4703:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cm_cn_co_bounded_integer_fixtures_remain_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cm_cn_co_bounded_integer_fixtures_remain_outside_native_admission' (96997) panicked at tools/x86-runner/src/native_v2.rs:4721:64:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cs_subnormal_fistp_m64_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cs_subnormal_fistp_m64_fixture_remains_outside_native_admission' (96999) panicked at tools/x86-runner/src/native_v2.rs:4570:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cr_subnormal_fist_m16_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cr_subnormal_fist_m16_fixture_remains_outside_native_admission' (96998) panicked at tools/x86-runner/src/native_v2.rs:4558:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31ct_pseudo_infinity_fistp_m32_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31ct_pseudo_infinity_fistp_m32_fixture_remains_outside_native_admission' (97000) panicked at tools/x86-runner/src/native_v2.rs:4582:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cu_pseudo_infinity_fistp_m16_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cu_pseudo_infinity_fistp_m16_fixture_remains_outside_native_admission' (97001) panicked at tools/x86-runner/src/native_v2.rs:4654:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cv_pseudo_infinity_fistp_m64_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cv_pseudo_infinity_fistp_m64_fixture_remains_outside_native_admission' (97002) panicked at tools/x86-runner/src/native_v2.rs:4666:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cw_pseudo_nan_fistp_m32_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cw_pseudo_nan_fistp_m32_fixture_remains_outside_native_admission' (97003) panicked at tools/x86-runner/src/native_v2.rs:4606:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cx_pseudo_nan_fistp_m16_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cx_pseudo_nan_fistp_m16_fixture_remains_outside_native_admission' (97004) panicked at tools/x86-runner/src/native_v2.rs:4594:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cy_pseudo_nan_fistp_m64_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cy_pseudo_nan_fistp_m64_fixture_remains_outside_native_admission' (97005) panicked at tools/x86-runner/src/native_v2.rs:4678:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31cz_unnormal_fistp_m32_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31cz_unnormal_fistp_m32_fixture_remains_outside_native_admission' (97006) panicked at tools/x86-runner/src/native_v2.rs:4618:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31da_unnormal_fistp_m16_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31da_unnormal_fistp_m16_fixture_remains_outside_native_admission' (97007) panicked at tools/x86-runner/src/native_v2.rs:4630:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::s2_31db_unnormal_fistp_m64_fixture_remains_outside_native_admission stdout ----
+
+thread 'native_v2::tests::s2_31db_unnormal_fistp_m64_fixture_remains_outside_native_admission' (97008) panicked at tools/x86-runner/src/native_v2.rs:4642:60:
+called `Result::unwrap()` on an `Err` value: InvalidField { field: "state.x87", reason: "not part of this profile" }
+
+---- native_v2::tests::x87_instructions_are_rejected_by_native_profile_and_instruction_admission stdout ----
+
+thread 'native_v2::tests::x87_instructions_are_rejected_by_native_profile_and_instruction_admission' (97020) panicked at tools/x86-runner/src/native_v2.rs:4219:41:
+code=[db, 18]: InvalidField { field: "memory.code", reason: "x87 state profile admits one exact instruction with budget 1 and the following stop RIP" }
+
+
+failures:
+    native_v2::tests::bounded_fist_literal_fixtures_remain_outside_native_admission
+    native_v2::tests::fs_load_profile_fails_closed_before_tracee_and_legacy_decode_is_rejected
+    native_v2::tests::physical_rep_stosb_counts_as_one_instruction_after_all_iterations
+    native_v2::tests::ret_imm16_fixtures_admit_stack_targets_and_cleanup_paths
+    native_v2::tests::rexw_overrides_operand_override_for_memory_stack_admission
+    native_v2::tests::s2_31az_subnormal_store_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31ba_bs_sticky_status_m80_store_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31bb_max_finite_m32_fld_store_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31bc_max_finite_m64_fld_store_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31bd_exact_m32_subnormal_store_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31be_exact_m64_subnormal_store_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31bf_masked_inexact_m32_subnormal_store_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31bg_masked_inexact_m64_subnormal_store_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31bh_sticky_ue_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31bl_special_binary80_subnormal_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31bm_binary80_subnormal_m64_store_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31bn_binary80_minimum_normal_m32_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31bo_binary80_minimum_normal_m64_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31bp_binary80_overflow_to_infinity_m32_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31bq_br_binary80_m64_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31cf_masked_signaling_nan_fist_m32_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cg_masked_signaling_nan_fist_m16_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31ch_masked_signaling_nan_fistp_m64_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31ci_fist_snan_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31ci_fistp_exact_incoming_ie_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cj_finite_overflow_fistp_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cj_roundback_fist_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31ck_m16_overflow_and_roundback_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31cl_m64_finite_overflow_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cm_cn_co_bounded_integer_fixtures_remain_outside_native_admission
+    native_v2::tests::s2_31cr_subnormal_fist_m16_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cs_subnormal_fistp_m64_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31ct_pseudo_infinity_fistp_m32_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cu_pseudo_infinity_fistp_m16_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cv_pseudo_infinity_fistp_m64_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cw_pseudo_nan_fistp_m32_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cx_pseudo_nan_fistp_m16_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cy_pseudo_nan_fistp_m64_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31cz_unnormal_fistp_m32_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31da_unnormal_fistp_m16_fixture_remains_outside_native_admission
+    native_v2::tests::s2_31db_unnormal_fistp_m64_fixture_remains_outside_native_admission
+    native_v2::tests::x87_instructions_are_rejected_by_native_profile_and_instruction_admission
+
+test result: FAILED. 70 passed; 42 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s

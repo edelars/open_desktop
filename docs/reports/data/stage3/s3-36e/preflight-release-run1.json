@@ -1,0 +1,101 @@
+{
+  "input_digest": "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540",
+  "interpreter_executions": 4800,
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "cea6d65f764bd2d4a5d8b564cf743945aae596ab",
+      "source_sha256": "a56d73670c3c273f555ff56fdb0d7a68ddcfae40695c4f04bc4ed9d7da4db63f",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "cea6d65f764bd2d4a5d8b564cf743945aae596ab",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "native_executions": 4800,
+  "parity_trials": 4800,
+  "process_run": 1,
+  "profile_id": "s3-36e-two-site-memory-full-cache-call-v1",
+  "repetitions_per_case_backend": 2,
+  "schema": 1,
+  "sequences": [
+    {
+      "counters": {
+        "hits": 2399,
+        "misses": 1,
+        "replacements": 0,
+        "resident_entries_high_water": 1,
+        "resident_logical_bytes_high_water": 4782,
+        "successful_compiles": 1,
+        "successful_publications": 1
+      },
+      "counters_delta": {
+        "hits": 2399,
+        "misses": 1,
+        "replacements": 0,
+        "successful_compiles": 1,
+        "successful_publications": 1
+      },
+      "input_count": 1200,
+      "interpreter_executions": 2400,
+      "native_executions": 2400,
+      "parity_trials": 2400,
+      "resident_entries": 1,
+      "resident_logical_bytes_high_water": 4782,
+      "sequence": "store_then_load"
+    },
+    {
+      "counters": {
+        "hits": 2399,
+        "misses": 1,
+        "replacements": 0,
+        "resident_entries_high_water": 1,
+        "resident_logical_bytes_high_water": 4782,
+        "successful_compiles": 1,
+        "successful_publications": 1
+      },
+      "counters_delta": {
+        "hits": 2399,
+        "misses": 1,
+        "replacements": 0,
+        "successful_compiles": 1,
+        "successful_publications": 1
+      },
+      "input_count": 1200,
+      "interpreter_executions": 2400,
+      "native_executions": 2400,
+      "parity_trials": 2400,
+      "resident_entries": 1,
+      "resident_logical_bytes_high_water": 4782,
+      "sequence": "load_then_store"
+    }
+  ],
+  "source_files": [
+    "tools/bench/src/two_site_memory_cached.rs",
+    "tools/bench/src/two_site_memory_warm.rs",
+    "tools/bench/src/two_site_memory_cold.rs",
+    "tools/bench/src/main.rs",
+    "tools/bench/src/lib.rs",
+    "crates/od-jit/src/memory_cache.rs",
+    "crates/od-host/src/lib.rs",
+    "crates/od-jit/src/memory_load_v2.rs",
+    "crates/od-jit/src/translation.rs",
+    "crates/od-jit/src/memory_dispatch.rs",
+    "crates/od-jit/src/block.rs",
+    "crates/od-jit/src/runtime.rs",
+    "crates/od-isa/src/execute.rs",
+    "crates/od-isa/src/state.rs",
+    "crates/od-testkit/src/memory_corpus.rs"
+  ],
+  "source_sha256": "cdc04dc1ca8041c68a44b371f5f6f0aec7829f0466c005eb05deecec6cf6dd0f",
+  "timing_started": false,
+  "unique_cases": 2400
+}

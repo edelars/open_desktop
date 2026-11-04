@@ -2,9 +2,24 @@ import Darwin
 import Dispatch
 import Foundation
 
+private enum Issue027Trace {
+    private static let enabled = ProcessInfo.processInfo.environment["OD_ISSUE027_TRACE"] == "1"
+
+    static func mark(_ phase: String, detail: String = "") {
+        guard enabled else { return }
+        let suffix = detail.isEmpty ? "" : " \(detail)"
+        fputs(
+            "issue027_trace role=launcher uptime_ns=\(DispatchTime.now().uptimeNanoseconds) phase=\(phase)\(suffix)\n",
+            stderr
+        )
+        fflush(stderr)
+    }
+}
+
 @main
 struct OpenDesktopLauncherSmoke {
     static func main() {
+        Issue027Trace.mark("launcher_started")
         var parentFD: Int32 = -1
         var childFD: Int32 = -1
         var childPID: pid_t?
@@ -22,11 +37,15 @@ struct OpenDesktopLauncherSmoke {
 
             let pid = try spawnHelper(path: config.helper.path, parentFD: parentFD, childFD: childFD)
             childPID = pid
+            Issue027Trace.mark("helper_spawned", detail: "pid=\(pid)")
             Darwin.close(childFD)
             childFD = -1
 
             try ControlFrame(kind: .hello, requestID: 0, payload: Data()).write(to: parentFD)
+            Issue027Trace.mark("hello_sent")
+            Issue027Trace.mark("waiting_ready")
             let ready = try ControlFrame.read(from: parentFD)
+            Issue027Trace.mark("ready_received", detail: "kind=\(ready.kind) request_id=\(ready.requestID)")
             guard ready.kind == .ready,
                   ready.requestID == 0,
                   ready.payload.count == 4,
@@ -42,15 +61,22 @@ struct OpenDesktopLauncherSmoke {
             runPayload.appendLE(UInt64(2)) // reserved RFLAGS bit 1
             runPayload.append(contentsOf: config.code)
             try ControlFrame(kind: .run, requestID: 1, payload: runPayload).write(to: parentFD)
+            Issue027Trace.mark("run_sent", detail: "request_id=1 bytes=\(runPayload.count)")
+            Issue027Trace.mark("waiting_run_ack")
             try expectStatusFrame(.runAck, requestID: 1, fd: parentFD)
+            Issue027Trace.mark("run_ack_received")
+            Issue027Trace.mark("waiting_result")
             let result = try waitForResult(
                 fd: parentFD,
                 requestID: 1,
                 stopAfterMilliseconds: config.stopAfterMilliseconds
             )
+            Issue027Trace.mark("result_received")
             printResult(result)
+            Issue027Trace.mark("waiting_child_exit")
             let childStatus = try waitForChild(pid)
             childPID = nil
+            Issue027Trace.mark("child_exited", detail: "status=\(childStatus)")
             guard childStatus == 0 else {
                 throw LauncherError.childFailed(childStatus)
             }
@@ -58,18 +84,28 @@ struct OpenDesktopLauncherSmoke {
             parentFD = -1
         } catch {
             var reportedError: Error = error
+            Issue027Trace.mark("launcher_caught_error", detail: "error=\(error)")
             if let childPID {
                 var status: Int32 = 0
                 let waited = waitpid(childPID, &status, WNOHANG)
+                Issue027Trace.mark("child_wait_probe", detail: "waited=\(waited) status=\(status)")
                 if waited == childPID {
                     if status & 0x7F != 0 {
                         reportedError = LauncherError.childSignaled(status & 0x7F)
+                        Issue027Trace.mark("child_signaled", detail: "signal=\(status & 0x7F)")
                     } else {
                         let exitStatus = (status >> 8) & 0xFF
-                        if exitStatus != 0 { reportedError = LauncherError.childFailed(exitStatus) }
+                        if exitStatus != 0 {
+                            reportedError = LauncherError.childFailed(exitStatus)
+                            Issue027Trace.mark("child_failed", detail: "status=\(exitStatus)")
+                        } else {
+                            Issue027Trace.mark("child_exited", detail: "status=0")
+                        }
                     }
                 } else {
+                    Issue027Trace.mark("terminating_child", detail: "pid=\(childPID)")
                     terminateChild(childPID)
+                    Issue027Trace.mark("child_termination_complete", detail: "pid=\(childPID)")
                 }
             }
             if parentFD >= 0 { Darwin.close(parentFD) }

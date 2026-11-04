@@ -1,0 +1,32 @@
+{
+  "schema": "open-desktop-stage3-monitoring-correction-v1",
+  "run": "s3-35c-calibration-only-process-run-1",
+  "corrects": {
+    "path": "work/tmp/stage3/s3-35c/calibration.monitoring.json",
+    "sha256": "67081eb6b86e61031e3516373eaccbba8845f3ed5994c20773f5d1f6b6ad6ff4"
+  },
+  "bound_artifacts": {
+    "report": {
+      "path": "work/tmp/stage3/s3-35c/calibration.json",
+      "sha256": "ec7328d6f2cccf464333fefb22802799c9f19e011f8ce28970c22640e888f49e"
+    },
+    "journal": {
+      "path": "work/tmp/stage3/s3-35c/calibration.json.journal.jsonl",
+      "sha256": "253a35c723cbc0e8959c5ac0b555662953a4d6cb68825ffc8383674e7e491360"
+    }
+  },
+  "correction": {
+    "snapshot_times_utc": [
+      "2026-11-01T04:44:28Z",
+      "2026-11-01T04:44:36Z",
+      "2026-11-01T04:44:45Z"
+    ],
+    "phase_label": "benchmark_process_observed",
+    "measured_calibration_interval_start_utc": null,
+    "measured_calibration_interval_end_utc": null,
+    "report_total_elapsed_ns": 3540512750,
+    "interpretation": "These snapshots show the benchmark process present at point-in-time only. They do not prove that calibration timing was active at those instants. The exact calibration interval and mapping of the six journal attempts to process/load snapshots are unavailable because no per-attempt wall-clock timestamps were recorded.",
+    "stage2_timing_overlap": "Stage2 compilation is present in some process snapshots, including release-build overlap, but without per-attempt timestamps its overlap with measured calibration attempts is unknown. Its direct effect on calibration totals is unquantified.",
+    "raw_report_or_journal_modified": false
+  }
+}

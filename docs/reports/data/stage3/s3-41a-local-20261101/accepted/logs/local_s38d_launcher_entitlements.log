@@ -1,0 +1,4 @@
+
+--- stderr ---
+Executable=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-190932-58293bb642/artifacts/open-desktop-launcher-smoke
+warning: Specifying ':' in the path is deprecated and will not work in a future release

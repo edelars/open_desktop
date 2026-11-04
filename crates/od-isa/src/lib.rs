@@ -11,6 +11,7 @@ pub mod cpuid;
 pub mod execute;
 mod finite_arithmetic;
 pub mod hlt;
+pub mod integer_flags;
 pub mod interrupt;
 pub mod iretq;
 pub mod long_decode;

@@ -32,6 +32,12 @@ DEFAULT_CASES = (
     "tests/fixtures/x86/s1_06_jz_not_taken.case.json",
     "tests/fixtures/x86/s1_06_mov_preserves_flags.case.json",
 )
+JIT_BLOCK_MANIFEST = "tests/cpu/manifests/stage3_s3_14_jit_block.json"
+JIT_ENGINES = {
+    "jit": "jit",
+    "jit-block": "jit_ir_block",
+    "jit-dispatch": "jit_ir_dispatch",
+}
 SOURCE_ROOTS = (
     "crates/od-isa",
     "crates/od-testkit",
@@ -106,6 +112,106 @@ def prepare_cases(case_names: list[str], output_dir: Path) -> list[tuple[Path, d
     return cases
 
 
+def load_case_manifest(path: str | Path) -> list[str]:
+    """Load an explicit in-repository one-block fixture selection."""
+    manifest_path = (ROOT / path).resolve()
+    if ROOT not in manifest_path.parents:
+        raise Stage1Error(f"case manifest must be inside the repository: {path}")
+    try:
+        raw = manifest_path.read_bytes()
+        manifest = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise Stage1Error(f"could not read case manifest {path}: {error}") from error
+    if (not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int
+            or manifest.get("schema_version") != 1):
+        raise Stage1Error("case manifest must be a schema_version 1 object")
+    if manifest.get("engine") != "jit-block":
+        raise Stage1Error("S3-14 case manifest must select engine jit-block")
+    selected = manifest.get("cases")
+    if not isinstance(selected, list) or not selected:
+        raise Stage1Error("case manifest must contain a nonempty cases list")
+    entry_fields = {
+        "path", "fixture_sha256", "program_sha256", "required", "kind", "category",
+        "terminal_boundary", "one_block_reason",
+    }
+
+    def validate_entry(item: object, *, kind: str) -> str:
+        if not isinstance(item, dict) or set(item) != entry_fields:
+            raise Stage1Error("manifest cases must contain the complete one-block evidence record")
+        if (not isinstance(item["path"], str) or item["kind"] != kind
+                or type(item["required"]) is not bool or item["required"] != (kind != "local_only")
+                or not isinstance(item["category"], str) or not item["category"]
+                or not isinstance(item["one_block_reason"], str) or not item["one_block_reason"]
+                or not isinstance(item["fixture_sha256"], str)
+                or not isinstance(item["program_sha256"], str)):
+            raise Stage1Error("manifest case metadata is invalid")
+        expected_boundary = "code_end" if kind in {"historical", "boundary"} else "budget"
+        if item["terminal_boundary"] != expected_boundary:
+            raise Stage1Error(f"{item['path']} has an invalid terminal boundary")
+        fixture_path = (ROOT / item["path"]).resolve()
+        if ROOT not in fixture_path.parents:
+            raise Stage1Error(f"manifest case must be inside the repository: {item['path']}")
+        try:
+            fixture_bytes = fixture_path.read_bytes()
+            fixture = json.loads(fixture_bytes)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise Stage1Error(f"could not validate manifest fixture {item['path']}: {error}") from error
+        if (not isinstance(fixture, dict) or not isinstance(fixture.get("program"), dict)
+                or not isinstance(fixture["program"].get("bytes_hex"), str)):
+            raise Stage1Error(f"{item['path']} has an invalid program record")
+        try:
+            program = bytes.fromhex(fixture["program"]["bytes_hex"])
+        except ValueError as error:
+            raise Stage1Error(f"{item['path']} program bytes are not hexadecimal") from error
+        if hashlib.sha256(fixture_bytes).hexdigest() != item["fixture_sha256"]:
+            raise Stage1Error(f"{item['path']} fixture digest does not match the manifest")
+        program_digest = hashlib.sha256(program).hexdigest()
+        if (program_digest != fixture["program"].get("sha256")
+                or program_digest != item["program_sha256"]):
+            raise Stage1Error(f"{item['path']} program digest does not match the manifest")
+        expected_exit = "reached_code_end" if expected_boundary == "code_end" else "instruction_budget_exhausted"
+        if fixture.get("expected_exit") != expected_exit:
+            raise Stage1Error(f"{item['path']} expected exit does not match its manifest boundary")
+        if expected_boundary == "code_end":
+            initial = fixture.get("initial_state")
+            try:
+                entry_rip = int(initial["rip"], 0) if isinstance(initial, dict) else None
+            except (KeyError, TypeError, ValueError):
+                entry_rip = None
+            if entry_rip != 0:
+                raise Stage1Error(f"{item['path']} must enter at RIP 0 for physical v1 oracle")
+        return item["path"]
+
+    paths = []
+    for item in selected:
+        if not isinstance(item, dict):
+            raise Stage1Error("manifest case entry is not an object")
+        if item.get("kind") not in {"historical", "boundary"}:
+            raise Stage1Error("selected manifest cases must be historical or boundary cases")
+        paths.append(validate_entry(item, kind=item["kind"]))
+    excluded = manifest.get("excluded")
+    if not isinstance(excluded, list):
+        raise Stage1Error("case manifest must document excluded cases")
+    local_only = manifest.get("local_only", [])
+    if not isinstance(local_only, list):
+        raise Stage1Error("case manifest local_only must be a list")
+    for item in local_only:
+        validate_entry(item, kind="local_only")
+    for item in excluded:
+        if not isinstance(item, dict) or set(item) != {"path", "reason"}:
+            raise Stage1Error("each excluded case must contain only path and reason")
+        if not all(isinstance(item[field], str) and item[field] for field in ("path", "reason")):
+            raise Stage1Error("excluded case path/reason is invalid")
+    return paths
+
+
+def expected_backend(engine: str) -> str:
+    try:
+        return JIT_ENGINES[engine]
+    except KeyError as error:
+        raise Stage1Error(f"unsupported local JIT engine {engine!r}") from error
+
+
 def run(argv: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None,
         timeout: float = 60.0) -> subprocess.CompletedProcess[str]:
     try:
@@ -164,6 +270,83 @@ def ssh_argv(target: str, remote_command: str) -> list[str]:
 
 def ssh_run(target: str, command: str, *, timeout: float = 60.0) -> str:
     return require_success(run(ssh_argv(target, command), timeout=timeout), "SSH command")
+
+
+def remote_test_packages(engine: str) -> tuple[str, ...]:
+    """Avoid unrelated od-isa unit failures for the bounded Stage 3 engines."""
+    if engine in {"jit-block", "jit-dispatch"}:
+        # od-isa still builds as a dependency, but its full unit suite has known
+        # x87 expectation failures tracked by ISSUE-040.
+        return ("od-testkit", "od-runner", "od-x86-runner")
+    return ("od-isa", "od-testkit", "od-runner", "od-x86-runner")
+
+
+def remote_test_command(remote_root: str, engine: str) -> str:
+    packages = " ".join(f"-p {package}" for package in remote_test_packages(engine))
+    return (
+        f"cd {shlex.quote(remote_root)} && . \"$HOME/.cargo/env\" && "
+        f"cargo test --offline {packages}"
+    )
+
+
+def run_preflight_process(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def run_remote_test_preflight(
+    target: str,
+    command: str,
+    output_dir: Path,
+    *,
+    process_runner=None,
+) -> dict:
+    """Run Cargo preflight and persist complete process evidence, including failure."""
+    argv = ssh_argv(target, command)
+    stdout_path = output_dir / "remote-test-preflight.stdout.log"
+    stderr_path = output_dir / "remote-test-preflight.stderr.log"
+    record_path = output_dir / "remote-test-preflight.json"
+
+    def as_text(value: str | bytes | None) -> str:
+        if value is None:
+            return ""
+        return value.decode(errors="replace") if isinstance(value, bytes) else value
+
+    try:
+        process = (process_runner or run_preflight_process)(argv, timeout=1800.0)
+        stdout = process.stdout
+        stderr = process.stderr
+        exit_code = process.returncode
+        failure = {}
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout if error.stdout is not None else error.output
+        stderr = error.stderr
+        exit_code = None
+        failure = {"timed_out": True, "timeout_seconds": 1800.0}
+    except OSError as error:
+        stdout = stderr = ""
+        exit_code = None
+        failure = {"launch_error": str(error)}
+
+    stdout_path.write_text(as_text(stdout))
+    stderr_path.write_text(as_text(stderr))
+    record = {
+        "host": target,
+        "command": command,
+        "exit_code": exit_code,
+        "stdout_path": stdout_path.name,
+        "stderr_path": stderr_path.name,
+        **failure,
+    }
+    record_path.write_text(json.dumps(record, indent=2) + "\n")
+    return record
 
 
 def parse_result(output: str, path: Path) -> dict:
@@ -305,9 +488,118 @@ def local_machine() -> dict:
     }
 
 
+def run_local_dispatch_comparisons(
+    cases: list[tuple[Path, dict, str]],
+    output_dir: Path,
+    manifest: dict,
+    manifest_path: Path,
+    runner: Path,
+    env: dict[str, str],
+    repeats: int,
+) -> None:
+    """Compare only local interpreter and jit-dispatch results, preserving all evidence."""
+    for repeat in range(1, repeats + 1):
+        repeat_dir = output_dir / f"repeat-{repeat:02d}"
+        repeat_dir.mkdir()
+        for fixture_path, fixture, input_digest in cases:
+            case_dir = repeat_dir / fixture["case_id"]
+            case_dir.mkdir()
+            local_results: dict[str, dict] = {}
+            result_paths: dict[str, Path] = {}
+            for engine in ("interpreter", "jit-dispatch"):
+                result_path = case_dir / f"{engine}.json"
+                process = run(
+                    [str(runner), "--fixture", str(fixture_path), "--engine", engine, "--json"],
+                    env=env,
+                    timeout=max(60.0, fixture["wall_timeout_ms"] / 1000 + 30.0),
+                )
+                result_path.write_text(process.stdout)
+                (case_dir / f"{engine}.stderr.log").write_text(process.stderr)
+                (case_dir / f"{engine}.process.json").write_text(
+                    json.dumps({"returncode": process.returncode})
+                )
+                if process.returncode != 0:
+                    raise Stage1Error(
+                        f"local {engine} exited {process.returncode}: {process.stderr[-1000:]}"
+                    )
+                result = parse_result(process.stdout, result_path)
+                backend = engine if engine == "interpreter" else expected_backend(engine)
+                validate_result(result, fixture, input_digest, backend, f"local {engine}")
+                expected_revision = f"sha256:{manifest['source_fingerprint']}"
+                if result["build"]["revision"] != expected_revision:
+                    raise Stage1Error(
+                        f"local {engine} result build revision does not match the source fingerprint"
+                    )
+                local_results[engine] = result
+                result_paths[engine] = result_path
+
+            cross_path = case_dir / "interpreter-vs-jit-dispatch.json"
+            cross = compare(
+                runner,
+                result_paths["interpreter"],
+                result_paths["jit-dispatch"],
+                fixture_path,
+                cross_path,
+                env,
+            )
+            if cross.get("case_id") != fixture["case_id"]:
+                raise Stage1Error("interpreter/jit-dispatch comparison returned a different case")
+
+            repeat_checks = {}
+            if repeat > 1:
+                previous_dir = output_dir / f"repeat-{repeat - 1:02d}" / fixture["case_id"]
+                for engine in ("interpreter", "jit-dispatch"):
+                    report = compare(
+                        runner,
+                        previous_dir / f"{engine}.json",
+                        result_paths[engine],
+                        fixture_path,
+                        case_dir / f"{engine}-repeat-compare.json",
+                        env,
+                    )
+                    if report.get("case_id") != fixture["case_id"]:
+                        raise Stage1Error(f"{engine} repeat comparison returned a different case")
+                    repeat_checks[engine.replace("-", "_")] = 0
+
+            manifest["fixtures"].append(
+                {
+                    "repeat": repeat,
+                    "case_id": fixture["case_id"],
+                    "fixture_path": fixture_path.relative_to(ROOT).as_posix(),
+                    "fixture_sha256": input_digest,
+                    "fixture_schema_version": fixture["schema_version"],
+                    "result_schema_version": local_results["jit-dispatch"]["schema_version"],
+                    "build": {
+                        "local_interpreter": local_results["interpreter"]["build"],
+                        "local_jit_dispatch": local_results["jit-dispatch"]["build"],
+                    },
+                    "machines": {
+                        "local_interpreter": local_results["interpreter"]["machine"],
+                        "local_jit_dispatch": local_results["jit-dispatch"]["machine"],
+                    },
+                    "differences": {"interpreter_vs_jit_dispatch": 0},
+                    "repeat_differences": repeat_checks,
+                }
+            )
+            if len(manifest["fixtures"]) % 25 == 0:
+                manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+            print(f"local-only repeat {repeat}/{repeats}: {fixture['case_id']} matched interpreter and jit-dispatch")
+
+    manifest["status"] = "local_only"
+    manifest["local_comparison_status"] = "passed"
+    manifest["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"local-only manifest: {manifest_path}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("cases", nargs="*", help="fixture JSON paths; defaults to S0 and S1-06 cases")
+    parser.add_argument("--engine", choices=tuple(JIT_ENGINES), default="jit",
+                        help="local JIT engine (default: jit)")
+    parser.add_argument("--manifest", help="explicit S3-14 jit-block case manifest")
+    parser.add_argument("--local-only", action="store_true",
+                        help="compare local interpreter and jit-dispatch without native x86")
     parser.add_argument("--host", default="192.168.1.14")
     parser.add_argument("--user", default="senya")
     parser.add_argument("--remote-root", default="/home/senya/projects/open_desktop-stage1")
@@ -320,6 +612,21 @@ def main() -> int:
         parser.error("--host and --user must be plain SSH host/user names")
     if any(ch in args.remote_root for ch in "\n\r:") or not args.remote_root.startswith("/"):
         parser.error("--remote-root must be an absolute POSIX path without newlines or colon")
+    if args.manifest and args.cases:
+        parser.error("choose either --manifest or positional cases, not both")
+    if args.engine == "jit-block" and not args.manifest and not args.cases:
+        parser.error("--engine jit-block requires an explicit --manifest or fixture cases")
+    if args.manifest and args.engine != "jit-block":
+        parser.error("--manifest is reserved for --engine jit-block")
+    if args.local_only and args.engine != "jit-dispatch":
+        parser.error("--local-only requires --engine jit-dispatch")
+    if args.local_only and args.manifest:
+        parser.error("--local-only does not use a jit-block manifest")
+
+    try:
+        case_names = load_case_manifest(args.manifest) if args.manifest else args.cases
+    except Stage1Error as error:
+        parser.error(str(error))
 
     target = f"{args.user}@{args.host}"
     run_id = time.strftime("stage1-%Y%m%d-%H%M%S", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
@@ -327,14 +634,32 @@ def main() -> int:
     output_dir = output_root / run_id
     output_dir.mkdir(parents=True, exist_ok=False)
     manifest_path = output_dir / "manifest.json"
+    is_block_engine = args.engine == "jit-block"
+    is_dispatch_engine = args.engine == "jit-dispatch"
     manifest = {
         "run_id": run_id,
+        "stage": "S3-15" if is_dispatch_engine else "S3-14" if is_block_engine else "Stage1",
+        "suite": (
+            "local-only interpreter versus jit-dispatch"
+            if args.local_only
+            else "register-only one-block triple comparison"
+            if args.manifest
+            else "explicit jit-block case comparison"
+            if is_block_engine
+            else "dispatcher physical triple comparison"
+            if is_dispatch_engine
+            else "legacy fixture oracle"
+        ),
         "status": "running",
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source_fingerprint": None,
-        "host": args.host,
-        "user": args.user,
-        "remote_root": args.remote_root,
+        "host": None if args.local_only else args.host,
+        "user": None if args.local_only else args.user,
+        "remote_root": None if args.local_only else args.remote_root,
+        "engine": args.engine,
+        "jit_backend": expected_backend(args.engine),
+        "evidence_scope": "local_only" if args.local_only else "physical_triple",
+        "physical_x86": "not_run" if args.local_only else "pending",
         "repeats": args.repeats,
         "machines": {},
         "fixtures": [],
@@ -343,7 +668,7 @@ def main() -> int:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
     try:
-        cases = prepare_cases(args.cases or list(DEFAULT_CASES), output_dir)
+        cases = prepare_cases(case_names or list(DEFAULT_CASES), output_dir)
         manifest["inputs"] = [
             {"case_id": fixture["case_id"], "fixture_path": path.relative_to(ROOT).as_posix(),
              "fixture_sha256": digest, "seed": fixture.get("seed")}
@@ -351,8 +676,44 @@ def main() -> int:
         ]
         manifest["reproduce_argv"] = [sys.executable, "tests/cpu/stage1_oracle.py",
             "--host", args.host, "--user", args.user, "--remote-root", args.remote_root,
-            "--repeats", str(args.repeats), *[str(path) for path, _, _ in cases]]
+            "--repeats", str(args.repeats), "--engine", args.engine]
+        if args.local_only:
+            manifest["reproduce_argv"].append("--local-only")
+        if args.manifest:
+            manifest["reproduce_argv"].extend(["--manifest", args.manifest])
+        else:
+            manifest["reproduce_argv"].extend(str(path) for path, _, _ in cases)
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+
+        if args.local_only:
+            fingerprint = source_fingerprint(ROOT)
+            local_info = local_machine()
+            revision = f"sha256:{fingerprint}"
+            manifest["source_fingerprint"] = fingerprint
+            manifest["machines"] = {"local": local_info}
+            manifest["commands"].append(
+                {"host": "local", "argv": ["cargo", "build", "--offline", "-p", "od-runner"]}
+            )
+            local_env = os.environ.copy()
+            local_env["OPEN_DESKTOP_GIT_REVISION"] = revision
+            local_env["RUSTC_VERSION"] = local_info["rustc"]
+            build = run(
+                ["cargo", "build", "--offline", "-p", "od-runner"],
+                env=local_env,
+                timeout=600.0,
+            )
+            require_success(build, "local od-runner build")
+            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+            run_local_dispatch_comparisons(
+                cases,
+                output_dir,
+                manifest,
+                manifest_path,
+                ROOT / "target/debug/od-runner",
+                local_env,
+                args.repeats,
+            )
+            return 0
 
         fingerprint = source_fingerprint(ROOT)
         remote_cd = f"cd {shlex.quote(args.remote_root)}"
@@ -378,12 +739,24 @@ def main() -> int:
         manifest["source_fingerprint"] = fingerprint
         manifest["machines"] = {"local": local_info, "remote_rustc": remote_rustc, "remote_cargo": remote_cargo}
 
-        remote_tests = (
-            f"{remote_cd} && . \"$HOME/.cargo/env\" && "
-            "cargo test --offline -p od-isa -p od-testkit -p od-runner -p od-x86-runner"
-        )
+        remote_tests = remote_test_command(args.remote_root, args.engine)
         manifest["commands"].append({"host": target, "command": remote_tests})
-        remote_test_output = ssh_run(target, remote_tests, timeout=1800.0)
+        preflight = run_remote_test_preflight(target, remote_tests, output_dir)
+        manifest["remote_test_preflight"] = preflight
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        if preflight["exit_code"] != 0:
+            reason = (
+                f"timed out after {preflight['timeout_seconds']} seconds"
+                if preflight.get("timed_out")
+                else f"could not start ({preflight['launch_error']})"
+                if preflight.get("launch_error")
+                else f"exited {preflight['exit_code']}"
+            )
+            raise Stage1Error(
+                f"remote Cargo test preflight failed: {reason}; full stdout/stderr are saved at "
+                f"{preflight['stdout_path']} and {preflight['stderr_path']}"
+            )
+        remote_test_output = (output_dir / preflight["stdout_path"]).read_text()
         manifest["remote_test_summary"] = [
             line.strip()
             for line in remote_test_output.splitlines()
@@ -448,7 +821,8 @@ def main() -> int:
                 case_dir = repeat_dir / fixture["case_id"]
                 local_results: dict[str, dict] = {}
                 result_paths: dict[str, Path] = {}
-                for engine in ("interpreter", "jit"):
+                local_engines = ("interpreter", args.engine)
+                for engine in local_engines:
                     result_path = case_dir / f"{engine}.json"
                     process = run(
                         [str(local_runner), "--fixture", str(fixture_path), "--engine", engine, "--json"],
@@ -459,11 +833,25 @@ def main() -> int:
                     (case_dir / f"{engine}.stderr.log").write_text(process.stderr)
                     (case_dir / f"{engine}.process.json").write_text(json.dumps({"returncode": process.returncode}))
                     result = parse_result(process.stdout, result_path)
-                    validate_result(result, fixture, input_digest, engine, f"local {engine}")
+                    backend = engine if engine == "interpreter" else expected_backend(engine)
+                    validate_result(result, fixture, input_digest, backend, f"local {engine}")
                     if process.returncode != 0:
                         raise Stage1Error(f"local {engine} exited {process.returncode}: {process.stderr[-1000:]}")
                     local_results[engine] = result
                     result_paths[engine] = result_path
+
+                jit_label = args.engine.replace("-", "_")
+                local_cross_path = case_dir / f"interpreter-vs-{args.engine}.json"
+                local_cross = compare(
+                    local_runner,
+                    result_paths["interpreter"],
+                    result_paths[args.engine],
+                    fixture_path,
+                    local_cross_path,
+                    local_env,
+                )
+                if local_cross.get("case_id") != fixture["case_id"]:
+                    raise Stage1Error("interpreter/JIT comparison returned a different case")
 
                 native_path = case_dir / "native_x86.json"
                 native = native_results.get(fixture_path.name)
@@ -481,10 +869,36 @@ def main() -> int:
                     if not report.get("case_id") == fixture["case_id"]:
                         raise Stage1Error(f"{engine}/native comparison returned a different case")
 
-                previous = output_dir / f"repeat-{repeat - 1:02d}" / fixture["case_id"] / "native_x86.json"
+                repeat_checks = {}
                 if repeat > 1:
-                    repeat_report = case_dir / "native-repeat-compare.json"
-                    compare(local_runner, previous, native_path, fixture_path, repeat_report, local_env)
+                    previous_dir = output_dir / f"repeat-{repeat - 1:02d}" / fixture["case_id"]
+                    for engine in local_engines:
+                        previous_result = previous_dir / f"{engine}.json"
+                        repeat_report = case_dir / f"{engine}-repeat-compare.json"
+                        report = compare(
+                            local_runner,
+                            previous_result,
+                            result_paths[engine],
+                            fixture_path,
+                            repeat_report,
+                            local_env,
+                        )
+                        if report.get("case_id") != fixture["case_id"]:
+                            raise Stage1Error(f"{engine} repeat comparison returned a different case")
+                        repeat_checks[engine.replace("-", "_")] = 0
+                    previous_native = previous_dir / "native_x86.json"
+                    native_repeat_report = case_dir / "native-repeat-compare.json"
+                    report = compare(
+                        local_runner,
+                        previous_native,
+                        native_path,
+                        fixture_path,
+                        native_repeat_report,
+                        local_env,
+                    )
+                    if report.get("case_id") != fixture["case_id"]:
+                        raise Stage1Error("native repeat comparison returned a different case")
+                    repeat_checks["native_x86"] = 0
 
                 entry = {
                     "repeat": repeat,
@@ -494,19 +908,26 @@ def main() -> int:
                     "fixture_schema_version": fixture["schema_version"],
                     "result_schema_version": native["schema_version"],
                     "build": {"local_interpreter": local_results["interpreter"]["build"],
-                              "local_jit": local_results["jit"]["build"],
+                              f"local_{args.engine.replace('-', '_')}": local_results[args.engine]["build"],
                               "native_x86": native["build"]},
                     "machines": {"local_interpreter": local_results["interpreter"]["machine"],
-                                 "local_jit": local_results["jit"]["machine"],
+                                 f"local_{args.engine.replace('-', '_')}": local_results[args.engine]["machine"],
                                  "native_x86": native["machine"]},
-                    "differences": {"interpreter_vs_native": 0, "jit_vs_native": 0},
+                    "differences": {
+                        f"interpreter_vs_{jit_label}": 0,
+                        "interpreter_vs_native": 0,
+                        f"{jit_label}_vs_native": 0,
+                    },
+                    "repeat_differences": repeat_checks,
                 }
                 manifest["fixtures"].append(entry)
                 if len(manifest["fixtures"]) % 25 == 0:
                     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-                print(f"repeat {repeat}/{args.repeats}: {fixture['case_id']} matched interpreter and JIT")
+                print(f"repeat {repeat}/{args.repeats}: {fixture['case_id']} matched interpreter and {args.engine}")
 
         manifest["status"] = "passed"
+        if not args.local_only:
+            manifest["physical_x86"] = "compared"
         manifest["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
         print(f"manifest: {manifest_path}")

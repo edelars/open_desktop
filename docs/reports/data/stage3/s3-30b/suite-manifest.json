@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "suite": "S3-30b bounded distinct-branch allocator-configuration evidence",
+  "fixture": {
+    "profile": "distinct-jz-fallthrough",
+    "bytes_hex": "48 03 C0 48 2B D2 48 03 C3 48 2B C9 48 3B C3 74 0A 48 BB 11 00 FF EE DD CC BB AA",
+    "sha256": "72210fb82b0ffa9f88f10f63697a1051347d07587e3569028947119726fac8c7",
+    "guest_base_rip": "0x1000",
+    "jz_taken_exit_rip": "0x101b",
+    "jz_fallthrough_exit_rip": "0x1011",
+    "instruction_budget": 6,
+    "scope": "single Jcc-terminated emitted block; fallthrough MOV suffix and dispatcher traversal are outside timed calls"
+  },
+  "build": {
+    "source_revision": "35da9aaf4234b4673b53605a0e8cb853ad9960dc",
+    "source_sha256": "23ec849569f653f87d630f3488c849836ecff18c0e7db465c3b5a83bf071b824",
+    "source_tree_dirty": false,
+    "binary_sha256": "2fd3c82678708b87348ec9bab26379d81e9e86e4034c62c256f9400a6b165b81",
+    "target": "aarch64-apple-darwin",
+    "profile": "release",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "executable_receipt": {
+      "path": "docs/reports/data/stage3/s3-30b/executable-sha256.txt",
+      "sha256": "f193f87b028b78649ded76d06c6a2214e0deea0209e348f6e33c1a229280acd5"
+    }
+  },
+  "host": {
+    "cpu_model": "Apple M3 Max",
+    "architecture": "aarch64",
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "unscored_setup_evidence": {
+    "release_preflight_report": {
+      "path": "docs/reports/data/stage3/s3-30b/release-preflight.json",
+      "sha256": "4a706ccff4ee9171ed56ce40859fa28da196010b569d0af1ffff3717e0b3c139"
+    },
+    "release_preflight_log": {
+      "path": "docs/reports/data/stage3/s3-30b/release-preflight.log",
+      "sha256": "6d9480b02e27d4db0bd7057b2bb2fa486f8131d4f76fe8c70cc9fe31a58ecf34"
+    },
+    "calibration_pilot_report": {
+      "path": "docs/reports/data/stage3/s3-30b/calibration-pilot.json",
+      "sha256": "720685c8ee225ba330d4f81dedb125fdd601a11136cdef3ab46d61a0629ce893"
+    },
+    "calibration_pilot_log": {
+      "path": "docs/reports/data/stage3/s3-30b/calibration-pilot.log",
+      "sha256": "934e74617ab54684249d6db05122850e6fe74ea14654721daadd797b086eb4ca"
+    },
+    "calibration_pilot_journal": {
+      "path": "docs/reports/data/stage3/s3-30b/calibration-pilot.calibration.jsonl",
+      "sha256": "c80b45c9b27f8eb142864afdf18158cd4810342c6e0ed4cff75eda397a75434c"
+    }
+  },
+  "runs": [
+    {
+      "process_run": 1,
+      "runtime_repository_revision": "305dd65fdbbc8a51543577dee363c03c2a8053c5",
+      "runtime_working_tree_dirty": null,
+      "report": {
+        "path": "docs/reports/data/stage3/s3-30b/run1.json",
+        "sha256": "30f18f9c409060efe68046888970f575dfa9d62b90d528f6ed62e0e50e47f843"
+      },
+      "command_log": {
+        "path": "docs/reports/data/stage3/s3-30b/run1.log",
+        "sha256": "4756e633ae480ccb5b426c02d86bf46356ce970520e35b08efcd51f92ce77226"
+      },
+      "calibration_journal": {
+        "path": "docs/reports/data/stage3/s3-30b/run1.calibration.jsonl",
+        "sha256": "b6cde403efa465d9c86a0b1b618a589ffa1c81f1c4f5be972a4ad65e3413ff10"
+      },
+      "artifact_receipt": {
+        "path": "docs/reports/data/stage3/s3-30b/run1-artifact-sha256.txt",
+        "sha256": "61449cf91892f2c15a4da8667f5cfeb508e1e8e885c357861f43b15b1cf72a84"
+      }
+    },
+    {
+      "process_run": 2,
+      "runtime_repository_revision": "09232bc1de9f6d24d4e0da84b6ed9af15bee494b",
+      "runtime_working_tree_dirty": null,
+      "report": {
+        "path": "docs/reports/data/stage3/s3-30b/run2.json",
+        "sha256": "6cc24921f7db98ad371699366e09c9941ac76d9a9f000b5618cb3db5116c4edd"
+      },
+      "command_log": {
+        "path": "docs/reports/data/stage3/s3-30b/run2.log",
+        "sha256": "d87701ab9a49ad2fdd5ddd5cd9454937bd679d6a558425ed57e56ba8d6686bac"
+      },
+      "calibration_journal": {
+        "path": "docs/reports/data/stage3/s3-30b/run2.calibration.jsonl",
+        "sha256": "dd7f87633209b6a73be8d8e1207e96c554d6fd40fbbb8e60e746d588b173db55"
+      },
+      "artifact_receipt": {
+        "path": "docs/reports/data/stage3/s3-30b/run2-artifact-sha256.txt",
+        "sha256": "c63d01df9ba8171440bb312763444dea12cf66b6a57251b650c030cab8fc0063"
+      }
+    },
+    {
+      "process_run": 3,
+      "runtime_repository_revision": "de3b4f333ebd1a4f4e93806fcd94a6aa28f03472",
+      "runtime_working_tree_dirty": null,
+      "report": {
+        "path": "docs/reports/data/stage3/s3-30b/run3.json",
+        "sha256": "0fc8aba3d6464444aa8fbcf2ae533e27904bc7de929553250956b4c9de9bcada"
+      },
+      "command_log": {
+        "path": "docs/reports/data/stage3/s3-30b/run3.log",
+        "sha256": "c82222762bf7347ebfe2c69bde3703d1de981c4521feec8b1103a58bdc1a93a6"
+      },
+      "calibration_journal": {
+        "path": "docs/reports/data/stage3/s3-30b/run3.calibration.jsonl",
+        "sha256": "3f14d0dcdbffe763f7d91e973e26ac2bd3ea1f673079ab8bc7754ee0726ebe16"
+      },
+      "artifact_receipt": {
+        "path": "docs/reports/data/stage3/s3-30b/run3-artifact-sha256.txt",
+        "sha256": "4f994ce930d19f9b95293298669bfb0fdf2b211e279c7d9ac9a577817c859b26"
+      }
+    }
+  ],
+  "raw_derived_summary": {
+    "method": "Ratios and ns/call summaries are calculated from each raw paired total (budget0 / budget4), pooled as 60 samples per set across the three runs; no run-level medians are pooled.",
+    "native_calls_per_side": 8388608,
+    "native_pairs_per_branch_per_run": 20,
+    "native_pairs_per_branch_pooled": 60,
+    "native_calls_per_budget_per_branch_pooled": 503316480,
+    "compile_calls_per_side": 32768,
+    "compile_pairs_per_run": 20,
+    "compile_pairs_pooled": 60,
+    "compile_calls_per_budget_pooled": 1966080,
+    "alternating_pair_orders_per_60_sample_set": {
+      "budget0_then_budget4": 30,
+      "budget4_then_budget0": 30
+    },
+    "sample_floor_ns": 200000000,
+    "measured_timed_sides": 360,
+    "all_measured_sides_passed_floor": true,
+    "minimum_measured_side_ns": 289931459,
+    "minimum_compile_side_ns": 289931459,
+    "minimum_native_execution_side_ns": 345072526,
+    "ratio_median_ranges": {
+      "compile_budget0_over_budget4": {
+        "median": 0.996036170827,
+        "range": [
+          0.96280830152,
+          1.0459684107
+        ],
+        "pairs": 60
+      },
+      "jz_taken_budget0_over_budget4": {
+        "median": 1.019455351209,
+        "range": [
+          0.981907318288,
+          1.048155961189
+        ],
+        "pairs": 60
+      },
+      "jz_fallthrough_budget0_over_budget4": {
+        "median": 1.038610853426,
+        "range": [
+          1.00886299491,
+          1.086055631502
+        ],
+        "pairs": 60
+      }
+    },
+    "recomputed_ns_per_call_median_ranges": {
+      "compile_budget0": {
+        "median": 9189.348221,
+        "range": [
+          8855.543793,
+          9706.531525
+        ]
+      },
+      "compile_budget4": {
+        "median": 9232.914612,
+        "range": [
+          8848.005951,
+          9479.927063
+        ]
+      },
+      "jz_taken_budget0": {
+        "median": 44.246059,
+        "range": [
+          41.909314,
+          46.177377
+        ]
+      },
+      "jz_taken_budget4": {
+        "median": 43.460164,
+        "range": [
+          41.952016,
+          45.6772
+        ]
+      },
+      "jz_fallthrough_budget0": {
+        "median": 44.554991,
+        "range": [
+          43.112445,
+          45.773162
+        ]
+      },
+      "jz_fallthrough_budget4": {
+        "median": 42.989468,
+        "range": [
+          41.135851,
+          44.775968
+        ]
+      }
+    },
+    "allocation": {
+      "budget4": {
+        "register_home_values": 4,
+        "spilled_temporaries": 10,
+        "helper_capture_slots": 3,
+        "helper_saves": 3,
+        "helper_reloads": 3,
+        "frame_bytes": 288,
+        "emitted_code_bytes": 3052
+      },
+      "budget0": {
+        "register_home_values": 0,
+        "spilled_temporaries": 14,
+        "helper_capture_slots": 0,
+        "helper_saves": 0,
+        "helper_reloads": 0,
+        "frame_bytes": 288,
+        "emitted_code_bytes": 3040
+      }
+    },
+    "interpretation_limit": "Bounded budget4-versus-budget0 allocator-configuration cost only. Not marginal spill cost, allocator algorithm or winner/default, downstream block/dispatcher behavior, or general performance."
+  }
+}

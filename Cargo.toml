@@ -9,6 +9,7 @@ members = [
     "crates/od-testkit",
     "tools/runner",
     "tools/x86-runner",
+    "tools/bench",
 ]
 
 [workspace.package]

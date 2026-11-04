@@ -1,0 +1,6 @@
+{"record_type":"calibration_attempt","repetitions":1,"native_total_ns":21692767,"interpreter_total_ns":297336,"native_floor_met":false,"interpreter_floor_met":false}
+{"record_type":"calibration_attempt","repetitions":2,"native_total_ns":42258878,"interpreter_total_ns":575576,"native_floor_met":false,"interpreter_floor_met":false}
+{"record_type":"calibration_attempt","repetitions":4,"native_total_ns":87435308,"interpreter_total_ns":1169357,"native_floor_met":false,"interpreter_floor_met":false}
+{"record_type":"calibration_attempt","repetitions":8,"native_total_ns":176128252,"interpreter_total_ns":2350524,"native_floor_met":false,"interpreter_floor_met":false}
+{"record_type":"calibration_attempt","repetitions":16,"native_total_ns":350740022,"interpreter_total_ns":4732936,"native_floor_met":true,"interpreter_floor_met":false}
+{"record_type":"calibration_attempt","repetitions":32,"native_total_ns":649013776,"interpreter_total_ns":9026810,"native_floor_met":true,"interpreter_floor_met":false}

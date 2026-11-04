@@ -4911,6 +4911,10 @@ mod tests {
             ("s2_17f_ret_imm_stack_fault", "stack access"),
             ("s2_17f_ret_imm_read_fault", "stack access"),
             ("s2_17f_ret_imm_truncated", "native instruction outside"),
+            (
+                "s2_17f_ret_imm_budget",
+                "native RET target outside fixture code/stop boundary",
+            ),
         ] {
             let loaded = Fixture::from_json(
                 &std::fs::read(directory.join(format!("{name}.case.json"))).unwrap(),
@@ -6598,6 +6602,7 @@ mod tests {
         input.initial_state.fs_cache_limit = Some(HexU64(0xffff));
         input.initial_state.fs_cache_access = Some(HexU64(0xf3));
         input.initial_state.fs_cache_flags = Some(HexU64(0));
+        input.instruction_budget = 1;
         let loaded = Fixture::from_json(&input.to_json().unwrap()).unwrap();
         let result = execute(&loaded);
         assert!(matches!(result.outcome, Outcome::Unsupported { .. }));

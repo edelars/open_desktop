@@ -1,0 +1,40 @@
+{
+  "date": "2026-10-26",
+  "host": {
+    "name": "mini",
+    "os": "Ubuntu 25.10",
+    "architecture": "x86_64",
+    "cpu": "Intel Core i5-3210M @ 2.50GHz",
+    "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "1.99.1 (5f94df478 2026-08-27)"
+  },
+  "dedicated_remote_root": "/home/senya/projects/open_desktop-stage3-s3-14",
+  "attempts": [
+    {
+      "run_id": "stage1-20261026-230058-7ed50b16",
+      "revision": "980efd3",
+      "source_fingerprint": "95204da889d70bd2d349195715a78d88d2dfa8bff6f074a4e931d9d5c846255d",
+      "step": "remote package tests before native execution",
+      "command": "cargo test --offline -p od-isa -p od-testkit -p od-runner -p od-x86-runner",
+      "result": "failed_preflight",
+      "od_isa_tests": {"passed": 706, "failed": 5, "total": 711},
+      "failed_tests": [
+        "execute::tests::fabs_rejects_missing_or_invalid_source_and_boundaries_atomically",
+        "execute::tests::fchs_rejects_invalid_source_and_execution_boundaries_atomically",
+        "execute::tests::fst_and_fstp_sti_reject_noncanonical_specials_and_bad_infinity_environment_atomically",
+        "long_decode::tests::fcomi_family_decodes_only_the_32_bare_indexed_register_forms",
+        "long_decode::tests::fninit_accepts_only_bare_db_e3"
+      ],
+      "known_issue": "ISSUE-023",
+      "native_fixtures_executed": 0,
+      "full_preflight_output_saved": false
+    },
+    {
+      "revision": "b8924dc",
+      "step": "transfer updated source archive",
+      "result": "ssh_connect_timeout",
+      "native_fixtures_executed": 0
+    }
+  ],
+  "acceptance_status": "open"
+}

@@ -1,0 +1,38 @@
+{
+  "case_count": 2400,
+  "frozen_seed_values": [
+    5999696582365151233,
+    5999696582365151234,
+    5999696582365151235
+  ],
+  "input_digest": "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540",
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "b6892d4199c29ff4c872ac6e1fb48d1df6a1bc50",
+      "source_sha256": "de5c60d04db39b05bb2efcc61ac79711fb3a18c6c7f135e41695ad7269775d65",
+      "source_tree_dirty": true,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "b6892d4199c29ff4c872ac6e1fb48d1df6a1bc50",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "preflight_parity_cases": 2400,
+  "process_run": 1,
+  "profile_id": "s3-35c-two-site-memory-cold-direct-v1",
+  "schema": 1,
+  "sequence_counts": [
+    1200,
+    1200
+  ],
+  "source_sha256": "0b938f8e7e8c6ab763fc81992daa8c274a0bc9f5867a33ec876e75d1dbc8a7c7",
+  "timing_started": false
+}

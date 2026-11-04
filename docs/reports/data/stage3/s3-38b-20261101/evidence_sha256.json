@@ -1,0 +1,681 @@
+{
+  "schema_version": 1,
+  "source_run_id": "stage3-20261101-180016-5fb4c7afec",
+  "files": [
+    {
+      "path": "input_manifest.json",
+      "sha256": "29a703a6bee33c51f5a6ca9e527fd178d2ed7d966e87f24c355a7f29c47a5073",
+      "size_bytes": 55000
+    },
+    {
+      "path": "logs/process_app_bundle.log",
+      "sha256": "d8ef3e65132838147c0a0a8e12a84315d169b15e452a2859d2d0dabb1e3d731b",
+      "size_bytes": 1200
+    },
+    {
+      "path": "logs/process_app_bundle.stderr.log",
+      "sha256": "0c2acd46601fbfde7f274aecc5ef326bc3a6489923e972ef85ad7da087871bd8",
+      "size_bytes": 805
+    },
+    {
+      "path": "logs/process_app_bundle.stdout.log",
+      "sha256": "37122621add767f9c7ba085a78865b890961c889b12551a204c9b4cf326ea014",
+      "size_bytes": 379
+    },
+    {
+      "path": "logs/process_build_od_host.log",
+      "sha256": "96007323b65eb20dd70bd08a3274b06f314a76d49008fd56199ce4e9b5b09bfc",
+      "size_bytes": 386
+    },
+    {
+      "path": "logs/process_build_od_host.stderr.log",
+      "sha256": "ca531676eeec970b2735926676f28ac359bad1f18aab039680843449ad4c10fe",
+      "size_bytes": 370
+    },
+    {
+      "path": "logs/process_build_od_host.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_bundle_launcher_entitlements.log",
+      "sha256": "3fef2ec039947360353748a717fd7c1fd81f054b397f3ec25454c8502368c291",
+      "size_bytes": 302
+    },
+    {
+      "path": "logs/process_bundle_launcher_entitlements.stderr.log",
+      "sha256": "c2cb10fe58aec8ac76e41556e49c3eb7b893afe5e4cc58a68f96ba4870bbc91b",
+      "size_bytes": 286
+    },
+    {
+      "path": "logs/process_bundle_launcher_entitlements.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_bundle_launcher_signature.log",
+      "sha256": "9fcd14f99b95b61c2dd2b24a0e6585c6e5564bdbf056fe20ad7646f77e55631f",
+      "size_bytes": 1046
+    },
+    {
+      "path": "logs/process_bundle_launcher_signature.stderr.log",
+      "sha256": "50569c8c2cfa39476d97ce47ef018f868b4486f7e25198051a67b3261a176aa5",
+      "size_bytes": 1030
+    },
+    {
+      "path": "logs/process_bundle_launcher_signature.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_bundle_signature.log",
+      "sha256": "9fcd14f99b95b61c2dd2b24a0e6585c6e5564bdbf056fe20ad7646f77e55631f",
+      "size_bytes": 1046
+    },
+    {
+      "path": "logs/process_bundle_signature.stderr.log",
+      "sha256": "50569c8c2cfa39476d97ce47ef018f868b4486f7e25198051a67b3261a176aa5",
+      "size_bytes": 1030
+    },
+    {
+      "path": "logs/process_bundle_signature.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_bundle_verify.log",
+      "sha256": "7e61e21c128ea402cb2cbc0b15f87df13a35c83bbedd29ad453a9414a7b77440",
+      "size_bytes": 762
+    },
+    {
+      "path": "logs/process_bundle_verify.stderr.log",
+      "sha256": "44f9d91d30cd61904faec936195ab5fe1e24c81619e40c99457c92d68181a800",
+      "size_bytes": 746
+    },
+    {
+      "path": "logs/process_bundle_verify.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_bundle_vmhost_entitlements.log",
+      "sha256": "6e7cfb28596a8c074a62686977715f3a4fea3bc8d19861bb9e386f3ce9fc4a36",
+      "size_bytes": 531
+    },
+    {
+      "path": "logs/process_bundle_vmhost_entitlements.stderr.log",
+      "sha256": "faab47200cd3fbefe3e769ac5fb43ddcf21abfc826c846c4c6e9a75a20443874",
+      "size_bytes": 282
+    },
+    {
+      "path": "logs/process_bundle_vmhost_entitlements.stdout.log",
+      "sha256": "84ea240cae1d3d70098e6bfe66ed4cf2e991a14ef6e66978af7b5813d2d17176",
+      "size_bytes": 233
+    },
+    {
+      "path": "logs/process_bundle_vmhost_signature.log",
+      "sha256": "8e70fb8c925a8a8244e17ac52bb4df738dcbfae439bed87b6dca60152ca7ff87",
+      "size_bytes": 1040
+    },
+    {
+      "path": "logs/process_bundle_vmhost_signature.stderr.log",
+      "sha256": "b4742e2bda8bd5bec46e5ee792f0e1d960a2a60efe2b3ff039eef8e5170ac039",
+      "size_bytes": 1024
+    },
+    {
+      "path": "logs/process_bundle_vmhost_signature.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_cargo_version.log",
+      "sha256": "1f88eaf7fe1aaec83184752cf4c944cd22f00184136ff36a3e4c318cc60ef566",
+      "size_bytes": 36
+    },
+    {
+      "path": "logs/process_cargo_version.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_cargo_version.stdout.log",
+      "sha256": "1f88eaf7fe1aaec83184752cf4c944cd22f00184136ff36a3e4c318cc60ef566",
+      "size_bytes": 36
+    },
+    {
+      "path": "logs/process_codesign_path.log",
+      "sha256": "e85c9309f45e99de475cbe756d15b1587ceb58c593200d7dd44719478ed89767",
+      "size_bytes": 18
+    },
+    {
+      "path": "logs/process_codesign_path.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_codesign_path.stdout.log",
+      "sha256": "e85c9309f45e99de475cbe756d15b1587ceb58c593200d7dd44719478ed89767",
+      "size_bytes": 18
+    },
+    {
+      "path": "logs/process_compile_fault_helper.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_compile_fault_helper.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_compile_fault_helper.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_compile_launcher.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_compile_launcher.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_compile_launcher.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_compile_vmhost.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_compile_vmhost.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_compile_vmhost.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race.log",
+      "sha256": "7a0057dc9c7500bd490c9f76d7c108477a7980fa0feb1cddcd91ca541636540c",
+      "size_bytes": 133
+    },
+    {
+      "path": "logs/process_control_race.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race.stdout.log",
+      "sha256": "7a0057dc9c7500bd490c9f76d7c108477a7980fa0feb1cddcd91ca541636540c",
+      "size_bytes": 133
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-001.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-001.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-002.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-002.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-003.stderr.log",
+      "sha256": "81f381cec38efe487a6edc60823c37f3641239dd452bf18ba81975738e85083f",
+      "size_bytes": 45
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-003.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-004.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-004.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-005.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-005.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-006.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-006.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-007.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-007.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-008.stderr.log",
+      "sha256": "26263f5b0663e736e424e7d07ed9f5193902d0805d0d097df64d9464d13d6770",
+      "size_bytes": 45
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-008.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-009.stderr.log",
+      "sha256": "e75e0f868f0d5a89671dab9fe7f7c5cdf39ea866c13418ef6d0a3be280f84eed",
+      "size_bytes": 54
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-009.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-010.stderr.log",
+      "sha256": "345929e5382f1a3693064ea51875eb146ac678f91739e196cfca03df9e504c44",
+      "size_bytes": 46
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-010.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-011.stderr.log",
+      "sha256": "e3ed6ead18c9e83ebff2915b9afffc70e43401b1dc213f95923f9ef267689f34",
+      "size_bytes": 56
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-011.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-012.stderr.log",
+      "sha256": "e75e0f868f0d5a89671dab9fe7f7c5cdf39ea866c13418ef6d0a3be280f84eed",
+      "size_bytes": 54
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-012.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-013.stderr.log",
+      "sha256": "345929e5382f1a3693064ea51875eb146ac678f91739e196cfca03df9e504c44",
+      "size_bytes": 46
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-013.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-014.stderr.log",
+      "sha256": "e3ed6ead18c9e83ebff2915b9afffc70e43401b1dc213f95923f9ef267689f34",
+      "size_bytes": 56
+    },
+    {
+      "path": "logs/process_control_race_children/vmhost-014.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_fault_helper_entitlements.log",
+      "sha256": "1aaa67b4da036dfd8b3ea5be4ef9dbd324b0b2170807b15897008d9c31b1b974",
+      "size_bytes": 503
+    },
+    {
+      "path": "logs/process_fault_helper_entitlements.stderr.log",
+      "sha256": "705c593249df6cd47b6797ee705d394410a3a2e731214d2d6307128147b06132",
+      "size_bytes": 254
+    },
+    {
+      "path": "logs/process_fault_helper_entitlements.stdout.log",
+      "sha256": "84ea240cae1d3d70098e6bfe66ed4cf2e991a14ef6e66978af7b5813d2d17176",
+      "size_bytes": 233
+    },
+    {
+      "path": "logs/process_fault_helper_signature.log",
+      "sha256": "96d9bf2a612164be86834e901d30185136f28476dcfad2e7c93ccb35e8999fec",
+      "size_bytes": 1028
+    },
+    {
+      "path": "logs/process_fault_helper_signature.stderr.log",
+      "sha256": "1c74eacb06c3edd4332c8ff0f9ff14032b962e5d28c6363388fb6618e06c5db2",
+      "size_bytes": 1012
+    },
+    {
+      "path": "logs/process_fault_helper_signature.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_generated_fault.log",
+      "sha256": "7eabf75dcb22227a63d017ff64d2179594a66d7730305af016f3bebb598282d8",
+      "size_bytes": 278
+    },
+    {
+      "path": "logs/process_generated_fault.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_generated_fault.stdout.log",
+      "sha256": "7eabf75dcb22227a63d017ff64d2179594a66d7730305af016f3bebb598282d8",
+      "size_bytes": 278
+    },
+    {
+      "path": "logs/process_generated_fault_children/launcher.stderr.log",
+      "sha256": "a6d3bab0df00c7be61bdbbcbc923825ee1a4b9b2885c4967545ea0bc333b717e",
+      "size_bytes": 58
+    },
+    {
+      "path": "logs/process_generated_fault_children/launcher.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_isolation.log",
+      "sha256": "8451c3e85a04fbd8a261a165809a839dd54f504ff8ad9068f8eae0f401e304aa",
+      "size_bytes": 111
+    },
+    {
+      "path": "logs/process_isolation.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_isolation.stdout.log",
+      "sha256": "8451c3e85a04fbd8a261a165809a839dd54f504ff8ad9068f8eae0f401e304aa",
+      "size_bytes": 111
+    },
+    {
+      "path": "logs/process_isolation_children/vmhost-001.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_isolation_children/vmhost-001.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_isolation_children/vmhost-002.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_isolation_children/vmhost-002.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_launcher_entitlements.log",
+      "sha256": "1cf0f4cc4d573da6e8587ddd4d7072e986232b13ba3907105342cb8641314bf3",
+      "size_bytes": 266
+    },
+    {
+      "path": "logs/process_launcher_entitlements.stderr.log",
+      "sha256": "b2b94fc2f74e96bab9db8fdf2d36720117c125f707eff9d93736f21333973e7c",
+      "size_bytes": 250
+    },
+    {
+      "path": "logs/process_launcher_entitlements.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_launcher_signature.log",
+      "sha256": "248ba861d4663c44124649cc1881366c04713cf43748ee1813b4e5066184ccd5",
+      "size_bytes": 1015
+    },
+    {
+      "path": "logs/process_launcher_signature.stderr.log",
+      "sha256": "acc7b64da8cb49878a03d19e61517266b247fb39cc7b86053861e6fbfde26c0c",
+      "size_bytes": 999
+    },
+    {
+      "path": "logs/process_launcher_signature.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_rustc_version.log",
+      "sha256": "352d6857968e80a6357a926ac685b9b07f77c479aaafde33e73a53945e802909",
+      "size_bytes": 192
+    },
+    {
+      "path": "logs/process_rustc_version.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_rustc_version.stdout.log",
+      "sha256": "352d6857968e80a6357a926ac685b9b07f77c479aaafde33e73a53945e802909",
+      "size_bytes": 192
+    },
+    {
+      "path": "logs/process_sign_fault_helper.log",
+      "sha256": "4d43b5588811c2e4d099213cdc8a9e291a0fd43fa99eccbb36677b9376ec7927",
+      "size_bytes": 201
+    },
+    {
+      "path": "logs/process_sign_fault_helper.stderr.log",
+      "sha256": "02f35e2ee8278fd75a57b1e1acb855333681fd5c9bc2cfaa1b2d1e2f9a4f76e9",
+      "size_bytes": 185
+    },
+    {
+      "path": "logs/process_sign_fault_helper.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_sign_launcher.log",
+      "sha256": "8ed92a4e99679d1aadd5fc6c71bd1da64d4d28ed308940f7b0d57aed2d47bdc5",
+      "size_bytes": 197
+    },
+    {
+      "path": "logs/process_sign_launcher.stderr.log",
+      "sha256": "4a1a518534c1d3f40173768933fe629445d7857bc8ff0c10226d94009c8c502d",
+      "size_bytes": 181
+    },
+    {
+      "path": "logs/process_sign_launcher.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_sign_vmhost.log",
+      "sha256": "447b609516ee37d6ce4bf178e8ff76bc604b605b93b6b5777af81f1f2e67b3b1",
+      "size_bytes": 185
+    },
+    {
+      "path": "logs/process_sign_vmhost.stderr.log",
+      "sha256": "2cf722a6fe72c5a354b5b8258fb3bd9be2c5bcec289f995101618e3be0947512",
+      "size_bytes": 169
+    },
+    {
+      "path": "logs/process_sign_vmhost.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_sw_vers.log",
+      "sha256": "0b74dee9f2004e79e0ebb6e94909916c30d37db5dfb5c1f733b7ca7f723a701d",
+      "size_bytes": 66
+    },
+    {
+      "path": "logs/process_sw_vers.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_sw_vers.stdout.log",
+      "sha256": "0b74dee9f2004e79e0ebb6e94909916c30d37db5dfb5c1f733b7ca7f723a701d",
+      "size_bytes": 66
+    },
+    {
+      "path": "logs/process_swift_version.log",
+      "sha256": "175d63fe186d32fb49352b7e37b5370f648c60db92f7c25d928b5d6081f28c84",
+      "size_bytes": 142
+    },
+    {
+      "path": "logs/process_swift_version.stderr.log",
+      "sha256": "bbc8b176d3c74d4c5a7fd00b40280f98168e116d5272273bfe8e71407625540e",
+      "size_bytes": 30
+    },
+    {
+      "path": "logs/process_swift_version.stdout.log",
+      "sha256": "c469aee809408e0f8f981436d9afb0cf3deb47b1647747357cf47aa1d7f9f922",
+      "size_bytes": 96
+    },
+    {
+      "path": "logs/process_uname.log",
+      "sha256": "988178c82fb21e5a574980b3b0e7d7e23bf0fbed94b7ed0500f118a6b73de7b4",
+      "size_bytes": 145
+    },
+    {
+      "path": "logs/process_uname.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_uname.stdout.log",
+      "sha256": "988178c82fb21e5a574980b3b0e7d7e23bf0fbed94b7ed0500f118a6b73de7b4",
+      "size_bytes": 145
+    },
+    {
+      "path": "logs/process_verify_fault_helper.log",
+      "sha256": "130e972733634c08c50d5a36a9d9693374cf945de66529ff5f25d56c61f82c9c",
+      "size_bytes": 379
+    },
+    {
+      "path": "logs/process_verify_fault_helper.stderr.log",
+      "sha256": "ef2db81e7bf8ae8b8ddf5744e2d24746e85602ec7f8751e9d389f9760c435713",
+      "size_bytes": 363
+    },
+    {
+      "path": "logs/process_verify_fault_helper.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_verify_launcher.log",
+      "sha256": "f2fb05c0ad945c04d5961bf7e473c3d3fe0b07164a01e2700375fdcaed312d1c",
+      "size_bytes": 371
+    },
+    {
+      "path": "logs/process_verify_launcher.stderr.log",
+      "sha256": "6347ab3c8063c482acc6b4c5f5e8a812b0c2907d66580920c02e510cc6da5d07",
+      "size_bytes": 355
+    },
+    {
+      "path": "logs/process_verify_launcher.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_verify_vmhost.log",
+      "sha256": "f5405ed482a94268e8fd4b2877f84e6fde64504c3e70e8703d09ddb838a45c5f",
+      "size_bytes": 347
+    },
+    {
+      "path": "logs/process_verify_vmhost.stderr.log",
+      "sha256": "5ce899f1485d9d00e46c00a45950bb1ff4e336b2bbb9585eb356b4e5f4d855e6",
+      "size_bytes": 331
+    },
+    {
+      "path": "logs/process_verify_vmhost.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_vmhost_entitlements.log",
+      "sha256": "be02a9b81d559c1e9ee591b8a3aa71b0d3af1a745e0e033fccd7791c6896c457",
+      "size_bytes": 487
+    },
+    {
+      "path": "logs/process_vmhost_entitlements.stderr.log",
+      "sha256": "9a3f7327326a48fb4f69b998688db0a8719d9213f5906b253386deb5a6e40b7f",
+      "size_bytes": 238
+    },
+    {
+      "path": "logs/process_vmhost_entitlements.stdout.log",
+      "sha256": "84ea240cae1d3d70098e6bfe66ed4cf2e991a14ef6e66978af7b5813d2d17176",
+      "size_bytes": 233
+    },
+    {
+      "path": "logs/process_vmhost_signature.log",
+      "sha256": "c17dfcab8048c0ef7883791a4677c84a5cdd56c2705e48ac84e0628934c01ab8",
+      "size_bytes": 996
+    },
+    {
+      "path": "logs/process_vmhost_signature.stderr.log",
+      "sha256": "c30838353d4994aeae63014d83da7f9f04c11a94935156c13dca1079a040bcd2",
+      "size_bytes": 980
+    },
+    {
+      "path": "logs/process_vmhost_signature.stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_xcode_version.log",
+      "sha256": "ee3fe26035862d2b9653c1a570be3eca4ee5be2815f0ce99ff2d8ffa3399e4c8",
+      "size_bytes": 33
+    },
+    {
+      "path": "logs/process_xcode_version.stderr.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 0
+    },
+    {
+      "path": "logs/process_xcode_version.stdout.log",
+      "sha256": "ee3fe26035862d2b9653c1a570be3eca4ee5be2815f0ce99ff2d8ffa3399e4c8",
+      "size_bytes": 33
+    },
+    {
+      "path": "summary.json",
+      "sha256": "6a9432420bca7c535354231d1f78f905b9ae3fcdd3bb023dc6d0613fa57ec5d5",
+      "size_bytes": 101368
+    }
+  ]
+}

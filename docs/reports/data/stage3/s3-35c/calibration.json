@@ -1,0 +1,104 @@
+{
+  "calibration_attempts": [
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 297336,
+      "native_floor_met": false,
+      "native_total_ns": 21692767,
+      "record_type": "calibration_attempt",
+      "repetitions": 1
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 575576,
+      "native_floor_met": false,
+      "native_total_ns": 42258878,
+      "record_type": "calibration_attempt",
+      "repetitions": 2
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 1169357,
+      "native_floor_met": false,
+      "native_total_ns": 87435308,
+      "record_type": "calibration_attempt",
+      "repetitions": 4
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 2350524,
+      "native_floor_met": false,
+      "native_total_ns": 176128252,
+      "record_type": "calibration_attempt",
+      "repetitions": 8
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 4732936,
+      "native_floor_met": true,
+      "native_total_ns": 350740022,
+      "record_type": "calibration_attempt",
+      "repetitions": 16
+    },
+    {
+      "interpreter_floor_met": false,
+      "interpreter_total_ns": 9026810,
+      "native_floor_met": true,
+      "native_total_ns": 649013776,
+      "record_type": "calibration_attempt",
+      "repetitions": 32
+    }
+  ],
+  "calibration_floor_passed": false,
+  "calibration_only": true,
+  "case_count": 2400,
+  "frozen_seed_values": [
+    5999696582365151233,
+    5999696582365151234,
+    5999696582365151235
+  ],
+  "input_digest": "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540",
+  "interpreter_preflight_executions": 4800,
+  "journal_path": "work/tmp/stage3/s3-35c/calibration.json.journal.jsonl",
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "47028a93cf0e85fcd80cf6a7a43a2558e1244227",
+      "source_sha256": "b1801aed089183d7a94d0b0c33fb5b259c675026ee5e5365876a35c8f05ee6fd",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "47028a93cf0e85fcd80cf6a7a43a2558e1244227",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "minimum_side_time_ns": 200000000,
+  "native_preflight_executions": 4800,
+  "preflight_parity_cases": 4800,
+  "preflight_repetitions_per_case": 2,
+  "preflight_unique_cases": 2400,
+  "process_run": 1,
+  "profile_id": "s3-35c-two-site-memory-cold-direct-v1",
+  "repetitions_per_side": 32,
+  "sample_floor_passed": false,
+  "sample_floor_policy": "Retain all 20 raw pairs. Any side below 200ms classifies the entire process diagnostic-only; no partial scoring or trimming.",
+  "sample_pairs": [],
+  "schema": 1,
+  "sequence_counts": [
+    1200,
+    1200
+  ],
+  "source_sha256": "489caad111722c23d9e3058e2893ca9502bd7181e0de1186da4a5c80f57be773",
+  "status": "diagnostic_only_calibration_floor_failed",
+  "stop_reason": null,
+  "timer_boundaries": "Native per-input timer includes compile_ir_memory_two_site_block_v2, publish_ir_memory_two_site_v2, direct typed execute_ir_memory_two_site_v2, and explicit PublishedCode plus IR block drops. Interpreter timer includes only od_isa::execute::run. State/RAM reset and full-result validation are outside each timer. Each backend must report exactly two ordered 8-byte data callbacks at the sequence's expected addresses. Direct Complete or BudgetExhausted is normalized to interpreter InstructionBudgetExhausted only when all CPU state and RAM match, RIP is code_end, retired count is 2, and remaining budget is 0.",
+  "timing_started": true,
+  "total_elapsed_ns": 3540512750
+}

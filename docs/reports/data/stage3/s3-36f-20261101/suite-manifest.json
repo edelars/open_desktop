@@ -1,0 +1,896 @@
+{
+  "schema": 1,
+  "suite_id": "s3-36f-cached-native-register-v1-synthetic-recurrence-2026-11-01",
+  "record_type": "s3-36f_scored_suite_manifest",
+  "classification": "synthetic recurrence microbenchmark only; cached native dispatcher was slower than the interpreter in every measured pair; no broad performance/default-policy conclusion",
+  "profile_id": "s3-36f-native-register-v1-cached-register-loop-v1",
+  "source_revision": "a5b368eab1d1cdfa3e47a28d0d7c1263b12978c7",
+  "source_sha256": "b38e9516cc90c36e4e358899f3d7d417ccf666fae5d0c532c30ff8c55efaab66",
+  "source_tree_dirty": false,
+  "runtime_working_tree_dirty": null,
+  "runtime_working_tree_status_note": "The per-run git status check timed out after two seconds; runtime cleanliness is unknown.",
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "a5b368eab1d1cdfa3e47a28d0d7c1263b12978c7",
+      "source_sha256": "b38e9516cc90c36e4e358899f3d7d417ccf666fae5d0c532c30ff8c55efaab66",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "a5b368eab1d1cdfa3e47a28d0d7c1263b12978c7",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "source_fingerprints": [
+    {
+      "path": "tools/bench/src/cached_native_loop.rs",
+      "sha256": "e2ee0738531b72ff3e47ffe89b0ce6a84a86404157f7244c6b38e56c1050db91"
+    },
+    {
+      "path": "tools/bench/src/main.rs",
+      "sha256": "f053b64946e603791a2d9dab8fd8ce816437a42fed3cf3c716fd4a0c30e6fc43"
+    },
+    {
+      "path": "tools/bench/src/lib.rs",
+      "sha256": "8f524964adf949256237c7d4c22c4343c0b47820d183693cc103f58aaa6b511f"
+    },
+    {
+      "path": "crates/od-jit/src/dispatch.rs",
+      "sha256": "d0df81783bfe8720606d88e54af19d21b26dc0099af48f9a74fc5bd604806a6c"
+    },
+    {
+      "path": "crates/od-jit/src/block_compile.rs",
+      "sha256": "49818cf3032862772410be002bc46abb1536c640e0eb65d10c9a758b55dbd68b"
+    },
+    {
+      "path": "crates/od-isa/src/execute.rs",
+      "sha256": "0307eb7469b50484658c7740b983ce5e24414d49a3f9db3d6a1bdf63ec2fbbd9"
+    }
+  ],
+  "input_strata": [
+    {
+      "id": "a_1",
+      "seed": 3538945,
+      "iterations": 1,
+      "budget": 3,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "resident_entries": 1,
+      "resident_code_bytes": 1408,
+      "resident_logical_bytes": 7193,
+      "preflight_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 34,
+        "misses": 1,
+        "publications": 1
+      }
+    },
+    {
+      "id": "a_64",
+      "seed": 3539008,
+      "iterations": 64,
+      "budget": 192,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "resident_entries": 1,
+      "resident_code_bytes": 1408,
+      "resident_logical_bytes": 7193,
+      "preflight_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 2176,
+        "misses": 1,
+        "publications": 1
+      }
+    },
+    {
+      "id": "a_4096",
+      "seed": 3543040,
+      "iterations": 4096,
+      "budget": 12288,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "resident_entries": 1,
+      "resident_code_bytes": 1408,
+      "resident_logical_bytes": 7193,
+      "preflight_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 139264,
+        "misses": 1,
+        "publications": 1
+      }
+    },
+    {
+      "id": "b_1",
+      "seed": 3538945,
+      "iterations": 1,
+      "budget": 5,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "resident_entries": 1,
+      "resident_code_bytes": 2188,
+      "resident_logical_bytes": 10552,
+      "preflight_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 34,
+        "misses": 1,
+        "publications": 1
+      }
+    },
+    {
+      "id": "b_64",
+      "seed": 3539008,
+      "iterations": 64,
+      "budget": 320,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "resident_entries": 1,
+      "resident_code_bytes": 2188,
+      "resident_logical_bytes": 10552,
+      "preflight_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 2176,
+        "misses": 1,
+        "publications": 1
+      }
+    },
+    {
+      "id": "b_4096",
+      "seed": 3543040,
+      "iterations": 4096,
+      "budget": 20480,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "resident_entries": 1,
+      "resident_code_bytes": 2188,
+      "resident_logical_bytes": 10552,
+      "preflight_cache_counts": {
+        "compiles": 1,
+        "evictions": 0,
+        "hits": 139264,
+        "misses": 1,
+        "publications": 1
+      }
+    }
+  ],
+  "preflight": {
+    "path": "preflight-release.json",
+    "sha256": "00e677ee0f7ef3d5d6c3ca1bc2fef4dee0710a1124697a8d4f6216dbf570ac04",
+    "timing_started": false,
+    "strata_count": 6,
+    "full_state_budget_exit_and_retirement_parity": true,
+    "boundary_stop_budget_and_zero_work_checks_passed": true
+  },
+  "scored_run_count": 3,
+  "pairs_per_stratum_per_run": 20,
+  "pairs_per_stratum_across_runs": 60,
+  "pair_count_total": 360,
+  "scored_side_count_total": 720,
+  "minimum_measured_side_ns": 207669506,
+  "side_floor_ns": 200000000,
+  "all_measured_side_floors_passed": true,
+  "timed_cache_counter_invariant": "Each cached sample hit delta equals calls multiplied by loop iterations; misses, compiles, publications and evictions are zero. Interpreter cache deltas are all zero.",
+  "retirement_invariant": "Both backends retire calls multiplied by guest_work_per_call in every sample.",
+  "ratio_summary_definition": "Median and min/max over the 60 stored native_over_interpreter_ratios per stratum; no trimming.",
+  "cross_run_summary": [
+    {
+      "stratum": "a_1",
+      "iterations": 1,
+      "seed": 3538945,
+      "budget": 3,
+      "guest_work_per_call": 3,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "pair_count_across_runs": 60,
+      "ratio_definition": "cached native elapsed_ns / interpreter elapsed_ns, paired raw values",
+      "median_ratio": 4.76612717272478,
+      "ratio_range": [
+        4.479954290907464,
+        5.193026049463288
+      ],
+      "native_slower_in_all_pairs": true,
+      "per_run_ratio_medians": [
+        4.792769489226898,
+        4.7792130794582555,
+        4.698302928248938
+      ],
+      "cold_first_dispatch_ns_by_run": [
+        18958,
+        27208,
+        17625
+      ],
+      "cold_first_dispatch_median_ns": 18958,
+      "cold_first_dispatch_range_ns": [
+        17625,
+        27208
+      ],
+      "minimum_cached_sample_ns": 1006143550,
+      "minimum_interpreter_sample_ns": 207669506,
+      "timed_cache_hit_delta": 87525820,
+      "timed_cache_other_counter_deltas": {
+        "misses": 0,
+        "compiles": 0,
+        "publications": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "stratum": "a_64",
+      "iterations": 64,
+      "seed": 3539008,
+      "budget": 192,
+      "guest_work_per_call": 192,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "pair_count_across_runs": 60,
+      "ratio_definition": "cached native elapsed_ns / interpreter elapsed_ns, paired raw values",
+      "median_ratio": 4.88897645935357,
+      "ratio_range": [
+        4.413530697033098,
+        5.193073359199707
+      ],
+      "native_slower_in_all_pairs": true,
+      "per_run_ratio_medians": [
+        4.879432518143461,
+        4.917183394982737,
+        4.885007067733982
+      ],
+      "cold_first_dispatch_ns_by_run": [
+        80292,
+        64375,
+        72042
+      ],
+      "cold_first_dispatch_median_ns": 72042,
+      "cold_first_dispatch_range_ns": [
+        64375,
+        80292
+      ],
+      "minimum_cached_sample_ns": 1096320891,
+      "minimum_interpreter_sample_ns": 219213174,
+      "timed_cache_hit_delta": 94745600,
+      "timed_cache_other_counter_deltas": {
+        "misses": 0,
+        "compiles": 0,
+        "publications": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "stratum": "a_4096",
+      "iterations": 4096,
+      "seed": 3543040,
+      "budget": 12288,
+      "guest_work_per_call": 12288,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "pair_count_across_runs": 60,
+      "ratio_definition": "cached native elapsed_ns / interpreter elapsed_ns, paired raw values",
+      "median_ratio": 4.893843997754287,
+      "ratio_range": [
+        4.688485164360034,
+        5.254633352943856
+      ],
+      "native_slower_in_all_pairs": true,
+      "per_run_ratio_medians": [
+        4.853820122684444,
+        4.922684530051251,
+        4.879420730553349
+      ],
+      "cold_first_dispatch_ns_by_run": [
+        3004208,
+        2960459,
+        3018709
+      ],
+      "cold_first_dispatch_median_ns": 3004208,
+      "cold_first_dispatch_range_ns": [
+        2960459,
+        3018709
+      ],
+      "minimum_cached_sample_ns": 1082037790,
+      "minimum_interpreter_sample_ns": 218302871,
+      "timed_cache_hit_delta": 99532800,
+      "timed_cache_other_counter_deltas": {
+        "misses": 0,
+        "compiles": 0,
+        "publications": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "stratum": "b_1",
+      "iterations": 1,
+      "seed": 3538945,
+      "budget": 5,
+      "guest_work_per_call": 5,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "pair_count_across_runs": 60,
+      "ratio_definition": "cached native elapsed_ns / interpreter elapsed_ns, paired raw values",
+      "median_ratio": 3.720487446991976,
+      "ratio_range": [
+        3.5582569651912754,
+        3.970327519878836
+      ],
+      "native_slower_in_all_pairs": true,
+      "per_run_ratio_medians": [
+        3.716390279717908,
+        3.6943828299786077,
+        3.7292875568786084
+      ],
+      "cold_first_dispatch_ns_by_run": [
+        21584,
+        24625,
+        31917
+      ],
+      "cold_first_dispatch_median_ns": 24625,
+      "cold_first_dispatch_range_ns": [
+        21584,
+        31917
+      ],
+      "minimum_cached_sample_ns": 806163246,
+      "minimum_interpreter_sample_ns": 213108046,
+      "timed_cache_hit_delta": 52337960,
+      "timed_cache_other_counter_deltas": {
+        "misses": 0,
+        "compiles": 0,
+        "publications": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "stratum": "b_64",
+      "iterations": 64,
+      "seed": 3539008,
+      "budget": 320,
+      "guest_work_per_call": 320,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "pair_count_across_runs": 60,
+      "ratio_definition": "cached native elapsed_ns / interpreter elapsed_ns, paired raw values",
+      "median_ratio": 3.8091958123480123,
+      "ratio_range": [
+        3.267009854010153,
+        4.013347904403538
+      ],
+      "native_slower_in_all_pairs": true,
+      "per_run_ratio_medians": [
+        3.7737351800963115,
+        3.8246717713851988,
+        3.8165922285932776
+      ],
+      "cold_first_dispatch_ns_by_run": [
+        87125,
+        86209,
+        82041
+      ],
+      "cold_first_dispatch_median_ns": 86209,
+      "cold_first_dispatch_range_ns": [
+        82041,
+        87125
+      ],
+      "minimum_cached_sample_ns": 857550555,
+      "minimum_interpreter_sample_ns": 221200865,
+      "timed_cache_hit_delta": 56773120,
+      "timed_cache_other_counter_deltas": {
+        "misses": 0,
+        "compiles": 0,
+        "publications": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "stratum": "b_4096",
+      "iterations": 4096,
+      "seed": 3543040,
+      "budget": 20480,
+      "guest_work_per_call": 20480,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "pair_count_across_runs": 60,
+      "ratio_definition": "cached native elapsed_ns / interpreter elapsed_ns, paired raw values",
+      "median_ratio": 3.780486971128097,
+      "ratio_range": [
+        3.462228681823297,
+        4.033991907305444
+      ],
+      "native_slower_in_all_pairs": true,
+      "per_run_ratio_medians": [
+        3.7774040092230567,
+        3.796544915994214,
+        3.7580617127334337
+      ],
+      "cold_first_dispatch_ns_by_run": [
+        4085750,
+        4036750,
+        4494709
+      ],
+      "cold_first_dispatch_median_ns": 4085750,
+      "cold_first_dispatch_range_ns": [
+        4036750,
+        4494709
+      ],
+      "minimum_cached_sample_ns": 866771946,
+      "minimum_interpreter_sample_ns": 226168495,
+      "timed_cache_hit_delta": 55951360,
+      "timed_cache_other_counter_deltas": {
+        "misses": 0,
+        "compiles": 0,
+        "publications": 0,
+        "evictions": 0
+      }
+    }
+  ],
+  "scored_runs": [
+    {
+      "process_run": 1,
+      "total_elapsed_ns": 154550740500,
+      "pair_count": 120,
+      "strata": [
+        {
+          "stratum": "a_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calibrated_calls_per_side": 1403510,
+          "ratio_median": 4.792769489226898,
+          "ratio_range": [
+            4.479954290907464,
+            5.193026049463288
+          ],
+          "cold_first_dispatch_ns": 18958,
+          "minimum_cached_side_ns": 1049728458,
+          "minimum_interpreter_side_ns": 216299645,
+          "native_calls_across_pairs": 28070200,
+          "cached_hit_delta_across_pairs": 28070200,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "a_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calibrated_calls_per_side": 24700,
+          "ratio_median": 4.879432518143461,
+          "ratio_range": [
+            4.675800059007525,
+            5.1226559632890725
+          ],
+          "cold_first_dispatch_ns": 80292,
+          "minimum_cached_side_ns": 1102903628,
+          "minimum_interpreter_side_ns": 225713449,
+          "native_calls_across_pairs": 494000,
+          "cached_hit_delta_across_pairs": 31616000,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "a_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calibrated_calls_per_side": 393,
+          "ratio_median": 4.853820122684444,
+          "ratio_range": [
+            4.688485164360034,
+            5.254633352943856
+          ],
+          "cold_first_dispatch_ns": 3004208,
+          "minimum_cached_side_ns": 1082037790,
+          "minimum_interpreter_side_ns": 218302871,
+          "native_calls_across_pairs": 7860,
+          "cached_hit_delta_across_pairs": 32194560,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "b_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calibrated_calls_per_side": 857144,
+          "ratio_median": 3.716390279717908,
+          "ratio_range": [
+            3.619337400789227,
+            3.802519493247741
+          ],
+          "cold_first_dispatch_ns": 21584,
+          "minimum_cached_side_ns": 840538511,
+          "minimum_interpreter_side_ns": 223254101,
+          "native_calls_across_pairs": 17142880,
+          "cached_hit_delta_across_pairs": 17142880,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "b_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calibrated_calls_per_side": 14913,
+          "ratio_median": 3.7737351800963115,
+          "ratio_range": [
+            3.267009854010153,
+            3.833921011876096
+          ],
+          "cold_first_dispatch_ns": 87125,
+          "minimum_cached_side_ns": 918636696,
+          "minimum_interpreter_side_ns": 243909705,
+          "native_calls_across_pairs": 298260,
+          "cached_hit_delta_across_pairs": 19088640,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "b_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calibrated_calls_per_side": 228,
+          "ratio_median": 3.7774040092230567,
+          "ratio_range": [
+            3.7200560979855055,
+            3.8966838714481327
+          ],
+          "cold_first_dispatch_ns": 4085750,
+          "minimum_cached_side_ns": 869341751,
+          "minimum_interpreter_side_ns": 226168495,
+          "native_calls_across_pairs": 4560,
+          "cached_hit_delta_across_pairs": 18677760,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        }
+      ]
+    },
+    {
+      "process_run": 2,
+      "total_elapsed_ns": 157235875833,
+      "pair_count": 120,
+      "strata": [
+        {
+          "stratum": "a_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calibrated_calls_per_side": 1355933,
+          "ratio_median": 4.7792130794582555,
+          "ratio_range": [
+            4.636905535556946,
+            4.973257233542545
+          ],
+          "cold_first_dispatch_ns": 27208,
+          "minimum_cached_side_ns": 1006143550,
+          "minimum_interpreter_side_ns": 207669506,
+          "native_calls_across_pairs": 27118660,
+          "cached_hit_delta_across_pairs": 27118660,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "a_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calibrated_calls_per_side": 24774,
+          "ratio_median": 4.917183394982737,
+          "ratio_range": [
+            4.413530697033098,
+            5.193073359199707
+          ],
+          "cold_first_dispatch_ns": 64375,
+          "minimum_cached_side_ns": 1096320891,
+          "minimum_interpreter_side_ns": 219213174,
+          "native_calls_across_pairs": 495480,
+          "cached_hit_delta_across_pairs": 31710720,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "a_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calibrated_calls_per_side": 414,
+          "ratio_median": 4.922684530051251,
+          "ratio_range": [
+            4.798603521201813,
+            5.012496776515245
+          ],
+          "cold_first_dispatch_ns": 2960459,
+          "minimum_cached_side_ns": 1187656617,
+          "minimum_interpreter_side_ns": 241519173,
+          "native_calls_across_pairs": 8280,
+          "cached_hit_delta_across_pairs": 33914880,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "b_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calibrated_calls_per_side": 905661,
+          "ratio_median": 3.6943828299786077,
+          "ratio_range": [
+            3.5582569651912754,
+            3.970327519878836
+          ],
+          "cold_first_dispatch_ns": 24625,
+          "minimum_cached_side_ns": 864802815,
+          "minimum_interpreter_side_ns": 226640886,
+          "native_calls_across_pairs": 18113220,
+          "cached_hit_delta_across_pairs": 18113220,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "b_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calibrated_calls_per_side": 14754,
+          "ratio_median": 3.8246717713851988,
+          "ratio_range": [
+            3.757854750129154,
+            3.996572191274083
+          ],
+          "cold_first_dispatch_ns": 86209,
+          "minimum_cached_side_ns": 902618418,
+          "minimum_interpreter_side_ns": 226969124,
+          "native_calls_across_pairs": 295080,
+          "cached_hit_delta_across_pairs": 18885120,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "b_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calibrated_calls_per_side": 228,
+          "ratio_median": 3.796544915994214,
+          "ratio_range": [
+            3.462228681823297,
+            3.9584024780374514
+          ],
+          "cold_first_dispatch_ns": 4036750,
+          "minimum_cached_side_ns": 896920191,
+          "minimum_interpreter_side_ns": 226586406,
+          "native_calls_across_pairs": 4560,
+          "cached_hit_delta_across_pairs": 18677760,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        }
+      ]
+    },
+    {
+      "process_run": 3,
+      "total_elapsed_ns": 175258226125,
+      "pair_count": 120,
+      "strata": [
+        {
+          "stratum": "a_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calibrated_calls_per_side": 1616848,
+          "ratio_median": 4.698302928248938,
+          "ratio_range": [
+            4.584408869883565,
+            4.878184854068647
+          ],
+          "cold_first_dispatch_ns": 17625,
+          "minimum_cached_side_ns": 1171339190,
+          "minimum_interpreter_side_ns": 245356493,
+          "native_calls_across_pairs": 32336960,
+          "cached_hit_delta_across_pairs": 32336960,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "a_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calibrated_calls_per_side": 24546,
+          "ratio_median": 4.885007067733982,
+          "ratio_range": [
+            4.829266689728892,
+            4.978329024235285
+          ],
+          "cold_first_dispatch_ns": 72042,
+          "minimum_cached_side_ns": 1106160436,
+          "minimum_interpreter_side_ns": 226530778,
+          "native_calls_across_pairs": 490920,
+          "cached_hit_delta_across_pairs": 31418880,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "a_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calibrated_calls_per_side": 408,
+          "ratio_median": 4.879420730553349,
+          "ratio_range": [
+            4.789277479080944,
+            5.009605383629085
+          ],
+          "cold_first_dispatch_ns": 3018709,
+          "minimum_cached_side_ns": 1154517340,
+          "minimum_interpreter_side_ns": 237968495,
+          "native_calls_across_pairs": 8160,
+          "cached_hit_delta_across_pairs": 33423360,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "b_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calibrated_calls_per_side": 854093,
+          "ratio_median": 3.7292875568786084,
+          "ratio_range": [
+            3.6463635618294754,
+            3.9072110914104106
+          ],
+          "cold_first_dispatch_ns": 31917,
+          "minimum_cached_side_ns": 806163246,
+          "minimum_interpreter_side_ns": 213108046,
+          "native_calls_across_pairs": 17081860,
+          "cached_hit_delta_across_pairs": 17081860,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "b_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calibrated_calls_per_side": 14687,
+          "ratio_median": 3.8165922285932776,
+          "ratio_range": [
+            3.708429084985295,
+            4.013347904403538
+          ],
+          "cold_first_dispatch_ns": 82041,
+          "minimum_cached_side_ns": 857550555,
+          "minimum_interpreter_side_ns": 221200865,
+          "native_calls_across_pairs": 293740,
+          "cached_hit_delta_across_pairs": 18799360,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        },
+        {
+          "stratum": "b_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calibrated_calls_per_side": 227,
+          "ratio_median": 3.7580617127334337,
+          "ratio_range": [
+            3.5748110108552713,
+            4.033991907305444
+          ],
+          "cold_first_dispatch_ns": 4494709,
+          "minimum_cached_side_ns": 866771946,
+          "minimum_interpreter_side_ns": 229558327,
+          "native_calls_across_pairs": 4540,
+          "cached_hit_delta_across_pairs": 18595840,
+          "timed_counter_deltas": {
+            "misses": 0,
+            "compiles": 0,
+            "publications": 0,
+            "evictions": 0
+          }
+        }
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "preflight-release.json",
+      "role": "release_preflight",
+      "sha256": "00e677ee0f7ef3d5d6c3ca1bc2fef4dee0710a1124697a8d4f6216dbf570ac04"
+    },
+    {
+      "path": "process-1.json",
+      "role": "scored_process_run_1",
+      "sha256": "4d239d4dd1fc5ec2bc5d15f0b813685cb354721a8e30abee148fbc002aacf863"
+    },
+    {
+      "path": "process-2.json",
+      "role": "scored_process_run_2",
+      "sha256": "8fcfed9de368d8e72c00b35b0b8c6d19cfe6cfe286127ebea23b9a50ab4a53de"
+    },
+    {
+      "path": "process-3.json",
+      "role": "scored_process_run_3",
+      "sha256": "7e99dfea3272ede1a6af15cc72bf4899f15932ae63a50a121a225d09fb742d1b"
+    },
+    {
+      "path": "../../../STAGE_3_S3-36f_2026-11-01.md",
+      "role": "standalone_report",
+      "sha256": "1f2baa94c985967cc0bb61e2b76485d2f6e74ef127b7870bdf97a8693009fd3a"
+    }
+  ],
+  "archive_provenance": {
+    "scored_reports": {
+      "paths": [
+        "process-1.json",
+        "process-2.json",
+        "process-3.json"
+      ],
+      "method": "written directly to archive paths"
+    },
+    "preflight": {
+      "archive_path": "preflight-release.json",
+      "copied_from": "/tmp/stage3-s36f-preflight-a5b368e.json",
+      "byte_identical": true,
+      "sha256": "00e677ee0f7ef3d5d6c3ca1bc2fef4dee0710a1124697a8d4f6216dbf570ac04"
+    }
+  }
+}

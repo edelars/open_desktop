@@ -114,6 +114,186 @@
 - **Результат:** исправлен только `Operation::RepLods`; address-size-64 и legacy REP LODS семантика не менялась. Целевые и workspace проверки, offline all-target check, formatting, fixture freshness, diff check и Graphify update подтверждены в S2-19j correction report. Hardware, native/JIT, Mac mini и SSH проверки не выполнялись.
 - **Следующий шаг:** отсутствует для локальной семантической ошибки; физическая/native acceptance остаётся в общем финальном substage и не является доказательством, полученным этой правкой.
 
+<a id="issue-042"></a>
+
+### ISSUE-042 — layout checker worktree metadata acceptance pending
+
+- **Дата обнаружения:** 2026-10-27; проверено в linked worktree 2026-11-04.
+- **Компонент:** `tools/check_layout.py`, Git worktree root.
+- **Статус:** поддержка Git metadata pointer подтверждена; оставшиеся две broken links относятся к отдельной открытой ISSUE-043.
+- **Суть и последствия:** в linked worktree `.git` является обычным текстовым pointer-файлом на основную Git directory, а не каталогом или исходным файлом проекта. До исправления `python3 tools/check_layout.py` сообщал `ERROR: Unmapped root file: .git`, поэтому корректный worktree не проходил структуру. Commit `f1670fc` обновил `tools/check_layout.py` для распознавания корректного Git metadata pointer.
+- **Основание и результат:** `python3 tools/check_layout.py` выполнен в `/Users/senya/.codex/worktrees/stage3-baseline/open_desktop`. Ошибка для `.git` больше не возникает; проверка обнаружила только две отсутствующие Stage 2 oracle manifests, зарегистрированные в ISSUE-043.
+- **Следующий шаг:** отсутствует для Git metadata pointer handling. Восстановление двух Stage 2 manifests отслеживается отдельно в ISSUE-043.
+
+<a id="issue-043"></a>
+
+### ISSUE-043 — Stage 2 report ссылается на отсутствующие ignored oracle manifests
+
+- **Дата обнаружения:** 2026-10-27.
+- **Компонент:** `docs/reports/STAGE_2_REPORT.md` и локальные evidence paths под `work/`.
+- **Статус:** открыта.
+- **Суть и последствия:** два исторических manifest URL в отчёте Stage 2 указывают на отсутствующие `work/stage2-oracle/stage2-20261022-230853-3684f650/manifest.json` и `work/stage1-oracle/stage1-20261022-230241-3b73e810/manifest.json`; `work/**` игнорируется Git. Локально доступны Stage 1 runs с другими IDs. Эти ссылки не работают и не позволяют независимо открыть указанные сырые evidence.
+- **Основание:** `python3 tools/check_layout.py` сообщил обе ссылки как broken; прямой поиск под `work/` не нашёл указанные пути, а `.gitignore` содержит `/work/**`.
+- **Следующий шаг:** восстановить соответствующие архивные manifests с сохранением provenance либо обновить Stage 2 report на имеющиеся воспроизводимые evidence paths. Stage 2 файлы не менялись в текущей задаче.
+
+<a id="issue-044"></a>
+
+### ISSUE-044 — Непостоянный timeout generated-code fault smoke
+
+- **Дата обнаружения:** 2026-10-29.
+- **Компонент:** `tests/system/vmhost_generated_fault_smoke.py` и test-only VMHost fault helper.
+- **Статус:** открыта; причина повторяющихся timeout не установлена.
+- **Суть и последствия:** smoke иногда превышает свой 5-секундный deadline; в одном из прежних запусков helper затем сообщил `control frame write failed`. Два немедленных повтора в S3-38a прошли. В S3-38b один process-suite run подтвердил ожидаемый `VMHost terminated by SIGSEGV`, а последующий report-inclusive run снова достиг внутреннего timeout. Это наблюдаемая неповторяемость локального process gate, но подтверждённого продуктового дефекта пока нет.
+- **Основание:** наблюдения на локальном macOS ARM64 host. Fault helper выполняет отдельный сгенерированный ARM64 stub и вызывает `od_host_abi_version`, но не вызывает `od_fragment_execute`; причина не локализована к новому C ABI block-dispatch path. В report-inclusive run `stage3-20261030-023436-6452c1b474` статус был `generated_fault_inner_timeout` после 13.961 s; сохранённые launcher stdout/stderr пусты, outer process-group cleanup завершился без оставшихся детей. Успешный run `stage3-20261030-022418-2f31426694` — отдельная сборка с другим fault-helper hash. Ранний run `stage3-20261030-021650-2286bde631` завершился harness `KeyError` до fault gate. На одном новом замороженном наборе бинарников три диагностических запуска прошли ожидаемый HELLO/READY/RUN, сгенерированный вызов завершился SIGSEGV, а launcher увидел EOF control socket и `waitpid` статус 11; прежний timeout не повторился. Сами прежние VMHost/fault-helper Mach-O имели одинаковые UUID и hashes именованных секций, но отличались hashes целых подписанных файлов и bytes в link-edit/signature. См. [S3-38a report](reports/STAGE_3_S3-38a_2026-10-29.md), [S3-38b report](reports/STAGE_3_S3-38b_2026-10-30.md) и [ISSUE-044 diagnostic report](reports/STAGE_3_ISSUE-044_DIAGNOSTIC_2026-10-30.md).
+- **Следующий шаг:** причина прежнего timeout не установлена и исправление не заявляется. Не повторять попытки до нового основания; при новом timeout использовать зафиксированные opt-in phase markers для локализации. Сохранить no-retry-to-pass и 5-секундный inner deadline. Не трактовать три успешных диагностических наблюдения как исправление проблемы или доказательство стабильности S3-38b process suite.
+
+<a id="issue-045"></a>
+
+### ISSUE-045 — S3-20eg retry assertions
+
+- **Дата обнаружения:** 2026-11-02.
+- **Компонент:** `crates/od-host/src/lib.rs`, `s3_20eg_addr32_rsp_dword_store_uses_zero_extended_esp` (bounded S3-20eg test coverage).
+- **Статус:** решена для добавленных retry assertions; точный S3-20eg host gate passed 1/1; runtime defect не установлен.
+- **Суть и последствия:** the previously reviewed test asserted that injected backend write errors and entry STOP/budget exits leave CPU state and guest memory unchanged, but omitted successful retries after those outcomes. Runtime follow-up commit `525e310` adds the missing retry assertions for backend errors and entry guards. The exact updated host gate now passes, establishing the retry assertions in this bounded fixture. The successful callback-STOP path also verifies `EntryRipMismatch` with no second write. This was a test-evidence gap, not evidence of broken runtime behavior.
+- **Основание:** review of the S3-20eg host test at [`od-host/src/lib.rs`](../crates/od-host/src/lib.rs) and the [S3-20eg report](reports/STAGE_3_S3-20eg_2026-11-02.md).
+- **Результат:** `cargo test -p od-host --lib tests::s3_20eg_addr32_rsp_dword_store_uses_zero_extended_esp --offline -- --exact --test-threads=1` passed 1/1; the S3-34br fail-closed harness self-test passed. This closes ISSUE-045's retry-assertion evidence only. It does not establish physical-x86/Mini, owner/MMU, or full Stage 3 acceptance. The latest SSH attempt to `senya@192.168.1.14:22` timed out before remote commands; M1 remains deferred.
+
+<a id="issue-046"></a>
+
+### ISSUE-046 — S3-34dn artifact protection self-check
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `tests/cpu/stage3_dword_store_corpus.rs`, S3-34dn persisted mismatch artifact and replay validation.
+- **Статус:** решена для create-only/version/RIP self-check acceptance; независимое Sol/high review прошло. Это не подтверждает JIT/native parity или replay реального mismatch artifact.
+- **Суть и последствия:** the S3-34dn self-check attempts a create-only write over a sentinel file and confirms `AlreadyExists` while preserving its contents; it also mutates version and RIP fields and confirms parser rejection. These safeguards are now execution evidence for the labeled synthetic self-check. No runtime defect is established.
+- **Основание и результат:** commit `ee2af23` updates `s3_34dn_replay_artifact_self_checks_roundtrip_and_fail_closed` in [`stage3_dword_store_corpus.rs`](../tests/cpu/stage3_dword_store_corpus.rs). The exact Rust self-check and fail-closed harness self-test each passed 1/1; see the [S3-34dn report](reports/STAGE_3_S3-34dn_2026-11-03.md). The optional saved-artifact replay and S3-20eg acceptance tracked by ISSUE-045 remain separate.
+- **Следующий шаг:** no further work is required for this self-check issue. Full S3-34.2 runtime/replay acceptance remains open; ISSUE-045 is separately resolved for the S3-20eg retry assertions.
+
+<a id="issue-047"></a>
+
+### ISSUE-047 — Rust parser rejected the addr32 checked-load predicate
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `crates/od-jit/src/ir.rs`, `is_checked_dword_load_address` / `address32_profile`.
+- **Статус:** решена в текущем follow-up: добавлена закрывающая скобка, сохраняющая все прежние OR branches под guard `operand.address_size == Dword`; independent Sol/high review passed; targeted rustfmt passed. См. [repair report](reports/STAGE_3_ISSUE-047_2026-11-03.md).
+- **Суть и последствия:** до исправления Rust не мог разобрать `address32_profile`: `cargo fmt --all` и `cargo check` завершались с `mismatched closing delimiter: '}'` около `ir.rs:1122`. Формы, predicate atoms и итоговые size/index/scale checks не менялись; code review подтвердил, что допуск не расширен и не сужен.
+- **Основание:** исходный parser diagnostic; после правки `rustfmt --edition 2024 --check crates/od-jit/src/ir.rs` прошёл. Затронутые downstream Type/acceptance issues зафиксированы отдельно в ISSUE-048 и ISSUE-049; parser fix сам по себе их не закрывает.
+- **Результат:** точечный формат прошёл; следующий `cargo check` дошёл до od-host и выявил ISSUE-048. `cargo test -p od-jit --lib --offline` запустился и дал 380 passed / 17 failed (ISSUE-049). Это подтверждает снятие parser barrier, но не завершение workspace acceptance.
+
+<a id="issue-048"></a>
+
+### ISSUE-048 — od-host workspace check reports nine compile errors
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `crates/od-host/src/lib.rs`, `crates/od-host/src/session.rs` and host test implementations.
+- **Статус:** решена локальными compile repairs в `crates/od-host/src/lib.rs` и `crates/od-host/src/session.rs`; independent Sol/high review passed.
+- **Суть и последствия:** исправлены import paths, две test-only `GuestMemory` реализации, четыре неоднозначных integer literals и сравнение error types. Семантика runtime не менялась; unsupported test memory operations возвращают явную backend error.
+- **Основание и результат:** `cargo check -p od-jit -p od-host --all-targets --offline` завершился успешно. Полный `cargo test -p od-jit --lib --offline` прошёл: 397 passed / 0 failed. Точный host regression S3-18f и host regressions S3-20fk/S3-20fx прошли после исправления stale test expectations/setup. Это закрывает compile barrier и перечисленные local cases, но не заменяет stage-wide или hardware acceptance; Mini/M1 deferred.
+
+<a id="issue-049"></a>
+
+### ISSUE-049 — seventeen existing od-jit unit gates fail after parser repair
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `crates/od-jit/src/block.rs`, `lowering.rs`, `memory_dispatch.rs` и `memory_load_v2.rs`: admitted profiles и unit gates.
+- **Статус:** решена в текущем follow-up; независимое Sol/high review исправлений прошло. Исход до ISSUE-047 неизвестен: прежний predicate не разбирался компилятором.
+- **Суть и последствия:** первый запуск `cargo test -p od-jit --lib --offline` после parser repair дал 380 passed / 17 failed. Четыре ошибки относились к StoreThenStore lowering/dispatch, exact sites и PC maps; двенадцать — к admission и source expectations для addr32/qword dword load/store; одна — к fixture мутации source byte. Exact first-site builder arm для StoreThenStore добавлен в `48b554d`; расширены точные literal gates для отсутствовавших адресных форм и исправлена устаревшая negative fixture. Не установлено, существовали ли эти ошибки до ISSUE-047.
+- **Результат:** четыре StoreThenStore gates прошли отдельно после исправления; затем полный `cargo test -p od-jit --lib --offline` прошёл: 397 passed / 0 failed. Это результат локального od-jit suite, без утверждения о host runtime или Stage 3 acceptance. Границы StoreThenStore описаны в [S3-26f report](reports/STAGE_3_S3-26f_2026-11-03.md).
+
+<a id="issue-050"></a>
+
+### ISSUE-050 — Stage 3 local harness self-tests exceed their bounded timeout
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `tests/cpu/stage3_harness.py`, mandatory `harness_self_tests` step and `tests/cpu/test_stage3_harness.py` temporary fixtures.
+- **Статус:** в работе; timeout raised to 600 seconds, test fixtures moved below ignored `work/stage3-harness/`, and primary failure preservation now has a focused regression test. Full local-suite rerun remains unverified.
+- **Суть и последствия:** `python3 tests/cpu/stage3_harness.py --suite local` stopped before the selected local suites because its required self-test step had a 120-second timeout. The 2026-11-03 summary (`stage3-20261103-123052-8fa49da8df`) records `returncode: null`, 138.722 seconds including cleanup/fingerprint work, and output ending during the 60th self-test. Termination left a temporary `run/logs` tree at repository root, so the final source fingerprint also changed and masked the timeout as the reported failure.
+- **Основание и результат:** deleting only that generated temporary tree restored the exact starting source fingerprint. A standalone self-test invocation exceeded the context tool's 300-second RPC limit without a summary. The follow-up raises the harness step timeout to 600 seconds, routes temporary test roots under ignored `work/`, and preserves the original timeout if fingerprint comparison itself fails. The focused timeout/fingerprint test, Python compilation, and diff whitespace check passed; independent Sol/high review found no remaining issue. A post-fix full-local rerun attempt exceeded a 240-second context RPC window without a final summary; its result is unconfirmed.
+- **Следующий шаг:** rerun the bounded local suite in an execution session that can observe the full self-test step and final summary; confirm the new timeout and stable source fingerprint before updating S3-41 acceptance. Mini and physical-x86 acceptance remain separate.
+
+<a id="issue-051"></a>
+
+### ISSUE-051 — Mini jit-block remote preflight fails in od-x86-runner tests
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** `tools/x86-runner` native V2 unit tests selected by the Stage 1 physical `jit-block` preflight.
+- **Статус:** решена 2026-11-03; тестовые предположения были устаревшими, подтверждённого runtime-дефекта не найдено.
+- **Суть и результат:** initial Mini preflight exited 101 with 571 passed and 42 failed overall; `od-x86-runner` reported 70 passed/42 failed. Test-only corrections aligned fixture conversion with each declared profile, corrected FS-load budget and RET expectations, supplied readable code permissions for the native STOSB case, replaced stale fixture names, and made x87 rejection assertions distinguish the exact allowlist fallback. Runtime behavior was unchanged. The final exact preflight passed 613 tests with 0 failures, including 112/112 `od-x86-runner` tests. The official S3-14 CLI then completed its managed Mini comparison.
+- **Основание и проверка:** complete initial and final stdout/stderr, commands, and failed test names are preserved in [`S3-14 Mini evidence`](reports/data/stage3/s3-14-mini-2026-11-03/). The successful managed comparison and its limits are documented in the [S3-14 report](reports/STAGE_3_S3-14_2026-10-26.md).
+- **Следующий шаг:** нет по этой записи; более широкие Stage 3 и S3-21 physical gates остаются отдельными незавершёнными условиями.
+
+<a id="issue-052"></a>
+
+### ISSUE-052 — Graphify incremental merge can collapse distinct semantic nodes
+
+- **Дата обнаружения:** 2026-11-03.
+- **Компонент:** локальный Graphify incremental builder, merge/deduplication semantic citations.
+- **Статус:** открыта; безопасное обновление текущего графа продолжается через merge без dedup и проверку сохранённых идентификаторов.
+- **Суть и последствия:** обычный incremental merge группирует citations только по `(source_file, label)` и может объединить разные semantic target IDs. На текущем полном corpus candidate потерял бы 6 сохранённых semantic IDs; community guard также увидел 687 candidate communities против 705 сохранённых labels и отказался публиковать обновление. `--force` может опубликовать граф с потерей данных.
+- **Основание:** полный refresh для текущего checkout обнаружил 3358 файлов; safe updater сообщил указанный community mismatch до публикации. Резервные копии всех 9 Graphify output files сохранены, их checksums не изменялись. Повторный build с `dedup=False` должен пройти полную проверку semantic IDs/provenance до manifest update.
+- **Следующий шаг:** исправить upstream merge key так, чтобы сохранялись разные target IDs и provenance одной метки; до этого обновлять граф через `dedup=False` с проверкой IDs и не применять `--force`.
+
+<a id="issue-041"></a>
+
+### ISSUE-041 — checked memory lowering ограничен узкими V2 MOV slices
+
+- **Дата обнаружения:** 2026-10-27.
+- **Компонент:** `od-jit` checked memory bridge / generated block runtime (S3-19/S3-20).
+- **Статус:** открыта; реализованы exact production V2 load `48 8B /r` и отдельный unsafe store `48 89 /r`, qword, data/base/index RAX..RBX, signed disp8/disp32, разрешённые SIB scales 1/2/4/8, RIP-relative `mod=00,r/m=101,disp32` длиной 7 и отдельный `67 48 8B/89` dword-address profile длиной 4 с `mod=00`, без SIB/index/displacement. Direct формы имеют длины 3/4/7, SIB — 4/5/8. Отдельные shared-IR Dword store slices S3-20co/S3-20cq принимают ровно `89 03` и `89 00`. Base-less, no-index, RSP/RBP/R8+, остальные prefixes/overrides и trailing bytes отвергаются; общий IR/PC-map/cache и multiblock интеграция остаются за пределами среза. S3-24a добавляет отдельный exact 23-byte V3 artifact для bounded active-native-call случая: изменение уже исполненного prefix вызывает один committed store и dirty exit до tail, с notification до освобождения typed handle. S3-24b добавляет только fixture-case перезаписи полного 8-byte immediate последнего `MOV RCX,imm64` в этом V3 artifact; S3-24c также принимает точный immediate, если его qword пересекает два соседних mappings одного backing с непрерывными backing offsets. Полная source lease, identity и точный span проверяются до допуска; backing notification вызывает redispatch до native tail. Opcode/частичные и остальные split-mapping writes остаются запрещены; это не физический SMC oracle и не полное S3-24. S3-27a отдельно проверяет точный `ArchitecturalFault` от checked write на валидном адресе: prefix committed, store RIP/state preserved, tail не исполнен, RAM/version/cache notification unchanged. S3-27c добавляет диагностический PC map только для exact V3 fixture и проверяет его lifetime через artifact drop/cache invalidation/reuse; direct V2 maps и общий host-fault recovery не реализованы. Полный S3-27 fault/fetch/PC-map coverage остаётся открытым.
+- **Суть и последствия:** общий dedicated V2 compiler/emitter/site/helper family создаёт разные private load/store artifacts и compile flavors. Load использует `MemoryOperand::access_address_48` и `CheckedMemoryHelperV1` со staged commit; store вызывает один checked all-or-nothing write и допускается только через unsafe host API с private synchronous ordinary RAM preconditions. Store artifact отклоняется load API; V1 ABI и tag 6 остаются неизменными. Generic unsafe V2 store API по-прежнему запрещает executable backing. Отдельный fixture-only S3-23c path записывает только другой неактивный executable guest backing через typed store slot/tracked owner; active-source overlap, production MMU, MMIO, DMA и общий SMC остаются запрещены.
+- **Основание:** compiler tests и ARM64 native tests подтверждают supported direct/SIB register/base/index/scale/mod формы, exact RIP-relative disp32 site и отдельный 32-bit address-size profile. S3-20f differential охватывает все 16 data/base пар для обоих направлений, старшие биты base, qword data и alias `MOV RAX,[EAX]`. Sparse successful access across `0xffffffff..0x100000006` proves that 32-bit address-size truncation applies only to the starting effective address, while qword operand bytes continue linearly; distinct low sentinels remain unchanged. Отдельный unmapped case проверяет fault atomicity. S3-27a инжектирует точный architectural #PF на checked write валидного адреса и сравнивает fault payload, полное CPU state и RAM/version с независимой interpreter fixture; дополнительно проверяются STOP при fault, guard no-call, helper boundary classification и malformed host outcomes. См. [S3-20f report](reports/STAGE_3_S3-20f_2026-10-27.md), [S3-27a report](reports/STAGE_3_S3-27a_2026-10-27.md), [contract](specs/JIT_CONTRACT.md#s3-19b--s3-20-узкие-production-v2-mov-loadstore-slices) и [plan](plans/STAGE_3.md#s3-19-подключить-checked-memory-bridge). Физическая проверка Mac mini отложена до финального S3-21 gate после локального Stage 3.
+- **Следующий шаг:** расширять memory lowering только отдельными проверенными формами; сохранять запрет executable backing в generic unsafe private-data store API и ограничивать code writes отдельным проверенным owner path. Production writer/MMU integration, прочие future-instruction rewrites и general active SMC остаются открытыми; физическую проверку выполнить после локального Stage 3.
+
+- **Результат S3-20cq (2026-11-01):** exact `89 00` (`MOV [RAX],EAX`) подключён к существующему shared typed IR Dword-store пути рядом с `89 03`. Проверены full-width старый RAX как адрес, low32 старого RAX как payload, ровно один четырёхбайтовый write, сохранность RAX и adjacent bytes, crossing `0xffff_ffff`, architectural/backend callback errors, noncanonical #GP без callback, entry guards и строгая provenance/source admission. Callback STOP выставляется во время единственного успешного write и возвращается после committed RIP/retirement; HelperCall/AfterHelper/commit snapshots inadmissible, helper error replay допускается только для all-or-nothing отказа до commit. См. [S3-20cq report](reports/STAGE_3_S3-20cq_2026-11-01.md); общий ISSUE-041 остаётся открытым.
+
+<a id="issue-037"></a>
+
+### ISSUE-037 — unresolved branch-target handoff between block builder and IR
+
+- **Дата обнаружения:** 2026-10-26.
+- **Компонент:** `od-jit` bounded block builder и typed IR verifier (S3-03/S3-04).
+- **Статус:** закрыта для S3-05 IR handoff; unresolved branch безопасно уходит к interpreter до Jcc, а target не выдаётся за проверенную boundary. Dispatch resolution по-прежнему требуется в S3-15.
+- **Суть и последствия:** builder останавливается сразу после условной ветви и не читает недостижимый хвост; будущая или внешняя цель может оставаться `Unresolved`. Теперь lowering исключает такую Jcc из IR records и направляет prefix-only Program на `NeedInterpreter` с RIP ветви; при пустом prefix возвращается `NoNativePrefix`. Verifier не принимает unresolved target как native branch. Нельзя считать target проверенным только потому, что его числовой адрес внутри code buffer, или читать хвост ради проверки после terminator.
+- **Основание и проверка:** boundary handling в [`ir.rs`](../crates/od-jit/src/ir.rs), target classification в [`block.rs`](../crates/od-jit/src/block.rs), fallback lowering в [`lowering.rs`](../crates/od-jit/src/lowering.rs), а также [S3-05 contract](specs/JIT_CONTRACT.md#s3-05-decoded-effects-to-typed-ir). Targeted tests покрывают unresolved-first, unresolved-after-prefix и другие branch classes.
+- **Следующий шаг:** S3-15 определяет resolution к будущему block entry без декодирования недостижимого хвоста; до этого unresolved Jcc остаётся interpreter-only.
+
+<a id="issue-040"></a>
+
+### ISSUE-040 — Stage 1 test expectations reject currently accepted x87 forms
+
+- **Дата обнаружения:** 2026-10-26.
+- **Компонент:** `od-isa` local Stage 1 test suite; x87 decode/execute admission.
+- **Статус:** открыта; пять тестов падают на Stage 3 baseline commit `9a1376b` и повторно на S3-11 worktree, остальные 706 проходят.
+- **Суть и последствия:** тесты `fabs_rejects_missing_or_invalid_source_and_boundaries_atomically`, `fchs_rejects_invalid_source_and_execution_boundaries_atomically`, `fst_and_fstp_sti_reject_noncanonical_specials_and_bad_infinity_environment_atomically`, `fcomi_family_decodes_only_the_32_bare_indexed_register_forms` и `fninit_accepts_only_bare_db_e3` ожидают `Unsupported`, тогда как соответствующие x87 forms принимаются текущей реализацией. Это не подтверждённый JIT flags дефект, но мешает полному зелёному `od-isa` suite и осложняет проверку Stage 3 изменений.
+- **Основание:** локальный baseline harness [отчёт S3-01](reports/STAGE_3_BASELINE_2026-10-26.md#ограничения-и-следующий-шаг) зафиксировал 703 passed/5 failed; повтор S3-11 дал те же пять имен, serial run также воспроизводит их, а изменённые files не относятся к x87 decoder/execute.
+- **Следующий шаг:** сверить эти ожидания с поддержанным x87 профилем Stage 2, обновить неверные тестовые ожидания или исправить admission только при доказанном semantic дефекте; затем повторить целевые и workspace проверки.
+
+<a id="issue-039"></a>
+
+### ISSUE-039 — Ограниченное покрытие liveness allocator tests
+
+- **Дата обнаружения:** 2026-10-26.
+- **Компонент:** `od-jit::allocator` (S3-09).
+- **Статус:** частично устранена в S3-30a по покрытию def/use/helper-boundary: table-driven matrix проверяет budgets 0..=4, одновременные live register homes и spills, capture-slot reuse, а также границы до `Constant`, `ReadGpr` и `CheckedLoad` definitions. S3-30p3 отдельно закрыла sum-only limitation native helper-clobber probe, проверяя индивидуально все шесть W64 values после двух вызовов. Ранее добавленные S3-10/S3-11 проверки остаются. Это не подтверждает все allocator paths, pending-flags combinations или runtime correctness вне проверенных fixtures; подтверждённого runtime-дефекта нет.
+- **Суть и последствия:** allocator опирается на first/last-use в linear IR; непокрытое сочетание может ошибочно посчитать временное значение мёртвым или сохранить неверный набор register homes. Подтверждённого runtime-дефекта нет.
+- **Основание:** независимое ревью S3-09 выявило отсутствие отдельных unit vectors для перечисленных liveness сочетаний. S3-30a добавила `table_driven_definition_use_and_helper_boundary_liveness_matrix`; `cargo test -p od-jit --offline` прошёл (275/275). Native helper-clobber probe прошёл (1/1); после S3-30p3 он отдельно проверяет все шесть values после обоих вызовов, что зафиксировано в [S3-30p3 report](reports/STAGE_3_S3-30p3_2026-11-01.md). Независимое Sol/high review подтвердило ожидаемые liveness, spill/capture slots, counters и новый test evidence.
+- **Следующий шаг:** при изменениях allocator добавлять проверки для конкретно изменяемых путей. Текущее покрытие не является исчерпывающей матрицей runtime allocator paths; новые комбинации добавлять в пределах конкретных Stage 3 срезов. Allocator comparison и выбор реализации остаются задачей S3-30 и требуют отдельного измерительного среза.
+
+<a id="issue-038"></a>
+
+### ISSUE-038 — Ограничение одной MAP_JIT region и незавершённая multi-block интеграция
+
+- **Дата обнаружения:** 2026-10-26.
+- **Компонент:** `od-host::PublishedCode` (S3-07), будущий block cache (S3-18).
+- **Статус:** частично устранена в S3-18b/S3-18c/S3-22a/S3-23a/S3-23c/S3-23d/S3-23e/S3-23f/S3-23g/S3-24a/S3-24b/S3-25a/S3-25b; bounded host arena/cache, fixture context identity, единая fixture write transaction для interpreter/V2/control, owner notifications и region-scoped redispatch между calls, tracked V2 code store, qword writes across same- or distinct-backing adjacent mappings (maximum two segments), bounded active-prefix and exact-tail-immediate exits и synchronous V3/cache slot lifetime checks реализованы. Текущая синхронная компиляция/публикация удерживает frozen snapshot, поэтому race с owner write исключён в этом пути; live-owner candidate commit потребуется при фоновой/асинхронной компиляции или освобождении snapshot до publication. Production MMU ownership, DMA/device writers, instruction rewrites beyond the exact V3 tail-immediate fixture, active-code retirement beyond this fixture, полный lifecycle и performance acceptance остаются открытыми.
+- **Результат S3-24b (2026-10-29):** точный `MOV RCX,imm64` tail immediate в одном V3 fixture artifact может быть заменён одним committed qword-store; source/backing identity и exact destination span обязательны. Dirty exit перед tail, direct/alias invalidation, свежая redispatch, STOP, stale lease, сдвинутые/частичные записи и fault/backend atomicity покрыты. Тогда же split-mapping target был отклонён; S3-24c расширяет только точные два соседних mapping одного backing. Это не физическое x86 SMC доказательство и не закрывает общий S3-24. См. [S3-24b report](reports/STAGE_3_S3-24b_2026-10-29.md).
+- **Результат S3-24c (2026-11-03):** тот же exact V3 tail immediate теперь допускает destination через два соседних mappings одного backing с contiguous backing offsets. Подтверждены dirty exit, единичные write/version/notification, инвалидирование предварительно закешированного tail, fresh dispatch с новым immediate и STOP после commit. Scope fixture-only; production owner/MMU и общий SMC остаются открытыми. См. [S3-24c report](reports/STAGE_3_S3-24c_2026-11-03.md).
+- **Результат S3-38a (2026-10-29):** существующий register-only S0-09 C ABI `od_fragment_execute` подключён к eager multi-block dispatcher через run-local bounded arena/cache. ABI ownership/status/STOP regressions и локальные VMHost control/process smokes прошли. Cache не разделяется между handles/requests и не хранится в `FragmentInstance`; full S3-38 и остальные пункты этой записи остаются открытыми. См. [S3-38a report](reports/STAGE_3_S3-38a_2026-10-29.md).
+- **Уточнение S3-15n:** production ownership prerequisites are recorded in [JIT_CONTRACT](specs/JIT_CONTRACT.md#production-memory-owner-integration-prerequisites-s3-15n): `od-machine` must own RAM/backing, mappings, MMU permissions, code leases and committed-write batches; `od-jit` consumes fetch/decode and invalidation events for compile/cache/dispatch; `od-host` owns executable publication/release. This is a documented dependency map, not an implementation. The borrowed uncached dispatcher remains fixture-bounded, and `od-machine` has no production memory owner.
+- **Суть и последствия:** Apple ограничивает процесс с Hardened Runtime и allow-jit entitlement одной `MAP_JIT` region. `od-host` отвергает вторую отдельную region как `MappingAlreadyLive` (C ABI: существующий `STATUS_BUSY`). S3-18b добавляет один bounded arena с 1..=16 fixed slots по 4096 bytes и handle-owned lifetime; S3-18c соединяет её capacity с `od-jit::dispatch::MultiEntryBlockCache`, который ограничен 16 entries, 65,536 emitted bytes и 512 KiB logical metadata, использует FIFO eviction и dropped handles перед publication. S3-22a включает caller-owned nonzero context generation/profile в cache key. S3-23a добавляет fixture owner notifications для backing content, mapping replacement/removal и execute-permission changes между synchronous dispatch calls. S3-23c добавляет one-vCPU tracked fixture path: stop-RIP/STOP/budget guards сохраняют приоритет, owner сверяет site RIP/source bytes с active-source lease, проверяет полный range/permissions/version и отвергает active-source alias overlap; после result decoding committed store меняет version и инвалидирует target backing. S3-23d направляет interpreter `GuestMemory::write`, tracked V2 store и control write fixture через общие range/permission/backing/version/active-overlap проверки и единый all-or-nothing commit; interpreter/JIT notifications применяются после возврата call, control notification — до возврата control adapter. S3-23f разрешает один qword через максимум две adjacent mappings того же backing с единым slice copy. S3-23g строит фиксированный план максимум из двух сегментов для adjacent mappings разных BackingIds, валидирует версии и permissions обоих до mutation, затем под эксклюзивной fixture транзакцией копирует оба сегмента без callback/re-entry. Если сегменты contiguous в одном backing, они coalesce в один slice copy; разные backing получают отдельные copies и по одной version increment. Fixed notification batch применяется до следующего lookup; это не подтверждает hardware atomicity или SMP. Differential fixture tests сравнивают interpreter и native V2 store по CPU/RAM/version и следующему dispatch; control-write parity и failure atomicity также проверены. S3-25a подтверждает, что cache entry/compiled metadata/published handle остаются живы через backend call и result validation, eviction/drop происходит только на safe point после возврата, STOP не освобождает resident entry, а backend error удаляет его после возврата. S3-25b проверяет capacity-2 arena: один V3 slot и один cached prefix живут одновременно, третья публикация не выселяет их, cache clear и notification освобождают только cache slot, устаревший V3 handle отвергает изменённый source, а drop V3 позволяет переиспользовать slot и затем освободить/reopen mapping lease. STOP-after-commit, fault after prefix и backend-before-handle/reopen проверены соответствующими fixture cases. Полный S3-25 остаётся открытым. Это bounded fixture path, не production memory owner: DMA/device writers, production MMU, future owner-aware candidate commit если фоновой/unfrozen compilation сможет превысить lifetime snapshot, active-code retirement, SMP reclamation и deferred retirement queue остаются вне среза. Caller по-прежнему удерживает frozen snapshot/lease; `pthread_jit_write_protect_np` действует на текущий поток, а локальный gate не координирует посторонних или параллельных JIT-пользователей процесса.
+- **Основание:** Apple [JIT porting documentation](https://developer.apple.com/documentation/apple-silicon/porting-just-in-time-compilers-to-apple-silicon) и [entitlement documentation](https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.security.cs.allow-jit?changes=latest_7_7_7&language=objc); Intel SDM Vol. 3A (Order No. 253668-082US, December 2023) §9.1.3 задаёт store/control-transfer/execute последовательность ([официальный PDF](https://cdrdv2-public.intel.com/812386/253668-sdm-vol-3a.pdf)); arena/store lifecycle and fixture tests в [`od-host/src/lib.rs`](../crates/od-host/src/lib.rs); owner invalidation details описаны в [S3-23a report](reports/STAGE_3_S3-23a_2026-10-27.md), [S3-23c report](reports/STAGE_3_S3-23c_2026-10-27.md), [S3-23d report](reports/STAGE_3_S3-23d_2026-10-27.md), [S3-23e report](reports/STAGE_3_S3-23e_2026-10-27.md), [S3-23f report](reports/STAGE_3_S3-23f_2026-10-27.md), [S3-23g report](reports/STAGE_3_S3-23g_2026-10-27.md), [S3-25a report](reports/STAGE_3_S3-25a_2026-10-27.md) и [S3-25b report](reports/STAGE_3_S3-25b_2026-10-27.md).
+- **Следующий шаг:** implement the `od-machine` production RAM/backing/mapping/MMU owner and private synchronous RAM capability with permission/revocation tests; connect incremental fetch/decode and every committed writer (including aliases and future device/DMA writers) to versioned owner identities and active-code dirty notifications; then integrate `od-jit` dispatch/invalidation and `od-host` publication/lease release and run the owner-backed end-to-end acceptance in [S3-15n](specs/JIT_CONTRACT.md#production-memory-owner-integration-prerequisites-s3-15n). Add candidate revalidation only if writers may mutate backing during compilation outside a frozen lease. Active-code/SMP retirement remains its own S3-23/24/25 prerequisite. Final Mac mini physical comparison and cold/warm performance measurements remain separate gates. Do not create per-block MAP_JIT mappings.
+
 ### ISSUE-018 — Специальные значения и исключения indexed FCOMI-family вне bounded профиля
 
 - **Дата обнаружения:** 2026-10-24.
@@ -282,6 +462,7 @@
 - **Статус:** открыта; локальные fault-diagnostics закрыты, но этап 0 не принят до проверки пути выпуска.
 - **Суть и последствия:** unit test подтверждает fault в generated code внутри дочернего процесса, а protocol-level test helper подтверждает `SIGSEGV` диагностику launcher-а. Временная ad-hoc `.app` smoke-упаковка валидна и исполняет JIT, но не подтверждает Developer ID distribution или notarization. Владелец сообщает о наличии Developer ID certificate, но соответствующая signing identity (сертификат с доступным private key) не найдена в keychains проверенных M3 Max и M1 Pro. Членство Apple Developer Program не активно; Apple notary service недоступен до его возобновления.
 - **Основание:** проверки `generated_code_fault_is_confined_to_child_process`, `vmhost_generated_fault_smoke.py` и `vmhost_app_bundle_smoke.sh` прошли на M3 Max. Инвентаризация подписи и пределы теста записаны в [STAND.md](testing/STAND.md) и [отчёте этапа 0](reports/STAGE_0_REPORT.md).
+- **Проверка S3-07 (2026-10-26):** на macOS 26.7.1 ARM64 ad-hoc подписанный Hardened Runtime VMHost с `com.apple.security.cs.allow-jit` прошёл launcher smoke и исполнил фрагмент; Developer ID/notarization и packaged distribution этим не подтверждены.
 - **Следующий шаг:** установить на M3 Max действующую Developer ID Application identity вместе с соответствующим private key и проверить подписание конечного Open Desktop bundle. Если требуется проверить notarization, владелец должен возобновить членство Apple Developer Program и предоставить авторизацию для notary service; учетные данные не передавать через чат. Затем повторить S0-14 review. До появления доступной identity Developer ID signing не проверено, а без активного членства notarization недоступна. Ответственный: владелец конфигурации подписи совместно с инженером macOS.
 
 ### ISSUE-018 — S2-22 покрывает только ограниченные selector/descriptor slices
@@ -1637,3 +1818,12 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Основание:** authenticated source/archive hashes and image-derived/debug ELF mapping at `ffffffff8139c1b4` (`RDMSR`) and `ffffffff8139c1d5` (conditional `WRMSR`), with source `arch/x86/kernel/head_64.S:379–401`; see [S2-25d mapping](reports/STAGE_2_LINUX_PROFILE.md#ia32-efer-on-the-mapped-main-kernel-direct64-continuation).
 - **Следующий шаг:** audit all earlier compressed/decompression and `__pi_*` helper paths for EFER accesses and capture/establish the relevant startup control-state assumptions through independent evidence. Keep any next CPU slice read-only until WRMSR mode and paging effects have an owning contract; Stage 4 remains owner of system translation effects.
 - **S2-25e:** implemented a local exact read-only `RDMSR IA32_EFER` fixture profile over four synthetic values with bounded current CR0/CR4 prerequisites. This does not change the open status: no actual Ubuntu entry value, initial CR snapshot, absolute-first-access ordering, WRMSR behavior, guest exception delivery, paging effect, or runtime boot observation is established. See [S2-25e CPU contract](specs/CPU_CONTRACT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer) and [implementation report](reports/STAGE_2_REPORT.md#s2-25e--exact-read-only-long64-rdmsr-ia32_efer).
+
+### ISSUE-053 — Stage 3 reports reference absent ignored evidence
+
+- **Дата обнаружения:** 2026-11-04; разрешено в текущем main worktree 2026-11-04.
+- **Компонент:** `docs/reports/STAGE_3*.md` and historical Stage 3 evidence under ignored `work/` paths.
+- **Статус:** разрешена локальным восстановлением исходных файлов.
+- **Суть и последствия:** Several Stage 3 reports linked to run summaries, manifests, and diagnostic attempts under `work/stage3-harness/` or `work/stage1-harness/` that were absent from this checkout. The reports could not be opened locally until those files were restored.
+- **Основание и результат:** all 21 files reported as broken by `python3 tools/check_layout.py` were found in `/Users/senya/.codex/worktrees/stage3-baseline/open_desktop` and copied to the same relative `work/` paths in the main worktree. The layout checker now passes: `Layout OK: 48 required directories, 6 crate scaffolds, 14 instruction scopes.`
+- **Граница:** `work/` remains Git-ignored, so these local evidence files are available in this main worktree but are not part of the source commit. If portable evidence is needed, curate the required records into `docs/reports/data/stage3/` under the project's evidence policy.

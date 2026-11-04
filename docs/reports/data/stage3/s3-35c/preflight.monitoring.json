@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "profile_id": "s3-35c-two-site-memory-cold-direct-v1",
+  "process_run": 1,
+  "command": "cargo run --release -p od-bench --offline -- two-site-memory-cold --preflight-only --process-run 1 --output work/tmp/stage3/s3-35c/preflight.json",
+  "commit": "b6892d4199c29ff4c872ac6e1fb48d1df6a1bc50",
+  "exit_code": 0,
+  "start_utc_estimate": "2026-11-01T04:25:30Z",
+  "start_time_basis": "Estimated from cargo PID 80311 at 00:33 elapsed in the 2026-11-01T04:26:03Z snapshot; command started after the 04:25:28Z prestart snapshot.",
+  "finish_utc_observed_by": "2026-11-01T04:26:13Z",
+  "finish_time_basis": "The command session returned exit code 0 before the 04:26:13Z final artifact/process snapshot; precise process exit timestamp was not sampled.",
+  "processes": {
+    "cargo_pid": 80311,
+    "bench_rustc_pid": 83956,
+    "bench_binary_pid": null,
+    "bench_binary_pid_note": "The preflight executable completed between periodic snapshots; its PID was not captured.",
+    "build_rustc_cpu_percent_at_active_snapshot": 95.7
+  },
+  "report": {
+    "path": "work/tmp/stage3/s3-35c/preflight.json",
+    "sha256": "da5b4bc31dc3d682be8dc2f972d7c4d10a296f5b7c95386d405dd34008cfc519",
+    "case_count": 2400,
+    "preflight_parity_cases": 2400,
+    "sequence_counts": [1200, 1200],
+    "frozen_seed_values": [5999696582365151233, 5999696582365151234, 5999696582365151235],
+    "input_digest": "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540",
+    "timing_started": false,
+    "journal_created": false
+  },
+  "host": {
+    "os": "macos 26.7.1",
+    "architecture": "aarch64-apple-darwin",
+    "cpu_model": "Apple M3 Max",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "profile": "release",
+    "build_source_revision": "b6892d4199c29ff4c872ac6e1fb48d1df6a1bc50",
+    "build_source_sha256": "de5c60d04db39b05bb2efcc61ac79711fb3a18c6c7f135e41695ad7269775d65",
+    "build_source_tree_dirty": true,
+    "execution_working_tree_dirty": null,
+    "working_tree_status_note": "Host metadata reported git status unavailable after a 2000 ms timeout; preserve dirty state as unknown."
+  },
+  "snapshots": [
+    {
+      "utc": "2026-11-01T04:25:28Z",
+      "phase": "prestart",
+      "load_average_1_5_15": [3.64, 3.04, 2.77],
+      "stage2_processes": [
+        {
+          "pid": 6141,
+          "command": "cargo test -p od-runner --offline -- --test-threads=1",
+          "elapsed": "04:17",
+          "cpu_percent": 0.0
+        }
+      ],
+      "graphify_processes": []
+    },
+    {
+      "utc": "2026-11-01T04:26:03Z",
+      "phase": "active_release_build",
+      "load_average_1_5_15": [3.55, 3.07, 2.79],
+      "bench_processes": [
+        {"pid": 80311, "command": "cargo run --release -p od-bench ... --preflight-only", "elapsed": "00:33", "cpu_percent": 0.0},
+        {"pid": 83956, "command": "rustc --crate-name od_bench ... --release", "elapsed": "00:02", "cpu_percent": 95.7}
+      ],
+      "stage2_processes": [
+        {
+          "pid": 83785,
+          "command": "rustc --crate-name od_x86_runner ... --test",
+          "elapsed": "00:13",
+          "cpu_percent": 0.0
+        }
+      ],
+      "graphify_processes": []
+    },
+    {
+      "utc": "2026-11-01T04:26:13Z",
+      "phase": "completed",
+      "load_average_1_5_15": [3.31, 3.04, 2.78],
+      "bench_processes": [],
+      "stage2_processes": [
+        {
+          "pid": 84084,
+          "command": "rustc --crate-name od_x86_runner ... --test",
+          "elapsed": "00:03",
+          "cpu_percent": 22.8,
+          "timing_relation": "Observed after the preflight command had completed; no overlap established."
+        }
+      ],
+      "graphify_processes": []
+    }
+  ],
+  "limitations": [
+    "Snapshots are periodic point-in-time observations, not continuous telemetry.",
+    "The report confirms timing_started=false; the run was preflight-only.",
+    "Build source tree was reported dirty and execution working-tree status was unavailable; retain these provenance caveats for evidence review."
+  ]
+}

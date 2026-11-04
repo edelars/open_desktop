@@ -1,0 +1,22 @@
+S3-39 M1 Pro smoke build recipe
+Source revision: 00bf9476f107eb7343026b81899e3ec8111543f1 (clean dedicated worktree)
+Build host: Mac15,11 / Apple M3 Max / macOS 26.7.1 (25G241)
+Build host Rust/Cargo: rustc 1.99.0 (b940084d7), cargo 1.99.0 (5f94df478)
+Rust target: aarch64-apple-darwin; deployment target 14.0; generic CPU target
+Rust command:
+  MACOSX_DEPLOYMENT_TARGET=14.0 RUSTFLAGS='-C target-cpu=generic' CARGO_TARGET_DIR=target/s3-39-aarch64 cargo build --release --target aarch64-apple-darwin -p od-host --offline
+M1 build host: MacBookPro18,3 / Apple M1 Pro / macOS 14.6.1 (23G93)
+M1 toolchain: Xcode 15.4 (15F31d), Swift 5.10, Apple clang 15.0, macOS SDK 14.5
+Swift target: arm64-apple-macosx14.0
+Swift VMHost command:
+  xcrun swiftc -target arm64-apple-macosx14.0 -module-cache-path "$D/module-cache" -parse-as-library -O -import-objc-header "$P/include/open_desktop/host_abi.h" "$P/apps/vmhost/Sources/ControlFrame.swift" "$P/apps/vmhost/Sources/main.swift" "$P/libod_host.a" -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o "$D/od-vmhost-smoke"
+Swift launcher command:
+  xcrun swiftc -target arm64-apple-macosx14.0 -module-cache-path "$D/module-cache" -parse-as-library -O -import-objc-header "$P/include/open_desktop/host_abi.h" "$P/apps/vmhost/Sources/ControlFrame.swift" "$P/apps/macos/Sources/launcher.swift" "$P/libod_host.a" -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o "$D/open-desktop-launcher-smoke"
+VMHost signature:
+  codesign --force --sign - --options runtime --entitlements "$P/apps/vmhost/Configuration/vmhost-smoke.entitlements" "$D/od-vmhost-smoke"
+Launcher signature:
+  codesign --force --sign - --options runtime "$D/open-desktop-launcher-smoke"
+Both signatures verified with codesign --verify --strict. VMHost carries com.apple.security.cs.allow-jit=true.
+C ABI lifecycle probe:
+  clang -target arm64-apple-macosx14.0 -O2 -I "$P/include" "$D/publication_lifecycle.c" "$P/libod_host.a" -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o "$D/publication_lifecycle_same_process"
+  codesign --force --sign - --options runtime --entitlements "$P/apps/vmhost/Configuration/vmhost-smoke.entitlements" "$D/publication_lifecycle_same_process"

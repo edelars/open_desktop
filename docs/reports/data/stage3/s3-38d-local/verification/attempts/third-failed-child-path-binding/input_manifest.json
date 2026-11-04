@@ -1,0 +1,1573 @@
+{
+  "schema_version": 3,
+  "stage": "S3-34g-vmhost-process",
+  "stage1_dispatch": {
+    "source_fingerprint": "b96906f28c43a2b2a47e995da23e177eafee2585a1df75443ad1501db9368ef3",
+    "command_profile": [
+      "stage1_harness.py",
+      "--suite",
+      "oracle",
+      "--engine",
+      "jit-dispatch",
+      "--local-only",
+      "--generated-count",
+      1000,
+      "--seed",
+      "0x5eedcafe",
+      "--repeats",
+      2
+    ],
+    "manual_inputs": [
+      {
+        "case_id": "s0_09_mov_imm64",
+        "path": "tests/fixtures/x86/s0_09_mov_imm64.case.json",
+        "sha256": "45139dedf0d845010e5773fe4b776919ebb5c0af125680d0e27540dac732a5db"
+      },
+      {
+        "case_id": "s0_09_add_overflow",
+        "path": "tests/fixtures/x86/s0_09_add_overflow.case.json",
+        "sha256": "12e43c2a15e5b41e868092fd9223c1e4ff888da49d6b39a1474ce8e362d2a729"
+      },
+      {
+        "case_id": "s0_09_cmp_jz",
+        "path": "tests/fixtures/x86/s0_09_cmp_jz.case.json",
+        "sha256": "0828f14b6ef6035e1dffb812c79b3ec81c0d78aa86c2f7cc8a8aa422d96ca58b"
+      },
+      {
+        "case_id": "s0_09_sub_jnz_loop",
+        "path": "tests/fixtures/x86/s0_09_sub_jnz_loop.case.json",
+        "sha256": "720abcca7c3bbc11593b1b6a1a908cb24206eadb7df3d3eeed14b2340091227c"
+      },
+      {
+        "case_id": "s1_06_add_signed_overflow",
+        "path": "tests/fixtures/x86/s1_06_add_signed_overflow.case.json",
+        "sha256": "740d7bf6e9408a9db1dcab0f6d1a399b3200aac63d11ad3e51b6baa1f95c0d15"
+      },
+      {
+        "case_id": "s1_06_sub_borrow",
+        "path": "tests/fixtures/x86/s1_06_sub_borrow.case.json",
+        "sha256": "994a3b4ad68580a9e3138fe4ce18e18d5f94647064afe06311de654bb19e6ad0"
+      },
+      {
+        "case_id": "s1_06_cmp_signed_boundary",
+        "path": "tests/fixtures/x86/s1_06_cmp_signed_boundary.case.json",
+        "sha256": "a8a47e5f25bc1fd3493cc5432cc614e92365cc2c15f70fb37f40be5b7e86d6a5"
+      },
+      {
+        "case_id": "s1_06_jz_taken",
+        "path": "tests/fixtures/x86/s1_06_jz_taken.case.json",
+        "sha256": "f7a04d7ab9cb67f3a475dfeb28d6b7ba1b032411048d898a80a2a05dc2e8889d"
+      },
+      {
+        "case_id": "s1_06_jz_not_taken",
+        "path": "tests/fixtures/x86/s1_06_jz_not_taken.case.json",
+        "sha256": "174ccb9a7d8209fe320950d20fd8d72f54fc64d06c8ed512264b904a06d2d1b2"
+      },
+      {
+        "case_id": "s1_06_mov_preserves_flags",
+        "path": "tests/fixtures/x86/s1_06_mov_preserves_flags.case.json",
+        "sha256": "01eb759e88337a61b6e1801ceda16903764263172eb10977316796ac65b0608c"
+      }
+    ]
+  },
+  "memory_corpus": {
+    "source": "crates/od-host/tests/memory_corpus.rs",
+    "source_sha256": "9fb1e3ce8579e1a64580f51a630b1762b1f60db2b7afc6c9611cb1d7caf5b7ee",
+    "required_tests": [
+      "bounded_reducer_is_deterministic_preserves_class_and_saves_report",
+      "comparator_rejects_corruption_and_serializes_named_diagnostics",
+      "fixed_seed_memory_corpus_matches_interpreter_twice_per_input",
+      "generic_reducer_can_clear_marker_when_comparator_allows_candidate",
+      "mismatch_report_preserves_empty_first_and_mismatching_continuation_phases",
+      "named_fault_stop_budget_and_continuation_cases_are_separate",
+      "reducer_preserves_load_pair_site_fault_boundary_and_mismatch_class",
+      "reducer_rejects_malformed_and_unavailable_inputs_and_stops_on_nonreproduction",
+      "reducer_rejects_same_mismatch_moving_to_continuation_phase",
+      "replay_envelope_round_trips_and_rejects_malformed_reports",
+      "replay_refuses_to_claim_equivalence_without_native_backend",
+      "replay_success_fault_stop_budget_and_continuation_for_all_sequences",
+      "saved_mismatch_report_replays_and_preserves_original_classes"
+    ],
+    "expected_unique_inputs": 3600,
+    "replays_per_input": 2,
+    "exact_gate": {
+      "test_identity": "reducer_preserves_load_pair_site_fault_boundary_and_mismatch_class",
+      "argv": [
+        "cargo",
+        "test",
+        "--offline",
+        "-p",
+        "od-host",
+        "--test",
+        "memory_corpus",
+        "reducer_preserves_load_pair_site_fault_boundary_and_mismatch_class",
+        "--",
+        "--exact",
+        "--test-threads=1"
+      ]
+    }
+  },
+  "lifecycle": {
+    "source": "crates/od-host/src/lib.rs",
+    "source_sha256": "d4138880dbae0c090641d4b5cc361f8e5925f23ab6e79ecd967b48d2eb56cf6d",
+    "exact_tests": [
+      "arena_cache_a_b_a_churn_reuses_only_safe_slots_at_capacity_one_and_two",
+      "bounded_memory_dispatch_nop_fallback_is_exact_and_strict_run_stays_strict",
+      "code_region_store_invalidates_cached_prefix_and_tail_before_redispatch",
+      "active_code_v3_exits_on_dirty_prefix_and_finishes_unrelated_store_in_one_entry",
+      "active_code_v3_invalidates_exact_not_yet_executed_tail_immediate",
+      "active_code_v3_guards_faults_aliases_and_committed_stop_are_precise",
+      "active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse",
+      "direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse",
+      "active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic",
+      "ir_two_load_pair_preserves_callbacks_faults_and_continuation"
+    ]
+  },
+  "local_rust_tests": {
+    "gates": [
+      {
+        "step": "arena_cache_a_b_a_churn_reuses_only_safe_slots_at_capacity_one_and_two",
+        "suite": "local_lifecycle",
+        "package": "od-host",
+        "identity": "tests::arena_cache_a_b_a_churn_reuses_only_safe_slots_at_capacity_one_and_two"
+      },
+      {
+        "step": "bounded_memory_dispatch_nop_fallback_is_exact_and_strict_run_stays_strict",
+        "suite": "local_lifecycle",
+        "package": "od-host",
+        "identity": "tests::bounded_memory_dispatch_nop_fallback_is_exact_and_strict_run_stays_strict"
+      },
+      {
+        "step": "code_region_store_invalidates_cached_prefix_and_tail_before_redispatch",
+        "suite": "local_lifecycle",
+        "package": "od-host",
+        "identity": "tests::code_region_store_invalidates_cached_prefix_and_tail_before_redispatch"
+      },
+      {
+        "step": "active_code_v3_exits_on_dirty_prefix_and_finishes_unrelated_store_in_one_entry",
+        "suite": "local_lifecycle",
+        "package": "od-host",
+        "identity": "tests::active_code_v3_exits_on_dirty_prefix_and_finishes_unrelated_store_in_one_entry"
+      },
+      {
+        "step": "active_code_v3_invalidates_exact_not_yet_executed_tail_immediate",
+        "suite": "local_lifecycle",
+        "package": "od-host",
+        "identity": "tests::active_code_v3_invalidates_exact_not_yet_executed_tail_immediate"
+      },
+      {
+        "step": "active_code_v3_guards_faults_aliases_and_committed_stop_are_precise",
+        "suite": "local_lifecycle",
+        "package": "od-host",
+        "identity": "tests::active_code_v3_guards_faults_aliases_and_committed_stop_are_precise"
+      },
+      {
+        "step": "active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse",
+        "suite": "local_lifecycle",
+        "package": "od-host",
+        "identity": "tests::active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse"
+      },
+      {
+        "step": "direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse",
+        "suite": "local_lifecycle",
+        "package": "od-host",
+        "identity": "tests::direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse"
+      },
+      {
+        "step": "active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic",
+        "suite": "local_lifecycle",
+        "package": "od-host",
+        "identity": "tests::active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic"
+      },
+      {
+        "step": "ir_two_load_pair_preserves_callbacks_faults_and_continuation",
+        "suite": "local_lifecycle",
+        "package": "od-host",
+        "identity": "tests::ir_two_load_pair_preserves_callbacks_faults_and_continuation"
+      },
+      {
+        "step": "s3_27d_direct_memory_v2_pc_map",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "memory_load_v2::tests::ir_checked_load_uses_distinct_v2_artifact_and_pc_map"
+      },
+      {
+        "step": "s3_27d_direct_memory_v2_pc_map_lifecycle",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse"
+      },
+      {
+        "step": "s3_27d_direct_memory_v2_pc_map_invalidation",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::tracked_v2_store_invalidates_alias_after_return_and_preserves_late_stop_commit"
+      },
+      {
+        "step": "s3_27d_direct_memory_v2_error_distinction",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::address32_low_base_rsi_rdi_index_sib_matches_all_execution_paths"
+      },
+      {
+        "step": "s3_38b_native_register_v1_cache_profile_invalidation",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::native_cached_profile_isolated_and_dependency_context_changes_miss"
+      },
+      {
+        "step": "s3_38b_native_register_v1_cache_guards_capacity",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::native_cached_guards_and_failures_preserve_publication_and_entry_counts"
+      },
+      {
+        "step": "s3_38b_native_register_v1_host_reuse_lifetime_parity",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::cached_native_register_v1_reuses_eager_block_with_full_state_parity"
+      },
+      {
+        "step": "s3_38c_native_register_v1_strategy_key_isolation",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::native_cached_demand_candidate_strategy_key_isolated"
+      },
+      {
+        "step": "s3_38c_native_register_v1_candidate_lifecycle_guards",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::native_cached_demand_candidate_guards_and_lifetime"
+      },
+      {
+        "step": "s3_38c_native_register_v1_candidate_cold_hit_parity",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::cached_native_register_v1_demand_candidate_cold_hit_full_state_parity"
+      },
+      {
+        "step": "s3_27c_active_code_v3_pc_map",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "memory_load_v2::tests::active_code_v3_compiles_only_exact_three_instruction_source"
+      },
+      {
+        "step": "s3_29e_coordinator",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::s3_29e_bounded_arithmetic_load_coordinator"
+      },
+      {
+        "step": "demand_flags_replacement_spills",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::demand_flags_candidate_defers_replaced_writers_and_survives_clobbers_and_spills"
+      },
+      {
+        "step": "demand_flags_branch_materialization",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::demand_flags_candidate_materializes_before_jz_and_jnz_after_preserving_mov"
+      },
+      {
+        "step": "demand_flags_exit_materialization",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::demand_flags_candidate_materializes_on_stop_unsupported_and_helper_failure_exits"
+      },
+      {
+        "step": "s3_28_event_before_entry",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::event_pending_before_entry_preserves_state_budget_cache_and_nop_fallback"
+      },
+      {
+        "step": "s3_28_stop_priority_after_publication",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::cached_publication_boundary_rechecks_stop_priority_before_event"
+      },
+      {
+        "step": "s3_34t_register_event_cache_miss_hit_request",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::event_pending_after_native_cache_miss_and_hit_preserves_request_until_cleared"
+      },
+      {
+        "step": "s3_34t_register_event_publication_prevents_entry",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::event_set_during_publication_prevents_native_entry"
+      },
+      {
+        "step": "s3_34t_register_event_multi_cache_capacity",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::event_pending_on_multi_cache_hit_and_miss_obeys_capacity"
+      },
+      {
+        "step": "s3_34t_register_event_jcc_resume_without_replay",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::event_after_jcc_yields_before_nop_and_resumes_without_replaying_prefix"
+      },
+      {
+        "step": "s3_34t_register_event_control_priority",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "dispatch::tests::event_request_obeys_stop_code_end_budget_and_error_priority"
+      },
+      {
+        "step": "abi_create_execute_stop_destroy",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::c_abi_create_execute_stop_destroy_lifecycle"
+      },
+      {
+        "step": "abi_stop_before_execute",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::c_abi_stop_requested_before_execute_is_honored_once"
+      },
+      {
+        "step": "abi_dispatch_interpreter_loop_reuse",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::c_abi_register_dispatch_matches_interpreter_and_reuses_loop_block"
+      },
+      {
+        "step": "abi_stop_at_code_end",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::c_abi_pre_stop_at_code_end_honors_v0_stop_contract_once"
+      },
+      {
+        "step": "abi_interleaved_handles",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::c_abi_repeated_and_interleaved_handles_keep_state_independent"
+      },
+      {
+        "step": "abi_busy_invalid_state_output_preservation",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::c_abi_reports_live_process_mapping_as_busy"
+      },
+      {
+        "step": "s3_33a_native_inc_rax_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_inc_rax_fallback_carries_canonical_flags_into_native_branches"
+      },
+      {
+        "step": "s3_33a_native_inc_rax_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_inc_rax_is_opt_in_and_compiles_following_branch_consumers"
+      },
+      {
+        "step": "s3_33b_native_dec_rax_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_dec_rax_preserves_cf_and_matches_interpreter_branches"
+      },
+      {
+        "step": "s3_33b_native_dec_rax_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_dec_rax_is_opt_in_and_compiles_following_branch_consumers"
+      },
+      {
+        "step": "s3_33c_native_neg_rax_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_neg_rax_replaces_full_pending_flags_and_matches_interpreter"
+      },
+      {
+        "step": "s3_33c_native_neg_rax_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_neg_rax_is_opt_in_and_compiles_following_branch_consumers"
+      },
+      {
+        "step": "s3_33d_native_add_rax_imm8_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_add_rax_imm8_matches_interpreter_full_state_and_pending_branch"
+      },
+      {
+        "step": "s3_33d_native_add_rax_imm8_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_add_rax_imm8_compiles_eager_and_candidate_branch_consumers"
+      },
+      {
+        "step": "s3_33d_native_add_rax_imm8_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::add_rax_imm8_admission_covers_signed_byte_range_and_rejects_neighbors"
+      },
+      {
+        "step": "s3_33e_native_cmp_rax_imm8_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_cmp_rax_imm8_matches_interpreter_and_preserves_gprs"
+      },
+      {
+        "step": "s3_33e_native_cmp_rax_imm8_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_cmp_rax_imm8_compiles_eager_and_candidate_branch_consumers"
+      },
+      {
+        "step": "s3_33e_native_cmp_rax_imm8_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::cmp_rax_imm8_admission_covers_signed_byte_range_and_rejects_neighbors"
+      },
+      {
+        "step": "s3_33f_native_sub_rax_imm8_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_sub_rax_imm8_matches_interpreter_full_state_and_pending_branch"
+      },
+      {
+        "step": "s3_33f_native_sub_rax_imm8_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_sub_rax_imm8_compiles_eager_and_candidate_branch_consumers"
+      },
+      {
+        "step": "s3_33f_native_sub_rax_imm8_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::sub_rax_imm8_admission_covers_signed_byte_range_and_rejects_neighbors"
+      },
+      {
+        "step": "s3_33g_native_not_rax_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::not_rax_admission_is_exact_and_separate_from_neg_profile"
+      },
+      {
+        "step": "s3_33g_native_not_rax_emitter",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_emitter::tests::native_not_rax_preserving_subtract_emits_no_helper_for_register_homes"
+      },
+      {
+        "step": "s3_33g_native_not_rax_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_not_rax_is_opt_in_and_emits_no_flag_helper_for_not"
+      },
+      {
+        "step": "s3_33g_native_not_rax_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_not_rax_preserves_full_flags_and_pending_writer_state"
+      },
+      {
+        "step": "s3_33h_native_lea_rax_rbx_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::lea_rax_rbx_admission_is_exact_and_separate_from_other_profiles"
+      },
+      {
+        "step": "s3_33h_native_lea_rax_rbx_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_lea_rax_rbx_compiles_eager_and_candidate_without_memory_helper"
+      },
+      {
+        "step": "s3_33h_native_lea_rax_rbx_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_lea_rax_rbx_copies_unmapped_addresses_without_data_access"
+      },
+      {
+        "step": "s3_33i_native_xchg_rax_rbx_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::xchg_rax_rbx_admission_is_exact_and_separate_from_other_profiles"
+      },
+      {
+        "step": "s3_33i_native_xchg_rax_rbx_emitter",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_emitter::tests::dual_write_runtime_shape_is_limited_to_atomic_rax_rbx_exchange"
+      },
+      {
+        "step": "s3_33i_native_xchg_rax_rbx_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_xchg_rax_rbx_compiles_with_atomic_pending_statepoints"
+      },
+      {
+        "step": "s3_33i_native_xchg_rax_rbx_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_xchg_rax_rbx_matches_interpreter_and_preserves_flags"
+      },
+      {
+        "step": "s3_33j_native_lea_rbx_disp8_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::lea_rax_rbx_disp8_admission_covers_all_signed_bytes_and_rejects_neighbors"
+      },
+      {
+        "step": "s3_33j_native_lea_rbx_disp8_emitter",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_emitter::tests::preserving_integer_support_is_limited_to_w64_add_or_subtract_with_result"
+      },
+      {
+        "step": "s3_33j_native_lea_rbx_disp8_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_lea_rax_rbx_disp8_compiles_eager_and_candidate_without_memory_helper"
+      },
+      {
+        "step": "s3_33j_native_lea_rbx_disp8_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_lea_rax_rbx_disp8_matches_interpreter_without_data_access"
+      },
+      {
+        "step": "s3_33k_native_mov_rax_imm32_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::mov_rax_imm32_admission_sign_extends_and_rejects_neighbors"
+      },
+      {
+        "step": "s3_33k_native_mov_rax_imm32_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_mov_rax_imm32_compiles_eager_and_candidate_without_flag_helpers"
+      },
+      {
+        "step": "s3_33k_native_mov_rax_imm32_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_mov_rax_imm32_matches_interpreter_full_state_and_preserves_flags"
+      },
+      {
+        "step": "s3_33l_native_lea_rbx_rcx_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::lea_rax_rbx_rcx_admission_is_exact_and_separate_from_other_lea_profiles"
+      },
+      {
+        "step": "s3_33l_native_lea_rbx_rcx_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_lea_rax_rbx_rcx_compiles_eager_and_candidate_without_memory_helper"
+      },
+      {
+        "step": "s3_33l_native_lea_rbx_rcx_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_lea_rax_rbx_rcx_matches_interpreter_and_preserves_flags_without_data_access"
+      },
+      {
+        "step": "s3_33m_native_lea_rax_rip_disp32_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::lea_rax_rip_disp32_admission_is_exact_and_uses_signed_decoded_disp"
+      },
+      {
+        "step": "s3_33m_native_lea_rax_rip_disp32_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_lea_rax_rip_disp32_compiles_eager_and_candidate_from_guest_next_rip"
+      },
+      {
+        "step": "s3_33m_native_lea_rax_rip_disp32_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_lea_rax_rip_disp32_matches_interpreter_without_data_access"
+      },
+      {
+        "step": "s3_33n_native_register_v1_admission",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block::tests::native_register_v1_admission_is_exact_and_combines_all_committed_forms"
+      },
+      {
+        "step": "s3_33n_native_register_v1_compiler",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::native_register_v1_mixed_compiler_preserves_statepoints_and_boundaries"
+      },
+      {
+        "step": "s3_33n_native_register_v1_host",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_register_v1_mixed_matches_interpreter_and_bounded_ordered_pair_corpus"
+      },
+      {
+        "step": "s3_34n_native_register_v1_corpus",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_register_v1_corpus::generated_corpus_runs_twice_across_all_backends"
+      },
+      {
+        "step": "s3_34n_native_register_v1_replay",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_register_v1_corpus::saved_case_round_trip_and_replay"
+      },
+      {
+        "step": "s3_34n_native_register_v1_selfcheck",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_register_v1_corpus::comparator_and_envelope_fail_closed"
+      },
+      {
+        "step": "s3_34o_native_register_v1_reducer",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_register_v1_corpus::reduce_saved_native_register_v1_case"
+      },
+      {
+        "step": "s3_34o_native_register_v1_reducer_selfcheck",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_register_v1_corpus::native_register_v1_reducer_rejects_unstable_and_structural_changes"
+      },
+      {
+        "step": "s3_34p_cached_native_register_v1_corpus",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_register_v1_corpus::cached_corpus_matches_existing_observations_and_saves_versioned_trace"
+      },
+      {
+        "step": "s3_34p_cached_native_register_v1_replay",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_register_v1_corpus::cached_trace_replays_from_empty_cache_and_rejects_corruption"
+      },
+      {
+        "step": "s3_34p_cached_native_register_v1_failure_replay",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_register_v1_corpus::cached_failure_trace_replays_saved_prefix_and_failure"
+      },
+      {
+        "step": "s3_34q_retained_hit_state_reducer_selfcheck",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::native_register_v1_corpus::retained_hit_failure_reducer_and_selfcheck"
+      },
+      {
+        "step": "s3_34r_abi_idle_handle_cross_thread_mapping_release",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::c_abi_idle_handle_runs_sequentially_on_host_threads_and_releases_mapping"
+      },
+      {
+        "step": "s3_34s_memory_event_bare_nop_bridge_budget_effects",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::bounded_memory_dispatch_opt_in_bare_nop_bridge_preserves_budget_and_effects"
+      },
+      {
+        "step": "s3_34s_memory_event_after_publication_stop_wins",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "memory_dispatch::tests::event_after_publication_skips_entry_and_stop_wins"
+      },
+      {
+        "step": "s3_34s_memory_event_malformed_pending_accounting",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "memory_dispatch::tests::malformed_event_pending_executor_accounting_is_rejected"
+      },
+      {
+        "step": "s3_34s_memory_event_yield_before_and_after_committed_artifact",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "memory_dispatch::tests::controlled_event_yields_before_work_and_after_one_committed_artifact"
+      },
+      {
+        "step": "s3_34s_memory_event_terminal_exit_stop_not_masked",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "memory_dispatch::tests::completed_artifact_terminal_exit_and_stop_are_not_masked_by_event"
+      },
+      {
+        "step": "s3_34s_memory_event_stop_boundary_budget_priority",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "memory_dispatch::tests::controlled_event_respects_stop_boundary_and_budget_priority"
+      },
+      {
+        "step": "s3_34s_memory_event_nop_fallback_resume_without_replay",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "memory_dispatch::tests::nop_fallback_event_yields_before_nop_and_resumes_without_replay"
+      },
+      {
+        "step": "s3_30p3_allocator_helper_clobber_values",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::allocated_register_and_spill_values_survive_helper_clobbers"
+      },
+      {
+        "step": "s3_32a_candidate_exact_lowering",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "lowering::tests::s3_32a_candidate_reuses_one_preinstruction_rax_read_only_for_exact_opcode"
+      },
+      {
+        "step": "s3_32a_candidate_verified_compile_pipeline",
+        "suite": "local_acceptance",
+        "package": "od-jit",
+        "identity": "block_compile::tests::s3_32a_exact_candidate_uses_the_normal_verified_compile_pipeline"
+      },
+      {
+        "step": "s3_32a_candidate_interpreter_edges_and_resume",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "tests::s3_32a_candidate_matches_interpreter_edges_and_budget_resume"
+      },
+      {
+        "step": "s3_37e_memory_cache_lifecycle_republishes",
+        "suite": "local_acceptance",
+        "package": "od-host",
+        "identity": "capacity_one_memory_cache_republishes_after_fault_and_backend_error"
+      }
+    ],
+    "sources": [
+      {
+        "path": "crates/od-host/tests/memory_corpus.rs",
+        "sha256": "9fb1e3ce8579e1a64580f51a630b1762b1f60db2b7afc6c9611cb1d7caf5b7ee"
+      },
+      {
+        "path": "crates/od-host/src/lib.rs",
+        "sha256": "d4138880dbae0c090641d4b5cc361f8e5925f23ab6e79ecd967b48d2eb56cf6d"
+      },
+      {
+        "path": "crates/od-host/src/tests/native_register_v1_corpus.rs",
+        "sha256": "1f2cfd4f546f74754349984621dd18ef992a3ef6bbd75a16c6de50d176c92435"
+      },
+      {
+        "path": "crates/od-jit/src/block.rs",
+        "sha256": "a910ba720ecb0f5286c26531014417b65d1d53ff302bf90a2cb3f750ada7aa78"
+      },
+      {
+        "path": "crates/od-jit/src/block_emitter.rs",
+        "sha256": "003a86dd6321c34f7523eb4300a18268ae2c22c3a17bd6dd7d00f0480153be46"
+      },
+      {
+        "path": "crates/od-jit/src/block_compile.rs",
+        "sha256": "49818cf3032862772410be002bc46abb1536c640e0eb65d10c9a758b55dbd68b"
+      },
+      {
+        "path": "crates/od-jit/src/lowering.rs",
+        "sha256": "2519e686535b846341ea23d679b9642b2aff77ff3f8cb2e7e83fe56d91876ce0"
+      },
+      {
+        "path": "crates/od-jit/src/dispatch.rs",
+        "sha256": "d0df81783bfe8720606d88e54af19d21b26dc0099af48f9a74fc5bd604806a6c"
+      },
+      {
+        "path": "crates/od-jit/src/memory_dispatch.rs",
+        "sha256": "21a248231bf15e45361153e9482537c1a98372b10bc3d0d1bb8c15cc1bfdbf0e"
+      },
+      {
+        "path": "crates/od-jit/src/translation.rs",
+        "sha256": "d016b776bf079b29b6d09f24c06d9f87edaa3153d4b21264a1c87d97e14ef72d"
+      },
+      {
+        "path": "tests/cpu/stage3_harness.py",
+        "sha256": "fc9524026d8ec8fe8f63be1bd65c0107bc6c7270dfee9a8b88226956ed543c3a"
+      },
+      {
+        "path": "tests/cpu/test_stage3_harness.py",
+        "sha256": "e7c9f63581446cefb7032142ca262fc5f99c8bf9a0f5f68c61e400b2320f5a71"
+      }
+    ]
+  },
+  "vmhost_process": {
+    "host_requirement": {
+      "system": "darwin",
+      "machine": "arm64",
+      "rust_target_prefix": "aarch64-apple-darwin"
+    },
+    "build_profile": {
+      "cargo": [
+        "build",
+        "--release",
+        "-p",
+        "od-host",
+        "--offline"
+      ],
+      "cargo_target_dir": "${RUN_ROOT}/build-target",
+      "swift": [
+        "xcrun",
+        "swiftc",
+        "-parse-as-library",
+        "-O"
+      ],
+      "swift_module_cache": "${RUN_ROOT}/swift-module-cache",
+      "signing": [
+        "${CODESIGN_PATH}",
+        "--force",
+        "--sign",
+        "-",
+        "--options",
+        "runtime"
+      ],
+      "entitlements": {
+        "path": "apps/vmhost/Configuration/vmhost-smoke.entitlements",
+        "sha256": "958648f799e436860b51eaf55ec8f92d2c62da17001e23d96bc05ffc748f2a2a"
+      },
+      "commands": [
+        {
+          "step": "process_sw_vers",
+          "argv": [
+            "sw_vers"
+          ]
+        },
+        {
+          "step": "process_uname",
+          "argv": [
+            "uname",
+            "-a"
+          ]
+        },
+        {
+          "step": "process_rustc_version",
+          "argv": [
+            "rustc",
+            "-vV"
+          ]
+        },
+        {
+          "step": "process_cargo_version",
+          "argv": [
+            "cargo",
+            "--version"
+          ]
+        },
+        {
+          "step": "process_swift_version",
+          "argv": [
+            "xcrun",
+            "swiftc",
+            "--version"
+          ]
+        },
+        {
+          "step": "process_xcode_version",
+          "argv": [
+            "xcodebuild",
+            "-version"
+          ]
+        },
+        {
+          "step": "process_codesign_path",
+          "argv": [
+            "xcrun",
+            "--find",
+            "codesign"
+          ]
+        },
+        {
+          "step": "process_build_od_host",
+          "argv": [
+            "cargo",
+            "build",
+            "--release",
+            "-p",
+            "od-host",
+            "--offline",
+            "--target-dir",
+            "${RUN_ROOT}/build-target"
+          ]
+        },
+        {
+          "step": "process_compile_vmhost",
+          "argv": [
+            "xcrun",
+            "swiftc",
+            "-module-cache-path",
+            "${RUN_ROOT}/swift-module-cache",
+            "-parse-as-library",
+            "-O",
+            "-import-objc-header",
+            "include/open_desktop/host_abi.h",
+            "apps/vmhost/Sources/ControlFrame.swift",
+            "apps/vmhost/Sources/main.swift",
+            "${RUN_ROOT}/build-target/release/libod_host.a",
+            "-ldl",
+            "-lpthread",
+            "-lm",
+            "-framework",
+            "Security",
+            "-framework",
+            "SystemConfiguration",
+            "-framework",
+            "CoreFoundation",
+            "-framework",
+            "CoreServices",
+            "-framework",
+            "Foundation",
+            "-o",
+            "${RUN_ROOT}/artifacts/od-vmhost-smoke"
+          ]
+        },
+        {
+          "step": "process_sign_vmhost",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "--force",
+            "--sign",
+            "-",
+            "--options",
+            "runtime",
+            "--entitlements",
+            "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/apps/vmhost/Configuration/vmhost-smoke.entitlements",
+            "${RUN_ROOT}/artifacts/od-vmhost-smoke"
+          ]
+        },
+        {
+          "step": "process_verify_vmhost",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "--verify",
+            "--strict",
+            "--verbose=2",
+            "${RUN_ROOT}/artifacts/od-vmhost-smoke"
+          ]
+        },
+        {
+          "step": "process_vmhost_signature",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--verbose=4",
+            "${RUN_ROOT}/artifacts/od-vmhost-smoke"
+          ]
+        },
+        {
+          "step": "process_vmhost_entitlements",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--entitlements",
+            ":-",
+            "${RUN_ROOT}/artifacts/od-vmhost-smoke"
+          ]
+        },
+        {
+          "step": "process_compile_launcher",
+          "argv": [
+            "xcrun",
+            "swiftc",
+            "-module-cache-path",
+            "${RUN_ROOT}/swift-module-cache",
+            "-parse-as-library",
+            "-O",
+            "-import-objc-header",
+            "include/open_desktop/host_abi.h",
+            "apps/vmhost/Sources/ControlFrame.swift",
+            "apps/macos/Sources/launcher.swift",
+            "${RUN_ROOT}/build-target/release/libod_host.a",
+            "-ldl",
+            "-lpthread",
+            "-lm",
+            "-framework",
+            "Security",
+            "-framework",
+            "SystemConfiguration",
+            "-framework",
+            "CoreFoundation",
+            "-framework",
+            "CoreServices",
+            "-framework",
+            "Foundation",
+            "-o",
+            "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke"
+          ]
+        },
+        {
+          "step": "process_sign_launcher",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "--force",
+            "--sign",
+            "-",
+            "--options",
+            "runtime",
+            "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke"
+          ]
+        },
+        {
+          "step": "process_verify_launcher",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "--verify",
+            "--strict",
+            "--verbose=2",
+            "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke"
+          ]
+        },
+        {
+          "step": "process_launcher_signature",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--verbose=4",
+            "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke"
+          ]
+        },
+        {
+          "step": "process_launcher_entitlements",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--entitlements",
+            ":-",
+            "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke"
+          ]
+        },
+        {
+          "step": "process_compile_fault_helper",
+          "argv": [
+            "xcrun",
+            "swiftc",
+            "-module-cache-path",
+            "${RUN_ROOT}/swift-module-cache",
+            "-parse-as-library",
+            "-O",
+            "-import-objc-header",
+            "include/open_desktop/host_abi.h",
+            "apps/vmhost/Sources/ControlFrame.swift",
+            "tests/system/vmhost_generated_fault_helper.swift",
+            "${RUN_ROOT}/build-target/release/libod_host.a",
+            "-ldl",
+            "-lpthread",
+            "-lm",
+            "-framework",
+            "Security",
+            "-framework",
+            "SystemConfiguration",
+            "-framework",
+            "CoreFoundation",
+            "-framework",
+            "CoreServices",
+            "-framework",
+            "Foundation",
+            "-o",
+            "${RUN_ROOT}/artifacts/od-vmhost-generated-fault-smoke"
+          ]
+        },
+        {
+          "step": "process_sign_fault_helper",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "--force",
+            "--sign",
+            "-",
+            "--options",
+            "runtime",
+            "--entitlements",
+            "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/apps/vmhost/Configuration/vmhost-smoke.entitlements",
+            "${RUN_ROOT}/artifacts/od-vmhost-generated-fault-smoke"
+          ]
+        },
+        {
+          "step": "process_verify_fault_helper",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "--verify",
+            "--strict",
+            "--verbose=2",
+            "${RUN_ROOT}/artifacts/od-vmhost-generated-fault-smoke"
+          ]
+        },
+        {
+          "step": "process_fault_helper_signature",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--verbose=4",
+            "${RUN_ROOT}/artifacts/od-vmhost-generated-fault-smoke"
+          ]
+        },
+        {
+          "step": "process_fault_helper_entitlements",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--entitlements",
+            ":-",
+            "${RUN_ROOT}/artifacts/od-vmhost-generated-fault-smoke"
+          ]
+        },
+        {
+          "step": "process_control_race",
+          "argv": [
+            "/opt/homebrew/opt/python@3.15/bin/python3.15",
+            "tests/system/vmhost_control_race_smoke.py",
+            "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke",
+            "${RUN_ROOT}/artifacts/od-vmhost-smoke",
+            "--diagnostics-dir",
+            "${RUN_ROOT}/logs/process_control_race_children"
+          ]
+        },
+        {
+          "step": "process_isolation",
+          "argv": [
+            "/opt/homebrew/opt/python@3.15/bin/python3.15",
+            "tests/system/vmhost_isolation_smoke.py",
+            "${RUN_ROOT}/artifacts/od-vmhost-smoke",
+            "--diagnostics-dir",
+            "${RUN_ROOT}/logs/process_isolation_children"
+          ]
+        },
+        {
+          "step": "process_generated_fault",
+          "argv": [
+            "/opt/homebrew/opt/python@3.15/bin/python3.15",
+            "tests/system/vmhost_generated_fault_smoke.py",
+            "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke",
+            "${RUN_ROOT}/artifacts/od-vmhost-generated-fault-smoke",
+            "--diagnostics-dir",
+            "${RUN_ROOT}/logs/process_generated_fault_children"
+          ]
+        },
+        {
+          "step": "process_app_bundle",
+          "argv": [
+            "sh",
+            "tests/system/vmhost_app_bundle_smoke.sh",
+            "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke",
+            "${RUN_ROOT}/artifacts/od-vmhost-smoke",
+            "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/apps/vmhost/Configuration/vmhost-smoke.entitlements",
+            "${RUN_ROOT}/artifacts/OpenDesktop-Stage0-Smoke.app",
+            "${CODESIGN_PATH}"
+          ]
+        },
+        {
+          "step": "process_bundle_verify",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "--verify",
+            "--strict",
+            "--deep",
+            "--verbose=2",
+            "${RUN_ROOT}/artifacts/OpenDesktop-Stage0-Smoke.app"
+          ]
+        },
+        {
+          "step": "process_bundle_signature",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--verbose=4",
+            "${RUN_ROOT}/artifacts/OpenDesktop-Stage0-Smoke.app"
+          ]
+        },
+        {
+          "step": "process_bundle_vmhost_signature",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--verbose=4",
+            "${RUN_ROOT}/artifacts/OpenDesktop-Stage0-Smoke.app/Contents/MacOS/od-vmhost-smoke"
+          ]
+        },
+        {
+          "step": "process_bundle_vmhost_entitlements",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--entitlements",
+            ":-",
+            "${RUN_ROOT}/artifacts/OpenDesktop-Stage0-Smoke.app/Contents/MacOS/od-vmhost-smoke"
+          ]
+        },
+        {
+          "step": "process_bundle_launcher_signature",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--verbose=4",
+            "${RUN_ROOT}/artifacts/OpenDesktop-Stage0-Smoke.app/Contents/MacOS/OpenDesktopLauncher"
+          ]
+        },
+        {
+          "step": "process_bundle_launcher_entitlements",
+          "argv": [
+            "${CODESIGN_PATH}",
+            "-d",
+            "--entitlements",
+            ":-",
+            "${RUN_ROOT}/artifacts/OpenDesktop-Stage0-Smoke.app/Contents/MacOS/OpenDesktopLauncher"
+          ]
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "path": "Cargo.lock",
+        "sha256": "da5db61fe48b71ca6c9a86a8cc8416a8997b6b186bfce918aebd92822adeb21f"
+      },
+      {
+        "path": "Cargo.toml",
+        "sha256": "0eb78110af0bb1d0527d33806ecc32f42e54aaae6f4fc318a196e2f5c98b15e9"
+      },
+      {
+        "path": "crates/od-host/Cargo.toml",
+        "sha256": "537a72463a4ba307493114db647a18f78648501515d16142c3786f6b5747fcac"
+      },
+      {
+        "path": "crates/od-host/src/lib.rs",
+        "sha256": "d4138880dbae0c090641d4b5cc361f8e5925f23ab6e79ecd967b48d2eb56cf6d"
+      },
+      {
+        "path": "include/open_desktop/host_abi.h",
+        "sha256": "746811defce1d3780b9b011321ef155e9dc8403a4d139b05da34f49f8fcf0b5f"
+      },
+      {
+        "path": "apps/vmhost/Sources/ControlFrame.swift",
+        "sha256": "ba3cc0563e8436a12ebed043706aa797deac3e1c56d5d841f5252f1ac12386e0"
+      },
+      {
+        "path": "apps/vmhost/Sources/main.swift",
+        "sha256": "41e24311ee865d07e2ba177b0c80be74060ca3edda2f1d712e6c409f71cca775"
+      },
+      {
+        "path": "apps/macos/Sources/launcher.swift",
+        "sha256": "680f2c148f8ed65e2d254277186fc5b757bf1009e1040886bd1f79b535e76ac4"
+      },
+      {
+        "path": "apps/vmhost/Configuration/vmhost-smoke.entitlements",
+        "sha256": "958648f799e436860b51eaf55ec8f92d2c62da17001e23d96bc05ffc748f2a2a"
+      },
+      {
+        "path": "tests/system/vmhost_control_race_smoke.py",
+        "sha256": "fa016c6096944fb4a8c78708b1201e53d28bee21839513d35baea50d2955224c"
+      },
+      {
+        "path": "tests/system/vmhost_isolation_smoke.py",
+        "sha256": "84f713f35443ca3e1a043dd023846c418e952259025ebb87683df07773829ba7"
+      },
+      {
+        "path": "tests/system/vmhost_generated_fault_smoke.py",
+        "sha256": "50c8fd57262cd0441a2fe69768c510e76069943297ea403633d44bf95c7c3209"
+      },
+      {
+        "path": "tests/system/vmhost_generated_fault_helper.swift",
+        "sha256": "2899ecbcd3f27b61f64cded328a0b78906765f1f774eb53ef7e6cb44a593d8eb"
+      },
+      {
+        "path": "tests/system/vmhost_app_bundle_smoke.sh",
+        "sha256": "d43248b9c1c6fc8043585d30d04d3299d6955cef8f8b0ab9ed0d3324c3115a90"
+      },
+      {
+        "path": "tests/cpu/stage3_harness.py",
+        "sha256": "fc9524026d8ec8fe8f63be1bd65c0107bc6c7270dfee9a8b88226956ed543c3a"
+      }
+    ],
+    "success_markers": {
+      "control_race": "VMHost control smoke passed:",
+      "isolation": "VMHost isolation smoke passed:",
+      "generated_fault": "VMHost terminated by SIGSEGV",
+      "app_bundle": "vmhost_app_bundle_status=passed"
+    },
+    "automatic_retry": false
+  },
+  "local_vmhost_result_state": {
+    "host_requirement": {
+      "system": "darwin",
+      "machine": "arm64",
+      "rust_target_prefix": "aarch64-apple-darwin"
+    },
+    "commands": [
+      {
+        "step": "local_s38d_validator_selfcheck",
+        "argv": [
+          "/opt/homebrew/opt/python@3.15/bin/python3.15",
+          "tests/cpu/test_stage3_harness.py",
+          "Stage3HarnessValidationTests.test_s3_38d_result_state_validator_rejects_corruption"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "step": "local_s38d_codesign_path",
+        "argv": [
+          "xcrun",
+          "--find",
+          "codesign"
+        ],
+        "timeout_seconds": 30
+      },
+      {
+        "step": "local_s38d_build_od_host",
+        "argv": [
+          "cargo",
+          "build",
+          "--release",
+          "-p",
+          "od-host",
+          "--offline",
+          "--target-dir",
+          "${RUN_ROOT}/build-target"
+        ],
+        "timeout_seconds": 1800
+      },
+      {
+        "step": "local_s38d_compile_vmhost",
+        "argv": [
+          "xcrun",
+          "swiftc",
+          "-module-cache-path",
+          "${RUN_ROOT}/swift-module-cache",
+          "-parse-as-library",
+          "-O",
+          "-import-objc-header",
+          "include/open_desktop/host_abi.h",
+          "apps/vmhost/Sources/ControlFrame.swift",
+          "apps/vmhost/Sources/main.swift",
+          "${RUN_ROOT}/build-target/release/libod_host.a",
+          "-ldl",
+          "-lpthread",
+          "-lm",
+          "-framework",
+          "Security",
+          "-framework",
+          "SystemConfiguration",
+          "-framework",
+          "CoreFoundation",
+          "-framework",
+          "CoreServices",
+          "-framework",
+          "Foundation",
+          "-o",
+          "${RUN_ROOT}/artifacts/od-vmhost-smoke"
+        ],
+        "timeout_seconds": 900
+      },
+      {
+        "step": "local_s38d_sign_vmhost",
+        "argv": [
+          "${CODESIGN_PATH}",
+          "--force",
+          "--sign",
+          "-",
+          "--options",
+          "runtime",
+          "--entitlements",
+          "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/apps/vmhost/Configuration/vmhost-smoke.entitlements",
+          "${RUN_ROOT}/artifacts/od-vmhost-smoke"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "step": "local_s38d_verify_vmhost",
+        "argv": [
+          "${CODESIGN_PATH}",
+          "--verify",
+          "--strict",
+          "--verbose=2",
+          "${RUN_ROOT}/artifacts/od-vmhost-smoke"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "step": "local_s38d_vmhost_signature",
+        "argv": [
+          "${CODESIGN_PATH}",
+          "-d",
+          "--verbose=4",
+          "${RUN_ROOT}/artifacts/od-vmhost-smoke"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "step": "local_s38d_vmhost_entitlements",
+        "argv": [
+          "${CODESIGN_PATH}",
+          "-d",
+          "--entitlements",
+          ":-",
+          "${RUN_ROOT}/artifacts/od-vmhost-smoke"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "step": "local_s38d_compile_launcher",
+        "argv": [
+          "xcrun",
+          "swiftc",
+          "-module-cache-path",
+          "${RUN_ROOT}/swift-module-cache",
+          "-parse-as-library",
+          "-O",
+          "-import-objc-header",
+          "include/open_desktop/host_abi.h",
+          "apps/vmhost/Sources/ControlFrame.swift",
+          "apps/macos/Sources/launcher.swift",
+          "${RUN_ROOT}/build-target/release/libod_host.a",
+          "-ldl",
+          "-lpthread",
+          "-lm",
+          "-framework",
+          "Security",
+          "-framework",
+          "SystemConfiguration",
+          "-framework",
+          "CoreFoundation",
+          "-framework",
+          "CoreServices",
+          "-framework",
+          "Foundation",
+          "-o",
+          "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke"
+        ],
+        "timeout_seconds": 900
+      },
+      {
+        "step": "local_s38d_sign_launcher",
+        "argv": [
+          "${CODESIGN_PATH}",
+          "--force",
+          "--sign",
+          "-",
+          "--options",
+          "runtime",
+          "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "step": "local_s38d_verify_launcher",
+        "argv": [
+          "${CODESIGN_PATH}",
+          "--verify",
+          "--strict",
+          "--verbose=2",
+          "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "step": "local_s38d_launcher_signature",
+        "argv": [
+          "${CODESIGN_PATH}",
+          "-d",
+          "--verbose=4",
+          "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "step": "local_s38d_launcher_entitlements",
+        "argv": [
+          "${CODESIGN_PATH}",
+          "-d",
+          "--entitlements",
+          ":-",
+          "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke"
+        ],
+        "timeout_seconds": 120
+      },
+      {
+        "step": "local_s38d_result_state",
+        "argv": [
+          "/opt/homebrew/opt/python@3.15/bin/python3.15",
+          "tests/system/vmhost_result_state_smoke.py",
+          "${RUN_ROOT}/artifacts/open-desktop-launcher-smoke",
+          "${RUN_ROOT}/artifacts/od-vmhost-smoke",
+          "--diagnostics-dir",
+          "${RUN_ROOT}/logs/local_s38d_result_state_children"
+        ],
+        "timeout_seconds": 900
+      }
+    ],
+    "inputs": [
+      {
+        "path": "Cargo.lock",
+        "sha256": "da5db61fe48b71ca6c9a86a8cc8416a8997b6b186bfce918aebd92822adeb21f"
+      },
+      {
+        "path": "Cargo.toml",
+        "sha256": "0eb78110af0bb1d0527d33806ecc32f42e54aaae6f4fc318a196e2f5c98b15e9"
+      },
+      {
+        "path": "crates/od-host/Cargo.toml",
+        "sha256": "537a72463a4ba307493114db647a18f78648501515d16142c3786f6b5747fcac"
+      },
+      {
+        "path": "crates/od-host/src/lib.rs",
+        "sha256": "d4138880dbae0c090641d4b5cc361f8e5925f23ab6e79ecd967b48d2eb56cf6d"
+      },
+      {
+        "path": "include/open_desktop/host_abi.h",
+        "sha256": "746811defce1d3780b9b011321ef155e9dc8403a4d139b05da34f49f8fcf0b5f"
+      },
+      {
+        "path": "apps/vmhost/Sources/ControlFrame.swift",
+        "sha256": "ba3cc0563e8436a12ebed043706aa797deac3e1c56d5d841f5252f1ac12386e0"
+      },
+      {
+        "path": "apps/vmhost/Sources/main.swift",
+        "sha256": "41e24311ee865d07e2ba177b0c80be74060ca3edda2f1d712e6c409f71cca775"
+      },
+      {
+        "path": "apps/macos/Sources/launcher.swift",
+        "sha256": "680f2c148f8ed65e2d254277186fc5b757bf1009e1040886bd1f79b535e76ac4"
+      },
+      {
+        "path": "apps/vmhost/Configuration/vmhost-smoke.entitlements",
+        "sha256": "958648f799e436860b51eaf55ec8f92d2c62da17001e23d96bc05ffc748f2a2a"
+      },
+      {
+        "path": "protocols/control/CONTROL_PROTOCOL_V0.md",
+        "sha256": "eef84b4ed0193d33b0ce4bf0df7f81fad5d9009d5d87563ea76bfef799c801fc"
+      },
+      {
+        "path": "tests/system/vmhost_result_state_smoke.py",
+        "sha256": "5444eee1ab0b6991e2b1f008ee2ed7cd552047aa150e8ff9f77357c8026f426c"
+      },
+      {
+        "path": "tests/cpu/stage3_harness.py",
+        "sha256": "fc9524026d8ec8fe8f63be1bd65c0107bc6c7270dfee9a8b88226956ed543c3a"
+      },
+      {
+        "path": "tests/cpu/test_stage3_harness.py",
+        "sha256": "e7c9f63581446cefb7032142ca262fc5f99c8bf9a0f5f68c61e400b2320f5a71"
+      }
+    ],
+    "profile": {
+      "loop_code_hex": "48b8010000000000000075f4",
+      "fixed_budgets": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "initial_gprs": [
+        17297757506775570040,
+        1234605616436508552,
+        9833440827789222417,
+        14627333965148450829
+      ],
+      "initial_rflags": 514,
+      "launcher_initial_rflags": 2,
+      "result_format": "<6QIIQ",
+      "result_bytes": 64,
+      "stop_budget": 18446744073709551615,
+      "stop_delays_ms": [
+        0,
+        5
+      ]
+    },
+    "automatic_retry": false
+  }
+}

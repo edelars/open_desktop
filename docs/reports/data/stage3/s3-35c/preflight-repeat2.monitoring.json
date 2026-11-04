@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "profile_id": "s3-35c-two-site-memory-cold-direct-v1",
+  "process_run": 1,
+  "command": "cargo run --release -p od-bench --offline -- two-site-memory-cold --preflight-only --process-run 1 --output work/tmp/stage3/s3-35c/preflight-repeat2.json",
+  "commit": "48eb7220ae2e0f103c3ee2b7a4da39e914173867",
+  "exit_code": 0,
+  "start_utc_estimate": "2026-11-01T04:32:49Z",
+  "start_time_basis": "Estimated from cargo PID 90584 at 00:32 elapsed in the 2026-11-01T04:33:21Z snapshot; command started after the 04:32:48Z prestart snapshot.",
+  "finish_utc_observed_by": "2026-11-01T04:33:32Z",
+  "finish_time_basis": "The command session returned exit code 0 before the 04:33:32Z final artifact/process snapshot; precise process exit timestamp was not sampled.",
+  "processes": {
+    "cargo_pid": 90584,
+    "bench_rustc_pid": 91314,
+    "bench_binary_pid": null,
+    "bench_binary_pid_note": "The preflight executable completed between periodic snapshots; its PID was not captured.",
+    "bench_rustc_cpu_percent_at_active_snapshot": 39.1
+  },
+  "report": {
+    "path": "work/tmp/stage3/s3-35c/preflight-repeat2.json",
+    "sha256": "a49dca5314914f9f6bb86c65ddb3f4f8bdd61d7026c64d831fca05efbce588a8",
+    "case_count": 2400,
+    "unique_cases": 2400,
+    "repetitions_per_case": 2,
+    "preflight_parity_cases": 4800,
+    "interpreter_executions": 4800,
+    "native_executions": 4800,
+    "sequence_counts": [1200, 1200],
+    "frozen_seed_values": [5999696582365151233, 5999696582365151234, 5999696582365151235],
+    "input_digest": "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540",
+    "timing_started": false,
+    "journal_created": false
+  },
+  "host": {
+    "os": "macos 26.7.1",
+    "architecture": "aarch64-apple-darwin",
+    "cpu_model": "Apple M3 Max",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "profile": "release",
+    "build_source_revision": "48eb7220ae2e0f103c3ee2b7a4da39e914173867",
+    "build_source_sha256": "c614a0dac2744ad4e91863661a66eefb2af8452a934dac0c8dd8e80c8375b06a",
+    "profile_source_sha256": "78e20b0e30326c55263f305c037a375e2b2eb85f64403e4127ae47b2bc3ef46c",
+    "build_source_tree_dirty": true,
+    "execution_working_tree_dirty": null,
+    "working_tree_status_note": "Host metadata reported git status unavailable after a 2000 ms timeout; preserve dirty state as unknown."
+  },
+  "snapshots": [
+    {
+      "utc": "2026-11-01T04:32:48Z",
+      "phase": "prestart",
+      "load_average_1_5_15": [2.12, 2.50, 2.60],
+      "stage2_processes": [],
+      "graphify_processes": []
+    },
+    {
+      "utc": "2026-11-01T04:33:21Z",
+      "phase": "active_release_build",
+      "load_average_1_5_15": [2.58, 2.57, 2.62],
+      "bench_processes": [
+        {
+          "pid": 90584,
+          "command": "cargo run --release -p od-bench ... --preflight-only",
+          "elapsed": "00:32",
+          "cpu_percent": 0.1
+        },
+        {
+          "pid": 91314,
+          "command": "rustc --crate-name od_bench ... --release",
+          "elapsed": "00:00",
+          "cpu_percent": 39.1
+        }
+      ],
+      "stage2_processes": [],
+      "graphify_processes": []
+    },
+    {
+      "utc": "2026-11-01T04:33:32Z",
+      "phase": "completed",
+      "load_average_1_5_15": [3.45, 2.76, 2.69],
+      "bench_processes": [],
+      "stage2_processes": [],
+      "graphify_processes": [],
+      "post_run_processes": [
+        {
+          "pid": 91535,
+          "command": "Graphify query for concurrent root task",
+          "elapsed": "00:02",
+          "timing_relation": "Observed after the preflight command had completed; no overlap established."
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Snapshots are periodic point-in-time observations, not continuous telemetry.",
+    "The report confirms timing_started=false; this was preflight-only.",
+    "Build source tree was reported dirty and execution working-tree status was unavailable; retain these provenance caveats for evidence review."
+  ]
+}

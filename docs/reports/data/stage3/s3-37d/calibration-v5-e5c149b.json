@@ -1,0 +1,72 @@
+{
+  "build_source_sha256": "74e6a764a6182f9a460201184be8989a6e81681937f0264922cdbabe8ec82429",
+  "calibration_batch_body_elapsed_ns": [
+    993842842,
+    988253091,
+    948909913,
+    938246850,
+    933657868,
+    946711545,
+    936866238,
+    965917529
+  ],
+  "calibration_checkpoint_count": 128,
+  "calibration_checkpoint_elapsed_ns": 1847450086,
+  "calibration_elapsed_ns": 11645719042,
+  "calibration_epoch_body_elapsed_ns": 7652405876,
+  "calibration_epochs": 524800,
+  "calibration_fixed_elapsed_ns": 2138120955,
+  "calibration_integrity_sha256": "48b5a4b25677e1f7fe5b1744c4bc6eb2b72b24902845c257fdbe8d0ff76fe050",
+  "calibration_measurement_batch_epochs": 65536,
+  "calibration_measurement_batches": 8,
+  "calibration_warmup_body_elapsed_ns": 7742125,
+  "calibration_warmup_epochs": 512,
+  "capture_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "80b318a6293da499c7d9287da4d9db8c4e3ff4f6",
+      "source_sha256": "e52e51dfe03ae87197de98538ef114fe5ea896fef4af146e720e92ac2722add2",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "80b318a6293da499c7d9287da4d9db8c4e3ff4f6",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": true
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "case_list_sha256": "b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3",
+  "estimated_epoch_ns": 14246,
+  "max_run_ns": 1800000000000,
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "e5c149bf3da78b4e2cff95d1335504330a0d8b57",
+      "source_sha256": "0c56ad1d4dd54a4ce3aef926685a0a6f4f016f31ab97f704a064dae90de9783b",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "e5c149bf3da78b4e2cff95d1335504330a0d8b57",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "profile": "s3-37d-fifo16-mixed-lifecycle-v5",
+  "recommended_epochs": 46049027,
+  "schedule": "same mixed hit/miss/invalidate/recompile/hit sequence as scored profile; one retained runtime; 512 warm-up epochs followed by eight 65,536-epoch measurement batches; 128 bounded checkpoints across all calibration epochs; 128 epoch clear and 512 epoch reopen cadence; use the fastest measured batch rate for target sizing; reject an epoch cap that cannot meet the target duration",
+  "schema": 3,
+  "target_stress_ns": 660000000000,
+  "trace_sha256": "bf8d5efe0c52a47cbb4682f67ea73a82e684d463733aff3be60fed0b280bd5b3",
+  "upper_bound_elapsed_ns": 660000009683
+}

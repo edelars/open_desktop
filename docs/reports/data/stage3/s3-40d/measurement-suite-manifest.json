@@ -1,0 +1,522 @@
+{
+  "schema": 1,
+  "record_type": "s3_40d_measurement_suite_manifest",
+  "created_at_utc": "2026-11-01T00:27:11.282452+00:00",
+  "reconstruction_note": "Manifest derived from preserved raw preflight/run JSON reports and corresponding run envelopes; snapshot evidence has the limits stated in each envelope.",
+  "head": "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+  "preflight": {
+    "path": "work/tmp/stage3/s3-40d/preflight-588c21f.json",
+    "sha256": "35cfb854d7507e0c566f955feb3cc0eb16a3148ca31f21975d8a75f315b0a378",
+    "timing_started": false,
+    "case_count": 1200,
+    "parity_checked": 2400,
+    "stored_interpreter_observations_checked": 1200,
+    "inputs_digest": "fnv1a64:172fb17b01c502df",
+    "corpus_sha256": "3fddc5c753f3d2884850468480ec68d13a6069d1aed16e8973e1acef56ffac1f",
+    "cache_baselines": 1200
+  },
+  "host_binding": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+      "source_sha256": "a85ddefd0f74cb00ee25066bb2256f7c213e73faefc4c8a7feea46cc0d015d1c",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "accepted_scored_runs": [
+    {
+      "name": "run1",
+      "report_path": "work/tmp/stage3/s3-40d/cached-native-flags-1-retry-quiet.json",
+      "report_sha256": "2141d9c2833068828da9f7b87f80f97fad09c147a98b75377ac40168ef10443f",
+      "envelope_path": "work/tmp/stage3/s3-40d/measurement-run-envelope-1.json",
+      "envelope_sha256": "1bcc7f94e5d4d04aebe204600fe7aaf7d301f2b9e0031c99c99b3c8bca05b299",
+      "status": "completed without overlap observed"
+    },
+    {
+      "name": "run2",
+      "report_path": "work/tmp/stage3/s3-40d/cached-native-flags-2-retry3.json",
+      "report_sha256": "ec8a7da940c081e42bccae9b5f6970f4ec6fe70c3b8aa939f479656b71ead48a",
+      "envelope_path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-retry3.json",
+      "envelope_sha256": "830516c8f5cb8a5e82edf65f7de4805f161b344cf3792528ae194aae0b44bd54",
+      "status": "accepted as noisy bounded run; early Stage2 overlap; no winner inference"
+    },
+    {
+      "name": "run3",
+      "report_path": "work/tmp/stage3/s3-40d/cached-native-flags-3-final.json",
+      "report_sha256": "8b20679257e9ee58555b351737d7af7ef4b7ace94e1411186b4b9e5c289a5256",
+      "envelope_path": "work/tmp/stage3/s3-40d/measurement-run-envelope-3-final.json",
+      "envelope_sha256": "da2ce8d92ce9c7e69cec688b35fa2282dbe88c1166a08f06252cdb15522f03d9",
+      "status": "completed with early Stage2 activity at low sampled load"
+    }
+  ],
+  "excluded_diagnostic_attempts": [
+    {
+      "name": "run1-initial-overlap",
+      "report_path": "work/tmp/stage3/s3-40d/cached-native-flags-1.json",
+      "report_sha256": "989b638745f71b9a914de0a99316fc83de1e363be515f5ddb5571a6947a7964f",
+      "envelope_path": null,
+      "envelope_sha256": null,
+      "status": "inconclusive; Stage2 overlap at tail"
+    },
+    {
+      "name": "run2-initial-overlap",
+      "report_path": "work/tmp/stage3/s3-40d/cached-native-flags-2-final.json",
+      "report_sha256": "e401b3d3fee41c9f1fed7fc3c21af220f46baf8074f3d6fc21e9d05f723d59b0",
+      "envelope_path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-final.json",
+      "envelope_sha256": "ceb32e4e5889131635c621fc2f1f69be775728163c5fddf87cb19246b7b95d23",
+      "status": "diagnostic only; high Stage2 CPU/load and late outliers"
+    },
+    {
+      "name": "run2-interrupted-attempt1",
+      "report_path": null,
+      "report_sha256": null,
+      "envelope_path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-overlap.json",
+      "envelope_sha256": "d805f6ed3a52a04cbc42bd6992ccf123a9c7ef2af04bd13861e19a52b9a4fd86",
+      "status": "stopped for Stage2 overlap; no raw report"
+    },
+    {
+      "name": "run2-interrupted-attempt2",
+      "report_path": null,
+      "report_sha256": null,
+      "envelope_path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-retry-overlap.json",
+      "envelope_sha256": "c53d53b533d188bd1d71cddd4ef1a271de07882059fdaa5f49f1e44091e51e6b",
+      "status": "stopped for Stage2 overlap; no raw report"
+    },
+    {
+      "name": "run2-interrupted-attempt3",
+      "report_path": null,
+      "report_sha256": null,
+      "envelope_path": "work/tmp/stage3/s3-40d/measurement-run-envelope-2-retry2-overlap.json",
+      "envelope_sha256": "99bc8698f05704be73932f94e147be17a2468204889160a6a6ed8ab0fa58fc99",
+      "status": "stopped for Stage2 overlap; no raw report"
+    }
+  ],
+  "same_frozen_corpus_and_source": {
+    "input_digest": "fnv1a64:172fb17b01c502df",
+    "corpus_sha256": "3fddc5c753f3d2884850468480ec68d13a6069d1aed16e8973e1acef56ffac1f",
+    "all_heads": [
+      "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+      "588c21f2e1b6642dd98e2d9c5703ba7481256546",
+      "588c21f2e1b6642dd98e2d9c5703ba7481256546"
+    ],
+    "all_source_hashes": [
+      "a85ddefd0f74cb00ee25066bb2256f7c213e73faefc4c8a7feea46cc0d015d1c",
+      "a85ddefd0f74cb00ee25066bb2256f7c213e73faefc4c8a7feea46cc0d015d1c",
+      "a85ddefd0f74cb00ee25066bb2256f7c213e73faefc4c8a7feea46cc0d015d1c"
+    ],
+    "all_build_trees_clean": [
+      true,
+      true,
+      true
+    ]
+  },
+  "run_timing_spread": {
+    "run1": {
+      "cold": {
+        "sweeps_per_sample": 80,
+        "paired_samples": 20,
+        "calibration_restarts": 0,
+        "eager": {
+          "median_ns_per_case": 12877,
+          "min_ns_per_case": 12060,
+          "max_ns_per_case": 13888,
+          "iqr_ns_per_case": 467
+        },
+        "candidate": {
+          "median_ns_per_case": 13219,
+          "min_ns_per_case": 12460,
+          "max_ns_per_case": 14318,
+          "iqr_ns_per_case": 826
+        },
+        "paired_ratio": {
+          "standard_median": 1.0278714013796986,
+          "lower_median": 1.0250540520610543,
+          "min": 0.9525938085757716,
+          "max": 1.0941618952138403,
+          "p25": 1.0053176552361005,
+          "p75": 1.0516946882483955,
+          "iqr": 0.04637703301229501
+        }
+      },
+      "repeat_dispatch": {
+        "sweeps_per_sample": 88,
+        "paired_samples": 20,
+        "calibration_restarts": 0,
+        "eager": {
+          "median_ns_per_case": 12388,
+          "min_ns_per_case": 11515,
+          "max_ns_per_case": 13192,
+          "iqr_ns_per_case": 644
+        },
+        "candidate": {
+          "median_ns_per_case": 12712,
+          "min_ns_per_case": 12131,
+          "max_ns_per_case": 13451,
+          "iqr_ns_per_case": 457
+        },
+        "paired_ratio": {
+          "standard_median": 1.0229738063308282,
+          "lower_median": 1.0229599709399377,
+          "min": 0.977689466986136,
+          "max": 1.1013228808552435,
+          "p25": 0.9897750179030913,
+          "p75": 1.0461190370055131,
+          "iqr": 0.056344019102421816
+        }
+      }
+    },
+    "run2": {
+      "cold": {
+        "sweeps_per_sample": 74,
+        "paired_samples": 20,
+        "calibration_restarts": 0,
+        "eager": {
+          "median_ns_per_case": 13514,
+          "min_ns_per_case": 11962,
+          "max_ns_per_case": 14909,
+          "iqr_ns_per_case": 767
+        },
+        "candidate": {
+          "median_ns_per_case": 14006,
+          "min_ns_per_case": 13204,
+          "max_ns_per_case": 16990,
+          "iqr_ns_per_case": 622
+        },
+        "paired_ratio": {
+          "standard_median": 1.028747621398062,
+          "lower_median": 1.0239118685687671,
+          "min": 0.9417647312835075,
+          "max": 1.3105196075910819,
+          "p25": 0.9961079579818474,
+          "p75": 1.0452682696253415,
+          "iqr": 0.0491603116434941
+        }
+      },
+      "repeat_dispatch": {
+        "sweeps_per_sample": 96,
+        "paired_samples": 20,
+        "calibration_restarts": 0,
+        "eager": {
+          "median_ns_per_case": 12110,
+          "min_ns_per_case": 11158,
+          "max_ns_per_case": 12806,
+          "iqr_ns_per_case": 873
+        },
+        "candidate": {
+          "median_ns_per_case": 12276,
+          "min_ns_per_case": 11463,
+          "max_ns_per_case": 13604,
+          "iqr_ns_per_case": 1013
+        },
+        "paired_ratio": {
+          "standard_median": 1.0245630516398327,
+          "lower_median": 1.0202121495345116,
+          "min": 0.9263763002371295,
+          "max": 1.1234060699995858,
+          "p25": 0.9893525499439711,
+          "p75": 1.0606132540941422,
+          "iqr": 0.07126070415017105
+        }
+      }
+    },
+    "run3": {
+      "cold": {
+        "sweeps_per_sample": 70,
+        "paired_samples": 20,
+        "calibration_restarts": 0,
+        "eager": {
+          "median_ns_per_case": 13692,
+          "min_ns_per_case": 12953,
+          "max_ns_per_case": 14455,
+          "iqr_ns_per_case": 626
+        },
+        "candidate": {
+          "median_ns_per_case": 13603,
+          "min_ns_per_case": 12954,
+          "max_ns_per_case": 14947,
+          "iqr_ns_per_case": 624
+        },
+        "paired_ratio": {
+          "standard_median": 1.0200792189549688,
+          "lower_median": 1.0194309557556278,
+          "min": 0.9443860669936235,
+          "max": 1.0783971205109824,
+          "p25": 0.9887691179806412,
+          "p75": 1.0398385534411478,
+          "iqr": 0.051069435460506685
+        }
+      },
+      "repeat_dispatch": {
+        "sweeps_per_sample": 75,
+        "paired_samples": 20,
+        "calibration_restarts": 0,
+        "eager": {
+          "median_ns_per_case": 12267,
+          "min_ns_per_case": 11848,
+          "max_ns_per_case": 13021,
+          "iqr_ns_per_case": 321
+        },
+        "candidate": {
+          "median_ns_per_case": 12573,
+          "min_ns_per_case": 12226,
+          "max_ns_per_case": 13396,
+          "iqr_ns_per_case": 383
+        },
+        "paired_ratio": {
+          "standard_median": 1.01421523941141,
+          "lower_median": 1.0107916158840051,
+          "min": 0.9804969818635474,
+          "max": 1.081157440287606,
+          "p25": 1.0014159163326262,
+          "p75": 1.044730383768954,
+          "iqr": 0.04331446743632794
+        }
+      }
+    }
+  },
+  "cross_run_summary": {
+    "cold": {
+      "eager": {
+        "per_run_medians_ns_per_case": [
+          12877,
+          13514,
+          13692
+        ],
+        "median_of_run_medians_ns_per_case": 13514
+      },
+      "candidate": {
+        "per_run_medians_ns_per_case": [
+          13219,
+          14006,
+          13603
+        ],
+        "median_of_run_medians_ns_per_case": 13603
+      },
+      "paired_ratio_median_across_runs": {
+        "per_run": [
+          1.0278714013796986,
+          1.028747621398062,
+          1.0200792189549688
+        ],
+        "median": 1.0278714013796986
+      }
+    },
+    "repeat_dispatch": {
+      "eager": {
+        "per_run_medians_ns_per_case": [
+          12388,
+          12110,
+          12267
+        ],
+        "median_of_run_medians_ns_per_case": 12267
+      },
+      "candidate": {
+        "per_run_medians_ns_per_case": [
+          12712,
+          12276,
+          12573
+        ],
+        "median_of_run_medians_ns_per_case": 12573
+      },
+      "paired_ratio_median_across_runs": {
+        "per_run": [
+          1.0229738063308282,
+          1.0245630516398327,
+          1.01421523941141
+        ],
+        "median": 1.0229738063308282
+      }
+    }
+  },
+  "cache_accounting_additive_and_resident_separate": {
+    "cold": {
+      "eager": {
+        "per_run": {
+          "run1": {
+            "hits": 318400,
+            "misses": 2723200,
+            "compiles": 2723200,
+            "publications": 2723200,
+            "replacements": 1419200,
+            "published_code_bytes_total": 3301696000
+          },
+          "run2": {
+            "hits": 294520,
+            "misses": 2518960,
+            "compiles": 2518960,
+            "publications": 2518960,
+            "replacements": 1312760,
+            "published_code_bytes_total": 3054068800
+          },
+          "run3": {
+            "hits": 278600,
+            "misses": 2382800,
+            "compiles": 2382800,
+            "publications": 2382800,
+            "replacements": 1241800,
+            "published_code_bytes_total": 2888984000
+          }
+        },
+        "sum_across_accepted_runs": {
+          "hits": 891520,
+          "misses": 7624960,
+          "compiles": 7624960,
+          "publications": 7624960,
+          "replacements": 3973760,
+          "published_code_bytes_total": 9244748800
+        },
+        "resident_maxima_across_runs": {
+          "peak_resident_entries": 1,
+          "max_resident_code_bytes": 2452,
+          "max_resident_logical_bytes": 6340,
+          "max_final_resident_code_bytes": 2384
+        }
+      },
+      "candidate": {
+        "per_run": {
+          "run1": {
+            "hits": 318400,
+            "misses": 2723200,
+            "compiles": 2723200,
+            "publications": 2723200,
+            "replacements": 1419200,
+            "published_code_bytes_total": 3772710400
+          },
+          "run2": {
+            "hits": 294520,
+            "misses": 2518960,
+            "compiles": 2518960,
+            "publications": 2518960,
+            "replacements": 1312760,
+            "published_code_bytes_total": 3489757120
+          },
+          "run3": {
+            "hits": 278600,
+            "misses": 2382800,
+            "compiles": 2382800,
+            "publications": 2382800,
+            "replacements": 1241800,
+            "published_code_bytes_total": 3301121600
+          }
+        },
+        "sum_across_accepted_runs": {
+          "hits": 891520,
+          "misses": 7624960,
+          "compiles": 7624960,
+          "publications": 7624960,
+          "replacements": 3973760,
+          "published_code_bytes_total": 10563589120
+        },
+        "resident_maxima_across_runs": {
+          "peak_resident_entries": 1,
+          "max_resident_code_bytes": 3144,
+          "max_resident_logical_bytes": 9927,
+          "max_final_resident_code_bytes": 3144
+        }
+      }
+    },
+    "repeat_dispatch": {
+      "eager": {
+        "per_run": {
+          "run1": {
+            "hits": 674080,
+            "misses": 2671680,
+            "compiles": 2671680,
+            "publications": 2671680,
+            "replacements": 2671680,
+            "published_code_bytes_total": 3102844800
+          },
+          "run2": {
+            "hits": 735360,
+            "misses": 2914560,
+            "compiles": 2914560,
+            "publications": 2914560,
+            "replacements": 2914560,
+            "published_code_bytes_total": 3384921600
+          },
+          "run3": {
+            "hits": 574500,
+            "misses": 2277000,
+            "compiles": 2277000,
+            "publications": 2277000,
+            "replacements": 2277000,
+            "published_code_bytes_total": 2644470000
+          }
+        },
+        "sum_across_accepted_runs": {
+          "hits": 1983940,
+          "misses": 7863240,
+          "compiles": 7863240,
+          "publications": 7863240,
+          "replacements": 7863240,
+          "published_code_bytes_total": 9132236400
+        },
+        "resident_maxima_across_runs": {
+          "peak_resident_entries": 1,
+          "max_resident_code_bytes": 2452,
+          "max_resident_logical_bytes": 6340,
+          "max_final_resident_code_bytes": 2384
+        }
+      },
+      "candidate": {
+        "per_run": {
+          "run1": {
+            "hits": 674080,
+            "misses": 2671680,
+            "compiles": 2671680,
+            "publications": 2671680,
+            "replacements": 2671680,
+            "published_code_bytes_total": 3508236160
+          },
+          "run2": {
+            "hits": 735360,
+            "misses": 2914560,
+            "compiles": 2914560,
+            "publications": 2914560,
+            "replacements": 2914560,
+            "published_code_bytes_total": 3827166720
+          },
+          "run3": {
+            "hits": 574500,
+            "misses": 2277000,
+            "compiles": 2277000,
+            "publications": 2277000,
+            "replacements": 2277000,
+            "published_code_bytes_total": 2989974000
+          }
+        },
+        "sum_across_accepted_runs": {
+          "hits": 1983940,
+          "misses": 7863240,
+          "compiles": 7863240,
+          "publications": 7863240,
+          "replacements": 7863240,
+          "published_code_bytes_total": 10325376880
+        },
+        "resident_maxima_across_runs": {
+          "peak_resident_entries": 1,
+          "max_resident_code_bytes": 3144,
+          "max_resident_logical_bytes": 9927,
+          "max_final_resident_code_bytes": 3144
+        }
+      }
+    }
+  },
+  "run_durations_seconds": {
+    "run1": 172.090353333,
+    "run2": 177.762459833,
+    "run3": 149.287803333
+  },
+  "limitations_and_decision": "Eager remains the default. Candidate/eager medians are close to parity with per-run noise and observed Stage2 activity as documented; no performance winner inference is authorized. Run2 retry3 is accepted as noisy bounded evidence; the high-load run2 diagnostic and all interrupted overlap attempts are excluded. Mini checks remain deferred to final Stage3 acceptance."
+}

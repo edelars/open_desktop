@@ -1,0 +1,126 @@
+{
+  "date_utc": "2026-10-31",
+  "source_revision": "00bf9476f107eb7343026b81899e3ec8111543f1",
+  "machine": "MacBookPro18,3 / Apple M1 Pro / arm64 / macOS 14.6.1 23G93 / 16 GiB / 16384-byte pages",
+  "artifact_target": "arm64-apple-macosx14.0",
+  "debugger_used": false,
+  "all_accepted_cases_passed": true,
+  "accepted_cases": [
+    {
+      "name": "arithmetic",
+      "returncode": 0,
+      "duration_ns": 693583084,
+      "passed": true,
+      "observed": {
+        "gpr": [
+          0,
+          1,
+          0,
+          0
+        ],
+        "instructions_executed": 6,
+        "reason": 0,
+        "rflags": 70,
+        "rip": 5
+      }
+    },
+    {
+      "name": "multi_block_taken_register_only",
+      "returncode": 0,
+      "duration_ns": 8554208,
+      "passed": true,
+      "observed": {
+        "gpr": [
+          7,
+          5,
+          2,
+          0
+        ],
+        "instructions_executed": 3,
+        "reason": 0,
+        "rflags": 2,
+        "rip": 11
+      }
+    },
+    {
+      "name": "s3_14_live_through_helpers",
+      "returncode": 0,
+      "duration_ns": 17742166,
+      "passed": true,
+      "observed": {
+        "gpr": [
+          1,
+          0,
+          0,
+          1
+        ],
+        "instructions_executed": 6,
+        "reason": 0,
+        "rflags": 70,
+        "rip": 17
+      }
+    },
+    {
+      "name": "cooperative_stop",
+      "returncode": 0,
+      "duration_ns": 39195417,
+      "passed": true,
+      "observed": {
+        "gpr": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "instructions_executed": 27772,
+        "reason": 2,
+        "rflags": 2,
+        "rip": 0
+      }
+    },
+    {
+      "name": "publication_lifecycle_repeat",
+      "returncode": 0,
+      "duration_ns": 8990542,
+      "passed": true,
+      "observed": {
+        "gpr": [
+          0,
+          1,
+          0,
+          0
+        ],
+        "instructions_executed": 6,
+        "reason": 0,
+        "rflags": 70,
+        "rip": 5
+      }
+    },
+    {
+      "name": "publication_lifecycle_same_process",
+      "returncode": 0,
+      "duration_ns": 503514042,
+      "passed": true,
+      "observed": {
+        "create_status": 0,
+        "first_status": 0,
+        "first_rax": 0,
+        "first_rip": 5,
+        "first_reason": 0,
+        "first_instructions": 6,
+        "second_status": 0,
+        "second_rax": 0,
+        "second_rip": 5,
+        "second_reason": 0,
+        "second_instructions": 6,
+        "destroy_status": 0
+      }
+    }
+  ],
+  "excluded_probe": {
+    "name": "multi_block_taken_branch",
+    "returncode": 1,
+    "vmhost_result": "VMHost returned status 2 (OD_STATUS_INVALID_CODE)",
+    "reason": "The constructed probe used ADD RAX,imm8, outside the accepted S0-09 register-only profile. It is retained as a rejected input and is not counted as coverage."
+  }
+}

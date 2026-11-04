@@ -2,6 +2,7 @@
 """Check VMHost stop races, partial-frame handling, and launcher completion."""
 
 import argparse
+import itertools
 import json
 from pathlib import Path
 import socket
@@ -16,6 +17,8 @@ VERSION = 0
 HELLO, READY, RUN, RUN_ACK, STOP, STOP_ACK, RESULT, ERROR = 1, 2, 3, 4, 5, 6, 7, 255
 SCENARIO_PATH = Path(__file__).resolve().parents[1] / "fixtures/control/control_v0_scenarios.json"
 SCENARIOS = json.loads(SCENARIO_PATH.read_text())
+DIAGNOSTICS_DIR = None
+_CHILD_LOG_SEQUENCE = itertools.count(1)
 if SCENARIOS.get("schema_version") != 1 or SCENARIOS.get("protocol") != "CONTROL_PROTOCOL_V0":
     raise RuntimeError(f"unsupported control scenario fixture: {SCENARIO_PATH}")
 MAX_PAYLOAD = SCENARIOS["max_payload_bytes"]
@@ -64,13 +67,34 @@ def deterministic_chunks(data, seed, max_chunk_bytes):
 
 
 def launch_vmhost(path):
+    stdout = stderr = subprocess.DEVNULL
+    opened_logs = []
+    if DIAGNOSTICS_DIR is not None:
+        sequence = next(_CHILD_LOG_SEQUENCE)
+        try:
+            stdout = (DIAGNOSTICS_DIR / f"vmhost-{sequence:03d}.stdout.log").open("xb")
+            opened_logs.append(stdout)
+            stderr = (DIAGNOSTICS_DIR / f"vmhost-{sequence:03d}.stderr.log").open("xb")
+            opened_logs.append(stderr)
+        except Exception:
+            for output in opened_logs:
+                output.close()
+            raise
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-    process = subprocess.Popen(
-        [path, "--socket-fd", str(child.fileno())],
-        pass_fds=(child.fileno(),),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        process = subprocess.Popen(
+            [path, "--socket-fd", str(child.fileno())],
+            pass_fds=(child.fileno(),),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    except Exception:
+        parent.close()
+        child.close()
+        raise
+    finally:
+        for output in opened_logs:
+            output.close()
     child.close()
     parent.settimeout(3)
     return process, parent
@@ -282,7 +306,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("launcher", help="path to the built launcher smoke binary")
     parser.add_argument("vmhost", help="path to the built VMHost smoke binary")
+    parser.add_argument("--diagnostics-dir", type=Path)
     args = parser.parse_args()
+    global DIAGNOSTICS_DIR
+    if args.diagnostics_dir is not None:
+        if args.diagnostics_dir.is_symlink() or not args.diagnostics_dir.is_dir():
+            raise RuntimeError("diagnostics directory must be an existing non-symlink directory")
+        DIAGNOSTICS_DIR = args.diagnostics_dir.resolve()
 
     # Reproduce the original 100-run timing window. An early STOP must be kept
     # until the worker has entered the C ABI execution state.

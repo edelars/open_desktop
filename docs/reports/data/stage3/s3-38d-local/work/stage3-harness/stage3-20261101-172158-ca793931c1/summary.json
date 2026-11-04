@@ -1,0 +1,1112 @@
+{
+  "schema_version": 3,
+  "run_id": "stage3-20261101-172158-ca793931c1",
+  "status": "vmhost_result_state_only",
+  "suite_selection": "vmhost-result-state",
+  "result_scope": "vmhost_result_state_only",
+  "source": {
+    "revision": "1ae5d4a6bb955e3a485c42331734fedc6b347180",
+    "fingerprint_start": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+    "fingerprint_end": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+    "fingerprint_method": "sha256 of sorted tracked and non-ignored untracked paths, modes and contents"
+  },
+  "host": {
+    "os": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+    "system": "darwin",
+    "machine": "arm64",
+    "python": "3.15.0",
+    "rust_target": "aarch64-apple-darwin",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)"
+  },
+  "suites": {
+    "local_lifecycle": {
+      "status": "not_run"
+    },
+    "local_acceptance": {
+      "status": "not_run"
+    },
+    "stage1_dispatch": {
+      "status": "not_run"
+    },
+    "memory_corpus": {
+      "status": "not_run"
+    },
+    "local_vmhost_result_state": {
+      "status": "passed",
+      "steps": [
+        "local_s38d_validator_selfcheck",
+        "local_s38d_codesign_path",
+        "local_s38d_build_od_host",
+        "local_s38d_compile_vmhost",
+        "local_s38d_sign_vmhost",
+        "local_s38d_verify_vmhost",
+        "local_s38d_vmhost_signature",
+        "local_s38d_vmhost_entitlements",
+        "local_s38d_compile_launcher",
+        "local_s38d_sign_launcher",
+        "local_s38d_verify_launcher",
+        "local_s38d_launcher_signature",
+        "local_s38d_launcher_entitlements",
+        "local_s38d_result_state"
+      ],
+      "artifacts": {
+        "od_host_library": {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/build-target/release/libod_host.a",
+          "sha256": "66a2ccbd85e01730f54d23572287e029c38bfedd17195bc4342c6f6863baf04e",
+          "size_bytes": 19827000
+        },
+        "vmhost": {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke",
+          "sha256": "ad8c58935730a321a556ea67680f270fc41442fa6800f5eddf50b5469f2b8e07",
+          "size_bytes": 2316416
+        },
+        "launcher": {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke",
+          "sha256": "7657d726f33a3a25462dd7b768600dec86821af7da254e66744f4340591b9d2d",
+          "size_bytes": 141824
+        },
+        "entitlements_source": {
+          "path": "apps/vmhost/Configuration/vmhost-smoke.entitlements",
+          "sha256": "958648f799e436860b51eaf55ec8f92d2c62da17001e23d96bc05ffc748f2a2a",
+          "size_bytes": 241
+        },
+        "codesign_binary": {
+          "path": "/usr/bin/codesign",
+          "sha256": "3635f18db517033a4786ea7ddb0acc1801e642eaf6171e208e24cb9a1922f518",
+          "size_bytes": 458576
+        }
+      },
+      "automatic_retry": false
+    },
+    "vmhost_process": {
+      "status": "not_run"
+    },
+    "physical_x86": {
+      "status": "not_run"
+    },
+    "mac_mini": {
+      "status": "not_run"
+    },
+    "performance": {
+      "status": "not_run"
+    },
+    "owner_backed": {
+      "status": "not_run"
+    },
+    "stage2": {
+      "status": "not_run"
+    }
+  },
+  "steps": {
+    "harness_self_tests": {
+      "status": "not_run"
+    },
+    "stage1_dispatch": {
+      "status": "not_run"
+    },
+    "memory_corpus": {
+      "status": "not_run"
+    },
+    "memory_s3_34h_exact_gate": {
+      "status": "not_run"
+    },
+    "arena_cache_a_b_a_churn_reuses_only_safe_slots_at_capacity_one_and_two": {
+      "status": "not_run"
+    },
+    "bounded_memory_dispatch_nop_fallback_is_exact_and_strict_run_stays_strict": {
+      "status": "not_run"
+    },
+    "code_region_store_invalidates_cached_prefix_and_tail_before_redispatch": {
+      "status": "not_run"
+    },
+    "active_code_v3_exits_on_dirty_prefix_and_finishes_unrelated_store_in_one_entry": {
+      "status": "not_run"
+    },
+    "active_code_v3_invalidates_exact_not_yet_executed_tail_immediate": {
+      "status": "not_run"
+    },
+    "active_code_v3_guards_faults_aliases_and_committed_stop_are_precise": {
+      "status": "not_run"
+    },
+    "active_code_v3_pc_map_survives_artifact_drop_invalidation_and_safe_reuse": {
+      "status": "not_run"
+    },
+    "direct_memory_v2_pc_map_survives_artifact_drop_and_arena_slot_reuse": {
+      "status": "not_run"
+    },
+    "active_code_v3_architectural_write_fault_matches_interpreter_and_is_atomic": {
+      "status": "not_run"
+    },
+    "ir_two_load_pair_preserves_callbacks_faults_and_continuation": {
+      "status": "not_run"
+    },
+    "s3_27d_direct_memory_v2_pc_map": {
+      "status": "not_run"
+    },
+    "s3_27d_direct_memory_v2_pc_map_lifecycle": {
+      "status": "not_run"
+    },
+    "s3_27d_direct_memory_v2_pc_map_invalidation": {
+      "status": "not_run"
+    },
+    "s3_27d_direct_memory_v2_error_distinction": {
+      "status": "not_run"
+    },
+    "s3_38b_native_register_v1_cache_profile_invalidation": {
+      "status": "not_run"
+    },
+    "s3_38b_native_register_v1_cache_guards_capacity": {
+      "status": "not_run"
+    },
+    "s3_38b_native_register_v1_host_reuse_lifetime_parity": {
+      "status": "not_run"
+    },
+    "s3_38c_native_register_v1_strategy_key_isolation": {
+      "status": "not_run"
+    },
+    "s3_38c_native_register_v1_candidate_lifecycle_guards": {
+      "status": "not_run"
+    },
+    "s3_38c_native_register_v1_candidate_cold_hit_parity": {
+      "status": "not_run"
+    },
+    "s3_27c_active_code_v3_pc_map": {
+      "status": "not_run"
+    },
+    "s3_29e_coordinator": {
+      "status": "not_run"
+    },
+    "demand_flags_replacement_spills": {
+      "status": "not_run"
+    },
+    "demand_flags_branch_materialization": {
+      "status": "not_run"
+    },
+    "demand_flags_exit_materialization": {
+      "status": "not_run"
+    },
+    "s3_28_event_before_entry": {
+      "status": "not_run"
+    },
+    "s3_28_stop_priority_after_publication": {
+      "status": "not_run"
+    },
+    "s3_34t_register_event_cache_miss_hit_request": {
+      "status": "not_run"
+    },
+    "s3_34t_register_event_publication_prevents_entry": {
+      "status": "not_run"
+    },
+    "s3_34t_register_event_multi_cache_capacity": {
+      "status": "not_run"
+    },
+    "s3_34t_register_event_jcc_resume_without_replay": {
+      "status": "not_run"
+    },
+    "s3_34t_register_event_control_priority": {
+      "status": "not_run"
+    },
+    "abi_create_execute_stop_destroy": {
+      "status": "not_run"
+    },
+    "abi_stop_before_execute": {
+      "status": "not_run"
+    },
+    "abi_dispatch_interpreter_loop_reuse": {
+      "status": "not_run"
+    },
+    "abi_stop_at_code_end": {
+      "status": "not_run"
+    },
+    "abi_interleaved_handles": {
+      "status": "not_run"
+    },
+    "abi_busy_invalid_state_output_preservation": {
+      "status": "not_run"
+    },
+    "s3_33a_native_inc_rax_host": {
+      "status": "not_run"
+    },
+    "s3_33a_native_inc_rax_compiler": {
+      "status": "not_run"
+    },
+    "s3_33b_native_dec_rax_host": {
+      "status": "not_run"
+    },
+    "s3_33b_native_dec_rax_compiler": {
+      "status": "not_run"
+    },
+    "s3_33c_native_neg_rax_host": {
+      "status": "not_run"
+    },
+    "s3_33c_native_neg_rax_compiler": {
+      "status": "not_run"
+    },
+    "s3_33d_native_add_rax_imm8_host": {
+      "status": "not_run"
+    },
+    "s3_33d_native_add_rax_imm8_compiler": {
+      "status": "not_run"
+    },
+    "s3_33d_native_add_rax_imm8_admission": {
+      "status": "not_run"
+    },
+    "s3_33e_native_cmp_rax_imm8_host": {
+      "status": "not_run"
+    },
+    "s3_33e_native_cmp_rax_imm8_compiler": {
+      "status": "not_run"
+    },
+    "s3_33e_native_cmp_rax_imm8_admission": {
+      "status": "not_run"
+    },
+    "s3_33f_native_sub_rax_imm8_host": {
+      "status": "not_run"
+    },
+    "s3_33f_native_sub_rax_imm8_compiler": {
+      "status": "not_run"
+    },
+    "s3_33f_native_sub_rax_imm8_admission": {
+      "status": "not_run"
+    },
+    "s3_33g_native_not_rax_admission": {
+      "status": "not_run"
+    },
+    "s3_33g_native_not_rax_emitter": {
+      "status": "not_run"
+    },
+    "s3_33g_native_not_rax_compiler": {
+      "status": "not_run"
+    },
+    "s3_33g_native_not_rax_host": {
+      "status": "not_run"
+    },
+    "s3_33h_native_lea_rax_rbx_admission": {
+      "status": "not_run"
+    },
+    "s3_33h_native_lea_rax_rbx_compiler": {
+      "status": "not_run"
+    },
+    "s3_33h_native_lea_rax_rbx_host": {
+      "status": "not_run"
+    },
+    "s3_33i_native_xchg_rax_rbx_admission": {
+      "status": "not_run"
+    },
+    "s3_33i_native_xchg_rax_rbx_emitter": {
+      "status": "not_run"
+    },
+    "s3_33i_native_xchg_rax_rbx_compiler": {
+      "status": "not_run"
+    },
+    "s3_33i_native_xchg_rax_rbx_host": {
+      "status": "not_run"
+    },
+    "s3_33j_native_lea_rbx_disp8_admission": {
+      "status": "not_run"
+    },
+    "s3_33j_native_lea_rbx_disp8_emitter": {
+      "status": "not_run"
+    },
+    "s3_33j_native_lea_rbx_disp8_compiler": {
+      "status": "not_run"
+    },
+    "s3_33j_native_lea_rbx_disp8_host": {
+      "status": "not_run"
+    },
+    "s3_33k_native_mov_rax_imm32_admission": {
+      "status": "not_run"
+    },
+    "s3_33k_native_mov_rax_imm32_compiler": {
+      "status": "not_run"
+    },
+    "s3_33k_native_mov_rax_imm32_host": {
+      "status": "not_run"
+    },
+    "s3_33l_native_lea_rbx_rcx_admission": {
+      "status": "not_run"
+    },
+    "s3_33l_native_lea_rbx_rcx_compiler": {
+      "status": "not_run"
+    },
+    "s3_33l_native_lea_rbx_rcx_host": {
+      "status": "not_run"
+    },
+    "s3_33m_native_lea_rax_rip_disp32_admission": {
+      "status": "not_run"
+    },
+    "s3_33m_native_lea_rax_rip_disp32_compiler": {
+      "status": "not_run"
+    },
+    "s3_33m_native_lea_rax_rip_disp32_host": {
+      "status": "not_run"
+    },
+    "s3_33n_native_register_v1_admission": {
+      "status": "not_run"
+    },
+    "s3_33n_native_register_v1_compiler": {
+      "status": "not_run"
+    },
+    "s3_33n_native_register_v1_host": {
+      "status": "not_run"
+    },
+    "s3_34n_native_register_v1_corpus": {
+      "status": "not_run"
+    },
+    "s3_34n_native_register_v1_replay": {
+      "status": "not_run"
+    },
+    "s3_34n_native_register_v1_selfcheck": {
+      "status": "not_run"
+    },
+    "s3_34o_native_register_v1_reducer": {
+      "status": "not_run"
+    },
+    "s3_34o_native_register_v1_reducer_selfcheck": {
+      "status": "not_run"
+    },
+    "s3_34p_cached_native_register_v1_corpus": {
+      "status": "not_run"
+    },
+    "s3_34p_cached_native_register_v1_replay": {
+      "status": "not_run"
+    },
+    "s3_34p_cached_native_register_v1_failure_replay": {
+      "status": "not_run"
+    },
+    "s3_34q_retained_hit_state_reducer_selfcheck": {
+      "status": "not_run"
+    },
+    "s3_34r_abi_idle_handle_cross_thread_mapping_release": {
+      "status": "not_run"
+    },
+    "s3_34s_memory_event_bare_nop_bridge_budget_effects": {
+      "status": "not_run"
+    },
+    "s3_34s_memory_event_after_publication_stop_wins": {
+      "status": "not_run"
+    },
+    "s3_34s_memory_event_malformed_pending_accounting": {
+      "status": "not_run"
+    },
+    "s3_34s_memory_event_yield_before_and_after_committed_artifact": {
+      "status": "not_run"
+    },
+    "s3_34s_memory_event_terminal_exit_stop_not_masked": {
+      "status": "not_run"
+    },
+    "s3_34s_memory_event_stop_boundary_budget_priority": {
+      "status": "not_run"
+    },
+    "s3_34s_memory_event_nop_fallback_resume_without_replay": {
+      "status": "not_run"
+    },
+    "s3_30p3_allocator_helper_clobber_values": {
+      "status": "not_run"
+    },
+    "s3_32a_candidate_exact_lowering": {
+      "status": "not_run"
+    },
+    "s3_32a_candidate_verified_compile_pipeline": {
+      "status": "not_run"
+    },
+    "s3_32a_candidate_interpreter_edges_and_resume": {
+      "status": "not_run"
+    },
+    "s3_37e_memory_cache_lifecycle_republishes": {
+      "status": "not_run"
+    },
+    "local_s38d_validator_selfcheck": {
+      "name": "local_s38d_validator_selfcheck",
+      "argv": [
+        "/opt/homebrew/opt/python@3.15/bin/python3.15",
+        "tests/cpu/test_stage3_harness.py",
+        "Stage3HarnessValidationTests.test_s3_38d_result_state_validator_rejects_corruption"
+      ],
+      "command": "/opt/homebrew/opt/python@3.15/bin/python3.15 tests/cpu/test_stage3_harness.py Stage3HarnessValidationTests.test_s3_38d_result_state_validator_rejects_corruption",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 120,
+      "duration_seconds": 18.648,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_validator_selfcheck.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_validator_selfcheck.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_validator_selfcheck.stderr.log",
+      "output_tail": "\n--- stderr ---\ntest_s3_38d_result_state_validator_rejects_corruption (__main__.Stage3HarnessValidationTests.test_s3_38d_result_state_validator_rejects_corruption) ... ok\n\n----------------------------------------------------------------------\nRan 1 test in 0.003s\n\nOK\n",
+      "output_sha256": "93c1f195bdf485d75eab635ddf12b3c28e1a88e209dd3ef2eace9db26029e331",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "bda62acd9a0a5f49344bf19bd9a08fb648a9385951819906b97a30fd20dac829",
+      "process_group_cleanup": "empty",
+      "process_group_id": 35479,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_codesign_path": {
+      "name": "local_s38d_codesign_path",
+      "argv": [
+        "xcrun",
+        "--find",
+        "codesign"
+      ],
+      "command": "xcrun --find codesign",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 30,
+      "duration_seconds": 24.592,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_codesign_path.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_codesign_path.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_codesign_path.stderr.log",
+      "output_tail": "/usr/bin/codesign\n",
+      "output_sha256": "e85c9309f45e99de475cbe756d15b1587ceb58c593200d7dd44719478ed89767",
+      "stdout_sha256": "e85c9309f45e99de475cbe756d15b1587ceb58c593200d7dd44719478ed89767",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "process_group_cleanup": "empty",
+      "process_group_id": 35683,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_build_od_host": {
+      "name": "local_s38d_build_od_host",
+      "argv": [
+        "cargo",
+        "build",
+        "--release",
+        "-p",
+        "od-host",
+        "--offline",
+        "--target-dir",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/build-target"
+      ],
+      "command": "cargo build --release -p od-host --offline --target-dir /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/build-target",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 1800,
+      "duration_seconds": 22.188,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_build_od_host.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_build_od_host.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_build_od_host.stderr.log",
+      "output_tail": "\n--- stderr ---\n   Compiling od-isa v0.1.0 (/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/crates/od-isa)\n   Compiling od-jit v0.1.0 (/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/crates/od-jit)\n   Compiling od-host v0.1.0 (/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/crates/od-host)\n    Finished `release` profile [optimized] target(s) in 3.65s\n",
+      "output_sha256": "cc95fe27c7f15db7b2ce56ecb55a4d5b7113e7b2fce753696f751f1cf5335428",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "82efc8bc331f1aba0a7b2f378e5af0c0d6ba2944b86fd0cf37377f09b126ed9d",
+      "process_group_cleanup": "empty",
+      "process_group_id": 36160,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_compile_vmhost": {
+      "name": "local_s38d_compile_vmhost",
+      "argv": [
+        "xcrun",
+        "swiftc",
+        "-module-cache-path",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/swift-module-cache",
+        "-parse-as-library",
+        "-O",
+        "-import-objc-header",
+        "include/open_desktop/host_abi.h",
+        "apps/vmhost/Sources/ControlFrame.swift",
+        "apps/vmhost/Sources/main.swift",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/build-target/release/libod_host.a",
+        "-ldl",
+        "-lpthread",
+        "-lm",
+        "-framework",
+        "Security",
+        "-framework",
+        "SystemConfiguration",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "CoreServices",
+        "-framework",
+        "Foundation",
+        "-o",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke"
+      ],
+      "command": "xcrun swiftc -module-cache-path /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/swift-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/vmhost/Sources/ControlFrame.swift apps/vmhost/Sources/main.swift /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/build-target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 900,
+      "duration_seconds": 22.073,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_compile_vmhost.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_compile_vmhost.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_compile_vmhost.stderr.log",
+      "output_tail": "",
+      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "process_group_cleanup": "empty",
+      "process_group_id": 36442,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_sign_vmhost": {
+      "name": "local_s38d_sign_vmhost",
+      "argv": [
+        "/usr/bin/codesign",
+        "--force",
+        "--sign",
+        "-",
+        "--options",
+        "runtime",
+        "--entitlements",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/apps/vmhost/Configuration/vmhost-smoke.entitlements",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke"
+      ],
+      "command": "/usr/bin/codesign --force --sign - --options runtime --entitlements /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/apps/vmhost/Configuration/vmhost-smoke.entitlements /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 120,
+      "duration_seconds": 18.261,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_sign_vmhost.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_sign_vmhost.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_sign_vmhost.stderr.log",
+      "output_tail": "\n--- stderr ---\n/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke: replacing existing signature\n",
+      "output_sha256": "cc7d49a1e49af4d289388c718a22acb4c605ddb851fbcddca9b90599280badcf",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "07fffe55c9ee6f9b9350adb62bc002b6068718f371e7927460318db9d050006d",
+      "process_group_cleanup": "empty",
+      "process_group_id": 36728,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_verify_vmhost": {
+      "name": "local_s38d_verify_vmhost",
+      "argv": [
+        "/usr/bin/codesign",
+        "--verify",
+        "--strict",
+        "--verbose=2",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke"
+      ],
+      "command": "/usr/bin/codesign --verify --strict --verbose=2 /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 120,
+      "duration_seconds": 18.252,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_verify_vmhost.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_verify_vmhost.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_verify_vmhost.stderr.log",
+      "output_tail": "\n--- stderr ---\n/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke: valid on disk\n/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke: satisfies its Designated Requirement\n",
+      "output_sha256": "5c54a5cd9efb1ebe1c9c6491ef581f015ede525963ae958e2309e2454f2ff725",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "f03d09f601dd23e6297bb1bcb378535e5ea1d69f293594fd6dfda80f82c03569",
+      "process_group_cleanup": "empty",
+      "process_group_id": 36936,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_vmhost_signature": {
+      "name": "local_s38d_vmhost_signature",
+      "argv": [
+        "/usr/bin/codesign",
+        "-d",
+        "--verbose=4",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke"
+      ],
+      "command": "/usr/bin/codesign -d --verbose=4 /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 120,
+      "duration_seconds": 18.045,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_vmhost_signature.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_vmhost_signature.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_vmhost_signature.stderr.log",
+      "output_tail": "\n--- stderr ---\nExecutable=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke\nIdentifier=od-vmhost-smoke-55554944427b68a38c7e35bfb636aa719d8c58fc\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20500 size=4857 flags=0x10002(adhoc,runtime) hashes=140+7 location=embedded\nVersionPlatform=1\nVersionMin=1703936\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=0603555779f02e918dc28401207ea8d6fdcd8ff0\nCandidateCDHashFull sha256=0603555779f02e918dc28401207ea8d6fdcd8ff0d441a1597dfc0a0fa291d5ef\nHash choices=sha256\nCMSDigest=0603555779f02e918dc28401207ea8d6fdcd8ff0d441a1597dfc0a0fa291d5ef\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=1458176\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=0603555779f02e918dc28401207ea8d6fdcd8ff0\nSignature=adhoc\nInfo.plist=not bound\nTeamIdentifier=not set\nRuntime Version=27.0.0\nSealed Resources=none\nInternal requirements count=0 size=12\n",
+      "output_sha256": "67b690133ccec7d599ef177ad404217ee41dd5dda4aeac6027cc12ab35650aa7",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "c9a4a1e570b7246c591e1f176694b0dccac0f4507fcd67b859ede87406a16b59",
+      "process_group_cleanup": "empty",
+      "process_group_id": 37145,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_vmhost_entitlements": {
+      "name": "local_s38d_vmhost_entitlements",
+      "argv": [
+        "/usr/bin/codesign",
+        "-d",
+        "--entitlements",
+        ":-",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke"
+      ],
+      "command": "/usr/bin/codesign -d --entitlements :- /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 120,
+      "duration_seconds": 18.84,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_vmhost_entitlements.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_vmhost_entitlements.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_vmhost_entitlements.stderr.log",
+      "output_tail": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"https://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>com.apple.security.cs.allow-jit</key><true/></dict></plist>\n\n--- stderr ---\nExecutable=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke\nwarning: Specifying ':' in the path is deprecated and will not work in a future release\n",
+      "output_sha256": "5b22a3072e95a6d240ca86ede5bc18e26b20c12ac6ebe212333079cb521eb1cb",
+      "stdout_sha256": "84ea240cae1d3d70098e6bfe66ed4cf2e991a14ef6e66978af7b5813d2d17176",
+      "stderr_sha256": "d1ad657d1450d7bb0178d7bfcac12819c71d72ce603bc75ffac900eb29dd3460",
+      "process_group_cleanup": "empty",
+      "process_group_id": 37323,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_compile_launcher": {
+      "name": "local_s38d_compile_launcher",
+      "argv": [
+        "xcrun",
+        "swiftc",
+        "-module-cache-path",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/swift-module-cache",
+        "-parse-as-library",
+        "-O",
+        "-import-objc-header",
+        "include/open_desktop/host_abi.h",
+        "apps/vmhost/Sources/ControlFrame.swift",
+        "apps/macos/Sources/launcher.swift",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/build-target/release/libod_host.a",
+        "-ldl",
+        "-lpthread",
+        "-lm",
+        "-framework",
+        "Security",
+        "-framework",
+        "SystemConfiguration",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "CoreServices",
+        "-framework",
+        "Foundation",
+        "-o",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke"
+      ],
+      "command": "xcrun swiftc -module-cache-path /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/swift-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/vmhost/Sources/ControlFrame.swift apps/macos/Sources/launcher.swift /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/build-target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 900,
+      "duration_seconds": 20.017,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_compile_launcher.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_compile_launcher.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_compile_launcher.stderr.log",
+      "output_tail": "",
+      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "process_group_cleanup": "empty",
+      "process_group_id": 37536,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_sign_launcher": {
+      "name": "local_s38d_sign_launcher",
+      "argv": [
+        "/usr/bin/codesign",
+        "--force",
+        "--sign",
+        "-",
+        "--options",
+        "runtime",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke"
+      ],
+      "command": "/usr/bin/codesign --force --sign - --options runtime /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 120,
+      "duration_seconds": 17.709,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_sign_launcher.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_sign_launcher.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_sign_launcher.stderr.log",
+      "output_tail": "\n--- stderr ---\n/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke: replacing existing signature\n",
+      "output_sha256": "256630c365cd6eb0d6ffa9d15889ecc0a5147da08d6460e200e087d651ac3c5a",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "09addcdc94c79c1e12e1feaebf1eb6257f4e163f1dd6ab023ff6686a97b88229",
+      "process_group_cleanup": "empty",
+      "process_group_id": 37766,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_verify_launcher": {
+      "name": "local_s38d_verify_launcher",
+      "argv": [
+        "/usr/bin/codesign",
+        "--verify",
+        "--strict",
+        "--verbose=2",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke"
+      ],
+      "command": "/usr/bin/codesign --verify --strict --verbose=2 /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 120,
+      "duration_seconds": 18.304,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_verify_launcher.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_verify_launcher.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_verify_launcher.stderr.log",
+      "output_tail": "\n--- stderr ---\n/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke: valid on disk\n/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke: satisfies its Designated Requirement\n",
+      "output_sha256": "582e819309f6734361be9be3c1aa5131a7ff1c131da29f5b5da3441994d13f11",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "7c1b61aa46854208e549f608671d7c093be090353824795e27e38b7f19dbf165",
+      "process_group_cleanup": "empty",
+      "process_group_id": 37971,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_launcher_signature": {
+      "name": "local_s38d_launcher_signature",
+      "argv": [
+        "/usr/bin/codesign",
+        "-d",
+        "--verbose=4",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke"
+      ],
+      "command": "/usr/bin/codesign -d --verbose=4 /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 120,
+      "duration_seconds": 18.291,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_launcher_signature.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_launcher_signature.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_launcher_signature.stderr.log",
+      "output_tail": "\n--- stderr ---\nExecutable=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke\nIdentifier=open-desktop-launcher-smoke-5555494412e77c4e6d023c88a85c08d109d013ec\nFormat=Mach-O thin (arm64)\nCodeDirectory v=20500 size=485 flags=0x10002(adhoc,runtime) hashes=8+2 location=embedded\nVersionPlatform=1\nVersionMin=1703936\nVersionSDK=1769472\nHash type=sha256 size=32\nCandidateCDHash sha256=26f98ca24339950eb35c9d0ac7b3828ab4d435ac\nCandidateCDHashFull sha256=26f98ca24339950eb35c9d0ac7b3828ab4d435acb44b6ccf976c24906b469b78\nHash choices=sha256\nCMSDigest=26f98ca24339950eb35c9d0ac7b3828ab4d435acb44b6ccf976c24906b469b78\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=49152\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=26f98ca24339950eb35c9d0ac7b3828ab4d435ac\nSignature=adhoc\nInfo.plist=not bound\nTeamIdentifier=not set\nRuntime Version=27.0.0\nSealed Resources=none\nInternal requirements count=0 size=12\n",
+      "output_sha256": "666d8ebdf157c84a0222ddc7ec901542f751fca8143931884d345d16f907038a",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "64098c47d121ae9258b886c2059c2c1a7b42ff2c70994a5f717894b700185b07",
+      "process_group_cleanup": "empty",
+      "process_group_id": 38260,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_launcher_entitlements": {
+      "name": "local_s38d_launcher_entitlements",
+      "argv": [
+        "/usr/bin/codesign",
+        "-d",
+        "--entitlements",
+        ":-",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke"
+      ],
+      "command": "/usr/bin/codesign -d --entitlements :- /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 120,
+      "duration_seconds": 17.794,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_launcher_entitlements.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_launcher_entitlements.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_launcher_entitlements.stderr.log",
+      "output_tail": "\n--- stderr ---\nExecutable=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke\nwarning: Specifying ':' in the path is deprecated and will not work in a future release\n",
+      "output_sha256": "2416383c89b0c5835e15c672fc2cdce90117dcc0186989e36eef501ae2a208f1",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "b41d3f20bd450a0d75bd6a3f4e1d3303818e15660659eed3bfb20b950d1ce803",
+      "process_group_cleanup": "empty",
+      "process_group_id": 38499,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0
+    },
+    "local_s38d_result_state": {
+      "name": "local_s38d_result_state",
+      "argv": [
+        "/opt/homebrew/opt/python@3.15/bin/python3.15",
+        "tests/system/vmhost_result_state_smoke.py",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke",
+        "--diagnostics-dir",
+        "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children"
+      ],
+      "command": "/opt/homebrew/opt/python@3.15/bin/python3.15 tests/system/vmhost_result_state_smoke.py /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke --diagnostics-dir /Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children",
+      "status": "passed",
+      "failure": null,
+      "returncode": 0,
+      "timeout_seconds": 900,
+      "duration_seconds": 40.453,
+      "source_fingerprint_after": "4f178bb236114b738d506d99c777e39fa595828e4184d88df998bb314a6ba689",
+      "log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state.log",
+      "stdout_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state.stdout.log",
+      "stderr_log": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state.stderr.log",
+      "output_tail": "VMHost RESULT state smoke passed: raw V0 budgets 0/1/2/3/4, launcher projections, immediate/delayed STOP\nvmhost_result_state_observation={\"launcher_budget\":[{\"gpr\":[17297757506775570040,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":0,\"reason\":1,\"rflags\":2,\"rip\":0},{\"gpr\":[1,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":1,\"reason\":1,\"rflags\":2,\"rip\":10},{\"gpr\":[1,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":2,\"reason\":1,\"rflags\":2,\"rip\":0},{\"gpr\":[1,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":3,\"reason\":1,\"rflags\":2,\"rip\":10},{\"gpr\":[1,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":4,\"reason\":1,\"rflags\":2,\"rip\":0}],\"raw_budget\":[{\"gpr\":[17297757506775570040,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":0,\"payload_length\":64,\"reason\":1,\"request_id\":940376065,\"reserved\":0,\"rflags\":514,\"rip\":0},{\"gpr\":[1,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":1,\"payload_length\":64,\"reason\":1,\"request_id\":940376066,\"reserved\":0,\"rflags\":514,\"rip\":10},{\"gpr\":[1,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":2,\"payload_length\":64,\"reason\":1,\"request_id\":940376067,\"reserved\":0,\"rflags\":514,\"rip\":0},{\"gpr\":[1,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":3,\"payload_length\":64,\"reason\":1,\"request_id\":940376068,\"reserved\":0,\"rflags\":514,\"rip\":10},{\"gpr\":[1,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":4,\"payload_length\":64,\"reason\":1,\"request_id\":940376069,\"reserved\":0,\"rflags\":514,\"rip\":0}],\"stop\":[{\"ack_order\":[\"RUN_ACK\",\"STOP_ACK\",\"RESULT\"],\"gpr\":[17297757506775570040,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":0,\"payload_length\":64,\"reason\":2,\"request_id\":940380161,\"reserved\":0,\"rflags\":514,\"rip\":0,\"stop_observation\":\"early_stop_no_guest_progress\"},{\"ack_order\":[\"RUN_ACK\",\"STOP_ACK\",\"RESULT\"],\"gpr\":[1,1234605616436508552,9833440827789222417,14627333965148450829],\"instructions_executed\":19404,\"payload_length\":64,\"reason\":2,\"request_id\":940380162,\"reserved\":0,\"rflags\":514,\"rip\":0,\"stop_observation\":\"stop_after_observed_guest_progress\"}]}\n",
+      "output_sha256": "feb3b63797cd9f84b22b9175e450e5837c7108755c64f37f4a52d7ff49e6eb43",
+      "stdout_sha256": "feb3b63797cd9f84b22b9175e450e5837c7108755c64f37f4a52d7ff49e6eb43",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "process_group_cleanup": "empty",
+      "process_group_id": 38713,
+      "suite": "local_vmhost_result_state",
+      "expected_returncode": 0,
+      "child_diagnostics": [
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/launcher-budget-0.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/launcher-budget-0.stdout.log",
+          "sha256": "d81b6eed00969c8e314c8435ce3f62dd1a6701b6c18b14c00076cde3408ef6da",
+          "size_bytes": 148
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/launcher-budget-1.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/launcher-budget-1.stdout.log",
+          "sha256": "60048eb6bf1122a21bdf83c5ff0fd0612f03d7bae4b3ff948f34c47774458558",
+          "size_bytes": 130
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/launcher-budget-2.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/launcher-budget-2.stdout.log",
+          "sha256": "a2f263c27da3bcbcc2225665c84dc55c725b78a9a1fae87a75c100af7326a105",
+          "size_bytes": 129
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/launcher-budget-3.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/launcher-budget-3.stdout.log",
+          "sha256": "edf1862e10a2cf65337172bd8ea825875dddc7cf048e3b7480a8ce87ac9368d2",
+          "size_bytes": 130
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/launcher-budget-4.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/launcher-budget-4.stdout.log",
+          "sha256": "b28e063ff56863fc805d2b4d46814395c8b8bd623f95567c33776bbfa4f0c970",
+          "size_bytes": 129
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-budget-0.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-budget-0.stdout.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-budget-1.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-budget-1.stdout.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-budget-2.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-budget-2.stdout.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-budget-3.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-budget-3.stdout.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-budget-4.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-budget-4.stdout.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-stop-delayed.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-stop-delayed.stdout.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-stop-immediate.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        },
+        {
+          "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/logs/local_s38d_result_state_children/raw-stop-immediate.stdout.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "size_bytes": 0
+        }
+      ]
+    },
+    "process_sw_vers": {
+      "status": "not_run"
+    },
+    "process_uname": {
+      "status": "not_run"
+    },
+    "process_rustc_version": {
+      "status": "not_run"
+    },
+    "process_cargo_version": {
+      "status": "not_run"
+    },
+    "process_swift_version": {
+      "status": "not_run"
+    },
+    "process_xcode_version": {
+      "status": "not_run"
+    },
+    "process_codesign_path": {
+      "status": "not_run"
+    },
+    "process_build_od_host": {
+      "status": "not_run"
+    },
+    "process_compile_vmhost": {
+      "status": "not_run"
+    },
+    "process_sign_vmhost": {
+      "status": "not_run"
+    },
+    "process_verify_vmhost": {
+      "status": "not_run"
+    },
+    "process_vmhost_signature": {
+      "status": "not_run"
+    },
+    "process_vmhost_entitlements": {
+      "status": "not_run"
+    },
+    "process_compile_launcher": {
+      "status": "not_run"
+    },
+    "process_sign_launcher": {
+      "status": "not_run"
+    },
+    "process_verify_launcher": {
+      "status": "not_run"
+    },
+    "process_launcher_signature": {
+      "status": "not_run"
+    },
+    "process_launcher_entitlements": {
+      "status": "not_run"
+    },
+    "process_compile_fault_helper": {
+      "status": "not_run"
+    },
+    "process_sign_fault_helper": {
+      "status": "not_run"
+    },
+    "process_verify_fault_helper": {
+      "status": "not_run"
+    },
+    "process_fault_helper_signature": {
+      "status": "not_run"
+    },
+    "process_fault_helper_entitlements": {
+      "status": "not_run"
+    },
+    "process_control_race": {
+      "status": "not_run"
+    },
+    "process_isolation": {
+      "status": "not_run"
+    },
+    "process_app_bundle": {
+      "status": "not_run"
+    },
+    "process_bundle_verify": {
+      "status": "not_run"
+    },
+    "process_bundle_signature": {
+      "status": "not_run"
+    },
+    "process_bundle_vmhost_signature": {
+      "status": "not_run"
+    },
+    "process_bundle_vmhost_entitlements": {
+      "status": "not_run"
+    },
+    "process_bundle_launcher_signature": {
+      "status": "not_run"
+    },
+    "process_bundle_launcher_entitlements": {
+      "status": "not_run"
+    },
+    "process_generated_fault": {
+      "status": "not_run"
+    }
+  },
+  "children": {},
+  "started_utc": "2026-11-01T17:21:58Z",
+  "input_manifest": "work/stage3-harness/stage3-20261101-172158-ca793931c1/input_manifest.json",
+  "input_manifest_sha256": "2135145c97d2fae5e4d25e01b1c27515d0bcd8630e85010e575eb69a0dfe0b42",
+  "local_vmhost_result_artifacts": {
+    "od_host_library": {
+      "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/build-target/release/libod_host.a",
+      "sha256": "66a2ccbd85e01730f54d23572287e029c38bfedd17195bc4342c6f6863baf04e",
+      "size_bytes": 19827000
+    },
+    "vmhost": {
+      "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/od-vmhost-smoke",
+      "sha256": "ad8c58935730a321a556ea67680f270fc41442fa6800f5eddf50b5469f2b8e07",
+      "size_bytes": 2316416
+    },
+    "launcher": {
+      "path": "work/stage3-harness/stage3-20261101-172158-ca793931c1/artifacts/open-desktop-launcher-smoke",
+      "sha256": "7657d726f33a3a25462dd7b768600dec86821af7da254e66744f4340591b9d2d",
+      "size_bytes": 141824
+    },
+    "entitlements_source": {
+      "path": "apps/vmhost/Configuration/vmhost-smoke.entitlements",
+      "sha256": "958648f799e436860b51eaf55ec8f92d2c62da17001e23d96bc05ffc748f2a2a",
+      "size_bytes": 241
+    },
+    "codesign_binary": {
+      "path": "/usr/bin/codesign",
+      "sha256": "3635f18db517033a4786ea7ddb0acc1801e642eaf6171e208e24cb9a1922f518",
+      "size_bytes": 458576
+    }
+  },
+  "finished_utc": "2026-11-01T17:27:32Z"
+}

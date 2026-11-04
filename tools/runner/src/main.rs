@@ -63,6 +63,12 @@ fn main() -> ExitCode {
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
         _ => {}
     }
+    if args.windows(2).any(|arguments| {
+        arguments[0] == "--engine" && matches!(arguments[1].as_str(), "jit-block" | "jit-dispatch")
+    }) {
+        eprintln!("invalid input: --engine jit-block and jit-dispatch require --fixture v1 input");
+        return ExitCode::from(3);
+    }
     match parse_args(args.into_iter()) {
         Ok(None) => ExitCode::SUCCESS,
         Ok(Some(config)) => match run(config) {

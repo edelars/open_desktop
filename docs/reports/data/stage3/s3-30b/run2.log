@@ -1,0 +1,3 @@
+host metadata git status unavailable: git timed out after 2000 ms
+Command: /tmp/od-bench-s3-30b-target/release/od-bench allocator-cost-branch-routing --process-run 2 --output work/tmp/stage3/s3-30b/run2.json
+Exit status: 0

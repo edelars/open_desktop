@@ -6,7 +6,7 @@ Build and run on macOS ARM64 from the repository root:
 
 ```sh
 cargo build --release -p od-host --offline
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/vmhost/Sources/ControlFrame.swift apps/vmhost/Sources/main.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-smoke
+xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/VMHostABI.h apps/vmhost/Sources/ControlFrame.swift apps/vmhost/Sources/main.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-smoke
 codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements target/od-vmhost-smoke
 codesign --verify --strict --verbose=2 target/od-vmhost-smoke
 xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/vmhost/Sources/ControlFrame.swift apps/macos/Sources/launcher.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/open-desktop-launcher-smoke
@@ -24,7 +24,7 @@ Run the two-instance crash/stop isolation scenario with `python3 tests/system/vm
 Build the dedicated generated-code-fault helper with the same control framing and host ABI:
 
 ```sh
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/vmhost/Sources/ControlFrame.swift tests/system/vmhost_generated_fault_helper.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-generated-fault-smoke
+xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/VMHostABI.h apps/vmhost/Sources/ControlFrame.swift tests/system/vmhost_generated_fault_helper.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-generated-fault-smoke
 codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements target/od-vmhost-generated-fault-smoke
 python3 tests/system/vmhost_generated_fault_smoke.py target/open-desktop-launcher-smoke target/od-vmhost-generated-fault-smoke
 ```
@@ -34,3 +34,12 @@ The test-only helper completes HELLO/READY/RUN, then emits and executes a two-in
 To verify local app-bundle assembly, ad-hoc signatures, and JIT execution from inside the bundle, run `sh tests/system/vmhost_app_bundle_smoke.sh target/open-desktop-launcher-smoke target/od-vmhost-smoke apps/vmhost/Configuration/vmhost-smoke.entitlements`. The script creates and removes a temporary `.app` bundle. This is a local smoke bundle, not a packaged distribution or notarized product.
 
 The VMHost ad-hoc signature enables Hardened Runtime with `com.apple.security.cs.allow-jit`. This confirms local signed JIT execution on the tested M3 Max only. It does not confirm Developer ID signing, notarization, a packaged VMHost distribution, or another Mac model.
+
+S3-38a routes the existing v0 `od_fragment_execute` call through the eager
+register-only block dispatcher. Its bounded cache and MAP_JIT arena exist only
+for the synchronous call and are released before RESULT returns; no Swift
+protocol or C ABI layout changed. Local arithmetic, stop-race, two-process
+isolation, and app-bundle regressions passed on macOS ARM64. The generated-fault
+process smoke timed out once in three runs and passed twice on retry; its cause
+is unlocalized and it is not a clean gate. See the
+[S3-38a report](../../docs/reports/STAGE_3_S3-38a_2026-10-29.md).

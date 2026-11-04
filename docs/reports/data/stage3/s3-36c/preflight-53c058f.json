@@ -1,0 +1,264 @@
+{
+  "corpus_cases_validated": 1200,
+  "corpus_path": "work/stage3-native-register-v1/manual/native-register-v1-observations.json",
+  "corpus_sha256": "3fddc5c753f3d2884850468480ec68d13a6069d1aed16e8973e1acef56ffac1f",
+  "inputs_digest": "fnv1a64:172fb17b01c502df",
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "53c058f135ddcf5722dbfbfa132a08bd5359038a",
+      "source_sha256": "7f116d2dd51f9e62de7e22491a85675db906046f051ec1154fd85c625752af56",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "53c058f135ddcf5722dbfbfa132a08bd5359038a",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "profile_id": "s3-36c-resident-warm-native-nop-fallback-v1",
+  "retirement_strata": [
+    {
+      "cases": 10,
+      "native_retired": 2
+    },
+    {
+      "cases": 9,
+      "native_retired": 3
+    }
+  ],
+  "schema": 1,
+  "selected_case_count": 19,
+  "selected_cases": [
+    {
+      "budget": 3,
+      "index": 21,
+      "input_digest": "fnv1a64:bdeea71329cab81a",
+      "interpreter_retired": 1,
+      "native_retired": 2,
+      "seed": 5995193176011309057
+    },
+    {
+      "budget": 3,
+      "index": 54,
+      "input_digest": "fnv1a64:ae906725bc358e98",
+      "interpreter_retired": 1,
+      "native_retired": 2,
+      "seed": 5995193176011309057
+    },
+    {
+      "budget": 4,
+      "index": 126,
+      "input_digest": "fnv1a64:f1169c01de06849c",
+      "interpreter_retired": 1,
+      "native_retired": 3,
+      "seed": 5995193176011309057
+    },
+    {
+      "budget": 3,
+      "index": 354,
+      "input_digest": "fnv1a64:c7bc02758220fd4e",
+      "interpreter_retired": 1,
+      "native_retired": 2,
+      "seed": 5995193176011309057
+    },
+    {
+      "budget": 3,
+      "index": 54,
+      "input_digest": "fnv1a64:8399deda3d04075a",
+      "interpreter_retired": 1,
+      "native_retired": 2,
+      "seed": 5995193176011309058
+    },
+    {
+      "budget": 4,
+      "index": 57,
+      "input_digest": "fnv1a64:d0c0ba333e6ec120",
+      "interpreter_retired": 1,
+      "native_retired": 3,
+      "seed": 5995193176011309058
+    },
+    {
+      "budget": 4,
+      "index": 174,
+      "input_digest": "fnv1a64:59162cf82b81852b",
+      "interpreter_retired": 1,
+      "native_retired": 3,
+      "seed": 5995193176011309058
+    },
+    {
+      "budget": 3,
+      "index": 177,
+      "input_digest": "fnv1a64:6af82b31e69b2cf1",
+      "interpreter_retired": 1,
+      "native_retired": 2,
+      "seed": 5995193176011309058
+    },
+    {
+      "budget": 4,
+      "index": 186,
+      "input_digest": "fnv1a64:8d1ebdd669b93089",
+      "interpreter_retired": 1,
+      "native_retired": 3,
+      "seed": 5995193176011309058
+    },
+    {
+      "budget": 3,
+      "index": 303,
+      "input_digest": "fnv1a64:6160ef1c70c864e9",
+      "interpreter_retired": 1,
+      "native_retired": 2,
+      "seed": 5995193176011309058
+    },
+    {
+      "budget": 3,
+      "index": 336,
+      "input_digest": "fnv1a64:6fb8e1acf1ffca2f",
+      "interpreter_retired": 1,
+      "native_retired": 2,
+      "seed": 5995193176011309058
+    },
+    {
+      "budget": 3,
+      "index": 357,
+      "input_digest": "fnv1a64:5c9b3de085f6f6f8",
+      "interpreter_retired": 1,
+      "native_retired": 2,
+      "seed": 5995193176011309058
+    },
+    {
+      "budget": 4,
+      "index": 72,
+      "input_digest": "fnv1a64:1c5b84e35c471281",
+      "interpreter_retired": 1,
+      "native_retired": 3,
+      "seed": 5995193176011309059
+    },
+    {
+      "budget": 4,
+      "index": 114,
+      "input_digest": "fnv1a64:abbb79105cb49dcf",
+      "interpreter_retired": 1,
+      "native_retired": 3,
+      "seed": 5995193176011309059
+    },
+    {
+      "budget": 4,
+      "index": 126,
+      "input_digest": "fnv1a64:c0a3a8e7b8617e83",
+      "interpreter_retired": 1,
+      "native_retired": 3,
+      "seed": 5995193176011309059
+    },
+    {
+      "budget": 4,
+      "index": 153,
+      "input_digest": "fnv1a64:845dc05514c945f6",
+      "interpreter_retired": 1,
+      "native_retired": 3,
+      "seed": 5995193176011309059
+    },
+    {
+      "budget": 4,
+      "index": 168,
+      "input_digest": "fnv1a64:dac875b5def46603",
+      "interpreter_retired": 1,
+      "native_retired": 3,
+      "seed": 5995193176011309059
+    },
+    {
+      "budget": 3,
+      "index": 348,
+      "input_digest": "fnv1a64:2e679708e249975c",
+      "interpreter_retired": 1,
+      "native_retired": 2,
+      "seed": 5995193176011309059
+    },
+    {
+      "budget": 3,
+      "index": 399,
+      "input_digest": "fnv1a64:3ffbeef5b30cfdca",
+      "interpreter_retired": 1,
+      "native_retired": 2,
+      "seed": 5995193176011309059
+    }
+  ],
+  "source_fingerprints": [
+    {
+      "path": "tools/bench/src/cached_native_flags_compare.rs",
+      "sha256": "f0eafe43d3d9fd49b8a007df963d9143b5a8e77a7acd037a33947c0577e0b829"
+    },
+    {
+      "path": "tools/bench/src/main.rs",
+      "sha256": "64af5c287fcc405a5bb3b21c79882dc0b86d07cf5c66da8168bbb6ce0a76fd31"
+    },
+    {
+      "path": "tools/bench/src/lib.rs",
+      "sha256": "4d9167cf1c94dd9727abb2a5824c654ba6774d5e03c90a2faf840fdd0ade9bc2"
+    },
+    {
+      "path": "tools/bench/Cargo.toml",
+      "sha256": "a1232a471d5e385cadf0b3e0d5f3e263e3fd408022744488c5d7c634df169f86"
+    },
+    {
+      "path": "crates/od-jit/Cargo.toml",
+      "sha256": "36b61ed3511f90b146f2d5011ef8fe52ffa0f29fa6a7ba6164288d0de8c9eda4"
+    },
+    {
+      "path": "crates/od-jit/src/dispatch.rs",
+      "sha256": "d0df81783bfe8720606d88e54af19d21b26dc0099af48f9a74fc5bd604806a6c"
+    },
+    {
+      "path": "crates/od-jit/src/block_compile.rs",
+      "sha256": "cf4bfbd49ad52c6816926c73e3059b105c2f9f550173e183c92e892e87c31156"
+    },
+    {
+      "path": "crates/od-jit/src/block.rs",
+      "sha256": "bcd47a633975c87fec772e5970e79bc54cef22069a6646fe9ed1b15cd8146432"
+    },
+    {
+      "path": "crates/od-jit/src/block_emitter.rs",
+      "sha256": "003a86dd6321c34f7523eb4300a18268ae2c22c3a17bd6dd7d00f0480153be46"
+    },
+    {
+      "path": "crates/od-jit/src/translation.rs",
+      "sha256": "d016b776bf079b29b6d09f24c06d9f87edaa3153d4b21264a1c87d97e14ef72d"
+    },
+    {
+      "path": "crates/od-jit/src/statepoints.rs",
+      "sha256": "5209343f7ba0d4fc375b22a84b62bd864af5445bf08e5ace64d29637caf3b43c"
+    },
+    {
+      "path": "crates/od-host/src/lib.rs",
+      "sha256": "f38a088ea97b0e93934732da2ce86c16f0300eddf247c49cd9fe3ab26b51121f"
+    },
+    {
+      "path": "crates/od-isa/src/execute.rs",
+      "sha256": "0307eb7469b50484658c7740b983ce5e24414d49a3f9db3d6a1bdf63ec2fbbd9"
+    },
+    {
+      "path": "crates/od-isa/src/long_decode.rs",
+      "sha256": "cfdb5e7032100d72702f2be041b0d6acc17b88e85b9fc8aff2032159be9558f4"
+    },
+    {
+      "path": "crates/od-isa/src/state.rs",
+      "sha256": "969e8ab978eebe2274b3285b4be14d879fe652a2d65c71795f7f02e3e705246c"
+    },
+    {
+      "path": "crates/od-host/src/tests/native_register_v1_corpus.rs",
+      "sha256": "1f2cfd4f546f74754349984621dd18ef992a3ef6bbd75a16c6de50d176c92435"
+    },
+    {
+      "path": "tools/bench/src/cached_native_flags_compare/warm_fallback.rs",
+      "sha256": "17207f3b211419cc2dca078cf195df47fa8a6e29eff6c778df7536618ca65a11"
+    }
+  ],
+  "stored_interpreter_observations_checked": 1200,
+  "timing_started": false
+}

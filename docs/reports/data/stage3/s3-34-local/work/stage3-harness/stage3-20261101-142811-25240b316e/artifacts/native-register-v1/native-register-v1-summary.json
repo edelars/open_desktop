@@ -1,0 +1,44 @@
+{
+  "profile": "NativeRegisterV1",
+  "version": 1,
+  "unique_inputs": 1200,
+  "seeds": [
+    5995193176011309057,
+    5995193176011309058,
+    5995193176011309059
+  ],
+  "cases_per_seed": 400,
+  "repeats_per_backend": 2,
+  "full_partial_preserve_xchg_branch_anchors": 3,
+  "rip_relative_lea_after_variable_predecessor_cases": 1197,
+  "anchor_branch_taken": 2,
+  "anchor_branch_fallthrough": 1,
+  "code_end_exits": 391,
+  "budget_exits": 354,
+  "stop_address_exits": 347,
+  "stop_requested_exits": 108,
+  "fallback_instructions_retired": 228,
+  "bounded_loop_inputs": 147,
+  "zero_budget_inputs": 83,
+  "rip_predecessor_lengths": [
+    3,
+    4,
+    7
+  ],
+  "form_counts": [
+    228,
+    151,
+    144,
+    131,
+    136,
+    124,
+    134,
+    131,
+    149,
+    129,
+    129,
+    129,
+    1197
+  ],
+  "canonical_inputs_digest": "fnv1a64:172fb17b01c502df"
+}

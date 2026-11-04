@@ -1,0 +1,7 @@
+{
+  "host": "senya@192.168.1.39",
+  "command": "cd /home/senya/projects/open_desktop-stage3-20261103 && . \"$HOME/.cargo/env\" && cargo test --offline -p od-testkit -p od-runner -p od-x86-runner",
+  "exit_code": 101,
+  "stdout_path": "remote-test-preflight.stdout.log",
+  "stderr_path": "remote-test-preflight.stderr.log"
+}

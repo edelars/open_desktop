@@ -1,0 +1,1 @@
+{"case_id":"s1_06_mov_preserves_flags","input_sha256":"01eb759e88337a61b6e1801ceda16903764263172eb10977316796ac65b0608c","left_backend":"jit_ir_block","right_backend":"jit_ir_block","differences":[]}

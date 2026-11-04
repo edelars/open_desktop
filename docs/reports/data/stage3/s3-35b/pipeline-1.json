@@ -1,0 +1,2268 @@
+{
+  "calibration_observed_dispatch_ns": 208853212,
+  "calibration_ordinary_dispatch_ns": 203863860,
+  "calibration_sweeps": 31,
+  "capture_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "80b318a6293da499c7d9287da4d9db8c4e3ff4f6",
+      "source_sha256": "e52e51dfe03ae87197de98538ef114fe5ea896fef4af146e720e92ac2722add2",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "80b318a6293da499c7d9287da4d9db8c4e3ff4f6",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": true
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "case_list_sha256": "b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3",
+  "common_cold_sweeps_per_sample": 31,
+  "inputs": 1010,
+  "max_observer_overhead_ratio": 1.0413354704577464,
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "1dc65e8854430e87ab41e844eed7b1553c6ba371",
+      "source_sha256": "a6c0373005a845f590afc56e5adc7066774e85a2751fd5e42f40b76f0b1e8d64",
+      "source_tree_dirty": true,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "1dc65e8854430e87ab41e844eed7b1553c6ba371",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": true
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "measured_pairs": 20,
+  "measured_series_restarts": [],
+  "median_observer_overhead_ratio": 1.0296958114564612,
+  "min_observer_overhead_ratio": 0.9861682638329489,
+  "minimum_dispatch_sample_ns": 200000000,
+  "observed_variant": {
+    "samples": [
+      {
+        "attributed_phase_ns": 172455381,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 207187936,
+        "evictions": 40424,
+        "initialization_ns": 25416,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 34732555,
+        "pair": 0,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 5828567,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 16386200,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 16773636,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 35137762,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 75267750,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 16984327,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6077139,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 172629997,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 207166890,
+        "evictions": 40424,
+        "initialization_ns": 23709,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 34536893,
+        "pair": 1,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 5877362,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 16288118,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 16766236,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 35114986,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 75370401,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17175718,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6037176,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 176864029,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 212121866,
+        "evictions": 40424,
+        "initialization_ns": 62711,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 35257837,
+        "pair": 2,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 5928897,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 16677887,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 16932307,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 35413899,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 75974193,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 19654072,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6282774,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 172161333,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 206817306,
+        "evictions": 40424,
+        "initialization_ns": 29916,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 34655973,
+        "pair": 3,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 5849516,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 16427067,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 16706589,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 35049089,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 75100369,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 16875494,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6153209,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 181660199,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 217950307,
+        "evictions": 40424,
+        "initialization_ns": 63331,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 36290108,
+        "pair": 4,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6094523,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17103630,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17458231,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36359201,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 77629861,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 20664032,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6350721,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 180782472,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 217037262,
+        "evictions": 40424,
+        "initialization_ns": 25662,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 36254790,
+        "pair": 5,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6101075,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17103359,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17431910,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36540093,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78113412,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 18890337,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6602286,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 180164109,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 216461398,
+        "evictions": 40424,
+        "initialization_ns": 22754,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 36297289,
+        "pair": 6,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6086699,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17124246,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17426912,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36538852,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78164401,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 18255656,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6567343,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 180457779,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 216491249,
+        "evictions": 40424,
+        "initialization_ns": 25460,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 36033470,
+        "pair": 7,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6084546,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17042477,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17409655,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36442541,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78475279,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 18656366,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6346915,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 180315322,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 216332821,
+        "evictions": 40424,
+        "initialization_ns": 23747,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 36017499,
+        "pair": 8,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6095029,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17041443,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17395196,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36366011,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78435500,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 18653720,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6328423,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 187495024,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 224079349,
+        "evictions": 40424,
+        "initialization_ns": 59918,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 36584325,
+        "pair": 9,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6150536,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17384111,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17659844,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 37281725,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78741948,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 23795660,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6481200,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 187059346,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 223917870,
+        "evictions": 40424,
+        "initialization_ns": 69457,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 36858524,
+        "pair": 10,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6195953,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17396111,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17611641,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36984692,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 79002318,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 23384365,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6484266,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 186083425,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 222559618,
+        "evictions": 40424,
+        "initialization_ns": 48460,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 36476193,
+        "pair": 11,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6154002,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17388084,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17671383,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36983006,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 79114245,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 22255517,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6517188,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 181408875,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 217342626,
+        "evictions": 40424,
+        "initialization_ns": 33084,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 35933751,
+        "pair": 12,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6078733,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17170788,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17385590,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36401565,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78090177,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 19823586,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6458436,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 185180213,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 221793615,
+        "evictions": 40424,
+        "initialization_ns": 32540,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 36613402,
+        "pair": 13,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6164179,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17298243,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17604767,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 37195627,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 79329030,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 21077785,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6510582,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 182233068,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 218554513,
+        "evictions": 40424,
+        "initialization_ns": 26666,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 36321445,
+        "pair": 14,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6083951,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17106714,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17400100,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36778964,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78054852,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 20158590,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6649897,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 182212164,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 218360217,
+        "evictions": 40424,
+        "initialization_ns": 25252,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 36148053,
+        "pair": 15,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6098181,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17154304,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17567955,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36804249,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 79086703,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 19214810,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6285962,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 183809365,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 220198621,
+        "evictions": 40424,
+        "initialization_ns": 37503,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 36389256,
+        "pair": 16,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6119626,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17259569,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17547317,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36796736,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78845012,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 20841922,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6399183,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 182305760,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 218647576,
+        "evictions": 40424,
+        "initialization_ns": 30332,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 36341816,
+        "pair": 17,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6081284,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17238364,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17458525,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36555006,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78507584,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 20037036,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6427961,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 183832461,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 220012360,
+        "evictions": 40424,
+        "initialization_ns": 47998,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 36179899,
+        "pair": 18,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6086857,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17070993,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17553007,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 36642594,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78633591,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 21623756,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6221663,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 185150173,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 221709732,
+        "evictions": 40424,
+        "initialization_ns": 33706,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 36559559,
+        "pair": 19,
+        "phase_totals": [
+          {
+            "calls": 40982,
+            "elapsed_ns": 6156181,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 17388794,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 17589057,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 37064805,
+            "phase": "allocation"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 78802367,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 40920,
+            "elapsed_ns": 21606506,
+            "phase": "publication"
+          },
+          {
+            "calls": 40982,
+            "elapsed_ns": 6542463,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      }
+    ],
+    "variant": "phase_observed"
+  },
+  "ordinary_variant": {
+    "samples": [
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 200684261,
+        "evictions": 40424,
+        "initialization_ns": 23205,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 200684261,
+        "pair": 0,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 200311259,
+        "evictions": 40424,
+        "initialization_ns": 24373,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 200311259,
+        "pair": 1,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 203701758,
+        "evictions": 40424,
+        "initialization_ns": 66124,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 203701758,
+        "pair": 2,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 200944862,
+        "evictions": 40424,
+        "initialization_ns": 26792,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 200944862,
+        "pair": 3,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 212076050,
+        "evictions": 40424,
+        "initialization_ns": 36667,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 212076050,
+        "pair": 4,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 211187003,
+        "evictions": 40424,
+        "initialization_ns": 33377,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 211187003,
+        "pair": 5,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 210095319,
+        "evictions": 40424,
+        "initialization_ns": 22208,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 210095319,
+        "pair": 6,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 210584651,
+        "evictions": 40424,
+        "initialization_ns": 34124,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 210584651,
+        "pair": 7,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 210741448,
+        "evictions": 40424,
+        "initialization_ns": 25123,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 210741448,
+        "pair": 8,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 216574569,
+        "evictions": 40424,
+        "initialization_ns": 83045,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 216574569,
+        "pair": 9,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 215062106,
+        "evictions": 40424,
+        "initialization_ns": 59207,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 215062106,
+        "pair": 10,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 219977652,
+        "evictions": 40424,
+        "initialization_ns": 43458,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 219977652,
+        "pair": 11,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 216007743,
+        "evictions": 40424,
+        "initialization_ns": 83165,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 216007743,
+        "pair": 12,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 215012883,
+        "evictions": 40424,
+        "initialization_ns": 33040,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 215012883,
+        "pair": 13,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 221619901,
+        "evictions": 40424,
+        "initialization_ns": 78961,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 221619901,
+        "pair": 14,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 214671800,
+        "evictions": 40424,
+        "initialization_ns": 39709,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 214671800,
+        "pair": 15,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 213476994,
+        "evictions": 40424,
+        "initialization_ns": 33833,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 213476994,
+        "pair": 16,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 212833379,
+        "evictions": 40424,
+        "initialization_ns": 30247,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 212833379,
+        "pair": 17,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 212662685,
+        "evictions": 40424,
+        "initialization_ns": 36625,
+        "native_block_executions": 40982,
+        "order": 1,
+        "other_dispatch_ns": 212662685,
+        "pair": 18,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      },
+      {
+        "attributed_phase_ns": 0,
+        "cache_hits": 62,
+        "cache_misses": 40920,
+        "calls": 31310,
+        "cold_sweeps": 31,
+        "dispatch_elapsed_ns": 215217175,
+        "evictions": 40424,
+        "initialization_ns": 45376,
+        "native_block_executions": 40982,
+        "order": 0,
+        "other_dispatch_ns": 215217175,
+        "pair": 19,
+        "phase_totals": [
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "block_build_and_admission"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "key_snapshot_and_lookup"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "ir_lowering"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "allocation"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "emission_and_finalization"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "publication"
+          },
+          {
+            "calls": 0,
+            "elapsed_ns": 0,
+            "phase": "host_execution_boundary"
+          }
+        ],
+        "retired_guest_instructions": 92690,
+        "successful_compiles": 40920,
+        "successful_publications": 40920
+      }
+    ],
+    "variant": "ordinary_noop_observer"
+  },
+  "paired_observer_overhead_ratios": [
+    1.0324074990614236,
+    1.0342248909733027,
+    1.0413354704577464,
+    1.029224156027438,
+    1.0276988231344368,
+    1.0277017946980382,
+    1.0303009083224743,
+    1.0280485684590563,
+    1.0265319093755112,
+    1.0346521756208598,
+    1.0411777051974,
+    1.0117374013974838,
+    1.006179792360499,
+    1.0315363986817478,
+    0.9861682638329489,
+    1.0171816559045017,
+    1.031486423309858,
+    1.0273180693146822,
+    1.0345602473701487,
+    1.0301674668854843
+  ],
+  "phase_boundary_contract": "real dispatcher boundaries: block decode/build and instruction-boundary admission; minimum-key sizing, TranslationKey/snapshot work and cache lookup; typed IR lowering; allocator build; ARM64 emission plus byte encoding/finalization; backend publication; host executor call. A cache hit still records block build and key/lookup. Every phase is sequential and non-overlapping. Each observed phase duration spans the Instant sample in PhaseRecorder::begin through the clock read in PhaseRecorder::end, so it includes the wrapped operation and wrapper/callback transit between those samples.",
+  "phase_overhead_interpretation": "ordinary/observed paired ratios measure total instrumentation overhead on identical cold sweeps. Phase durations include the operation and elapsed boundary transit between the begin/end clock samples; PhaseRecorder bookkeeping after the end clock read is excluded from that phase. other_dispatch_ns is measured dispatch total minus phase totals and includes control guards, cache install/accounting, result validation, and observer work outside measured phase intervals. Components are attribution within one observed pass, not independent end-to-end measurements and must not be summed with other benchmark reports.",
+  "preflight": {
+    "full_state_exit_retirement_budget_parity": true,
+    "observed_cache_hits": 2,
+    "observed_cache_misses": 1320,
+    "observed_calls": 1010,
+    "observed_native_block_executions": 1322,
+    "observed_retired_guest_instructions": 2990,
+    "ordinary_cache_hits": 2,
+    "ordinary_cache_misses": 1320,
+    "ordinary_calls": 1010,
+    "ordinary_native_block_executions": 1322,
+    "ordinary_observed_cache_counters_match": true,
+    "ordinary_observed_dispatch_results_match": true,
+    "ordinary_retired_guest_instructions": 2990,
+    "phase_event_counts_match_cache_counters": true
+  },
+  "process_run": 1,
+  "schema": 1,
+  "timing_scope": "dispatch-call intervals across a complete S3-17 corpus sweep; each sweep constructs a fresh FIFO16 runtime/cache/arena; per-case state cloning and interpreter-result validation are outside each dispatch-call interval; arena teardown is outside intervals",
+  "total_elapsed_ns": 24531636583,
+  "trace_sha256": "bf8d5efe0c52a47cbb4682f67ea73a82e684d463733aff3be60fed0b280bd5b3",
+  "visits": 1322
+}

@@ -1,0 +1,1698 @@
+{
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "c2af2a3821a6c8c2e226d25ae7c391061e2ffef7",
+      "source_sha256": "7f1976afbe33a35c5ce3fb9082da4ae1234e35341223f5b38a2df8e9de0f82d0",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "c2af2a3821a6c8c2e226d25ae7c391061e2ffef7",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "profile_id": "s3-31b-native-register-v1-cached-loop-phase-attribution-v1",
+  "schema": 1,
+  "source_fingerprints": [
+    [
+      "tools/bench/src/cached_native_loop_phases.rs",
+      "fc851575ece09364b3845f3f1331c462b3dbcebb372ff9080e9be79686fd5a45"
+    ],
+    [
+      "tools/bench/src/cached_native_loop.rs",
+      "09faa149db18ec66f2d11961ab18196ccb938c669fdc795c94d791f6bcfe079b"
+    ],
+    [
+      "tools/bench/src/main.rs",
+      "edf28e082faf29c1af7004271625a26d578ddc4a7f4ffb7e69a937281527338b"
+    ],
+    [
+      "tools/bench/src/lib.rs",
+      "71ea41b93043dd9847f38a5e342fca17e12b84fb61c3e198e08bfaacc10cfc6f"
+    ],
+    [
+      "crates/od-jit/src/dispatch.rs",
+      "3b27a421baf0e1a3cc8df0e8ff8eaf939a155f64f2e17b54ce9bd9091653e5ac"
+    ],
+    [
+      "crates/od-jit/src/block.rs",
+      "a910ba720ecb0f5286c26531014417b65d1d53ff302bf90a2cb3f750ada7aa78"
+    ],
+    [
+      "crates/od-host/src/lib.rs",
+      "d4138880dbae0c090641d4b5cc361f8e5925f23ab6e79ecd967b48d2eb56cf6d"
+    ],
+    [
+      "crates/od-jit/src/phase_observation.rs",
+      "9ad57c75ad5192c9f63a4538ed33222daae9e036c873187eb5f02e5f1c44ce16"
+    ]
+  ],
+  "strata": [
+    {
+      "budget": 3,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "event_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "final_cache_counts": {
+        "compiles": 1,
+        "hits": 2,
+        "misses": 1,
+        "publications": 1,
+        "replacements": 0
+      },
+      "final_phase_counts": [
+        {
+          "calls": 1,
+          "elapsed_ns": 250,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 1,
+          "elapsed_ns": 1625,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 1,
+          "elapsed_ns": 42,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "hit_only": true,
+      "id": "a_1",
+      "interpreter": {
+        "gpr": [
+          6173026271151342951,
+          5429181089882602517,
+          0,
+          11602207361033945468,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "iterations": 1,
+      "observed": {
+        "gpr": [
+          6173026271151342951,
+          5429181089882602517,
+          0,
+          11602207361033945468,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "observed_retired": 3,
+      "ordinary": {
+        "gpr": [
+          6173026271151342951,
+          5429181089882602517,
+          0,
+          11602207361033945468,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "ordinary_retired": 3,
+      "phase_counts_valid": true,
+      "pre_admission_error_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "resident_code_bytes": 1408,
+      "resident_entry_count": 1,
+      "resident_logical_bytes": 7193,
+      "seed": 3538945,
+      "stop_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "zero_work_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ]
+    },
+    {
+      "budget": 192,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "event_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "final_cache_counts": {
+        "compiles": 1,
+        "hits": 191,
+        "misses": 1,
+        "publications": 1,
+        "replacements": 0
+      },
+      "final_phase_counts": [
+        {
+          "calls": 64,
+          "elapsed_ns": 11254,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 64,
+          "elapsed_ns": 22625,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 64,
+          "elapsed_ns": 2546,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "hit_only": true,
+      "id": "a_64",
+      "interpreter": {
+        "gpr": [
+          15743946691236565031,
+          4251195832571594048,
+          0,
+          1548398450098607463,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "iterations": 64,
+      "observed": {
+        "gpr": [
+          15743946691236565031,
+          4251195832571594048,
+          0,
+          1548398450098607463,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "observed_retired": 192,
+      "ordinary": {
+        "gpr": [
+          15743946691236565031,
+          4251195832571594048,
+          0,
+          1548398450098607463,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "ordinary_retired": 192,
+      "phase_counts_valid": true,
+      "pre_admission_error_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "resident_code_bytes": 1408,
+      "resident_entry_count": 1,
+      "resident_logical_bytes": 7193,
+      "seed": 3539008,
+      "stop_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "zero_work_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ]
+    },
+    {
+      "budget": 12288,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "event_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "final_cache_counts": {
+        "compiles": 1,
+        "hits": 12287,
+        "misses": 1,
+        "publications": 1,
+        "replacements": 0
+      },
+      "final_phase_counts": [
+        {
+          "calls": 4096,
+          "elapsed_ns": 709075,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 4096,
+          "elapsed_ns": 1446588,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 4096,
+          "elapsed_ns": 147293,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "hit_only": true,
+      "id": "a_4096",
+      "interpreter": {
+        "gpr": [
+          17872880678215087463,
+          2647115659505258496,
+          0,
+          2073252264010794343,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "iterations": 4096,
+      "observed": {
+        "gpr": [
+          17872880678215087463,
+          2647115659505258496,
+          0,
+          2073252264010794343,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "observed_retired": 12288,
+      "ordinary": {
+        "gpr": [
+          17872880678215087463,
+          2647115659505258496,
+          0,
+          2073252264010794343,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "ordinary_retired": 12288,
+      "phase_counts_valid": true,
+      "pre_admission_error_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "resident_code_bytes": 1408,
+      "resident_entry_count": 1,
+      "resident_logical_bytes": 7193,
+      "seed": 3543040,
+      "stop_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "zero_work_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ]
+    },
+    {
+      "budget": 5,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "event_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "final_cache_counts": {
+        "compiles": 1,
+        "hits": 2,
+        "misses": 1,
+        "publications": 1,
+        "replacements": 0
+      },
+      "final_phase_counts": [
+        {
+          "calls": 1,
+          "elapsed_ns": 417,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 1,
+          "elapsed_ns": 417,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 1,
+          "elapsed_ns": 83,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "hit_only": true,
+      "id": "b_1",
+      "interpreter": {
+        "gpr": [
+          11602207361033945468,
+          5429181089882602517,
+          0,
+          17031388450916547985,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "iterations": 1,
+      "observed": {
+        "gpr": [
+          11602207361033945468,
+          5429181089882602517,
+          0,
+          17031388450916547985,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "observed_retired": 5,
+      "ordinary": {
+        "gpr": [
+          11602207361033945468,
+          5429181089882602517,
+          0,
+          17031388450916547985,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "ordinary_retired": 5,
+      "phase_counts_valid": true,
+      "pre_admission_error_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "resident_code_bytes": 2188,
+      "resident_entry_count": 1,
+      "resident_logical_bytes": 10552,
+      "seed": 3538945,
+      "stop_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "zero_work_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ]
+    },
+    {
+      "budget": 320,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "event_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "final_cache_counts": {
+        "compiles": 1,
+        "hits": 191,
+        "misses": 1,
+        "publications": 1,
+        "replacements": 0
+      },
+      "final_phase_counts": [
+        {
+          "calls": 64,
+          "elapsed_ns": 22544,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 64,
+          "elapsed_ns": 26755,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 64,
+          "elapsed_ns": 4083,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "hit_only": true,
+      "id": "b_64",
+      "interpreter": {
+        "gpr": [
+          11119318870175309863,
+          4251195832571594048,
+          0,
+          15370514702746903911,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "iterations": 64,
+      "observed": {
+        "gpr": [
+          11119318870175309863,
+          4251195832571594048,
+          0,
+          15370514702746903911,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "observed_retired": 320,
+      "ordinary": {
+        "gpr": [
+          11119318870175309863,
+          4251195832571594048,
+          0,
+          15370514702746903911,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "ordinary_retired": 320,
+      "phase_counts_valid": true,
+      "pre_admission_error_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "resident_code_bytes": 2188,
+      "resident_entry_count": 1,
+      "resident_logical_bytes": 10552,
+      "seed": 3539008,
+      "stop_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "zero_work_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ]
+    },
+    {
+      "budget": 20480,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "event_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "final_cache_counts": {
+        "compiles": 1,
+        "hits": 12287,
+        "misses": 1,
+        "publications": 1,
+        "replacements": 0
+      },
+      "final_phase_counts": [
+        {
+          "calls": 4096,
+          "elapsed_ns": 1439160,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 4096,
+          "elapsed_ns": 1719641,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 4096,
+          "elapsed_ns": 245264,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "hit_only": true,
+      "id": "b_4096",
+      "interpreter": {
+        "gpr": [
+          13773106670537536871,
+          2647115659505258496,
+          0,
+          16420222330042795367,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "iterations": 4096,
+      "observed": {
+        "gpr": [
+          13773106670537536871,
+          2647115659505258496,
+          0,
+          16420222330042795367,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "observed_retired": 20480,
+      "ordinary": {
+        "gpr": [
+          13773106670537536871,
+          2647115659505258496,
+          0,
+          16420222330042795367,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "rflags": 514,
+        "rip": 4096
+      },
+      "ordinary_retired": 20480,
+      "phase_counts_valid": true,
+      "pre_admission_error_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "resident_code_bytes": 2188,
+      "resident_entry_count": 1,
+      "resident_logical_bytes": 10552,
+      "seed": 3543040,
+      "stop_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ],
+      "zero_work_phase_counts": [
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "BlockBuildAndAdmission"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "KeySnapshotAndLookup"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "IrLowering"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Allocation"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "EmissionAndFinalization"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "Publication"
+        },
+        {
+          "calls": 0,
+          "elapsed_ns": 0,
+          "phase": "HostExecutionBoundary"
+        }
+      ]
+    }
+  ],
+  "timing_started": false
+}

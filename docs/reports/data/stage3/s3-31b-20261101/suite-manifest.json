@@ -1,0 +1,2440 @@
+{
+  "schema": 1,
+  "suite_id": "s3-31b-native-register-v1-phase-attribution-2026-11-01",
+  "record_type": "s3-31b_scored_suite_manifest",
+  "classification": "bounded synthetic observed-path phase attribution only; paired ordinary/observed differences are not isolated observer cost or production phase shares",
+  "profile_id": "s3-31b-native-register-v1-cached-loop-phase-attribution-v1",
+  "source_revision": "c2af2a3821a6c8c2e226d25ae7c391061e2ffef7",
+  "source_sha256": "7f1976afbe33a35c5ce3fb9082da4ae1234e35341223f5b38a2df8e9de0f82d0",
+  "source_tree_dirty": false,
+  "runtime_working_tree_dirty": null,
+  "runtime_working_tree_status_note": "The runtime git status check exceeded its two-second timeout; runtime cleanliness is unknown.",
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "c2af2a3821a6c8c2e226d25ae7c391061e2ffef7",
+      "source_sha256": "7f1976afbe33a35c5ce3fb9082da4ae1234e35341223f5b38a2df8e9de0f82d0",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "c2af2a3821a6c8c2e226d25ae7c391061e2ffef7",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "source_fingerprints": [
+    {
+      "path": "tools/bench/src/cached_native_loop_phases.rs",
+      "sha256": "fc851575ece09364b3845f3f1331c462b3dbcebb372ff9080e9be79686fd5a45"
+    },
+    {
+      "path": "tools/bench/src/cached_native_loop.rs",
+      "sha256": "09faa149db18ec66f2d11961ab18196ccb938c669fdc795c94d791f6bcfe079b"
+    },
+    {
+      "path": "tools/bench/src/main.rs",
+      "sha256": "edf28e082faf29c1af7004271625a26d578ddc4a7f4ffb7e69a937281527338b"
+    },
+    {
+      "path": "tools/bench/src/lib.rs",
+      "sha256": "71ea41b93043dd9847f38a5e342fca17e12b84fb61c3e198e08bfaacc10cfc6f"
+    },
+    {
+      "path": "crates/od-jit/src/dispatch.rs",
+      "sha256": "3b27a421baf0e1a3cc8df0e8ff8eaf939a155f64f2e17b54ce9bd9091653e5ac"
+    },
+    {
+      "path": "crates/od-jit/src/block.rs",
+      "sha256": "a910ba720ecb0f5286c26531014417b65d1d53ff302bf90a2cb3f750ada7aa78"
+    },
+    {
+      "path": "crates/od-host/src/lib.rs",
+      "sha256": "d4138880dbae0c090641d4b5cc361f8e5925f23ab6e79ecd967b48d2eb56cf6d"
+    },
+    {
+      "path": "crates/od-jit/src/phase_observation.rs",
+      "sha256": "9ad57c75ad5192c9f63a4538ed33222daae9e036c873187eb5f02e5f1c44ce16"
+    }
+  ],
+  "preflight": {
+    "path": "preflight-release.json",
+    "sha256": "2e5451332b40055e3a93b5be38ae5b8d46f7048b4a09ab02e08a0a525ba1e63c",
+    "timing_started": false,
+    "strata_count": 6,
+    "hit_only_all_strata": true,
+    "phase_counts_valid_all_strata": true,
+    "pre_admission_error_case": "one code mismatch rejected before admission with zero measured-phase calls; cleanup for errors inside measured phases was not tested"
+  },
+  "sampling": {
+    "process_runs": 3,
+    "pairs_per_stratum_per_run": 20,
+    "pairs_per_stratum_across_runs": 60,
+    "strata_count": 6,
+    "pair_count_total": 360,
+    "measured_side_count": 720,
+    "measured_side_floor_ns": 200000000,
+    "minimum_measured_side_ns": 218509127,
+    "all_measured_sides_passed_floor": true,
+    "discarded_pair_restarts": 0,
+    "timed_scope": "ordinary and explicit-observer full cached NativeRegisterV1 calls; observer hooks remain inside observed interval"
+  },
+  "phase_semantics": {
+    "shares_denominator": "cumulative observed full-call elapsed_ns within the stratum",
+    "per_visit_time": "cumulative phase elapsed_ns divided by cumulative phase invocation count",
+    "residual": "signed observed full-call elapsed_ns minus the sum of named non-overlapping phases; includes all other work and observer hooks",
+    "KeySnapshotAndLookup": "excludes repeated post-hit validation and matches_code_view",
+    "HostExecutionBoundary": "includes wrapper and result decoding",
+    "Publication": "zero calls in the resident hit-only timing path"
+  },
+  "ratio_summary_definition": "Median and min/max of 60 stored observed_over_ordinary_ratio values per stratum; no trimming. b_64 range crosses 1.0.",
+  "cross_run_summary": [
+    {
+      "stratum": "a_1",
+      "iterations": 1,
+      "seed": 3538945,
+      "budget": 3,
+      "guest_work_per_call": 3,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "resident_entries": 1,
+      "resident_code_bytes": 1408,
+      "resident_logical_bytes": 7193,
+      "pair_count_across_runs": 60,
+      "ratio_definition": "observed elapsed_ns / ordinary elapsed_ns, paired raw values",
+      "ratio_median": 1.1173602937209421,
+      "ratio_range": [
+        1.043386955578002,
+        1.271983853341534
+      ],
+      "paired_delta_median_ns": 26500951.5,
+      "paired_delta_range_ns": [
+        10420406,
+        61906027
+      ],
+      "minimum_measured_side_ns": 218509127,
+      "observed_elapsed_total_ns": 15186349610,
+      "ordinary_elapsed_total_ns": 13578505148,
+      "observed_minus_ordinary_total_ns": 1607844462,
+      "observed_phase_breakdown": [
+        {
+          "phase": "BlockBuildAndAdmission",
+          "invocations": 18268880,
+          "total_ns": 3192509188,
+          "share_of_observed_full_path": 0.2102222897527512,
+          "ns_per_visit": 174.75122656670797
+        },
+        {
+          "phase": "KeySnapshotAndLookup",
+          "invocations": 18268880,
+          "total_ns": 6499434199,
+          "share_of_observed_full_path": 0.4279787023156778,
+          "ns_per_visit": 355.7653342186275
+        },
+        {
+          "phase": "IrLowering",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Allocation",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "EmissionAndFinalization",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Publication",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "HostExecutionBoundary",
+          "invocations": 18268880,
+          "total_ns": 671713528,
+          "share_of_observed_full_path": 0.044231401571164015,
+          "ns_per_visit": 36.76818327122407
+        }
+      ],
+      "residual_total_ns": 4822692695,
+      "residual_share_of_observed_full_path": 0.317567606360407,
+      "scored_cache_counters": {
+        "ordinary": {
+          "hits": 18268880,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        },
+        "observed": {
+          "hits": 18268880,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        }
+      },
+      "retired_instructions": {
+        "ordinary": 54806640,
+        "observed": 54806640
+      },
+      "per_run": [
+        {
+          "process_run": 1,
+          "ratio_median": 1.1223637833074076,
+          "ratio_range": [
+            1.0969594388621882,
+            1.1573760267605093
+          ],
+          "minimum_measured_side_ns": 222077533,
+          "calls_per_side": 307694,
+          "cold_first_dispatch_ns": 16583,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6153880,
+            "KeySnapshotAndLookup": 6153880,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6153880
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1073877258,
+            "KeySnapshotAndLookup": 2192858713,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 225953591
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6153880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6153880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 2,
+          "ratio_median": 1.1194767031978485,
+          "ratio_range": [
+            1.043386955578002,
+            1.1473709830680259
+          ],
+          "minimum_measured_side_ns": 218509127,
+          "calls_per_side": 306124,
+          "cold_first_dispatch_ns": 53292,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6122480,
+            "KeySnapshotAndLookup": 6122480,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6122480
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1065802439,
+            "KeySnapshotAndLookup": 2160310065,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 221765723
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6122480,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6122480,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 3,
+          "ratio_median": 1.1134089657129322,
+          "ratio_range": [
+            1.0599749866555168,
+            1.271983853341534
+          ],
+          "minimum_measured_side_ns": 220037812,
+          "calls_per_side": 299626,
+          "cold_first_dispatch_ns": 29208,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5992520,
+            "KeySnapshotAndLookup": 5992520,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5992520
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1052829491,
+            "KeySnapshotAndLookup": 2146265421,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 223994214
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5992520,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5992520,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "stratum": "a_64",
+      "iterations": 64,
+      "seed": 3539008,
+      "budget": 192,
+      "guest_work_per_call": 192,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "resident_entries": 1,
+      "resident_code_bytes": 1408,
+      "resident_logical_bytes": 7193,
+      "pair_count_across_runs": 60,
+      "ratio_definition": "observed elapsed_ns / ordinary elapsed_ns, paired raw values",
+      "ratio_median": 1.1182155959496374,
+      "ratio_range": [
+        1.0913963006699754,
+        1.2487579593487326
+      ],
+      "paired_delta_median_ns": 28407104.5,
+      "paired_delta_range_ns": [
+        21864650,
+        59757387
+      ],
+      "minimum_measured_side_ns": 228867382,
+      "observed_elapsed_total_ns": 16203552163,
+      "ordinary_elapsed_total_ns": 14450566904,
+      "observed_minus_ordinary_total_ns": 1752985259,
+      "observed_phase_breakdown": [
+        {
+          "phase": "BlockBuildAndAdmission",
+          "invocations": 20078080,
+          "total_ns": 3525406147,
+          "share_of_observed_full_path": 0.2175699569783278,
+          "ns_per_visit": 175.5848241963375
+        },
+        {
+          "phase": "KeySnapshotAndLookup",
+          "invocations": 20078080,
+          "total_ns": 7158427337,
+          "share_of_observed_full_path": 0.4417813615798337,
+          "ns_per_visit": 356.5294757765683
+        },
+        {
+          "phase": "IrLowering",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Allocation",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "EmissionAndFinalization",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Publication",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "HostExecutionBoundary",
+          "invocations": 20078080,
+          "total_ns": 734675931,
+          "share_of_observed_full_path": 0.04534042434705124,
+          "ns_per_visit": 36.59094549877279
+        }
+      ],
+      "residual_total_ns": 4785042748,
+      "residual_share_of_observed_full_path": 0.29530825709478725,
+      "scored_cache_counters": {
+        "ordinary": {
+          "hits": 20078080,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        },
+        "observed": {
+          "hits": 20078080,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        }
+      },
+      "retired_instructions": {
+        "ordinary": 60234240,
+        "observed": 60234240
+      },
+      "per_run": [
+        {
+          "process_run": 1,
+          "ratio_median": 1.116741128877157,
+          "ratio_range": [
+            1.098287048807162,
+            1.1339223752951477
+          ],
+          "minimum_measured_side_ns": 238068435,
+          "calls_per_side": 5315,
+          "cold_first_dispatch_ns": 60667,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6803200,
+            "KeySnapshotAndLookup": 6803200,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6803200
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1187146457,
+            "KeySnapshotAndLookup": 2410002438,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 247338212
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6803200,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6803200,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 2,
+          "ratio_median": 1.1300903929867778,
+          "ratio_range": [
+            1.0913963006699754,
+            1.2487579593487326
+          ],
+          "minimum_measured_side_ns": 228867382,
+          "calls_per_side": 5224,
+          "cold_first_dispatch_ns": 63541,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6686720,
+            "KeySnapshotAndLookup": 6686720,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6686720
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1168875304,
+            "KeySnapshotAndLookup": 2372639064,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 241542340
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6686720,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6686720,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 3,
+          "ratio_median": 1.1142598258907372,
+          "ratio_range": [
+            1.097344031361973,
+            1.1299583897390155
+          ],
+          "minimum_measured_side_ns": 238383619,
+          "calls_per_side": 5147,
+          "cold_first_dispatch_ns": 61083,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6588160,
+            "KeySnapshotAndLookup": 6588160,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6588160
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1169384386,
+            "KeySnapshotAndLookup": 2375785835,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 245795379
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6588160,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6588160,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "stratum": "a_4096",
+      "iterations": 4096,
+      "seed": 3543040,
+      "budget": 12288,
+      "guest_work_per_call": 12288,
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "resident_entries": 1,
+      "resident_code_bytes": 1408,
+      "resident_logical_bytes": 7193,
+      "pair_count_across_runs": 60,
+      "ratio_definition": "observed elapsed_ns / ordinary elapsed_ns, paired raw values",
+      "ratio_median": 1.1162922296695852,
+      "ratio_range": [
+        1.088489886114875,
+        1.1634883250013917
+      ],
+      "paired_delta_median_ns": 27779438.0,
+      "paired_delta_range_ns": [
+        21721079,
+        38718409
+      ],
+      "minimum_measured_side_ns": 231327755,
+      "observed_elapsed_total_ns": 16055458069,
+      "ordinary_elapsed_total_ns": 14385840301,
+      "observed_minus_ordinary_total_ns": 1669617768,
+      "observed_phase_breakdown": [
+        {
+          "phase": "BlockBuildAndAdmission",
+          "invocations": 20070400,
+          "total_ns": 3494295069,
+          "share_of_observed_full_path": 0.21763907662944923,
+          "ns_per_visit": 174.10191471022003
+        },
+        {
+          "phase": "KeySnapshotAndLookup",
+          "invocations": 20070400,
+          "total_ns": 7095439813,
+          "share_of_observed_full_path": 0.4419331907259581,
+          "ns_per_visit": 353.52757359095983
+        },
+        {
+          "phase": "IrLowering",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Allocation",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "EmissionAndFinalization",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Publication",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "HostExecutionBoundary",
+          "invocations": 20070400,
+          "total_ns": 728933684,
+          "share_of_observed_full_path": 0.045400989549306645,
+          "ns_per_visit": 36.31884187659439
+        }
+      ],
+      "residual_total_ns": 4736789503,
+      "residual_share_of_observed_full_path": 0.29502674309528604,
+      "scored_cache_counters": {
+        "ordinary": {
+          "hits": 20070400,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        },
+        "observed": {
+          "hits": 20070400,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        }
+      },
+      "retired_instructions": {
+        "ordinary": 60211200,
+        "observed": 60211200
+      },
+      "per_run": [
+        {
+          "process_run": 1,
+          "ratio_median": 1.1126188028610131,
+          "ratio_range": [
+            1.088489886114875,
+            1.1634883250013917
+          ],
+          "minimum_measured_side_ns": 235056453,
+          "calls_per_side": 82,
+          "cold_first_dispatch_ns": 2996292,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6717440,
+            "KeySnapshotAndLookup": 6717440,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6717440
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1170959770,
+            "KeySnapshotAndLookup": 2376959531,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 244174213
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6717440,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6717440,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 2,
+          "ratio_median": 1.1242418309061897,
+          "ratio_range": [
+            1.0900764963431755,
+            1.1408783740983286
+          ],
+          "minimum_measured_side_ns": 231327755,
+          "calls_per_side": 83,
+          "cold_first_dispatch_ns": 3010625,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6799360,
+            "KeySnapshotAndLookup": 6799360,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6799360
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1167806697,
+            "KeySnapshotAndLookup": 2371350731,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 242401283
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6799360,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6799360,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 3,
+          "ratio_median": 1.115255855117487,
+          "ratio_range": [
+            1.0924849141475859,
+            1.1275885729628616
+          ],
+          "minimum_measured_side_ns": 235166744,
+          "calls_per_side": 80,
+          "cold_first_dispatch_ns": 2993000,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6553600,
+            "KeySnapshotAndLookup": 6553600,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6553600
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1155528602,
+            "KeySnapshotAndLookup": 2347129551,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 242358188
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6553600,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6553600,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "stratum": "b_1",
+      "iterations": 1,
+      "seed": 3538945,
+      "budget": 5,
+      "guest_work_per_call": 5,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "resident_entries": 1,
+      "resident_code_bytes": 2188,
+      "resident_logical_bytes": 10552,
+      "pair_count_across_runs": 60,
+      "ratio_definition": "observed elapsed_ns / ordinary elapsed_ns, paired raw values",
+      "ratio_median": 1.0900475605542224,
+      "ratio_range": [
+        1.0172567126871679,
+        1.1276010869087616
+      ],
+      "paired_delta_median_ns": 21588787.5,
+      "paired_delta_range_ns": [
+        4392513,
+        31215372
+      ],
+      "minimum_measured_side_ns": 228115672,
+      "observed_elapsed_total_ns": 15701180560,
+      "ordinary_elapsed_total_ns": 14431182443,
+      "observed_minus_ordinary_total_ns": 1269998117,
+      "observed_phase_breakdown": [
+        {
+          "phase": "BlockBuildAndAdmission",
+          "invocations": 14823340,
+          "total_ns": 5112904038,
+          "share_of_observed_full_path": 0.32563819124693894,
+          "ns_per_visit": 344.92253689114597
+        },
+        {
+          "phase": "KeySnapshotAndLookup",
+          "invocations": 14823340,
+          "total_ns": 6066026015,
+          "share_of_observed_full_path": 0.3863420328057166,
+          "ns_per_visit": 409.22126963288974
+        },
+        {
+          "phase": "IrLowering",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Allocation",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "EmissionAndFinalization",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Publication",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "HostExecutionBoundary",
+          "invocations": 14823340,
+          "total_ns": 862640932,
+          "share_of_observed_full_path": 0.05494115099839346,
+          "ns_per_visit": 58.194774726883416
+        }
+      ],
+      "residual_total_ns": 3659609575,
+      "residual_share_of_observed_full_path": 0.23307862494895099,
+      "scored_cache_counters": {
+        "ordinary": {
+          "hits": 14823340,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        },
+        "observed": {
+          "hits": 14823340,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        }
+      },
+      "retired_instructions": {
+        "ordinary": 74116700,
+        "observed": 74116700
+      },
+      "per_run": [
+        {
+          "process_run": 1,
+          "ratio_median": 1.0940916049355174,
+          "ratio_range": [
+            1.0685142375983738,
+            1.1276010869087616
+          ],
+          "minimum_measured_side_ns": 237948643,
+          "calls_per_side": 251837,
+          "cold_first_dispatch_ns": 23542,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5036740,
+            "KeySnapshotAndLookup": 5036740,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5036740
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1739585133,
+            "KeySnapshotAndLookup": 2054595001,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 291548637
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5036740,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5036740,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 2,
+          "ratio_median": 1.0845687324748892,
+          "ratio_range": [
+            1.0172567126871679,
+            1.109064157240114
+          ],
+          "minimum_measured_side_ns": 228115672,
+          "calls_per_side": 242670,
+          "cold_first_dispatch_ns": 21584,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 4853400,
+            "KeySnapshotAndLookup": 4853400,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 4853400
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1656475009,
+            "KeySnapshotAndLookup": 1969060586,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 280908272
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 4853400,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 4853400,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 3,
+          "ratio_median": 1.0908995660663785,
+          "ratio_range": [
+            1.0814057036154092,
+            1.0977452352172268
+          ],
+          "minimum_measured_side_ns": 238906694,
+          "calls_per_side": 246660,
+          "cold_first_dispatch_ns": 22083,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 4933200,
+            "KeySnapshotAndLookup": 4933200,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 4933200
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1716843896,
+            "KeySnapshotAndLookup": 2042370428,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 290184023
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 4933200,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 4933200,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "stratum": "b_64",
+      "iterations": 64,
+      "seed": 3539008,
+      "budget": 320,
+      "guest_work_per_call": 320,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "resident_entries": 1,
+      "resident_code_bytes": 2188,
+      "resident_logical_bytes": 10552,
+      "pair_count_across_runs": 60,
+      "ratio_definition": "observed elapsed_ns / ordinary elapsed_ns, paired raw values",
+      "ratio_median": 1.0967201995414935,
+      "ratio_range": [
+        0.9969702723935385,
+        1.1857986757084455
+      ],
+      "paired_delta_median_ns": 23390555.5,
+      "paired_delta_range_ns": [
+        -834839,
+        44505317
+      ],
+      "minimum_measured_side_ns": 235380231,
+      "observed_elapsed_total_ns": 16084640563,
+      "ordinary_elapsed_total_ns": 14693806430,
+      "observed_minus_ordinary_total_ns": 1390834133,
+      "observed_phase_breakdown": [
+        {
+          "phase": "BlockBuildAndAdmission",
+          "invocations": 15352320,
+          "total_ns": 5344674662,
+          "share_of_observed_full_path": 0.3322843703635207,
+          "ns_per_visit": 348.13465730260964
+        },
+        {
+          "phase": "KeySnapshotAndLookup",
+          "invocations": 15352320,
+          "total_ns": 6330634915,
+          "share_of_observed_full_path": 0.39358261629809477,
+          "ns_per_visit": 412.35688905650744
+        },
+        {
+          "phase": "IrLowering",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Allocation",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "EmissionAndFinalization",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Publication",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "HostExecutionBoundary",
+          "invocations": 15352320,
+          "total_ns": 903578641,
+          "share_of_observed_full_path": 0.05617648945656455,
+          "ns_per_visit": 58.85616252136485
+        }
+      ],
+      "residual_total_ns": 3505752345,
+      "residual_share_of_observed_full_path": 0.21795652388182,
+      "scored_cache_counters": {
+        "ordinary": {
+          "hits": 15352320,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        },
+        "observed": {
+          "hits": 15352320,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        }
+      },
+      "retired_instructions": {
+        "ordinary": 76761600,
+        "observed": 76761600
+      },
+      "per_run": [
+        {
+          "process_run": 1,
+          "ratio_median": 1.0960737341119098,
+          "ratio_range": [
+            1.0659382968166093,
+            1.1232319491822675
+          ],
+          "minimum_measured_side_ns": 239560761,
+          "calls_per_side": 4054,
+          "cold_first_dispatch_ns": 79834,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5189120,
+            "KeySnapshotAndLookup": 5189120,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5189120
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1785704082,
+            "KeySnapshotAndLookup": 2106863367,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 302090781
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5189120,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5189120,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 2,
+          "ratio_median": 1.0925551678787095,
+          "ratio_range": [
+            1.0496554422486655,
+            1.1857986757084455
+          ],
+          "minimum_measured_side_ns": 235380231,
+          "calls_per_side": 3963,
+          "cold_first_dispatch_ns": 81208,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5072640,
+            "KeySnapshotAndLookup": 5072640,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5072640
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1769947922,
+            "KeySnapshotAndLookup": 2093505133,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 299234201
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5072640,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5072640,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 3,
+          "ratio_median": 1.1007289199718144,
+          "ratio_range": [
+            0.9969702723935385,
+            1.1160337538101797
+          ],
+          "minimum_measured_side_ns": 241079493,
+          "calls_per_side": 3977,
+          "cold_first_dispatch_ns": 85250,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5090560,
+            "KeySnapshotAndLookup": 5090560,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5090560
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1789022658,
+            "KeySnapshotAndLookup": 2130266415,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 302253659
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5090560,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5090560,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        }
+      ]
+    },
+    {
+      "stratum": "b_4096",
+      "iterations": 4096,
+      "seed": 3543040,
+      "budget": 20480,
+      "guest_work_per_call": 20480,
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "resident_entries": 1,
+      "resident_code_bytes": 2188,
+      "resident_logical_bytes": 10552,
+      "pair_count_across_runs": 60,
+      "ratio_definition": "observed elapsed_ns / ordinary elapsed_ns, paired raw values",
+      "ratio_median": 1.0982827530093786,
+      "ratio_range": [
+        1.0728478100037422,
+        1.1436930988873732
+      ],
+      "paired_delta_median_ns": 24477167.0,
+      "paired_delta_range_ns": [
+        18398155,
+        36452083
+      ],
+      "minimum_measured_side_ns": 242224789,
+      "observed_elapsed_total_ns": 16585027566,
+      "ordinary_elapsed_total_ns": 15079640885,
+      "observed_minus_ordinary_total_ns": 1505386681,
+      "observed_phase_breakdown": [
+        {
+          "phase": "BlockBuildAndAdmission",
+          "invocations": 15728640,
+          "total_ns": 5506024185,
+          "share_of_observed_full_path": 0.33198764144881976,
+          "ns_per_visit": 350.06359004974365
+        },
+        {
+          "phase": "KeySnapshotAndLookup",
+          "invocations": 15728640,
+          "total_ns": 6534012282,
+          "share_of_observed_full_path": 0.3939705409591841,
+          "ns_per_visit": 415.4213130950928
+        },
+        {
+          "phase": "IrLowering",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Allocation",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "EmissionAndFinalization",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "Publication",
+          "invocations": 0,
+          "total_ns": 0,
+          "share_of_observed_full_path": 0.0,
+          "ns_per_visit": null
+        },
+        {
+          "phase": "HostExecutionBoundary",
+          "invocations": 15728640,
+          "total_ns": 928093885,
+          "share_of_observed_full_path": 0.055959743286928945,
+          "ns_per_visit": 59.00662008921305
+        }
+      ],
+      "residual_total_ns": 3616897214,
+      "residual_share_of_observed_full_path": 0.2180820743050672,
+      "scored_cache_counters": {
+        "ordinary": {
+          "hits": 15728640,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        },
+        "observed": {
+          "hits": 15728640,
+          "misses": 0,
+          "compiles": 0,
+          "publications": 0,
+          "replacements": 0
+        }
+      },
+      "retired_instructions": {
+        "ordinary": 78643200,
+        "observed": 78643200
+      },
+      "per_run": [
+        {
+          "process_run": 1,
+          "ratio_median": 1.1005557481603483,
+          "ratio_range": [
+            1.0809416419776183,
+            1.1436930988873732
+          ],
+          "minimum_measured_side_ns": 244270335,
+          "calls_per_side": 64,
+          "cold_first_dispatch_ns": 3984625,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5242880,
+            "KeySnapshotAndLookup": 5242880,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5242880
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1833034718,
+            "KeySnapshotAndLookup": 2162593670,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 309631638
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 2,
+          "ratio_median": 1.0913496500862065,
+          "ratio_range": [
+            1.0728478100037422,
+            1.132082538627802
+          ],
+          "minimum_measured_side_ns": 242224789,
+          "calls_per_side": 64,
+          "cold_first_dispatch_ns": 4011959,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5242880,
+            "KeySnapshotAndLookup": 5242880,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5242880
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1814148605,
+            "KeySnapshotAndLookup": 2150912542,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 306355517
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        },
+        {
+          "process_run": 3,
+          "ratio_median": 1.1018479997404815,
+          "ratio_range": [
+            1.0831563360064715,
+            1.1361298915289073
+          ],
+          "minimum_measured_side_ns": 250446337,
+          "calls_per_side": 64,
+          "cold_first_dispatch_ns": 4030250,
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5242880,
+            "KeySnapshotAndLookup": 5242880,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5242880
+          },
+          "phase_totals_ns": {
+            "BlockBuildAndAdmission": 1858840862,
+            "KeySnapshotAndLookup": 2220506070,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 312106730
+          },
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "scored_runs": [
+    {
+      "process_run": 1,
+      "total_elapsed_ns": 65268916375,
+      "pairs_total": 120,
+      "per_stratum": [
+        {
+          "stratum": "a_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calls_per_side": 307694,
+          "ratio_median": 1.1223637833074076,
+          "ratio_range": [
+            1.0969594388621882,
+            1.1573760267605093
+          ],
+          "minimum_measured_side_ns": 222077533,
+          "observed_elapsed_total_ns": 5094663613,
+          "ordinary_elapsed_total_ns": 4538532193,
+          "paired_delta_median_ns": 27515662.0,
+          "paired_delta_range_ns": [
+            22412595,
+            36001304
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6153880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6153880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 18461640,
+            "observed": 18461640
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6153880,
+            "KeySnapshotAndLookup": 6153880,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6153880
+          }
+        },
+        {
+          "stratum": "a_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calls_per_side": 5315,
+          "ratio_median": 1.116741128877157,
+          "ratio_range": [
+            1.098287048807162,
+            1.1339223752951477
+          ],
+          "minimum_measured_side_ns": 238068435,
+          "observed_elapsed_total_ns": 5420583064,
+          "ordinary_elapsed_total_ns": 4858585221,
+          "paired_delta_median_ns": 28307163.0,
+          "paired_delta_range_ns": [
+            24201888,
+            32063007
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6803200,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6803200,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 20409600,
+            "observed": 20409600
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6803200,
+            "KeySnapshotAndLookup": 6803200,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6803200
+          }
+        },
+        {
+          "stratum": "a_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calls_per_side": 82,
+          "ratio_median": 1.1126188028610131,
+          "ratio_range": [
+            1.088489886114875,
+            1.1634883250013917
+          ],
+          "minimum_measured_side_ns": 235056453,
+          "observed_elapsed_total_ns": 5345976511,
+          "ordinary_elapsed_total_ns": 4804409690,
+          "paired_delta_median_ns": 27075393.0,
+          "paired_delta_range_ns": [
+            21721079,
+            38718409
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6717440,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6717440,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 20152320,
+            "observed": 20152320
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6717440,
+            "KeySnapshotAndLookup": 6717440,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6717440
+          }
+        },
+        {
+          "stratum": "b_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calls_per_side": 251837,
+          "ratio_median": 1.0940916049355174,
+          "ratio_range": [
+            1.0685142375983738,
+            1.1276010869087616
+          ],
+          "minimum_measured_side_ns": 237948643,
+          "observed_elapsed_total_ns": 5330807823,
+          "ordinary_elapsed_total_ns": 4871044989,
+          "paired_delta_median_ns": 23108992.0,
+          "paired_delta_range_ns": [
+            16707633,
+            31215372
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5036740,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5036740,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 25183700,
+            "observed": 25183700
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5036740,
+            "KeySnapshotAndLookup": 5036740,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5036740
+          }
+        },
+        {
+          "stratum": "b_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calls_per_side": 4054,
+          "ratio_median": 1.0960737341119098,
+          "ratio_range": [
+            1.0659382968166093,
+            1.1232319491822675
+          ],
+          "minimum_measured_side_ns": 239560761,
+          "observed_elapsed_total_ns": 5370565554,
+          "ordinary_elapsed_total_ns": 4899868832,
+          "paired_delta_median_ns": 23287465.5,
+          "paired_delta_range_ns": [
+            16734349,
+            29729315
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5189120,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5189120,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 25945600,
+            "observed": 25945600
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5189120,
+            "KeySnapshotAndLookup": 5189120,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5189120
+          }
+        },
+        {
+          "stratum": "b_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calls_per_side": 64,
+          "ratio_median": 1.1005557481603483,
+          "ratio_range": [
+            1.0809416419776183,
+            1.1436930988873732
+          ],
+          "minimum_measured_side_ns": 244270335,
+          "observed_elapsed_total_ns": 5518201111,
+          "ordinary_elapsed_total_ns": 5005992408,
+          "paired_delta_median_ns": 24805168.5,
+          "paired_delta_range_ns": [
+            20673207,
+            36452083
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 26214400,
+            "observed": 26214400
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5242880,
+            "KeySnapshotAndLookup": 5242880,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5242880
+          }
+        }
+      ]
+    },
+    {
+      "process_run": 2,
+      "total_elapsed_ns": 64547535917,
+      "pairs_total": 120,
+      "per_stratum": [
+        {
+          "stratum": "a_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calls_per_side": 306124,
+          "ratio_median": 1.1194767031978485,
+          "ratio_range": [
+            1.043386955578002,
+            1.1473709830680259
+          ],
+          "minimum_measured_side_ns": 218509127,
+          "observed_elapsed_total_ns": 5067058438,
+          "ordinary_elapsed_total_ns": 4536939171,
+          "paired_delta_median_ns": 26846061.5,
+          "paired_delta_range_ns": [
+            10420406,
+            33061545
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6122480,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6122480,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 18367440,
+            "observed": 18367440
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6122480,
+            "KeySnapshotAndLookup": 6122480,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6122480
+          }
+        },
+        {
+          "stratum": "a_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calls_per_side": 5224,
+          "ratio_median": 1.1300903929867778,
+          "ratio_range": [
+            1.0913963006699754,
+            1.2487579593487326
+          ],
+          "minimum_measured_side_ns": 228867382,
+          "observed_elapsed_total_ns": 5387116133,
+          "ordinary_elapsed_total_ns": 4748913242,
+          "paired_delta_median_ns": 30026745.0,
+          "paired_delta_range_ns": [
+            21864650,
+            59757387
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6686720,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6686720,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 20060160,
+            "observed": 20060160
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6686720,
+            "KeySnapshotAndLookup": 6686720,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6686720
+          }
+        },
+        {
+          "stratum": "a_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calls_per_side": 83,
+          "ratio_median": 1.1242418309061897,
+          "ratio_range": [
+            1.0900764963431755,
+            1.1408783740983286
+          ],
+          "minimum_measured_side_ns": 231327755,
+          "observed_elapsed_total_ns": 5379865219,
+          "ordinary_elapsed_total_ns": 4793655924,
+          "paired_delta_median_ns": 29882394.5,
+          "paired_delta_range_ns": [
+            21831630,
+            33727999
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6799360,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6799360,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 20398080,
+            "observed": 20398080
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6799360,
+            "KeySnapshotAndLookup": 6799360,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6799360
+          }
+        },
+        {
+          "stratum": "b_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calls_per_side": 242670,
+          "ratio_median": 1.0845687324748892,
+          "ratio_range": [
+            1.0172567126871679,
+            1.109064157240114
+          ],
+          "minimum_measured_side_ns": 228115672,
+          "observed_elapsed_total_ns": 5090623950,
+          "ordinary_elapsed_total_ns": 4719651283,
+          "paired_delta_median_ns": 19617646.5,
+          "paired_delta_range_ns": [
+            4392513,
+            25139467
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 4853400,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 4853400,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 24267000,
+            "observed": 24267000
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 4853400,
+            "KeySnapshotAndLookup": 4853400,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 4853400
+          }
+        },
+        {
+          "stratum": "b_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calls_per_side": 3963,
+          "ratio_median": 1.0925551678787095,
+          "ratio_range": [
+            1.0496554422486655,
+            1.1857986757084455
+          ],
+          "minimum_measured_side_ns": 235380231,
+          "observed_elapsed_total_ns": 5318721141,
+          "ordinary_elapsed_total_ns": 4868150386,
+          "paired_delta_median_ns": 22419731.5,
+          "paired_delta_range_ns": [
+            12884811,
+            44505317
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5072640,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5072640,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 25363200,
+            "observed": 25363200
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5072640,
+            "KeySnapshotAndLookup": 5072640,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5072640
+          }
+        },
+        {
+          "stratum": "b_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calls_per_side": 64,
+          "ratio_median": 1.0913496500862065,
+          "ratio_range": [
+            1.0728478100037422,
+            1.132082538627802
+          ],
+          "minimum_measured_side_ns": 242224789,
+          "observed_elapsed_total_ns": 5457758412,
+          "ordinary_elapsed_total_ns": 4981314384,
+          "paired_delta_median_ns": 23055958.5,
+          "paired_delta_range_ns": [
+            18398155,
+            32270621
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 26214400,
+            "observed": 26214400
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5242880,
+            "KeySnapshotAndLookup": 5242880,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5242880
+          }
+        }
+      ]
+    },
+    {
+      "process_run": 3,
+      "total_elapsed_ns": 65261104291,
+      "pairs_total": 120,
+      "per_stratum": [
+        {
+          "stratum": "a_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calls_per_side": 299626,
+          "ratio_median": 1.1134089657129322,
+          "ratio_range": [
+            1.0599749866555168,
+            1.271983853341534
+          ],
+          "minimum_measured_side_ns": 220037812,
+          "observed_elapsed_total_ns": 5024627559,
+          "ordinary_elapsed_total_ns": 4503033784,
+          "paired_delta_median_ns": 25616446.5,
+          "paired_delta_range_ns": [
+            13602647,
+            61906027
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5992520,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5992520,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 17977560,
+            "observed": 17977560
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5992520,
+            "KeySnapshotAndLookup": 5992520,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5992520
+          }
+        },
+        {
+          "stratum": "a_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calls_per_side": 5147,
+          "ratio_median": 1.1142598258907372,
+          "ratio_range": [
+            1.097344031361973,
+            1.1299583897390155
+          ],
+          "minimum_measured_side_ns": 238383619,
+          "observed_elapsed_total_ns": 5395852966,
+          "ordinary_elapsed_total_ns": 4843068441,
+          "paired_delta_median_ns": 27454846.0,
+          "paired_delta_range_ns": [
+            23844013,
+            31202555
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6588160,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6588160,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 19764480,
+            "observed": 19764480
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6588160,
+            "KeySnapshotAndLookup": 6588160,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6588160
+          }
+        },
+        {
+          "stratum": "a_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calls_per_side": 80,
+          "ratio_median": 1.115255855117487,
+          "ratio_range": [
+            1.0924849141475859,
+            1.1275885729628616
+          ],
+          "minimum_measured_side_ns": 235166744,
+          "observed_elapsed_total_ns": 5329616339,
+          "ordinary_elapsed_total_ns": 4787774687,
+          "paired_delta_median_ns": 27589793.0,
+          "paired_delta_range_ns": [
+            22216788,
+            30126973
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 6553600,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 6553600,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 19660800,
+            "observed": 19660800
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 6553600,
+            "KeySnapshotAndLookup": 6553600,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 6553600
+          }
+        },
+        {
+          "stratum": "b_1",
+          "iterations": 1,
+          "pairs": 20,
+          "calls_per_side": 246660,
+          "ratio_median": 1.0908995660663785,
+          "ratio_range": [
+            1.0814057036154092,
+            1.0977452352172268
+          ],
+          "minimum_measured_side_ns": 238906694,
+          "observed_elapsed_total_ns": 5279748787,
+          "ordinary_elapsed_total_ns": 4840486171,
+          "paired_delta_median_ns": 22065925.5,
+          "paired_delta_range_ns": [
+            19696282,
+            23550518
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 4933200,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 4933200,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 24666000,
+            "observed": 24666000
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 4933200,
+            "KeySnapshotAndLookup": 4933200,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 4933200
+          }
+        },
+        {
+          "stratum": "b_64",
+          "iterations": 64,
+          "pairs": 20,
+          "calls_per_side": 3977,
+          "ratio_median": 1.1007289199718144,
+          "ratio_range": [
+            0.9969702723935385,
+            1.1160337538101797
+          ],
+          "minimum_measured_side_ns": 241079493,
+          "observed_elapsed_total_ns": 5395353868,
+          "ordinary_elapsed_total_ns": 4925787212,
+          "paired_delta_median_ns": 24595048.0,
+          "paired_delta_range_ns": [
+            -834839,
+            28255504
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5090560,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5090560,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 25452800,
+            "observed": 25452800
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5090560,
+            "KeySnapshotAndLookup": 5090560,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5090560
+          }
+        },
+        {
+          "stratum": "b_4096",
+          "iterations": 4096,
+          "pairs": 20,
+          "calls_per_side": 64,
+          "ratio_median": 1.1018479997404815,
+          "ratio_range": [
+            1.0831563360064715,
+            1.1361298915289073
+          ],
+          "minimum_measured_side_ns": 250446337,
+          "observed_elapsed_total_ns": 5609068043,
+          "ordinary_elapsed_total_ns": 5092334093,
+          "paired_delta_median_ns": 25902184.0,
+          "paired_delta_range_ns": [
+            21358542,
+            34254426
+          ],
+          "cache_counters": {
+            "ordinary": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "observed": {
+              "hits": 5242880,
+              "misses": 0,
+              "compiles": 0,
+              "publications": 0,
+              "replacements": 0
+            }
+          },
+          "retired_instructions": {
+            "ordinary": 26214400,
+            "observed": 26214400
+          },
+          "phase_invocation_counts": {
+            "BlockBuildAndAdmission": 5242880,
+            "KeySnapshotAndLookup": 5242880,
+            "IrLowering": 0,
+            "Allocation": 0,
+            "EmissionAndFinalization": 0,
+            "Publication": 0,
+            "HostExecutionBoundary": 5242880
+          }
+        }
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "preflight-release.json",
+      "role": "release_preflight",
+      "sha256": "2e5451332b40055e3a93b5be38ae5b8d46f7048b4a09ab02e08a0a525ba1e63c"
+    },
+    {
+      "path": "process-1.json",
+      "role": "scored_process_run_1",
+      "sha256": "55d2c96368d3077ef39c60117e6a9c80b06ff7d28094ca1e512a2a825b5dca5d"
+    },
+    {
+      "path": "process-2.json",
+      "role": "scored_process_run_2",
+      "sha256": "a19363c7f736efa6ae8c77c2878d6fcb8749350b3d77385cd01ecc6d07b28922"
+    },
+    {
+      "path": "process-3.json",
+      "role": "scored_process_run_3",
+      "sha256": "dbee18f2891a9cc3e22a2a699cf7fda18dfe81d0abc8152154f0a058a35db3ca"
+    },
+    {
+      "path": "../../../STAGE_3_S3-31b_2026-11-01.md",
+      "role": "standalone_report",
+      "sha256": "106b60ed5de3fe6a5c98e0c9e2670bf066a47c8a4d57d9e70568ed98a7ac7627"
+    }
+  ]
+}

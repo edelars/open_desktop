@@ -1,0 +1,6330 @@
+{
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+      "source_sha256": "68c08c7ff7f91f3fffea8eab3ba7c85e2094725e6cadc23c1eab42c5a5cb696c",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "dcd1bfe5db813a2647c100c4c64a008dca9bd21c",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "process_run": 3,
+  "profile_id": "s3-31c-native-register-v1-run-local-prepared-key-reuse-v1",
+  "ratio_contract": "candidate_over_baseline_ratio and candidate_over_interpreter_ratio are elapsed candidate / elapsed comparator; below 1 is faster; no speedup is inferred without the raw repeated ranges and cross-process comparison",
+  "sampling_protocol": "each sample side has at least 200 ms measured elapsed time; 20 retained paired samples per stratum; baseline/candidate/interpreter order rotates across all six permutations; calibration begins at 64 calls per side and doubles on restart; raw samples preserve order, seed, calls and elapsed nanoseconds",
+  "schema": 1,
+  "source_fingerprints": [
+    [
+      "profile",
+      "26f2754e17463742be81dd0b6d337e03963b1b47887d6d666ec40e1896f0e6f6"
+    ],
+    [
+      "cli",
+      "47f1cb26659df6e2d9ca1a440db4bde37175a2cecb79a80a47fc3edfb3ef2140"
+    ],
+    [
+      "lib",
+      "1ddd0fa26fd399d75aca1f3594db5e1f7f8019ebacb475f8bb3c84507323f7ce"
+    ],
+    [
+      "dispatch",
+      "853bd584fdbaa9252a2866ca5277adc24585623a23c55a072bf02f9c4eb28f0a"
+    ],
+    [
+      "block",
+      "a910ba720ecb0f5286c26531014417b65d1d53ff302bf90a2cb3f750ada7aa78"
+    ],
+    [
+      "host",
+      "d4138880dbae0c090641d4b5cc361f8e5925f23ab6e79ecd967b48d2eb56cf6d"
+    ],
+    [
+      "frozen_fixture",
+      "09faa149db18ec66f2d11961ab18196ccb938c669fdc795c94d791f6bcfe079b"
+    ]
+  ],
+  "strata": [
+    {
+      "calibrated_calls_per_side": 2097152,
+      "calibration": {
+        "baseline": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 2097152,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 2097152,
+          "elapsed_ns": 1343284218,
+          "guest_instructions": 6291456,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 6291456,
+          "seed": 3538945
+        },
+        "candidate": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 2097152,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 2097152,
+          "elapsed_ns": 1605701214,
+          "guest_instructions": 6291456,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 6291456,
+          "seed": 3538945
+        },
+        "candidate_over_baseline_ratio": 1.195354782319046,
+        "candidate_over_interpreter_ratio": 4.816078616723688,
+        "interpreter": {
+          "cache_delta": null,
+          "calls": 2097152,
+          "elapsed_ns": 333404278,
+          "guest_instructions": 6291456,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 6291456,
+          "seed": 3538945
+        },
+        "order": "BCI",
+        "pair": 0,
+        "seed": 3538945
+      },
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "discarded_restarts": [],
+      "guest_work_per_call": 3,
+      "id": "a_1",
+      "iterations": 1,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "retained_pairs": [
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1352923512,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1551767569,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1469736132429635,
+          "candidate_over_interpreter_ratio": 4.743194175710212,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 327156661,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "BCI",
+          "pair": 0,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1313821170,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1547312311,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1777191191096426,
+          "candidate_over_interpreter_ratio": 4.708782374378702,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 328601364,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "BIC",
+          "pair": 1,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1351006239,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1587350950,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1749397628059361,
+          "candidate_over_interpreter_ratio": 4.555878120966584,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 348418221,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "CBI",
+          "pair": 2,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1318696980,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1567891361,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.188970161287546,
+          "candidate_over_interpreter_ratio": 4.768505892777722,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 328801389,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "CIB",
+          "pair": 3,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1297168867,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1559985409,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.2026078089646288,
+          "candidate_over_interpreter_ratio": 4.830788601316958,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 322925621,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "IBC",
+          "pair": 4,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1346796333,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1605189533,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1918576652376436,
+          "candidate_over_interpreter_ratio": 4.872434652270918,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 329443009,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "ICB",
+          "pair": 5,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1318312253,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1590547787,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.2065030749585242,
+          "candidate_over_interpreter_ratio": 4.729183193656895,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 336326110,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "BCI",
+          "pair": 6,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1315651755,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1589102612,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.2078444056041258,
+          "candidate_over_interpreter_ratio": 4.67042962797419,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 340247630,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "BIC",
+          "pair": 7,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1376659978,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1612618914,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.171399575618374,
+          "candidate_over_interpreter_ratio": 4.779052154017804,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 337434885,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "CBI",
+          "pair": 8,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1332983812,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1601748745,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.2016265543365803,
+          "candidate_over_interpreter_ratio": 4.824554076290545,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 331999335,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "CIB",
+          "pair": 9,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1305264265,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1589155313,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.2174969893931786,
+          "candidate_over_interpreter_ratio": 4.717590907463568,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 336857380,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "IBC",
+          "pair": 10,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1363692046,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1625539367,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1920135281041304,
+          "candidate_over_interpreter_ratio": 4.726087328099641,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 343950345,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "ICB",
+          "pair": 11,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1358929972,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1588737610,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.169109257088341,
+          "candidate_over_interpreter_ratio": 4.805390990530153,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 330615680,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "BCI",
+          "pair": 12,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1300865978,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1598554121,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.2288384414954696,
+          "candidate_over_interpreter_ratio": 4.844144763030128,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 329997182,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "BIC",
+          "pair": 13,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1352106229,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1633879690,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.208395949191356,
+          "candidate_over_interpreter_ratio": 4.811277906343994,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 339593705,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "CBI",
+          "pair": 14,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1319271018,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1574083910,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1931467367382127,
+          "candidate_over_interpreter_ratio": 4.711186415707463,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 334116244,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "CIB",
+          "pair": 15,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1343675130,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1607039225,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.196002805380494,
+          "candidate_over_interpreter_ratio": 4.733710287323516,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 339488293,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "IBC",
+          "pair": 16,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1336545375,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1607167045,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.202478475525008,
+          "candidate_over_interpreter_ratio": 4.709253276441074,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 341278532,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "ICB",
+          "pair": 17,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1301475639,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1780473698,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.3680422780468195,
+          "candidate_over_interpreter_ratio": 3.5392743240633604,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 503061796,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "BCI",
+          "pair": 18,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1889520158,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 2097152,
+            "elapsed_ns": 1666652906,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 0.882050873574221,
+          "candidate_over_interpreter_ratio": 4.773993585458399,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 2097152,
+            "elapsed_ns": 349110839,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 6291456,
+            "seed": 3538945
+          },
+          "order": "BIC",
+          "pair": 19,
+          "seed": 3538945
+        }
+      ],
+      "seed": 3538945,
+      "warmup_calls_per_side": 32
+    },
+    {
+      "calibrated_calls_per_side": 32768,
+      "calibration": {
+        "baseline": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 2097152,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 32768,
+          "elapsed_ns": 1284862781,
+          "guest_instructions": 6291456,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 6291456,
+          "seed": 3539008
+        },
+        "candidate": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 2097152,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 32768,
+          "elapsed_ns": 454279652,
+          "guest_instructions": 6291456,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 6291456,
+          "seed": 3539008
+        },
+        "candidate_over_baseline_ratio": 0.35356277628840427,
+        "candidate_over_interpreter_ratio": 1.486465723797913,
+        "interpreter": {
+          "cache_delta": null,
+          "calls": 32768,
+          "elapsed_ns": 305610580,
+          "guest_instructions": 6291456,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 6291456,
+          "seed": 3539008
+        },
+        "order": "BCI",
+        "pair": 0,
+        "seed": 3539008
+      },
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "discarded_restarts": [],
+      "guest_work_per_call": 192,
+      "id": "a_64",
+      "iterations": 64,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "retained_pairs": [
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1295298136,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 472255504,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.36459212815542874,
+          "candidate_over_interpreter_ratio": 1.4783084051651372,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 319456686,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "BCI",
+          "pair": 0,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1528341331,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 470131268,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.3076088164758269,
+          "candidate_over_interpreter_ratio": 1.4821283352148165,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 317200108,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "BIC",
+          "pair": 1,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1328056123,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 469498418,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.35352302502053223,
+          "candidate_over_interpreter_ratio": 1.466595262760138,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 320128143,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "CBI",
+          "pair": 2,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1308832211,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 475467138,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.36327585308794025,
+          "candidate_over_interpreter_ratio": 1.5080072297626261,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 315294999,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "CIB",
+          "pair": 3,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1413201311,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 538314555,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.38091852223026984,
+          "candidate_over_interpreter_ratio": 1.7863974276041614,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 301340870,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "IBC",
+          "pair": 4,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1885431050,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 561878682,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.29801072916455895,
+          "candidate_over_interpreter_ratio": 1.4800774763950757,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 379627885,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "ICB",
+          "pair": 5,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 2078837202,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 577025013,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.27757104425726936,
+          "candidate_over_interpreter_ratio": 1.0328696184862802,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 558662006,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "BCI",
+          "pair": 6,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 2664822056,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 884595961,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.3319531069657283,
+          "candidate_over_interpreter_ratio": 1.9140237072240578,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 462165624,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "BIC",
+          "pair": 7,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1663799300,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 859564751,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.5166276671711546,
+          "candidate_over_interpreter_ratio": 2.268070243696621,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 378985066,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "CBI",
+          "pair": 8,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 3765226978,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 849900610,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.22572360576558048,
+          "candidate_over_interpreter_ratio": 1.3014788116269969,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 653026851,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "CIB",
+          "pair": 9,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1860175304,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 553788956,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.29770793903626624,
+          "candidate_over_interpreter_ratio": 1.0262570698509157,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 539620113,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "IBC",
+          "pair": 10,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1363381640,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 479133520,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.35143022756269476,
+          "candidate_over_interpreter_ratio": 1.4775405206412664,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 324277753,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "ICB",
+          "pair": 11,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1382604749,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 467446107,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.3380909166832321,
+          "candidate_over_interpreter_ratio": 1.4917207468739877,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 313360331,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "BCI",
+          "pair": 12,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1327354754,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 460961541,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.3472783290306429,
+          "candidate_over_interpreter_ratio": 1.4731541421291334,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 312907881,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "BIC",
+          "pair": 13,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1301435206,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 459087831,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.3527550421899375,
+          "candidate_over_interpreter_ratio": 1.4780800789765784,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 310597401,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "CBI",
+          "pair": 14,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1304931343,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 463873188,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.35547708351733565,
+          "candidate_over_interpreter_ratio": 1.5108324102386734,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 307031531,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "CIB",
+          "pair": 15,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1318615157,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 467401515,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.3544639332550915,
+          "candidate_over_interpreter_ratio": 1.5276607028073432,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 305958983,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "IBC",
+          "pair": 16,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1314087380,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 469174528,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.3570344979646635,
+          "candidate_over_interpreter_ratio": 1.5022666326138678,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 312311089,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "ICB",
+          "pair": 17,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1317832837,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 463127613,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.3514312286027822,
+          "candidate_over_interpreter_ratio": 1.3884670394639784,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 333553192,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "BCI",
+          "pair": 18,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 1316918598,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 32768,
+            "elapsed_ns": 468276710,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.3555851597138732,
+          "candidate_over_interpreter_ratio": 1.498239904486695,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 32768,
+            "elapsed_ns": 312551220,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 6291456,
+            "seed": 3539008
+          },
+          "order": "BIC",
+          "pair": 19,
+          "seed": 3539008
+        }
+      ],
+      "seed": 3539008,
+      "warmup_calls_per_side": 32
+    },
+    {
+      "calibrated_calls_per_side": 512,
+      "calibration": {
+        "baseline": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 2097152,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 512,
+          "elapsed_ns": 1323077510,
+          "guest_instructions": 6291456,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 6291456,
+          "seed": 3543040
+        },
+        "candidate": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 2097152,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 512,
+          "elapsed_ns": 446030215,
+          "guest_instructions": 6291456,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 6291456,
+          "seed": 3543040
+        },
+        "candidate_over_baseline_ratio": 0.3371157106283214,
+        "candidate_over_interpreter_ratio": 1.4280613931695092,
+        "interpreter": {
+          "cache_delta": null,
+          "calls": 512,
+          "elapsed_ns": 312332661,
+          "guest_instructions": 6291456,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 6291456,
+          "seed": 3543040
+        },
+        "order": "BCI",
+        "pair": 0,
+        "seed": 3543040
+      },
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "discarded_restarts": [],
+      "guest_work_per_call": 12288,
+      "id": "a_4096",
+      "iterations": 4096,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "retained_pairs": [
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1321620364,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 453017320,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3427741674839992,
+          "candidate_over_interpreter_ratio": 1.4476435839124975,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 312934292,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "BCI",
+          "pair": 0,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1308492852,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 444948798,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.34004679301068125,
+          "candidate_over_interpreter_ratio": 1.4480223528001976,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 307280338,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "BIC",
+          "pair": 1,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1309007809,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 449286741,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3432269371587836,
+          "candidate_over_interpreter_ratio": 1.4587895505168242,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 307985988,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "CBI",
+          "pair": 2,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1308474027,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 446129647,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3409541479572678,
+          "candidate_over_interpreter_ratio": 1.4620109158259191,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 305147959,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "CIB",
+          "pair": 3,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1336121890,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 454653284,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.34027829901057904,
+          "candidate_over_interpreter_ratio": 1.4393495955879487,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 315874118,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "IBC",
+          "pair": 4,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1320362081,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 453534588,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3434925877729747,
+          "candidate_over_interpreter_ratio": 1.4232106689693704,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 318670031,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "ICB",
+          "pair": 5,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1274434541,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 435773249,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3419345874430439,
+          "candidate_over_interpreter_ratio": 1.453439027495011,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 299822174,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "BCI",
+          "pair": 6,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1270074100,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 439869365,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3463336233689042,
+          "candidate_over_interpreter_ratio": 1.4460497701021804,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 304186878,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "BIC",
+          "pair": 7,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1249102319,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 439721868,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3520303031316364,
+          "candidate_over_interpreter_ratio": 1.4317938795786558,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 307112549,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "CBI",
+          "pair": 8,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1340561338,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 443684744,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3309693718766638,
+          "candidate_over_interpreter_ratio": 1.4203578422195868,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 312375326,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "CIB",
+          "pair": 9,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1306118378,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 440652044,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3373752727335102,
+          "candidate_over_interpreter_ratio": 1.3955386465834771,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 315757679,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "IBC",
+          "pair": 10,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1292719082,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 447639881,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.34627777003758964,
+          "candidate_over_interpreter_ratio": 1.40898871013974,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 317702958,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "ICB",
+          "pair": 11,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1293551407,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 428174216,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.33100672588886143,
+          "candidate_over_interpreter_ratio": 1.3778477245118927,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 310755832,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "BCI",
+          "pair": 12,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1313496387,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 448021623,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.34109086818523543,
+          "candidate_over_interpreter_ratio": 1.4493511732950524,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 309118750,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "BIC",
+          "pair": 13,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1299265411,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 446398147,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3435773347159474,
+          "candidate_over_interpreter_ratio": 1.461692096765676,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 305398208,
+            "guest_instructions": 6291456,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "CBI",
+          "pair": 14,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1290669967,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 448785549,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.3477151870537017,
+          "candidate_over_interpreter_ratio": 1.430003213500399,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 313835343,
+            "guest_instructions": 6291456,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "CIB",
+          "pair": 15,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1277568667,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 446866376,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.34977875361434485,
+          "candidate_over_interpreter_ratio": 1.523677756333831,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 293281420,
+            "guest_instructions": 6291456,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "IBC",
+          "pair": 16,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1330544429,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 454759133,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.341784252437015,
+          "candidate_over_interpreter_ratio": 1.4697768463643044,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 309406924,
+            "guest_instructions": 6291456,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "ICB",
+          "pair": 17,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1328550418,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 457988102,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.34472767897619977,
+          "candidate_over_interpreter_ratio": 1.463919212293065,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 312850667,
+            "guest_instructions": 6291456,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "BCI",
+          "pair": 18,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 1348889340,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 2097152,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 512,
+            "elapsed_ns": 453009088,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.33583858554327367,
+          "candidate_over_interpreter_ratio": 1.3094013180591255,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 512,
+            "elapsed_ns": 345966574,
+            "guest_instructions": 6291456,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 6291456,
+            "seed": 3543040
+          },
+          "order": "BIC",
+          "pair": 19,
+          "seed": 3543040
+        }
+      ],
+      "seed": 3543040,
+      "warmup_calls_per_side": 32
+    },
+    {
+      "calibrated_calls_per_side": 1048576,
+      "calibration": {
+        "baseline": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 1048576,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 1048576,
+          "elapsed_ns": 929491767,
+          "guest_instructions": 5242880,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 5242880,
+          "seed": 3538945
+        },
+        "candidate": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 1048576,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 1048576,
+          "elapsed_ns": 1056614438,
+          "guest_instructions": 5242880,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 5242880,
+          "seed": 3538945
+        },
+        "candidate_over_baseline_ratio": 1.1367657848227073,
+        "candidate_over_interpreter_ratio": 3.6681766820124726,
+        "interpreter": {
+          "cache_delta": null,
+          "calls": 1048576,
+          "elapsed_ns": 288048949,
+          "guest_instructions": 5242880,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 5242880,
+          "seed": 3538945
+        },
+        "order": "BCI",
+        "pair": 0,
+        "seed": 3538945
+      },
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "discarded_restarts": [],
+      "guest_work_per_call": 5,
+      "id": "b_1",
+      "iterations": 1,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "retained_pairs": [
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 949334582,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1058409181,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1148958450141027,
+          "candidate_over_interpreter_ratio": 3.684014118896445,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 287297808,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "BCI",
+          "pair": 0,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 931817066,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1059100550,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1365970732285344,
+          "candidate_over_interpreter_ratio": 3.6392752205902696,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 291019636,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "BIC",
+          "pair": 1,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 998113598,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1038010165,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.0399719702045378,
+          "candidate_over_interpreter_ratio": 3.0947879022789087,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 335405914,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "CBI",
+          "pair": 2,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1232391602,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1368767469,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.110659523140762,
+          "candidate_over_interpreter_ratio": 4.546975185246554,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 301028137,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "CIB",
+          "pair": 3,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1237067837,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1453154558,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1746765331188544,
+          "candidate_over_interpreter_ratio": 4.381377972774022,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 331666103,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "IBC",
+          "pair": 4,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1391327515,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1402737962,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.008201122221032,
+          "candidate_over_interpreter_ratio": 4.665400948297651,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 300668255,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "ICB",
+          "pair": 5,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1220887788,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1424883442,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1670879633698164,
+          "candidate_over_interpreter_ratio": 3.758247583878848,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 379135065,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "BCI",
+          "pair": 6,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1164789787,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1214551548,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.0427216666521133,
+          "candidate_over_interpreter_ratio": 4.097983848164188,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 296377827,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "BIC",
+          "pair": 7,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1481472658,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1696850679,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1453810300426077,
+          "candidate_over_interpreter_ratio": 4.124347860618239,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 411422784,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "CBI",
+          "pair": 8,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 946250665,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1082048953,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1435119604380939,
+          "candidate_over_interpreter_ratio": 3.701979540577411,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 292289285,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "CIB",
+          "pair": 9,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 943906792,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1067992965,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1314601971843847,
+          "candidate_over_interpreter_ratio": 3.671379569974666,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 290896908,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "IBC",
+          "pair": 10,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 937786087,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1053422308,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.123307673895998,
+          "candidate_over_interpreter_ratio": 3.716711935158235,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 283428559,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "ICB",
+          "pair": 11,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 941073557,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1064315789,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1309591913228096,
+          "candidate_over_interpreter_ratio": 3.711406837426556,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 286768828,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "BCI",
+          "pair": 12,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 931541350,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1047496631,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1244767942936724,
+          "candidate_over_interpreter_ratio": 3.7064302975817713,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 282616034,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "BIC",
+          "pair": 13,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 934226879,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1055654325,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1299763994480403,
+          "candidate_over_interpreter_ratio": 3.6935712515998294,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 285808572,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "CBI",
+          "pair": 14,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 931400593,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1063757750,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.142105510770273,
+          "candidate_over_interpreter_ratio": 3.718130670549242,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 286100152,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "CIB",
+          "pair": 15,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 924990673,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1052569739,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1379247053229475,
+          "candidate_over_interpreter_ratio": 3.6976287857442425,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 284660738,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "IBC",
+          "pair": 16,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 932619903,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1063294152,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.140115226556558,
+          "candidate_over_interpreter_ratio": 3.722768443278544,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 285619202,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "ICB",
+          "pair": 17,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 935151363,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1063953713,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.137734226881515,
+          "candidate_over_interpreter_ratio": 3.7263003701844712,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 285525483,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "BCI",
+          "pair": 18,
+          "seed": 3538945
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 939568286,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 1048576,
+            "elapsed_ns": 1079744791,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "candidate_over_baseline_ratio": 1.1491924611427338,
+          "candidate_over_interpreter_ratio": 3.7715193145736445,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 1048576,
+            "elapsed_ns": 286289079,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 5242880,
+            "seed": 3538945
+          },
+          "order": "BIC",
+          "pair": 19,
+          "seed": 3538945
+        }
+      ],
+      "seed": 3538945,
+      "warmup_calls_per_side": 32
+    },
+    {
+      "calibrated_calls_per_side": 16384,
+      "calibration": {
+        "baseline": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 1048576,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 16384,
+          "elapsed_ns": 930168306,
+          "guest_instructions": 5242880,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 5242880,
+          "seed": 3539008
+        },
+        "candidate": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 1048576,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 16384,
+          "elapsed_ns": 254705833,
+          "guest_instructions": 5242880,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 5242880,
+          "seed": 3539008
+        },
+        "candidate_over_baseline_ratio": 0.27382768404065577,
+        "candidate_over_interpreter_ratio": 0.9220276420018289,
+        "interpreter": {
+          "cache_delta": null,
+          "calls": 16384,
+          "elapsed_ns": 276245333,
+          "guest_instructions": 5242880,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 5242880,
+          "seed": 3539008
+        },
+        "order": "BCI",
+        "pair": 0,
+        "seed": 3539008
+      },
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "discarded_restarts": [],
+      "guest_work_per_call": 320,
+      "id": "b_64",
+      "iterations": 64,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "retained_pairs": [
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 922724207,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 246074398,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.26668249963881135,
+          "candidate_over_interpreter_ratio": 0.9270951465336096,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 265425182,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "BCI",
+          "pair": 0,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 890452235,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 242681528,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2725373899477045,
+          "candidate_over_interpreter_ratio": 0.8993835581335202,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 269830959,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "BIC",
+          "pair": 1,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 880123288,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 241477217,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2743674895238086,
+          "candidate_over_interpreter_ratio": 0.8879385570913051,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 271952620,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "CBI",
+          "pair": 2,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 872041478,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 243660809,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2794142424954699,
+          "candidate_over_interpreter_ratio": 0.9198434450228054,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 264893782,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "CIB",
+          "pair": 3,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 947007855,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 250385852,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2643968058744349,
+          "candidate_over_interpreter_ratio": 0.974447128208598,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 256951706,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "IBC",
+          "pair": 4,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 905616088,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 248566784,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2744725798201588,
+          "candidate_over_interpreter_ratio": 0.9177209086775137,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 270852262,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "ICB",
+          "pair": 5,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 908255581,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 247961713,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2730087413577919,
+          "candidate_over_interpreter_ratio": 0.9245084003606303,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 268209259,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "BCI",
+          "pair": 6,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 895452293,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 238039881,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.26583200787001615,
+          "candidate_over_interpreter_ratio": 0.9130831762150413,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 260699011,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "BIC",
+          "pair": 7,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 888569655,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 238301938,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2681859960657783,
+          "candidate_over_interpreter_ratio": 0.9262326595973833,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 257280863,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "CBI",
+          "pair": 8,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 866604827,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 239153729,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2759663015354979,
+          "candidate_over_interpreter_ratio": 0.9380417457173021,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 254949985,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "CIB",
+          "pair": 9,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 879786864,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 243011866,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2762167474234987,
+          "candidate_over_interpreter_ratio": 0.9253065863183371,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 262628484,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "IBC",
+          "pair": 10,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 870372513,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 237204299,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.27253192794703984,
+          "candidate_over_interpreter_ratio": 0.8966625362345556,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 264541329,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "ICB",
+          "pair": 11,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 909977152,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 250631877,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.27542656038027646,
+          "candidate_over_interpreter_ratio": 0.9215925430833474,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 271955192,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "BCI",
+          "pair": 12,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 914175893,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 247799231,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2710629681852702,
+          "candidate_over_interpreter_ratio": 0.9086678831755446,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 272706052,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "BIC",
+          "pair": 13,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 901588845,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 250186983,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.277495650470254,
+          "candidate_over_interpreter_ratio": 0.9187405682352798,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 272315158,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "CBI",
+          "pair": 14,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 931392654,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 250131190,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2685561121034996,
+          "candidate_over_interpreter_ratio": 0.897057672364214,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 278835127,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "CIB",
+          "pair": 15,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 929720027,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 254935550,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2742067962358737,
+          "candidate_over_interpreter_ratio": 0.9099216001091097,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 280173094,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "IBC",
+          "pair": 16,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 901560014,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 256106039,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.28406987335620676,
+          "candidate_over_interpreter_ratio": 0.9034752741599158,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 283467679,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "ICB",
+          "pair": 17,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 875849333,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 244380772,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.279021474119225,
+          "candidate_over_interpreter_ratio": 0.8958089933345064,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 272804553,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "BCI",
+          "pair": 18,
+          "seed": 3539008
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 930923837,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 16384,
+            "elapsed_ns": 252607706,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "candidate_over_baseline_ratio": 0.2713516358266804,
+          "candidate_over_interpreter_ratio": 0.9210981729612441,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 16384,
+            "elapsed_ns": 274246235,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 5242880,
+            "seed": 3539008
+          },
+          "order": "BIC",
+          "pair": 19,
+          "seed": 3539008
+        }
+      ],
+      "seed": 3539008,
+      "warmup_calls_per_side": 32
+    },
+    {
+      "calibrated_calls_per_side": 256,
+      "calibration": {
+        "baseline": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 1048576,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 256,
+          "elapsed_ns": 920960794,
+          "guest_instructions": 5242880,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 5242880,
+          "seed": 3543040
+        },
+        "candidate": {
+          "cache_delta": {
+            "compiles": 0,
+            "hits": 1048576,
+            "misses": 0,
+            "publications": 0,
+            "replacements": 0
+          },
+          "calls": 256,
+          "elapsed_ns": 228910211,
+          "guest_instructions": 5242880,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 5242880,
+          "seed": 3543040
+        },
+        "candidate_over_baseline_ratio": 0.24855586957809195,
+        "candidate_over_interpreter_ratio": 0.8690349217589687,
+        "interpreter": {
+          "cache_delta": null,
+          "calls": 256,
+          "elapsed_ns": 263407379,
+          "guest_instructions": 5242880,
+          "order": "BCI",
+          "pair": 0,
+          "retired": 5242880,
+          "seed": 3543040
+        },
+        "order": "BCI",
+        "pair": 0,
+        "seed": 3543040
+      },
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "discarded_restarts": [],
+      "guest_work_per_call": 20480,
+      "id": "b_4096",
+      "iterations": 4096,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "retained_pairs": [
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 881241677,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 238830334,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.27101570458293245,
+          "candidate_over_interpreter_ratio": 0.8889190872907348,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 268674998,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 0,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "BCI",
+          "pair": 0,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 876683966,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 224064992,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2555823999181023,
+          "candidate_over_interpreter_ratio": 0.8597869492644026,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 260605249,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 1,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "BIC",
+          "pair": 1,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 864447630,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 224627161,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2598505140213063,
+          "candidate_over_interpreter_ratio": 0.8513354519194164,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 263852704,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 2,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "CBI",
+          "pair": 2,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 859038803,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 224749959,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2616295774010572,
+          "candidate_over_interpreter_ratio": 0.8441642119230789,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 266239620,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 3,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "CIB",
+          "pair": 3,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 898250832,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 233278963,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.259703586892976,
+          "candidate_over_interpreter_ratio": 0.8963882750432248,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 260243211,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 4,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "IBC",
+          "pair": 4,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 898042208,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 233946586,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.26050733909379903,
+          "candidate_over_interpreter_ratio": 0.8514681629024055,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 274756704,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 5,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "ICB",
+          "pair": 5,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 912212757,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 230659384,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2528570031826468,
+          "candidate_over_interpreter_ratio": 0.8804055219887171,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 261992205,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 6,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "BCI",
+          "pair": 6,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 892608747,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 229850625,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.25750433857220534,
+          "candidate_over_interpreter_ratio": 0.8573431566203014,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 268096413,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 7,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "BIC",
+          "pair": 7,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 871697102,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 240283872,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2756506491173353,
+          "candidate_over_interpreter_ratio": 0.9217314606819931,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 260687502,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 8,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "CBI",
+          "pair": 8,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 868034082,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 225272893,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2595207926409507,
+          "candidate_over_interpreter_ratio": 0.8634114369343919,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 260910249,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 9,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "CIB",
+          "pair": 9,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 866062251,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 224471574,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2591864196145411,
+          "candidate_over_interpreter_ratio": 0.8435341419412129,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 266108463,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 10,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "IBC",
+          "pair": 10,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 901082208,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 224904120,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2495933423202159,
+          "candidate_over_interpreter_ratio": 0.8668196211051687,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 259458963,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 11,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "ICB",
+          "pair": 11,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 899101699,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 236542459,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2630875453389617,
+          "candidate_over_interpreter_ratio": 0.8921645936722087,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 265133206,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 12,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "BCI",
+          "pair": 12,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 907224511,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 231515340,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.25519079036434894,
+          "candidate_over_interpreter_ratio": 0.8523399481403731,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 271623242,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 13,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "BIC",
+          "pair": 13,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 885020793,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 237181327,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2679952029104473,
+          "candidate_over_interpreter_ratio": 0.9105607005474997,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 260478326,
+            "guest_instructions": 5242880,
+            "order": "CBI",
+            "pair": 14,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "CBI",
+          "pair": 14,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 866428960,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 223746544,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.25823991848102584,
+          "candidate_over_interpreter_ratio": 0.8770234104936925,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 255120378,
+            "guest_instructions": 5242880,
+            "order": "CIB",
+            "pair": 15,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "CIB",
+          "pair": 15,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 867195667,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 224840337,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.259272901786766,
+          "candidate_over_interpreter_ratio": 0.8830122213122527,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 254628794,
+            "guest_instructions": 5242880,
+            "order": "IBC",
+            "pair": 16,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "IBC",
+          "pair": 16,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 868832295,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 225201742,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.25920047320524614,
+          "candidate_over_interpreter_ratio": 0.8609069443057343,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 261586625,
+            "guest_instructions": 5242880,
+            "order": "ICB",
+            "pair": 17,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "ICB",
+          "pair": 17,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 868638166,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 232212247,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.267329086021302,
+          "candidate_over_interpreter_ratio": 0.842961611999121,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 275471912,
+            "guest_instructions": 5242880,
+            "order": "BCI",
+            "pair": 18,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "BCI",
+          "pair": 18,
+          "seed": 3543040
+        },
+        {
+          "baseline": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 904279172,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate": {
+            "cache_delta": {
+              "compiles": 0,
+              "hits": 1048576,
+              "misses": 0,
+              "publications": 0,
+              "replacements": 0
+            },
+            "calls": 256,
+            "elapsed_ns": 233191036,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "candidate_over_baseline_ratio": 0.2578750492331366,
+          "candidate_over_interpreter_ratio": 0.8576555682603633,
+          "interpreter": {
+            "cache_delta": null,
+            "calls": 256,
+            "elapsed_ns": 271893572,
+            "guest_instructions": 5242880,
+            "order": "BIC",
+            "pair": 19,
+            "retired": 5242880,
+            "seed": 3543040
+          },
+          "order": "BIC",
+          "pair": 19,
+          "seed": 3543040
+        }
+      ],
+      "seed": 3543040,
+      "warmup_calls_per_side": 32
+    }
+  ],
+  "timed_scope": "full synchronous interpreter, ordinary cached dispatcher, or prepared-key candidate call; state reset and CodeView/control setup are outside each interval; candidate memo setup/use/drop are inside the dispatcher call",
+  "total_elapsed_ns": 298176332625
+}

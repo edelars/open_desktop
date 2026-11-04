@@ -10,6 +10,10 @@ The matching bounded `FST m64fp`/`FSTP m64fp` (`DD 10`/`DD 18`) forms store cano
 
 Those bounded m64 store forms also quiet canonical Special-tagged binary80 SignalingNaNs in the binary64 destination and set sticky IE only after a successful atomic write; the raw x87 source remains unchanged. Native/JIT admission and physical acceptance remain deferred.
 
+Stage 3 also has an opt-in, capacity-one cached eager `NativeRegisterV1` fixture path. Its contract and limits are documented in the [JIT contract](docs/specs/JIT_CONTRACT.md#s3-38b-runtime-cache-slice-eager-nativeregisterv1) and [runtime cache report](docs/reports/STAGE_3_S3-38b_NATIVE_REGISTER_CACHE_2026-10-30.md); it does not imply owner/MMU, SMC, Mini, or performance support.
+
+An opt-in local Rust `od-host::session::Session` owns a copied S0-09 fragment, bounded multi-entry cache, and one executable-memory lease across synchronous calls. It is thread-affine and does not add persistent-session RUN handling to VMHost IPC or the V0 C ABI. See the [S3-38e report](docs/reports/STAGE_3_S3-38e_session_owner_2026-11-03.md).
+
 ## Начало работы
 
 1. Прочитать [правила проекта](AGENTS.md) и [карту каталогов](docs/PROJECT_LAYOUT.md).

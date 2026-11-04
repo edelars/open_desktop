@@ -1,0 +1,3 @@
+stage3_harness_status=local_only
+input_manifest_sha256=d1616536d6b6cc6d384eb49f217a48fc20ff5b4dc24a815894a604d77444bb9e
+summary_path=work/stage3-harness/stage3-20261101-154016-f87988c535/summary.json

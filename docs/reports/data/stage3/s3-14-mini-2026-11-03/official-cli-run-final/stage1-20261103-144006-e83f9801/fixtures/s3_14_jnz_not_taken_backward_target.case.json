@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "case_id": "s3_14_jnz_not_taken_backward_target",
+  "profile": "s0_09_register_subset_v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "tests/fixtures/x86/stage3/s3_14_jnz_not_taken_backward_target.hex",
+    "specification": "docs/specs/CPU_CONTRACT.md",
+    "specification_version": "v0.1; Intel SDM 093; AMD APM 4.09"
+  },
+  "program": {
+    "bytes_hex": "483bc175fb",
+    "sha256": "bc9a764963804ed2555985528d89b4c16719bcfaa204749a9fa76dc870b7c71a"
+  },
+  "initial_state": {
+    "rax": "0x0000000000000007",
+    "rcx": "0x0000000000000007",
+    "rdx": "0x0000000000000000",
+    "rbx": "0x0000000000000000",
+    "rip": "0x0000000000000000",
+    "rflags": "0x0000000000000002"
+  },
+  "instruction_budget": 8,
+  "wall_timeout_ms": 1000,
+  "comparison": {
+    "registers": [
+      "rax",
+      "rcx",
+      "rdx",
+      "rbx"
+    ],
+    "rip": true,
+    "rflags_mask": "0x00000000000008d5",
+    "memory": {
+      "status": "unsupported"
+    },
+    "exceptions": {
+      "status": "unsupported"
+    }
+  },
+  "expected_exit": "reached_code_end"
+}

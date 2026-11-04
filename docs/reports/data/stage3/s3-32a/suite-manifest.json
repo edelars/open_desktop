@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "suite": "S3-32a exact aliased W64 ADD baseline/candidate diagnostic A/B",
+  "status": "bounded_diagnostic_ab_complete",
+  "source_and_runtime": {
+    "experiment_harness_commit": "cefd59c",
+    "build_source_revision": "958be7edf97dd0e421454630285dc4d6e711b2a7",
+    "build_source_sha256": "97d0130cb448f4834840fcbbeadb449067c6b05a0d664c4d99d03e7f1a4898c3",
+    "build_source_tree_clean": true,
+    "runtime_repository_revision": "958be7edf97dd0e421454630285dc4d6e711b2a7",
+    "runtime_working_tree_dirty": null,
+    "runtime_dirty_status_note": "git status timed out after 2000 ms; runtime cleanliness is unknown"
+  },
+  "host": {
+    "cpu_model": "Apple M3 Max",
+    "os": "macOS",
+    "os_version": "26.7.1",
+    "architecture": "aarch64",
+    "target": "aarch64-apple-darwin",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)"
+  },
+  "binary": {
+    "location": "target/release/od-bench",
+    "sha256": "98e7fafa0a548e4eb56d77639949527be0b6c8b0b2fb076feb8e96d7b6165a65",
+    "sha256_receipt": {
+      "path": "executable-sha256.txt",
+      "sha256": "624c4f2809ae88a0b77c8e07d4c0de0c8981c1003e1e467921674c243cfc88a1"
+    }
+  },
+  "fixture": {
+    "profile": "distinct-jz-fallthrough",
+    "sha256": "72210fb82b0ffa9f88f10f63697a1051347d07587e3569028947119726fac8c7",
+    "bytes_hex": "4803c0482bd24803c3482bc9483bc3740a48bb1100ffeeddccbbaa",
+    "byte_length": 27,
+    "guest_base_rip": "0x1000",
+    "instruction_budget": 6,
+    "strata": [
+      { "id": "jz-taken", "exit_rip": "0x101b" },
+      { "id": "jz-fallthrough", "exit_rip": "0x1011" }
+    ]
+  },
+  "variants": {
+    "baseline": {
+      "register_homes": 4,
+      "read_gpr_operations": 10,
+      "temporary_definitions": 14,
+      "spilled_temporaries": 10,
+      "frame_bytes": 288,
+      "emitted_code_bytes": 3052,
+      "helper_capture_slots": 3,
+      "helper_saves": 3,
+      "helper_reloads": 3
+    },
+    "s3_32a_candidate": {
+      "register_homes": 4,
+      "read_gpr_operations": 9,
+      "temporary_definitions": 13,
+      "spilled_temporaries": 9,
+      "frame_bytes": 272,
+      "emitted_code_bytes": 3032,
+      "helper_capture_slots": 3,
+      "helper_saves": 3,
+      "helper_reloads": 3
+    }
+  },
+  "protocol": {
+    "processes": 3,
+    "process_order": "sequential",
+    "compile_pairs_per_process": 20,
+    "native_pairs_per_stratum_per_process": 20,
+    "pooled_compile_pairs": 60,
+    "pooled_native_pairs_per_stratum": 60,
+    "compile_calls_per_side": 32768,
+    "native_calls_per_side": 8388608,
+    "warmups_per_publication": 64,
+    "sample_floor_ns": 200000000,
+    "measured_timed_sides": 360,
+    "all_timed_sides_passed_floor": true,
+    "minimum_timed_side_ns": 283092167,
+    "all_fixture_preflights_match": true,
+    "shared_calibration_bounds_passed": true,
+    "independent_raw_audit": {
+      "review": "Sol PASS",
+      "assertions": 3074
+    },
+    "timer_boundaries": {
+      "compile": "Block build/decode, verified lowering including candidate transform, allocation, emission/finalization and destruction of unpublished CompiledBlock; admission setup and summary collection are outside.",
+      "publication_drop": "PublishedCode publication and drop are measured separately for each side; prior mapping is dropped before the next publication.",
+      "native": "Repeated PublishedCode::execute_block calls with safe wrapper/result collection; state-vector construction and validation are outside the timer."
+    }
+  },
+  "raw_derived_candidate_over_baseline_ratios": {
+    "method": "Compute candidate_total_ns / baseline_total_ns for each raw paired total, then pool 60 pairs per set; do not take ratios of run medians.",
+    "all_ranges_cross_one": true,
+    "sets": [
+      {
+        "stratum": "compile",
+        "n": 60,
+        "median": 0.9832762133712801,
+        "minimum": 0.9488835862269013,
+        "maximum": 1.062649364816329
+      },
+      {
+        "stratum": "jz-taken",
+        "n": 60,
+        "median": 0.9878736671103938,
+        "minimum": 0.9749361861693031,
+        "maximum": 1.0766848438450791
+      },
+      {
+        "stratum": "jz-fallthrough",
+        "n": 60,
+        "median": 0.9975100869584979,
+        "minimum": 0.9322534409534861,
+        "maximum": 1.0375123643358157
+      }
+    ],
+    "interpretation": "Lower pooled medians were observed on this fixture; every range crosses 1. This is not a supported speedup or default-selection claim."
+  },
+  "commands": {
+    "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+    "release_build": {
+      "command": "cargo build --release -p od-bench --offline",
+      "exit_code": 0,
+      "log": {
+        "path": "release-build.log",
+        "sha256": "5a4d453460bc45022e3f9804ada94a704ecd68610de370c1b5eb2e7be5d3ca1c"
+      },
+      "executable_receipt": "executable-sha256.txt"
+    },
+    "release_preflight": {
+      "command": "target/release/od-bench allocator-cost-s3-32a --preflight-only --process-run 1 --output work/tmp/stage3/s3-32a/runs/preflight.json",
+      "exit_code": 0,
+      "report": {
+        "path": "release-preflight.json",
+        "sha256": "c2ad932b609b869f8debe6fd0a954281e23b034099b3289b3642595ff27cc6da"
+      },
+      "capture_note_log": {
+        "path": "release-preflight.log",
+        "sha256": "0343c5cca367bb29808ea80ab6da0428db78fba0895f97c8e73fa019c699dc11",
+        "note": "git status timed out after 2000 ms"
+      }
+    },
+    "calibration": {
+      "command": "target/release/od-bench allocator-cost-s3-32a --calibration-only --process-run 1 --output work/tmp/stage3/s3-32a/runs/calibration-1.json",
+      "exit_code": 0,
+      "report": {
+        "path": "calibration-pilot.json",
+        "sha256": "69346f1c2f041c3aa38c43ab7ceeb471aa27a235f0ef2c64a2121ebe8700288a"
+      },
+      "capture_note_log": {
+        "path": "calibration-pilot.log",
+        "sha256": "0343c5cca367bb29808ea80ab6da0428db78fba0895f97c8e73fa019c699dc11",
+        "note": "git status timed out after 2000 ms"
+      }
+    },
+    "measured_processes": [
+      {
+        "process_run": 1,
+        "command": "target/release/od-bench allocator-cost-s3-32a --process-run 1 --output work/tmp/stage3/s3-32a/runs/run1.json",
+        "exit_code": 0,
+        "report": { "path": "run1.json", "sha256": "7d3c4b0afdc8b0b74693158bf0dae58e34e945e5a1c645c7ae43ba31d5005ccf" },
+        "capture_note_log": { "path": "run1.log", "sha256": "0343c5cca367bb29808ea80ab6da0428db78fba0895f97c8e73fa019c699dc11", "note": "git status timed out after 2000 ms" }
+      },
+      {
+        "process_run": 2,
+        "command": "target/release/od-bench allocator-cost-s3-32a --process-run 2 --output work/tmp/stage3/s3-32a/runs/run2.json",
+        "exit_code": 0,
+        "report": { "path": "run2.json", "sha256": "14239d15c3d52ca60159b779973ee58bf4af36c63c17a05d80f7fbbeb6303ce7" },
+        "capture_note_log": { "path": "run2.log", "sha256": "0343c5cca367bb29808ea80ab6da0428db78fba0895f97c8e73fa019c699dc11", "note": "git status timed out after 2000 ms" }
+      },
+      {
+        "process_run": 3,
+        "command": "target/release/od-bench allocator-cost-s3-32a --process-run 3 --output work/tmp/stage3/s3-32a/runs/run3.json",
+        "exit_code": 0,
+        "report": { "path": "run3.json", "sha256": "91df943e525b168529889dad48bf7395a931dd6e338e7330b350205b3f68b65d" },
+        "capture_note_log": { "path": "run3.log", "sha256": "0343c5cca367bb29808ea80ab6da0428db78fba0895f97c8e73fa019c699dc11", "note": "git status timed out after 2000 ms" }
+      }
+    ]
+  },
+  "limits": {
+    "scope": "One frozen S3-30b-derived fixture and two branch-exit strata; one ARM64 host.",
+    "no_speedup_claim": true,
+    "production_default_unchanged": true,
+    "mini": "not_run; deferred",
+    "stage2": "suite_not_invoked_by_this_slice; parallel_activity_not_a_blocker"
+  }
+}

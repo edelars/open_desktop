@@ -1,0 +1,97 @@
+{
+  "schema": 1,
+  "profile_id": "s3-35c-two-site-memory-cold-direct-v1",
+  "process_run": 2,
+  "command": "cargo run --release -p od-bench --offline -- two-site-memory-cold --process-run 2 --output work/tmp/stage3/s3-35c/run2.json",
+  "monitoring_kind": "reconstructed_point_in_time_envelope",
+  "started_utc_window": "2026-11-01T05:09:21Z prelaunch path/HEAD check; PID 2969 first observed at 2026-11-01T05:09:26Z",
+  "finished_utc_window": "PID 2969 absent at 2026-11-01T05:17:24Z; report/journal present and hashed at 2026-11-01T05:17:33Z",
+  "executor": {
+    "pid": 2969,
+    "exact_exit_code": null,
+    "exit_code_note": "Exact numeric executor exit was not retained when polling session 46170. The CLI emitted only a host metadata git-status timeout warning; report status is scored, all sample floors pass, all 20 pairs are present, and the CLI success gate implies exit 0. This is an inference, not a captured exit code.",
+    "observed_cpu_percent": [
+      {"utc":"2026-11-01T05:09:26Z","cpu":98.0,"elapsed":"3s"},
+      {"utc":"2026-11-01T05:10:00Z","cpu":98.5,"elapsed":"37s"},
+      {"utc":"2026-11-01T05:10:39Z","cpu":100.0,"elapsed":"1m16s"},
+      {"utc":"2026-11-01T05:11:20Z","cpu":98.0,"elapsed":"1m57s"},
+      {"utc":"2026-11-01T05:12:01Z","cpu":98.9,"elapsed":"2m38s"},
+      {"utc":"2026-11-01T05:12:40Z","cpu":99.7,"elapsed":"3m17s"},
+      {"utc":"2026-11-01T05:13:20Z","cpu":100.0,"elapsed":"3m57s"},
+      {"utc":"2026-11-01T05:14:02Z","cpu":100.0,"elapsed":"4m39s"},
+      {"utc":"2026-11-01T05:14:41Z","cpu":100.0,"elapsed":"5m18s"},
+      {"utc":"2026-11-01T05:15:24Z","cpu":98.8,"elapsed":"6m01s"},
+      {"utc":"2026-11-01T05:16:05Z","cpu":99.0,"elapsed":"6m42s"},
+      {"utc":"2026-11-01T05:16:44Z","cpu":100.0,"elapsed":"7m21s"}
+    ]
+  },
+  "system_load_samples": [
+    {"utc":"2026-11-01T05:09:21Z","load_1_5_15":[3.39,3.42,3.23]},
+    {"utc":"2026-11-01T05:09:26Z","load_1_5_15":[3.76,3.49,3.26]},
+    {"utc":"2026-11-01T05:10:00Z","load_1_5_15":[2.86,3.30,3.20]},
+    {"utc":"2026-11-01T05:10:39Z","load_1_5_15":[2.50,3.15,3.15]},
+    {"utc":"2026-11-01T05:11:20Z","load_1_5_15":[2.81,3.14,3.14]},
+    {"utc":"2026-11-01T05:12:01Z","load_1_5_15":[2.50,3.15,3.15]},
+    {"utc":"2026-11-01T05:12:40Z","load_1_5_15":[2.94,3.14,3.14]},
+    {"utc":"2026-11-01T05:13:20Z","load_1_5_15":[3.68,3.33,3.21]},
+    {"utc":"2026-11-01T05:14:02Z","load_1_5_15":[3.43,3.31,3.21]},
+    {"utc":"2026-11-01T05:14:41Z","load_1_5_15":[3.10,3.24,3.19]},
+    {"utc":"2026-11-01T05:15:24Z","load_1_5_15":[2.65,3.09,3.13]},
+    {"utc":"2026-11-01T05:16:05Z","load_1_5_15":[2.64,3.03,3.11]},
+    {"utc":"2026-11-01T05:16:44Z","load_1_5_15":[2.72,3.01,3.09]}
+  ],
+  "concurrent_process_observations": [
+    {"utc":"2026-11-01T05:09:21Z","stage2":"none observed","graphify":"none observed"},
+    {"utc":"2026-11-01T05:13:20Z","stage2":"cargo test -p od-isa cvtsi2ss --offline -- --test-threads=1 PID 7156; rustc PID 7175 observed at 421.9% CPU, elapsed 18s","graphify":"none observed"},
+    {"utc":"2026-11-01T05:14:41Z","stage2":"cargo test -p od-isa cvtsi2ss_m64 PID 8133; rustc PID 8152 observed at 100% CPU for 21s","graphify":"none observed"},
+    {"utc":"2026-11-01T05:15:24Z","stage2":"od-runner fixture_v2 cargo test PID 8945; rustc PID 8964 observed at 10.2% CPU for 5s","graphify":"none observed"},
+    {"utc":"2026-11-01T05:16:05Z","stage2":"cargo test PID 8945 elapsed 46s; rustc od_host PID 9471 observed at 9.8% CPU, elapsed 13s","graphify":"none observed"},
+    {"utc":"2026-11-01T05:16:44Z","stage2":"cargo test -p od-runner --test fixture_v2 ... PID 9921 elapsed 16s, observed idle 0%, no rustc child","graphify":"none observed"},
+    {"utc":"2026-11-01T05:17:24Z","stage2":"cargo test -p od-runner --test fixture_v2 cvtsi2ss_m64... PID 10652; rustc PID 10671 observed at 29.1% CPU, elapsed 10s","graphify":"none observed"}
+  ],
+  "artifacts": {
+    "report_path":"work/tmp/stage3/s3-35c/run2.json",
+    "report_sha256":"e5010ace610613927849800422db2eba16148384a38834adad41dc26c0dcd0f0",
+    "journal_path":"work/tmp/stage3/s3-35c/run2.json.journal.jsonl",
+    "journal_sha256":"3c0aa530c37ddf483e5d28abd6e9f2d13c52e2296c5fc18ba3e72f588fa27a76",
+    "journal_lines":31,
+    "journal_bytes":6855
+  },
+  "result_summary": {
+    "status":"scored",
+    "stop_reason":null,
+    "timing_started":true,
+    "unique_cases":2400,
+    "preflight_repetitions_per_case":2,
+    "interpreter_preflight_executions":4800,
+    "native_preflight_executions":4800,
+    "preflight_parity_cases":4800,
+    "calibration_attempts":11,
+    "calibration_repetitions":[1,2,4,8,16,32,64,128,256,512,1024],
+    "calibration_floor_passed":true,
+    "sample_pairs":20,
+    "sample_pairs_floor_passed":20,
+    "sample_repetitions_per_side":1024,
+    "ratio_definition":"native_total_ns / interpreter_total_ns per pair, computed from raw totals",
+    "ratio_median":71.78408752835392,
+    "ratio_min":66.77359786820851,
+    "ratio_max":75.22725503491128,
+    "report_total_elapsed_ns":476679000500
+  },
+  "source_and_host": {
+    "source_revision":"6f9da043073188b5164ee81b543add51314981a0",
+    "source_sha256":"5f4948f477c6e21232da25951219dab32c163a0a445fcade1b4b61c43d9e364a",
+    "build_source_sha256":"1b1f655e70e989e96e92c4f17cee0724ccf9ef6a0714104a7107a7880e6d4d15",
+    "source_tree_dirty_at_build":false,
+    "runtime_working_tree_dirty":null,
+    "host":"Apple M3 Max, aarch64, macOS 26.7.1, release, rustc 1.99.0"
+  },
+  "limitations": [
+    "Snapshots are reconstructed point-in-time observations, not continuous process accounting.",
+    "There are no per-pair timestamps, so exact timing-order relation between Stage2 compiler bursts and individual pairs is unknown.",
+    "Stage2 overlap occurred and may have affected some samples; no post-hoc trimming or replay was performed.",
+    "Graphify was not observed during this run.",
+    "Exact executor exit code was not retained; success is inferred from the final scored report and all-floor CLI gate.",
+    "Run2 is awaiting independent evidence review; run3 is not authorized until that review is clean."
+  ]
+}

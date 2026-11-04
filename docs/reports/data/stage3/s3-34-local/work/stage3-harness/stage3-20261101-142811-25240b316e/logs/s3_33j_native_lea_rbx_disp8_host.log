@@ -1,0 +1,10 @@
+
+running 1 test
+test tests::native_lea_rax_rbx_disp8_matches_interpreter_without_data_access ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 126 filtered out; finished in 0.02s
+
+
+--- stderr ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/deps/od_host-28d3c92878240099)

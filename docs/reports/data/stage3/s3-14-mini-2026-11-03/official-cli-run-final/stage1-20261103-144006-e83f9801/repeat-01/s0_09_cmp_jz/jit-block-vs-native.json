@@ -1,0 +1,1 @@
+{"case_id":"s0_09_cmp_jz","input_sha256":"0828f14b6ef6035e1dffb812c79b3ec81c0d78aa86c2f7cc8a8aa422d96ca58b","left_backend":"jit_ir_block","right_backend":"native_x86","differences":[]}

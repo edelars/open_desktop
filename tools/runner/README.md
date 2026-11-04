@@ -27,6 +27,9 @@ cargo run --offline -p od-runner -- \
 cargo run --offline -p od-runner -- \
   --fixture tests/fixtures/x86/s0_09_add_overflow.case.json \
   --engine jit --json
+cargo run --offline -p od-runner -- \
+  --fixture tests/fixtures/x86/s0_09_add_overflow.case.json \
+  --engine jit-dispatch --json
 ```
 
 Compare two saved results against the exact fixture used to produce them:
@@ -62,7 +65,7 @@ fixture profile. Trace and replay commands return success on success and a
 nonzero process status on invalid input, unsupported requests, or replay
 mismatches; error details go to stderr.
 
-The fixture command accepts `interpreter` or `jit` per invocation and dispatches strictly by schema version. The S0-09 v1 fixture contract and digests remain unchanged; it does not capture RAM or exceptions, and its in-process path has no wall-time watchdog. The native x86 runner enforces its wall-time limit in an isolated process.
+The fixture command accepts `interpreter`, `jit`, `jit-block`, or `jit-dispatch` per invocation and dispatches strictly by schema version. `jit-block` runs one bounded block; `jit-dispatch` iteratively runs admitted blocks with an exact remaining budget. Both have distinct result backend tags and are opt-in on fixture schema v1 only. Unsupported forms and host errors do not trigger interpreter fallback. Schema v2 continues to deny JIT execution. The S0-09 v1 fixture contract and digests remain unchanged; it does not capture RAM or exceptions, and its in-process path has no wall-time watchdog. The native x86 runner enforces its wall-time limit in an isolated process.
 
 ### Schema v2 memory execution
 

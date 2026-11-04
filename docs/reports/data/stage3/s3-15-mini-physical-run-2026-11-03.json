@@ -1,0 +1,63 @@
+{
+  "stage": "S3-15",
+  "date": "2026-11-03",
+  "status": "passed",
+  "evidence_scope": "physical_triple",
+  "run_id": "stage1-20261103-145538-7946dccc",
+  "harness_run_id": "stage1-harness-20261103-145527-16e11228",
+  "source_fingerprint": "7126851dcc2f2507ede25b7912cbab7fd7e84b6187c1b8973b38aa00b107f60e",
+  "corpus": {
+    "manual_cases": 10,
+    "generated_cases": 1000,
+    "seed": "0x5eedcafe",
+    "sha256": "9356e916b2037a3f5a082e8366fe33bf4277ab00812489809bfc586210744d35",
+    "unique_inputs": 1010,
+    "repeats": 2,
+    "fixture_repeat_entries": 2020
+  },
+  "machines": {
+    "local": {
+      "host_os": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+      "host_arch": "arm64",
+      "cpu_model": "Apple M3 Max",
+      "kernel": "Darwin 192.168.1.100 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031 arm64",
+      "page_size": 16384,
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)"
+    },
+    "remote_rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "remote_cargo": "cargo 1.99.1 (5f94df478 2026-08-27)"
+  },
+  "preflight": {
+    "exit_code": 0,
+    "passed": 613,
+    "failed": 0,
+    "test_binaries": 7,
+    "empty_doctest_targets": 2,
+    "od_x86_runner_passed": 112,
+    "od_x86_runner_failed": 0
+  },
+  "pairwise_differences": {
+    "interpreter_vs_jit_dispatch": 0,
+    "interpreter_vs_native": 0,
+    "jit_dispatch_vs_native": 0
+  },
+  "repeat_differences": {
+    "interpreter": 0,
+    "jit_dispatch": 0,
+    "native_x86": 0
+  },
+  "native_revision_mismatches": 0,
+  "raw_evidence": {
+    "manifest": "work/stage1-oracle/stage1-20261103-145538-7946dccc/manifest.json",
+    "manifest_sha256": "6c5cfb822527a866c1b03545303c9b4e5c64c69f9aeccbb2f1bd82ed6562709a",
+    "harness_summary": "work/stage1-harness/stage1-harness-20261103-145527-16e11228/summary.json",
+    "generated_corpus_dir": "work/stage1-harness-generated-stage1-harness-20261103-145527-16e11228"
+  },
+  "reproduce_command": "python3 tests/cpu/stage1_harness.py --suite oracle --engine jit-dispatch --generated-count 1000 --seed 0x5eedcafe --repeats 2 --host 192.168.1.39 --user senya --remote-root /home/senya/projects/open_desktop-stage3-s3-14-preflight-final-20261103",
+  "comparison_counts": {
+    "pairwise": 6060,
+    "repeat": 3030
+  },
+  "all_backend_outcomes": "reached_code_end"
+}

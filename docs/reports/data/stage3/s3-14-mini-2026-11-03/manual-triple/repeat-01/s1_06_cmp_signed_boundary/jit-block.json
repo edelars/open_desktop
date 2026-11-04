@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "case_id": "s1_06_cmp_signed_boundary",
+  "input_sha256": "a8a47e5f25bc1fd3493cc5432cc614e92365cc2c15f70fb37f40be5b7e86d6a5",
+  "profile": "s0_09_register_subset_v1",
+  "backend": "jit_ir_block",
+  "status": "completed",
+  "expected_exit": "reached_code_end",
+  "exit_reason": {
+    "status": "available",
+    "value": "reached_code_end"
+  },
+  "instructions_executed": {
+    "status": "available",
+    "value": "0x0000000000000001"
+  },
+  "snapshot": {
+    "gpr": {
+      "status": "available",
+      "value": {
+        "rax": "0x8000000000000000",
+        "rcx": "0x7fffffffffffffff",
+        "rdx": "0x0000000000000000",
+        "rbx": "0x0000000000000000"
+      }
+    },
+    "rip": {
+      "status": "available",
+      "value": "0x0000000000000003"
+    },
+    "rflags": {
+      "status": "available",
+      "value": "0x0000000000000812"
+    },
+    "memory": {
+      "status": "unavailable",
+      "reason": "S0-09 register-only profile does not capture memory"
+    },
+    "exception": {
+      "status": "unavailable",
+      "reason": "S0-09 profile does not capture exceptions"
+    }
+  },
+  "build": {
+    "revision": "sha256:0f78441d1298009db38083318f9ac5e8821f4626e9f7f0f33efed16c2d41ada7",
+    "target": "aarch64-apple-darwin",
+    "profile": "debug",
+    "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)"
+  },
+  "machine": {
+    "host_os": "macos",
+    "host_arch": "aarch64",
+    "cpu_model": null,
+    "kernel": null,
+    "page_size": null
+  }
+}

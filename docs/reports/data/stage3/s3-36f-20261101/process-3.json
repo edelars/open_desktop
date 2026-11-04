@@ -1,0 +1,5020 @@
+{
+  "excluded_from_timing": "profile setup/admission, cache allocation, state construction/reset, fixed native warmup, interpreter calibration, result/counter validation and serialization; cold_first_dispatch_ns separately covers the first full dispatch call including compile, publication and execution",
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "a5b368eab1d1cdfa3e47a28d0d7c1263b12978c7",
+      "source_sha256": "b38e9516cc90c36e4e358899f3d7d417ccf666fae5d0c532c30ff8c55efaab66",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "a5b368eab1d1cdfa3e47a28d0d7c1263b12978c7",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "process_run": 3,
+  "profile_id": "s3-36f-native-register-v1-cached-register-loop-v1",
+  "sampling_protocol": "20 paired samples per stratum; cached and interpreter order alternates; calibrated common calls per side; each individual side must exceed 200 ms; interpreter calibration is its first workload and is recorded separately from 32 native warmup calls; three separate release processes are required",
+  "schema": 1,
+  "source_fingerprints": [
+    [
+      "tools/bench/src/cached_native_loop.rs",
+      "e2ee0738531b72ff3e47ffe89b0ce6a84a86404157f7244c6b38e56c1050db91"
+    ],
+    [
+      "tools/bench/src/main.rs",
+      "f053b64946e603791a2d9dab8fd8ce816437a42fed3cf3c716fd4a0c30e6fc43"
+    ],
+    [
+      "tools/bench/src/lib.rs",
+      "8f524964adf949256237c7d4c22c4343c0b47820d183693cc103f58aaa6b511f"
+    ],
+    [
+      "crates/od-jit/src/dispatch.rs",
+      "d0df81783bfe8720606d88e54af19d21b26dc0099af48f9a74fc5bd604806a6c"
+    ],
+    [
+      "crates/od-jit/src/block_compile.rs",
+      "49818cf3032862772410be002bc46abb1536c640e0eb65d10c9a758b55dbd68b"
+    ],
+    [
+      "crates/od-isa/src/execute.rs",
+      "0307eb7469b50484658c7740b983ce5e24414d49a3f9db3d6a1bdf63ec2fbbd9"
+    ]
+  ],
+  "strata": [
+    {
+      "calibrated_calls_per_side": 1616848,
+      "calibration": {
+        "interpreter": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 16996,
+          "guest_instructions": 192,
+          "order": "calibration_interpreter_first",
+          "pair": 0,
+          "retired": 192,
+          "seed": 3538945
+        },
+        "interpreter_floor_met": false,
+        "native": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 64,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 62125,
+          "guest_instructions": 192,
+          "order": "calibration_native_second",
+          "pair": 0,
+          "retired": 192,
+          "seed": 3538945
+        },
+        "native_floor_met": false,
+        "next_calls": 902256
+      },
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "cold_first_dispatch_ns": 17625,
+      "guest_work_per_call": 3,
+      "id": "a_1",
+      "interpreter_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 251883752,
+          "guest_instructions": 4850544,
+          "order": "interpreter_first",
+          "pair": 0,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 251733217,
+          "guest_instructions": 4850544,
+          "order": "interpreter_second",
+          "pair": 1,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 251861058,
+          "guest_instructions": 4850544,
+          "order": "interpreter_first",
+          "pair": 2,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 253019533,
+          "guest_instructions": 4850544,
+          "order": "interpreter_second",
+          "pair": 3,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 248670704,
+          "guest_instructions": 4850544,
+          "order": "interpreter_first",
+          "pair": 4,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 249709056,
+          "guest_instructions": 4850544,
+          "order": "interpreter_second",
+          "pair": 5,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 245356493,
+          "guest_instructions": 4850544,
+          "order": "interpreter_first",
+          "pair": 6,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 250670447,
+          "guest_instructions": 4850544,
+          "order": "interpreter_second",
+          "pair": 7,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 250265918,
+          "guest_instructions": 4850544,
+          "order": "interpreter_first",
+          "pair": 8,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 256391091,
+          "guest_instructions": 4850544,
+          "order": "interpreter_second",
+          "pair": 9,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 255607711,
+          "guest_instructions": 4850544,
+          "order": "interpreter_first",
+          "pair": 10,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 253873246,
+          "guest_instructions": 4850544,
+          "order": "interpreter_second",
+          "pair": 11,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 248367841,
+          "guest_instructions": 4850544,
+          "order": "interpreter_first",
+          "pair": 12,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 258721272,
+          "guest_instructions": 4850544,
+          "order": "interpreter_second",
+          "pair": 13,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 255141350,
+          "guest_instructions": 4850544,
+          "order": "interpreter_first",
+          "pair": 14,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 258722115,
+          "guest_instructions": 4850544,
+          "order": "interpreter_second",
+          "pair": 15,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 265398388,
+          "guest_instructions": 4850544,
+          "order": "interpreter_first",
+          "pair": 16,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 256936017,
+          "guest_instructions": 4850544,
+          "order": "interpreter_second",
+          "pair": 17,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 254817454,
+          "guest_instructions": 4850544,
+          "order": "interpreter_first",
+          "pair": 18,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 252823836,
+          "guest_instructions": 4850544,
+          "order": "interpreter_second",
+          "pair": 19,
+          "retired": 4850544,
+          "seed": 3538945
+        }
+      ],
+      "interpreter_warmup_calls_per_side": 0,
+      "iterations": 1,
+      "native_over_interpreter_ratios": [
+        4.692316763647383,
+        4.666920563764932,
+        4.740750132162154,
+        4.698697791842023,
+        4.710402838606996,
+        4.697908064655853,
+        4.878184854068647,
+        4.728218472439234,
+        4.7861211249707605,
+        4.666529021478364,
+        4.683878147948361,
+        4.724076025718755,
+        4.736900454837871,
+        4.59598989989505,
+        4.671090287795373,
+        4.658806159651253,
+        4.584408869883565,
+        4.705781439742642,
+        4.670767670412404,
+        4.732308626153429
+      ],
+      "native_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1181918352,
+          "guest_instructions": 4850544,
+          "order": "native_second",
+          "pair": 0,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1174818927,
+          "guest_instructions": 4850544,
+          "order": "native_first",
+          "pair": 1,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1194010344,
+          "guest_instructions": 4850544,
+          "order": "native_second",
+          "pair": 2,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1188862321,
+          "guest_instructions": 4850544,
+          "order": "native_first",
+          "pair": 3,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1171339190,
+          "guest_instructions": 4850544,
+          "order": "native_second",
+          "pair": 4,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1173110188,
+          "guest_instructions": 4850544,
+          "order": "native_first",
+          "pair": 5,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1196894328,
+          "guest_instructions": 4850544,
+          "order": "native_second",
+          "pair": 6,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1185224638,
+          "guest_instructions": 4850544,
+          "order": "native_first",
+          "pair": 7,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1197802997,
+          "guest_instructions": 4850544,
+          "order": "native_second",
+          "pair": 8,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1196456467,
+          "guest_instructions": 4850544,
+          "order": "native_first",
+          "pair": 9,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1197235372,
+          "guest_instructions": 4850544,
+          "order": "native_second",
+          "pair": 10,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1199316515,
+          "guest_instructions": 4850544,
+          "order": "native_first",
+          "pair": 11,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1176493739,
+          "guest_instructions": 4850544,
+          "order": "native_second",
+          "pair": 12,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1189080353,
+          "guest_instructions": 4850544,
+          "order": "native_first",
+          "pair": 13,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1191788282,
+          "guest_instructions": 4850544,
+          "order": "native_second",
+          "pair": 14,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1205336183,
+          "guest_instructions": 4850544,
+          "order": "native_first",
+          "pair": 15,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1216694724,
+          "guest_instructions": 4850544,
+          "order": "native_second",
+          "pair": 16,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1209084740,
+          "guest_instructions": 4850544,
+          "order": "native_first",
+          "pair": 17,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1190193126,
+          "guest_instructions": 4850544,
+          "order": "native_second",
+          "pair": 18,
+          "retired": 4850544,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1616848,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 1616848,
+          "elapsed_ns": 1196440420,
+          "guest_instructions": 4850544,
+          "order": "native_first",
+          "pair": 19,
+          "retired": 4850544,
+          "seed": 3538945
+        }
+      ],
+      "native_warmup_calls_per_side": 32,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "restarts": [
+        {
+          "attempt": 0,
+          "discarded_interpreter": [
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 141688790,
+              "guest_instructions": 2706768,
+              "order": "interpreter_first",
+              "pair": 0,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 141193588,
+              "guest_instructions": 2706768,
+              "order": "interpreter_second",
+              "pair": 1,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 140942796,
+              "guest_instructions": 2706768,
+              "order": "interpreter_first",
+              "pair": 2,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 142277193,
+              "guest_instructions": 2706768,
+              "order": "interpreter_second",
+              "pair": 3,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 142090536,
+              "guest_instructions": 2706768,
+              "order": "interpreter_first",
+              "pair": 4,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 137939926,
+              "guest_instructions": 2706768,
+              "order": "interpreter_second",
+              "pair": 5,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 133928260,
+              "guest_instructions": 2706768,
+              "order": "interpreter_first",
+              "pair": 6,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 142867797,
+              "guest_instructions": 2706768,
+              "order": "interpreter_second",
+              "pair": 7,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 143416459,
+              "guest_instructions": 2706768,
+              "order": "interpreter_first",
+              "pair": 8,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 138979714,
+              "guest_instructions": 2706768,
+              "order": "interpreter_second",
+              "pair": 9,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 138899517,
+              "guest_instructions": 2706768,
+              "order": "interpreter_first",
+              "pair": 10,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 144141156,
+              "guest_instructions": 2706768,
+              "order": "interpreter_second",
+              "pair": 11,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 143037869,
+              "guest_instructions": 2706768,
+              "order": "interpreter_first",
+              "pair": 12,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 143608599,
+              "guest_instructions": 2706768,
+              "order": "interpreter_second",
+              "pair": 13,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 142534638,
+              "guest_instructions": 2706768,
+              "order": "interpreter_first",
+              "pair": 14,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 139198103,
+              "guest_instructions": 2706768,
+              "order": "interpreter_second",
+              "pair": 15,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 138485602,
+              "guest_instructions": 2706768,
+              "order": "interpreter_first",
+              "pair": 16,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 141722254,
+              "guest_instructions": 2706768,
+              "order": "interpreter_second",
+              "pair": 17,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 139588266,
+              "guest_instructions": 2706768,
+              "order": "interpreter_first",
+              "pair": 18,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 0,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 141901761,
+              "guest_instructions": 2706768,
+              "order": "interpreter_second",
+              "pair": 19,
+              "retired": 2706768,
+              "seed": 3538945
+            }
+          ],
+          "discarded_native": [
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 666978468,
+              "guest_instructions": 2706768,
+              "order": "native_second",
+              "pair": 0,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 665119920,
+              "guest_instructions": 2706768,
+              "order": "native_first",
+              "pair": 1,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 666577576,
+              "guest_instructions": 2706768,
+              "order": "native_second",
+              "pair": 2,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 666510051,
+              "guest_instructions": 2706768,
+              "order": "native_first",
+              "pair": 3,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 657991125,
+              "guest_instructions": 2706768,
+              "order": "native_second",
+              "pair": 4,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 650760023,
+              "guest_instructions": 2706768,
+              "order": "native_first",
+              "pair": 5,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 651510774,
+              "guest_instructions": 2706768,
+              "order": "native_second",
+              "pair": 6,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 661770658,
+              "guest_instructions": 2706768,
+              "order": "native_first",
+              "pair": 7,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 656405094,
+              "guest_instructions": 2706768,
+              "order": "native_second",
+              "pair": 8,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 654126392,
+              "guest_instructions": 2706768,
+              "order": "native_first",
+              "pair": 9,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 652291232,
+              "guest_instructions": 2706768,
+              "order": "native_second",
+              "pair": 10,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 658281283,
+              "guest_instructions": 2706768,
+              "order": "native_first",
+              "pair": 11,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 699540893,
+              "guest_instructions": 2706768,
+              "order": "native_second",
+              "pair": 12,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 682008942,
+              "guest_instructions": 2706768,
+              "order": "native_first",
+              "pair": 13,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 670189291,
+              "guest_instructions": 2706768,
+              "order": "native_second",
+              "pair": 14,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 663980164,
+              "guest_instructions": 2706768,
+              "order": "native_first",
+              "pair": 15,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 660834746,
+              "guest_instructions": 2706768,
+              "order": "native_second",
+              "pair": 16,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 654845911,
+              "guest_instructions": 2706768,
+              "order": "native_first",
+              "pair": 17,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 663991750,
+              "guest_instructions": 2706768,
+              "order": "native_second",
+              "pair": 18,
+              "retired": 2706768,
+              "seed": 3538945
+            },
+            {
+              "cache": {
+                "compiles": 0,
+                "evictions": 0,
+                "hits": 902256,
+                "misses": 0,
+                "publications": 0
+              },
+              "calls": 902256,
+              "elapsed_ns": 657032384,
+              "guest_instructions": 2706768,
+              "order": "native_first",
+              "pair": 19,
+              "retired": 2706768,
+              "seed": 3538945
+            }
+          ],
+          "next_calls": 1616848,
+          "previous_calls": 902256
+        }
+      ],
+      "seed": 3538945
+    },
+    {
+      "calibrated_calls_per_side": 24546,
+      "calibration": {
+        "interpreter": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 625792,
+          "guest_instructions": 12288,
+          "order": "calibration_interpreter_first",
+          "pair": 0,
+          "retired": 12288,
+          "seed": 3539008
+        },
+        "interpreter_floor_met": false,
+        "native": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 4096,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 2886626,
+          "guest_instructions": 12288,
+          "order": "calibration_native_second",
+          "pair": 0,
+          "retired": 12288,
+          "seed": 3539008
+        },
+        "native_floor_met": false,
+        "next_calls": 24546
+      },
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "cold_first_dispatch_ns": 72042,
+      "guest_work_per_call": 192,
+      "id": "a_64",
+      "interpreter_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 226538127,
+          "guest_instructions": 4712832,
+          "order": "interpreter_first",
+          "pair": 0,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 228868544,
+          "guest_instructions": 4712832,
+          "order": "interpreter_second",
+          "pair": 1,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 233177368,
+          "guest_instructions": 4712832,
+          "order": "interpreter_first",
+          "pair": 2,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 231189016,
+          "guest_instructions": 4712832,
+          "order": "interpreter_second",
+          "pair": 3,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 229602216,
+          "guest_instructions": 4712832,
+          "order": "interpreter_first",
+          "pair": 4,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 226530778,
+          "guest_instructions": 4712832,
+          "order": "interpreter_second",
+          "pair": 5,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 229466569,
+          "guest_instructions": 4712832,
+          "order": "interpreter_first",
+          "pair": 6,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 229588517,
+          "guest_instructions": 4712832,
+          "order": "interpreter_second",
+          "pair": 7,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 228275272,
+          "guest_instructions": 4712832,
+          "order": "interpreter_first",
+          "pair": 8,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 232196158,
+          "guest_instructions": 4712832,
+          "order": "interpreter_second",
+          "pair": 9,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 232479145,
+          "guest_instructions": 4712832,
+          "order": "interpreter_first",
+          "pair": 10,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 230709396,
+          "guest_instructions": 4712832,
+          "order": "interpreter_second",
+          "pair": 11,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 231360251,
+          "guest_instructions": 4712832,
+          "order": "interpreter_first",
+          "pair": 12,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 231613940,
+          "guest_instructions": 4712832,
+          "order": "interpreter_second",
+          "pair": 13,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 231573839,
+          "guest_instructions": 4712832,
+          "order": "interpreter_first",
+          "pair": 14,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 231581964,
+          "guest_instructions": 4712832,
+          "order": "interpreter_second",
+          "pair": 15,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 231141547,
+          "guest_instructions": 4712832,
+          "order": "interpreter_first",
+          "pair": 16,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 231915517,
+          "guest_instructions": 4712832,
+          "order": "interpreter_second",
+          "pair": 17,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 231382204,
+          "guest_instructions": 4712832,
+          "order": "interpreter_first",
+          "pair": 18,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 232897605,
+          "guest_instructions": 4712832,
+          "order": "interpreter_second",
+          "pair": 19,
+          "retired": 4712832,
+          "seed": 3539008
+        }
+      ],
+      "interpreter_warmup_calls_per_side": 0,
+      "iterations": 64,
+      "native_over_interpreter_ratios": [
+        4.882888592082338,
+        4.9179443812077555,
+        4.839259168582776,
+        4.829266689728892,
+        4.865080213337314,
+        4.978329024235285,
+        4.911677879316703,
+        4.863895902075973,
+        4.971880638039498,
+        4.872675257615589,
+        4.891089985727537,
+        4.916269569705778,
+        4.885995006117105,
+        4.881832742882402,
+        4.903815974653337,
+        4.879655420834068,
+        4.8787360716245445,
+        4.898671187232375,
+        4.897901858519767,
+        4.8840191293508575
+      ],
+      "native_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1106160436,
+          "guest_instructions": 4712832,
+          "order": "native_second",
+          "pair": 0,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1125562770,
+          "guest_instructions": 4712832,
+          "order": "native_first",
+          "pair": 1,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1128405716,
+          "guest_instructions": 4712832,
+          "order": "native_second",
+          "pair": 2,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1116473414,
+          "guest_instructions": 4712832,
+          "order": "native_first",
+          "pair": 3,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1117033198,
+          "guest_instructions": 4712832,
+          "order": "native_second",
+          "pair": 4,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1127744747,
+          "guest_instructions": 4712832,
+          "order": "native_first",
+          "pair": 5,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1127065871,
+          "guest_instructions": 4712832,
+          "order": "native_second",
+          "pair": 6,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1116694647,
+          "guest_instructions": 4712832,
+          "order": "native_first",
+          "pair": 7,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1134957405,
+          "guest_instructions": 4712832,
+          "order": "native_second",
+          "pair": 8,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1131416474,
+          "guest_instructions": 4712832,
+          "order": "native_first",
+          "pair": 9,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1137076418,
+          "guest_instructions": 4712832,
+          "order": "native_second",
+          "pair": 10,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1134229583,
+          "guest_instructions": 4712832,
+          "order": "native_first",
+          "pair": 11,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1130425031,
+          "guest_instructions": 4712832,
+          "order": "native_second",
+          "pair": 12,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1130700516,
+          "guest_instructions": 4712832,
+          "order": "native_first",
+          "pair": 13,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1135595491,
+          "guest_instructions": 4712832,
+          "order": "native_second",
+          "pair": 14,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1130040186,
+          "guest_instructions": 4712832,
+          "order": "native_first",
+          "pair": 15,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1127678603,
+          "guest_instructions": 4712832,
+          "order": "native_second",
+          "pair": 16,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1136077861,
+          "guest_instructions": 4712832,
+          "order": "native_first",
+          "pair": 17,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1133287327,
+          "guest_instructions": 4712832,
+          "order": "native_second",
+          "pair": 18,
+          "retired": 4712832,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1570944,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 24546,
+          "elapsed_ns": 1137476358,
+          "guest_instructions": 4712832,
+          "order": "native_first",
+          "pair": 19,
+          "retired": 4712832,
+          "seed": 3539008
+        }
+      ],
+      "native_warmup_calls_per_side": 32,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "restarts": [],
+      "seed": 3539008
+    },
+    {
+      "calibrated_calls_per_side": 408,
+      "calibration": {
+        "interpreter": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 37702375,
+          "guest_instructions": 786432,
+          "order": "calibration_interpreter_first",
+          "pair": 0,
+          "retired": 786432,
+          "seed": 3543040
+        },
+        "interpreter_floor_met": false,
+        "native": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 262144,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 189288132,
+          "guest_instructions": 786432,
+          "order": "calibration_native_second",
+          "pair": 0,
+          "retired": 786432,
+          "seed": 3543040
+        },
+        "native_floor_met": false,
+        "next_calls": 408
+      },
+      "code_hex": "488d040b4887d875f7",
+      "code_sha256": "1b15664c7c1982a1034f5405d8b3f295c720972cc502bf126977d223b54396c2",
+      "cold_first_dispatch_ns": 3018709,
+      "guest_work_per_call": 12288,
+      "id": "a_4096",
+      "interpreter_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 248601861,
+          "guest_instructions": 5013504,
+          "order": "interpreter_first",
+          "pair": 0,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 238946625,
+          "guest_instructions": 5013504,
+          "order": "interpreter_second",
+          "pair": 1,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 240071796,
+          "guest_instructions": 5013504,
+          "order": "interpreter_first",
+          "pair": 2,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 237968495,
+          "guest_instructions": 5013504,
+          "order": "interpreter_second",
+          "pair": 3,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 239051744,
+          "guest_instructions": 5013504,
+          "order": "interpreter_first",
+          "pair": 4,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 244165034,
+          "guest_instructions": 5013504,
+          "order": "interpreter_second",
+          "pair": 5,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 246853042,
+          "guest_instructions": 5013504,
+          "order": "interpreter_first",
+          "pair": 6,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 243224088,
+          "guest_instructions": 5013504,
+          "order": "interpreter_second",
+          "pair": 7,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 244118628,
+          "guest_instructions": 5013504,
+          "order": "interpreter_first",
+          "pair": 8,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 244215410,
+          "guest_instructions": 5013504,
+          "order": "interpreter_second",
+          "pair": 9,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 249729240,
+          "guest_instructions": 5013504,
+          "order": "interpreter_first",
+          "pair": 10,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 250467710,
+          "guest_instructions": 5013504,
+          "order": "interpreter_second",
+          "pair": 11,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 244825631,
+          "guest_instructions": 5013504,
+          "order": "interpreter_first",
+          "pair": 12,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 246839668,
+          "guest_instructions": 5013504,
+          "order": "interpreter_second",
+          "pair": 13,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 239562044,
+          "guest_instructions": 5013504,
+          "order": "interpreter_first",
+          "pair": 14,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 245452833,
+          "guest_instructions": 5013504,
+          "order": "interpreter_second",
+          "pair": 15,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 244274700,
+          "guest_instructions": 5013504,
+          "order": "interpreter_first",
+          "pair": 16,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 245258049,
+          "guest_instructions": 5013504,
+          "order": "interpreter_second",
+          "pair": 17,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 245078909,
+          "guest_instructions": 5013504,
+          "order": "interpreter_first",
+          "pair": 18,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 243608963,
+          "guest_instructions": 5013504,
+          "order": "interpreter_second",
+          "pair": 19,
+          "retired": 5013504,
+          "seed": 3543040
+        }
+      ],
+      "interpreter_warmup_calls_per_side": 0,
+      "iterations": 4096,
+      "native_over_interpreter_ratios": [
+        4.826000337141482,
+        5.009605383629085,
+        4.859615212775765,
+        4.851555412828913,
+        5.000698363447204,
+        4.907565945744713,
+        4.881064552568892,
+        4.912234486413205,
+        4.915676262935576,
+        4.922685239232037,
+        4.789277479080944,
+        4.807028814213218,
+        4.945436742282919,
+        4.898658865478623,
+        4.9128080030908405,
+        4.801171205059997,
+        4.877776908537806,
+        4.825350441403862,
+        4.8140757922176,
+        4.816233920752744
+      ],
+      "native_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1199752665,
+          "guest_instructions": 5013504,
+          "order": "native_second",
+          "pair": 0,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1197028299,
+          "guest_instructions": 5013504,
+          "order": "native_first",
+          "pair": 1,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1166656552,
+          "guest_instructions": 5013504,
+          "order": "native_second",
+          "pair": 2,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1154517340,
+          "guest_instructions": 5013504,
+          "order": "native_first",
+          "pair": 3,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1195425665,
+          "guest_instructions": 5013504,
+          "order": "native_second",
+          "pair": 4,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1198256006,
+          "guest_instructions": 5013504,
+          "order": "native_first",
+          "pair": 5,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1204905633,
+          "guest_instructions": 5013504,
+          "order": "native_second",
+          "pair": 6,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1194773753,
+          "guest_instructions": 5013504,
+          "order": "native_first",
+          "pair": 7,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1200008145,
+          "guest_instructions": 5013504,
+          "order": "native_second",
+          "pair": 8,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1202195594,
+          "guest_instructions": 5013504,
+          "order": "native_first",
+          "pair": 9,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1196022625,
+          "guest_instructions": 5013504,
+          "order": "native_second",
+          "pair": 10,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1204005499,
+          "guest_instructions": 5013504,
+          "order": "native_first",
+          "pair": 11,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1210769671,
+          "guest_instructions": 5013504,
+          "order": "native_second",
+          "pair": 12,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1209183328,
+          "guest_instructions": 5013504,
+          "order": "native_first",
+          "pair": 13,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1176922327,
+          "guest_instructions": 5013504,
+          "order": "native_second",
+          "pair": 14,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1178461074,
+          "guest_instructions": 5013504,
+          "order": "native_first",
+          "pair": 15,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1191517491,
+          "guest_instructions": 5013504,
+          "order": "native_second",
+          "pair": 16,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1183456035,
+          "guest_instructions": 5013504,
+          "order": "native_first",
+          "pair": 17,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1179828443,
+          "guest_instructions": 5013504,
+          "order": "native_second",
+          "pair": 18,
+          "retired": 5013504,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 1671168,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 408,
+          "elapsed_ns": 1173277751,
+          "guest_instructions": 5013504,
+          "order": "native_first",
+          "pair": 19,
+          "retired": 5013504,
+          "seed": 3543040
+        }
+      ],
+      "native_warmup_calls_per_side": 32,
+      "resident_code_bytes": 1408,
+      "resident_entries": 1,
+      "resident_logical_bytes": 7193,
+      "restarts": [],
+      "seed": 3543040
+    },
+    {
+      "calibrated_calls_per_side": 854093,
+      "calibration": {
+        "interpreter": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 17956,
+          "guest_instructions": 320,
+          "order": "calibration_interpreter_first",
+          "pair": 0,
+          "retired": 320,
+          "seed": 3538945
+        },
+        "interpreter_floor_met": false,
+        "native": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 64,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 70164,
+          "guest_instructions": 320,
+          "order": "calibration_native_second",
+          "pair": 0,
+          "retired": 320,
+          "seed": 3538945
+        },
+        "native_floor_met": false,
+        "next_calls": 854093
+      },
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "cold_first_dispatch_ns": 31917,
+      "guest_work_per_call": 5,
+      "id": "b_1",
+      "interpreter_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 226693025,
+          "guest_instructions": 4270465,
+          "order": "interpreter_first",
+          "pair": 0,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 222037887,
+          "guest_instructions": 4270465,
+          "order": "interpreter_second",
+          "pair": 1,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 223443371,
+          "guest_instructions": 4270465,
+          "order": "interpreter_first",
+          "pair": 2,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 224448951,
+          "guest_instructions": 4270465,
+          "order": "interpreter_second",
+          "pair": 3,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 228694334,
+          "guest_instructions": 4270465,
+          "order": "interpreter_first",
+          "pair": 4,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 233120683,
+          "guest_instructions": 4270465,
+          "order": "interpreter_second",
+          "pair": 5,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 230652063,
+          "guest_instructions": 4270465,
+          "order": "interpreter_first",
+          "pair": 6,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 223111395,
+          "guest_instructions": 4270465,
+          "order": "interpreter_second",
+          "pair": 7,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 221636222,
+          "guest_instructions": 4270465,
+          "order": "interpreter_first",
+          "pair": 8,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 220181436,
+          "guest_instructions": 4270465,
+          "order": "interpreter_second",
+          "pair": 9,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 217899114,
+          "guest_instructions": 4270465,
+          "order": "interpreter_first",
+          "pair": 10,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 218825637,
+          "guest_instructions": 4270465,
+          "order": "interpreter_second",
+          "pair": 11,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 213108046,
+          "guest_instructions": 4270465,
+          "order": "interpreter_first",
+          "pair": 12,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 227316616,
+          "guest_instructions": 4270465,
+          "order": "interpreter_second",
+          "pair": 13,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 228137745,
+          "guest_instructions": 4270465,
+          "order": "interpreter_first",
+          "pair": 14,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 230128173,
+          "guest_instructions": 4270465,
+          "order": "interpreter_second",
+          "pair": 15,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 231511194,
+          "guest_instructions": 4270465,
+          "order": "interpreter_first",
+          "pair": 16,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 225373226,
+          "guest_instructions": 4270465,
+          "order": "interpreter_second",
+          "pair": 17,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 226015050,
+          "guest_instructions": 4270465,
+          "order": "interpreter_first",
+          "pair": 18,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 223944214,
+          "guest_instructions": 4270465,
+          "order": "interpreter_second",
+          "pair": 19,
+          "retired": 4270465,
+          "seed": 3538945
+        }
+      ],
+      "interpreter_warmup_calls_per_side": 0,
+      "iterations": 1,
+      "native_over_interpreter_ratios": [
+        3.7085645797880193,
+        3.80800461769842,
+        3.794587081305715,
+        3.7689209516510505,
+        3.720914130736619,
+        3.6463635618294754,
+        3.7173256455980628,
+        3.8007158890293344,
+        3.733535310848242,
+        3.661358834992792,
+        3.732013976890241,
+        3.7616716820068024,
+        3.9072110914104106,
+        3.6735124721371006,
+        3.726431371538278,
+        3.7265611368669753,
+        3.7054834635771434,
+        3.74070267335127,
+        3.710982604919451,
+        3.753898718722869
+      ],
+      "native_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 840705723,
+          "guest_instructions": 4270465,
+          "order": "native_second",
+          "pair": 0,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 845521299,
+          "guest_instructions": 4270465,
+          "order": "native_first",
+          "pair": 1,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 847875329,
+          "guest_instructions": 4270465,
+          "order": "native_second",
+          "pair": 2,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 845930354,
+          "guest_instructions": 4270465,
+          "order": "native_first",
+          "pair": 3,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 850951979,
+          "guest_instructions": 4270465,
+          "order": "native_second",
+          "pair": 4,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 850042764,
+          "guest_instructions": 4270465,
+          "order": "native_first",
+          "pair": 5,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 857408829,
+          "guest_instructions": 4270465,
+          "order": "native_second",
+          "pair": 6,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 847983024,
+          "guest_instructions": 4270465,
+          "order": "native_first",
+          "pair": 7,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 827486661,
+          "guest_instructions": 4270465,
+          "order": "native_second",
+          "pair": 8,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 806163246,
+          "guest_instructions": 4270465,
+          "order": "native_first",
+          "pair": 9,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 813202539,
+          "guest_instructions": 4270465,
+          "order": "native_second",
+          "pair": 10,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 823150202,
+          "guest_instructions": 4270465,
+          "order": "native_first",
+          "pair": 11,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 832658121,
+          "guest_instructions": 4270465,
+          "order": "native_second",
+          "pair": 12,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 835050424,
+          "guest_instructions": 4270465,
+          "order": "native_first",
+          "pair": 13,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 850139650,
+          "guest_instructions": 4270465,
+          "order": "native_second",
+          "pair": 14,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 857586706,
+          "guest_instructions": 4270465,
+          "order": "native_first",
+          "pair": 15,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 857860901,
+          "guest_instructions": 4270465,
+          "order": "native_second",
+          "pair": 16,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 843054229,
+          "guest_instructions": 4270465,
+          "order": "native_first",
+          "pair": 17,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 838737919,
+          "guest_instructions": 4270465,
+          "order": "native_second",
+          "pair": 18,
+          "retired": 4270465,
+          "seed": 3538945
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 854093,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 854093,
+          "elapsed_ns": 840663898,
+          "guest_instructions": 4270465,
+          "order": "native_first",
+          "pair": 19,
+          "retired": 4270465,
+          "seed": 3538945
+        }
+      ],
+      "native_warmup_calls_per_side": 32,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "restarts": [],
+      "seed": 3538945
+    },
+    {
+      "calibrated_calls_per_side": 14687,
+      "calibration": {
+        "interpreter": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 1045873,
+          "guest_instructions": 20480,
+          "order": "calibration_interpreter_first",
+          "pair": 0,
+          "retired": 20480,
+          "seed": 3539008
+        },
+        "interpreter_floor_met": false,
+        "native": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 4096,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 3893004,
+          "guest_instructions": 20480,
+          "order": "calibration_native_second",
+          "pair": 0,
+          "retired": 20480,
+          "seed": 3539008
+        },
+        "native_floor_met": false,
+        "next_calls": 14687
+      },
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "cold_first_dispatch_ns": 82041,
+      "guest_work_per_call": 320,
+      "id": "b_64",
+      "interpreter_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 227381268,
+          "guest_instructions": 4699840,
+          "order": "interpreter_first",
+          "pair": 0,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 232622250,
+          "guest_instructions": 4699840,
+          "order": "interpreter_second",
+          "pair": 1,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 232795589,
+          "guest_instructions": 4699840,
+          "order": "interpreter_first",
+          "pair": 2,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 235781154,
+          "guest_instructions": 4699840,
+          "order": "interpreter_second",
+          "pair": 3,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 238152064,
+          "guest_instructions": 4699840,
+          "order": "interpreter_first",
+          "pair": 4,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 232998502,
+          "guest_instructions": 4699840,
+          "order": "interpreter_second",
+          "pair": 5,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 229039527,
+          "guest_instructions": 4699840,
+          "order": "interpreter_first",
+          "pair": 6,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 231243617,
+          "guest_instructions": 4699840,
+          "order": "interpreter_second",
+          "pair": 7,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 230297427,
+          "guest_instructions": 4699840,
+          "order": "interpreter_first",
+          "pair": 8,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 235543128,
+          "guest_instructions": 4699840,
+          "order": "interpreter_second",
+          "pair": 9,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 229714222,
+          "guest_instructions": 4699840,
+          "order": "interpreter_first",
+          "pair": 10,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 242568291,
+          "guest_instructions": 4699840,
+          "order": "interpreter_second",
+          "pair": 11,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 238016335,
+          "guest_instructions": 4699840,
+          "order": "interpreter_first",
+          "pair": 12,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 240463905,
+          "guest_instructions": 4699840,
+          "order": "interpreter_second",
+          "pair": 13,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 237872603,
+          "guest_instructions": 4699840,
+          "order": "interpreter_first",
+          "pair": 14,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 222838786,
+          "guest_instructions": 4699840,
+          "order": "interpreter_second",
+          "pair": 15,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 221200865,
+          "guest_instructions": 4699840,
+          "order": "interpreter_first",
+          "pair": 16,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 231294099,
+          "guest_instructions": 4699840,
+          "order": "interpreter_second",
+          "pair": 17,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 228967200,
+          "guest_instructions": 4699840,
+          "order": "interpreter_first",
+          "pair": 18,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 237685829,
+          "guest_instructions": 4699840,
+          "order": "interpreter_second",
+          "pair": 19,
+          "retired": 4699840,
+          "seed": 3539008
+        }
+      ],
+      "interpreter_warmup_calls_per_side": 0,
+      "iterations": 64,
+      "native_over_interpreter_ratios": [
+        3.9024943558675202,
+        3.8187172551206947,
+        3.8794506110680644,
+        3.8445380583725535,
+        3.7852783547574043,
+        3.814818470377977,
+        3.7687914846243986,
+        3.708429084985295,
+        3.809871167166796,
+        3.725819145952753,
+        3.8774288864012956,
+        3.7318873924869265,
+        3.797502709215315,
+        3.771094248011983,
+        3.768295023029617,
+        3.8994789040001323,
+        4.013347904403538,
+        3.8755233828944333,
+        3.9966437070462493,
+        3.8183659868085784
+      ],
+      "native_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 887354115,
+          "guest_instructions": 4699840,
+          "order": "native_second",
+          "pair": 0,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 888318600,
+          "guest_instructions": 4699840,
+          "order": "native_first",
+          "pair": 1,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 903118990,
+          "guest_instructions": 4699840,
+          "order": "native_second",
+          "pair": 2,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 906469620,
+          "guest_instructions": 4699840,
+          "order": "native_first",
+          "pair": 3,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 901471853,
+          "guest_instructions": 4699840,
+          "order": "native_second",
+          "pair": 4,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 888846989,
+          "guest_instructions": 4699840,
+          "order": "native_first",
+          "pair": 5,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 863202219,
+          "guest_instructions": 4699840,
+          "order": "native_second",
+          "pair": 6,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 857550555,
+          "guest_instructions": 4699840,
+          "order": "native_first",
+          "pair": 7,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 877403527,
+          "guest_instructions": 4699840,
+          "order": "native_second",
+          "pair": 8,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 877591096,
+          "guest_instructions": 4699840,
+          "order": "native_first",
+          "pair": 9,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 890700560,
+          "guest_instructions": 4699840,
+          "order": "native_second",
+          "pair": 10,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 905237547,
+          "guest_instructions": 4699840,
+          "order": "native_first",
+          "pair": 11,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 903867677,
+          "guest_instructions": 4699840,
+          "order": "native_second",
+          "pair": 12,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 906812049,
+          "guest_instructions": 4699840,
+          "order": "native_first",
+          "pair": 13,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 896374146,
+          "guest_instructions": 4699840,
+          "order": "native_second",
+          "pair": 14,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 868955145,
+          "guest_instructions": 4699840,
+          "order": "native_first",
+          "pair": 15,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 887756028,
+          "guest_instructions": 4699840,
+          "order": "native_second",
+          "pair": 16,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 896385689,
+          "guest_instructions": 4699840,
+          "order": "native_first",
+          "pair": 17,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 915100319,
+          "guest_instructions": 4699840,
+          "order": "native_second",
+          "pair": 18,
+          "retired": 4699840,
+          "seed": 3539008
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 939968,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 14687,
+          "elapsed_ns": 907571485,
+          "guest_instructions": 4699840,
+          "order": "native_first",
+          "pair": 19,
+          "retired": 4699840,
+          "seed": 3539008
+        }
+      ],
+      "native_warmup_calls_per_side": 32,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "restarts": [],
+      "seed": 3539008
+    },
+    {
+      "calibrated_calls_per_side": 227,
+      "calibration": {
+        "interpreter": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 67750121,
+          "guest_instructions": 1310720,
+          "order": "calibration_interpreter_first",
+          "pair": 0,
+          "retired": 1310720,
+          "seed": 3543040
+        },
+        "interpreter_floor_met": false,
+        "native": {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 262144,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 64,
+          "elapsed_ns": 258776210,
+          "guest_instructions": 1310720,
+          "order": "calibration_native_second",
+          "pair": 0,
+          "retired": 1310720,
+          "seed": 3543040
+        },
+        "native_floor_met": true,
+        "next_calls": 227
+      },
+      "code_hex": "488d040b4887d8488d040b4887d875f0",
+      "code_sha256": "e8aa1e4aad8f3fe14084f309d11a1a1e8e1257a0045ae52463c5721186ac0e2b",
+      "cold_first_dispatch_ns": 4494709,
+      "guest_work_per_call": 20480,
+      "id": "b_4096",
+      "interpreter_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 239341128,
+          "guest_instructions": 4648960,
+          "order": "interpreter_first",
+          "pair": 0,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 237744794,
+          "guest_instructions": 4648960,
+          "order": "interpreter_second",
+          "pair": 1,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 254000832,
+          "guest_instructions": 4648960,
+          "order": "interpreter_first",
+          "pair": 2,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 232329989,
+          "guest_instructions": 4648960,
+          "order": "interpreter_second",
+          "pair": 3,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 233548410,
+          "guest_instructions": 4648960,
+          "order": "interpreter_first",
+          "pair": 4,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 234804117,
+          "guest_instructions": 4648960,
+          "order": "interpreter_second",
+          "pair": 5,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 231189539,
+          "guest_instructions": 4648960,
+          "order": "interpreter_first",
+          "pair": 6,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 233085326,
+          "guest_instructions": 4648960,
+          "order": "interpreter_second",
+          "pair": 7,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 229558327,
+          "guest_instructions": 4648960,
+          "order": "interpreter_first",
+          "pair": 8,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 240261546,
+          "guest_instructions": 4648960,
+          "order": "interpreter_second",
+          "pair": 9,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 237821918,
+          "guest_instructions": 4648960,
+          "order": "interpreter_first",
+          "pair": 10,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 235174407,
+          "guest_instructions": 4648960,
+          "order": "interpreter_second",
+          "pair": 11,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 237076457,
+          "guest_instructions": 4648960,
+          "order": "interpreter_first",
+          "pair": 12,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 230843907,
+          "guest_instructions": 4648960,
+          "order": "interpreter_second",
+          "pair": 13,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 234377831,
+          "guest_instructions": 4648960,
+          "order": "interpreter_first",
+          "pair": 14,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 234461742,
+          "guest_instructions": 4648960,
+          "order": "interpreter_second",
+          "pair": 15,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 233409378,
+          "guest_instructions": 4648960,
+          "order": "interpreter_first",
+          "pair": 16,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 236052803,
+          "guest_instructions": 4648960,
+          "order": "interpreter_second",
+          "pair": 17,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 233637300,
+          "guest_instructions": 4648960,
+          "order": "interpreter_first",
+          "pair": 18,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 0,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 236389756,
+          "guest_instructions": 4648960,
+          "order": "interpreter_second",
+          "pair": 19,
+          "retired": 4648960,
+          "seed": 3543040
+        }
+      ],
+      "interpreter_warmup_calls_per_side": 0,
+      "iterations": 4096,
+      "native_over_interpreter_ratios": [
+        3.855870425245092,
+        4.033991907305444,
+        3.5748110108552713,
+        3.866854102076336,
+        3.823849458020288,
+        3.726140657916999,
+        3.7491832448353124,
+        3.7364156463457507,
+        3.878638107516788,
+        3.707708069938083,
+        3.7569687079893117,
+        3.836080858067179,
+        3.7100279721153417,
+        3.7591547174775553,
+        3.7462155667785835,
+        3.72024515624387,
+        3.754367525884071,
+        3.798145565761403,
+        3.823554034394337,
+        3.781935622455653
+      ],
+      "native_samples": [
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 922868377,
+          "guest_instructions": 4648960,
+          "order": "native_second",
+          "pair": 0,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 959060575,
+          "guest_instructions": 4648960,
+          "order": "native_first",
+          "pair": 1,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 908004971,
+          "guest_instructions": 4648960,
+          "order": "native_second",
+          "pair": 2,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 898386171,
+          "guest_instructions": 4648960,
+          "order": "native_first",
+          "pair": 3,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 893053961,
+          "guest_instructions": 4648960,
+          "order": "native_second",
+          "pair": 4,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 874913167,
+          "guest_instructions": 4648960,
+          "order": "native_first",
+          "pair": 5,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 866771946,
+          "guest_instructions": 4648960,
+          "order": "native_second",
+          "pair": 6,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 870903659,
+          "guest_instructions": 4648960,
+          "order": "native_first",
+          "pair": 7,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 890373675,
+          "guest_instructions": 4648960,
+          "order": "native_second",
+          "pair": 8,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 890819673,
+          "guest_instructions": 4648960,
+          "order": "native_first",
+          "pair": 9,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 893489504,
+          "guest_instructions": 4648960,
+          "order": "native_second",
+          "pair": 10,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 902148041,
+          "guest_instructions": 4648960,
+          "order": "native_first",
+          "pair": 11,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 879560287,
+          "guest_instructions": 4648960,
+          "order": "native_second",
+          "pair": 12,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 867777962,
+          "guest_instructions": 4648960,
+          "order": "native_first",
+          "pair": 13,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 878029879,
+          "guest_instructions": 4648960,
+          "order": "native_second",
+          "pair": 14,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 872255160,
+          "guest_instructions": 4648960,
+          "order": "native_first",
+          "pair": 15,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 876304589,
+          "guest_instructions": 4648960,
+          "order": "native_second",
+          "pair": 16,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 896562907,
+          "guest_instructions": 4648960,
+          "order": "native_first",
+          "pair": 17,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 893324841,
+          "guest_instructions": 4648960,
+          "order": "native_second",
+          "pair": 18,
+          "retired": 4648960,
+          "seed": 3543040
+        },
+        {
+          "cache": {
+            "compiles": 0,
+            "evictions": 0,
+            "hits": 929792,
+            "misses": 0,
+            "publications": 0
+          },
+          "calls": 227,
+          "elapsed_ns": 894010839,
+          "guest_instructions": 4648960,
+          "order": "native_first",
+          "pair": 19,
+          "retired": 4648960,
+          "seed": 3543040
+        }
+      ],
+      "native_warmup_calls_per_side": 32,
+      "resident_code_bytes": 2188,
+      "resident_entries": 1,
+      "resident_logical_bytes": 10552,
+      "restarts": [],
+      "seed": 3543040
+    }
+  ],
+  "timed_scope": "full cached NativeRegisterV1 dispatcher invocation, including validation, capacity-one cache lookup and published native block execution; interpreter is measured by full run call",
+  "total_elapsed_ns": 175258226125
+}

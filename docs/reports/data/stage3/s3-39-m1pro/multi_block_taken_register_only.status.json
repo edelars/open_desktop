@@ -1,0 +1,48 @@
+{
+  "name": "multi_block_taken_register_only",
+  "argv": [
+    "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke",
+    "--vmhost",
+    "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke",
+    "--hex",
+    "48 3b c1 74 03 48 03 c3 48 03 c2",
+    "--rax",
+    "5",
+    "--rcx",
+    "5",
+    "--rdx",
+    "2",
+    "--budget",
+    "8"
+  ],
+  "returncode": 0,
+  "timeout_seconds": null,
+  "duration_ns": 8554208,
+  "stdout_file": "multi_block_taken_register_only.stdout.txt",
+  "stderr_file": "multi_block_taken_register_only.stderr.txt",
+  "expected_fields": {
+    "gpr": [
+      7,
+      5,
+      2,
+      0
+    ],
+    "rip": 11,
+    "reason": 0,
+    "instructions_executed": 3
+  },
+  "observed": {
+    "gpr": [
+      7,
+      5,
+      2,
+      0
+    ],
+    "instructions_executed": 3,
+    "reason": 0,
+    "rflags": 2,
+    "rip": 11
+  },
+  "passed": true,
+  "debugger_used": false
+}

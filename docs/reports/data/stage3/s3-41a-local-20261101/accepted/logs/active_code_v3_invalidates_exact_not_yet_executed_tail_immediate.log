@@ -1,0 +1,10 @@
+
+running 1 test
+test tests::active_code_v3_invalidates_exact_not_yet_executed_tail_immediate ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 126 filtered out; finished in 0.00s
+
+
+--- stderr ---
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (target/debug/deps/od_host-28d3c92878240099)

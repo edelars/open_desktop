@@ -428,3 +428,10 @@ oracle. It parses the source as raw u64 binary64, truncates toward zero, checks
 signed-i64 range and sticky IE/PE, and validates full RAX aliasing and state
 preservation without host FP or production conversion helpers. The runner
 exercises 19 source values × 4 RC values × 4 sticky histories (304 comparisons).
+
+`memory_corpus` provides the deterministic seed/index generator shared by the
+S3-34a host correctness corpus and its bounded benchmark subset. The fixed
+S3-34a constants name exactly two original sequences, three seeds, and 400
+inputs per sequence/seed; the later load-then-load extension remains available
+to the host correctness corpus through the same generator but is not part of
+`S3_34A_SEQUENCES`.

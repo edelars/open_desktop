@@ -1,0 +1,59 @@
+{
+  "uname": {
+    "argv": [
+      "uname",
+      "-a"
+    ],
+    "returncode": 0,
+    "stdout": "Darwin m1.local 23.6.0 Darwin Kernel Version 23.6.0: Mon Jul 29 21:14:30 PDT 2024; root:xnu-10063.141.2~1/RELEASE_ARM64_T6000 arm64\n",
+    "stderr": ""
+  },
+  "macos": {
+    "argv": [
+      "sw_vers"
+    ],
+    "returncode": 0,
+    "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t14.6.1\nBuildVersion:\t\t23G93\n",
+    "stderr": ""
+  },
+  "model": {
+    "argv": [
+      "sysctl",
+      "-n",
+      "hw.model"
+    ],
+    "returncode": 0,
+    "stdout": "MacBookPro18,3\n",
+    "stderr": ""
+  },
+  "cpu": {
+    "argv": [
+      "sysctl",
+      "-n",
+      "machdep.cpu.brand_string"
+    ],
+    "returncode": 0,
+    "stdout": "Apple M1 Pro\n",
+    "stderr": ""
+  },
+  "memory_bytes": {
+    "argv": [
+      "sysctl",
+      "-n",
+      "hw.memsize"
+    ],
+    "returncode": 0,
+    "stdout": "17179869184\n",
+    "stderr": ""
+  },
+  "page_size": {
+    "argv": [
+      "pagesize"
+    ],
+    "returncode": 0,
+    "stdout": "16384\n",
+    "stderr": ""
+  },
+  "python": "3.12.5",
+  "outside_debugger": true
+}

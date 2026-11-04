@@ -1,0 +1,1 @@
+{"gpr":[0,1,0,0],"instructions_executed":6,"reason":0,"rflags":70,"rip":5}

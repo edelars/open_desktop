@@ -1,0 +1,6 @@
+
+--- stderr ---
+--prepared:/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-180016-5fb4c7afec/artifacts/OpenDesktop-Stage0-Smoke.app/Contents/MacOS/od-vmhost-smoke
+--validated:/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-180016-5fb4c7afec/artifacts/OpenDesktop-Stage0-Smoke.app/Contents/MacOS/od-vmhost-smoke
+/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-180016-5fb4c7afec/artifacts/OpenDesktop-Stage0-Smoke.app: valid on disk
+/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-180016-5fb4c7afec/artifacts/OpenDesktop-Stage0-Smoke.app: satisfies its Designated Requirement

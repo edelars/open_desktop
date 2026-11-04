@@ -1,0 +1,135 @@
+{
+  "schema": 1,
+  "profile": "s3-36d-two-site-memory-warm-direct-v1",
+  "run_kind": "scored_process_run_2",
+  "command": "cargo run --release -p od-bench --offline -- two-site-memory-warm --process-run 2 --output work/tmp/stage3/s3-36d/run2.json",
+  "source_revision": "dee1c860895c94883be7ce5650f50585569291f8",
+  "process": {
+    "benchmark_pid": 37485,
+    "benchmark_start_utc_inferred_from_elapsed_snapshot": "2026-11-01T06:11:10Z",
+    "completed_by_utc": "2026-11-01T06:12:38Z",
+    "exit_code": 0,
+    "reported_profile_elapsed_ns": 56305182500,
+    "scored_samples_started": true
+  },
+  "outputs": {
+    "report_path": "work/tmp/stage3/s3-36d/run2.json",
+    "report_sha256": "190638c9fa2c2607b3b7ff4dead469c262d254db3af4fda711cff9f6e23a3e35",
+    "journal_path": "work/tmp/stage3/s3-36d/run2.json.warm.journal.jsonl",
+    "journal_sha256": "5af88cd9888d41df483441626ea3e3149240e92138bb1254170206e80e09dc91",
+    "journal_records": 64,
+    "source_sha256_from_report": "2ba1b077bc7a905adae120a98436a1fbf4d9d7de157cc2d02692db1d08ee0177"
+  },
+  "snapshots": [
+    {
+      "observed_at_utc": "2026-11-01T06:11:07Z",
+      "phase": "immediately_before_launch",
+      "load_average_raw": "{ 1.50 2.26 2.31 }",
+      "stage2_cargo_test_pid": 37310,
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_cargo_test_elapsed_seconds": 10,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "note": "Output report and journal paths checked absent; HEAD was dee1c860895c94883be7ce5650f50585569291f8."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:11:13Z",
+      "phase": "early_run",
+      "load_average_raw": "{ 1.42 2.21 2.30 }",
+      "benchmark_pid": 37485,
+      "benchmark_elapsed_seconds": 3,
+      "benchmark_cpu_percent": 0.0,
+      "stage2_cargo_test_pid": 37310,
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "journal_records_visible": 0,
+      "note": "Point-in-time process sample during initial resident setup/preflight."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:11:48Z",
+      "phase": "active_measurement",
+      "load_average_raw": "{ 1.93 2.24 2.30 }",
+      "benchmark_pid": 37485,
+      "benchmark_elapsed_seconds": 38,
+      "benchmark_cpu_percent": 97.5,
+      "stage2_cargo_test_pid": 37310,
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_cargo_test_elapsed_seconds": 51,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "journal_records_visible": 18,
+      "note": "Point-in-time process sample; no per-pair timestamps exist."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:12:23Z",
+      "phase": "active_measurement",
+      "load_average_raw": "{ 3.61 2.62 2.44 }",
+      "benchmark_pid": 37485,
+      "benchmark_elapsed_seconds": 73,
+      "benchmark_cpu_percent": 99.7,
+      "stage2_cargo_test_pid": 37310,
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_cargo_test_elapsed_seconds": 86,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "journal_records_visible": 56,
+      "note": "Point-in-time process sample; no per-pair timestamps exist."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:12:38Z",
+      "phase": "after_command_completion",
+      "load_average_raw": "{ 3.66 2.69 2.46 }",
+      "benchmark_pid_visible": false,
+      "stage2_cargo_test_pid": 37310,
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_cargo_test_elapsed_seconds": 101,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "journal_records_visible": 64
+    }
+  ],
+  "run_summary": {
+    "status": "scored",
+    "stop_reason": null,
+    "unique_cases": 2400,
+    "sequence_counts": {
+      "store_then_load": 1200,
+      "load_then_store": 1200
+    },
+    "preflight_trials_per_input_backend": 2,
+    "preflight_executions_per_backend": 4800,
+    "parity_trials": 4800,
+    "warmup_sweeps_per_backend_per_sequence": 1,
+    "calibration_repetitions_per_side_per_sequence": 2048,
+    "scored_pairs_per_sequence": 20,
+    "scored_pairs_total": 40,
+    "sample_floor_ns": 200000000,
+    "all_sample_sides_met_floor": true,
+    "store_then_load_native_over_interpreter_ratio_median_min_max": [
+      1.405221218434525,
+      1.3849596817658085,
+      1.4203506059567454
+    ],
+    "load_then_store_native_over_interpreter_ratio_median_min_max": [
+      1.4007509385009604,
+      1.382420203263857,
+      1.4421564463826295
+    ],
+    "per_sequence_lifecycle_counts": {
+      "compile": 1,
+      "publish": 1,
+      "IR_drop": 1,
+      "published_drop": 1,
+      "resident_mapping_high_water": 1
+    },
+    "lifecycle_order_note": "The report counts are per sequence; source-reviewed loop explicitly drops the current PublishedCode before the next sequence is compiled. There is no cross-sequence aggregate ratio.",
+    "runtime_working_tree_dirty": null,
+    "runtime_working_tree_note": "Runtime git status was unavailable because the probe timed out after 2000 ms; build source_tree_dirty was false."
+  },
+  "limitations": [
+    "Process and Stage2 observations are point-in-time snapshots; no per-pair timestamps exist.",
+    "Concurrent Stage2 process was sampled at 0% CPU with no rustc visible in snapshots; unobserved intervals cannot be reconstructed.",
+    "Results are per-stratum bounded diagnostics on the two S3-34a checked-memory sequences, not a general workload result."
+  ]
+}

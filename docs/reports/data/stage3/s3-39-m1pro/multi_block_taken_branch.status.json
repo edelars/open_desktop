@@ -1,0 +1,35 @@
+{
+  "name": "multi_block_taken_branch",
+  "argv": [
+    "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/open-desktop-launcher-smoke",
+    "--vmhost",
+    "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/od-vmhost-smoke",
+    "--hex",
+    "48 3b c1 74 04 48 83 c0 01 48 83 c0 02",
+    "--rax",
+    "5",
+    "--rcx",
+    "5",
+    "--budget",
+    "8"
+  ],
+  "returncode": 1,
+  "timeout_seconds": null,
+  "duration_ns": 27780292,
+  "stdout_file": "multi_block_taken_branch.stdout.txt",
+  "stderr_file": "multi_block_taken_branch.stderr.txt",
+  "expected_fields": {
+    "gpr": [
+      7,
+      5,
+      0,
+      0
+    ],
+    "rip": 13,
+    "reason": 0,
+    "instructions_executed": 3
+  },
+  "observed": null,
+  "passed": false,
+  "failure": "nonzero process status or missing JSON result"
+}

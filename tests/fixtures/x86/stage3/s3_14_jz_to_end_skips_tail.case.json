@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "case_id": "s3_14_jz_to_end_skips_tail",
+  "profile": "s0_09_register_subset_v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "tests/fixtures/x86/stage3/s3_14_jz_to_end_skips_tail.hex",
+    "specification": "docs/specs/CPU_CONTRACT.md",
+    "specification_version": "v0.1; Intel SDM 093; AMD APM 4.09"
+  },
+  "program": {
+    "bytes_hex": "483bc1740a48b80100000000000000",
+    "sha256": "da994a588724123fa3689e59b840ecb1b32aae4b128ed12d7b0a98d26622c2bf"
+  },
+  "initial_state": {
+    "rax": "0x0000000000000005",
+    "rcx": "0x0000000000000005",
+    "rdx": "0x000000000000feed",
+    "rbx": "0x0000000000000000",
+    "rip": "0x0000000000000000",
+    "rflags": "0x0000000000000002"
+  },
+  "instruction_budget": 8,
+  "wall_timeout_ms": 1000,
+  "comparison": {
+    "registers": [
+      "rax",
+      "rcx",
+      "rdx",
+      "rbx"
+    ],
+    "rip": true,
+    "rflags_mask": "0x00000000000008d5",
+    "memory": {
+      "status": "unsupported"
+    },
+    "exceptions": {
+      "status": "unsupported"
+    }
+  },
+  "expected_exit": "reached_code_end"
+}

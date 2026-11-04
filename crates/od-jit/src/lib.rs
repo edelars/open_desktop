@@ -7,6 +7,24 @@ use std::collections::HashMap;
 
 use od_isa::{DecodeError, FragmentState as CpuState, Instruction, Operation, decode};
 
+pub mod allocator;
+pub mod arm64;
+pub mod block;
+pub mod block_compile;
+pub mod block_emitter;
+pub mod dispatch;
+pub mod emitter;
+pub mod ir;
+pub mod lowering;
+pub mod memory_bridge;
+pub mod memory_cache;
+pub mod memory_dispatch;
+pub mod memory_load_v2;
+pub mod phase_observation;
+pub mod runtime;
+pub mod statepoints;
+pub mod translation;
+
 const RIP_OFFSET: u32 = std::mem::offset_of!(CpuState, rip) as u32;
 const RFLAGS_OFFSET: u32 = std::mem::offset_of!(CpuState, rflags) as u32;
 
@@ -15,6 +33,16 @@ pub enum JitError {
     Decode(DecodeError),
     CodeTooLarge,
     InvalidEntry,
+    Encoding(arm64::EncodeError),
+}
+
+impl From<arm64::EncodeError> for JitError {
+    fn from(error: arm64::EncodeError) -> Self {
+        match error {
+            arm64::EncodeError::BranchOutOfRange { .. } => Self::CodeTooLarge,
+            error => Self::Encoding(error),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,264 +61,253 @@ fn compile_decoded(
     code_length: usize,
     instructions: &[Instruction],
 ) -> Result<JitOutput, JitError> {
+    use arm64::{AddressBase, Condition, Encoder, PairIndexMode, WReg, XRegOrSp, XRegOrZero};
+
     let offsets: HashMap<usize, usize> = instructions
         .iter()
         .enumerate()
         .map(|(index, instruction)| (instruction.offset, index))
         .collect();
-    let mut emitter = Emitter::default();
-    // Preserve the one callee-saved register holding CpuState and establish
-    // the budget and instruction counters. The generated function is
-    // fn(*mut CpuState, u64, *mut u64)->u32.
-    emitter.emit(0xA9BF_53F3); // STP X19, X20, [SP, #-16]!
-    emitter.emit(0xA9BF_7BF5); // STP X21, X30, [SP, #-16]!
-    emitter.emit(0xA9BF_7BF6); // STP X22, X30, [SP, #-16]!
-    emitter.emit(mov_reg(19, 0));
-    emitter.emit(mov_reg(15, 1));
-    emitter.emit(mov_reg(21, 2));
-    emitter.emit(mov_reg(14, 31));
-    emitter.emit(mov_reg(22, 3));
+    let mut encoder = Encoder::new();
+    let guest_labels: Vec<_> = (0..=instructions.len())
+        .map(|_| encoder.new_label())
+        .collect::<Result<_, _>>()?;
+    let code_end_label = guest_labels[instructions.len()];
+    let budget_exit = encoder.new_label()?;
+    let stop_exit = encoder.new_label()?;
+    let invalid_entry = encoder.new_label()?;
 
-    let mut start_patches = Vec::with_capacity(instructions.len() + 1);
-    for instruction in instructions {
-        emitter.emit(ldr_x(9, 19, RIP_OFFSET));
-        emitter.emit_mov_imm64(10, instruction.offset as u64);
-        emitter.emit(subs_x(31, 9, 10)); // CMP X9, X10
-        let patch = emitter.emit(0x5400_0000); // B.EQ guest block
-        start_patches.push((patch, instruction.offset));
+    // Preserve the legacy fragment prologue and its generated word sequence.
+    encoder.stp_x(
+        xr(19)?,
+        xr(20)?,
+        AddressBase::Sp,
+        -16,
+        PairIndexMode::PreIndex,
+    )?;
+    encoder.stp_x(
+        xr(21)?,
+        xr(30)?,
+        AddressBase::Sp,
+        -16,
+        PairIndexMode::PreIndex,
+    )?;
+    encoder.stp_x(
+        xr(22)?,
+        xr(30)?,
+        AddressBase::Sp,
+        -16,
+        PairIndexMode::PreIndex,
+    )?;
+    encoder.mov_x(xr(19)?, XRegOrZero::Reg(xr(0)?));
+    encoder.mov_x(xr(15)?, XRegOrZero::Reg(xr(1)?));
+    encoder.mov_x(xr(21)?, XRegOrZero::Reg(xr(2)?));
+    encoder.mov_x(xr(14)?, XRegOrZero::Zero);
+    encoder.mov_x(xr(22)?, XRegOrZero::Reg(xr(3)?));
+
+    for (index, instruction) in instructions.iter().enumerate() {
+        encoder.ldr_x(
+            XRegOrZero::Reg(xr(9)?),
+            AddressBase::Reg(xr(19)?),
+            RIP_OFFSET,
+        )?;
+        emit_mov_imm64(&mut encoder, 10, instruction.offset as u64)?;
+        encoder.subs_x(XRegOrZero::Zero, xr(9)?, XRegOrZero::Reg(xr(10)?));
+        encoder.b_cond(Condition::Equal, guest_labels[index])?;
     }
-    emitter.emit(ldr_x(9, 19, RIP_OFFSET));
-    emitter.emit_mov_imm64(10, code_length as u64);
-    emitter.emit(subs_x(31, 9, 10));
-    let start_at_end = emitter.emit(0x5400_0000); // B.EQ complete
-    start_patches.push((start_at_end, code_length));
-    let invalid_start_branch = emitter.emit(0x1400_0000); // B invalid_entry
+    encoder.ldr_x(
+        XRegOrZero::Reg(xr(9)?),
+        AddressBase::Reg(xr(19)?),
+        RIP_OFFSET,
+    )?;
+    emit_mov_imm64(&mut encoder, 10, code_length as u64)?;
+    encoder.subs_x(XRegOrZero::Zero, xr(9)?, XRegOrZero::Reg(xr(10)?));
+    encoder.b_cond(Condition::Equal, code_end_label)?;
+    encoder.b(invalid_entry)?;
 
     let mut guest_to_host = Vec::with_capacity(instructions.len());
-    let mut branch_patches = Vec::new();
-    for instruction in instructions {
-        let host_word = emitter.words.len();
-        guest_to_host.push((instruction.offset, host_word));
-        emitter.emit_mov_imm64(9, instruction.offset as u64);
-        emitter.emit(str_x(9, 19, RIP_OFFSET));
-        emitter.emit(subs_imm(15, 15, 1));
-        let budget_patch = emitter.emit(0x5400_0003); // B.LO budget_exit
-        branch_patches.push((budget_patch, PatchKind::Budget));
-        emitter.emit(ldarb_w(9, 22));
-        let stop_patch = emitter.emit(0x3500_0009); // CBNZ W9 stop_exit
-        branch_patches.push((stop_patch, PatchKind::Stopped));
-        emitter.emit(adds_imm(14, 14, 1));
+    for (index, instruction) in instructions.iter().enumerate() {
+        encoder.bind(guest_labels[index])?;
+        guest_to_host.push((instruction.offset, encoder.position()));
+        emit_mov_imm64(&mut encoder, 9, instruction.offset as u64)?;
+        encoder.str_x(
+            XRegOrZero::Reg(xr(9)?),
+            AddressBase::Reg(xr(19)?),
+            RIP_OFFSET,
+        )?;
+        encoder.subs_imm_x(XRegOrZero::Reg(xr(15)?), XRegOrSp::Reg(xr(15)?), 1)?;
+        encoder.b_cond(Condition::Lower, budget_exit)?;
+        encoder.ldarb_w(WReg::new(9)?, AddressBase::Reg(xr(22)?));
+        encoder.cbnz_w(WReg::new(9)?, stop_exit)?;
+        encoder.adds_imm_x(XRegOrZero::Reg(xr(14)?), XRegOrSp::Reg(xr(14)?), 1)?;
 
         match instruction.operation {
             Operation::MovImm { dst, value } => {
-                emitter.emit_mov_imm64(9, value);
-                emitter.emit(str_x(9, 19, dst as u32 * 8));
+                emit_mov_imm64(&mut encoder, 9, value)?;
+                encoder.str_x(
+                    XRegOrZero::Reg(xr(9)?),
+                    AddressBase::Reg(xr(19)?),
+                    u32::from(dst as u8) * 8,
+                )?;
             }
             Operation::Add { dst, src } | Operation::Sub { dst, src } => {
-                let lhs = dst as u32;
-                let rhs = src as u32;
-                emitter.emit(ldr_x(9, 19, lhs * 8));
-                emitter.emit(ldr_x(10, 19, rhs * 8));
-                emitter.emit(if matches!(instruction.operation, Operation::Add { .. }) {
-                    add_x(11, 9, 10)
+                encoder.ldr_x(
+                    XRegOrZero::Reg(xr(9)?),
+                    AddressBase::Reg(xr(19)?),
+                    u32::from(dst as u8) * 8,
+                )?;
+                encoder.ldr_x(
+                    XRegOrZero::Reg(xr(10)?),
+                    AddressBase::Reg(xr(19)?),
+                    u32::from(src as u8) * 8,
+                )?;
+                if matches!(instruction.operation, Operation::Add { .. }) {
+                    encoder.add_x(xr(11)?, xr(9)?, XRegOrZero::Reg(xr(10)?));
                 } else {
-                    sub_x(11, 9, 10)
-                });
-                emitter.emit(str_x(11, 19, lhs * 8));
+                    encoder.sub_x(xr(11)?, xr(9)?, XRegOrZero::Reg(xr(10)?));
+                }
+                encoder.str_x(
+                    XRegOrZero::Reg(xr(11)?),
+                    AddressBase::Reg(xr(19)?),
+                    u32::from(dst as u8) * 8,
+                )?;
                 emit_flag_helper_call(
-                    &mut emitter,
+                    &mut encoder,
                     matches!(instruction.operation, Operation::Add { .. }) as u32,
-                );
+                )?;
             }
             Operation::Cmp { lhs, rhs } => {
-                emitter.emit(ldr_x(9, 19, lhs as u32 * 8));
-                emitter.emit(ldr_x(10, 19, rhs as u32 * 8));
-                emitter.emit(sub_x(11, 9, 10));
-                emit_flag_helper_call(&mut emitter, 2);
+                encoder.ldr_x(
+                    XRegOrZero::Reg(xr(9)?),
+                    AddressBase::Reg(xr(19)?),
+                    u32::from(lhs as u8) * 8,
+                )?;
+                encoder.ldr_x(
+                    XRegOrZero::Reg(xr(10)?),
+                    AddressBase::Reg(xr(19)?),
+                    u32::from(rhs as u8) * 8,
+                )?;
+                encoder.sub_x(xr(11)?, xr(9)?, XRegOrZero::Reg(xr(10)?));
+                emit_flag_helper_call(&mut encoder, 2)?;
             }
             Operation::Jz { displacement } | Operation::Jnz { displacement } => {
                 let target = (instruction.next_offset() as i64 + i64::from(displacement)) as usize;
-                emitter.emit(ldr_x(9, 19, RFLAGS_OFFSET));
-                emitter.emit_mov_imm64(10, 1 << 6);
-                emitter.emit(and_x(9, 9, 10));
-                let is_jz = matches!(instruction.operation, Operation::Jz { .. });
-                let patch = emitter.emit(if is_jz { 0xB500_0009 } else { 0xB400_0009 }); // CBNZ/CBZ X9
-                branch_patches.push((patch, PatchKind::Guest(target)));
+                let label = if target == code_length {
+                    code_end_label
+                } else {
+                    let index = *offsets.get(&target).ok_or(JitError::InvalidEntry)?;
+                    guest_labels[index]
+                };
+                encoder.ldr_x(
+                    XRegOrZero::Reg(xr(9)?),
+                    AddressBase::Reg(xr(19)?),
+                    RFLAGS_OFFSET,
+                )?;
+                emit_mov_imm64(&mut encoder, 10, 1 << 6)?;
+                encoder.and_x(xr(9)?, xr(9)?, XRegOrZero::Reg(xr(10)?));
+                if matches!(instruction.operation, Operation::Jz { .. }) {
+                    encoder.cbnz_x(XRegOrZero::Reg(xr(9)?), label)?;
+                } else {
+                    encoder.cbz_x(XRegOrZero::Reg(xr(9)?), label)?;
+                }
             }
         }
     }
 
-    let complete = emitter.words.len();
-    emitter.emit_mov_imm64(9, code_length as u64);
-    emitter.emit(str_x(9, 19, RIP_OFFSET));
-    emitter.emit_mov_imm64(0, 0);
-    emitter.emit(str_x(14, 21, 0));
-    let epilogue = emitter.words.len();
-    emitter.emit(0xA8C1_7BF6); // LDP X22, X30, [SP], #16
-    emitter.emit(0xA8C1_7BF5); // LDP X21, X30, [SP], #16
-    emitter.emit(0xA8C1_53F3); // LDP X19, X20, [SP], #16
-    emitter.emit(0xD65F_03C0); // RET
-    let budget_exit = emitter.words.len();
-    emitter.emit_mov_imm64(0, 1);
-    emitter.emit(str_x(14, 21, 0));
-    emitter.emit(0xA8C1_7BF6);
-    emitter.emit(0xA8C1_7BF5);
-    emitter.emit(0xA8C1_53F3);
-    emitter.emit(0xD65F_03C0);
-    let stop_exit = emitter.words.len();
-    emitter.emit_mov_imm64(0, 3);
-    emitter.emit(str_x(14, 21, 0));
-    emitter.emit(0xA8C1_7BF6);
-    emitter.emit(0xA8C1_7BF5);
-    emitter.emit(0xA8C1_53F3);
-    emitter.emit(0xD65F_03C0);
-    let invalid_entry = emitter.words.len();
-    emitter.emit_mov_imm64(0, 2);
-    emitter.emit(str_x(14, 21, 0));
-    emitter.emit(0xA8C1_7BF6);
-    emitter.emit(0xA8C1_7BF5);
-    emitter.emit(0xA8C1_53F3);
-    emitter.emit(0xD65F_03C0);
+    encoder.bind(code_end_label)?;
+    emit_mov_imm64(&mut encoder, 9, code_length as u64)?;
+    encoder.str_x(
+        XRegOrZero::Reg(xr(9)?),
+        AddressBase::Reg(xr(19)?),
+        RIP_OFFSET,
+    )?;
+    encoder.movz_x(xr(0)?, 0, 0)?;
+    encoder.str_x(XRegOrZero::Reg(xr(14)?), AddressBase::Reg(xr(21)?), 0)?;
+    emit_epilogue(&mut encoder)?;
 
-    for (patch, guest_offset) in start_patches {
-        let target = if guest_offset == code_length {
-            complete
-        } else {
-            let index = *offsets.get(&guest_offset).ok_or(JitError::InvalidEntry)?;
-            guest_to_host[index].1
-        };
-        emitter.patch_conditional(patch, target)?;
-    }
-    emitter.patch_unconditional(invalid_start_branch, invalid_entry)?;
+    encoder.bind(budget_exit)?;
+    emit_mov_imm64(&mut encoder, 0, 1)?;
+    encoder.str_x(XRegOrZero::Reg(xr(14)?), AddressBase::Reg(xr(21)?), 0)?;
+    emit_epilogue(&mut encoder)?;
 
-    for (patch, kind) in branch_patches {
-        let target = match kind {
-            PatchKind::Budget => budget_exit,
-            PatchKind::Stopped => stop_exit,
-            PatchKind::Guest(target) if target == code_length => complete,
-            PatchKind::Guest(target) => {
-                let index = *offsets.get(&target).ok_or(JitError::InvalidEntry)?;
-                // Each guest block starts with saving its RIP to CpuState.
-                guest_to_host[index].1
-            }
-        };
-        emitter.patch_conditional(patch, target)?;
-    }
+    encoder.bind(stop_exit)?;
+    emit_mov_imm64(&mut encoder, 0, 3)?;
+    encoder.str_x(XRegOrZero::Reg(xr(14)?), AddressBase::Reg(xr(21)?), 0)?;
+    emit_epilogue(&mut encoder)?;
 
-    // Keep the epilogue's location represented for debugging even when no
-    // guest branch targets it directly.
-    let _ = epilogue;
+    encoder.bind(invalid_entry)?;
+    emit_mov_imm64(&mut encoder, 0, 2)?;
+    encoder.str_x(XRegOrZero::Reg(xr(14)?), AddressBase::Reg(xr(21)?), 0)?;
+    emit_epilogue(&mut encoder)?;
+
     Ok(JitOutput {
-        host_code: emitter.words,
+        host_code: encoder.finish()?.into_words(),
         guest_to_host,
     })
 }
 
-#[derive(Clone, Copy)]
-enum PatchKind {
-    Budget,
-    Stopped,
-    Guest(usize),
+fn xr(number: u8) -> Result<arm64::XReg, JitError> {
+    Ok(arm64::XReg::new(number)?)
 }
 
-#[derive(Default)]
-struct Emitter {
-    words: Vec<u32>,
-}
-
-impl Emitter {
-    fn emit(&mut self, word: u32) -> usize {
-        let index = self.words.len();
-        self.words.push(word);
-        index
-    }
-
-    fn emit_mov_imm64(&mut self, dst: u32, value: u64) {
-        self.emit(mov_imm16(dst, value as u16, 0, false));
-        for half in 1..4 {
-            let imm = ((value >> (half * 16)) & 0xFFFF) as u16;
-            if imm != 0 {
-                self.emit(mov_imm16(dst, imm, half as u32, true));
-            }
+fn emit_mov_imm64(encoder: &mut arm64::Encoder, dst: u8, value: u64) -> Result<(), JitError> {
+    let dst = xr(dst)?;
+    encoder.movz_x(dst, value as u16, 0)?;
+    for half in 1..4 {
+        let immediate = ((value >> (half * 16)) & 0xffff) as u16;
+        if immediate != 0 {
+            encoder.movk_x(dst, immediate, half as u8)?;
         }
     }
-
-    fn patch_conditional(&mut self, at: usize, target: usize) -> Result<(), JitError> {
-        let delta = target as i64 - at as i64;
-        if !(-(1 << 18)..(1 << 18)).contains(&delta) {
-            return Err(JitError::CodeTooLarge);
-        }
-        self.words[at] = (self.words[at] & !0x00FF_FFE0) | (((delta as u32) & 0x7_FFFF) << 5);
-        Ok(())
-    }
-
-    fn patch_unconditional(&mut self, at: usize, target: usize) -> Result<(), JitError> {
-        let delta = target as i64 - at as i64;
-        if !(-(1 << 25)..(1 << 25)).contains(&delta) {
-            return Err(JitError::CodeTooLarge);
-        }
-        self.words[at] = 0x1400_0000 | ((delta as u32) & 0x03FF_FFFF);
-        Ok(())
-    }
+    Ok(())
 }
 
-fn mov_reg(dst: u32, src: u32) -> u32 {
-    0xAA00_03E0 | (src << 16) | dst // ORR Xd, XZR, Xm
+fn emit_epilogue(encoder: &mut arm64::Encoder) -> Result<(), JitError> {
+    use arm64::{AddressBase, PairIndexMode};
+    encoder.ldp_x(
+        xr(22)?,
+        xr(30)?,
+        AddressBase::Sp,
+        16,
+        PairIndexMode::PostIndex,
+    )?;
+    encoder.ldp_x(
+        xr(21)?,
+        xr(30)?,
+        AddressBase::Sp,
+        16,
+        PairIndexMode::PostIndex,
+    )?;
+    encoder.ldp_x(
+        xr(19)?,
+        xr(20)?,
+        AddressBase::Sp,
+        16,
+        PairIndexMode::PostIndex,
+    )?;
+    encoder.ret(xr(30)?);
+    Ok(())
 }
 
-fn mov_imm16(dst: u32, value: u16, half: u32, keep: bool) -> u32 {
-    (if keep { 0xF280_0000 } else { 0xD280_0000 }) | (half << 21) | ((value as u32) << 5) | dst
-}
-
-fn emit_flag_helper_call(emitter: &mut Emitter, operation: u32) {
-    emitter.emit(mov_reg(0, 19));
-    emitter.emit(mov_reg(1, 9));
-    emitter.emit(mov_reg(2, 10));
-    emitter.emit(mov_reg(3, 11));
-    emitter.emit(mov_imm16(4, operation as u16, 0, false));
+fn emit_flag_helper_call(encoder: &mut arm64::Encoder, operation: u32) -> Result<(), JitError> {
+    use arm64::{XReg, XRegOrZero};
+    encoder.mov_x(xr(0)?, XRegOrZero::Reg(xr(19)?));
+    encoder.mov_x(xr(1)?, XRegOrZero::Reg(xr(9)?));
+    encoder.mov_x(xr(2)?, XRegOrZero::Reg(xr(10)?));
+    encoder.mov_x(xr(3)?, XRegOrZero::Reg(xr(11)?));
+    encoder.movz_x(xr(4)?, operation as u16, 0)?;
     let address = update_arithmetic_flags as *const () as usize as u64;
     for half in 0..4 {
-        let imm = ((address >> (half * 16)) & 0xFFFF) as u32;
-        emitter.emit(mov_imm16(16, imm as u16, half, half != 0));
+        let immediate = ((address >> (half * 16)) & 0xffff) as u16;
+        if half == 0 {
+            encoder.movz_x(xr(16)?, immediate, 0)?;
+        } else {
+            encoder.movk_x(xr(16)?, immediate, half as u8)?;
+        }
     }
-    emitter.emit(0xD63F_0200); // BLR X16
-    emitter.emit(mov_reg(0, 19)); // restore state pointer for following code
-}
-
-fn ldr_x(rt: u32, rn: u32, byte_offset: u32) -> u32 {
-    0xF940_0000 | ((byte_offset / 8) << 10) | (rn << 5) | rt
-}
-
-fn ldarb_w(rt: u32, rn: u32) -> u32 {
-    0x08DF_FC00 | (rn << 5) | rt
-}
-
-fn str_x(rt: u32, rn: u32, byte_offset: u32) -> u32 {
-    0xF900_0000 | ((byte_offset / 8) << 10) | (rn << 5) | rt
-}
-
-fn add_x(rd: u32, rn: u32, rm: u32) -> u32 {
-    0x8B00_0000 | (rm << 16) | (rn << 5) | rd
-}
-
-fn sub_x(rd: u32, rn: u32, rm: u32) -> u32 {
-    0xCB00_0000 | (rm << 16) | (rn << 5) | rd
-}
-
-fn and_x(rd: u32, rn: u32, rm: u32) -> u32 {
-    0x8A00_0000 | (rm << 16) | (rn << 5) | rd
-}
-
-fn subs_imm(rd: u32, rn: u32, imm12: u32) -> u32 {
-    0xF100_0000 | (imm12 << 10) | (rn << 5) | rd
-}
-
-fn subs_x(rd: u32, rn: u32, rm: u32) -> u32 {
-    0xEB00_0000 | (rm << 16) | (rn << 5) | rd
-}
-
-fn adds_imm(rd: u32, rn: u32, imm12: u32) -> u32 {
-    0xB100_0000 | (imm12 << 10) | (rn << 5) | rd
+    encoder.blr(XReg::new(16)?);
+    encoder.mov_x(xr(0)?, XRegOrZero::Reg(xr(19)?));
+    Ok(())
 }
 
 unsafe extern "C" fn update_arithmetic_flags(
@@ -377,9 +394,9 @@ mod tests {
         assert_eq!(RFLAGS_OFFSET, 40);
         assert_eq!(std::mem::size_of::<usize>(), 8);
         let output = compile(&[0x48, 0x03, 0xc1, 0x74, 0]).unwrap();
-        assert!(output.host_code.contains(&ldr_x(9, 19, RIP_OFFSET)));
-        assert!(output.host_code.contains(&str_x(9, 19, RIP_OFFSET)));
-        assert!(output.host_code.contains(&ldr_x(9, 19, RFLAGS_OFFSET)));
+        assert!(output.host_code.contains(&0xF940_1269)); // LDR X9, [X19, #32]
+        assert!(output.host_code.contains(&0xF900_1269)); // STR X9, [X19, #32]
+        assert!(output.host_code.contains(&0xF940_1669)); // LDR X9, [X19, #40]
     }
 
     #[test]
@@ -437,6 +454,70 @@ mod tests {
         assert_eq!(output.guest_to_host[0].0, 0);
         assert!(!output.host_code.is_empty());
         assert_eq!(output.host_code[0], 0xA9BF_53F3);
+    }
+
+    #[test]
+    fn legacy_mov_fragment_output_matches_the_existing_word_vector() {
+        let code = [0x48, 0xb8, 1, 0, 0, 0, 0, 0, 0, 0];
+        let output = compile(&code).unwrap();
+        assert_eq!(output.guest_to_host, vec![(0, 17)]);
+        assert_eq!(
+            output.host_code,
+            vec![
+                0xa9bf_53f3,
+                0xa9bf_7bf5,
+                0xa9bf_7bf6,
+                0xaa00_03f3,
+                0xaa01_03ef,
+                0xaa02_03f5,
+                0xaa1f_03ee,
+                0xaa03_03f6,
+                0xf940_1269,
+                0xd280_000a,
+                0xeb0a_013f,
+                0x5400_00c0,
+                0xf940_1269,
+                0xd280_014a,
+                0xeb0a_013f,
+                0x5400_0160,
+                0x1400_001e,
+                0xd280_0009,
+                0xf900_1269,
+                0xf100_05ef,
+                0x5400_01c3,
+                0x08df_fec9,
+                0x3500_0249,
+                0xb100_05ce,
+                0xd280_0029,
+                0xf900_0269,
+                0xd280_0149,
+                0xf900_1269,
+                0xd280_0000,
+                0xf900_02ae,
+                0xa8c1_7bf6,
+                0xa8c1_7bf5,
+                0xa8c1_53f3,
+                0xd65f_03c0,
+                0xd280_0020,
+                0xf900_02ae,
+                0xa8c1_7bf6,
+                0xa8c1_7bf5,
+                0xa8c1_53f3,
+                0xd65f_03c0,
+                0xd280_0060,
+                0xf900_02ae,
+                0xa8c1_7bf6,
+                0xa8c1_7bf5,
+                0xa8c1_53f3,
+                0xd65f_03c0,
+                0xd280_0040,
+                0xf900_02ae,
+                0xa8c1_7bf6,
+                0xa8c1_7bf5,
+                0xa8c1_53f3,
+                0xd65f_03c0,
+            ]
+        );
     }
 
     #[test]

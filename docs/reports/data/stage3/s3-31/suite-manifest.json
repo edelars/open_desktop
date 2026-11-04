@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "profile": "s3-31-warm-dispatch-phases",
+  "frozen_corpus": {
+    "case_list_sha256": "b9276b52556b3692552de074e83cd8aef0c777f29861bd19ab09c188e41615d3",
+    "trace_sha256": "bf8d5efe0c52a47cbb4682f67ea73a82e684d463733aff3be60fed0b280bd5b3",
+    "inputs": 1010,
+    "trace_visits": 1322
+  },
+  "runs": [
+    {
+      "process_run": 1,
+      "source_revision": "c88fcda336a5e5e06fef13663e38aedb15af51b5",
+      "build_source_sha256": "c277678d92c7c349d326940392d471e01861d4417af39b43a57cd839bd6e8462",
+      "binary_sha256": "71e3ea52f5e0bb254d74b37bdf50cd09625659db7b263e3eff777ca741d1c2c3",
+      "report_json": {
+        "path": "warm-dispatch-1.json",
+        "sha256": "c2bd04a5d82a27e556eddbf4ba6e551b172a5cbc308676659978b4f9b31ce3ca"
+      },
+      "command_log": {
+        "path": "run1.log",
+        "sha256": "0709f52ec102b5b82cf3970034f4823cc2820b02798f458b84776d6bdb7bcb46"
+      }
+    },
+    {
+      "process_run": 2,
+      "source_revision": "39b075b2da6d725b776f610dba49fe77f89dd207",
+      "build_source_sha256": "756600d7490f270eba15d01e024938edf93b8f6d7622b88a6b8c2bdee2faeaf9",
+      "binary_sha256": "950d0670ab1dfc2c720a1f3a16fa6b4ebf69331571b73eb8a9fe18c267050819",
+      "report_json": {
+        "path": "warm-dispatch-2.json",
+        "sha256": "a2997f303e0dcf8961ac7308dae9ded14c803c1c9f3326e5ed2829850ef725d4"
+      },
+      "command_log": {
+        "path": "run2.log",
+        "sha256": "62548b2c11d10db3cc3a0319ea84ac4c898a728fcb2976bd2f49b3d9e6d55b21"
+      }
+    },
+    {
+      "process_run": 3,
+      "source_revision": "dd947afe08b3e86a989104dd6e172fa32ac6c3c1",
+      "build_source_sha256": "e98e3d6dddec040f6f214e5987026548ee94ac5e1ae01226e6d2b7d608b99043",
+      "binary_sha256": "70a28023100b792059616710120e3cb1965bf0f96a4db8dced2f6b532d59ec27",
+      "report_json": {
+        "path": "warm-dispatch-3.json",
+        "sha256": "8af6af118b6902d4de21b7ee82f302394fb2a29e59ee813e5aabd9bd9f08c5a3"
+      },
+      "command_log": {
+        "path": "run3.log",
+        "sha256": "1b511555b61c1c238a4c4bd876602d2508fdcf8297e3420ad027613e5397c261"
+      }
+    }
+  ],
+  "executable_identity_receipt": {
+    "path": "executable-sha256.txt",
+    "sha256": "a680d33b0c46b66da645330051381a82c1a17779f4ebe4edbb471e9d2240e8ff"
+  }
+}

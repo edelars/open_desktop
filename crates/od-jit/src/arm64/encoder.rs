@@ -1,0 +1,874 @@
+use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_ENCODER_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Register numbers 0..=30. Encoded register 31 must be selected explicitly
+/// as `Zero` or `Sp` according to the instruction's operand role.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct XReg(u8);
+
+impl XReg {
+    pub fn new(number: u8) -> Result<Self, EncodeError> {
+        if number < 31 {
+            Ok(Self(number))
+        } else {
+            Err(EncodeError::InvalidRegister(number))
+        }
+    }
+
+    pub const fn number(self) -> u8 {
+        self.0
+    }
+}
+
+/// 32-bit register number 0..=30; register 31 is not a `WReg`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WReg(u8);
+
+impl WReg {
+    pub fn new(number: u8) -> Result<Self, EncodeError> {
+        if number < 31 {
+            Ok(Self(number))
+        } else {
+            Err(EncodeError::InvalidRegister(number))
+        }
+    }
+
+    pub const fn number(self) -> u8 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum XRegOrZero {
+    Reg(XReg),
+    Zero,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum XRegOrSp {
+    Reg(XReg),
+    Sp,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressBase {
+    Reg(XReg),
+    Sp,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PairIndexMode {
+    Offset,
+    PreIndex,
+    PostIndex,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Condition {
+    Equal,
+    Lower,
+}
+
+impl Condition {
+    const fn bits(self) -> u32 {
+        match self {
+            Self::Equal => 0,
+            Self::Lower => 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EncodeError {
+    InvalidRegister(u8),
+    InvalidHalfwordIndex(u8),
+    ImmediateOutOfRange {
+        value: u32,
+        maximum: u32,
+    },
+    OffsetOutOfRange {
+        value: i32,
+        minimum: i32,
+        maximum: i32,
+    },
+    UnalignedOffset {
+        value: i64,
+        alignment: u8,
+    },
+    PairWritebackOverlapsBase {
+        base: u8,
+    },
+    DuplicateLoadPairRegister {
+        register: u8,
+    },
+    InvalidLabel(Label),
+    ForeignLabel(Label),
+    LabelAlreadyBound(Label),
+    UnboundLabel(Label),
+    BranchOutOfRange {
+        words: i64,
+        minimum: i64,
+        maximum: i64,
+    },
+    BufferTooLarge,
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ARM64 encoding error: {self:?}")
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct Label {
+    owner: u64,
+    index: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncodedCode {
+    words: Vec<u32>,
+}
+
+impl EncodedCode {
+    pub fn words(&self) -> &[u32] {
+        &self.words
+    }
+
+    pub fn into_words(self) -> Vec<u32> {
+        self.words
+    }
+
+    pub fn to_le_bytes(&self) -> Result<Vec<u8>, EncodeError> {
+        let capacity = self
+            .words
+            .len()
+            .checked_mul(4)
+            .ok_or(EncodeError::BufferTooLarge)?;
+        let mut bytes = Vec::with_capacity(capacity);
+        for word in &self.words {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        Ok(bytes)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Relocation {
+    Branch26,
+    Conditional19,
+}
+
+#[derive(Clone, Copy)]
+struct Fixup {
+    at: usize,
+    target: Label,
+    relocation: Relocation,
+}
+
+/// Small checked buffer for the instruction forms currently emitted by od-jit.
+/// Labels are word offsets; branch displacement is relative to the branch
+/// instruction address and encoded in 4-byte words as required by A64.
+pub struct Encoder {
+    owner: u64,
+    words: Vec<u32>,
+    labels: Vec<Option<usize>>,
+    fixups: Vec<Fixup>,
+}
+
+impl Encoder {
+    pub fn new() -> Self {
+        Self {
+            owner: NEXT_ENCODER_ID.fetch_add(1, Ordering::Relaxed),
+            words: Vec::new(),
+            labels: Vec::new(),
+            fixups: Vec::new(),
+        }
+    }
+
+    pub fn new_label(&mut self) -> Result<Label, EncodeError> {
+        let index = u32::try_from(self.labels.len()).map_err(|_| EncodeError::BufferTooLarge)?;
+        let label = Label {
+            owner: self.owner,
+            index,
+        };
+        self.labels.push(None);
+        Ok(label)
+    }
+
+    pub fn position(&self) -> usize {
+        self.words.len()
+    }
+
+    pub fn bind(&mut self, label: Label) -> Result<(), EncodeError> {
+        self.validate_label(label)?;
+        let position = self.words.len();
+        let slot = self
+            .labels
+            .get_mut(label.index as usize)
+            .ok_or(EncodeError::InvalidLabel(label))?;
+        if slot.is_some() {
+            return Err(EncodeError::LabelAlreadyBound(label));
+        }
+        *slot = Some(position);
+        Ok(())
+    }
+
+    pub fn movz_x(&mut self, dst: XReg, immediate: u16, halfword: u8) -> Result<(), EncodeError> {
+        self.validate_halfword(halfword)?;
+        self.emit(
+            0xD280_0000
+                | (u32::from(halfword) << 21)
+                | (u32::from(immediate) << 5)
+                | u32::from(dst.0),
+        );
+        Ok(())
+    }
+
+    pub fn movk_x(&mut self, dst: XReg, immediate: u16, halfword: u8) -> Result<(), EncodeError> {
+        self.validate_halfword(halfword)?;
+        self.emit(
+            0xF280_0000
+                | (u32::from(halfword) << 21)
+                | (u32::from(immediate) << 5)
+                | u32::from(dst.0),
+        );
+        Ok(())
+    }
+
+    pub fn mov_x(&mut self, dst: XReg, src: XRegOrZero) {
+        let rm = match src {
+            XRegOrZero::Reg(reg) => reg.0,
+            XRegOrZero::Zero => 31,
+        };
+        self.emit(0xAA00_03E0 | (u32::from(rm) << 16) | u32::from(dst.0));
+    }
+
+    pub fn add_x(&mut self, dst: XReg, lhs: XReg, rhs: XRegOrZero) {
+        self.emit(
+            0x8B00_0000
+                | (u32::from(rhs.number()) << 16)
+                | (u32::from(lhs.0) << 5)
+                | u32::from(dst.0),
+        );
+    }
+
+    pub fn sub_x(&mut self, dst: XReg, lhs: XReg, rhs: XRegOrZero) {
+        self.emit(
+            0xCB00_0000
+                | (u32::from(rhs.number()) << 16)
+                | (u32::from(lhs.0) << 5)
+                | u32::from(dst.0),
+        );
+    }
+
+    pub fn and_x(&mut self, dst: XReg, lhs: XReg, rhs: XRegOrZero) {
+        self.emit(
+            0x8A00_0000
+                | (u32::from(rhs.number()) << 16)
+                | (u32::from(lhs.0) << 5)
+                | u32::from(dst.0),
+        );
+    }
+
+    pub fn subs_x(&mut self, dst: XRegOrZero, lhs: XReg, rhs: XRegOrZero) {
+        self.emit(
+            0xEB00_0000
+                | (u32::from(rhs.number()) << 16)
+                | (u32::from(lhs.0) << 5)
+                | u32::from(dst.number()),
+        );
+    }
+
+    pub fn adds_imm_x(
+        &mut self,
+        dst: XRegOrZero,
+        lhs: XRegOrSp,
+        immediate: u16,
+    ) -> Result<(), EncodeError> {
+        self.validate_imm12(u32::from(immediate))?;
+        self.emit(
+            0xB100_0000
+                | (u32::from(immediate) << 10)
+                | (u32::from(lhs.number()) << 5)
+                | u32::from(dst.number()),
+        );
+        Ok(())
+    }
+
+    pub fn subs_imm_x(
+        &mut self,
+        dst: XRegOrZero,
+        lhs: XRegOrSp,
+        immediate: u16,
+    ) -> Result<(), EncodeError> {
+        self.validate_imm12(u32::from(immediate))?;
+        self.emit(
+            0xF100_0000
+                | (u32::from(immediate) << 10)
+                | (u32::from(lhs.number()) << 5)
+                | u32::from(dst.number()),
+        );
+        Ok(())
+    }
+
+    pub fn ldr_x(
+        &mut self,
+        rt: XRegOrZero,
+        base: AddressBase,
+        byte_offset: u32,
+    ) -> Result<(), EncodeError> {
+        self.validate_scaled_offset(byte_offset, 8, 4095)?;
+        self.emit(
+            0xF940_0000
+                | ((byte_offset / 8) << 10)
+                | (u32::from(base.number()) << 5)
+                | u32::from(rt.number()),
+        );
+        Ok(())
+    }
+
+    pub fn str_x(
+        &mut self,
+        rt: XRegOrZero,
+        base: AddressBase,
+        byte_offset: u32,
+    ) -> Result<(), EncodeError> {
+        self.validate_scaled_offset(byte_offset, 8, 4095)?;
+        self.emit(
+            0xF900_0000
+                | ((byte_offset / 8) << 10)
+                | (u32::from(base.number()) << 5)
+                | u32::from(rt.number()),
+        );
+        Ok(())
+    }
+
+    pub fn ldarb_w(&mut self, rt: WReg, base: AddressBase) {
+        self.emit(0x08DF_FC00 | (u32::from(base.number()) << 5) | u32::from(rt.0));
+    }
+
+    pub fn stp_x(
+        &mut self,
+        first: XReg,
+        second: XReg,
+        base: AddressBase,
+        byte_offset: i32,
+        mode: PairIndexMode,
+    ) -> Result<(), EncodeError> {
+        self.validate_pair_registers(first, second, base, mode, false)?;
+        let imm7 = self.validate_pair_offset(byte_offset)?;
+        let mode_bits = match mode {
+            PairIndexMode::Offset => 0xA900_0000,
+            PairIndexMode::PreIndex => 0xA980_0000,
+            PairIndexMode::PostIndex => 0xA880_0000,
+        };
+        self.emit(
+            mode_bits
+                | (imm7 << 15)
+                | (u32::from(second.0) << 10)
+                | (u32::from(base.number()) << 5)
+                | u32::from(first.0),
+        );
+        Ok(())
+    }
+
+    pub fn ldp_x(
+        &mut self,
+        first: XReg,
+        second: XReg,
+        base: AddressBase,
+        byte_offset: i32,
+        mode: PairIndexMode,
+    ) -> Result<(), EncodeError> {
+        self.validate_pair_registers(first, second, base, mode, true)?;
+        let imm7 = self.validate_pair_offset(byte_offset)?;
+        let mode_bits = match mode {
+            PairIndexMode::Offset => 0xA940_0000,
+            PairIndexMode::PreIndex => 0xA9C0_0000,
+            PairIndexMode::PostIndex => 0xA8C0_0000,
+        };
+        self.emit(
+            mode_bits
+                | (imm7 << 15)
+                | (u32::from(second.0) << 10)
+                | (u32::from(base.number()) << 5)
+                | u32::from(first.0),
+        );
+        Ok(())
+    }
+
+    pub fn b(&mut self, target: Label) -> Result<(), EncodeError> {
+        self.branch26(0x1400_0000, target)
+    }
+    pub fn bl(&mut self, target: Label) -> Result<(), EncodeError> {
+        self.branch26(0x9400_0000, target)
+    }
+
+    pub fn b_cond(&mut self, condition: Condition, target: Label) -> Result<(), EncodeError> {
+        self.branch19(0x5400_0000 | condition.bits(), target)
+    }
+
+    pub fn cbz_x(&mut self, reg: XRegOrZero, target: Label) -> Result<(), EncodeError> {
+        self.branch19(0xB400_0000 | u32::from(reg.number()), target)
+    }
+
+    pub fn cbnz_x(&mut self, reg: XRegOrZero, target: Label) -> Result<(), EncodeError> {
+        self.branch19(0xB500_0000 | u32::from(reg.number()), target)
+    }
+
+    pub fn cbz_w(&mut self, reg: WReg, target: Label) -> Result<(), EncodeError> {
+        self.branch19(0x3400_0000 | u32::from(reg.0), target)
+    }
+
+    pub fn cbnz_w(&mut self, reg: WReg, target: Label) -> Result<(), EncodeError> {
+        self.branch19(0x3500_0000 | u32::from(reg.0), target)
+    }
+
+    pub fn blr(&mut self, reg: XReg) {
+        self.emit(0xD63F_0000 | (u32::from(reg.0) << 5));
+    }
+
+    pub fn ret(&mut self, reg: XReg) {
+        self.emit(0xD65F_0000 | (u32::from(reg.0) << 5));
+    }
+
+    /// Resolve every relocation into a temporary copy. No encoded output is
+    /// returned unless all labels and displacement ranges are valid.
+    pub fn finish(self) -> Result<EncodedCode, EncodeError> {
+        let mut words = self.words;
+        for fixup in self.fixups {
+            let target = self
+                .labels
+                .get(fixup.target.index as usize)
+                .ok_or(EncodeError::InvalidLabel(fixup.target))?
+                .ok_or(EncodeError::UnboundLabel(fixup.target))?;
+            let delta = i64::try_from(target).map_err(|_| EncodeError::BufferTooLarge)?
+                - i64::try_from(fixup.at).map_err(|_| EncodeError::BufferTooLarge)?;
+            match fixup.relocation {
+                Relocation::Branch26 => {
+                    check_branch_range(delta, 26)?;
+                    words[fixup.at] =
+                        (words[fixup.at] & 0xFC00_0000) | ((delta as u32) & 0x03FF_FFFF);
+                }
+                Relocation::Conditional19 => {
+                    check_branch_range(delta, 19)?;
+                    words[fixup.at] =
+                        (words[fixup.at] & !0x00FF_FFE0) | (((delta as u32) & 0x7_FFFF) << 5);
+                }
+            }
+        }
+        Ok(EncodedCode { words })
+    }
+
+    fn emit(&mut self, word: u32) {
+        self.words.push(word);
+    }
+
+    fn branch26(&mut self, opcode: u32, target: Label) -> Result<(), EncodeError> {
+        let at = self.words.len();
+        self.validate_label(target)?;
+        self.emit(opcode);
+        self.fixups.push(Fixup {
+            at,
+            target,
+            relocation: Relocation::Branch26,
+        });
+        Ok(())
+    }
+
+    fn branch19(&mut self, opcode: u32, target: Label) -> Result<(), EncodeError> {
+        let at = self.words.len();
+        self.validate_label(target)?;
+        self.emit(opcode);
+        self.fixups.push(Fixup {
+            at,
+            target,
+            relocation: Relocation::Conditional19,
+        });
+        Ok(())
+    }
+
+    fn validate_label(&self, label: Label) -> Result<(), EncodeError> {
+        if label.owner != self.owner {
+            return Err(EncodeError::ForeignLabel(label));
+        }
+        self.labels
+            .get(label.index as usize)
+            .map(|_| ())
+            .ok_or(EncodeError::InvalidLabel(label))
+    }
+
+    fn validate_halfword(&self, halfword: u8) -> Result<(), EncodeError> {
+        if halfword < 4 {
+            Ok(())
+        } else {
+            Err(EncodeError::InvalidHalfwordIndex(halfword))
+        }
+    }
+
+    fn validate_imm12(&self, value: u32) -> Result<(), EncodeError> {
+        if value <= 4095 {
+            Ok(())
+        } else {
+            Err(EncodeError::ImmediateOutOfRange {
+                value,
+                maximum: 4095,
+            })
+        }
+    }
+
+    fn validate_scaled_offset(
+        &self,
+        offset: u32,
+        scale: u32,
+        max_scaled: u32,
+    ) -> Result<(), EncodeError> {
+        if offset % scale != 0 {
+            return Err(EncodeError::UnalignedOffset {
+                value: i64::from(offset),
+                alignment: scale as u8,
+            });
+        }
+        let scaled = offset / scale;
+        if scaled > max_scaled {
+            return Err(EncodeError::ImmediateOutOfRange {
+                value: scaled,
+                maximum: max_scaled,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_pair_offset(&self, offset: i32) -> Result<u32, EncodeError> {
+        if !(-512..=504).contains(&offset) {
+            return Err(EncodeError::OffsetOutOfRange {
+                value: offset,
+                minimum: -512,
+                maximum: 504,
+            });
+        }
+        if offset % 8 != 0 {
+            return Err(EncodeError::UnalignedOffset {
+                value: i64::from(offset),
+                alignment: 8,
+            });
+        }
+        Ok(((offset / 8) as u32) & 0x7f)
+    }
+
+    fn validate_pair_registers(
+        &self,
+        first: XReg,
+        second: XReg,
+        base: AddressBase,
+        mode: PairIndexMode,
+        is_load: bool,
+    ) -> Result<(), EncodeError> {
+        if is_load && first == second {
+            return Err(EncodeError::DuplicateLoadPairRegister { register: first.0 });
+        }
+        if mode != PairIndexMode::Offset {
+            if let AddressBase::Reg(base) = base {
+                if base == first || base == second {
+                    return Err(EncodeError::PairWritebackOverlapsBase { base: base.0 });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl XRegOrZero {
+    const fn number(self) -> u8 {
+        match self {
+            Self::Reg(reg) => reg.0,
+            Self::Zero => 31,
+        }
+    }
+}
+
+impl XRegOrSp {
+    const fn number(self) -> u8 {
+        match self {
+            Self::Reg(reg) => reg.0,
+            Self::Sp => 31,
+        }
+    }
+}
+
+impl AddressBase {
+    const fn number(self) -> u8 {
+        match self {
+            Self::Reg(reg) => reg.0,
+            Self::Sp => 31,
+        }
+    }
+}
+
+fn check_branch_range(words: i64, bits: u32) -> Result<(), EncodeError> {
+    let minimum = -(1_i64 << (bits - 1));
+    let maximum = 1_i64 << (bits - 1);
+    if (minimum..maximum).contains(&words) {
+        Ok(())
+    } else {
+        Err(EncodeError::BranchOutOfRange {
+            words,
+            minimum,
+            maximum: maximum - 1,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn x(number: u8) -> XReg {
+        XReg::new(number).unwrap()
+    }
+
+    #[test]
+    fn matches_local_apple_clang_a64_assembler_fixture() {
+        // Fixture: tests/fixtures/arm64_encoder.s, clang 21.0.0,
+        // -target arm64-apple-macosx15.0. Words independently read with otool.
+        let mut encoder = Encoder::new();
+        let target = encoder.new_label().unwrap();
+        encoder.movz_x(x(10), 0x1234, 0).unwrap();
+        encoder.movk_x(x(10), 0xabcd, 1).unwrap();
+        encoder.mov_x(x(19), XRegOrZero::Reg(x(0)));
+        encoder.mov_x(x(14), XRegOrZero::Zero);
+        encoder.add_x(x(11), x(9), XRegOrZero::Reg(x(10)));
+        encoder.sub_x(x(12), x(10), XRegOrZero::Reg(x(9)));
+        encoder.and_x(x(13), x(9), XRegOrZero::Reg(x(10)));
+        encoder.subs_x(XRegOrZero::Zero, x(9), XRegOrZero::Reg(x(10)));
+        encoder
+            .adds_imm_x(XRegOrZero::Zero, XRegOrSp::Sp, 4095)
+            .unwrap();
+        encoder
+            .adds_imm_x(XRegOrZero::Reg(x(14)), XRegOrSp::Reg(x(14)), 1)
+            .unwrap();
+        encoder
+            .subs_imm_x(XRegOrZero::Zero, XRegOrSp::Reg(x(9)), 1)
+            .unwrap();
+        encoder
+            .ldr_x(XRegOrZero::Reg(x(9)), AddressBase::Reg(x(19)), 32)
+            .unwrap();
+        encoder
+            .str_x(XRegOrZero::Reg(x(9)), AddressBase::Reg(x(21)), 0)
+            .unwrap();
+        encoder.ldarb_w(WReg::new(9).unwrap(), AddressBase::Reg(x(22)));
+        encoder
+            .stp_x(x(19), x(20), AddressBase::Sp, -16, PairIndexMode::PreIndex)
+            .unwrap();
+        encoder
+            .ldp_x(x(22), x(30), AddressBase::Sp, 16, PairIndexMode::PostIndex)
+            .unwrap();
+        encoder.b(target).unwrap();
+        encoder.bl(target).unwrap();
+        encoder.b_cond(Condition::Equal, target).unwrap();
+        encoder.b_cond(Condition::Lower, target).unwrap();
+        encoder.cbz_x(XRegOrZero::Reg(x(9)), target).unwrap();
+        encoder.cbz_w(WReg::new(9).unwrap(), target).unwrap();
+        encoder.cbnz_x(XRegOrZero::Reg(x(9)), target).unwrap();
+        encoder.cbnz_w(WReg::new(9).unwrap(), target).unwrap();
+        encoder.blr(x(16));
+        encoder.ret(x(30));
+        encoder.bind(target).unwrap();
+        encoder.ret(x(30));
+
+        let code = encoder.finish().unwrap();
+        assert_eq!(
+            code.words(),
+            &[
+                0xd282_468a,
+                0xf2b5_79aa,
+                0xaa00_03f3,
+                0xaa1f_03ee,
+                0x8b0a_012b,
+                0xcb09_014c,
+                0x8a0a_012d,
+                0xeb0a_013f,
+                0xb13f_ffff,
+                0xb100_05ce,
+                0xf100_053f,
+                0xf940_1269,
+                0xf900_02a9,
+                0x08df_fec9,
+                0xa9bf_53f3,
+                0xa8c1_7bf6,
+                0x1400_000a,
+                0x9400_0009,
+                0x5400_0100,
+                0x5400_00e3,
+                0xb400_00c9,
+                0x3400_00a9,
+                0xb500_0089,
+                0x3500_0069,
+                0xd63f_0200,
+                0xd65f_03c0,
+                0xd65f_03c0,
+            ]
+        );
+        let bytes = code.to_le_bytes().unwrap();
+        assert_eq!(&bytes[..4], &[0x8a, 0x46, 0x82, 0xd2]);
+        assert_eq!(bytes.len(), code.words().len() * 4);
+    }
+
+    #[test]
+    fn validates_register_immediate_and_memory_offset_domains_before_emit() {
+        assert_eq!(XReg::new(31), Err(EncodeError::InvalidRegister(31)));
+        assert_eq!(WReg::new(31), Err(EncodeError::InvalidRegister(31)));
+        let mut encoder = Encoder::new();
+        assert_eq!(
+            encoder.movz_x(x(0), 1, 4),
+            Err(EncodeError::InvalidHalfwordIndex(4))
+        );
+        assert!(matches!(
+            encoder.adds_imm_x(XRegOrZero::Reg(x(0)), XRegOrSp::Reg(x(1)), 4096),
+            Err(EncodeError::ImmediateOutOfRange { .. })
+        ));
+        assert!(matches!(
+            encoder.ldr_x(XRegOrZero::Reg(x(0)), AddressBase::Sp, 7),
+            Err(EncodeError::UnalignedOffset {
+                value: 7,
+                alignment: 8
+            })
+        ));
+        assert!(matches!(
+            encoder.str_x(XRegOrZero::Reg(x(0)), AddressBase::Sp, 32768),
+            Err(EncodeError::ImmediateOutOfRange { .. })
+        ));
+        assert!(matches!(
+            encoder.stp_x(x(0), x(1), AddressBase::Sp, -520, PairIndexMode::Offset),
+            Err(EncodeError::OffsetOutOfRange { .. })
+        ));
+        assert!(matches!(
+            encoder.ldp_x(x(0), x(1), AddressBase::Sp, 4, PairIndexMode::PostIndex),
+            Err(EncodeError::UnalignedOffset { .. })
+        ));
+        assert!(matches!(
+            encoder.ldp_x(
+                x(0),
+                x(1),
+                AddressBase::Reg(x(0)),
+                16,
+                PairIndexMode::PostIndex
+            ),
+            Err(EncodeError::PairWritebackOverlapsBase { base: 0 })
+        ));
+        assert!(matches!(
+            encoder.ldp_x(x(0), x(0), AddressBase::Sp, 0, PairIndexMode::Offset),
+            Err(EncodeError::DuplicateLoadPairRegister { register: 0 })
+        ));
+        assert_eq!(
+            encoder.position(),
+            0,
+            "failed operands must not append words"
+        );
+    }
+
+    #[test]
+    fn accepts_highest_valid_immediate_and_scaled_offset_boundaries() {
+        let mut encoder = Encoder::new();
+        let top_register = XReg::new(30).unwrap();
+        encoder.movz_x(top_register, u16::MAX, 3).unwrap();
+        encoder
+            .adds_imm_x(XRegOrZero::Zero, XRegOrSp::Sp, 4095)
+            .unwrap();
+        encoder
+            .subs_imm_x(XRegOrZero::Zero, XRegOrSp::Sp, 4095)
+            .unwrap();
+        encoder
+            .ldr_x(XRegOrZero::Zero, AddressBase::Sp, 32760)
+            .unwrap();
+        encoder
+            .str_x(XRegOrZero::Zero, AddressBase::Sp, 32760)
+            .unwrap();
+        encoder
+            .stp_x(x(29), x(30), AddressBase::Sp, -512, PairIndexMode::Offset)
+            .unwrap();
+        encoder
+            .ldp_x(x(29), x(30), AddressBase::Sp, 504, PairIndexMode::Offset)
+            .unwrap();
+        assert_eq!(encoder.position(), 7);
+        assert!(encoder.finish().is_ok());
+    }
+
+    #[test]
+    fn finish_rejects_unbound_labels_and_branch_range_overflow() {
+        let mut encoder = Encoder::new();
+        let target = encoder.new_label().unwrap();
+        encoder.b(target).unwrap();
+        assert_eq!(encoder.finish(), Err(EncodeError::UnboundLabel(target)));
+
+        for (bits, edge) in [(19, 1_i64 << 18), (26, 1_i64 << 25)] {
+            assert_eq!(check_branch_range(-edge, bits), Ok(()));
+            assert_eq!(check_branch_range(edge - 1, bits), Ok(()));
+            assert!(matches!(
+                check_branch_range(edge, bits),
+                Err(EncodeError::BranchOutOfRange { .. })
+            ));
+            assert!(matches!(
+                check_branch_range(-edge - 1, bits),
+                Err(EncodeError::BranchOutOfRange { .. })
+            ));
+        }
+
+        let mut encoder = Encoder::new();
+        let target = encoder.new_label().unwrap();
+        encoder.b_cond(Condition::Equal, target).unwrap();
+        for _ in 0..(1 << 18) {
+            encoder.movz_x(x(0), 0, 0).unwrap();
+        }
+        encoder.bind(target).unwrap();
+        assert!(matches!(
+            encoder.finish(),
+            Err(EncodeError::BranchOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn label_binding_and_branch_to_self_use_instruction_relative_base() {
+        let mut encoder = Encoder::new();
+        let start = encoder.new_label().unwrap();
+        encoder.bind(start).unwrap();
+        encoder.b(start).unwrap();
+        encoder.bl(start).unwrap();
+        let words = encoder.finish().unwrap().into_words();
+        assert_eq!(words, vec![0x1400_0000, 0x97ff_ffff]);
+    }
+
+    #[test]
+    fn rejects_unknown_and_duplicate_labels_without_adding_branch_words() {
+        let mut encoder = Encoder::new();
+        assert_eq!(
+            encoder.b(Label {
+                owner: encoder.owner,
+                index: u32::MAX,
+            }),
+            Err(EncodeError::InvalidLabel(Label {
+                owner: encoder.owner,
+                index: u32::MAX,
+            }))
+        );
+        assert_eq!(encoder.position(), 0);
+        let label = encoder.new_label().unwrap();
+        encoder.bind(label).unwrap();
+        assert_eq!(
+            encoder.bind(label),
+            Err(EncodeError::LabelAlreadyBound(label))
+        );
+
+        let mut owner = Encoder::new();
+        let foreign = owner.new_label().unwrap();
+        let mut other = Encoder::new();
+        assert_eq!(other.bind(foreign), Err(EncodeError::ForeignLabel(foreign)));
+        assert_eq!(other.b(foreign), Err(EncodeError::ForeignLabel(foreign)));
+        assert_eq!(other.position(), 0);
+    }
+}

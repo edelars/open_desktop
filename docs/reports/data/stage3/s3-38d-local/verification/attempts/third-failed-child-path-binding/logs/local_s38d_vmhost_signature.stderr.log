@@ -1,0 +1,24 @@
+Executable=/Users/senya/.codex/worktrees/stage3-baseline/open_desktop/work/stage3-harness/stage3-20261101-165837-7fd1bd5898/artifacts/od-vmhost-smoke
+Identifier=od-vmhost-smoke-55554944427b68a38c7e35bfb636aa719d8c58fc
+Format=Mach-O thin (arm64)
+CodeDirectory v=20500 size=4857 flags=0x10002(adhoc,runtime) hashes=140+7 location=embedded
+VersionPlatform=1
+VersionMin=1703936
+VersionSDK=1769472
+Hash type=sha256 size=32
+CandidateCDHash sha256=bc6b6cf8af1ce265492a9616c3917ec758fa2e57
+CandidateCDHashFull sha256=bc6b6cf8af1ce265492a9616c3917ec758fa2e571ede036e7fcaa4950759ad62
+Hash choices=sha256
+CMSDigest=bc6b6cf8af1ce265492a9616c3917ec758fa2e571ede036e7fcaa4950759ad62
+CMSDigestType=2
+Executable Segment base=0
+Executable Segment limit=1458176
+Executable Segment flags=0x1
+Page size=16384
+CDHash=bc6b6cf8af1ce265492a9616c3917ec758fa2e57
+Signature=adhoc
+Info.plist=not bound
+TeamIdentifier=not set
+Runtime Version=27.0.0
+Sealed Resources=none
+Internal requirements count=0 size=12

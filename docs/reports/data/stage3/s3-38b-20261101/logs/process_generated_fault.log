@@ -1,0 +1,2 @@
+generated_fault_observation={"expected_reason":"VMHost terminated by SIGSEGV","launcher_returncode":1,"launcher_stderr":"open-desktop-launcher-smoke: VMHost terminated by SIGSEGV\n","launcher_stdout":""}
+launcher reported VMHost terminated by SIGSEGV after generated-code fault

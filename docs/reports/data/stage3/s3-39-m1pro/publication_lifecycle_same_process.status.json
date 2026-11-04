@@ -1,0 +1,41 @@
+{
+  "name": "publication_lifecycle_same_process",
+  "argv": [
+    "/private/tmp/open-desktop-s3-39-m1pro-9c43db068a0b41e9860dde708a4c4e33/publication_lifecycle_same_process"
+  ],
+  "returncode": 0,
+  "timeout_seconds": null,
+  "duration_ns": 503514042,
+  "stdout_file": "publication_lifecycle_same_process.stdout.txt",
+  "stderr_file": "publication_lifecycle_same_process.stderr.txt",
+  "expected": {
+    "create_status": 0,
+    "first_status": 0,
+    "first_rax": 0,
+    "first_rip": 5,
+    "first_reason": 0,
+    "first_instructions": 6,
+    "second_status": 0,
+    "second_rax": 0,
+    "second_rip": 5,
+    "second_reason": 0,
+    "second_instructions": 6,
+    "destroy_status": 0
+  },
+  "observed": {
+    "create_status": 0,
+    "first_status": 0,
+    "first_rax": 0,
+    "first_rip": 5,
+    "first_reason": 0,
+    "first_instructions": 6,
+    "second_status": 0,
+    "second_rax": 0,
+    "second_rip": 5,
+    "second_reason": 0,
+    "second_instructions": 6,
+    "destroy_status": 0
+  },
+  "passed": true,
+  "debugger_used": false
+}

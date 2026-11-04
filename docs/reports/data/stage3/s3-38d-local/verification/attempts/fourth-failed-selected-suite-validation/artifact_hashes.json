@@ -1,0 +1,12 @@
+[
+  {
+    "path": "work/stage3-harness/stage3-20261101-170509-680fd538d9/artifacts/od-vmhost-smoke",
+    "sha256": "4ce58fa1a780eecb010cec4a3562edd8ca13c119327e4a721d9ecbe20efe87b2",
+    "size_bytes": 2316416
+  },
+  {
+    "path": "work/stage3-harness/stage3-20261101-170509-680fd538d9/artifacts/open-desktop-launcher-smoke",
+    "sha256": "7657d726f33a3a25462dd7b768600dec86821af7da254e66744f4340591b9d2d",
+    "size_bytes": 141824
+  }
+]

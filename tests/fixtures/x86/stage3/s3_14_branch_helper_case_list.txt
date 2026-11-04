@@ -1,0 +1,5 @@
+tests/fixtures/x86/stage3/s3_14_jz_to_end_skips_tail.case.json
+tests/fixtures/x86/stage3/s3_14_jnz_to_end_skips_tail.case.json
+tests/fixtures/x86/stage3/s3_14_jz_not_taken_backward_target.case.json
+tests/fixtures/x86/stage3/s3_14_jnz_not_taken_backward_target.case.json
+tests/fixtures/x86/stage3/s3_14_live_through_helpers.case.json

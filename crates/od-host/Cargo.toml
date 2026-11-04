@@ -11,5 +11,14 @@ crate-type = ["rlib", "staticlib"]
 od-isa = { path = "../od-isa" }
 od-jit = { path = "../od-jit" }
 
+[dev-dependencies]
+od-testkit = { path = "../od-testkit" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+
+[[test]]
+name = "stage3_dword_store_corpus"
+path = "../../tests/cpu/stage3_dword_store_corpus.rs"
+
 [lints]
 workspace = true

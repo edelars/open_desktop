@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "profile": "s3-36d-two-site-memory-warm-direct-v1",
+  "run_kind": "preflight_only",
+  "command": "cargo run --release -p od-bench --offline -- two-site-memory-warm --preflight-only --process-run 1 --output work/tmp/stage3/s3-36d/preflight.json",
+  "source_revision": "dee1c860895c94883be7ce5650f50585569291f8",
+  "process": {
+    "cargo_pid": 30810,
+    "cargo_start_utc_inferred_from_elapsed_snapshot": "2026-11-01T06:04:06Z",
+    "completed_by_utc": "2026-11-01T06:05:17Z",
+    "exit_code": 0,
+    "release_compile_seconds_reported_by_cargo": 41.96,
+    "scored_timing_started": false
+  },
+  "outputs": {
+    "report_path": "work/tmp/stage3/s3-36d/preflight.json",
+    "report_sha256": "e84285d321d3f508753651192377c12b3122f2aa5978d7a0dc72644ea22b7e33",
+    "journal_path": null,
+    "journal_note": "Preflight-only mode does not create a calibration/sample journal. The expected warm journal path was absent after exit.",
+    "source_sha256_from_report": "2ba1b077bc7a905adae120a98436a1fbf4d9d7de157cc2d02692db1d08ee0177"
+  },
+  "snapshots": [
+    {
+      "observed_at_utc": "2026-11-01T06:03:47Z",
+      "phase": "immediately_before_launch",
+      "load_average_raw": "{ 2.15 2.07 2.17 }",
+      "active_stage2_or_graphify": [],
+      "note": "Output report and corresponding warm journal paths were checked absent; repository HEAD was dee1c860895c94883be7ce5650f50585569291f8."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:04:09Z",
+      "phase": "early_release_build",
+      "load_average_raw": "{ 2.32 2.11 2.18 }",
+      "cargo_pid": 30810,
+      "cargo_elapsed_seconds": 3,
+      "active_stage2_or_graphify": [],
+      "note": "Cargo release build-script child was briefly visible; no Graphify process."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:04:47Z",
+      "phase": "release_rustc_compile",
+      "load_average_raw": "{ 4.96 2.74 2.40 }",
+      "cargo_pid": 30810,
+      "cargo_elapsed_seconds": 41,
+      "benchmark_rustc_pid": 31214,
+      "benchmark_rustc_cpu_percent": 99.6,
+      "benchmark_rustc_elapsed_seconds": 4,
+      "stage2_cargo_test_pid": 30651,
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_cargo_test_elapsed_seconds": 52,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "note": "Point-in-time process sample."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:05:10Z",
+      "phase": "after_command_completion",
+      "load_average_raw": "{ 3.84 2.63 2.37 }",
+      "cargo_pid_visible": false,
+      "benchmark_rustc_visible": false,
+      "stage2_cargo_or_rustc_visible": false,
+      "graphify_visible": false
+    }
+  ],
+  "result_summary": {
+    "unique_cases": 2400,
+    "sequence_counts": {
+      "store_then_load": 1200,
+      "load_then_store": 1200
+    },
+    "preflight_trials_per_input_backend": 2,
+    "interpreter_executions": 4800,
+    "native_executions": 4800,
+    "parity_trials": 4800,
+    "resident_mapping_high_water_per_sequence": 1,
+    "compile_count_per_sequence": 1,
+    "publish_count_per_sequence": 1,
+    "published_drop_count_per_sequence": 1,
+    "timing_started": false,
+    "calibration_or_scored_samples": false,
+    "runtime_working_tree_dirty": null,
+    "runtime_working_tree_note": "The benchmark reported runtime git status as unavailable because the status probe timed out after 2000 ms. Build source_tree_dirty was false."
+  }
+}

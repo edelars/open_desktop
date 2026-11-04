@@ -1,0 +1,183 @@
+{
+  "schema": "open-desktop-stage3-process-monitoring-v1",
+  "run": "s3-35c-calibration-only-cap2048-process-run-1",
+  "command": "cargo run --release -p od-bench --offline -- two-site-memory-cold --calibration-only --process-run 1 --output work/tmp/stage3/s3-35c/calibration-cap2048.json",
+  "process": {
+    "pid": 14318,
+    "observed_command_transition": [
+      "cargo run --release -p od-bench --offline -- two-site-memory-cold --calibration-only --process-run 1 --output work/tmp/stage3/s3-35c/calibration-cap2048.json",
+      "target/release/od-bench two-site-memory-cold --calibration-only --process-run 1 --output work/tmp/stage3/s3-35c/calibration-cap2048.json"
+    ],
+    "start_utc_window": {
+      "earliest": "2026-11-01T04:54:34Z",
+      "latest": "2026-11-01T04:54:42Z",
+      "basis": "04:54:34Z prelaunch snapshot; first process snapshot at 04:54:42Z showed PID 14318 elapsed 3 seconds"
+    },
+    "last_active_snapshot_utc": "2026-11-01T04:56:20Z",
+    "finished_absent_by_utc": "2026-11-01T04:56:40Z",
+    "exact_finish_timestamp_available": false,
+    "executor_exit_code": 0
+  },
+  "result_artifacts": {
+    "report": {
+      "path": "work/tmp/stage3/s3-35c/calibration-cap2048.json",
+      "sha256": "77f843b1b3a3ec70a5a107c6f73598abb816cdfb3cbfd1049a43ab8712906972"
+    },
+    "journal": {
+      "path": "work/tmp/stage3/s3-35c/calibration-cap2048.json.journal.jsonl",
+      "sha256": "338641f6c1c3020153d8db3d9754992766f675f442d9a89f296bc120d04e7725",
+      "records": 11,
+      "record_type": "calibration_attempt"
+    }
+  },
+  "scoring": {
+    "calibration_only": true,
+    "scored_samples_started": false,
+    "sample_pairs": 0,
+    "sample_floor_passed": false,
+    "status": "calibration_only_unscored",
+    "calibration_floor_passed": true,
+    "repetitions_per_side": 1024,
+    "total_elapsed_ns": 45759491250
+  },
+  "source_and_host": {
+    "source_revision": "6f9da043073188b5164ee81b543add51314981a0",
+    "source_sha256": "5f4948f477c6e21232da25951219dab32c163a0a445fcade1b4b61c43d9e364a",
+    "build_source_sha256": "1b1f655e70e989e96e92c4f17cee0724ccf9ef6a0714104a7107a7880e6d4d15",
+    "source_tree_dirty": false,
+    "runtime_working_tree_dirty": null,
+    "runtime_working_tree_dirty_reason": "host metadata git status unavailable: git timed out after 2000 ms",
+    "host": "Apple M3 Max",
+    "architecture": "aarch64",
+    "os": "macos 26.7.1",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "target": "aarch64-apple-darwin",
+    "profile": "release"
+  },
+  "snapshots": [
+    {
+      "utc": "2026-11-01T04:54:34Z",
+      "phase": "prelaunch",
+      "load_average": [2.59, 2.88, 2.86],
+      "benchmark_pid": null,
+      "stage2": [
+        {"pid": 12811, "command": "cargo test -p od-isa --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 94}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:54:42Z",
+      "phase": "release_build",
+      "load_average": [3.05, 2.97, 2.89],
+      "benchmark_pid": 14318,
+      "benchmark_elapsed_seconds": 3,
+      "benchmark_child": {"pid": 14341, "command": "od-bench build-script-build", "cpu_percent": 0.0},
+      "stage2": [
+        {"pid": 14260, "command": "cargo test -p od-testkit --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 6}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:54:50Z",
+      "phase": "release_build",
+      "load_average": [2.96, 2.95, 2.88],
+      "benchmark_pid": 14318,
+      "benchmark_elapsed_seconds": 11,
+      "stage2": [
+        {"pid": 14260, "command": "cargo test -p od-testkit --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 14}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:54:59Z",
+      "phase": "release_build",
+      "load_average": [2.81, 2.92, 2.87],
+      "benchmark_pid": 14318,
+      "benchmark_elapsed_seconds": 20,
+      "stage2": [
+        {"pid": 14260, "command": "cargo test -p od-testkit --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 23},
+        {"pid": 14573, "command": "rustdoc od-testkit test build", "cpu_percent": 31.1, "elapsed_seconds": 6}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:55:12Z",
+      "phase": "release_build",
+      "load_average": [2.93, 2.94, 2.88],
+      "benchmark_pid": 14318,
+      "benchmark_elapsed_seconds": 33,
+      "benchmark_rustc": {"pid": 14796, "command": "rustc od_bench release", "cpu_percent": 103.5},
+      "stage2": [
+        {"pid": 14724, "command": "cargo test -p od-runner --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 8},
+        {"pid": 14744, "command": "rustc od_runner test", "cpu_percent": 174.3, "elapsed_seconds": 8}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:55:21Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [2.71, 2.89, 2.86],
+      "benchmark_pid": 14318,
+      "benchmark_elapsed_seconds": 42,
+      "stage2": [
+        {"pid": 14724, "command": "cargo test -p od-runner --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 17}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:55:38Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [2.57, 2.85, 2.84],
+      "benchmark_pid": 14318,
+      "benchmark_elapsed_seconds": 59,
+      "benchmark_cpu_seconds": 0.05,
+      "stage2": [
+        {"pid": 14724, "command": "cargo test -p od-runner --offline -- --test-threads=1", "cpu_seconds": 0.06, "elapsed_seconds": 34}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:56:09Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [4.59, 3.38, 3.04],
+      "benchmark_pid": 14318,
+      "benchmark_elapsed_seconds": 90,
+      "benchmark_cpu_percent": 99.1,
+      "benchmark_cpu_seconds": 26.07,
+      "journal_bytes": 1688,
+      "stage2": [],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:56:20Z",
+      "phase": "benchmark_process_observed",
+      "load_average": [4.48, 3.4, 3.05],
+      "benchmark_pid": 14318,
+      "benchmark_elapsed_seconds": 101,
+      "benchmark_cpu_percent": 100.0,
+      "benchmark_cpu_seconds": 37.54,
+      "journal_line_count": 10,
+      "stage2": [
+        {"pid": 14724, "command": "cargo test -p od-runner --offline -- --test-threads=1", "cpu_percent": 0.0, "elapsed_seconds": 76}
+      ],
+      "graphify_visible": false
+    },
+    {
+      "utc": "2026-11-01T04:56:40Z",
+      "phase": "postprocess",
+      "load_average": [4.21, 3.41, 3.06],
+      "benchmark_pid": null,
+      "report_and_journal_present": true,
+      "report_bytes": 5041,
+      "journal_line_count": 11,
+      "executor_exit_code": 0,
+      "graphify_visible": false
+    }
+  ],
+  "limitations": [
+    "Snapshots are point-in-time and do not include per-calibration-attempt wall-clock timestamps; they cannot establish which attempt overlapped a Stage2 build.",
+    "Stage2 compilation overlapped the release build in recorded snapshots, including high compiler CPU at 04:55:12Z; the impact on the calibration totals is unquantified.",
+    "The runtime working-tree dirty check timed out after two seconds; the report's runtime working_tree_dirty remains null.",
+    "Process elapsed time includes the cargo build phase; report total_elapsed_ns is the profile's measured run interval and is not a full command wall-clock duration."
+  ]
+}

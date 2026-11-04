@@ -1,0 +1,141 @@
+{
+  "run_id": "stage1-20261103-132356-1bd8ca2d",
+  "stage": "S3-14",
+  "suite": "register-only one-block triple comparison",
+  "status": "failed",
+  "started_utc": "2026-11-03T13:23:56Z",
+  "source_fingerprint": "0f78441d1298009db38083318f9ac5e8821f4626e9f7f0f33efed16c2d41ada7",
+  "host": "192.168.1.39",
+  "user": "senya",
+  "remote_root": "/home/senya/projects/open_desktop-stage3-20261103",
+  "engine": "jit-block",
+  "jit_backend": "jit_ir_block",
+  "evidence_scope": "physical_triple",
+  "physical_x86": "pending",
+  "repeats": 2,
+  "machines": {
+    "local": {
+      "host_os": "macOS-26.7.1-arm64-arm-64bit-Mach-O",
+      "host_arch": "arm64",
+      "cpu_model": "Apple M3 Max",
+      "kernel": "Darwin 192.168.1.100 25.6.0 Darwin Kernel Version 25.6.0: Tue Aug 18 17:51:35 PDT 2026; root:xnu-12377.161.15.700.19~2/RELEASE_ARM64_T6031 arm64",
+      "page_size": 16384,
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)"
+    },
+    "remote_rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "remote_cargo": "cargo 1.99.1 (5f94df478 2026-08-27)"
+  },
+  "fixtures": [],
+  "commands": [
+    {
+      "host": "senya@192.168.1.39",
+      "command": "cd /home/senya/projects/open_desktop-stage3-20261103 && . \"$HOME/.cargo/env\" && cargo test --offline -p od-testkit -p od-runner -p od-x86-runner"
+    }
+  ],
+  "inputs": [
+    {
+      "case_id": "s0_09_mov_imm64",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s0_09_mov_imm64.case.json",
+      "fixture_sha256": "45139dedf0d845010e5773fe4b776919ebb5c0af125680d0e27540dac732a5db",
+      "seed": null
+    },
+    {
+      "case_id": "s0_09_add_overflow",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s0_09_add_overflow.case.json",
+      "fixture_sha256": "12e43c2a15e5b41e868092fd9223c1e4ff888da49d6b39a1474ce8e362d2a729",
+      "seed": null
+    },
+    {
+      "case_id": "s0_09_cmp_jz",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s0_09_cmp_jz.case.json",
+      "fixture_sha256": "0828f14b6ef6035e1dffb812c79b3ec81c0d78aa86c2f7cc8a8aa422d96ca58b",
+      "seed": null
+    },
+    {
+      "case_id": "s1_06_add_signed_overflow",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s1_06_add_signed_overflow.case.json",
+      "fixture_sha256": "740d7bf6e9408a9db1dcab0f6d1a399b3200aac63d11ad3e51b6baa1f95c0d15",
+      "seed": null
+    },
+    {
+      "case_id": "s1_06_sub_borrow",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s1_06_sub_borrow.case.json",
+      "fixture_sha256": "994a3b4ad68580a9e3138fe4ce18e18d5f94647064afe06311de654bb19e6ad0",
+      "seed": null
+    },
+    {
+      "case_id": "s1_06_cmp_signed_boundary",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s1_06_cmp_signed_boundary.case.json",
+      "fixture_sha256": "a8a47e5f25bc1fd3493cc5432cc614e92365cc2c15f70fb37f40be5b7e86d6a5",
+      "seed": null
+    },
+    {
+      "case_id": "s1_06_jz_taken",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s1_06_jz_taken.case.json",
+      "fixture_sha256": "f7a04d7ab9cb67f3a475dfeb28d6b7ba1b032411048d898a80a2a05dc2e8889d",
+      "seed": null
+    },
+    {
+      "case_id": "s1_06_mov_preserves_flags",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s1_06_mov_preserves_flags.case.json",
+      "fixture_sha256": "01eb759e88337a61b6e1801ceda16903764263172eb10977316796ac65b0608c",
+      "seed": null
+    },
+    {
+      "case_id": "s3_14_jz_to_end_skips_tail",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s3_14_jz_to_end_skips_tail.case.json",
+      "fixture_sha256": "8da5f28d8409ae63a1851862f416bc786a6db43606b227c9a52fff879cf4543d",
+      "seed": null
+    },
+    {
+      "case_id": "s3_14_jnz_to_end_skips_tail",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s3_14_jnz_to_end_skips_tail.case.json",
+      "fixture_sha256": "cadf3cda3d7c536d6a0d8626b908215586ba6ef0b5d2c9421122cdaacb8d951c",
+      "seed": null
+    },
+    {
+      "case_id": "s3_14_jz_not_taken_backward_target",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s3_14_jz_not_taken_backward_target.case.json",
+      "fixture_sha256": "0f0e9f1c81ecc671d642ba124934b0adb8f03b5a35413728445be1f834ff9760",
+      "seed": null
+    },
+    {
+      "case_id": "s3_14_jnz_not_taken_backward_target",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s3_14_jnz_not_taken_backward_target.case.json",
+      "fixture_sha256": "97552173b206628db8001500d5a4553070090a4eaeec2c8e79d7dc00afbfbd33",
+      "seed": null
+    },
+    {
+      "case_id": "s3_14_live_through_helpers",
+      "fixture_path": "work/stage1-oracle/stage1-20261103-132356-1bd8ca2d/fixtures/s3_14_live_through_helpers.case.json",
+      "fixture_sha256": "479ea8ccc52ca53e676989279cdd068ed76dcdde78a9e06deb98fecb3ef87998",
+      "seed": null
+    }
+  ],
+  "reproduce_argv": [
+    "/opt/homebrew/opt/python@3.15/bin/python3.15",
+    "tests/cpu/stage1_oracle.py",
+    "--host",
+    "192.168.1.39",
+    "--user",
+    "senya",
+    "--remote-root",
+    "/home/senya/projects/open_desktop-stage3-20261103",
+    "--repeats",
+    "2",
+    "--engine",
+    "jit-block",
+    "--manifest",
+    "tests/cpu/manifests/stage3_s3_14_jit_block.json"
+  ],
+  "remote_test_preflight": {
+    "host": "senya@192.168.1.39",
+    "command": "cd /home/senya/projects/open_desktop-stage3-20261103 && . \"$HOME/.cargo/env\" && cargo test --offline -p od-testkit -p od-runner -p od-x86-runner",
+    "exit_code": 101,
+    "stdout_path": "remote-test-preflight.stdout.log",
+    "stderr_path": "remote-test-preflight.stderr.log"
+  },
+  "error": "remote Cargo test preflight failed: exited 101; full stdout/stderr are saved at remote-test-preflight.stdout.log and remote-test-preflight.stderr.log",
+  "finished_utc": "2026-11-03T13:24:35Z"
+}

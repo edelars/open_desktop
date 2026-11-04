@@ -1,0 +1,112 @@
+{
+  "schema": 2,
+  "capture_host": {
+    "os": "macos",
+    "os_version": "26.7.1",
+    "architecture": "aarch64",
+    "cpu_model": "Apple M3 Max",
+    "build": {
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "target": "aarch64-apple-darwin",
+      "profile": "release",
+      "source_revision": "7920708e246fac40a917e6cd29659dc2c9dc80f9",
+      "source_sha256": "3d26cd01ca85af744480b36689562be6aec817080f63658fc7d19a31e92c8797",
+      "source_tree_dirty": false
+    },
+    "execution": {
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "repository_revision": "7920708e246fac40a917e6cd29659dc2c9dc80f9",
+      "working_tree_dirty": false
+    }
+  },
+  "trace_elapsed_ns": 11088705375,
+  "inputs": [
+    {
+      "case_id": "s3_14_jz_to_end_skips_tail",
+      "fixture_sha256": "8da5f28d8409ae63a1851862f416bc786a6db43606b227c9a52fff879cf4543d",
+      "fixture_json_bytes": 1092,
+      "code_hex": "483bc1740a48b80100000000000000",
+      "program_sha256": "da994a588724123fa3689e59b840ecb1b32aae4b128ed12d7b0a98d26622c2bf",
+      "base_rip": 0,
+      "address_space_id": 1,
+      "mapping_id": 1,
+      "mapping_version": 1,
+      "backing_id": 1,
+      "backing_version": 1
+    },
+    {
+      "case_id": "s3_14_jnz_to_end_skips_tail",
+      "fixture_sha256": "cadf3cda3d7c536d6a0d8626b908215586ba6ef0b5d2c9421122cdaacb8d951c",
+      "fixture_json_bytes": 1094,
+      "code_hex": "483bc1750a48b80100000000000000",
+      "program_sha256": "adca9b3a6ddc1df07fb0d7596b7a9d3debf87ad7c19abd36b89ad24ecc5ed3d0",
+      "base_rip": 0,
+      "address_space_id": 1,
+      "mapping_id": 2,
+      "mapping_version": 1,
+      "backing_id": 2,
+      "backing_version": 1
+    },
+    {
+      "case_id": "s3_14_jz_not_taken_backward_target",
+      "fixture_sha256": "0f0e9f1c81ecc671d642ba124934b0adb8f03b5a35413728445be1f834ff9760",
+      "fixture_json_bytes": 1088,
+      "code_hex": "483bc174fb",
+      "program_sha256": "71de34e1cf7c0488c3be31e95871abac33c47fbad77e89dfb95d34726981d4b8",
+      "base_rip": 0,
+      "address_space_id": 1,
+      "mapping_id": 3,
+      "mapping_version": 1,
+      "backing_id": 3,
+      "backing_version": 1
+    },
+    {
+      "case_id": "s3_14_jnz_not_taken_backward_target",
+      "fixture_sha256": "97552173b206628db8001500d5a4553070090a4eaeec2c8e79d7dc00afbfbd33",
+      "fixture_json_bytes": 1090,
+      "code_hex": "483bc175fb",
+      "program_sha256": "bc9a764963804ed2555985528d89b4c16719bcfaa204749a9fa76dc870b7c71a",
+      "base_rip": 0,
+      "address_space_id": 1,
+      "mapping_id": 4,
+      "mapping_version": 1,
+      "backing_id": 4,
+      "backing_version": 1
+    },
+    {
+      "case_id": "s3_14_live_through_helpers",
+      "fixture_sha256": "479ea8ccc52ca53e676989279cdd068ed76dcdde78a9e06deb98fecb3ef87998",
+      "fixture_json_bytes": 1097,
+      "code_hex": "4803c0482bd24803c3482bc9483bc37400",
+      "program_sha256": "4fe980f463d01c3fc413943b73860314d9c780c638acdc9bf50072290c89f778",
+      "base_rip": 0,
+      "address_space_id": 1,
+      "mapping_id": 5,
+      "mapping_version": 1,
+      "backing_id": 5,
+      "backing_version": 1
+    }
+  ],
+  "visits": [
+    {
+      "input_index": 0,
+      "entry_rip": 0
+    },
+    {
+      "input_index": 1,
+      "entry_rip": 0
+    },
+    {
+      "input_index": 2,
+      "entry_rip": 0
+    },
+    {
+      "input_index": 3,
+      "entry_rip": 0
+    },
+    {
+      "input_index": 4,
+      "entry_rip": 0
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "profile": "s3-36d-two-site-memory-warm-direct-v1",
+  "run_kind": "calibration_only_unscored",
+  "command": "cargo run --release -p od-bench --offline -- two-site-memory-warm --calibration-only --process-run 1 --output work/tmp/stage3/s3-36d/calibration.json",
+  "source_revision": "dee1c860895c94883be7ce5650f50585569291f8",
+  "process": {
+    "benchmark_pid": 34192,
+    "benchmark_start_utc_inferred_from_elapsed_snapshot": "2026-11-01T06:06:48Z",
+    "completed_by_utc": "2026-11-01T06:07:03Z",
+    "exit_code": 0,
+    "reported_profile_elapsed_ns": 6912057959,
+    "scored_samples_started": false
+  },
+  "outputs": {
+    "report_path": "work/tmp/stage3/s3-36d/calibration.json",
+    "report_sha256": "5c6a2a075f633e66a6923d5d01591416bc4d28feb6f907b585ebb5d471657315",
+    "journal_path": "work/tmp/stage3/s3-36d/calibration.json.warm.journal.jsonl",
+    "journal_sha256": "ce516df83252b61394acb6c4dd14ea320d2dbd7a05e67abcd304b03545cb2fa9",
+    "journal_records": 24,
+    "source_sha256_from_report": "2ba1b077bc7a905adae120a98436a1fbf4d9d7de157cc2d02692db1d08ee0177"
+  },
+  "snapshots": [
+    {
+      "observed_at_utc": "2026-11-01T06:06:32Z",
+      "phase": "immediately_before_launch",
+      "load_average_raw": "{ 4.03 2.82 2.45 }",
+      "active_stage2_or_graphify": [
+        {
+          "kind": "stage2_cargo_test",
+          "pid": 33181,
+          "cpu_percent": 0.0,
+          "elapsed_seconds": 24
+        }
+      ],
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "note": "Output report and journal paths checked absent; HEAD was dee1c860895c94883be7ce5650f50585569291f8."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:06:51Z",
+      "phase": "early_benchmark",
+      "load_average_raw": "{ 4.04 2.91 2.49 }",
+      "benchmark_pid": 34192,
+      "benchmark_elapsed_seconds": 3,
+      "benchmark_cpu_percent": 0.0,
+      "stage2_cargo_test_pid": 33181,
+      "stage2_cargo_test_cpu_percent": 0.0,
+      "stage2_cargo_test_elapsed_seconds": 43,
+      "stage2_rustc_visible": false,
+      "graphify_visible": false,
+      "journal_visible": false,
+      "note": "Point-in-time process sample early in the short calibration process."
+    },
+    {
+      "observed_at_utc": "2026-11-01T06:07:03Z",
+      "phase": "after_benchmark_completion",
+      "load_average_raw": "{ 3.53 2.85 2.48 }",
+      "benchmark_pid_visible": false,
+      "stage2_cargo_test_pid": 34311,
+      "stage2_cargo_test_elapsed_seconds": 9,
+      "stage2_rustc_pid": 34330,
+      "stage2_rustc_command": "od_testkit compile for od-x86-runner test",
+      "stage2_rustc_cpu_percent": 21.4,
+      "graphify_visible": false,
+      "note": "This Stage2 compiler snapshot is after or near the short benchmark interval; exact relation to individual calibration attempts is unknown because attempts have no wall-clock timestamps."
+    }
+  ],
+  "calibration_summary": {
+    "minimum_side_time_ns": 200000000,
+    "maximum_repetitions": 2048,
+    "store_then_load": {
+      "attempts": 12,
+      "final_repetitions": 2048,
+      "final_native_total_ns": 415599356,
+      "final_interpreter_total_ns": 298097984,
+      "floor_passed": true,
+      "sample_pairs": 0,
+      "resident_mapping_high_water": 1,
+      "compile_count": 1,
+      "publish_count": 1,
+      "published_drop_count": 1
+    },
+    "load_then_store": {
+      "attempts": 12,
+      "final_repetitions": 2048,
+      "final_native_total_ns": 414290664,
+      "final_interpreter_total_ns": 303228888,
+      "floor_passed": true,
+      "sample_pairs": 0,
+      "resident_mapping_high_water": 1,
+      "compile_count": 1,
+      "publish_count": 1,
+      "published_drop_count": 1
+    },
+    "overall_status": "calibration_only_unscored",
+    "timing_started": true,
+    "calibration_floor_passed": true,
+    "sample_floor_passed": false,
+    "runtime_working_tree_dirty": null,
+    "runtime_working_tree_note": "The runtime git status probe timed out after 2000 ms; build source_tree_dirty was false."
+  },
+  "limitations": [
+    "No pair-level wall-clock timestamps are present.",
+    "Stage2/Graphify observations are reconstructed point-in-time snapshots; do not attribute load to a specific calibration attempt.",
+    "Calibration-only runs contain no scored sample pairs and are not performance results."
+  ]
+}

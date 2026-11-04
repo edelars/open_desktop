@@ -1,0 +1,65 @@
+{
+  "input_digest": "b09478b556aa91234d8c453f20e70f637222c5de2d7369d305ffe7c78caae540",
+  "interpreter_executions": 4800,
+  "measure_host": {
+    "architecture": "aarch64",
+    "build": {
+      "profile": "release",
+      "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+      "source_revision": "dee1c860895c94883be7ce5650f50585569291f8",
+      "source_sha256": "16771ca3b7d4f5e227a6c42a87c52b2788eb6987f8e1256488058a1568fbb5b0",
+      "source_tree_dirty": false,
+      "target": "aarch64-apple-darwin"
+    },
+    "cpu_model": "Apple M3 Max",
+    "execution": {
+      "repository_revision": "dee1c860895c94883be7ce5650f50585569291f8",
+      "working_directory": "/Users/senya/.codex/worktrees/stage3-baseline/open_desktop",
+      "working_tree_dirty": null
+    },
+    "os": "macos",
+    "os_version": "26.7.1"
+  },
+  "native_executions": 4800,
+  "parity_trials": 4800,
+  "preflight_trials_per_input_backend": 2,
+  "process_run": 1,
+  "profile_id": "s3-36d-two-site-memory-warm-direct-v1",
+  "schema": 1,
+  "sequences": [
+    {
+      "compile_count": 1,
+      "compile_ns": 298667,
+      "input_count": 1200,
+      "interpreter_executions": 2400,
+      "ir_drop_count": 1,
+      "ir_drop_ns": 291,
+      "native_executions": 2400,
+      "parity_trials": 2400,
+      "publish_count": 1,
+      "publish_ns": 19500,
+      "published_drop_count": 1,
+      "published_drop_ns": 31375,
+      "resident_mapping_high_water": 1,
+      "sequence": "store_then_load"
+    },
+    {
+      "compile_count": 1,
+      "compile_ns": 25250,
+      "input_count": 1200,
+      "interpreter_executions": 2400,
+      "ir_drop_count": 1,
+      "ir_drop_ns": 209,
+      "native_executions": 2400,
+      "parity_trials": 2400,
+      "publish_count": 1,
+      "publish_ns": 13417,
+      "published_drop_count": 1,
+      "published_drop_ns": 7459,
+      "resident_mapping_high_water": 1,
+      "sequence": "load_then_store"
+    }
+  ],
+  "source_sha256": "2ba1b077bc7a905adae120a98436a1fbf4d9d7de157cc2d02692db1d08ee0177",
+  "timing_started": false
+}
