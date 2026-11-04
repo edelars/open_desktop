@@ -14,7 +14,7 @@ use od_isa::long_decode::{
 use od_isa::memory::{AccessContext, AccessKind, GuestMemory};
 use od_isa::{LongModeState, OperandSize};
 use od_testkit::HexU64;
-use od_testkit::case::MemoryPermissions;
+use od_testkit::case::{MemoryPermissions, MemoryRegionSpec};
 use od_testkit::memory::FlatMemory;
 use od_testkit::result::{Backend, MemoryRegionSnapshot, Observation};
 use od_testkit::v2::{self, Fixture, LoadedFixture, Outcome, RunResult, Snapshot};
@@ -756,6 +756,73 @@ fn terminal_signal_result(loaded: &LoadedFixture, status: i32) -> Option<RunResu
     }))
 }
 
+fn is_admitted_execute_only_mov_code(fixture: &Fixture, region: &MemoryRegionSpec) -> bool {
+    if fixture.profile != v2::Profile::LongIntegerV1
+        || region.permissions.read
+        || region.permissions.write
+        || !region.permissions.execute
+        || fixture
+            .memory
+            .iter()
+            .filter(|memory| {
+                !memory.permissions.read && !memory.permissions.write && memory.permissions.execute
+            })
+            .count()
+            != 1
+        || fixture
+            .memory
+            .iter()
+            .filter(|memory| memory.permissions.execute)
+            .count()
+            != 1
+    {
+        return false;
+    }
+
+    let Ok(mut decoder) = FlatMemory::from_fixture(fixture) else {
+        return false;
+    };
+    let Ok(actual) = fixture.initial_state.to_cpu_for(fixture.profile) else {
+        return false;
+    };
+    let Ok(instruction) = long_decode::decode(&mut decoder, actual.rip, AccessContext::default())
+    else {
+        return false;
+    };
+    let Operation::Mov { dst, src } = instruction.operation else {
+        return false;
+    };
+    if !matches!(
+        (dst, src),
+        (Operand::Register(_), Operand::Memory(_)) | (Operand::Memory(_), Operand::Register(_))
+    ) {
+        return false;
+    }
+
+    let Some(code_end) = actual.rip.checked_add(u64::from(instruction.length)) else {
+        return false;
+    };
+    let Some(region_end) = region
+        .guest_address
+        .get()
+        .checked_add(u64::from(region.length))
+    else {
+        return false;
+    };
+    if region.guest_address.get() != actual.rip
+        || region_end != code_end
+        || fixture.stop_rip.map(HexU64::get) != Some(code_end)
+        || fixture.instruction_budget != 1
+        || fixture.expected_exit != v2::ExpectedExit::StopAddress
+    {
+        return false;
+    }
+
+    // Reuse the same logical access checks as the trace loop. This admits only
+    // fixtures whose first MOV fetch and data access are already in profile.
+    admission_with_tracee_memory(fixture, &mut decoder, &actual, None).is_ok()
+}
+
 #[derive(Debug)]
 struct MappingPlan {
     page_size: u64,
@@ -783,11 +850,12 @@ impl MappingPlan {
                 .checked_add(u64::from(region.length))
                 .ok_or("mapping range overflow")?;
             let permissions = region.permissions;
-            if (permissions.write && permissions.execute)
-                || (!permissions.read && (permissions.write || !permissions.execute))
-            {
+            if permissions.write && permissions.execute {
+                return Err("native regions cannot be writable+executable".into());
+            }
+            if !permissions.read && !is_admitted_execute_only_mov_code(fixture, region) {
                 return Err(
-                    "native regions must be readable or immutable execute-only, and cannot be writable+executable".into(),
+                    "execute-only native mapping is limited to a single admitted LongInteger MOV code region".into(),
                 );
             }
             if start < LOW_ADDRESS + page_size || end > HIGH_ADDRESS {
@@ -3837,6 +3905,7 @@ mod tests {
     #[test]
     fn execute_only_code_uses_rx_host_backing_but_keeps_logical_permissions() {
         let mut loaded = fixture(&[0x48, 0x8b, 0x03]);
+        loaded.fixture.instruction_budget = 1;
         loaded.fixture.memory[0].permissions = MemoryPermissions {
             read: false,
             write: false,
@@ -3867,12 +3936,12 @@ mod tests {
             AccessKind::Write
         ));
 
-        // A readable executable region has the same host RX protection but
-        // cannot share the page with logical execute-only code.
+        // A readable data region cannot share the page with logical
+        // execute-only code even though both may have host-readable backing.
         loaded
             .fixture
             .memory
-            .push(region("readable-code", 0x100010, &[0x90], false, true));
+            .push(region("readable-data", 0x100010, &[9], false, false));
         assert!(
             MappingPlan::new(&loaded.fixture, 4096)
                 .unwrap_err()
@@ -3883,6 +3952,7 @@ mod tests {
     #[test]
     fn execute_only_code_rejects_data_reads_and_writes_before_a_step() {
         let mut loaded = fixture(&[0x8a, 0x03]);
+        loaded.fixture.instruction_budget = 1;
         loaded.fixture.memory[0].permissions = MemoryPermissions {
             read: false,
             write: false,
@@ -3904,6 +3974,7 @@ mod tests {
         assert!(admission(&loaded.fixture, &mut readable_decoder, &actual).is_ok());
 
         loaded.fixture.memory[0] = region("code", 0x100000, &[0x88, 0x03], false, true);
+        loaded.fixture.instruction_budget = 1;
         loaded.fixture.memory[0].permissions = MemoryPermissions {
             read: false,
             write: false,
@@ -3917,6 +3988,89 @@ mod tests {
                 .unwrap_err()
                 .contains("outside fixture range or permission")
         );
+    }
+
+    #[test]
+    fn execute_only_mapping_requires_exact_single_instruction_mov_shape() {
+        let mut valid = fixture(&[0x48, 0x8b, 0x03]);
+        valid.fixture.instruction_budget = 1;
+        valid.fixture.memory[0].permissions = MemoryPermissions {
+            read: false,
+            write: false,
+            execute: true,
+        };
+        assert!(MappingPlan::new(&valid.fixture, 4096).is_ok());
+
+        let mut wrong_stop = valid.clone();
+        wrong_stop.fixture.stop_rip = Some(HexU64(0x100000));
+        assert!(MappingPlan::new(&wrong_stop.fixture, 4096).is_err());
+        wrong_stop.fixture.stop_rip = Some(HexU64(0x100004));
+        assert!(MappingPlan::new(&wrong_stop.fixture, 4096).is_err());
+        wrong_stop.fixture.stop_rip = None;
+        assert!(MappingPlan::new(&wrong_stop.fixture, 4096).is_err());
+
+        for budget in [0, 2] {
+            let mut wrong_budget = valid.clone();
+            wrong_budget.fixture.instruction_budget = budget;
+            assert!(MappingPlan::new(&wrong_budget.fixture, 4096).is_err());
+        }
+
+        let mut trailing_code = valid.clone();
+        trailing_code.fixture.memory[0].length += 1;
+        trailing_code.fixture.memory[0]
+            .initial_bytes_hex
+            .push_str("90");
+        trailing_code.fixture.memory[0]
+            .comparison_mask_hex
+            .push_str("ff");
+        assert!(MappingPlan::new(&trailing_code.fixture, 4096).is_err());
+
+        let mut adjacent_code = valid.clone();
+        adjacent_code
+            .fixture
+            .memory
+            .push(region("adjacent-code", 0x101000, &[0x90], false, true));
+        assert!(
+            MappingPlan::new(&adjacent_code.fixture, 4096)
+                .unwrap_err()
+                .contains("execute-only native mapping is limited")
+        );
+
+        let mut extra_execute_only = valid.clone();
+        extra_execute_only.fixture.memory.push(MemoryRegionSpec {
+            region_id: "second-code".into(),
+            guest_address: HexU64(0x101000),
+            length: 1,
+            permissions: MemoryPermissions {
+                read: false,
+                write: false,
+                execute: true,
+            },
+            initial_bytes_hex: "90".into(),
+            comparison_mask_hex: "ff".into(),
+        });
+        assert!(
+            MappingPlan::new(&extra_execute_only.fixture, 4096)
+                .unwrap_err()
+                .contains("execute-only native mapping is limited")
+        );
+
+        let mut wrong_opcode = fixture(&[0x90]);
+        wrong_opcode.fixture.instruction_budget = 1;
+        wrong_opcode.fixture.memory[0].permissions = MemoryPermissions {
+            read: false,
+            write: false,
+            execute: true,
+        };
+        assert!(MappingPlan::new(&wrong_opcode.fixture, 4096).is_err());
+
+        let mut wrong_profile = valid.clone();
+        wrong_profile.fixture.profile = v2::Profile::LongEferRdmsrV1;
+        assert!(MappingPlan::new(&wrong_profile.fixture, 4096).is_err());
+
+        let mut invalid_address = valid;
+        invalid_address.fixture.initial_state.gpr[3] = HexU64(0x400000);
+        assert!(MappingPlan::new(&invalid_address.fixture, 4096).is_err());
     }
 
     #[test]
@@ -5240,7 +5394,8 @@ mod tests {
         ))
         .unwrap();
         let result = execute(&loaded);
-        assert!(matches!(result.outcome, Outcome::Unsupported { .. }));
+        assert!(matches!(result.outcome, Outcome::Unsupported { ref reason }
+            if reason.contains("execute-only native mapping is limited to a single admitted LongInteger MOV code region")));
         assert!(matches!(result.snapshot, Observation::Unavailable { .. }));
         assert!(matches!(
             result.instructions_executed,

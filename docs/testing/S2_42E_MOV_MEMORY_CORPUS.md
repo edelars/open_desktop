@@ -132,14 +132,19 @@ exactly `read=false, write=false, execute=true`. The S2-42e generated manifest,
 fixtures, and digest remain unchanged.
 
 The Linux native-v2 runner maps immutable logical execute-only code with host
-RX backing so the tracer can capture complete snapshots. Admission retains the
-fixture's logical permissions separately from host page protections: code
-fetch is admitted, but data reads from those bytes and writes to code are
-rejected before `PTRACE_SINGLESTEP`. Execute-only code sharing a host page with
-another region whose logical permissions differ is unsupported. This backing
-does not enforce hardware execute-only access and does not claim guest `#PF`
-delivery. Native acceptance remains subject to a full 1,080-case rerun after
-this runner change.
+RX backing only for a single admitted `LongIntegerV1` MOV instruction. It must
+be the fixture's only executable region; its execute-only region exactly
+matches the entry instruction bytes; `instruction_budget` is 1;
+`expected_exit=stop_address`; `stop_rip` equals decoded next RIP; and the
+initial fetch/data access passes existing pre-step admission. This restricted
+mapping lets the tracer capture complete snapshots. Admission retains the
+fixture's logical permissions separately from host page protections: data
+reads from code bytes and writes to code are rejected before
+`PTRACE_SINGLESTEP`. Execute-only code sharing a host page with another region
+whose logical permissions differ is unsupported. Other profiles, including
+S2-25e EFER RDMSR, remain rejected before trace. This backing does not enforce
+hardware execute-only access and does not claim guest `#PF` delivery. Native
+acceptance remains subject to a full 1,080-case rerun after this runner change.
 
 The control vectors use the fixed 128-byte data pattern and RAX value recorded
 in the fixtures. They include first and last valid spans, unaligned accesses,

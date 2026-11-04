@@ -19,12 +19,16 @@ Exact retired count увеличивается только после подт�
 
 Native mappings ограничены low canonical ranges от `0x10000` с местом для
 нижней guard page и endpoint не выше `0x80000000` (2 GiB). Logical regions
-должны быть readable либо immutable execute-only; write-only и regions без
-read/write/execute остаются неподдерживаемыми. Для tracee immutable
-execute-only code получает host RX backing, чтобы tracer мог читать bytes для
-полного snapshot. Это не hardware execute-only mapping: logical permissions
-проверяются программно до каждого native шага, и profile admission должен
-отклонить чтение таких bytes как данных или запись в них до
+должны быть readable, за исключением узкого immutable execute-only code
+mapping для одной admitted LongInteger MOV instruction: это единственная
+executable region, она точно совпадает с entry bytes, `instruction_budget=1`,
+`expected_exit=stop_address`, а `stop_rip` равен decoded next RIP. Initial
+fetch/data access дополнительно проходит те же pre-step admission checks.
+Write-only и regions без read/write/execute остаются неподдерживаемыми. Для
+такого MOV tracee получает host RX backing, чтобы tracer мог читать bytes для
+полного snapshot. Это не hardware
+execute-only mapping: logical permissions остаются основанием pre-step checks;
+чтение этих bytes как данных и запись в них отклоняются до
 `PTRACE_SINGLESTEP`. Поэтому эта граница не подтверждает доставку guest `#PF`.
 Envelope вместе с guard pages не превышает 64 MiB. Нет writable+executable
 страниц; logical regions одной host page должны иметь одинаковые permissions.
