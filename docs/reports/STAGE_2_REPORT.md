@@ -24467,6 +24467,27 @@ validator bypasses for `not_run` pass status, CPUID FXSR/SSE,
 canonical/overlapping observation spans, and raw MXCSR_MASK consistency. This
 follow-up closes those and adds regression coverage. Parent S2-39 remains open.
 
+## S2-39l — offline interpreter replay against saved S2-39k evidence
+
+Added an opt-in integration test that validates the saved S2-39k raw Linux
+A/B/A/B record with the existing independent comparator, then runs the existing
+`s2-long-fxsave64-rax-disp8-v1` fixture in the interpreter four times in
+A/B/A/B order. Each replay completes one instruction at E+5 with modeled state
+unchanged except RIP. Comparison is limited to MXCSR `[24,28)`, XMM `[160,416)`,
+and software tail `[464,512)`; native guards, independent observations, and
+marker RIP normalization remain the comparator's responsibility. Raw
+MXCSR_MASK, x87/pointers, reserved bytes and padding are excluded. The evidence
+file remains untouched, and the test has no ignored-artifact dependency unless
+`OD_S2_39L_EVIDENCE_PATH` is explicitly set.
+
+Focused verification passed: all 16 FXSAVE64 comparator tests, the
+explicit-path offline replay test (1/1), and the unset-path test (1/1). The
+replay is not a new physical/native run; raw `execution_kind=unknown`, physical
+acceptance, and parent S2-39 remain open. Independent Sol/high review found no
+concrete defects. The [S2-39l report](S2_39L_INTERPRETER_REPLAY.md) records the
+Graphify refresh and repository layout check's pre-existing missing ignored
+artifact links in this isolated worktree.
+
 ## S2-42n — bounded MOV qword memory reducer
 
 Added an interpreter-only schema-v2 reducer for exact Long64

@@ -179,7 +179,9 @@ normative for its cases and comparison rules. One A/B/A/B Linux native run
 passed after emitted-code/ABI inspection on 2026-11-04; see the separate
 [acceptance report](../reports/S2_39K_LINUX_ACCEPTANCE.md). Its raw
 `execution_kind=unknown` remains unchanged, and separately established physical
-Mac acceptance remains open.
+Mac acceptance remains open. See [S2-39l](S2_39L_FXSAVE64_REPLAY.md) for a
+local cross-check of only the protocol-defined bytes and progression against
+this saved evidence; it is not additional native or physical acceptance.
 See [CPU oracle boundaries](CPU_ORACLE.md), the
 [S2-40a matrix](../reports/STAGE_2_LINUX_PROFILE.md#s2-40a--матрица-требований-ubuntu-generic-amd64)
 and [Stage 2 plan](../plans/STAGE_2.md#s2-39j-successful-cpl3-fxsave64-oracle-protocol).

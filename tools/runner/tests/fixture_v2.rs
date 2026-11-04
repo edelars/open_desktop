@@ -1,5 +1,6 @@
 //! Real CLI/interpreter checks; expected values are hand-calculated from Intel SDM 093.
 use od_testkit::HexU64;
+use od_testkit::fxsave64::{Fxsave64Case, Fxsave64Evidence, REPETITION_ORDER, compare_fxsave64};
 use od_testkit::mov_memory_reducer::{MovMemoryReductionStop, reduce_mov_memory_fixture};
 use od_testkit::rep_fault_reducer::{
     RepFaultReductionStop, reduce_rep_fault_fixture, rep_fault_oracle,
@@ -7383,6 +7384,120 @@ fn local_fxsave64_rax_fixture_runs_only_in_the_interpreter() {
         native_result.instructions_executed,
         Observation::Unavailable { .. }
     ));
+}
+
+#[test]
+fn s2_39l_opt_in_offline_interpreter_replay_matches_saved_linux_evidence() {
+    let Some(evidence_path) = std::env::var_os("OD_S2_39L_EVIDENCE_PATH") else {
+        return;
+    };
+    let evidence_bytes = fs::read(&evidence_path).unwrap_or_else(|error| {
+        panic!(
+            "cannot read S2-39k evidence {}: {error}",
+            evidence_path.to_string_lossy()
+        )
+    });
+    assert_eq!(
+        od_testkit::sha256_hex(&evidence_bytes),
+        "fb323ed37f8be6a10d593284e579c4db79aa2fa12fa3f5e5d70264e4ac1b0208",
+        "S2-39l is pinned to the saved S2-39k acceptance evidence"
+    );
+    let evidence: Fxsave64Evidence = serde_json::from_slice(&evidence_bytes)
+        .expect("S2-39k evidence must decode with the strict existing schema");
+    let comparison = compare_fxsave64(&evidence);
+    assert!(
+        comparison.passed,
+        "saved S2-39k evidence failed its independent comparator: {}",
+        comparison.errors.join("; ")
+    );
+    assert_eq!(evidence.status, "observed");
+    assert_eq!(evidence.runs.len(), REPETITION_ORDER.len());
+
+    let fixture = include_bytes!(
+        "../../../tests/fixtures/x86/stage2/s2_39d_fxsave64_rax_disp8_literal.case.json"
+    );
+    for (index, case) in REPETITION_ORDER.into_iter().enumerate() {
+        let replay_fixture = s2_39l_fixture_for_case(fixture, case);
+        let (input, result) = run(&replay_fixture, "interpreter", 0);
+        assert_eq!(
+            input.fixture.profile,
+            od_testkit::v2::Profile::LongFxsave64RaxV1
+        );
+        assert_eq!(
+            count(&result),
+            1,
+            "repetition {index} must execute one instruction"
+        );
+        let observed = snapshot(&result);
+        let mut expected_state = input.fixture.initial_state.clone();
+        expected_state.rip = input.fixture.stop_rip.unwrap();
+        assert_eq!(
+            observed.state, expected_state,
+            "repetition {index}: only RIP progresses"
+        );
+        assert_eq!(
+            observed.state.rip,
+            HexU64(input.fixture.initial_state.rip.get() + 5),
+            "repetition {index}: interpreter must reach architectural E+5"
+        );
+        let data_image = observed
+            .memory
+            .iter()
+            .find(|region| region.region_id == "data")
+            .expect("FXSAVE fixture result must include its data image");
+        let actual = decode_hex(&data_image.bytes_hex);
+        let native = &evidence.runs[index].image;
+        assert_eq!(actual.len(), 512, "repetition {index}: image size");
+        assert_eq!(native.len(), 512, "validated native image size");
+        assert_same_bytes(&actual, native, 24..28, index, "MXCSR");
+        assert_same_bytes(&actual, native, 160..416, index, "XMM0-XMM15");
+        assert_same_bytes(&actual, native, 464..512, index, "software tail");
+    }
+}
+
+fn s2_39l_fixture_for_case(fixture: &[u8], case: Fxsave64Case) -> Vec<u8> {
+    let mut value: serde_json::Value = serde_json::from_slice(fixture).unwrap();
+    let xmm = (0..16)
+        .map(|register| {
+            let bytes = case.xmm(register);
+            serde_json::Value::String(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+        })
+        .collect();
+    value["initial_state"]["sse"]["xmm"] = serde_json::Value::Array(xmm);
+    let mxcsr = match case {
+        Fxsave64Case::A => 0x1f80,
+        Fxsave64Case::B => 0x7f80,
+    };
+    value["initial_state"]["sse"]["mxcsr"] = serde_json::Value::String(format!("0x{mxcsr:016x}"));
+    value["memory"][1]["initial_bytes_hex"] =
+        serde_json::Value::String(format!("{:02x}", case.image_canary()).repeat(512));
+    serde_json::to_vec(&value).unwrap()
+}
+
+fn decode_hex(encoded: &str) -> Vec<u8> {
+    assert_eq!(encoded.len() % 2, 0, "hex byte string has odd length");
+    encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).unwrap();
+            u8::from_str_radix(pair, 16).unwrap()
+        })
+        .collect()
+}
+
+fn assert_same_bytes(
+    actual: &[u8],
+    native: &[u8],
+    range: std::ops::Range<usize>,
+    run: usize,
+    name: &str,
+) {
+    assert_eq!(
+        &actual[range.clone()],
+        &native[range],
+        "repetition {run}: interpreter/native {name} bytes differ"
+    );
 }
 
 #[test]

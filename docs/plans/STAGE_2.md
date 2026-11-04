@@ -711,6 +711,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-39h | Exact 33-byte S2-25c + FXSAVE64 composition, nine retirements, strict synthetic save image | S2-25c, S2-39d/f; interpreter only; hardware remains not_run |
 | [x] | S2-39j | Successful CPL3 FXSAVE64 oracle protocol | Protocol review and layout/link checks recorded; originally protocol-only. S2-39k Linux native A/B/A/B passed on 2026-11-04; raw `execution_kind=unknown`, separately established physical acceptance remains open; [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
 | [x] | S2-39k | Bounded executable CPL3 FXSAVE64 oracle | Linux-only isolated ptrace tracee + raw evidence validator; rejected attempts preserve partial output and earlier repetitions; pre-entry setup failures remain `not_run`. Linked-binary/ABI inspection and one Linux x86_64 A/B/A/B acceptance passed on 2026-11-04 (4/4 observations, exit 0); raw `execution_kind=unknown`, separate physical Mac acceptance and parent S2-39 remain open. [Implementation](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle); [acceptance](../reports/S2_39K_LINUX_ACCEPTANCE.md) |
+| [x] | S2-39l | Offline A/B/A/B interpreter replay against validated S2-39k evidence | Explicit-path opt-in only; existing independent comparator validates raw Linux evidence, then the interpreter profile is replayed A/B/A/B and compared only at protocol-defined bytes with E+5 progression. Focused checks passed; independent Sol/high review found no defects; ignored evidence is not a default-test dependency; physical acceptance and parent S2-39 remain open. [Protocol](../testing/S2_39L_FXSAVE64_REPLAY.md); [report](../reports/S2_39L_INTERPRETER_REPLAY.md) |
 | [ ] | S2-40 | Дополнительные обязательные расширения | S2-26, S2-39 |
 | [x] | S2-40c | Статический inventory FPU save/restore alternatives под neutral x86-64-v1 | Docs-only; S2-39k Linux A/B/A/B reconciled; four binary/package digests reverified in main checkout by S2-40d; source/signature provenance and source/image mapping reproduction remain open in [ISSUE-036](../KNOWN_ISSUES.md#issue-036--ubuntu-fpu-source-image-mapping-artifacts-are-unavailable); parent S2-39/40 remain open |
 | [x] | S2-40d | Read-only recheck of available Ubuntu kernel artifact digests | Four recorded package/binary digests match files in main checkout; source archives, signed indexes and APT provenance are absent; no signature authentication, source mapping, build-ID/section-equality reproduction, runtime or boot claim; [report](../reports/S2_40D_ARTIFACT_DIGEST_RECHECK.md) |
@@ -8358,6 +8359,24 @@ FXRSTOR, privileged gates/faults, general CPU semantics, production-profile
 admission, JIT or machine integration.
 
 Delivery status and verification limits are in the [S2-39k report](../reports/STAGE_2_REPORT.md#s2-39k--bounded-cpl3-fxsave64-oracle). The prior Darwin cross-target check did not establish runtime evidence. On 2026-11-04, final linked-binary/ABI inspection and one A/B/A/B run passed on Linux x86_64 with 4/4 observations and exit 0; see [acceptance evidence](../reports/S2_39K_LINUX_ACCEPTANCE.md). Raw `execution_kind=unknown` is preserved; separately established physical Mac acceptance and parent S2-39 remain open.
+
+#### S2-39l. Offline interpreter replay against the saved native evidence
+
+The [S2-39l protocol](../testing/S2_39L_FXSAVE64_REPLAY.md) adds a
+read-only, explicit-path replay using the existing S2-39k raw Linux evidence.
+The independent comparator must accept the evidence before interpreter runs
+start. Four fresh fixture invocations run A/B/A/B; only MXCSR `[24,28)`, XMM
+`[160,416)`, and software tail `[464,512)` are compared with each native image.
+The interpreter must complete one instruction and reach E+5 with all modeled
+state unchanged except RIP. Native guards, independent observations, raw stop
+RIP and one-byte INT3 normalization are checked by the existing comparator.
+The test returns immediately when `OD_S2_39L_EVIDENCE_PATH` is unset, so default
+tests do not depend on ignored `work/` artifacts. MXCSR_MASK, x87/pointers,
+reserved bytes and image padding remain excluded. This is a bounded local
+cross-check against saved Linux observations, not new hardware evidence or
+physical-host classification; parent S2-39 remains open.
+
+See the [S2-39l result](../reports/S2_39L_INTERPRETER_REPLAY.md).
 
 ### S2-40. Дополнительные обязательные расширения
 

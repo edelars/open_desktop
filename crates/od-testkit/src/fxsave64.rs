@@ -829,6 +829,61 @@ mod tests {
     }
 
     #[test]
+    fn s2_39l_comparator_regression_corpus_enforces_protocol_mask_and_completion() {
+        let mut evidence = valid_evidence();
+        evidence.runs[0].image[24] ^= 1;
+        assert!(!compare_fxsave64(&evidence).passed, "MXCSR is compared");
+
+        let mut evidence = valid_evidence();
+        evidence.runs[0].image[416] ^= 1;
+        evidence.runs[0].image[28..32].copy_from_slice(&[0xff, 0xff, 0x00, 0x00]);
+        evidence.runs[0].mxcsr_mask_raw = vec![0xff, 0xff, 0x00, 0x00];
+        evidence.runs[0].image[8] ^= 1;
+        evidence.runs[0].image[32] ^= 1;
+        assert!(
+            compare_fxsave64(&evidence).passed,
+            "MXCSR_MASK, x87/pointer data, and reserved bytes are excluded"
+        );
+
+        let mut evidence = valid_evidence();
+        evidence.runs[0].left_guard_after[0] ^= 1;
+        assert!(
+            compare_fxsave64(&evidence)
+                .errors
+                .iter()
+                .any(|error| error.contains("guard corruption"))
+        );
+
+        let mut evidence = valid_evidence();
+        evidence.runs[0].raw_stop_rip = Some(evidence.runs[0].entry_rip + 5);
+        assert!(
+            compare_fxsave64(&evidence)
+                .errors
+                .iter()
+                .any(|error| error.contains("wrong raw/adjusted E+5 RIP"))
+        );
+
+        let mut evidence = valid_evidence();
+        evidence.runs.pop();
+        assert!(
+            compare_fxsave64(&evidence)
+                .errors
+                .iter()
+                .any(|error| error.contains("exactly four A/B/A/B repetitions"))
+        );
+
+        let mut evidence = valid_evidence();
+        evidence.schema_version = 0;
+        assert!(
+            compare_fxsave64(&evidence)
+                .errors
+                .iter()
+                .any(|error| error.contains("schema version"))
+        );
+        assert!(serde_json::from_slice::<Fxsave64Evidence>(br#"{"schema_version":"#).is_err());
+    }
+
+    #[test]
     fn rejects_guard_corruption_signal_and_wrong_stop_rip() {
         let mut evidence = valid_evidence();
         evidence.runs[1].left_guard_after[0] ^= 1;
