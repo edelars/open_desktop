@@ -376,15 +376,23 @@ def _verify_result(
             raise CorpusError(f"{label}: execution outcome differs")
         if result.get("instructions_executed") != expected["instructions_executed"]:
             raise CorpusError(f"{label}: expected exactly one architectural retirement")
+        build_fields = ("revision", "compiler", "target", "profile")
         build = result.get("build")
         if (not isinstance(build, dict)
-                or any(not build.get(field) for field in ("revision", "compiler", "target", "profile"))
-                or not isinstance(expected_build, dict) or build != expected_build):
+                or any(not isinstance(build.get(field), str) or not build[field] for field in build_fields)
+                or not isinstance(expected_build, dict)
+                or any(not isinstance(expected_build.get(field), str) or not expected_build[field]
+                       for field in build_fields)
+                or build != expected_build):
             raise CorpusError(f"{label}: build provenance is missing or differs from the run manifest")
         machine = result.get("machine")
+        machine_fields = ("host_os", "host_arch")
         if (not isinstance(machine, dict)
-                or any(not machine.get(field) for field in ("host_os", "host_arch"))
-                or not isinstance(expected_machine, dict) or machine != expected_machine):
+                or any(not isinstance(machine.get(field), str) or not machine[field] for field in machine_fields)
+                or not isinstance(expected_machine, dict)
+                or any(not isinstance(expected_machine.get(field), str) or not expected_machine[field]
+                       for field in machine_fields)
+                or machine != expected_machine):
             raise CorpusError(f"{label}: machine provenance is missing or differs from the run manifest")
         if backend == "native_x86" and (machine.get("host_os") != "linux" or machine.get("host_arch") != "x86_64"):
             raise CorpusError(f"{label}: native result is not from Linux x86_64 hardware")
@@ -577,8 +585,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--verify-oracle-run and --run-oracle are mutually exclusive")
     summary_path: Path | None = None
     try:
-        corpus_directory = args.corpus_dir if args.corpus_dir.is_absolute() else ROOT / args.corpus_dir
-        corpus_directory = _path_inside_work(corpus_directory)
         output_root: Path | None = None
         if args.run_oracle:
             output_root = _path_inside_work(args.oracle_output_root if args.oracle_output_root.is_absolute()
@@ -588,6 +594,12 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "running", "profile": PROFILE,
                 "case_count": TOTAL_CASE_COUNT, "physical_mac_acceptance": "not_run",
             })
+
+        # Initialize the selected-run summary before validating the corpus path.
+        # This ensures an unsafe/missing corpus cannot leave a stale `passed`
+        # summary behind; the exception path below rewrites it as failed.
+        corpus_directory = args.corpus_dir if args.corpus_dir.is_absolute() else ROOT / args.corpus_dir
+        corpus_directory = _path_inside_work(corpus_directory)
 
         if args.verify_oracle_run is not None:
             manifest = verify_directory(corpus_directory)

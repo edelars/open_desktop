@@ -175,6 +175,19 @@ class RepStosbCorpusTests(unittest.TestCase):
                     module.verify_saved_run(manifest, expected_document, run_manifest, run)
             native_path.write_bytes(module.json_bytes(valid_native))
 
+            for section, field in (("build", "revision"), ("machine", "host_os")):
+                for value in (True, ""):
+                    invalid = dict(valid_native)
+                    invalid[section] = dict(valid_native[section], **{field: value})
+                    expected_provenance = dict(invalid[section])
+                    with self.assertRaises(module.CorpusError):
+                        module._verify_result(
+                            invalid, expected, fixture_digest, "native_x86",
+                            expected_provenance if section == "build" else TEST_BUILD,
+                            expected_provenance if section == "machine" else TEST_MACHINES["native_x86"],
+                            f"invalid {section} provenance",
+                        )
+
             invalid_record = [dict(records[0], fixture_sha256="0" * 64), records[1]]
             with self.assertRaises(module.CorpusError):
                 module.verify_saved_run(manifest, expected_document,
@@ -201,6 +214,28 @@ class RepStosbCorpusTests(unittest.TestCase):
             self.assertEqual(summary["status"], "failed")
             self.assertNotIn("corpus_digest", summary)
             self.assertIn("missing or unexpected", summary["error"])
+
+    def test_symlink_corpus_preflight_replaces_stale_success_summary(self) -> None:
+        with tempfile.TemporaryDirectory(dir=ROOT / "work") as temporary:
+            root = Path(temporary)
+            corpus = root / "corpus"
+            corpus_link = root / "corpus-link"
+            output = root / "oracle"
+            module.write_directory(corpus)
+            corpus_link.symlink_to(corpus, target_is_directory=True)
+            output.mkdir()
+            summary_path = output / "s2-42i-summary.json"
+            summary_path.write_text('{"status":"passed"}')
+            with patch.object(module, "run_oracle") as run_oracle:
+                status = module.main([
+                    "--corpus-dir", str(corpus_link), "--verify", "--run-oracle",
+                    "--oracle-output-root", str(output),
+                ])
+            self.assertEqual(status, 1)
+            run_oracle.assert_not_called()
+            summary = json.loads(summary_path.read_bytes())
+            self.assertEqual(summary["status"], "failed")
+            self.assertIn("symlinks", summary["error"])
 
     def test_missing_native_backend_writes_failed_machine_summary(self) -> None:
         with tempfile.TemporaryDirectory(dir=ROOT / "work") as temporary:

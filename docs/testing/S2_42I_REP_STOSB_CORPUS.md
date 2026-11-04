@@ -64,9 +64,11 @@ Linux x86 native backend. It verifies each result against the independent fill
 oracle, binds saved inputs/results to fixture digest, case, schema, profile,
 backend, build and machine identity, and writes a machine-readable summary at
 `work/stage2-42i-oracle/s2-42i-summary.json`. Missing native execution or any
-identity/result mismatch returns nonzero. A preflight error writes a failed
-summary before exiting, replacing any stale successful summary and never
-starting the backend.
+identity/result mismatch returns nonzero. The selected-run summary is
+initialized before corpus path preflight, so a symlinked or otherwise unsafe
+corpus path writes a failed summary over stale success and never starts the
+backend. Provenance fields must be nonempty strings even when the result and
+saved run manifest contain matching values.
 
 Verify saved oracle evidence later without contacting either backend:
 
@@ -78,11 +80,12 @@ python3 tests/cpu/generate_stage2_rep_stosb_corpus.py \
 
 ## Evidence boundary
 
-Seven focused Python tests cover deterministic uniqueness, the full count/DF
+Eight focused Python tests cover deterministic uniqueness, the full count/DF
 matrix, zero-count no-access, maximum-count and first/last/unaligned spans,
-canaries, strict bundle verification, saved-result identity, and fail-closed
-summary behavior. A local macOS interpreter run executed all 1,060 fixtures and
-matched their independent expected results. This is interpreter evidence only.
+canaries, strict bundle verification, saved-result identity and provenance
+types, and fail-closed summary behavior including a symlinked corpus path. A
+local macOS interpreter run executed all 1,060 fixtures and matched their
+independent expected results. This is interpreter evidence only.
 The Linux native SSH comparison and physical Mac acceptance have not been run
 and remain `not_run`; corpus generation does not imply native or physical
 correctness, and S2-42 remains open.
