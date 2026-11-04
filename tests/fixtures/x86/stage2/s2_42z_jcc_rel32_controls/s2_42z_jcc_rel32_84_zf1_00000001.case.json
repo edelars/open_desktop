@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_42z_jcc_rel32_84_zf1_00000001",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Handwritten S2-42z control: opcode=0x84, ZF=1, rel32=1.",
+    "specification": "Intel SDM revision 093, Vol. 2A Jcc: near 0F 84/85 rel32 sign-extends the signed 32-bit displacement and adds it to the address after the six-byte instruction; JZ tests ZF=1 and JNZ tests ZF=0.",
+    "specification_version": "Intel SDM revision 093; project S2-16a"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x0123456789abcdef",
+      "0x1122334455667788",
+      "0xdeadbeeffedcba98",
+      "0xaabbccddeeff0011",
+      "0x5566778899aabbcc",
+      "0x8877665544332211",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0xaabbccddeeff0011",
+      "0xfedcba9876543210",
+      "0x0123456789abcdef",
+      "0x9988776655443322",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000100000000",
+    "rflags": "0x00000000000008d7"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000100000000",
+      "length": 6,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "0f8401000000",
+      "comparison_mask_hex": "ffffffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000100000007",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x0000000000000cd7",
+  "expected_exit": "stop_address"
+}

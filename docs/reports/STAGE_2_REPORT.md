@@ -24635,3 +24635,24 @@ does not close S2-21 or parent S2-42. See the
 [protocol](../testing/S2_42Y_XADD_MEMORY_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42y--bare-qword-memory-xadd-alias-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42y-bare-memory-xadd-corpus).
+
+
+## S2-42z — Long64 JZ/JNZ near rel32 corpus
+
+S2-42z covers exact Long64 near JZ/JNZ encodings 0F 84 rel32 and 0F 85
+rel32. Thirty-two pinned controls exercise both conditions and both ZF values
+with displacement bit patterns spanning INT32_MIN, adjacent signed boundaries,
+negative small values, positive small values, and INT32_MAX. The 1,024 generated
+architectural inputs are unique. All branch targets are canonical, including
+signed extremes. An independent oracle sign-extends rel32 from the six-byte
+next RIP and checks complete GPR/RFLAGS state, definedness, unchanged code,
+RIP, retirement, stop, and no exception.
+
+All 1,056 cases passed twice locally (2,112 executions), and strict saved replay
+passed with source and executable identity checks. Six focused tests passed. The
+explicit native request records `not_run_form_not_admitted` and
+`backend_execution=not_started`; native and physical execution remain not_run.
+This selected branch corpus does not close parent S2-42. See the
+[protocol](../testing/S2_42Z_JCC_REL32_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42z--long64-jzjnz-near-rel32-corpus), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42z-jcc-rel32-corpus).

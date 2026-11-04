@@ -737,7 +737,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42w | Local qword memory XCHG corpus | Two pinned old-memory controls + 1,024 unique generated inputs for exact 48 87 00 (XCHG qword [RAX],RAX); all 1,026×2 passed local interpreter and strict saved replay; explicit native request blocked before backend; no atomicity/SMP claim; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42W_XCHG_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42w--local-qword-memory-xchg-corpus) |
 | [x] | S2-42x | qword register-register XADD alias corpus | 16 pinned boundary controls + 1,024 unique generated inputs for 48 0F C1 C0 (XADD RAX,RAX); 1,040×2 passed locally with strict saved replay and exact provenance; native blocked/not_started; S2-21/39/40 and parent S2-42 remain open; [protocol](../testing/S2_42X_XADD_REGISTER_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42x--qword-register-xadd-alias-corpus) |
 | [x] | S2-42y | bare qword memory XADD alias corpus | 8 pinned controls + 1,024 unique generated inputs for exact S2-21d bytes 48 0F C1 00 (XADD qword [RAX],RAX) across adjacent regions at 0x300100; 1,032×2 passed locally with strict saved replay; native blocked/not_started; no SMP/hardware atomicity claim; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42Y_XADD_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42y--bare-qword-memory-xadd-alias-corpus) |
-| [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
+| [x] | S2-42z | Long64 JZ/JNZ near rel32 corpus | 32 pinned controls + 1,024 unique generated cases for exact 0F 84/85 rel32, covering ZF taken/fallthrough and signed displacement boundaries; all 1,056×2 passed locally with strict saved replay; native blocked/not_started; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42Z_JCC_REL32_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42z--long64-jzjnz-near-rel32-corpus) || [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
 
 Проверки и генерация добавляются с каждой группой; S2-42 объединяет готовые наборы, а не откладывает тесты до конца. Независимые ветки допустимо выполнять последовательно в удобном порядке после их prerequisites. Критический первый срез: `00 → 01 → 02 → 03/04 → 05 → 06 → 07 → 08 → 09`.
@@ -20334,3 +20334,22 @@ atomicity claim and does not close S2-21 or parent S2-42. See the
 [protocol](../testing/S2_42Y_XADD_MEMORY_CORPUS.md),
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42y-bare-memory-xadd-corpus),
 and [report](../reports/STAGE_2_REPORT.md#s2-42y--bare-qword-memory-xadd-alias-corpus).
+
+### S2-42z — Long64 JZ/JNZ near rel32 corpus
+
+Adds 32 pinned controls and 1,024 unique generated inputs for exact Long64
+near JZ/JNZ encodings 0F 84 rel32 and 0F 85 rel32. Controls cover both ZF
+values, taken and fallthrough behavior, and signed displacement boundaries
+from INT32_MIN through INT32_MAX. Targets remain canonical; the independent
+oracle sign-extends the four-byte displacement from the six-byte next RIP and
+checks the complete GPR/flags state, unchanged code mapping, retirement, exit,
+and no exception.
+
+All 1,056 cases passed twice on the local interpreter with strict saved replay
+and source/executable provenance. Six focused tests cover signedness, condition,
+retirement, malformed schemas, tampering, replay, and native denial. The native
+request is blocked before backend execution; native and physical execution
+remain not_run. This bounded JZ/JNZ corpus does not close parent S2-42. See the
+[protocol](../testing/S2_42Z_JCC_REL32_CORPUS.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42z-jcc-rel32-corpus),
+and [report](../reports/STAGE_2_REPORT.md#s2-42z--long64-jzjnz-near-rel32-corpus).

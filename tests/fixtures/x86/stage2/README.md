@@ -9394,3 +9394,14 @@ flags, full state, canaries, RIP, and retirement. Native execution is denied
 before backend invocation. No atomic-call, rollback, SMP, or hardware atomicity
 claim is made. See the
 [S2-42y protocol](../../../../docs/testing/S2_42Y_XADD_MEMORY_CORPUS.md).
+
+
+### S2-42z JCC rel32 corpus
+
+s2_42z_jcc_rel32_controls/ contains 32 pinned controls for exact Long64
+0F 84/85 rel32 (JZ/JNZ), covering both ZF values, taken and fallthrough paths,
+and signed displacement boundaries. The corpus adds 1,024 unique generated
+architectural inputs. All 1,056 cases passed twice locally with independent
+signed next-RIP-relative oracle and strict saved replay. Native is denied before
+backend execution. See the
+[S2-42z protocol](../../../../docs/testing/S2_42Z_JCC_REL32_CORPUS.md).
