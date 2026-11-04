@@ -25006,16 +25006,21 @@ NativeX86. It passed with:
 
 `python3 tools/check_layout.py` was also run. It reported the worktree's `.git`
 file as an unmapped root item and reported absent ignored `work/` evidence files
-referenced by existing docs; those paths are outside this slice. The authorized
-Linux host has a different current ref and does not contain required base
-24db62b; its existing main checkout was already dirty, so no initial native
-smoke was run and that checkout was left untouched. A later authorized Linux
-smoke using an RX-admitted fixture found a preflight permission mismatch: the
-reducer required X-only code while native-v2 requires RX. The reducer gate is
-now RX, with a regression confirming RX admission and X-only rejection before
-callbacks. A post-fix Linux rerun is pending; native success is not claimed,
-`execution_kind` remains `unknown`, and physical Mac acceptance is `not_run`.
-S2-42 and dependencies S2-21/39/40 remain open. See the
+referenced by existing docs; those paths are outside this slice. The original
+`/home/senya/projects/open_desktop` Linux checkout was left untouched because it
+had a different ref and unrelated dirty files. A clean temporary checkout was
+made from the reviewed branch bundle. A bounded post-fix Linux x86_64 run used
+the generated S2-42i RX control `s2_42i_hand_last_count_1_df_0.case.json` (one
+`F3 AA`, count 1, DF=0). Two identical supervised native callbacks returned
+`no_initial_mismatch`; saved native replay returned `stop_address` with one
+retirement. The full snapshot, including RFLAGS definedness and complete
+code/data memory, matched the independent byte-fill oracle. The focused Linux
+`native_v2::tests` suite passed 221/221. No candidate pair was proposed, so
+actual native mismatch shrinking remains unexercised. Source hashes matched
+local files; remote HEAD was `8bc984cd74b6e1d53241f4ba602dc0be755dc2dd`;
+`execution_kind` remains `unknown` and physical Mac acceptance is `not_run`.
+See the [Linux acceptance record](S2_42AI_LINUX_ACCEPTANCE.md). S2-42 and
+dependencies S2-21/39/40 remain open. See the
 [protocol](../testing/S2_42AI_REP_STOSB_REDUCER.md) and
 [plan](../plans/STAGE_2.md#s2-42ai-successful-rep-stosb-bounded-reducer-and-native-adapter).
 Independent Sol/high review found an address-zero DF=1 post-index wrap bug and

@@ -42,8 +42,9 @@ and per-callback evidence.
 Interpreter reducer:
 
 ```sh
+python3 tests/cpu/generate_stage2_rep_stosb_corpus.py
 cargo run -p od-runner --offline -- \
-  --reduce-rep-stosb path/to/native-rx-rep-stosb.case.json
+  --reduce-rep-stosb work/stage2/s2-42i-rep-stosb/s2_42i_hand_last_count_1_df_0.case.json
 ```
 
 Linux x86_64 native reducer, using the existing supervised native-v2 fixture
@@ -52,8 +53,10 @@ the S2-19a literal fixture is X-only and is intentionally rejected by both
 reducer APIs at preflight.
 
 ```sh
-cargo run -p od-x86-runner --offline --target x86_64-unknown-linux-gnu -- \
-  --reduce-native-rep-stosb path/to/native-rx-rep-stosb.case.json
+cargo run -p od-x86-runner --offline -- \
+  --reduce-native-rep-stosb work/stage2/s2-42i-rep-stosb/s2_42i_hand_last_count_1_df_0.case.json \
+  --limit 4 \
+  --output-dir work/stage2/s2-42ai-native-rep-stosb/NAME
 ```
 
 Both commands accept `--limit N` (4–20) and `--output-dir DIR`; output must be a
@@ -72,4 +75,8 @@ flakiness, callback errors, exhausted budgets, and candidate/final backend
 swaps. Synthetic callbacks verify reducer decisions only; they do not establish
 a CPU mismatch. A native run that reports
 `no_initial_mismatch` after two callbacks does not exercise candidate shrinking.
-Physical Mac acceptance remains separate.
+The 2026-11-04 Linux x86_64 single-control acceptance returned
+`no_initial_mismatch`, saved a successful native replay and matched the
+independent state/memory oracle; no candidate shrinking was exercised. See the
+[acceptance record](../reports/S2_42AI_LINUX_ACCEPTANCE.md). Physical Mac
+acceptance remains separate.
