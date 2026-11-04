@@ -17323,6 +17323,29 @@ corpus groups and hardware acceptance are still outstanding. See [protocol](../t
 [plan](../plans/STAGE_2.md#s2-42d-bounded-native-xorpd-reducerreplay), and
 [test format](../testing/TEST_CASE_FORMAT.md#s2-42d-bounded-native-xorpd-xmm-input-reducer).
 
+## S2-42e — deterministic MOV memory corpus
+
+Added a deterministic corpus for the existing `s2-long-integer-v1` profile:
+1,024 schema-v2 fixtures spanning byte/word/dword/qword, register loads and
+memory stores, and seven existing admitted addressing forms. A strict manifest
+binds each raw fixture and its independently computed expected result. The
+byte-transfer oracle checks full GPR state, next RIP, RFLAGS and definedness,
+retirement, complete mapped memory and canaries without executing or decoding
+the instruction.
+
+The focused Python tests passed (5); all 1,024 fixtures passed strict loading
+and interpreter comparison with the independent oracle. `cargo build --offline
+-p od-runner`, Python compilation and `git diff --check` passed in the author
+worktree. The documented orchestration command sends the complete corpus to the
+existing Linux x86_64 native oracle, performs two repeats for interpreter and
+native, writes machine-readable success/failure evidence, and fails closed when
+a required result/backend is missing. That remote Linux/native command and
+physical Mac acceptance were not run (`not_run`). This slice changes no CPU
+semantics, fixture schema, runner CLI or native admission; S2-42 remains open
+for additional memory/stack/REP/FP groups, generic reduction, S2-21/S2-39/S2-40
+dependencies and physical acceptance. See [protocol](../testing/S2_42E_MOV_MEMORY_CORPUS.md)
+and [plan](../plans/STAGE_2.md#s2-42e-deterministic-mov-memory-corpus).
+
 ## S2-42f — schema-v2 reducer acceptance contract
 
 Added a documentation-only contract for future bounded schema-v2 reducers.
