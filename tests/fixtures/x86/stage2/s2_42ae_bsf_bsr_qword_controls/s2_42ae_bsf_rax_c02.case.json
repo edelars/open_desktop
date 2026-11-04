@@ -1,0 +1,55 @@
+{
+  "schema_version": 2,
+  "case_id": "s2_42ae_bsf_rax_c02",
+  "profile": "s2-long-integer-v1",
+  "provenance": {
+    "kind": "project_fixture",
+    "source": "Pinned S2-42ae bsf_rax control: source=0x8000000000000000, boundary index=2.",
+    "specification": "Intel SDM revision 093, Vol. 2A BSF: exact Long64 bytes 48 0F BC C0, qword register form with RAX destination and RCX or RAX source. Zero source preserves the destination and sets ZF; nonzero source writes the selected bit index and clears ZF. PF is set for even source parity; CF, OF, SF, and AF are cleared. All six arithmetic flags are defined.",
+    "specification_version": "Intel SDM revision 093, Vol. 2A BSF/BSR; project S2-15d/S2-42ae"
+  },
+  "seed": null,
+  "converted_from_v1_sha256": null,
+  "initial_state": {
+    "mode": "long64",
+    "gpr": [
+      "0x8000000000000000",
+      "0x8877665544332211",
+      "0xdeadbeeffedcba98",
+      "0xaabbccddeeff0011",
+      "0x5566778899aabbcc",
+      "0x8877665544332211",
+      "0x0000000000200004",
+      "0x0000000000200010",
+      "0xaabbccddeeff0011",
+      "0xfedcba9876543210",
+      "0x0123456789abcdef",
+      "0x9988776655443322",
+      "0x1122112211221122",
+      "0x3344334433443344",
+      "0x778899aabbccddee",
+      "0xffffffffffffffff"
+    ],
+    "rip": "0x0000000000100000",
+    "rflags": "0x0000000000000047"
+  },
+  "memory": [
+    {
+      "region_id": "code",
+      "guest_address": "0x0000000000100000",
+      "length": 4,
+      "permissions": {
+        "read": false,
+        "write": false,
+        "execute": true
+      },
+      "initial_bytes_hex": "480fbcc0",
+      "comparison_mask_hex": "ffffffff"
+    }
+  ],
+  "stop_rip": "0x0000000000100004",
+  "instruction_budget": 1,
+  "wall_timeout_ms": 2000,
+  "rflags_mask": "0x00000000000008d5",
+  "expected_exit": "stop_address"
+}
