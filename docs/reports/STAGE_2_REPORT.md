@@ -24843,3 +24843,18 @@ or parent S2-42. See the
 [protocol](../testing/S2_42AF_BITOPS_QWORD_REGISTER_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42af--qword-register-bt-family-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42af-qword-register-bt-family-corpus).
+
+## S2-42 Linux five-suite combined acceptance
+
+The new combined entry point passed the fixed S2-42c/e/h/i/r selection with
+the local macOS interpreter and Linux x86_64 native backend. It verified 5,282
+cases twice on each backend, for 10,564 saved results per backend. All five
+child manifests share source fingerprint
+`5f710e209f2772ba9df37d8e232dc0736fb086015a7b74d4d1e9b5f30a9d7f9d`.
+Aggregate run `20261104T143258Z-ff9f411e`; machine-readable summary and child
+evidence are at `work/stage2-42-linux-five-suites/20261104T143258Z-ff9f411e/`.
+The other 27 lettered suites are explicitly unselected. Physical Mac remains
+`not_run`; this bounded acceptance does not close the generic reducer
+requirements or parent S2-42. See the
+[protocol](../testing/S2_42_LINUX_FIVE_SUITE_ACCEPTANCE.md) and
+[plan](../plans/STAGE_2.md#s2-42-собрать-общий-corpus-reducer-и-harness).
