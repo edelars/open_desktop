@@ -17369,8 +17369,15 @@ saved results per backend matched, and saved-run verification passed. Evidence:
 [summary](../../work/stage2-42e-oracle/s2-42e-summary.json) and
 `work/stage2-42e-oracle/stage2-20261104-120215-67d38a75/`. Five focused Linux
 mapping/admission regressions passed. The complete `native_v2::tests` group
-still has 50 failures with exactly the same test names on parent `286b70c` and
-final `0a0640b`; see [ISSUE-035](../KNOWN_ISSUES.md#issue-035-linux-native-v2-broad-test-failures).
+initially had the same 50 failures on parent `286b70c` and final `0a0640b`.
+That test baseline is now resolved: after correcting stale test fixture/profile
+expectations and closing the MAXPS memory-profile routing gap, the full group
+passed 217 tests with 0 failures (19 filtered) on Linux x86_64 using source files
+matching main revision `64290d2b643ff69912a5c9b3969081e9dbbe8bca`; the checkout
+started at `0a0640b` and received the documented code-only patch. Patch and full
+transcript: `work/stage2-42e-oracle/native-v2-issue035-source.patch` and
+`work/stage2-42e-oracle/native-v2-issue035-resolved.log`; see
+[ISSUE-035](../KNOWN_ISSUES.md#issue-035-linux-native-v2-broad-test-failures).
 Physical Mac acceptance remains `not_run`. The change does not alter CPU
 semantics, fixture schema or runner CLI; S2-42 remains open
 for additional memory/stack/REP/FP groups, generic reduction, S2-21/S2-39/S2-40

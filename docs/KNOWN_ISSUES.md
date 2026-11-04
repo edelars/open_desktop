@@ -25,14 +25,14 @@
 
 <a id="issue-035-linux-native-v2-broad-test-failures"></a>
 
-### ISSUE-035 — Linux native_v2 broad test group has baseline failures
+### ISSUE-035 — Linux native_v2 broad test group had baseline failures
 
 - **Дата обнаружения:** 2026-11-04.
 - **Компонент:** `tools/x86-runner`, Linux x86_64 `native_v2` unit-test group.
-- **Статус:** открыто; 50 broad test failures reproduce unchanged on the parent baseline.
-- **Суть и последствия:** `cargo test --offline -p od-x86-runner native_v2::tests -- --nocapture` does not pass as a group. On parent `286b70c`, 163 tests passed and 50 failed; on final S2-42e `0a0640b`, 167 passed and the same 50 named tests failed. Set comparison found 50 common failures, with no baseline-only or final-only failures. The five focused execute-only mapping regressions pass. Observed failures include older fixture/profile validation errors and stale denial-reason expectations; the full logs preserve exact names and diagnostics.
-- **Основание:** Linux x86_64 host `192.168.1.39`, user `senya`; baseline transcript [native-v2-baseline.log](../work/stage2-42e-oracle/native-v2-baseline.log) and current transcript [native-v2-final.log](../work/stage2-42e-oracle/native-v2-final.log). The final mapping acceptance is independently recorded in [S2-42e evidence](../work/stage2-42e-oracle/stage2-20261104-120215-67d38a75/).
-- **Следующий шаг:** audit the 50 common failures by fixture and expected outcome, correct stale fixtures/assertions or resolve any confirmed runtime defects, then rerun the full Linux `native_v2::tests` group.
+- **Статус:** решено 2026-11-04.
+- **Суть и последствия:** The initial `cargo test --offline -p od-x86-runner native_v2::tests -- --nocapture` group run had 50 identical failures on parent `286b70c` and S2-42e `0a0640b`. Triage found stale fixture/profile setup and denial expectations, plus a confirmed MAXPS memory-profile routing gap. The x87 fixture helper now uses the selected profile state; profile budgets, fixture names, nested RET cleanup, strict schema rejections, and current denial text are checked at their intended boundaries. Separately, MAXPS memory profiles now fail closed before native trace. No native SSE capability was added.
+- **Проверка и evidence:** On Linux x86_64 host `192.168.1.39` as `senya`, `cargo test --offline -p od-x86-runner native_v2::tests -- --nocapture` passed **217 tests, 0 failed** (19 filtered). The tested source files match main revision `64290d2b643ff69912a5c9b3969081e9dbbe8bca`; the Linux checkout started at `0a0640b` and received only code changes to `native_fp.rs` and `native_v2.rs`, preserved as [source patch](../work/stage2-42e-oracle/native-v2-issue035-source.patch). The focused x87 denial matrix passed independently. Full resolved transcript: `work/stage2-42e-oracle/native-v2-issue035-resolved.log`. Initial transcripts remain at [native-v2-baseline.log](../work/stage2-42e-oracle/native-v2-baseline.log) and [native-v2-final.log](../work/stage2-42e-oracle/native-v2-final.log). The five suite evidence remains separately recorded in [S2-42e evidence](../work/stage2-42e-oracle/stage2-20261104-120215-67d38a75/).
+- **Граница:** this closes the broad Linux native_v2 unit-test baseline only. Physical Mac acceptance, S2-39k ptrace oracle, and parent S2-42 acceptance remain open.
 
 <a id="issue-033-s2-37cq-comiss-mixed-event-handling-audit"></a>
 
@@ -76,12 +76,12 @@
 
 - **Дата обнаружения:** 2026-11-01; исправлено 2026-11-03.
 - **Компонент:** `tools/x86-runner`, Linux x86_64-only `native_v2` backend.
-- **Статус:** Linux compile blocker решён 2026-11-03. Пять согласованных S2-42 suites прошли Linux native runtime; общий `native_v2::tests` остаётся с 50 baseline failures (ISSUE-035). Отдельный S2-39k ptrace oracle и physical hardware остаются `not_run`.
+- **Статус:** Linux compile blocker решён 2026-11-03. Пять согласованных S2-42 suites и полный Linux `native_v2::tests` group прошли; общий group дал 217 passed / 0 failed после закрытия ISSUE-035. Отдельный S2-39k ptrace oracle и physical hardware остаются `not_run`.
 - **Основание и последствия:** ранее `cargo check -p od-x86-runner --all-targets --target x86_64-unknown-linux-gnu --offline` обнаруживал два неполных Linux-only initializer-а в `native_v2.rs`: `Snapshot` и тестовый `Fixture`. Каждый не задавал 142 текущих optional control fields schema-v2. Все поля теперь явно заданы как `None`; наблюдаемое состояние, native admission policy и семантика не менялись. `serde_json` 1.0.151 уже присутствует в зависимостях runner и успешно компилируется для Linux target; отдельная dependency правка не потребовалась.
-- **Воспроизведение и результат:** указанная cross-target команда после исправления завершается успешно для `--all-targets --offline`; сама по себе она подтверждает только type-check. Отдельные пять согласованных S2-42 native suites запущены на Linux x86_64, а broad `native_v2::tests` дал одинаковые 50 baseline failures до/после mapping fix (ISSUE-035). S2-39k ptrace oracle не выполнялся; запуск suites не подтверждает hardware behavior.
-- **Следующий шаг:** устранить широкие baseline failures по ISSUE-035 и отдельно выполнить S2-39k; hardware acceptance требует собственной физической среды и evidence. Не трактовать cross-target type-check как runtime или hardware acceptance.
-- **S2-30cl:** `D9 F8` добавлен в существующий native x87-deny regression matrix. После устранения compile blocker тест проходит Linux target type-check; runtime execution остаётся `not_run`. См. [S2-30cl report](reports/S2_30CL_X87_FPREM.md).
-- **S2-30cm:** `D9 F5` добавлен в тот же Linux-only native x87-deny matrix. После устранения compile blocker тест проходит Linux target type-check; runtime execution остаётся `not_run`. См. [S2-30cm report](reports/S2_30CM_X87_FPREM1.md).
+- **Воспроизведение и результат:** указанная cross-target команда после исправления завершается успешно для `--all-targets --offline`; сама по себе она подтверждает только type-check. Отдельные пять согласованных S2-42 native suites запущены на Linux x86_64. Broad `native_v2::tests` group прошёл: 217 passed / 0 failed; полные данные и exact source patch — в [ISSUE-035](#issue-035-linux-native-v2-broad-test-failures). S2-39k ptrace oracle не выполнялся; запуск suites не подтверждает hardware behavior.
+- **Следующий шаг:** отдельно выполнить S2-39k; hardware acceptance требует собственной физической среды и evidence. Не трактовать cross-target type-check как runtime или hardware acceptance.
+- **S2-30cl:** `D9 F8` is covered by the native x87-deny admission matrix. Its Linux x86_64 denial regression passed in `native_v2::tests`; execution of the x87 instruction itself and physical-hardware acceptance remain `not_run`. См. [S2-30cl report](reports/S2_30CL_X87_FPREM.md).
+- **S2-30cm:** `D9 F5` is covered by the same native x87-deny admission matrix. Its Linux x86_64 denial regression passed in `native_v2::tests`; execution of the x87 instruction itself and physical-hardware acceptance remain `not_run`. См. [S2-30cm report](reports/S2_30CM_X87_FPREM1.md).
 - **S2-37dj:** прежнее cross-target compile препятствие устранено. Тест denial для `ADDSD` m64 проходит Linux target type-check, но на Darwin arm64 host не запускался. См. [S2-37dj report](reports/S2_37DJ_ADDSD_MEMORY.md).
 
 ### ISSUE-028 — Неподтверждённый внешний report о CVTPI2PS memory x87 transition

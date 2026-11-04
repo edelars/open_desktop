@@ -8416,6 +8416,8 @@ CPU-only S2-27d и статический Ubuntu mapping не являются p
 4. Для каждой поддержанной группы среза запустить ручной набор и минимум 1000 различных допустимых generated cases по нескольким seeds, по два повтора на interpreter/native. Для запрещённых или опасных комбинаций использовать отдельно определённый bounded набор и явно указать причину; число cases не заменяет coverage matrix.
 5. Обязательные selected suites не могут silently skip hardware, неподдержанные обязательные формы или отсутствующий backend. Невыбранное маркируется `not_run`.
 
+**Linux test-group baseline:** the initial Linux x86_64 `native_v2::tests` run had 50 failures on both parent `286b70c` and S2-42e `0a0640b`. ISSUE-035 was resolved on 2026-11-04: source files matching main revision `64290d2b643ff69912a5c9b3969081e9dbbe8bca` passed `cargo test --offline -p od-x86-runner native_v2::tests -- --nocapture` with 217 tests and 0 failures (19 filtered). The Linux checkout started at `0a0640b`; its exact code-only source patch and full transcript are `work/stage2-42e-oracle/native-v2-issue035-source.patch` and `work/stage2-42e-oracle/native-v2-issue035-resolved.log`. This clears the Linux unit-test baseline; it does not implement the required combined S2-42 command or close parent S2-42. Physical Mac acceptance remains `not_run`.
+
 **Готово:** одна документированная команда проверяет выбранный срез, выдаёт machine-readable summary и ненулевой exit при недоступной обязательной проверке. Mismatch воспроизводится и сокращается без изменения его смысла.
 
 ### S2-42a. Deterministic corpus для native XORPD
