@@ -24543,6 +24543,29 @@ full S2-21 acceptance; S2-21/S2-39/S2-40 and parent S2-42 remain open. See the
 [protocol](../testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md), [plan](../plans/STAGE_2.md#s2-42u--exact-bare-rexw-qword-memory-cmpxchg-corpus),
 and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42u-exact-qword-memory-cmpxchg-corpus).
 
+## S2-42v — register CMPXCHG local corpus
+
+S2-42v covers exactly the existing S2-21c encodings 48 0F B1 D9
+(CMPXCHG RCX,RBX) and 48 0F B1 C9 (CMPXCHG RCX,RCX). Sixteen pinned controls
+cover both encodings and eight accumulator/destination pairs. The 1,024
+deterministic generated inputs are unique and exercise equality, mismatch,
+CF/PF/AF/ZF/SF/OF boundaries, and the source/destination alias.
+
+The independent Python integer oracle computes subtraction flags from the
+pre-instruction RAX and RCX values, then applies the encoding-specific source
+and alias behavior. Full-state checks cover all GPRs, defined RFLAGS, unchanged
+execute-only code, RIP+4, one retirement, stop, and no exception. All 1,040
+cases passed twice on the local interpreter (2,080 executions); saved replay
+verification passed. Focused tests passed 11/11, Python compilation and diff
+check passed. Corpus digest:
+e46ff821850eb486e7a6113ed3a0b3e3a92022dcb8e27337a82d15ae7a5ef7f5.
+The explicit native request records blocked/not_started before backend
+execution. Native and physical evidence remain not_run. The slice does not
+close S2-21/S2-39/S2-40 or parent S2-42. See the
+[protocol](../testing/S2_42V_CMPXCHG_REGISTER_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42v--qword-register-cmpxchg-corpus),
+and [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42v-register-cmpxchg-corpus).
+
 ## S2-42w — local qword memory XCHG corpus
 
 S2-42w covers exactly the existing S2-21a bytes 48 87 00

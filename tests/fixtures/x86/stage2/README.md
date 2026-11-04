@@ -9349,6 +9349,16 @@ completed cases and list missing repeats. Native is denied before backend
 invocation and recorded `not_run`. This makes no atomicity or hardware claim.
 See the [S2-42u protocol](../../../../docs/testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md).
 
+### S2-42v register CMPXCHG corpus
+
+s2_42v_cmpxchg_qword_register_controls/ contains 16 pinned controls across
+the exact S2-21c encodings 48 0F B1 D9 and 48 0F B1 C9. They cover equal and
+mismatch outcomes, including RCX source/destination aliasing. The corpus adds
+1,024 unique generated cases with CF/PF/AF/ZF/SF/OF boundary coverage. All
+1,040 cases matched independent full-state interpreter expectations twice
+with strict saved replay. Native is denied before backend execution. See the
+[S2-42v protocol](../../../../docs/testing/S2_42V_CMPXCHG_REGISTER_CORPUS.md).
+
 ### S2-42w qword memory XCHG corpus
 
 s2_42w_xchg_qword_memory_controls/ contains two pinned controls for exact

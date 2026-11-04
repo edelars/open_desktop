@@ -733,6 +733,7 @@ CpuState + профиль + интерфейс гостевой памяти + b
 | [x] | S2-42s | REP STOSB work-limit checkpoint/replay evidence | Eight handwritten count 1024/1025/2048/2049 × DF controls; 8×2 local executions, 32 phase snapshots, successful-store journal and masked undefined-AF checks; native/physical `not_run`; parent S2-42 and dependencies S2-21/39/40 remain open; [protocol](../testing/S2_42S_REP_CHECKPOINT.md), [report](../reports/STAGE_2_REPORT.md#s2-42s--rep-stosb-work-limit-checkpointreplay) |
 | [x] | S2-42t | Local LOCK XADD qword [RBX],RAX corpus | 32 pinned arithmetic-boundary controls + 1,024 unique generated inputs; all 1,056×2 passed local interpreter and saved replay verification; explicit native blocked before backend because form is not admitted; S2-21, ISSUE-017 and parent S2-42 remain open; [protocol](../testing/S2_42T_LOCK_XADD_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42t--local-lock-xadd-qword-corpus) |
 | [x] | S2-42u | Exact bare REX.W qword memory CMPXCHG corpus | Two pinned equal/mismatch controls + 1,024 unique generated inputs for `48 0F B1 18`; generated classes cover equal/mismatch, CF=0/1 and OF=0/1; all 1,026×2 passed local interpreter and saved replay verification with cwd/environment provenance; interruption checkpoints preserve completed attempts and list missing repeats; native explicitly denied before backend; parent S2-42 and dependencies S2-21/39/40 remain open; [protocol](../testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42u--exact-qword-memory-cmpxchg-corpus) |
+| [x] | S2-42v | qword register CMPXCHG corpus | 16 pinned controls across both S2-21c encodings + 1,024 unique generated inputs; equal/mismatch and CF/PF/AF/ZF/SF/OF boundaries; all 1,040×2 passed locally with strict saved replay; native blocked before backend; S2-21/39/40 and parent S2-42 remain open; [protocol](../testing/S2_42V_CMPXCHG_REGISTER_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42v--register-cmpxchg-local-corpus) |
 | [x] | S2-42w | Local qword memory XCHG corpus | Two pinned old-memory controls + 1,024 unique generated inputs for exact 48 87 00 (XCHG qword [RAX],RAX); all 1,026×2 passed local interpreter and strict saved replay; explicit native request blocked before backend; no atomicity/SMP claim; parent S2-42 and S2-21/39/40 remain open; [protocol](../testing/S2_42W_XCHG_MEMORY_CORPUS.md), [report](../reports/STAGE_2_REPORT.md#s2-42w--local-qword-memory-xchg-corpus) |
 | [ ] | S2-43 | Диагностика и контракт для JIT | S2-42; S2-41 для системного профиля |
 | [ ] | S2-44 | Приёмка и документация | Все обязательные задачи профиля |
@@ -20255,6 +20256,25 @@ does not establish CMPXCHG atomicity, S2-21, or parent S2-42 acceptance. See
 the [protocol](../testing/S2_42U_CMPXCHG_QWORD_MEMORY_CORPUS.md), [fixture
 notes](../../tests/fixtures/x86/stage2/README.md#s2-42u-exact-qword-memory-cmpxchg-corpus),
 and [report](../reports/STAGE_2_REPORT.md#s2-42u--exact-qword-memory-cmpxchg-corpus).
+
+### S2-42v — qword register CMPXCHG corpus
+
+Adds 16 pinned controls and 1,024 generated inputs for exactly the two
+implemented S2-21c encodings: 48 0F B1 D9 (CMPXCHG RCX,RBX) and
+48 0F B1 C9 (CMPXCHG RCX,RCX). Controls span both encodings and eight RAX/RCX
+pairs. Generated cases exercise equality and mismatch plus carry, parity,
+auxiliary-carry, zero, sign, and overflow outcomes. The independent integer
+oracle computes RAX minus the old RCX value and then applies the source and
+alias rules. It checks all GPRs, defined RFLAGS, code, RIP, one retirement,
+stop, and no exception.
+
+All 1,040 cases passed twice through the local interpreter with strict saved
+replay verification. The native request is explicitly blocked before backend
+execution; native and physical evidence remain not_run. S2-21, S2-39, S2-40,
+and parent S2-42 remain open. See the
+[protocol](../testing/S2_42V_CMPXCHG_REGISTER_CORPUS.md),
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42v-register-cmpxchg-corpus),
+and [report](../reports/STAGE_2_REPORT.md#s2-42v--register-cmpxchg-local-corpus).
 
 ### S2-42w — local qword memory XCHG corpus
 
