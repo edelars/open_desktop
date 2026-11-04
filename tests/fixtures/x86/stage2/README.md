@@ -9461,3 +9461,15 @@ preserves destination, PF reports source parity, CF/OF/SF/AF clear. All 4,128
 cases passed twice locally with strict saved replay. Native evidence is
 `not_run/not_selected`. See the
 [S2-42ae protocol](../../../../docs/testing/S2_42AE_BSF_BSR_REGISTER_CORPUS.md).
+
+### S2-42af qword register BT-family corpus
+
+`s2_42af_bt_family_qword_register_controls/` contains 64 pinned controls for
+the exact `BT/BTS/BTR/BTC RAX,RCX` qword register forms. Each form adds 1,024
+unique generated states covering low-six-bit offset selection, indices 0/1/63,
+64/127 and high RCX values, selected bit zero/one, initial flag probes, and
+boundary/alternating RAX values. The independent integer oracle checks CF from
+the old bit, preserved ZF, RAX's operation-specific result, full state and one
+retirement. All 4,160 cases passed twice locally with strict saved replay.
+Native evidence is `not_run/not_selected`. See the
+[S2-42af protocol](../../../../docs/testing/S2_42AF_BITOPS_QWORD_REGISTER_CORPUS.md).

@@ -24779,3 +24779,27 @@ Native evidence is `not_run/not_selected`, and physical execution is `not_run`.
 does not close S2-15d, parent S2-42, or broader BSF/BSR coverage. See the [protocol](../testing/S2_42AE_BSF_BSR_REGISTER_CORPUS.md),
 [plan](../plans/STAGE_2.md#s2-42ae--qword-register-bsfbsr-corpus), and
 [fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42ae-qword-register-bsfbsr-corpus).
+
+## S2-42af — qword register BT-family corpus
+
+S2-42af adds four exact Long64 forms with RAX as the qword bit string and RCX
+as the register offset: `BT RAX,RCX` (`48 0F A3 C8`), `BTS` (`48 0F AB C8`),
+`BTR` (`48 0F B3 C8`), and `BTC` (`48 0F BB C8`). Each exact form has 16
+pinned controls and 1,024 generated states. The independent Python integer
+oracle checks RCX modulo 64, CF from the old selected bit, preserved ZF,
+unchanged/set/reset/complement RAX behavior, all other GPRs, code bytes, RIP,
+definedness and single-instruction retirement. The documented Intel SDM
+revision 093 behavior leaves OF/SF/AF/PF undefined; comparison uses mask
+`0x443` and does not treat undefined flag outputs as architectural evidence.
+
+Six focused tests passed. The corpus contains 4,160 cases; all 8,320 interpreter
+executions passed. Strict corpus verification and saved-result replay passed
+with digest `064e7ef0ce111fed8604b6bb7050c82fd480e12ff060dc20dde8a5b4067fec4b`.
+The runner built offline. Native evidence is `not_run/not_selected` even though
+the existing runner recognizes these operations; the new corpus was not part
+of the five authorized native suites. Physical execution is `not_run`. This
+slice is limited to the four distinct-register forms and does not close S2-15c
+or parent S2-42. See the
+[protocol](../testing/S2_42AF_BITOPS_QWORD_REGISTER_CORPUS.md),
+[plan](../plans/STAGE_2.md#s2-42af--qword-register-bt-family-corpus), and
+[fixture notes](../../tests/fixtures/x86/stage2/README.md#s2-42af-qword-register-bt-family-corpus).
