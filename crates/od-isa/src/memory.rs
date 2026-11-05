@@ -65,6 +65,23 @@ impl Default for AccessContext {
     }
 }
 
+/// Builds the x86 page-fault error code for the supported paging profile.
+/// Reserved-bit violations and protection violations set P; not-present
+/// entries clear it. I/D is reported for instruction fetches when NX is active.
+pub const fn page_fault_error_code(
+    access: AccessKind,
+    context: AccessContext,
+    present: bool,
+    reserved: bool,
+    nxe: bool,
+) -> u32 {
+    (present as u32)
+        | ((matches!(access, AccessKind::Write) as u32) << 1)
+        | ((matches!(context.page_privilege(), PrivilegeLevel::Ring3) as u32) << 2)
+        | ((reserved as u32) << 3)
+        | ((matches!(access, AccessKind::Fetch) && nxe) as u32) << 4
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArchitecturalFault {
     pub vector: u8,
@@ -72,6 +89,62 @@ pub struct ArchitecturalFault {
     pub error_code: Option<u32>,
     /// Supplied by the translation backend where architecturally meaningful.
     pub linear_address: Option<u64>,
+}
+
+/// A precisely described page fault, before CPU exception delivery.
+/// `cr2_value` is the value intended for CR2; constructing this record does not
+/// update CPU state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PageFaultRecord {
+    fault: ArchitecturalFault,
+    saved_rip: u64,
+    access: AccessKind,
+    context: AccessContext,
+}
+
+impl PageFaultRecord {
+    pub const fn new(
+        saved_rip: u64,
+        access: AccessKind,
+        context: AccessContext,
+        error_code: u32,
+        linear_address: u64,
+    ) -> Self {
+        Self {
+            fault: ArchitecturalFault {
+                vector: 14,
+                error_code: Some(error_code),
+                linear_address: Some(linear_address),
+            },
+            saved_rip,
+            access,
+            context,
+        }
+    }
+
+    pub const fn fault(&self) -> &ArchitecturalFault {
+        &self.fault
+    }
+
+    pub const fn saved_rip(&self) -> u64 {
+        self.saved_rip
+    }
+
+    pub const fn access(&self) -> AccessKind {
+        self.access
+    }
+
+    pub const fn context(&self) -> AccessContext {
+        self.context
+    }
+
+    pub const fn cr2_value(&self) -> u64 {
+        // The constructor always supplies the required linear address.
+        match self.fault.linear_address {
+            Some(address) => address,
+            None => unreachable!(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -208,6 +281,72 @@ pub trait GuestMemory {
         value: u64,
     ) -> Result<(), MemoryError> {
         self.write(address, context, &value.to_le_bytes()[..size.bytes()])
+    }
+}
+
+#[cfg(test)]
+mod page_fault_tests {
+    use super::*;
+
+    fn context(privilege: PrivilegeLevel, origin: AccessOrigin) -> AccessContext {
+        AccessContext {
+            mode: InstructionMode::Long64,
+            privilege,
+            origin,
+        }
+    }
+
+    #[test]
+    fn page_fault_error_codes_match_independent_literal_cases() {
+        let supervisor = context(PrivilegeLevel::Ring0, AccessOrigin::Explicit);
+        let user = context(PrivilegeLevel::Ring3, AccessOrigin::Explicit);
+        assert_eq!(
+            page_fault_error_code(AccessKind::Read, supervisor, false, false, false),
+            0x00
+        );
+        assert_eq!(
+            page_fault_error_code(AccessKind::Write, user, false, false, false),
+            0x06
+        );
+        assert_eq!(
+            page_fault_error_code(AccessKind::Write, user, true, false, false),
+            0x07
+        );
+        assert_eq!(
+            page_fault_error_code(AccessKind::Read, supervisor, true, true, false),
+            0x09
+        );
+        assert_eq!(
+            page_fault_error_code(AccessKind::Fetch, user, true, false, true),
+            0x15
+        );
+        assert_eq!(
+            page_fault_error_code(AccessKind::Fetch, user, false, false, false),
+            0x04
+        );
+        assert_eq!(
+            page_fault_error_code(AccessKind::Fetch, user, false, false, true),
+            0x14
+        );
+
+        let descriptor = context(PrivilegeLevel::Ring3, AccessOrigin::DescriptorTable);
+        assert_eq!(descriptor.privilege, PrivilegeLevel::Ring3);
+        assert_eq!(descriptor.page_privilege(), PrivilegeLevel::Ring0);
+        assert_eq!(
+            page_fault_error_code(AccessKind::Read, descriptor, true, false, false),
+            0x01
+        );
+    }
+
+    #[test]
+    fn page_fault_record_keeps_instruction_and_fault_addresses_distinct() {
+        let context = context(PrivilegeLevel::Ring3, AccessOrigin::DescriptorTable);
+        let record = PageFaultRecord::new(0x1234, AccessKind::Read, context, 0x01, 0xfeed_beef);
+        assert_eq!(record.fault().vector, 14);
+        assert_eq!(record.fault().error_code, Some(0x01));
+        assert_eq!(record.saved_rip(), 0x1234);
+        assert_eq!(record.cr2_value(), 0xfeed_beef);
+        assert_eq!(record.context(), context);
     }
 }
 

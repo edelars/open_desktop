@@ -39,6 +39,10 @@ pub use lretq::{
     LretqProfile, LretqReadPhase, LretqResult, LretqRunExit, LretqRunResult,
     run_with_lretq_profile, step_with_lretq_profile,
 };
+pub use memory::{
+    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode,
+    MemoryError, PageFaultRecord, PrivilegeLevel, page_fault_error_code,
+};
 pub use state::{
     CodeSegmentDescriptorCache, CpuActivity, DataSegmentDescriptorCache, DsDescriptorCache,
     FragmentAdapterError, FsDescriptorCache, LongModeState, OperandSize, RegisterError,

@@ -13,9 +13,10 @@ pub use bus::{
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};
 
 pub use page_walk::{
-    EffectivePermissions, GuestLinearAddress, Long64ProbeConfig, NonCanonicalAddress,
-    PageFaultProbe, PageFaultReason, PageTableLevel, ProbeAccessError, ProbeConfigError,
-    ProbeError, ProbeOutcome, ProbeReport, Translation4K, WalkEntry, WalkTrace, probe_long64_4k,
+    EffectivePermissions, GuestLinearAddress, InstructionProbeOutcome, InstructionProbeReport,
+    Long64ProbeConfig, NonCanonicalAddress, PageFaultProbe, PageFaultReason, PageTableLevel,
+    ProbeAccessError, ProbeConfigError, ProbeError, ProbeOutcome, ProbeReport, Translation4K,
+    WalkEntry, WalkTrace, probe_instruction_access, probe_long64_4k,
 };
 
 pub use physical_memory::{

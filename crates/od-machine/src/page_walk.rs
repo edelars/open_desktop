@@ -1,7 +1,9 @@
 //! Read-only diagnostic translation probe for the admitted Long64 4 KiB profile.
 
 use crate::{GuestPhysicalAddress, MemoryAccessError, PhysicalMemory};
-use od_isa::memory::{AccessContext, AccessKind, PrivilegeLevel};
+use od_isa::memory::{
+    AccessContext, AccessKind, PageFaultRecord, PrivilegeLevel, page_fault_error_code,
+};
 use std::fmt;
 
 const CR0_PE: u64 = 1 << 0;
@@ -352,7 +354,7 @@ pub fn probe_long64_4k(
             let fault = page_fault(
                 address,
                 access,
-                privilege,
+                context,
                 false,
                 false,
                 level,
@@ -388,7 +390,7 @@ pub fn probe_long64_4k(
             let fault = page_fault(
                 address,
                 access,
-                privilege,
+                context,
                 true,
                 true,
                 level,
@@ -420,7 +422,7 @@ pub fn probe_long64_4k(
         let fault = page_fault(
             address,
             access,
-            privilege,
+            context,
             true,
             false,
             PageTableLevel::Pt,
@@ -456,27 +458,65 @@ pub fn probe_long64_4k(
 fn page_fault(
     address: GuestLinearAddress,
     access: AccessKind,
-    privilege: PrivilegeLevel,
+    context: AccessContext,
     present: bool,
     reserved: bool,
     _level: PageTableLevel,
     reason: PageFaultReason,
     nxe: bool,
 ) -> PageFaultProbe {
-    let mut error_code = u32::from(present)
-        | (u32::from(access == AccessKind::Write) << 1)
-        | (u32::from(privilege == PrivilegeLevel::Ring3) << 2)
-        | (u32::from(reserved) << 3)
-        | (u32::from(access == AccessKind::Fetch && nxe) << 4);
-    if matches!(reason, PageFaultReason::NotPresent { .. }) {
-        error_code &= !1;
-    }
+    let error_code = page_fault_error_code(access, context, present, reserved, nxe);
     PageFaultProbe {
         linear: address,
         access,
-        page_privilege: privilege,
+        page_privilege: context.page_privilege(),
         error_code,
         reason,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InstructionProbeOutcome {
+    Translated(Translation4K),
+    PageFault {
+        record: PageFaultRecord,
+        reason: PageFaultReason,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstructionProbeReport {
+    pub outcome: Result<InstructionProbeOutcome, ProbeError>,
+    pub trace: WalkTrace,
+}
+
+/// Adds instruction restart metadata to a pure page-walk result. This does not
+/// deliver the exception, update CR2, or mutate CPU or guest memory state.
+pub fn probe_instruction_access(
+    memory: &PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    access: AccessKind,
+    context: AccessContext,
+) -> InstructionProbeReport {
+    let report = probe_long64_4k(memory, paging, address, access, context);
+    let outcome = report.outcome.map(|outcome| match outcome {
+        ProbeOutcome::Translated(translation) => InstructionProbeOutcome::Translated(translation),
+        ProbeOutcome::PageFault(probe) => InstructionProbeOutcome::PageFault {
+            record: PageFaultRecord::new(
+                instruction_rip,
+                probe.access,
+                context,
+                probe.error_code,
+                probe.linear.get(),
+            ),
+            reason: probe.reason,
+        },
+    });
+    InstructionProbeReport {
+        outcome,
+        trace: report.trace,
     }
 }
 
@@ -891,5 +931,124 @@ mod tests {
             context(PrivilegeLevel::Ring0),
         ));
         assert!(matches!(second, ProbeOutcome::Translated(t) if t.page_base.get() == 0x6000));
+    }
+
+    #[test]
+    fn instruction_probe_constructs_only_page_fault_records_and_preserves_context() {
+        use od_isa::memory::{AccessOrigin, InstructionMode};
+
+        let paging = cfg(false, true);
+        let rip = 0x1234;
+        let fault_linear = GuestLinearAddress::new(LINEAR);
+        let descriptor_context = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::DescriptorTable,
+        };
+        let mem = tables(memory(0x5000), 0x4003 | (1 << 5) | (1 << 6) | ENTRY_NX_BIT);
+        let before = [0x1008, 0x2010, 0x3018, 0x4020]
+            .map(|address| mem.read_u64(GuestPhysicalAddress::new(address)).unwrap());
+        let report = probe_instruction_access(
+            &mem,
+            &paging,
+            rip,
+            fault_linear,
+            AccessKind::Fetch,
+            descriptor_context,
+        );
+        match report.outcome.unwrap() {
+            InstructionProbeOutcome::PageFault { record, reason } => {
+                assert_eq!(record.fault().vector, 14);
+                assert_eq!(record.fault().error_code, Some(0x11));
+                assert_eq!(record.saved_rip(), rip);
+                assert_ne!(record.saved_rip(), record.cr2_value());
+                assert_eq!(record.cr2_value(), LINEAR);
+                assert_eq!(record.access(), AccessKind::Fetch);
+                assert_eq!(record.context(), descriptor_context);
+                assert_eq!(record.context().page_privilege(), PrivilegeLevel::Ring0);
+                assert_eq!(
+                    reason,
+                    PageFaultReason::Protection {
+                        user_denied: false,
+                        write_denied: false,
+                        execute_denied: true,
+                    }
+                );
+            }
+            other => panic!("expected page-fault record, got {other:?}"),
+        }
+        let after = [0x1008, 0x2010, 0x3018, 0x4020]
+            .map(|address| mem.read_u64(GuestPhysicalAddress::new(address)).unwrap());
+        assert_eq!(after, before);
+
+        let translated = probe_instruction_access(
+            &mem,
+            &paging,
+            rip,
+            fault_linear,
+            AccessKind::Read,
+            context(PrivilegeLevel::Ring0),
+        );
+        assert!(matches!(
+            translated.outcome,
+            Ok(InstructionProbeOutcome::Translated(_))
+        ));
+    }
+
+    #[test]
+    fn instruction_probe_keeps_non_page_fault_results_distinct() {
+        let paging = cfg(false, false);
+        let context = context(PrivilegeLevel::Ring0);
+        let mem = memory(0x5000);
+        let noncanonical = probe_instruction_access(
+            &mem,
+            &paging,
+            0x1000,
+            GuestLinearAddress::new(0x0000_8000_0000_0000),
+            AccessKind::Read,
+            context,
+        );
+        assert!(matches!(
+            noncanonical.outcome,
+            Err(ProbeError::NonCanonical(_))
+        ));
+
+        let mut large_page = tables(memory(0x5000), 0x4007);
+        large_page
+            .write_u64(
+                GuestPhysicalAddress::new(0x3018),
+                0x4007 | ENTRY_PS_OR_PAT,
+                |_| {},
+            )
+            .unwrap();
+        let unsupported = probe_instruction_access(
+            &large_page,
+            &paging,
+            0x1000,
+            GuestLinearAddress::new(LINEAR),
+            AccessKind::Read,
+            context,
+        );
+        assert!(matches!(
+            unsupported.outcome,
+            Err(ProbeError::UnsupportedPageSize { .. })
+        ));
+
+        let mut short_memory = memory(0x2000);
+        short_memory
+            .write_u64(GuestPhysicalAddress::new(0x1008), 0x2007, |_| {})
+            .unwrap();
+        let table_read = probe_instruction_access(
+            &short_memory,
+            &paging,
+            0x1000,
+            GuestLinearAddress::new(LINEAR),
+            AccessKind::Read,
+            context,
+        );
+        assert!(matches!(
+            table_read.outcome,
+            Err(ProbeError::Access(ProbeAccessError::TableRead { .. }))
+        ));
     }
 }
