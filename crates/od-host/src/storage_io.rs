@@ -51,10 +51,30 @@
 //!   file age: a live holder can never be displaced by a timeout.
 //!
 //! The held lock is the only reason `exclusive_lock` is reported `true`; every
-//! other open reports `false`. Read-only opens take no lock and neither block
-//! nor are blocked by a writer; read leases are a later task. `flock` is an
-//! advisory lock: it does not stop a process that never calls `flock` and it
-//! is not supported on network file systems.
+//! other open reports `false`. [`HostFileStorage::open_read_only`] takes no
+//! lock and neither blocks nor is blocked by a writer: it is **not** a lease
+//! and gives no protection against a concurrent writer (it is kept for
+//! callers that deliberately read a possibly changing file). A reader that
+//! needs a stable view of a file without a writer takes a [`ReadLease`]
+//! instead. `flock` is an advisory lock: it does not stop a process that never
+//! calls `flock` and it is not supported on network file systems.
+//!
+//! # Read leases
+//!
+//! [`ReadLease::open`] opens a file read-only and takes a non-blocking shared
+//! `flock(2)` lock (`LOCK_SH | LOCK_NB`) on it. Shared locks coexist, so any
+//! number of leases (in this or other processes) may be held at once, but a
+//! shared lock conflicts with `LOCK_EX`: while at least one lease is alive
+//! every writer constructor returns [`WriterOpenError::WriterBusy`], and while
+//! a writer holds `LOCK_EX` a lease request returns
+//! [`LeaseOpenError::LeaseBusy`]. The lease lives exactly as long as the
+//! descriptor: `Drop`, process exit and `SIGKILL` all release it through the
+//! kernel, with no unlock call, PID file or timeout. A lease only blocks
+//! writers that take the `flock` (all writers of this module do); plain
+//! `open_read_only` readers and foreign tools are neither blocked nor blocking.
+//! The `(st_dev, st_ino)` identity is taken from the locked descriptor and the
+//! path must still name it, otherwise [`LeaseOpenError::IdentityMismatch`].
+//! The lease offers read access only (`read_at`, `size`).
 //!
 //! The file identity `(st_dev, st_ino)` is recorded from the locked
 //! descriptor. Before every mutation the path is resolved again; if it no
@@ -68,8 +88,8 @@
 //! There is deliberately no public way to obtain a writable instance without
 //! this lock: [`HostFileStorage::create_new_exclusive`] and
 //! [`HostFileStorage::open_read_write_exclusive`] are the only writable
-//! constructors. Read leases for readers and VMHost lifecycle integration
-//! are not part of this module yet (later S9 work).
+//! constructors. VMHost lifecycle integration and the export/repair busy
+//! policy are not part of this module yet (later S9 work).
 //!
 //! Only Unix targets are supported because the adapter uses positioned I/O
 //! (`pread`/`pwrite`) and `flock(2)`.
@@ -87,6 +107,7 @@ const HOST_MAX_LEN: u64 = i64::MAX as u64;
 
 // `flock(2)`: see `man 2 flock`. Operation values are from
 // `<sys/file.h>` / `<sys/fcntl.h>` (macOS SDK, Linux glibc agree).
+const LOCK_SH: i32 = 0x01;
 const LOCK_EX: i32 = 0x02;
 const LOCK_NB: i32 = 0x04;
 
@@ -117,6 +138,25 @@ unsafe extern "C" {
     // SAFETY contract: `fd` is an open descriptor owned by the caller;
     // `F_FULLFSYNC` reads no caller memory.
     fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+}
+
+/// Takes a non-blocking `flock` and retries on `EINTR`. `Ok(false)` means the
+/// lock is held incompatibly by another open file description.
+fn flock_nonblocking(file: &File, operation: i32) -> io::Result<bool> {
+    loop {
+        // SAFETY: `file` is open for the duration of the call; see
+        // `man 2 flock`. `LOCK_NB` guarantees the call never blocks.
+        let rc = unsafe { flock(file.as_raw_fd(), operation | LOCK_NB) };
+        if rc == 0 {
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        match error.kind() {
+            io::ErrorKind::Interrupted => continue,
+            io::ErrorKind::WouldBlock => return Ok(false),
+            _ => return Err(error),
+        }
+    }
 }
 
 /// Stable identity of an open file: device and inode from `fstat`.
@@ -231,19 +271,8 @@ impl HostFileStorage {
     /// Takes `LOCK_EX | LOCK_NB` on the already opened file and records its
     /// identity. The result is the only way a writable instance is returned.
     fn acquire_writer_lock(mut self, path: &Path) -> Result<Self, WriterOpenError> {
-        loop {
-            // SAFETY: `file` is open for the duration of the call; see
-            // `man 2 flock`. `LOCK_NB` guarantees the call never blocks.
-            let rc = unsafe { flock(self.file.as_raw_fd(), LOCK_EX | LOCK_NB) };
-            if rc == 0 {
-                break;
-            }
-            let error = io::Error::last_os_error();
-            match error.kind() {
-                io::ErrorKind::Interrupted => continue,
-                io::ErrorKind::WouldBlock => return Err(WriterOpenError::WriterBusy),
-                _ => return Err(WriterOpenError::Io(error)),
-            }
+        if !flock_nonblocking(&self.file, LOCK_EX)? {
+            return Err(WriterOpenError::WriterBusy);
         }
         // Identity of the locked object, then check the path still names it.
         // If it was swapped after `open`, we locked an orphan: refuse.
@@ -263,26 +292,17 @@ impl HostFileStorage {
         Ok(self)
     }
 
-    /// Opens an existing regular file for reading only. Takes no lock: it
-    /// does not wait for or block a writer (read leases are a later task).
+    /// Opens an existing regular file for reading only. Takes no lock and is
+    /// **not** a lease: it neither waits for nor blocks a writer, so the file
+    /// may change under the reader. Use [`ReadLease::open`] for a read that a
+    /// writer must not overlap.
     pub fn open_read_only(path: &Path) -> io::Result<Self> {
         Self::open(path, false)
     }
 
     fn open(path: &Path, writable: bool) -> io::Result<Self> {
-        // Check the kind before open: opening a FIFO can block forever and
-        // opening a terminal or device can have side effects. Symlinks are
-        // followed, so a link to a regular file is accepted.
-        if !std::fs::metadata(path)?.is_file() {
-            return Err(not_regular_file());
-        }
-        let file = OpenOptions::new().read(true).write(writable).open(path)?;
-        // Re-check the opened object in case the path changed after the check.
-        if !file.metadata()?.is_file() {
-            return Err(not_regular_file());
-        }
         Ok(Self {
-            file,
+            file: open_regular_file(path, writable)?,
             writable,
             lock: None,
         })
@@ -303,6 +323,125 @@ impl HostFileStorage {
             Err(error) => Err(backend_error(error)),
         }
     }
+}
+
+/// Opens `path` after checking that it names a regular file.
+fn open_regular_file(path: &Path, writable: bool) -> io::Result<File> {
+    // Check the kind before open: opening a FIFO can block forever and
+    // opening a terminal or device can have side effects. Symlinks are
+    // followed, so a link to a regular file is accepted.
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(not_regular_file());
+    }
+    let file = OpenOptions::new().read(true).write(writable).open(path)?;
+    // Re-check the opened object in case the path changed after the check.
+    if !file.metadata()?.is_file() {
+        return Err(not_regular_file());
+    }
+    Ok(file)
+}
+
+/// Failure to acquire a read lease.
+#[derive(Debug)]
+pub enum LeaseOpenError {
+    /// A writer holds the exclusive lock on the same file (this or another
+    /// process, through any alias of the inode).
+    LeaseBusy,
+    /// The path does not name the object that was opened and locked.
+    IdentityMismatch,
+    Io(io::Error),
+}
+
+impl fmt::Display for LeaseOpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LeaseBusy => f.write_str("backing file is held by a writer"),
+            Self::IdentityMismatch => f.write_str("backing path no longer names the opened file"),
+            Self::Io(error) => write!(f, "backing file open failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for LeaseOpenError {}
+
+impl From<io::Error> for LeaseOpenError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+/// A shared read lease on a regular host file.
+///
+/// Holds `flock(LOCK_SH)` on its own open file description until dropped (or
+/// until the process dies); see the module docs. It implements
+/// [`StorageBackend`] as a read-only backend: `capabilities` reports
+/// read-only with no lock or durability claim (a shared lease is not the
+/// exclusive writer lock), and every mutating method is refused with
+/// [`BackendError::Unsupported`]. The descriptor is private runtime state and
+/// is not exposed.
+#[derive(Debug)]
+pub struct ReadLease {
+    file: File,
+    identity: FileIdentity,
+}
+
+impl ReadLease {
+    /// Opens an existing regular file read-only and takes
+    /// `flock(LOCK_SH | LOCK_NB)`. Never waits.
+    ///
+    /// Returns [`LeaseOpenError::LeaseBusy`] while a writer holds `LOCK_EX`,
+    /// and [`LeaseOpenError::IdentityMismatch`] when the path no longer names
+    /// the locked inode (replaced or removed between `open` and `flock`).
+    pub fn open(path: &Path) -> Result<Self, LeaseOpenError> {
+        Self::lock_opened(open_regular_file(path, false)?, path)
+    }
+
+    /// Locks an already opened file and checks that `path` still names it.
+    fn lock_opened(file: File, path: &Path) -> Result<Self, LeaseOpenError> {
+        if !flock_nonblocking(&file, LOCK_SH)? {
+            return Err(LeaseOpenError::LeaseBusy);
+        }
+        let identity = FileIdentity::of(&file.metadata()?);
+        match std::fs::metadata(path) {
+            Ok(current) if FileIdentity::of(&current) == identity => {}
+            Ok(_) => return Err(LeaseOpenError::IdentityMismatch),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(LeaseOpenError::IdentityMismatch);
+            }
+            Err(error) => return Err(LeaseOpenError::Io(error)),
+        }
+        Ok(Self { file, identity })
+    }
+
+    /// `(st_dev, st_ino)` of the leased file, from `fstat` on the locked
+    /// descriptor.
+    pub fn file_identity(&self) -> (u64, u64) {
+        (self.identity.dev, self.identity.ino)
+    }
+}
+
+impl StorageBackend for ReadLease {
+    fn capabilities(&self) -> StorageCapabilities {
+        StorageCapabilities::read_only(HOST_MAX_LEN)
+    }
+
+    fn size(&self) -> Result<u64, BackendError> {
+        self.file
+            .metadata()
+            .map(|metadata| metadata.len())
+            .map_err(backend_error)
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BackendError> {
+        self.file.read_at(buf, offset).map_err(backend_error)
+    }
+
+    fn write_at(&mut self, _offset: u64, _buf: &[u8]) -> Result<usize, BackendError> {
+        Err(BackendError::Unsupported)
+    }
+
+    // `set_len`, `flush_file_durable` and `flush_namespace_durable` keep the
+    // trait defaults: `Unsupported`.
 }
 
 fn not_regular_file() -> io::Error {
@@ -837,17 +976,24 @@ mod tests {
             return;
         };
         let mode = std::env::var(CHILD_MODE_ENV).unwrap_or_default();
-        let result = HostFileStorage::open_read_write_exclusive(Path::new(&path));
-        let tag = match &result {
-            Ok(_) => "LOCKED",
-            Err(WriterOpenError::WriterBusy) => "BUSY",
-            Err(_) => "ERROR",
+        let (tag, acquired) = if mode.starts_with("lease") {
+            match ReadLease::open(Path::new(&path)) {
+                Ok(lease) => ("LEASED", Some(Box::new(lease) as Box<dyn std::any::Any>)),
+                Err(LeaseOpenError::LeaseBusy) => ("BUSY", None),
+                Err(_) => ("ERROR", None),
+            }
+        } else {
+            match HostFileStorage::open_read_write_exclusive(Path::new(&path)) {
+                Ok(writer) => ("LOCKED", Some(Box::new(writer) as Box<dyn std::any::Any>)),
+                Err(WriterOpenError::WriterBusy) => ("BUSY", None),
+                Err(_) => ("ERROR", None),
+            }
         };
         let mut out = io::stdout().lock();
         writeln!(out, "{MARK}{tag}").unwrap();
         out.flush().unwrap();
         drop(out);
-        if mode == "hold" && result.is_ok() {
+        if (mode == "hold" || mode == "lease_hold") && acquired.is_some() {
             // Hold the lock until the parent kills this process (crash).
             let mut line = String::new();
             let _ = io::stdin().lock().read_line(&mut line);
@@ -922,6 +1068,251 @@ mod tests {
         drop(holder);
         let mut child = spawn_child(&path, "probe");
         assert_eq!(child_result(&mut child), "LOCKED");
+        child.wait().unwrap();
+    }
+
+    // ---- read leases (S9-04) ----
+
+    fn lease(path: &Path) -> ReadLease {
+        ReadLease::open(path).expect("take read lease")
+    }
+
+    #[test]
+    fn lease_reads_bytes_and_size_through_the_backend() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = dir.path("a.raw");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let lease = lease(&path);
+        let caps = lease.capabilities();
+        assert!(caps.validate().is_ok());
+        assert!(!caps.writable && !caps.resize && !caps.exclusive_lock);
+        assert!(!caps.file_durability && !caps.namespace_durability);
+        let storage = CheckedStorage::new(lease).unwrap();
+        assert_eq!(storage.size(), Ok(10));
+        let mut buf = [0u8; 4];
+        storage.read_exact_at(3, &mut buf).unwrap();
+        assert_eq!(&buf, b"3456");
+    }
+
+    #[test]
+    fn lease_refuses_every_mutation() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "a.raw");
+        let mut lease = lease(&path);
+        assert_eq!(lease.write_at(0, &[1]), Err(BackendError::Unsupported));
+        assert_eq!(lease.set_len(8), Err(BackendError::Unsupported));
+        assert_eq!(lease.flush_file_durable(), Err(BackendError::Unsupported));
+        assert_eq!(
+            lease.flush_namespace_durable(),
+            Err(BackendError::Unsupported)
+        );
+        let mut storage = CheckedStorage::new(lease).unwrap();
+        assert!(storage.write_all_at(0, &[1]).is_err());
+        assert!(storage.set_len(8).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), vec![0u8; 64]);
+    }
+
+    #[test]
+    fn lease_blocks_writer_in_this_process_until_dropped() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "a.raw");
+        let held = lease(&path);
+        assert!(matches!(
+            HostFileStorage::open_read_write_exclusive(&path),
+            Err(WriterOpenError::WriterBusy)
+        ));
+        // Aliases of the inode are busy as well.
+        let sym = dir.path("sym.raw");
+        let hard = dir.path("hard.raw");
+        std::os::unix::fs::symlink(&path, &sym).unwrap();
+        std::fs::hard_link(&path, &hard).unwrap();
+        for alias in [&sym, &hard] {
+            assert!(matches!(
+                HostFileStorage::open_read_write_exclusive(alias),
+                Err(WriterOpenError::WriterBusy)
+            ));
+        }
+        // The refused attempts did not disturb the lease.
+        assert_eq!(held.size(), Ok(64));
+        // A second independent exclusive attempt using raw flock is refused too.
+        let probe = OpenOptions::new().read(true).open(&path).unwrap();
+        assert!(!flock_nonblocking(&probe, LOCK_EX).expect("flock result"));
+        drop(probe);
+        drop(held);
+        let writer = HostFileStorage::open_read_write_exclusive(&path)
+            .expect("writer can open after the lease is dropped");
+        assert!(writer.capabilities().exclusive_lock);
+    }
+
+    #[test]
+    fn lease_is_busy_while_writer_holds_the_lock_and_works_after() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "a.raw");
+        let writer = HostFileStorage::open_read_write_exclusive(&path).unwrap();
+        assert!(matches!(
+            ReadLease::open(&path),
+            Err(LeaseOpenError::LeaseBusy)
+        ));
+        let alias = dir.path("alias.raw");
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        assert!(matches!(
+            ReadLease::open(&alias),
+            Err(LeaseOpenError::LeaseBusy)
+        ));
+        drop(writer);
+        let _ = lease(&path);
+        // A fresh writer created by create_new_exclusive blocks leases too.
+        let created = dir.path("created.raw");
+        let writer = HostFileStorage::create_new_exclusive(&created, 16).unwrap();
+        assert!(matches!(
+            ReadLease::open(&created),
+            Err(LeaseOpenError::LeaseBusy)
+        ));
+        drop(writer);
+        assert_eq!(lease(&created).size(), Ok(16));
+    }
+
+    #[test]
+    fn several_leases_coexist_and_writer_waits_for_the_last() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "a.raw");
+        let first = lease(&path);
+        let second = lease(&path);
+        let third = lease(&path);
+        assert_eq!(first.file_identity(), second.file_identity());
+        assert_eq!(second.file_identity(), third.file_identity());
+        drop(first);
+        drop(second);
+        assert!(matches!(
+            HostFileStorage::open_read_write_exclusive(&path),
+            Err(WriterOpenError::WriterBusy)
+        ));
+        drop(third);
+        HostFileStorage::open_read_write_exclusive(&path).expect("writer after last lease");
+    }
+
+    #[test]
+    fn lease_does_not_block_plain_read_only_opens_and_open_read_only_gives_no_lease() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "a.raw");
+        // A lease does not stop a plain read-only open.
+        let held = lease(&path);
+        let plain = HostFileStorage::open_read_only(&path).unwrap();
+        assert_eq!(plain.size(), Ok(64));
+        assert!(!plain.capabilities().exclusive_lock);
+        drop(held);
+        // A plain read-only open gives no lease: a writer still opens.
+        let writer = HostFileStorage::open_read_write_exclusive(&path)
+            .expect("plain read-only open does not hold a lease");
+        drop(writer);
+        drop(plain);
+    }
+
+    #[test]
+    fn lease_identity_matches_fstat_and_alias_resolves_to_same_inode() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "a.raw");
+        let sym = dir.path("sym.raw");
+        std::os::unix::fs::symlink(&path, &sym).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        let via_path = lease(&path);
+        assert_eq!(via_path.file_identity(), (meta.dev(), meta.ino()));
+        let via_alias = lease(&sym);
+        assert_eq!(via_alias.file_identity(), via_path.file_identity());
+    }
+
+    #[test]
+    fn lease_refuses_path_that_names_another_or_no_inode() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "a.raw");
+        let other = make_file(&dir, "b.raw");
+        // Simulates a swap between `open` and `flock`: the descriptor names
+        // `a.raw` while the path names `b.raw`.
+        let file = open_regular_file(&path, false).unwrap();
+        assert!(matches!(
+            ReadLease::lock_opened(file, &other),
+            Err(LeaseOpenError::IdentityMismatch)
+        ));
+        // The refused attempt released its lock (descriptor dropped).
+        HostFileStorage::open_read_write_exclusive(&path).expect("no lease left behind");
+        // Path removed after open.
+        let file = open_regular_file(&path, false).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(
+            ReadLease::lock_opened(file, &path),
+            Err(LeaseOpenError::IdentityMismatch)
+        ));
+    }
+
+    #[test]
+    fn lease_open_rejects_missing_path_directory_and_fifo() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        assert!(matches!(
+            ReadLease::open(&dir.path("missing.raw")),
+            Err(LeaseOpenError::Io(e)) if e.kind() == io::ErrorKind::NotFound
+        ));
+        assert!(matches!(
+            ReadLease::open(&dir.0),
+            Err(LeaseOpenError::Io(e)) if e.kind() == io::ErrorKind::InvalidInput
+        ));
+        let fifo = dir.path("pipe");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success());
+        assert!(matches!(
+            ReadLease::open(&fifo),
+            Err(LeaseOpenError::Io(e)) if e.kind() == io::ErrorKind::InvalidInput
+        ));
+    }
+
+    #[test]
+    fn lease_in_another_process_blocks_writer_allows_readers_and_sigkill_releases_it() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "a.raw");
+        let mut child = spawn_child(&path, "lease_hold");
+        assert_eq!(child_result(&mut child), "LEASED");
+        assert!(matches!(
+            HostFileStorage::open_read_write_exclusive(&path),
+            Err(WriterOpenError::WriterBusy)
+        ));
+        // A second reader in this process coexists with the foreign lease.
+        let ours = lease(&path);
+        drop(ours);
+        // A writer process is refused too.
+        let mut probe = spawn_child(&path, "probe");
+        assert_eq!(child_result(&mut probe), "BUSY");
+        probe.wait().unwrap();
+        // Crash: SIGKILL, no destructor, no unlock call.
+        child.kill().unwrap();
+        child.wait().unwrap();
+        HostFileStorage::open_read_write_exclusive(&path)
+            .expect("lease released by the kernel after reader crash");
+    }
+
+    #[test]
+    fn writer_in_this_process_makes_lease_busy_in_another_process() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "a.raw");
+        let writer = HostFileStorage::open_read_write_exclusive(&path).unwrap();
+        let mut child = spawn_child(&path, "lease_probe");
+        assert_eq!(child_result(&mut child), "BUSY");
+        child.wait().unwrap();
+        drop(writer);
+        let mut child = spawn_child(&path, "lease_probe");
+        assert_eq!(child_result(&mut child), "LEASED");
         child.wait().unwrap();
     }
 }
