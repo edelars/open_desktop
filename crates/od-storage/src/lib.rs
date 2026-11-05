@@ -8,10 +8,16 @@
 pub mod io;
 pub mod raw;
 
+/// Prototype of a minimal CoW commit protocol (S9-08). Not a normative format.
+#[cfg(any(test, feature = "test-support"))]
+pub mod cow_proto;
+
 /// In-memory backend and the shared backend contract suite. Enabled by tests
 /// and by the `test-support` feature for host crates that run the same suite.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
+#[cfg(test)]
+mod cow_proto_tests;
 #[cfg(test)]
 mod io_tests;
