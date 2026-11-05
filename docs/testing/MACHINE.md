@@ -85,13 +85,24 @@ git diff --check
     uncached probe, caches only successful 4 KiB walks, reports Hit versus Walk,
     and leaves pure-probe RAM unchanged; release performance evidence belongs
     to the separate [S4-13a report](../reports/STAGE_4_S4-13a_2026-11-05.md).
+29. S4-14a verifies that `TranslationProbeCache::clear` is idempotent and does
+    not write page-table RAM or A/D bits; a successful entry follows
+    `Walk -> Hit -> clear -> Walk -> Hit` with literal translation metadata.
+30. Failed replacement is not retained: the failed request returns `Walk`, the
+    cache is empty, and the next matching request walks before becoming a hit.
+31. Ending the cache scope permits a page-table remap and construction of a new
+    cache, which observes the new physical page; recreated caches also observe
+    leaf RW tighten/relax and NX Fetch rights with PFEC `0x07` and `0x15`.
+32. Explicit page-table writes report their committed `(address, length)` range;
+    cache probe itself produces no callbacks or page-table A/D mutation.
 
 ## Интерпретация
 
 Успешные локальные тесты подтверждают только перечисленный Rust-контракт,
 flat identity integration, tracked RAM-only effects и targeted `od-isa`
 PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
-cross-page admission, S4-12a snapshot bridge и S4-13a pure-cache experiment.
+cross-page admission, S4-12a snapshot bridge, S4-13a pure-cache experiment и
+S4-14a cache lifecycle boundary.
 Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не

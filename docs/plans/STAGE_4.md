@@ -320,7 +320,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-14. Реализовать TLB invalidation
 
-- [ ] Принято после ревью.
+- [ ] Полный S4-14 не принят.
+- [x] Ограниченный S4-14a lifecycle slice принят после независимого ревью.
+- `TranslationProbeCache::clear` и завершение его immutable-borrow scope
+  проверены как host-controlled boundary: clear идемпотентен, не пишет RAM и
+  не меняет A/D; после remap или изменения прав создаётся новый cache.
+- Этот срез не добавляет guest invalidation, generation counter, INVLPG,
+  CR3/EFER transitions или CPU hook. Полный S4-14 остаётся открытым.
 - **Где:** `od-machine`, system instruction effects `od-isa`.
 - **Сделать:** CR3/context transitions, INVLPG, paging/permission-control changes, reset; global/PCID/INVPCID — только при объявленной поддержке. Развести software-cache generations и архитектурную семантику guest page tables.
 - **Проверка:** remap A→B, tighten/relax rights с обязательной invalidation, stale entry после context switch, huge-page coverage, код/данные, разные guest pages внутри host page. Поведение без invalidation проверять в пределах разрешённого стандартом, не требовать несуществующей гарантии.

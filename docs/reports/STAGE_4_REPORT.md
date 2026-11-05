@@ -2,9 +2,9 @@
 
 ## Текущий статус
 
-На 2026-11-04 принят только локальный memory/bus/bridge/translation,
+На 2026-11-05 принят только локальный memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access и S4-10a admission-boundary slice
-S4-02—S4-13a. Этап 4 не завершён: S4-00—S4-01,
+S4-02—S4-14a. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, devices, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
 
@@ -61,6 +61,10 @@ integration, hardware cases и Linux userspace остаются открытым
   harness. Три процесса завершили 600 retained paired samples на synthetic
   profiles; результаты включают locality wins и two-page alternating slowdown,
   поэтому production TLB capacity/policy не выбрана.
+- S4-14a закрепляет host-controlled lifecycle границу: `clear()` идемпотентен,
+  не пишет RAM/A-D, failed replacement не resident, а remap и изменения RW/NX
+  наблюдаются только после завершения старого immutable-borrow scope и создания
+  нового cache. Guest invalidation и CPU hooks не добавлены.
 
 ## Проверки
 
@@ -77,6 +81,11 @@ integration, hardware cases и Linux userspace остаются открытым
   теста успешно; полный `cargo test -p od-isa --locked --offline` — 2006
   тестов успешно;
 - `git diff --check` — успешно;
+- `cargo test -p od-machine --features experimental-translation-probe-cache
+  --locked --offline translation_probe_cache::tests` — 11 cache lifecycle
+  тестов успешно; полный feature-enabled `od-machine` — 60 тестов успешно;
+- `cargo check -p od-machine --all-targets --features
+  experimental-translation-probe-cache --locked --offline` — успешно;
 - независимое ревью `gpt-6.1-sol/high` — для S4-02—S4-06 подтверждённые
   замечания исправлены с повторным approve; для S4-07 найден ET=0 P2, затем
   добавлена fail-closed проверка и повторное ревью: **approve**; S4-08 получил
@@ -85,7 +94,8 @@ integration, hardware cases и Linux userspace остаются открытым
   исправления тестовых P2 получил повторное **approve**; S4-11a после
   исправления fixture/assertion P2 получил повторное **approve**; S4-12a получил
   независимое **approve**; S4-13a получил независимое **approve** после
-  исправления benchmark parity P2.
+  исправления benchmark parity P2; S4-14a получил независимое **approve**,
+  P0—P2 не обнаружены.
 
 Архитектурный анализ `gpt-6-astra/high` подтвердил границу среза и отсутствие
 необходимости добавлять зависимости на `od-isa`, `od-jit` или `od-host`.
@@ -105,6 +115,8 @@ separate-call evidence, не CPU restart, REP iteration, stack recovery или R
 atomicity. Independent review покрывает только bounded slices; полная
 S4-08/S4-09/S4-10/S4-11 приёмка остаётся шире. S4-13a не доказывает
 production TLB correctness, invalidation или guest workload benefit.
+S4-14a не доказывает guest INVLPG/CR3/EFER semantics, generations,
+global/PCID, CPU/JIT invalidation или concurrent memory ownership.
 
 Открыты manifest S4-00, реализация 2 MiB/1 GiB и необходимых режимов, injected
 table-write failure, полная rights/error matrix, двухстраничная transaction

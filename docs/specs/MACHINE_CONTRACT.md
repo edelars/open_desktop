@@ -230,5 +230,15 @@ physical page; miss вызывает существующий pure probe и ра
 Прототип доказывает только корректность и стоимость synthetic pure-probe workload
 при immutable mapping. Он не кэширует tracked A/D effects или конечный operand,
 не реализует INVLPG/guest invalidation и не разрешает замену `PhysicalMemory` под
-живым cache. Результаты S4-13a не выбирают production capacity, replacement или
-TLB integration.
+живым cache. `clear()` только удаляет resident value: он идемпотентен, сохраняет
+привязку к memory и не выполняет walk, запись или A/D update. Для наблюдения
+изменённой таблицы page-table writer должен завершить scope старого cache,
+выполнить mutation через `PhysicalMemory`, затем создать новый cache. Fault и
+unsupported replacement оставляют cache пустым; возвращённые `Translation4K`
+являются диагностическими value snapshots и не являются access handles после
+изменения mapping.
+
+S4-14a проверяет этот lifecycle через remap, tighten/relax leaf write rights,
+NX fetch rights и committed-write callback ranges. Это host-controlled
+disposal/reconstruction boundary, а не guest invalidation protocol. Результаты
+S4-13a не выбирают production capacity, replacement или TLB integration.

@@ -2,8 +2,9 @@
 //!
 //! This is an experiment, not a production TLB. Borrowing `PhysicalMemory`
 //! immutably for the cache lifetime prevents page-table mutation while an
-//! entry is resident. Guest invalidation and tracked A/D effects are outside
-//! this type's contract.
+//! entry is resident. Dropping the cache ends that borrow, after which callers
+//! may mutate page tables and create a new cache over the updated snapshot.
+//! Guest invalidation and tracked A/D effects are outside this type's contract.
 
 use crate::page_walk::{
     EffectivePermissions, GuestLinearAddress, Long64ProbeConfig, ProbeOutcome, ProbeReport,
@@ -201,6 +202,23 @@ mod tests {
         assert_eq!(second_translation.offset, 0x2a5);
         assert_eq!(second_translation.leaf_entry_address.get(), PT);
         assert_eq!(second_translation.leaf_entry_value, PHYSICAL_PAGE | 7);
+
+        cache.clear();
+        assert!(cache.is_empty());
+        assert!(matches!(
+            cache.probe(&paging, second, AccessKind::Read, explicit_ring3()),
+            TranslationProbeCacheOutcome::Walk(_)
+        ));
+        let (hit, after_clear) =
+            translated(cache.probe(&paging, second, AccessKind::Read, explicit_ring3()));
+        assert!(hit);
+        assert_eq!(after_clear.linear.get(), 0x0040_02a5);
+        assert_eq!(after_clear.physical.get(), 0x0000_92a5);
+        assert_eq!(after_clear.page_base.get(), PHYSICAL_PAGE);
+        assert_eq!(after_clear.offset, 0x2a5);
+        assert_eq!(after_clear.permissions, second_translation.permissions);
+        assert_eq!(after_clear.leaf_entry_address.get(), PT);
+        assert_eq!(after_clear.leaf_entry_value, PHYSICAL_PAGE | 7);
     }
 
     #[test]
@@ -270,6 +288,45 @@ mod tests {
     }
 
     #[test]
+    fn failed_replacement_leaves_cache_empty_and_next_matching_request_walks() {
+        let memory = memory(PHYSICAL_PAGE | 7);
+        let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 9);
+        let missing = GuestLinearAddress::new(LINEAR_PAGE + 0x1009);
+        let mut cache = TranslationProbeCache::new(&memory);
+
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Read, explicit_ring3()),
+            TranslationProbeCacheOutcome::Walk(_)
+        ));
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Read, explicit_ring3()),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+        match cache.probe(&paging, missing, AccessKind::Read, explicit_ring3()) {
+            TranslationProbeCacheOutcome::Walk(report) => {
+                assert!(matches!(
+                    report.outcome,
+                    Ok(crate::ProbeOutcome::PageFault(fault)) if fault.error_code == 0x04
+                ));
+                assert_eq!(report.trace.len(), 4);
+            }
+            TranslationProbeCacheOutcome::Hit(value) => {
+                panic!("failed replacement unexpectedly hit as {value:?}")
+            }
+        }
+        assert!(cache.is_empty());
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Read, explicit_ring3()),
+            TranslationProbeCacheOutcome::Walk(_)
+        ));
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Read, explicit_ring3()),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+    }
+
+    #[test]
     fn page_fault_is_walked_repeatedly_and_never_cached() {
         let memory = memory(0);
         let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
@@ -293,7 +350,46 @@ mod tests {
     }
 
     #[test]
-    fn clear_and_drop_remove_the_entry_and_allow_memory_replacement_after_drop() {
+    fn empty_and_repeated_clear_leave_page_table_ram_unchanged() {
+        let memory = memory(PHYSICAL_PAGE | 7);
+        let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x33);
+        let entries = [ROOT, PDPT, PD + 16, PT];
+        let before: Vec<_> = entries
+            .iter()
+            .map(|address| {
+                memory
+                    .read_u64(GuestPhysicalAddress::new(*address))
+                    .unwrap()
+            })
+            .collect();
+        let mut cache = TranslationProbeCache::new(&memory);
+
+        cache.clear();
+        cache.clear();
+        assert!(cache.is_empty());
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Read, explicit_ring3()),
+            TranslationProbeCacheOutcome::Walk(_)
+        ));
+        cache.clear();
+        cache.clear();
+        assert!(cache.is_empty());
+
+        let after: Vec<_> = entries
+            .iter()
+            .map(|address| {
+                memory
+                    .read_u64(GuestPhysicalAddress::new(*address))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(after, before);
+        assert!(after.iter().all(|entry| entry & ((1 << 5) | (1 << 6)) == 0));
+    }
+
+    #[test]
+    fn dropping_cache_ends_borrow_so_page_table_can_be_remapped_before_recreation() {
         let mut memory = memory(PHYSICAL_PAGE | 7);
         let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
         let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x33);
@@ -318,9 +414,166 @@ mod tests {
             .write_u64(GuestPhysicalAddress::new(PT), 0xa000 | 7, |_| {})
             .unwrap();
         let mut replacement = TranslationProbeCache::new(&memory);
-        let (_, translation) =
+        // The scope ends the immutable cache borrow; mutation is then allowed.
+        let (hit, translation) =
             translated(replacement.probe(&paging, linear, AccessKind::Read, explicit_ring3()));
+        assert!(!hit);
         assert_eq!(translation.physical.get(), 0xa033);
+        let (hit, translation) =
+            translated(replacement.probe(&paging, linear, AccessKind::Read, explicit_ring3()));
+        assert!(hit);
+        assert_eq!(translation.physical.get(), 0xa033);
+        assert_eq!(translation.page_base.get(), 0xa000);
+        assert_eq!(translation.leaf_entry_address.get(), PT);
+        assert_eq!(translation.leaf_entry_value, 0xa000 | 7);
+    }
+
+    #[test]
+    fn leaf_write_permission_tighten_and_relax_are_observed_across_cache_lifetimes() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x51);
+
+        {
+            let mut cache = TranslationProbeCache::new(&memory);
+            let (hit, translated) =
+                translated(cache.probe(&paging, linear, AccessKind::Write, explicit_ring3()));
+            assert!(!hit);
+            assert_eq!(translated.physical.get(), 0x9051);
+            assert!(matches!(
+                cache.probe(&paging, linear, AccessKind::Write, explicit_ring3()),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+        }
+        memory
+            .write_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 5, |_| {})
+            .unwrap();
+        {
+            let mut cache = TranslationProbeCache::new(&memory);
+            match cache.probe(&paging, linear, AccessKind::Write, explicit_ring3()) {
+                TranslationProbeCacheOutcome::Walk(report) => assert!(matches!(
+                    report.outcome,
+                    Ok(crate::ProbeOutcome::PageFault(fault)) if fault.error_code == 0x07
+                )),
+                TranslationProbeCacheOutcome::Hit(value) => {
+                    panic!("write-protected mapping hit as {value:?}")
+                }
+            }
+            assert!(cache.is_empty());
+        }
+        memory
+            .write_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 7, |_| {})
+            .unwrap();
+        let mut cache = TranslationProbeCache::new(&memory);
+        let (hit, translated) =
+            translated(cache.probe(&paging, linear, AccessKind::Write, explicit_ring3()));
+        assert!(!hit);
+        assert_eq!(translated.physical.get(), 0x9051);
+        assert_eq!(translated.leaf_entry_value, PHYSICAL_PAGE | 7);
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Write, explicit_ring3()),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+    }
+
+    #[test]
+    fn nx_fetch_rights_are_observed_across_cache_lifetimes_with_exact_pfec() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x62);
+
+        {
+            let mut cache = TranslationProbeCache::new(&memory);
+            let (hit, translation) =
+                translated(cache.probe(&paging, linear, AccessKind::Fetch, explicit_ring3()));
+            assert!(!hit);
+            assert_eq!(translation.physical.get(), 0x9062);
+            assert!(matches!(
+                cache.probe(&paging, linear, AccessKind::Fetch, explicit_ring3()),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+        }
+        memory
+            .write_u64(
+                GuestPhysicalAddress::new(PT),
+                PHYSICAL_PAGE | 7 | (1 << 63),
+                |_| {},
+            )
+            .unwrap();
+        {
+            let mut cache = TranslationProbeCache::new(&memory);
+            match cache.probe(&paging, linear, AccessKind::Fetch, explicit_ring3()) {
+                TranslationProbeCacheOutcome::Walk(report) => assert!(matches!(
+                    report.outcome,
+                    Ok(crate::ProbeOutcome::PageFault(fault)) if fault.error_code == 0x15
+                )),
+                TranslationProbeCacheOutcome::Hit(value) => {
+                    panic!("NX mapping hit as {value:?}")
+                }
+            }
+            assert!(cache.is_empty());
+        }
+        memory
+            .write_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 7, |_| {})
+            .unwrap();
+        let mut cache = TranslationProbeCache::new(&memory);
+        let (hit, translation) =
+            translated(cache.probe(&paging, linear, AccessKind::Fetch, explicit_ring3()));
+        assert!(!hit);
+        assert_eq!(translation.physical.get(), 0x9062);
+        assert_eq!(translation.leaf_entry_value, PHYSICAL_PAGE | 7);
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Fetch, explicit_ring3()),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+    }
+
+    #[test]
+    fn cache_probe_has_no_write_callbacks_or_page_table_ad_side_effects() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let paging = config(0x8001_0011, ROOT, 0x20, 0xd00);
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x74);
+        let mut writes = Vec::new();
+        memory
+            .write_u64(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 7, |range| {
+                writes.push((range.start().get(), range.len()));
+            })
+            .unwrap();
+        assert_eq!(writes, [(PT, 8)]);
+        writes.clear();
+        let entries = [ROOT, PDPT, PD + 16, PT];
+        let before: Vec<_> = entries
+            .iter()
+            .map(|address| {
+                memory
+                    .read_u64(GuestPhysicalAddress::new(*address))
+                    .unwrap()
+            })
+            .collect();
+
+        let mut cache = TranslationProbeCache::new(&memory);
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Read, explicit_ring3()),
+            TranslationProbeCacheOutcome::Walk(_)
+        ));
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Read, explicit_ring3()),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+        assert!(
+            writes.is_empty(),
+            "probe invoked a committed-write callback"
+        );
+        let after: Vec<_> = entries
+            .iter()
+            .map(|address| {
+                memory
+                    .read_u64(GuestPhysicalAddress::new(*address))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(after, before);
+        assert!(after.iter().all(|entry| entry & ((1 << 5) | (1 << 6)) == 0));
     }
 
     #[test]
