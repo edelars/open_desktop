@@ -8,6 +8,18 @@ S4-02—S4-23a. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, devices, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
 
+В S4-00a (2026-11-05) восстановлены и захэшированы exact-version source
+package/tree inputs, config и три source-файла Ubuntu 7.0.0-38.38. Повторно
+зафиксированы четыре binary hashes из S2-40d; Build IDs `vmlinux` и debug ELF
+совпали, а read-only ELF64 section parser подтвердил равенство 38 общих
+allocated file-backed sections (42 release sections, 57 debug sections).
+Подписанные source/index inputs и `apt-provenance.json` отсутствуют, поэтому
+authenticated source/config-to-binary mapping не подтвержден. Подробности и
+локальные evidence paths — в
+[отчёте S4-00a](STAGE_4_S4-00A_2026-11-05.md) и
+[JSON manifest](data/stage4/s4-00a-source-audit-2026-11-05.json). Родительские
+S4-00 и S4-01 остаются открытыми.
+
 ## Реализовано
 
 - `od-machine` получил `GuestPhysicalAddress`, `GuestPhysicalRange`,

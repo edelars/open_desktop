@@ -175,6 +175,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** для каждого объявленного feature есть владелец, тест и статус. Для исключённого пути есть основание из выбранного kernel/boot contract. Не обещать полный x86-64 лишь по списку CPUID.
 - **Готово:** отсутствуют неявные предположения о режиме входа, обнаружении CPU/таймеров/PCI и источнике boot data. Если ACPI нужны, принять data-only путь S4-31, без полной UEFI.
 
+#### S4-00a. Зафиксировать доступные source/config inputs и пределы provenance
+
+- [x] Ограниченный evidence capture выполнен после независимого ревью `gpt-6.1-sol/high`; приёмка родительского S4-00 не подтверждена.
+- **Evidence:** [отчёт S4-00a](../reports/STAGE_4_S4-00A_2026-11-05.md) и [manifest](../reports/data/stage4/s4-00a-source-audit-2026-11-05.json).
+- **Подтверждено:** recovered exact-version source `.deb`, extracted source archive, config и три source-file hashes; существующие четыре binary hashes сверены с S2-40d; Build IDs двух ELF совпадают, а read-only ELF64 parser подтвердил равенство 38 общих allocated file-backed sections (42 release sections, 57 debug sections).
+- **Открыто:** подписанные `.dsc`, `orig.tar.gz`, `diff.gz`, `Sources.xz`, `InRelease` и `apt-provenance.json`; authenticated source/config-to-binary mapping. S4-00 и S4-01 остаются открытыми.
+- **Проверки:** `shasum -a 256`, `file`, read-only Python 3 ELF64 section parser, `objdump -h`, `ar`, `zstd`, `tar`; ограничения инструментария и отсутствующие inputs описаны в отчёте.
+
 ### S4-01. Снять baseline и разбить зависимости CPU/JIT
 
 - [ ] Принято после ревью.

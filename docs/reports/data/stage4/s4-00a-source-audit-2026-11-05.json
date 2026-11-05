@@ -1,0 +1,70 @@
+{
+  "slice": "S4-00a",
+  "date": "2026-11-05",
+  "target": {
+    "distribution": "Ubuntu",
+    "kernel_source_package_version": "7.0.0-38.38",
+    "binary_artifact_directory": "work/vms/s2-00-ubuntu-26.04.1"
+  },
+  "evidence": {
+    "binary_artifacts": [
+      {"path": "work/vms/s2-00-ubuntu-26.04.1/linux-image-7.0.0-38-generic_7.0.0-38.38_amd64.deb", "sha256": "f268d635efaa2e19a18e12813ffdbc2e32db2390cf67d4416abd59292975e7aa"},
+      {"path": "work/vms/s2-00-ubuntu-26.04.1/vmlinuz-7.0.0-38-generic", "sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e"},
+      {"path": "work/vms/s2-00-ubuntu-26.04.1/vmlinux-7.0.0-38-generic", "sha256": "ccaf590465e4e3bc6117efa8ac7cfe87ba0b348188e2608731961527dd05034f"},
+      {"path": "work/vms/s2-00-ubuntu-26.04.1/vmlinux-debug-7.0.0-38-generic", "sha256": "7e460f048c3de0f8ee85fd326f2f65d95a6ee448e57b6f5333e2be79b5be9d1f"}
+    ],
+    "source_package": {
+      "path": "work/vms/s2-00-ubuntu-26.04.1/source/linux-source-7.0.0_7.0.0-38.38_all.deb",
+      "sha256": "997a13a0c7fd0172a93b0c1ae9a4ffc7d3cbbf91d2fdd91d85334193580687de",
+      "retrieval_url": "https://repo.huaweicloud.com/ubuntu/ubuntu/pool/main/l/linux/linux-source-7.0.0_7.0.0-38.38_all.deb",
+      "retrieval": "Downloaded from a Huawei Ubuntu mirror; signed repository provenance was not recovered."
+    },
+    "source_tree_archive": {"path": "work/vms/s2-00-ubuntu-26.04.1/source/linux-source-7.0.0.tar.bz2", "sha256": "1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222"},
+    "source_files": [
+      {"archive_path": "linux-source-7.0.0/arch/x86/boot/compressed/head_64.S", "evidence_path": "work/vms/s2-00-ubuntu-26.04.1/source/extracted/compressed-head_64.S", "sha256": "418aa5f554ea94f62a6ea3bd7bb90e71c44d293e1e329ed4c1a94e76d8ef9641"},
+      {"archive_path": "linux-source-7.0.0/arch/x86/boot/compressed/pgtable_64.c", "evidence_path": "work/vms/s2-00-ubuntu-26.04.1/source/extracted/compressed-pgtable_64.c", "sha256": "8a71665407094b651c96047aec2f11c9926320836afb109002bf80d72acc2319"},
+      {"archive_path": "linux-source-7.0.0/arch/x86/kernel/head_64.S", "evidence_path": "work/vms/s2-00-ubuntu-26.04.1/source/extracted/kernel-head_64.S", "sha256": "d50a35df410be7b4813a3860d07f10d9bcb8ba0caadff01f1b53292c980f4c10"}
+    ],
+    "config": {"path": "work/vms/s2-00-ubuntu-26.04.1/source/extracted/config", "sha256": "6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d", "extracted_from": "work/vms/s2-00-ubuntu-26.04.1/buildinfo-data.tar:./usr/lib/linux/7.0.0-38-generic/config"},
+    "elf_comparison": {
+      "build_id_algorithm": "sha1",
+      "vmlinux_build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997",
+      "debug_elf_build_id": "338e542e384c46228f7a378babc0f9bb2b6a5997",
+      "release_section_count": 42,
+      "debug_section_count": 57,
+      "common_allocated_file_backed_sections_compared": 38,
+      "comparison_fields": ["name", "type", "flags", "address", "offset", "size", "sha256(bytes)"],
+      "common_allocated_file_backed_section_equality": true
+    }
+  },
+  "status": {
+    "exact_source_deb_and_tree_archive_recovered": true,
+    "config_extracted_and_hashed": true,
+    "selected_source_file_hashes_recorded": true,
+    "vmlinux_and_debug_elf_build_ids_match": true,
+    "common_allocated_file_backed_section_comparison_recorded": true,
+    "signed_dsc_recovered": false,
+    "orig_tar_gz_recovered": false,
+    "diff_gz_recovered": false,
+    "signed_sources_xz_recovered": false,
+    "signed_inrelease_recovered": false,
+    "apt_provenance_json_recovered": false,
+    "authenticated_source_to_binary_mapping_established": false,
+    "full_source_provenance_passed": false
+  },
+  "commands_and_tools": {
+    "hashing": "shasum -a 256",
+    "download": "curl -fL https://repo.huaweicloud.com/ubuntu/ubuntu/pool/main/l/linux/linux-source-7.0.0_7.0.0-38.38_all.deb -o work/vms/s2-00-ubuntu-26.04.1/source/linux-source-7.0.0_7.0.0-38.38_all.deb",
+    "source_archive_extraction": "ar p <source.deb> data.tar.zst | zstd -dc | tar -xOf - ./usr/src/linux-source-7.0.0/linux-source-7.0.0.tar.bz2 > <source>/linux-source-7.0.0.tar.bz2",
+    "config_extraction": "tar -xOf work/vms/s2-00-ubuntu-26.04.1/buildinfo-data.tar ./usr/lib/linux/7.0.0-38-generic/config > <source>/extracted/config",
+    "elf_identity": "file <vmlinux> <vmlinux-debug>",
+    "section_comparison": "python3 heredoc parser reproduced in STAGE_4_S4-00A_2026-11-05.md#commands-and-environment-limits; it reads e_shoff/e_shentsize/e_shnum/e_shstrndx, selects SHF_ALLOC sections excluding SHT_NOBITS, and compares name/type/flags/address/offset/size plus SHA-256 of section bytes",
+    "archive_inspection": "ar, zstd, and tar",
+    "environment_limit": "readelf is unavailable; Apple LLVM objdump -h was used only for a human-readable section listing and does not expose GNU flags."
+  },
+  "non_claims": [
+    "The source package is not authenticated by a recovered signed repository chain.",
+    "Matching Build IDs and 38 equal allocated file-backed sections do not establish that these source/config inputs produced the selected binaries.",
+    "No runtime alternative selection, Linux boot, or physical CPU behavior is established."
+  ]
+}

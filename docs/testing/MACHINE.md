@@ -1,5 +1,13 @@
 # Методика проверки машины: текущий срез
 
+S4-00a evidence capture 2026-11-05 сверяет binary hashes по
+[S2-40d](../reports/S2_40D_ARTIFACT_DIGEST_RECHECK.md), фиксирует recovered
+Ubuntu 7.0.0-38.38 source/config hashes, совпадающие Build IDs и равенство 38
+общих allocated file-backed ELF sections. Это не аутентифицирует mirror download и не
+связывает source/config с binary; полный список ограничений и команд находится
+в [S4-00a report](../reports/STAGE_4_S4-00A_2026-11-05.md). S4-00/S4-01 и
+полная source provenance остаются открытыми.
+
 ## Область
 
 Эта методика покрывает S4-02—S4-10a: валидируемую physical map, production RAM
