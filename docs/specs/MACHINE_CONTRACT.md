@@ -98,9 +98,10 @@ entries; canonicality проверяется до чтения таблиц. PFE
 а не доставка vector 14, запись CR2 или выбор `#GP/#SS`. Эффективные US/RW/XD,
 WP и NXE проверяются в заявленном профиле, но A/D bytes остаются неизменными.
 
-Этот probe не подключён к CPU execution path и не закрывает S4-09. Для
-`GuestMemory` по-прежнему действует отдельный linear-address contract; adapter
-S4-06 остаётся явно flat identity mode.
+Этот pure probe сохраняет диагностическую семантику: он не меняет A/D и не
+подключён к CPU execution path. Для `GuestMemory` по-прежнему действует
+отдельный linear-address contract; adapter S4-06 остаётся явно flat identity
+mode.
 
 ## Bounded page-fault record construction
 
@@ -120,3 +121,39 @@ PFEC использует независимые literal cases; для descripto
 для будущей записи в CR2. Создание записи не доставляет исключение, не меняет
 CR2 или `LongModeState`, не повторяет инструкцию и не меняет RAM/A-D bits.
 Cross-page fetch, IDT и exception delivery остаются вне этого bounded среза.
+
+## Tracked RAM access
+
+`access_long64_4k_ram` выполняет одну операцию Fetch/Read/Write шириной 1, 2, 4
+или 8 байт по текущему `Long64ProbeConfig` и полному `AccessContext`. Тип
+`AccessKind` выводится из операции. До обхода отвергаются неканонический адрес и
+операнд, пересекающий 4 KiB границу.
+
+Page-table entries читаются напрямую из `PhysicalMemory`; bus/device dispatch,
+TLB и конечные не-RAM области не используются. После проверки каждой present
+entry на reserved/unsupported формат отсутствующий A устанавливается немедленно
+через тот же `write_u64`/committed-write путь, прежде чем обход продолжится.
+Поэтому уже совершённые A writes остаются после нижнего nonpresent/reserved
+fault, protection fault или последующей ошибки чтения таблицы.
+
+После всех четырёх уровней проверяются накопленные права через общий
+`page_fault_error_code` helper. Весь конечный физический operand сначала
+проверяется как RAM. Только для разрешённой Write операции устанавливается
+отсутствующий leaf D, после чего записываются operand bytes. Ошибка не вызывает
+rollback ранее committed A/D writes. `TrackedAccessReport` содержит trace
+исходно прочитанных entries и журнал фактически committed A/D updates. Callback
+получает notifications каждого committed write, включая конечный operand, в
+порядке совершения; notifications operand не копируются автоматически в report.
+Уже установленный A/D bit не создаёт лишнюю запись/callback.
+
+Для ROM и reserved конечная Write возвращает `ReadOnlyRegion`; чтение/выборка
+сохраняют `UnreadableRegion`. Конечный MMIO access не dispatch-ится этим
+RAM-only API: Write возвращает `DeviceUnavailable`, а Read/Fetch сохраняют
+`UnreadableRegion(Mmio)`. Во всех таких отказах уже committed A updates остаются,
+D не устанавливается и callback не получает notification для operand.
+
+Результат разделяет `PageFaultRecord`, ошибки чтения/записи таблицы и ошибки
+физического операнда. Создание записи не меняет CPU, RIP или CR2. Этот bounded
+API не реализует `GuestMemory`, cross-page операции, huge pages, TLB,
+исключение-доставку или SMP/DMA coherence; pure probe выше остаётся без A/D
+эффектов.

@@ -1,6 +1,9 @@
 //! Read-only diagnostic translation probe for the admitted Long64 4 KiB profile.
 
-use crate::{GuestPhysicalAddress, MemoryAccessError, PhysicalMemory};
+use crate::{
+    AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MemoryAccessError, MemoryRegionKind,
+    PhysicalMemory,
+};
 use od_isa::memory::{
     AccessContext, AccessKind, PageFaultRecord, PrivilegeLevel, page_fault_error_code,
 };
@@ -488,6 +491,892 @@ pub enum InstructionProbeOutcome {
 pub struct InstructionProbeReport {
     pub outcome: Result<InstructionProbeOutcome, ProbeError>,
     pub trace: WalkTrace,
+}
+
+/// One RAM operation performed only after a complete four-level translation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RamAccessOperation {
+    Fetch,
+    Read { width: AccessWidth },
+    Write { width: AccessWidth, value: u64 },
+}
+
+impl RamAccessOperation {
+    const fn access_kind(self) -> AccessKind {
+        match self {
+            Self::Fetch => AccessKind::Fetch,
+            Self::Read { .. } => AccessKind::Read,
+            Self::Write { .. } => AccessKind::Write,
+        }
+    }
+
+    const fn width(self) -> u8 {
+        match self {
+            Self::Fetch => 1,
+            Self::Read { width } | Self::Write { width, .. } => width.bytes(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrackedAccessRequest {
+    pub instruction_rip: u64,
+    pub address: GuestLinearAddress,
+    pub context: AccessContext,
+    pub operation: RamAccessOperation,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdBit {
+    Accessed,
+    Dirty,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AdUpdate {
+    pub level: PageTableLevel,
+    pub address: GuestPhysicalAddress,
+    pub before: u64,
+    pub after: u64,
+    pub bit: AdBit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrackedAccessOutcome {
+    Fetched(u8),
+    Read(u64),
+    Written,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrackedAccessError {
+    CrossesPage {
+        address: GuestLinearAddress,
+        width: u8,
+    },
+    NonCanonical(NonCanonicalAddress),
+    UnsupportedPageSize {
+        level: PageTableLevel,
+        entry_address: GuestPhysicalAddress,
+        entry_value: u64,
+    },
+    PageFault {
+        record: PageFaultRecord,
+        reason: PageFaultReason,
+    },
+    TableRead {
+        level: PageTableLevel,
+        entry_address: GuestPhysicalAddress,
+        source: MemoryAccessError,
+    },
+    TableWrite {
+        level: PageTableLevel,
+        entry_address: GuestPhysicalAddress,
+        bit: AdBit,
+        source: MemoryAccessError,
+    },
+    OperandPhysical {
+        address: GuestPhysicalAddress,
+        source: MemoryAccessError,
+    },
+    /// The RAM-only tracked path does not dispatch physical MMIO accesses.
+    DeviceUnavailable {
+        address: GuestPhysicalAddress,
+    },
+}
+
+/// The report retains the walk trace and committed A/D writes. Notifications
+/// for all committed writes, including the final operand, go only to the caller
+/// supplied callback and are not copied into this report.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrackedAccessReport {
+    pub outcome: Result<TrackedAccessOutcome, TrackedAccessError>,
+    pub trace: WalkTrace,
+    pub ad_updates: [Option<AdUpdate>; 5],
+    pub ad_update_count: usize,
+}
+
+/// Performs one same-page fetch/read/write through RAM page tables and RAM only.
+/// A/D updates commit immediately through `PhysicalMemory::write_u64`; those
+/// effects remain committed if a later walk or operand access fails.
+pub fn access_long64_4k_ram(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> TrackedAccessReport {
+    let mut trace = WalkTrace::new();
+    let mut ad_updates = [None; 5];
+    let mut ad_update_count = 0;
+    let width = request.operation.width();
+    let address = request.address;
+    let access = request.operation.access_kind();
+    let fail = |outcome, trace, ad_updates, ad_update_count| TrackedAccessReport {
+        outcome: Err(outcome),
+        trace,
+        ad_updates,
+        ad_update_count,
+    };
+
+    if u16::from((address.0 & 0xfff) as u16) + u16::from(width) > 4096 {
+        return fail(
+            TrackedAccessError::CrossesPage { address, width },
+            trace,
+            ad_updates,
+            ad_update_count,
+        );
+    }
+    if !is_canonical_48(address.0) {
+        return fail(
+            TrackedAccessError::NonCanonical(NonCanonicalAddress { linear: address }),
+            trace,
+            ad_updates,
+            ad_update_count,
+        );
+    }
+
+    let mut table_base = paging.root();
+    let levels = [
+        PageTableLevel::Pml4,
+        PageTableLevel::Pdpt,
+        PageTableLevel::Pd,
+        PageTableLevel::Pt,
+    ];
+    let mut effective = EffectivePermissions {
+        user: true,
+        writable: true,
+        execute_disabled: false,
+    };
+    let mut leaf = (GuestPhysicalAddress::new(0), 0u64);
+    for level in levels {
+        let index = ((address.0 >> level.index_shift()) & 0x1ff) as u16;
+        let entry_address = GuestPhysicalAddress::new(table_base + u64::from(index) * 8);
+        let entry_value = match memory.read_u64(entry_address) {
+            Ok(value) => value,
+            Err(source) => {
+                return fail(
+                    TrackedAccessError::TableRead {
+                        level,
+                        entry_address,
+                        source,
+                    },
+                    trace,
+                    ad_updates,
+                    ad_update_count,
+                );
+            }
+        };
+        trace.push(WalkEntry {
+            level,
+            index,
+            entry_address,
+            entry_value,
+        });
+        if entry_value & ENTRY_PRESENT == 0 {
+            let reason = PageFaultReason::NotPresent { level };
+            let record = PageFaultRecord::new(
+                request.instruction_rip,
+                access,
+                request.context,
+                page_fault_error_code(access, request.context, false, false, paging.nxe()),
+                address.0,
+            );
+            return fail(
+                TrackedAccessError::PageFault { record, reason },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+        let mut offending = entry_value & ENTRY_ADDRESS_RESERVED;
+        if !paging.nxe() {
+            offending |= entry_value & ENTRY_NX;
+        }
+        if level == PageTableLevel::Pml4 && entry_value & ENTRY_PS_OR_PAT != 0 {
+            offending |= ENTRY_PS_OR_PAT;
+        }
+        if level != PageTableLevel::Pt
+            && level != PageTableLevel::Pml4
+            && entry_value & ENTRY_PS_OR_PAT != 0
+        {
+            return fail(
+                TrackedAccessError::UnsupportedPageSize {
+                    level,
+                    entry_address,
+                    entry_value,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+        if offending != 0 {
+            let reason = PageFaultReason::ReservedBits {
+                level,
+                offending_bits: offending,
+            };
+            let record = PageFaultRecord::new(
+                request.instruction_rip,
+                access,
+                request.context,
+                page_fault_error_code(access, request.context, true, true, paging.nxe()),
+                address.0,
+            );
+            return fail(
+                TrackedAccessError::PageFault { record, reason },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+
+        if entry_value & (1 << 5) == 0 {
+            let after = entry_value | (1 << 5);
+            if let Err(source) = memory.write_u64(entry_address, after, &mut committed_write) {
+                return fail(
+                    TrackedAccessError::TableWrite {
+                        level,
+                        entry_address,
+                        bit: AdBit::Accessed,
+                        source,
+                    },
+                    trace,
+                    ad_updates,
+                    ad_update_count,
+                );
+            }
+            ad_updates[ad_update_count] = Some(AdUpdate {
+                level,
+                address: entry_address,
+                before: entry_value,
+                after,
+                bit: AdBit::Accessed,
+            });
+            ad_update_count += 1;
+        }
+        effective.user &= entry_value & ENTRY_USER != 0;
+        effective.writable &= entry_value & ENTRY_WRITABLE != 0;
+        effective.execute_disabled |= entry_value & ENTRY_NX_BIT != 0;
+        leaf = (entry_address, entry_value | (1 << 5));
+        if level != PageTableLevel::Pt {
+            table_base = entry_value & ENTRY_ADDRESS_MASK;
+        }
+    }
+
+    let user = request.context.page_privilege() == PrivilegeLevel::Ring3;
+    let user_denied = user && !effective.user;
+    let write_denied =
+        access == AccessKind::Write && !effective.writable && (user || paging.write_protect());
+    let execute_denied = access == AccessKind::Fetch && paging.nxe() && effective.execute_disabled;
+    if user_denied || write_denied || execute_denied {
+        let reason = PageFaultReason::Protection {
+            user_denied,
+            write_denied,
+            execute_denied,
+        };
+        let record = PageFaultRecord::new(
+            request.instruction_rip,
+            access,
+            request.context,
+            page_fault_error_code(access, request.context, true, false, paging.nxe()),
+            address.0,
+        );
+        return fail(
+            TrackedAccessError::PageFault { record, reason },
+            trace,
+            ad_updates,
+            ad_update_count,
+        );
+    }
+
+    let physical = GuestPhysicalAddress::new((leaf.1 & ENTRY_ADDRESS_MASK) | (address.0 & 0xfff));
+    let range = match GuestPhysicalRange::new(physical, u64::from(width)) {
+        Ok(range) => range,
+        Err(source) => {
+            return fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+    };
+    match memory.locate_region_kind(physical, u64::from(width)) {
+        Ok(MemoryRegionKind::Ram) => {}
+        Ok(MemoryRegionKind::Mmio) => {
+            let error = if access == AccessKind::Write {
+                TrackedAccessError::DeviceUnavailable { address: physical }
+            } else {
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source: MemoryAccessError::UnreadableRegion(MemoryRegionKind::Mmio),
+                }
+            };
+            return fail(error, trace, ad_updates, ad_update_count);
+        }
+        Ok(kind) => {
+            return fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source: if access == AccessKind::Write {
+                        MemoryAccessError::ReadOnlyRegion(kind)
+                    } else {
+                        MemoryAccessError::UnreadableRegion(kind)
+                    },
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+        Err(source) => {
+            return fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+    };
+    let _ = range;
+
+    if let RamAccessOperation::Write { width, value } = request.operation {
+        if leaf.1 & (1 << 6) == 0 {
+            let after = leaf.1 | (1 << 6);
+            if let Err(source) = memory.write_u64(leaf.0, after, &mut committed_write) {
+                return fail(
+                    TrackedAccessError::TableWrite {
+                        level: PageTableLevel::Pt,
+                        entry_address: leaf.0,
+                        bit: AdBit::Dirty,
+                        source,
+                    },
+                    trace,
+                    ad_updates,
+                    ad_update_count,
+                );
+            }
+            ad_updates[ad_update_count] = Some(AdUpdate {
+                level: PageTableLevel::Pt,
+                address: leaf.0,
+                before: leaf.1,
+                after,
+                bit: AdBit::Dirty,
+            });
+            ad_update_count += 1;
+        }
+        let bytes = value.to_le_bytes();
+        if let Err(source) = memory.write_bytes(
+            physical,
+            &bytes[..usize::from(width.bytes())],
+            &mut committed_write,
+        ) {
+            return fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+        return TrackedAccessReport {
+            outcome: Ok(TrackedAccessOutcome::Written),
+            trace,
+            ad_updates,
+            ad_update_count,
+        };
+    }
+    if request.operation == RamAccessOperation::Fetch {
+        return match memory.read_u8(physical) {
+            Ok(value) => TrackedAccessReport {
+                outcome: Ok(TrackedAccessOutcome::Fetched(value)),
+                trace,
+                ad_updates,
+                ad_update_count,
+            },
+            Err(source) => fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            ),
+        };
+    }
+    let mut bytes = [0u8; 8];
+    let len = usize::from(width);
+    match memory.read_bytes(physical, &mut bytes[..len]) {
+        Ok(()) => {
+            let mut value_bytes = [0u8; 8];
+            value_bytes[..len].copy_from_slice(&bytes[..len]);
+            TrackedAccessReport {
+                outcome: Ok(TrackedAccessOutcome::Read(u64::from_le_bytes(value_bytes))),
+                trace,
+                ad_updates,
+                ad_update_count,
+            }
+        }
+        Err(source) => fail(
+            TrackedAccessError::OperandPhysical {
+                address: physical,
+                source,
+            },
+            trace,
+            ad_updates,
+            ad_update_count,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tracked_access_tests {
+    use super::*;
+    use crate::{MachineMemoryMap, MemoryRegionSpec, RamLimits};
+    use od_isa::memory::{AccessOrigin, InstructionMode};
+
+    const LINEAR: u64 = 0x0000_0080_8060_4abc;
+    const RIP: u64 = 0x1234;
+
+    fn setup(entry: u64, size: u64) -> (PhysicalMemory, Long64ProbeConfig) {
+        let range = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), size).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(range, MemoryRegionKind::Ram)],
+        )
+        .unwrap();
+        let mut memory = PhysicalMemory::new(&map, RamLimits::new(size)).unwrap();
+        for (address, value) in [
+            (0x1008, 0x2007),
+            (0x2010, 0x3007),
+            (0x3018, 0x4007),
+            (0x4020, entry),
+        ] {
+            memory
+                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        let paging =
+            Long64ProbeConfig::new(0x8000_0033, 0x1000, CR4_PAE, EFER_LME | EFER_LMA | EFER_NXE)
+                .unwrap();
+        (memory, paging)
+    }
+
+    fn request(operation: RamAccessOperation) -> TrackedAccessRequest {
+        TrackedAccessRequest {
+            instruction_rip: RIP,
+            address: GuestLinearAddress::new(LINEAR),
+            context: AccessContext {
+                mode: InstructionMode::Long64,
+                privilege: PrivilegeLevel::Ring0,
+                origin: AccessOrigin::Explicit,
+            },
+            operation,
+        }
+    }
+
+    fn entries(memory: &PhysicalMemory) -> [u64; 4] {
+        [0x1008, 0x2010, 0x3018, 0x4020]
+            .map(|address| memory.read_u64(GuestPhysicalAddress::new(address)).unwrap())
+    }
+
+    fn logged(log: &[GuestPhysicalRange]) -> Vec<(u64, u64)> {
+        log.iter()
+            .map(|range| (range.start().get(), range.len()))
+            .collect()
+    }
+
+    #[test]
+    fn successful_read_and_fetch_commit_only_accessed_bits() {
+        for operation in [
+            RamAccessOperation::Read {
+                width: AccessWidth::Dword,
+            },
+            RamAccessOperation::Fetch,
+        ] {
+            let (mut memory, paging) = setup(0x4007, 0x6000);
+            memory
+                .write_u32(GuestPhysicalAddress::new(0x4abc), 0x7856_3412, |_| {})
+                .unwrap();
+            let mut log = Vec::new();
+            let report = access_long64_4k_ram(&mut memory, &paging, request(operation), |range| {
+                log.push(range)
+            });
+            assert!(matches!(
+                report.outcome,
+                Ok(TrackedAccessOutcome::Read(0x7856_3412))
+                    | Ok(TrackedAccessOutcome::Fetched(0x12))
+            ));
+            assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4027]);
+            assert_eq!(report.ad_update_count, 4);
+            assert_eq!(
+                logged(&log),
+                [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
+            );
+        }
+    }
+
+    #[test]
+    fn write_commits_accessed_dirty_then_operand_in_order() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let mut log = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Word,
+                value: 0xbeef,
+            }),
+            |range| log.push(range),
+        );
+        assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4067]);
+        assert_eq!(
+            memory.read_u16(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+            0xbeef
+        );
+        assert_eq!(report.ad_update_count, 5);
+        assert_eq!(
+            logged(&log),
+            [
+                (0x1008, 8),
+                (0x2010, 8),
+                (0x3018, 8),
+                (0x4020, 8),
+                (0x4020, 8),
+                (0x4abc, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn pre_set_accessed_and_dirty_bits_do_not_create_extra_commits() {
+        let (mut memory, paging) = setup(0x4067, 0x6000);
+        for (address, value) in [(0x1008, 0x2027), (0x2010, 0x3027), (0x3018, 0x4027)] {
+            memory
+                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        let mut log = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 0xaa,
+            }),
+            |range| log.push(range),
+        );
+        assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(report.ad_update_count, 0);
+        assert_eq!(logged(&log), [(0x4abc, 1)]);
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4067]);
+    }
+
+    #[test]
+    fn nonpresent_reserved_and_protection_faults_keep_prior_accessed_prefix() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        memory
+            .write_u64(GuestPhysicalAddress::new(0x3018), 0, |_| {})
+            .unwrap();
+        let mut log = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |range| log.push(range),
+        );
+        let TrackedAccessError::PageFault { record, reason } = report.outcome.unwrap_err() else {
+            panic!("expected #PF record")
+        };
+        assert_eq!(record.fault().vector, 14);
+        assert_eq!(record.fault().error_code, Some(0));
+        assert_eq!(record.saved_rip(), RIP);
+        assert_eq!(record.cr2_value(), LINEAR);
+        assert_eq!(
+            reason,
+            PageFaultReason::NotPresent {
+                level: PageTableLevel::Pd
+            }
+        );
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0, 0x4007]);
+        assert_eq!(logged(&log), [(0x1008, 8), (0x2010, 8)]);
+
+        let (mut memory, paging) = setup(0x4007 | (1 << 36), 0x6000);
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |_| {},
+        );
+        assert!(matches!(
+            report.outcome,
+            Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::ReservedBits {
+                    level: PageTableLevel::Pt,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert_eq!(
+            entries(&memory),
+            [0x2027, 0x3027, 0x4027, 0x4007 | (1 << 36)]
+        );
+
+        let (mut memory, _) = setup(0x4005, 0x6000);
+        let paging = Long64ProbeConfig::new(
+            0x8000_0033 | CR0_WP,
+            0x1000,
+            CR4_PAE,
+            EFER_LME | EFER_LMA | EFER_NXE,
+        )
+        .unwrap();
+        let mut write_request = request(RamAccessOperation::Write {
+            width: AccessWidth::Byte,
+            value: 1,
+        });
+        write_request.context.privilege = PrivilegeLevel::Ring3;
+        let report = access_long64_4k_ram(&mut memory, &paging, write_request, |_| {});
+        assert!(matches!(
+            report.outcome,
+            Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::Protection {
+                    write_denied: true,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4025]);
+    }
+
+    #[test]
+    fn table_read_and_operand_failures_are_physical_errors_with_committed_prefix() {
+        let range = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x3000).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(range, MemoryRegionKind::Ram)],
+        )
+        .unwrap();
+        let mut short = PhysicalMemory::new(&map, RamLimits::new(0x3000)).unwrap();
+        short
+            .write_u64(GuestPhysicalAddress::new(0x1008), 0x2007, |_| {})
+            .unwrap();
+        short
+            .write_u64(GuestPhysicalAddress::new(0x2010), 0x3007, |_| {})
+            .unwrap();
+        let paging =
+            Long64ProbeConfig::new(0x8000_0033, 0x1000, CR4_PAE, EFER_LME | EFER_LMA | EFER_NXE)
+                .unwrap();
+        let mut log = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut short,
+            &paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |range| log.push(range),
+        );
+        assert!(
+            matches!(report.outcome, Err(TrackedAccessError::TableRead { level: PageTableLevel::Pd, entry_address, .. }) if entry_address.get() == 0x3018)
+        );
+        assert_eq!(logged(&log), [(0x1008, 8), (0x2010, 8)]);
+
+        let (mut memory, paging) = setup(0x9007, 0x6000);
+        let mut log = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 0x55,
+            }),
+            |range| log.push(range),
+        );
+        assert!(
+            matches!(report.outcome, Err(TrackedAccessError::OperandPhysical { address, .. }) if address.get() == 0x9abc)
+        );
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x9027]);
+        assert_eq!(
+            logged(&log),
+            [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
+        );
+    }
+
+    #[test]
+    fn writes_to_rom_and_reserved_are_write_errors_after_a_without_dirty_or_operand_commit() {
+        for kind in [MemoryRegionKind::Rom, MemoryRegionKind::Reserved] {
+            let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x6000).unwrap();
+            let target =
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(0x9000), 0x1000).unwrap();
+            let map = MachineMemoryMap::new(
+                36,
+                vec![
+                    MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                    MemoryRegionSpec::new(target, kind),
+                ],
+            )
+            .unwrap();
+            let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x6000)).unwrap();
+            for (address, value) in [
+                (0x1008, 0x2007),
+                (0x2010, 0x3007),
+                (0x3018, 0x4007),
+                (0x4020, 0x9007),
+            ] {
+                memory
+                    .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                    .unwrap();
+            }
+            let paging = Long64ProbeConfig::new(
+                0x8000_0033,
+                0x1000,
+                CR4_PAE,
+                EFER_LME | EFER_LMA | EFER_NXE,
+            )
+            .unwrap();
+            let mut callback_ranges = Vec::new();
+            let report = access_long64_4k_ram(
+                &mut memory,
+                &paging,
+                request(RamAccessOperation::Write {
+                    width: AccessWidth::Dword,
+                    value: 0xfeed_face,
+                }),
+                |range| callback_ranges.push(range),
+            );
+            assert!(matches!(
+                report.outcome,
+                Err(TrackedAccessError::OperandPhysical {
+                    address,
+                    source: MemoryAccessError::ReadOnlyRegion(region_kind),
+                }) if address.get() == 0x9abc && region_kind == kind
+            ));
+            assert_eq!(report.ad_update_count, 4);
+            assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x9027]);
+            assert_eq!(
+                logged(&callback_ranges),
+                [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
+            );
+            assert!(
+                !callback_ranges
+                    .iter()
+                    .any(|range| range.start().get() == 0x9abc)
+            );
+
+            let read = access_long64_4k_ram(
+                &mut memory,
+                &paging,
+                request(RamAccessOperation::Read {
+                    width: AccessWidth::Dword,
+                }),
+                |_| {},
+            );
+            assert!(matches!(
+                read.outcome,
+                Err(TrackedAccessError::OperandPhysical {
+                    source: MemoryAccessError::UnreadableRegion(region_kind),
+                    ..
+                }) if region_kind == kind
+            ));
+        }
+    }
+
+    #[test]
+    fn mmio_write_is_device_unavailable_without_dispatch_or_operand_notification() {
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x6000).unwrap();
+        let mmio = GuestPhysicalRange::new(GuestPhysicalAddress::new(0x9000), 0x1000).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(mmio, MemoryRegionKind::Mmio),
+            ],
+        )
+        .unwrap();
+        let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x6000)).unwrap();
+        for (address, value) in [
+            (0x1008, 0x2007),
+            (0x2010, 0x3007),
+            (0x3018, 0x4007),
+            (0x4020, 0x9007),
+        ] {
+            memory
+                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        let paging =
+            Long64ProbeConfig::new(0x8000_0033, 0x1000, CR4_PAE, EFER_LME | EFER_LMA | EFER_NXE)
+                .unwrap();
+        let mut callback_ranges = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 0xff,
+            }),
+            |range| callback_ranges.push(range),
+        );
+        assert_eq!(
+            report.outcome,
+            Err(TrackedAccessError::DeviceUnavailable {
+                address: GuestPhysicalAddress::new(0x9abc),
+            })
+        );
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x9027]);
+        assert_eq!(
+            logged(&callback_ranges),
+            [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
+        );
+    }
+
+    #[test]
+    fn cross_page_rejects_before_any_walk_or_commit_and_probe_stays_pure() {
+        let (mut memory, paging) = setup(0x4007 | (1 << 5) | (1 << 6), 0x6000);
+        let before = entries(&memory);
+        let mut cross = request(RamAccessOperation::Write {
+            width: AccessWidth::Dword,
+            value: 1,
+        });
+        cross.address = GuestLinearAddress::new(0x0000_0080_8060_5ffe);
+        let mut log = Vec::new();
+        let report = access_long64_4k_ram(&mut memory, &paging, cross, |range| log.push(range));
+        assert!(matches!(
+            report.outcome,
+            Err(TrackedAccessError::CrossesPage { .. })
+        ));
+        assert!(report.trace.is_empty());
+        assert!(log.is_empty());
+        assert_eq!(entries(&memory), before);
+
+        let pure = probe_long64_4k(
+            &memory,
+            &paging,
+            GuestLinearAddress::new(LINEAR),
+            AccessKind::Write,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            })
+            .context,
+        );
+        assert!(matches!(pure.outcome, Ok(ProbeOutcome::Translated(_))));
+        assert_eq!(entries(&memory), before);
+    }
 }
 
 /// Adds instruction restart metadata to a pure page-walk result. This does not

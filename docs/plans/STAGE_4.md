@@ -248,6 +248,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 ### S4-09. Accessed/dirty bits и наблюдаемые side effects
 
 - [ ] Принято после ревью.
+- Bounded RAM-only access API implemented in `od-machine`: `access_long64_4k_ram`
+  commits A updates during the walk, then validates the final RAM operand, commits
+  D for permitted writes, and finally commits the operand. Literal local tests
+  cover successful fetch/read/write and preserved A effects on later failures.
+  This does not complete S4-09: independent review, injected table-write failure,
+  full permission-level matrix, CPU execution integration and system acceptance
+  remain open. See [machine contract](../specs/MACHINE_CONTRACT.md#tracked-ram-access).
 - **Где:** page walker/physical writer `od-machine`, CPU contract и системные тесты.
 - **Сделать:** определить, на каких уровнях и при каких успешных/неуспешных accesses меняются A/D bits. Разделить эти записи и commit конечного memory operand. Использовать общий tracked physical-write путь.
 - **Проверка:** read, write, fetch, protection fault, nonpresent на разных уровнях, permission fault после предыдущих обращений; page-table bytes совпадают с ожидаемыми разрешёнными эффектами.
