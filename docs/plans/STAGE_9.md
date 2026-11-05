@@ -191,6 +191,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-03. Ввести узкий storage I/O interface
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено, коммит `a59338a`. Contract suite исполняется на memory и host file backend; детали и ограничения — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-03-узкий-storage-io-interface--реализовано-ревью-пройдено).
 - **Где:** `od-storage`, host implementation в `od-host`, локальный test backend.
 - **Сделать:** checked offset reads/writes, size/truncate/allocate при необходимости, file/namespace durability и locking capabilities; типизированные short/error outcomes. Interface описывает необходимые гарантии, а не копирует весь filesystem API.
 - **Проверить:** overflow, short read/write, interrupted call, no progress, несогласованные capabilities; upper library не импортирует host и не скрывает ошибку в zero-filled block.
@@ -199,6 +200,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-04. Обеспечить единственного writer
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** частично, коммит `ba77773`: межпроцессный exclusive writer lock (`flock`) с проверкой identity. Не сделаны read leases, интеграция с VMHost, запрет изменения parent, busy при export/repair; lock advisory. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-04-единственный-writer--частично).
 - **Где:** `od-storage` ownership, `od-host` file locking, VMHost lifecycle.
 - **Сделать:** exclusive writer ownership для backing и mutating metadata; стабильная file/object identity, read leases и освобождение при shutdown/crash. Path string и PID-файл сами по себе недостаточны; same-file aliases учитывать по поддержанной платформе. Один timeout или возраст lock-файла не разрешает отобрать ownership у живого writer.
 - **Проверить:** два процесса, повторное открытие через alias, writer после crash, stale handle и запрещённое изменение parent, занятый диск при export/repair.
@@ -207,6 +209,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-05. Реализовать RAW backend
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено, коммит `4fcd5c4`. Power-loss durability не заявляется; детали — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-05-raw-backend--реализовано-ревью-пройдено).
 - **Где:** `od-storage`, local tests, малые собственные fixtures.
 - **Сделать:** create/open/read/write/reopen с явным logical size, bounds и разрешённым alignment. Политика create existing file — безопасный отказ, а не молчаливое truncate. Различить out-of-range и чтение неполного файла.
 - **Проверить:** начало/конец, unaligned допустимые обращения, partial errors, EOF, повторное открытие и independent byte comparison.
@@ -215,6 +218,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-06. Провести durability от storage до host
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** частично, коммит `69e0b02`: только durability данных файла на macOS через `F_FULLFSYNC` и sticky reconcile-required. Namespace durability не реализована ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), power-loss не проверен, трактовка ENOTSUP/EINVAL — защитное предположение. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-06-durability-от-storage-до-host--частично).
 - **Где:** `od-storage`, `od-host`, методика и отчёт.
 - **Сделать:** реализовать выбранный в S9-00 порядок data/metadata/namespace persistence с проверенными API. Зафиксировать volume/medium assumptions и что именно обещает successful flush. Для unsupported backend отказать в заявленной durable операции.
 - **Проверить:** flush error до/после потенциального commit, short write, delayed completion, file creation/rename publication; лог операций подтверждает порядок. Process-kill/reopen — отдельный уровень, не power-loss proof.

@@ -1,6 +1,6 @@
 # Контракт persistent форматов хранения
 
-Статус: **черновик S9-00, ожидает архитектурного ревью**. Документ фиксирует scope, границы, модель отказов, лимиты и правила подтверждения. Нормативных байтов здесь пока нет: формат CoW определяется в S9-08, snapshot/full-VM container — в S9-14 и S9-23. Реализации нет: [`crates/od-storage/src/lib.rs`](../../crates/od-storage/src/lib.rs) — scaffold без функциональности (проверено 2026-11-05).
+Статус: **черновик S9-00, ожидает архитектурного ревью**. Документ фиксирует scope, границы, модель отказов, лимиты и правила подтверждения. Нормативных байтов здесь пока нет: формат CoW определяется в S9-08, snapshot/full-VM container — в S9-14 и S9-23. Реализован только offline-RAW срез (коммиты `a59338a`, `ba77773`, `4fcd5c4`, `69e0b02`): контракт [`io.rs`](../../crates/od-storage/src/io.rs) (`StorageBackend`, `CheckedStorage`), [`raw.rs`](../../crates/od-storage/src/raw.rs) (`RawImage`), host backend с `flock` и flush данных файла в [`storage_io.rs`](../../crates/od-host/src/storage_io.rs). Namespace durability не реализована, power-loss не проверен, CoW и остальные форматы не начаты; ничего из этого не принято.
 
 Связанные документы: [план этапа 9](../plans/STAGE_9.md), [этап 9 roadmap](../ROADMAP.md#этап-9-надёжность-данных-и-управление-состоянием), [архитектура §7](../ARCHITECTURE.md#7-диски-конфигурация-и-снимки), [виртуальная плата](VIRTUAL_BOARD.md), [матрица поддержки](SUPPORT_MATRIX.md), [состояние VM и операции](VM_STATE.md), [методика recovery](../testing/STORAGE_RECOVERY.md).
 
@@ -10,7 +10,7 @@
 
 | Artifact | Владелец кода | Статус формата |
 |---|---|---|
-| RAW disk image | `crates/od-storage/src/` | Без header: ровно `logical_size` bytes guest LBA space. Семантика в §4–§7; реализации нет (S9-05) |
+| RAW disk image | `crates/od-storage/src/` | Без header: ровно `logical_size` bytes guest LBA space. Семантика в §4–§7; реализован `RawImage` ([`raw.rs`](../../crates/od-storage/src/raw.rs), `4fcd5c4`), ревью S9-05 пройдено, power-loss не проверен |
 | Собственный CoW disk image | `crates/od-storage/src/` | **TBD S9-08**: требования — §9; bytes не определены |
 | Snapshot metadata и цепочки | `crates/od-storage/src/` | **TBD S9-14** поверх S9-08 |
 | Full-VM checkpoint container и manifest | container — `od-storage`, состав участников — `od-machine` | **TBD S9-23**; список участников — в [VM_STATE.md](VM_STATE.md) |
@@ -29,7 +29,7 @@
 
 | Профиль | Состав | Требует работающей VM | Статус |
 |---|---|---|---|
-| `offline-raw-v0` | RAW image, один writer, явный durable flush, reopen | Нет | Целевой первый срез S9-03…07; не реализован |
+| `offline-raw-v0` | RAW image, один writer, явный durable flush, reopen | Нет | Целевой первый срез S9-03…07; реализованы S9-03…05 и часть S9-04/S9-06 (file-data flush); fault backend S9-07 и namespace durability отсутствуют; профиль не принят |
 | `offline-cow-v1` | Собственный CoW, recovery, immutable snapshots, check/export/salvage/migration | Нет | S9-08…12, S9-14…22; формат TBD. S9-13 (guest storage/flush) относится к VM-профилям |
 | `restricted-vm` | Тестовая машина без UEFI/vTPM: CPU/RAM/devices/time/I/O + диски | Да | Отдельный ограниченный gate; не закрывает Windows gate (план §2, §6) |
 | `full-windows-vm` | Всё из `restricted-vm` + UEFI variables + vTPM + identity policy | Да | Целевой; заблокирован отсутствующими компонентами, см. [VM_STATE.md](VM_STATE.md#2-инвентаризация-prerequisites-s9-01) |
@@ -44,7 +44,7 @@ Offline-профили не зависят от CPU, Windows или vTPM. Ни �
 | Машина | MacBook Pro, Apple M3 Max (локальный хост) | [SUPPORT_MATRIX](SUPPORT_MATRIX.md); точная модель/год накопителя не зафиксированы | Предложено |
 | Filesystem | APFS, data volume внутреннего контейнера | Read-only `diskutil info /` 2026-11-05: APFS, internal, fixed, solid state, protocol Apple Fabric, FileVault on | Предложено; не испытано |
 | Media | Внутренний SSD Mac | То же | Модель контроллера и cache policy не зафиксированы |
-| Durability API | **Не выбран** | См. §7 | **Открыто** ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)) |
+| Durability API | `F_FULLFSYNC` для данных файла (macOS); namespace — не реализовано | См. §7 | **Открыто**: не испытано, namespace отсутствует ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)) |
 
 Явно **не получают** гарантий этой комбинации без отдельного S9-06/S9-39 evidence: сетевые filesystems (SMB/NFS/AFP), File Provider/облачные каталоги, внешние и removable накопители, другие filesystems (HFS+, exFAT, FAT), образы внутри disk images/sparsebundle, Linux ext4/xfs на Mini. Linux Mini (`senya@192.168.1.14`, [STAND.md](../testing/STAND.md)) используется для переносимости bytes и сравнения, но не как oracle гарантий APFS/macOS. Open попытка на неподдержанном backend должна либо отказать в durable операциях, либо работать в явно помеченном non-durable режиме; молчаливое наследование гарантий запрещено.
 
@@ -77,7 +77,7 @@ Guest page size (4 KiB) не равен host page size (16 KiB на основн
 - Enforcement межпроцессный (S9-04, host primitive в `od-host`); Rust ownership внутри процесса недостаточна. Path string и PID-файл не являются identity: нужна стабильная file/object identity с учётом same-file aliases на поддержанной платформе.
 - Timeout или возраст lock-файла не разрешает отобрать ownership у живого writer.
 - Readers immutable snapshots держат read lease конкретной generation (S9-16/S9-37); parent не мутируется и не освобождается, пока на него есть ссылки.
-- Конкретный host lock primitive и его семантика при crash процесса **не выбраны** и требуют проверенного источника (S9-04).
+- Реализовано (S9-04 частично, `ba77773`, [`storage_io.rs`](../../crates/od-host/src/storage_io.rs)): `flock(LOCK_EX|LOCK_NB)` на том же fd, что используется для записи; identity `(dev, ino)` проверяется после lock и перед каждой мутацией; symlink/hard-link aliases попадают на тот же lock; lock освобождается при SIGKILL процесса (тест с re-spawned бинарником). Lock advisory: процесс, не вызывающий `flock`, не остановлен. Не сделаны read leases, интеграция с VMHost, запрет изменения parent, busy при export/repair. Поведение на сетевых и non-APFS volumes не проверено.
 
 ## 6. Уровни подтверждения записи
 
@@ -96,14 +96,13 @@ Guest page size (4 KiB) не равен host page size (16 KiB на основн
 3. `uncertain` переводит writer в состояние `reconcile_required`: новые writes запрещены, image переоткрывается/инспектируется, исход определяется по generation/operation ID. Blind retry запрещён.
 4. Законные последующие overwrite/discard учитываются; требование не означает вечного хранения старых версий. Referenced snapshots сохраняют свои данные.
 
-## 7. Host durability API — статус открыт
+## 7. Host durability API — статус: частично реализовано, не подтверждено испытаниями
 
-Ни один host API пока не выбран и не подтверждён для `durable_ack`.
-
-- Context7, Rust std (`/websites/doc_rust-lang_stable_std`, 2026-11-05): `File::sync_all` описан как попытка («attempts to sync … to disk»), `sync_data` может не синхронизировать metadata. Документация не устанавливает, какой системный вызов используется на macOS, распространяется ли гарантия до энергонезависимой памяти накопителя и как обеспечивается durability namespace (create, rename, directory entry).
-- Проверенного источника по семантике `fsync`/`F_FULLFSYNC`/`F_BARRIERFSYNC` и namespace durability APFS в этой работе не получено. По правилу плана [§3, п. 3](../plans/STAGE_9.md#3-правила-исполнителя-и-размещение) гарантия не угадывается по названию функции.
-- До S9-06 с проверенным источником и испытаниями: RAW backend S9-05 предоставляет только `completed`/`visible`; durable операции на любом backend отвечают явным `unsupported_durability` (§11), а не успехом.
-- Запись: [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed).
+- Реализовано (`69e0b02`, [`storage_io.rs`](../../crates/od-host/src/storage_io.rs), [`io.rs`](../../crates/od-storage/src/io.rs)): durability данных файла на macOS через `fcntl(F_FULLFSYNC)` на заблокированном writable дескрипторе. `DurableAck` создаётся в checked-слое только после успеха backend. Явный отказ (ENOTSUP) даёт `UnsupportedDurability` без смены состояния; любой другой сбой flush, включая `EINVAL`, переводит `CheckedStorage` в sticky `reconcile_required` (запись, resize и flush отклоняются, `into_backend` не выдаёт backend).
+- Не реализовано: namespace durability (create, rename, directory entry) остаётся `unsupported`. На не-macOS и без writer-lock durability не объявляется. `RawImage` ([`raw.rs`](../../crates/od-storage/src/raw.rs)) сам sync не вызывает.
+- Не подтверждено: сопоставление ENOTSUP/EINVAL — защитное предположение, не подтверждённое локальной man-страницей `fcntl`. Гарантия `F_FULLFSYNC` на APFS/внутреннем SSD не проверена испытаниями уровней 1–3 ([STORAGE_RECOVERY.md](../testing/STORAGE_RECOVERY.md)); power-loss не проверен. Rust std (Context7, 2026-11-05) не описывает платформенный механизм `sync_all` и namespace durability.
+- Любое durable-обещание за пределами file-data на macOS отвечает явным `unsupported_durability` (§11), а не успехом.
+- Запись: [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed) (открыта для namespace, power-loss и non-APFS/network томов).
 
 ## 8. Модель отказов (crash model)
 
@@ -157,8 +156,8 @@ Storage API возвращает типизированные результат
 
 | Вопрос | Блокирует | Следующий шаг |
 |---|---|---|
-| Durability API и namespace durability на APFS | S9-06 и любой `durable_ack` | Получить проверяемый источник; иначе гарантия остаётся открытой |
-| Межпроцессный lock primitive и alias identity | S9-04 | Источник + multiprocess tests |
+| Namespace durability на APFS; подтверждение `F_FULLFSYNC` испытаниями и источником | S9-06 (приёмка) и `durable_ack` для создания/публикации | Источник + испытания уровней 1–3; иначе гарантия остаётся открытой |
+| Read leases, VMHost lifecycle, запрет изменения parent, busy при export/repair | S9-04 (приёмка) | Реализовать; `flock` и alias identity уже покрыты multiprocess tests (`ba77773`) |
 | LBA size guest device | S9-13 | Решить по требованиям выбранного NVMe профиля |
 | CoW block size, map layout, checksum алгоритм | S9-08 | Прототипные замеры на одинаковой нагрузке |
 | Модель накопителя/контроллера внутреннего SSD | S9-39 claim | Зафиксировать при подготовке стенда |
