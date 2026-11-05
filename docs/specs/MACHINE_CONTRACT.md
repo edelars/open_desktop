@@ -386,6 +386,43 @@ RAM/MMIO destinations. Нет implicit retry, transaction или device replay.
 являются только диагностической последовательностью вызовов; CPU restart,
 REP-iteration, stack recovery и RMW atomicity остаются вне этого контракта.
 
+## Bounded cross-page qword read (S4-11b)
+
+The opt-in CPU-connected S4-11b slice admits only the existing
+`MOV RAX,[RBX]` form (`48 8B 03`) when its 8-byte operand crosses one 4 KiB
+boundary. It splits the linear range into its first-page and second-page
+segments in increasing linear-address order. Each segment is translated and
+checked using the existing Long64/4 KiB access context; the corresponding
+physical range must be wholly RAM. The two physical ranges may be discontiguous.
+No MMIO device is dispatched by this cross-page path. Cross-page writes and
+instruction fetch remain rejected by their existing boundaries.
+
+Both translations, permissions and RAM-region admissions complete before
+either operand segment is read. Accessed-bit writes commit as each walk
+completes, and their callbacks retain actual walk order. If the second walk
+fails, earlier A-bit writes remain committed; a read never sets D. Once both
+segments are admitted, their bytes are read in increasing linear-address order
+into a private 8-byte buffer. The caller's result buffer and CPU destination
+change only after the complete read succeeds. A fault identifies the first
+inaccessible linear segment, retains the original instruction RIP and reports
+the original data-read context; no partial operand value is exposed.
+
+When page-table entries alias bytes in the operand range, both walks and their
+A-bit writes occur before operand bytes are sampled, so those committed writes
+are visible to the final read. Page-table aliasing between the two walks also
+observes earlier committed updates. This is the deterministic contract of this
+bounded uncached adapter; it does not claim a universal hardware ordering for
+page-walk observations or atomicity of an unaligned cross-page access. [Intel
+SDM Rev. 090, Vol. 3A §§5.7–5.8](https://cdrdv2-public.intel.com/874240/325462-090-sdm-vol-1-2abcd-3abcd-4.pdf)
+defines page faults and A/D effects, while §11.1.1 states that split accesses
+across page boundaries are not generally guaranteed atomic. The emulator's
+per-segment order and caller-buffer commit boundary are explicit local API
+behavior.
+
+This slice does not cover cross-page stores, RAM/MMIO or MMIO/MMIO splitting,
+stack/REP/RMW restart behavior, exception delivery/CR2 commit, TLB/JIT, or the
+full S4-11 acceptance. See the [S4-11b report](../reports/STAGE_4_S4-11B_2026-11-05.md).
+
 ## CPU-state to diagnostic translation snapshot
 
 `Long64ProbeConfig::from_cpu_state` строит immutable diagnostic snapshot из

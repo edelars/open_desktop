@@ -10,7 +10,7 @@ Ubuntu 7.0.0-38.38 source/config hashes, совпадающие Build IDs и р�
 
 ## Область
 
-Эта методика покрывает S4-02—S4-10a и bounded S4-06b/S4-06c: валидируемую physical
+Эта методика покрывает S4-02—S4-10a и bounded S4-06b/S4-06c/S4-11b: валидируемую physical
 map, production RAM owner, committed-write notification, синхронную MMIO/PIO
 bus, диагностический CPU memory bridge, uncached translation probe, bounded
 tracked RAM access и два CPU-connected paged MOV forms. Она не проверяет полную
@@ -142,7 +142,7 @@ git diff --check
 Успешные локальные тесты подтверждают только перечисленный Rust-контракт,
 flat identity integration, tracked RAM-only effects и targeted `od-isa`
 PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
-cross-page admission, S4-12a snapshot bridge, S4-13a pure-cache experiment,
+cross-page admission and bounded S4-11b qword read, S4-12a snapshot bridge, S4-13a pure-cache experiment,
 S4-14a cache lifecycle boundary, S4-21a diagnostic vCPU session и S4-22a
 caller-driven clock/RDTSC boundary, S4-23a bounded deadline queue, S4-23b
 reset-generation boundary and S4-23c bounded UART RX event delivery.
@@ -221,6 +221,22 @@ Focused reproduction, check results, reviewer findings, and open boundaries
 are recorded in the S4-06c report and JSON manifest. This does not test cross-page
 device transactions, retries, device read/modify/write, exception delivery,
 TLB/JIT, IRQs or the complete paging matrix.
+
+## S4-11b: CPU-connected cross-page qword load
+
+The [S4-11b report](../reports/STAGE_4_S4-11B_2026-11-05.md) and evidence
+manifest record all seven offsets of an 8-byte operand across a 4 KiB boundary.
+The fixture maps the two virtual pages to distinct, non-contiguous RAM pages.
+Positive cases check the assembled little-endian qword, RAX/RIP, retirement,
+preserved flags, no D-bit update and the ordered A-update journal.
+
+Negative cases fault on the second page as not-present or supervisor-only,
+verify the exact `PageFaultRecord`/PFEC/address/RIP/context, preserve the CPU
+destination and caller buffer, and retain A updates committed by earlier walks.
+RAM+hole and RAM+MMIO combinations must fail without device dispatch or a
+partial operand value. A page-table alias case confirms both walks and A
+updates precede operand sampling. Cross-page stores and device splitting remain
+outside this method.
 
 ## S4-24a: bounded COM1 polling TX
 

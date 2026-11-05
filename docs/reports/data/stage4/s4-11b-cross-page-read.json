@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "slice": "S4-11b",
+  "title": "Bounded CPU-connected cross-page qword read",
+  "date": "2026-11-05",
+  "baseline_commit": "5e1804b",
+  "status": "accepted_bounded_slice",
+  "code_files": [
+    "crates/od-machine/src/page_walk.rs",
+    "crates/od-machine/src/bus.rs",
+    "crates/od-machine/src/paged_memory_adapter.rs",
+    "crates/od-machine/tests/paged_mov_step.rs"
+  ],
+  "cpu_profile": {
+    "entry": "od_machine::step_paged_mov",
+    "encoding": "48 8B 03",
+    "operation": "MOV RAX,[RBX]",
+    "instructions_per_call": 1,
+    "operand_width_bytes": 8,
+    "guest_page_size_bytes": 4096,
+    "crossing_offsets": ["0xff9", "0xffa", "0xffb", "0xffc", "0xffd", "0xffe", "0xfff"],
+    "physical_mapping": "literal non-identity; two non-contiguous RAM pages",
+    "paging_profile": "canonical48/physical36/four-level/4KiB/uncached"
+  },
+  "contract": {
+    "translations_and_ram_admission_precede_operand_read": true,
+    "walk_order": "ascending linear address",
+    "operand_read_order": "first segment then second segment",
+    "a_updates_commit_during_walk_and_survive_later_fault": true,
+    "callbacks_preserve_walk_order_and_duplicates": true,
+    "read_sets_dirty_bit": false,
+    "caller_buffer_changes_only_after_full_success": true,
+    "cpu_destination_and_retirement_change_only_after_full_success": true,
+    "cross_page_mmio_dispatch": false,
+    "cross_page_store_supported": false,
+    "alias_observes_all_walk_a_updates_before_operand_sampling": true,
+    "hardware_atomicity_or_universal_walk_order_claimed": false
+  },
+  "reported_tests": {
+    "integration_command": "cargo test -p od-machine --test paged_mov_step --locked --offline",
+    "integration_passed": 15,
+    "unit_command": "cargo test -p od-machine --lib --locked --offline",
+    "unit_passed": 82,
+    "failed": 0,
+    "coverage": [
+      "all seven boundary offsets",
+      "non-contiguous physical RAM mappings",
+      "second-page not-present and permission PageFaultRecord assertions",
+      "caller buffer and CPU state preservation",
+      "ordered A effects and no D update",
+      "RAM+hole and RAM+MMIO rejection without device dispatch",
+      "page-table alias visibility after both walks",
+      "same-page RAM and S4-06c MMIO regressions"
+    ]
+  },
+  "checks": {
+    "commands": [
+      "cargo check -p od-machine --all-targets --locked --offline",
+      "cargo fmt --all -- --check",
+      "git diff --check"
+    ],
+    "result": "passed"
+  },
+  "review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approve",
+    "remaining_p0_p3_findings": 0,
+    "reviewed_code_files": 4,
+    "final_review_reran_focused_test": true
+  },
+  "graphify": {
+    "query_before_source_reads": true,
+    "worktree_update": "completed",
+    "nodes": 24667,
+    "edges": 63593,
+    "communities": 887,
+    "main_checkout_update": "completed",
+    "main_nodes": 26028,
+    "main_edges": 65344,
+    "main_communities": 877
+  },
+  "open_boundaries": [
+    "cross-page stores",
+    "other operand widths",
+    "RAM/MMIO or MMIO/MMIO splitting",
+    "cross-page instruction fetch",
+    "stack/REP/RMW restart",
+    "exception delivery and CR2 commit",
+    "TLB/JIT",
+    "IRQ and SMP",
+    "Linux boot"
+  ],
+  "issue_054": "open",
+  "parent_s4_11": "open",
+  "report": "docs/reports/STAGE_4_S4-11B_2026-11-05.md"
+}

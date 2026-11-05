@@ -277,6 +277,20 @@ impl MachineBus {
         )
     }
 
+    pub(crate) fn read_tracked_cross_page_ram(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        request: TrackedAccessRequest,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<u64, crate::TrackedAccessError> {
+        crate::page_walk::read_long64_4k_cross_page_ram(
+            &mut self.memory,
+            paging,
+            request,
+            committed_write,
+        )
+    }
+
     pub(crate) fn memory_kind(
         &self,
         address: GuestPhysicalAddress,

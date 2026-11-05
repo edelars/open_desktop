@@ -310,13 +310,19 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Реализовано: same-page Read/Write width matrix и ранний `CrossesPage` отказ
   без walk/A-D/callback/operand effects; отдельные calls сохраняют собственные
   commits, adjacent fetch evidence не объявляет CPU restart semantics.
-- Полный S4-11 остаётся открытым: двухстраничная transaction/preflight модель,
-  fault на второй странице, stack/REP/RMW и CPU/system integration не приняты.
+- Bounded S4-11b ниже принят отдельно. Полный S4-11 остаётся открытым для
+  cross-page stores, иных widths, stack/REP/RMW и CPU/system integration.
   См. [machine contract](../specs/MACHINE_CONTRACT.md#cross-page-admission-и-separate-call-progress).
 - **Где:** `od-machine`, затронутые memory semantics `od-isa`, `tests/system/`.
 - **Сделать:** определить preflight/commit для одного memory-вызова с сохранением его контракта. Разобрать boundary RAM/RAM, RAM/hole, RAM/MMIO, code fetch; не разбивать device access на произвольные повторяемые bytes.
 - **Проверка:** fault на второй странице read/write/fetch, разница прав соседних 4 KiB pages, стековые операции, поддержанные REP iterations и RMW. Сравнивать RIP, registers, flags, memory и A/D effects отдельно.
 - **Готово:** неподтверждённые restart cases из `KNOWN_ISSUES.md` не объявлены решёнными локальным happy path; завершённые REP iterations сохраняются согласно CPU-контракту.
+
+#### S4-11b. Bounded CPU-connected cross-page qword read
+
+- [x] Принят после независимого `gpt-6.1-sol/high` review без оставшихся P0—P3.
+- Только `48 8B 03`, qword read через две 4 KiB страницы, все семь offsets `0xff9..0xfff`, literal non-identity mappings и две non-contiguous RAM pages. Оба walk/permission/RAM admission завершаются до operand read; A updates остаются при последующем fault; D не ставится; caller buffer и CPU state коммитятся только после полного чтения.
+- Cross-page store, RAM/MMIO splitting, stack/REP/RMW и full exception delivery остаются открытыми. См. [S4-11b report](../reports/STAGE_4_S4-11B_2026-11-05.md) и [manifest](../reports/data/stage4/s4-11b-cross-page-read.json).
 
 ### S4-12. Подключить CR0/CR3/CR4, EFER и system instructions
 

@@ -5,7 +5,7 @@
 На 2026-11-05 приняты локальные memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access, S4-01a baseline, S4-10a
 admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-06c
-CPU-connected paged MOV to MMIO, bounded S4-21b
+CPU-connected paged MOV to MMIO, bounded S4-11b cross-page qword read, bounded S4-21b
 paged probe quantum, bounded S4-23c UART RX event delivery, bounded S4-24a
 COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO
 slices. Этап 4 не завершён: S4-00—S4-01,
@@ -239,7 +239,16 @@ permission fault и сохранение CPU state/нулевого retirement �
 - S4-11a закрепляет cross-page admission boundary: Read/Write, пересекающие
   4 KiB, возвращают `CrossesPage` до чтения таблиц, без trace, A/D effects,
   callback или operand commit. Отдельные same-page calls коммитятся независимо;
-  двухстраничный transaction/split path не добавлен.
+  общий split path не добавлен. S4-11b ниже добавляет только один CPU-connected
+  qword RAM load через две страницы.
+- S4-11b поддерживает только `MOV RAX,[RBX]` (`48 8B 03`) для qword read через
+  две 4 KiB RAM pages: обе translation/permission/region проверки предшествуют
+  operand read; A effects остаются при последующем fault; D не ставится; bytes
+  читаются во временный buffer, CPU destination и caller buffer обновляются
+  только при полном успехе. Все семь boundary offsets и literal nonidentity,
+  noncontiguous mappings проверены. См. [контракт](../specs/MACHINE_CONTRACT.md#bounded-cross-page-qword-read-s4-11b),
+  [отчёт](STAGE_4_S4-11B_2026-11-05.md) и
+  [manifest](data/stage4/s4-11b-cross-page-read.json). Родительский S4-11 открыт.
 - S4-12a добавляет `Long64ProbeConfig::from_cpu_state`: CR0 и CR4 читаются из
   `LongModeState` с явной ошибкой отсутствующего регистра, CR3 и EFER остаются
   явными входами, а вся существующая validation переиспользуется без defaults,
@@ -336,9 +345,10 @@ pure translation probe с record construction, а S4-09 — tracked RAM-only pro
 S4-10a — только rejection boundary для unsupported huge pages, а не реальные
 гостевые `IN/OUT` instructions, CPU page-fault delivery или
 полный executor integration. S4-11a — только same-page/cross-page admission и
-separate-call evidence, не CPU restart, REP iteration, stack recovery или RMW
-atomicity. S4-06b не доказывает полную paging matrix, TLB/invalidation, CR2
-commit, exception delivery/retry, cross-page operands, REP/stack/atomic
+separate-call evidence. S4-11b — только cross-page qword read; он не закрывает
+cross-page stores, CPU restart, REP iteration, stack recovery или RMW atomicity.
+S4-06b не доказывает полную paging matrix, TLB/invalidation, CR2
+commit, exception delivery/retry, general cross-page operands, REP/stack/atomic
 semantics, JIT/IRQ integration, SMP или Linux boot. S4-06c подтверждает только
 qword MMIO через два MOV forms и не подтверждает full device integration.
 ISSUE-054 остаётся открытой для

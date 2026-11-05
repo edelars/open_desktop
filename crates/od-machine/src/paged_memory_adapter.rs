@@ -62,10 +62,10 @@ pub fn step_paged_mov(
     })
 }
 
-/// `GuestMemory` view scoped to one instruction attempt; all RAM and MMIO
-/// backing is routed through `MachineBus`. Page-table walks and their A/D
-/// updates use tracked RAM writes; the final MMIO operand uses one width-sized
-/// device transaction and never accesses MMIO through `PhysicalMemory`.
+/// `GuestMemory` view scoped to one instruction attempt; same-page RAM and
+/// MMIO backing is routed through `MachineBus`. A crossing qword load resolves
+/// both 4 KiB walks and RAM ranges before reading either operand portion; it
+/// never splits a crossing access through MMIO.
 ///
 /// A failed read leaves the caller's destination buffer unchanged because the
 /// walker result is copied only after a successful complete read. A failed RAM
@@ -102,19 +102,45 @@ impl PagedMovMemoryAdapter<'_> {
         );
         match report.outcome {
             Ok(outcome) => Ok(outcome),
-            Err(TrackedAccessError::PageFault { record, .. }) => {
+            Err(error) => Err(self.map_access_error(error)),
+        }
+    }
+
+    fn access_cross_page_read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+    ) -> Result<u64, MemoryError> {
+        let result = self.bus.read_tracked_cross_page_ram(
+            &self.paging,
+            TrackedAccessRequest {
+                instruction_rip: self.instruction_rip,
+                address: GuestLinearAddress::new(address),
+                context,
+                operation: RamAccessOperation::Read {
+                    width: crate::AccessWidth::Qword,
+                },
+            },
+            &mut *self.committed_write,
+        );
+        result.map_err(|error| self.map_access_error(error))
+    }
+
+    fn map_access_error(&mut self, error: TrackedAccessError) -> MemoryError {
+        match error {
+            TrackedAccessError::PageFault { record, .. } => {
                 self.page_fault = Some(record.clone());
-                Err(MemoryError::Architectural(record.fault().clone()))
+                MemoryError::Architectural(record.fault().clone())
             }
-            Err(error @ TrackedAccessError::MmioBackend { .. }) => {
+            error @ TrackedAccessError::MmioBackend { .. } => {
                 let message = format!("tracked Long64 MMIO access failed: {error:?}");
                 self.memory_error = Some(error);
-                Err(MemoryError::Backend(message))
+                MemoryError::Backend(message)
             }
-            Err(error) => {
+            error => {
                 let message = format!("tracked Long64 RAM access failed: {error:?}");
                 self.memory_error = Some(error);
-                Err(MemoryError::Backend(message))
+                MemoryError::Backend(message)
             }
         }
     }
@@ -141,15 +167,19 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         if destination.len() != 8 {
             return Err(Self::unsupported("non-qword reads"));
         }
-        let value = match self.access(
-            address,
-            context,
-            RamAccessOperation::Read {
-                width: crate::AccessWidth::Qword,
-            },
-        )? {
-            TrackedAccessOutcome::Read(value) => value,
-            _ => return Err(Self::unsupported("non-read result")),
+        let value = if (address & 0xfff) + 8 > 4096 {
+            self.access_cross_page_read(address, context)?
+        } else {
+            match self.access(
+                address,
+                context,
+                RamAccessOperation::Read {
+                    width: crate::AccessWidth::Qword,
+                },
+            )? {
+                TrackedAccessOutcome::Read(value) => value,
+                _ => return Err(Self::unsupported("non-read result")),
+            }
         };
         destination.copy_from_slice(&value.to_le_bytes());
         Ok(())
@@ -311,6 +341,25 @@ mod tests {
         assert_eq!(
             callbacks,
             [range(0x1000), range(0x2000), range(0x3020), range(0x5000),]
+        );
+    }
+
+    #[test]
+    fn failed_second_cross_page_walk_keeps_caller_buffer_unchanged() {
+        let mut bus = bus(0x9007);
+        put(&mut bus, 0x5008, 0);
+        let mut callbacks = Vec::new();
+        let mut callback = |range| callbacks.push(range);
+        let mut memory = adapter(&mut bus, &mut callback);
+        let mut destination = [0x6d; 8];
+        let error = memory.read(DATA_LINEAR + 0xff9, context(), &mut destination);
+        assert!(matches!(error, Err(MemoryError::Architectural(_))));
+        assert_eq!(destination, [0x6d; 8]);
+        drop(memory);
+        drop(callback);
+        assert_eq!(
+            callbacks,
+            [range(0x1000), range(0x2000), range(0x3020), range(0x5000)]
         );
     }
 }

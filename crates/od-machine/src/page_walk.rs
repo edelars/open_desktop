@@ -627,6 +627,213 @@ pub struct TrackedAccessReport {
     pub ad_update_count: usize,
 }
 
+#[derive(Clone, Copy)]
+struct WalkTranslation {
+    physical: GuestPhysicalAddress,
+    leaf_address: GuestPhysicalAddress,
+    leaf_value: u64,
+}
+
+struct WalkResult {
+    translation: Result<WalkTranslation, TrackedAccessError>,
+    trace: WalkTrace,
+    ad_updates: [Option<AdUpdate>; 4],
+    ad_update_count: usize,
+}
+
+fn walk_long64_4k(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
+    access: AccessKind,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+) -> WalkResult {
+    let mut trace = WalkTrace::new();
+    let mut ad_updates = [None; 4];
+    let mut ad_update_count = 0;
+    let fail = |error, trace, ad_updates, ad_update_count| WalkResult {
+        translation: Err(error),
+        trace,
+        ad_updates,
+        ad_update_count,
+    };
+    if !is_canonical_48(address.0) {
+        return fail(
+            TrackedAccessError::NonCanonical(NonCanonicalAddress { linear: address }),
+            trace,
+            ad_updates,
+            ad_update_count,
+        );
+    }
+
+    let mut table_base = paging.root();
+    let levels = [
+        PageTableLevel::Pml4,
+        PageTableLevel::Pdpt,
+        PageTableLevel::Pd,
+        PageTableLevel::Pt,
+    ];
+    let mut effective = EffectivePermissions {
+        user: true,
+        writable: true,
+        execute_disabled: false,
+    };
+    let mut leaf = (GuestPhysicalAddress::new(0), 0u64);
+    for level in levels {
+        let index = ((address.0 >> level.index_shift()) & 0x1ff) as u16;
+        let entry_address = GuestPhysicalAddress::new(table_base + u64::from(index) * 8);
+        let entry_value = match memory.read_u64(entry_address) {
+            Ok(value) => value,
+            Err(source) => {
+                return fail(
+                    TrackedAccessError::TableRead {
+                        level,
+                        entry_address,
+                        source,
+                    },
+                    trace,
+                    ad_updates,
+                    ad_update_count,
+                );
+            }
+        };
+        trace.push(WalkEntry {
+            level,
+            index,
+            entry_address,
+            entry_value,
+        });
+        if entry_value & ENTRY_PRESENT == 0 {
+            let reason = PageFaultReason::NotPresent { level };
+            let record = PageFaultRecord::new(
+                instruction_rip,
+                access,
+                context,
+                page_fault_error_code(access, context, false, false, paging.nxe()),
+                address.0,
+            );
+            return fail(
+                TrackedAccessError::PageFault { record, reason },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+        let mut offending = entry_value & ENTRY_ADDRESS_RESERVED;
+        if !paging.nxe() {
+            offending |= entry_value & ENTRY_NX;
+        }
+        if level == PageTableLevel::Pml4 && entry_value & ENTRY_PS_OR_PAT != 0 {
+            offending |= ENTRY_PS_OR_PAT;
+        }
+        if level != PageTableLevel::Pt
+            && level != PageTableLevel::Pml4
+            && entry_value & ENTRY_PS_OR_PAT != 0
+        {
+            return fail(
+                TrackedAccessError::UnsupportedPageSize {
+                    level,
+                    entry_address,
+                    entry_value,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+        if offending != 0 {
+            let reason = PageFaultReason::ReservedBits {
+                level,
+                offending_bits: offending,
+            };
+            let record = PageFaultRecord::new(
+                instruction_rip,
+                access,
+                context,
+                page_fault_error_code(access, context, true, true, paging.nxe()),
+                address.0,
+            );
+            return fail(
+                TrackedAccessError::PageFault { record, reason },
+                trace,
+                ad_updates,
+                ad_update_count,
+            );
+        }
+
+        if entry_value & (1 << 5) == 0 {
+            let after = entry_value | (1 << 5);
+            if let Err(source) = memory.write_u64(entry_address, after, &mut *committed_write) {
+                return fail(
+                    TrackedAccessError::TableWrite {
+                        level,
+                        entry_address,
+                        bit: AdBit::Accessed,
+                        source,
+                    },
+                    trace,
+                    ad_updates,
+                    ad_update_count,
+                );
+            }
+            ad_updates[ad_update_count] = Some(AdUpdate {
+                level,
+                address: entry_address,
+                before: entry_value,
+                after,
+                bit: AdBit::Accessed,
+            });
+            ad_update_count += 1;
+        }
+        effective.user &= entry_value & ENTRY_USER != 0;
+        effective.writable &= entry_value & ENTRY_WRITABLE != 0;
+        effective.execute_disabled |= entry_value & ENTRY_NX_BIT != 0;
+        leaf = (entry_address, entry_value | (1 << 5));
+        if level != PageTableLevel::Pt {
+            table_base = entry_value & ENTRY_ADDRESS_MASK;
+        }
+    }
+
+    let user = context.page_privilege() == PrivilegeLevel::Ring3;
+    let user_denied = user && !effective.user;
+    let write_denied =
+        access == AccessKind::Write && !effective.writable && (user || paging.write_protect());
+    let execute_denied = access == AccessKind::Fetch && paging.nxe() && effective.execute_disabled;
+    if user_denied || write_denied || execute_denied {
+        let reason = PageFaultReason::Protection {
+            user_denied,
+            write_denied,
+            execute_denied,
+        };
+        let record = PageFaultRecord::new(
+            instruction_rip,
+            access,
+            context,
+            page_fault_error_code(access, context, true, false, paging.nxe()),
+            address.0,
+        );
+        return fail(
+            TrackedAccessError::PageFault { record, reason },
+            trace,
+            ad_updates,
+            ad_update_count,
+        );
+    }
+    let physical = GuestPhysicalAddress::new((leaf.1 & ENTRY_ADDRESS_MASK) | (address.0 & 0xfff));
+    WalkResult {
+        translation: Ok(WalkTranslation {
+            physical,
+            leaf_address: leaf.0,
+            leaf_value: leaf.1,
+        }),
+        trace,
+        ad_updates,
+        ad_update_count,
+    }
+}
+
 /// Performs one same-page fetch/read/write through RAM page tables and RAM only.
 /// A request crossing a 4 KiB boundary is rejected before table or operand
 /// access. Separate calls commit independently; this API does not split or
@@ -688,170 +895,24 @@ fn access_long64_4k_internal(
             ad_update_count,
         );
     }
-    if !is_canonical_48(address.0) {
-        return fail(
-            TrackedAccessError::NonCanonical(NonCanonicalAddress { linear: address }),
-            trace,
-            ad_updates,
-            ad_update_count,
-        );
-    }
-
-    let mut table_base = paging.root();
-    let levels = [
-        PageTableLevel::Pml4,
-        PageTableLevel::Pdpt,
-        PageTableLevel::Pd,
-        PageTableLevel::Pt,
-    ];
-    let mut effective = EffectivePermissions {
-        user: true,
-        writable: true,
-        execute_disabled: false,
+    let walk = walk_long64_4k(
+        memory,
+        paging,
+        request.instruction_rip,
+        address,
+        request.context,
+        access,
+        &mut committed_write,
+    );
+    trace = walk.trace;
+    ad_update_count = walk.ad_update_count;
+    ad_updates[..ad_update_count].copy_from_slice(&walk.ad_updates[..ad_update_count]);
+    let translation = match walk.translation {
+        Ok(translation) => translation,
+        Err(error) => return fail(error, trace, ad_updates, ad_update_count),
     };
-    let mut leaf = (GuestPhysicalAddress::new(0), 0u64);
-    for level in levels {
-        let index = ((address.0 >> level.index_shift()) & 0x1ff) as u16;
-        let entry_address = GuestPhysicalAddress::new(table_base + u64::from(index) * 8);
-        let entry_value = match memory.read_u64(entry_address) {
-            Ok(value) => value,
-            Err(source) => {
-                return fail(
-                    TrackedAccessError::TableRead {
-                        level,
-                        entry_address,
-                        source,
-                    },
-                    trace,
-                    ad_updates,
-                    ad_update_count,
-                );
-            }
-        };
-        trace.push(WalkEntry {
-            level,
-            index,
-            entry_address,
-            entry_value,
-        });
-        if entry_value & ENTRY_PRESENT == 0 {
-            let reason = PageFaultReason::NotPresent { level };
-            let record = PageFaultRecord::new(
-                request.instruction_rip,
-                access,
-                request.context,
-                page_fault_error_code(access, request.context, false, false, paging.nxe()),
-                address.0,
-            );
-            return fail(
-                TrackedAccessError::PageFault { record, reason },
-                trace,
-                ad_updates,
-                ad_update_count,
-            );
-        }
-        let mut offending = entry_value & ENTRY_ADDRESS_RESERVED;
-        if !paging.nxe() {
-            offending |= entry_value & ENTRY_NX;
-        }
-        if level == PageTableLevel::Pml4 && entry_value & ENTRY_PS_OR_PAT != 0 {
-            offending |= ENTRY_PS_OR_PAT;
-        }
-        if level != PageTableLevel::Pt
-            && level != PageTableLevel::Pml4
-            && entry_value & ENTRY_PS_OR_PAT != 0
-        {
-            return fail(
-                TrackedAccessError::UnsupportedPageSize {
-                    level,
-                    entry_address,
-                    entry_value,
-                },
-                trace,
-                ad_updates,
-                ad_update_count,
-            );
-        }
-        if offending != 0 {
-            let reason = PageFaultReason::ReservedBits {
-                level,
-                offending_bits: offending,
-            };
-            let record = PageFaultRecord::new(
-                request.instruction_rip,
-                access,
-                request.context,
-                page_fault_error_code(access, request.context, true, true, paging.nxe()),
-                address.0,
-            );
-            return fail(
-                TrackedAccessError::PageFault { record, reason },
-                trace,
-                ad_updates,
-                ad_update_count,
-            );
-        }
-
-        if entry_value & (1 << 5) == 0 {
-            let after = entry_value | (1 << 5);
-            if let Err(source) = memory.write_u64(entry_address, after, &mut committed_write) {
-                return fail(
-                    TrackedAccessError::TableWrite {
-                        level,
-                        entry_address,
-                        bit: AdBit::Accessed,
-                        source,
-                    },
-                    trace,
-                    ad_updates,
-                    ad_update_count,
-                );
-            }
-            ad_updates[ad_update_count] = Some(AdUpdate {
-                level,
-                address: entry_address,
-                before: entry_value,
-                after,
-                bit: AdBit::Accessed,
-            });
-            ad_update_count += 1;
-        }
-        effective.user &= entry_value & ENTRY_USER != 0;
-        effective.writable &= entry_value & ENTRY_WRITABLE != 0;
-        effective.execute_disabled |= entry_value & ENTRY_NX_BIT != 0;
-        leaf = (entry_address, entry_value | (1 << 5));
-        if level != PageTableLevel::Pt {
-            table_base = entry_value & ENTRY_ADDRESS_MASK;
-        }
-    }
-
-    let user = request.context.page_privilege() == PrivilegeLevel::Ring3;
-    let user_denied = user && !effective.user;
-    let write_denied =
-        access == AccessKind::Write && !effective.writable && (user || paging.write_protect());
-    let execute_denied = access == AccessKind::Fetch && paging.nxe() && effective.execute_disabled;
-    if user_denied || write_denied || execute_denied {
-        let reason = PageFaultReason::Protection {
-            user_denied,
-            write_denied,
-            execute_denied,
-        };
-        let record = PageFaultRecord::new(
-            request.instruction_rip,
-            access,
-            request.context,
-            page_fault_error_code(access, request.context, true, false, paging.nxe()),
-            address.0,
-        );
-        return fail(
-            TrackedAccessError::PageFault { record, reason },
-            trace,
-            ad_updates,
-            ad_update_count,
-        );
-    }
-
-    let physical = GuestPhysicalAddress::new((leaf.1 & ENTRY_ADDRESS_MASK) | (address.0 & 0xfff));
+    let leaf = (translation.leaf_address, translation.leaf_value);
+    let physical = translation.physical;
     let range = match GuestPhysicalRange::new(physical, u64::from(width)) {
         Ok(range) => range,
         Err(source) => {
@@ -1048,6 +1109,103 @@ fn access_long64_4k_internal(
             ad_update_count,
         ),
     }
+}
+
+pub(crate) fn read_long64_4k_cross_page_ram(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<u64, TrackedAccessError> {
+    let (width, access) = match request.operation {
+        RamAccessOperation::Read {
+            width: AccessWidth::Qword,
+        } => (8u8, AccessKind::Read),
+        RamAccessOperation::Write { width, .. } => {
+            return Err(TrackedAccessError::CrossesPage {
+                address: request.address,
+                width: width.bytes(),
+            });
+        }
+        operation => {
+            return Err(TrackedAccessError::CrossesPage {
+                address: request.address,
+                width: operation.width(),
+            });
+        }
+    };
+    let offset = request.address.0 & 0xfff;
+    let first_len = (4096 - offset) as u8;
+    if first_len == width {
+        return Err(TrackedAccessError::CrossesPage {
+            address: request.address,
+            width,
+        });
+    }
+    let second_linear = request.address.0.checked_add(u64::from(first_len)).ok_or(
+        TrackedAccessError::CrossesPage {
+            address: request.address,
+            width,
+        },
+    )?;
+    let second_address = GuestLinearAddress::new(second_linear);
+    let first = walk_long64_4k(
+        memory,
+        paging,
+        request.instruction_rip,
+        request.address,
+        request.context,
+        access,
+        &mut committed_write,
+    )
+    .translation?;
+    let second = walk_long64_4k(
+        memory,
+        paging,
+        request.instruction_rip,
+        second_address,
+        request.context,
+        access,
+        &mut committed_write,
+    )
+    .translation?;
+
+    let second_len = width - first_len;
+    for (physical, len) in [(first.physical, first_len), (second.physical, second_len)] {
+        match memory.locate_region_kind(physical, u64::from(len)) {
+            Ok(MemoryRegionKind::Ram) => {}
+            Ok(kind) => {
+                return Err(TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source: MemoryAccessError::UnreadableRegion(kind),
+                });
+            }
+            Err(source) => {
+                return Err(TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source,
+                });
+            }
+        }
+    }
+
+    let mut bytes = [0; 8];
+    memory
+        .read_bytes(first.physical, &mut bytes[..usize::from(first_len)])
+        .map_err(|source| TrackedAccessError::OperandPhysical {
+            address: first.physical,
+            source,
+        })?;
+    memory
+        .read_bytes(
+            second.physical,
+            &mut bytes[usize::from(first_len)..usize::from(width)],
+        )
+        .map_err(|source| TrackedAccessError::OperandPhysical {
+            address: second.physical,
+            source,
+        })?;
+    Ok(u64::from_le_bytes(bytes))
 }
 
 #[cfg(test)]
