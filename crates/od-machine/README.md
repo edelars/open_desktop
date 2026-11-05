@@ -12,6 +12,8 @@ interpreter integration, bounded uncached translation probe и tracked RAM-only
 Long64 4 KiB A/D access path; CPU-integrated MMU/page faults, UART/APIC/PCI,
 vCPU, JIT integration и Linux boot ещё не реализованы. Admission boundary для
 неподдержанных 2 MiB/1 GiB pages закреплён тестами, но сами huge pages и новые
-режимы ещё не реализованы. Читать ../AGENTS.md и
+режимы ещё не реализованы. Cross-page accesses отвергаются до page walk;
+split/transaction semantics и CPU restart/REP/RMW integration ещё не
+реализованы. Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости
 добавлять вместе с фактическим использованием.

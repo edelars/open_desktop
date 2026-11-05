@@ -178,3 +178,23 @@ reserved-bit outcome, а PT bit 7 не выбирает huge page и не меш
 объявлены optional до фиксации manifest S4-00. Их добавление потребует отдельной
 проверки alignment, reserved bits, permissions и A/D effects, а также отрицательных
 тестов; текущий admission boundary не заменяет эту работу.
+
+## Cross-page admission и separate-call progress
+
+`access_long64_4k_ram` принимает только один operand внутри одной 4 KiB page.
+Для Read/Write, у которых `(linear & 0xfff) + width > 4096`, результатом
+является `TrackedAccessError::CrossesPage` с исходным адресом и шириной. Проверка
+выполняется до page-table read: trace пуст, A/D journal пуст, callback не
+вызывается, RAM и device state не изменяются. Этот результат является admission
+boundary API, а не guest `#PF` и не заявлением об архитектурном fault priority.
+
+Crossing refusal предшествует проверке canonicality и доступности таблиц для
+этого bounded API; Fetch остаётся byte-only и сам по себе страницу не пересекает.
+API не разбивает operand и не различает потенциальные RAM/RAM, RAM/hole или
+RAM/MMIO destinations. Нет implicit retry, transaction или device replay.
+
+Каждый отдельный same-page call имеет собственный report и commit boundary.
+Успешный предыдущий call не откатывается, если следующий call получает
+`CrossesPage` или другой fault. Adjacent byte fetches с одним `instruction_rip`
+являются только диагностической последовательностью вызовов; CPU restart,
+REP-iteration, stack recovery и RMW atomicity остаются вне этого контракта.

@@ -12,6 +12,17 @@
 
 ## Записи
 
+<a id="issue-054-s4-11-cross-page-cpu-integration"></a>
+
+### ISSUE-054 — S4-11 cross-page and partial-execution integration is not established
+
+- **Дата обнаружения:** 2026-11-04.
+- **Компонент:** `od-machine` tracked RAM access and future CPU/`GuestMemory` integration.
+- **Статус:** открыта; это не подтверждённый дефект runtime, а незакрытая архитектурная граница.
+- **Суть и последствия:** bounded `access_long64_4k_ram` now rejects a same-call cross-page Read/Write before page walk and proves separate-call commits, but it does not implement a two-page preflight/transaction, partial operand semantics, device splitting, CPU restart state, REP iteration state, stack recovery or RMW atomicity. Connecting it directly to the existing `GuestMemory` contract would require reconciling tracked A/D effects with its complete-or-no-change wording.
+- **Основание:** S4-11a tests in `crates/od-machine/src/page_walk.rs` pass 46 cases and preserve the early `CrossesPage` result; the remaining cases are outside that API. Related CPU restart uncertainties remain in [ISSUE-016](#issue-016--не-установлен-restart-state-movs-после-destination-fault) and [ISSUE-014](#issue-014--не-установлено-состояние-rsp-после-fault-у-memory-destination-pop).
+- **Следующий шаг:** after the manifest and CPU memory contract are accepted, design a two-page preflight/commit model with literal fault-address, A/D, device and restart-state evidence; do not infer it from the current same-page tests.
+
 <a id="issue-034-s2-42e-execute-only-code-not-admitted-by-native-v2"></a>
 
 ### ISSUE-034 — S2-42e execute-only code native acceptance

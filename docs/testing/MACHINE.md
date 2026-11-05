@@ -65,13 +65,22 @@ git diff --check
 22. Nonpresent+PS keeps nonpresent precedence; PML4 bit 7 remains a reserved
     bit, PT bit 7 remains admitted for 4 KiB, and reserved-address/NXE cases do
     not invent huge-page support or change the admission boundary.
+23. Same-page Read/Write widths 1/2/4/8 cover the last fitting offsets and exact
+    bytes; crossing requests return `CrossesPage` before any walk with empty
+    trace/journal, zero A updates, no callback and unchanged RAM.
+24. Crossing admission wins over noncanonical or inaccessible-table candidates
+    and is independent of prospective RAM/RAM, RAM/hole and RAM/MMIO targets;
+    it never splits a device or operand access.
+25. A successful same-page call remains committed when a later crossing call is
+    rejected. Adjacent caller-issued Fetch bytes use separate reports; a later
+    fault does not erase the earlier byte or its A/D/callback effects.
 
 ## Интерпретация
 
 Успешные локальные тесты подтверждают только перечисленный Rust-контракт,
 flat identity integration, tracked RAM-only effects и targeted `od-isa`
-PFEC/record tests, pure translation probe и S4-10a rejection boundary. Они не
-являются physical x86 evidence и не
+PFEC/record tests, pure translation probe, S4-10a rejection boundary и S4-11a
+cross-page admission. Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не
 являются автоматически архитектурными `#PF`.

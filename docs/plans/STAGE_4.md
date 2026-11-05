@@ -277,7 +277,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-11. Cross-page accesses и частичное выполнение
 
-- [ ] Принято после ревью.
+- [x] Ограниченный S4-11a admission/sequence срез принят после независимого ревью.
+- Реализовано: same-page Read/Write width matrix и ранний `CrossesPage` отказ
+  без walk/A-D/callback/operand effects; отдельные calls сохраняют собственные
+  commits, adjacent fetch evidence не объявляет CPU restart semantics.
+- Полный S4-11 остаётся открытым: двухстраничная transaction/preflight модель,
+  fault на второй странице, stack/REP/RMW и CPU/system integration не приняты.
+  См. [machine contract](../specs/MACHINE_CONTRACT.md#cross-page-admission-и-separate-call-progress).
 - **Где:** `od-machine`, затронутые memory semantics `od-isa`, `tests/system/`.
 - **Сделать:** определить preflight/commit для одного memory-вызова с сохранением его контракта. Разобрать boundary RAM/RAM, RAM/hole, RAM/MMIO, code fetch; не разбивать device access на произвольные повторяемые bytes.
 - **Проверка:** fault на второй странице read/write/fetch, разница прав соседних 4 KiB pages, стековые операции, поддержанные REP iterations и RMW. Сравнивать RIP, registers, flags, memory и A/D effects отдельно.

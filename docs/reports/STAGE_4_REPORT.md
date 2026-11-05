@@ -4,7 +4,7 @@
 
 На 2026-11-04 принят только локальный memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access и S4-10a admission-boundary slice
-S4-02—S4-10a. Этап 4 не завершён: S4-00—S4-01,
+S4-02—S4-11a. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, devices, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
 
@@ -49,6 +49,10 @@ integration, hardware cases и Linux userspace остаются открытым
   ниже и не трогает operand; уже committed A у предков сохраняется. PML4 bit 7
   остаётся reserved-bit fault, PT bit 7 не меняет 4 KiB admission. 2 MiB/1 GiB
   leaves и новые paging modes не реализованы до manifest S4-00.
+- S4-11a закрепляет cross-page admission boundary: Read/Write, пересекающие
+  4 KiB, возвращают `CrossesPage` до чтения таблиц, без trace, A/D effects,
+  callback или operand commit. Отдельные same-page calls коммитятся независимо;
+  двухстраничный transaction/split path не добавлен.
 
 ## Проверки
 
@@ -58,8 +62,8 @@ integration, hardware cases и Linux userspace остаются открытым
 - `cargo check -p od-machine --all-targets --offline` — успешно;
 - `cargo test -p od-machine --locked --offline -- --test-threads=1` — 6 тестов успешно
   для memory slice; после S4-05 — 10; после S4-06 — 16; после S4-07 — 23
-  теста успешно; после S4-08 — 25; после S4-09 — 33; после S4-10a — 40 тестов
-  успешно;
+  теста успешно; после S4-08 — 25; после S4-09 — 33; после S4-10a — 40;
+  после S4-11a — 46 тестов успешно;
 - `cargo test -p od-isa --locked --offline page_fault` — 3 targeted PFEC/record
   теста успешно; полный `cargo test -p od-isa --locked --offline` — 2006
   тестов успешно;
@@ -69,7 +73,8 @@ integration, hardware cases и Linux userspace остаются открытым
   добавлена fail-closed проверка и повторное ревью: **approve**; S4-08 получил
   `approve with nits`, после чего методика дополнена targeted `od-isa` command;
   S4-09 после исправления P2/P3 получил повторное **approve**; S4-10a после
-  исправления тестовых P2 получил повторное **approve**.
+  исправления тестовых P2 получил повторное **approve**; S4-11a после
+  исправления fixture/assertion P2 получил повторное **approve**.
 
 Архитектурный анализ `gpt-6-astra/high` подтвердил границу среза и отсутствие
 необходимости добавлять зависимости на `od-isa`, `od-jit` или `od-host`.
@@ -84,10 +89,12 @@ bus/device boundary, S4-06 — только flat identity integration, S4-07—S
 pure translation probe с record construction, а S4-09 — tracked RAM-only probe,
 S4-10a — только rejection boundary для unsupported huge pages, а не реальные
 гостевые `IN/OUT` instructions, CPU page-fault delivery или
-полный executor integration. Independent review покрывает только bounded
-slices; полная S4-08/S4-09/S4-10 приёмка остаётся шире.
+полный executor integration. S4-11a — только same-page/cross-page admission и
+separate-call evidence, не CPU restart, REP iteration, stack recovery или RMW
+atomicity. Independent review покрывает только bounded slices; полная
+S4-08/S4-09/S4-10/S4-11 приёмка остаётся шире.
 
 Открыты manifest S4-00, реализация 2 MiB/1 GiB и необходимых режимов, injected
-table-write failure, полная rights/error matrix, CPU execution integration и
-system acceptance. Ошибки этого слоя нельзя подменять host marker или
-автоматически превращать в guest exception.
+table-write failure, полная rights/error matrix, двухстраничная transaction
+semantics, CPU execution integration и system acceptance. Ошибки этого слоя
+нельзя подменять host marker или автоматически превращать в guest exception.
