@@ -100,6 +100,22 @@ impl Long64ProbeConfig {
         })
     }
 
+    /// Builds an immutable diagnostic snapshot from the CR0/CR4 values carried by CPU state.
+    /// CR3 and EFER remain explicit inputs because `LongModeState` does not own them.
+    pub fn from_cpu_state(
+        state: &od_isa::state::LongModeState,
+        cr3: u64,
+        efer: u64,
+    ) -> Result<Self, ProbeConfigError> {
+        let cr0 = state
+            .cr0
+            .ok_or(ProbeConfigError::MissingCpuRegister { register: "CR0" })?;
+        let cr4 = state
+            .cr4
+            .ok_or(ProbeConfigError::MissingCpuRegister { register: "CR4" })?;
+        Self::new(cr0, cr3, cr4, efer)
+    }
+
     pub const fn cr0(self) -> u64 {
         self.cr0
     }
@@ -126,6 +142,9 @@ impl Long64ProbeConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProbeConfigError {
+    MissingCpuRegister {
+        register: &'static str,
+    },
     Cr0EtRequired {
         value: u64,
     },
@@ -2700,6 +2719,132 @@ mod tests {
             CR4_PAE,
             EFER_LME | EFER_LMA | if nxe { EFER_NXE } else { 0 },
         )
+    }
+
+    #[test]
+    fn cpu_state_snapshot_requires_cr0_then_cr4_and_preserves_raw_values() {
+        let mut state = od_isa::state::LongModeState::default();
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER_LME | EFER_LMA),
+            Err(ProbeConfigError::MissingCpuRegister { register: "CR0" })
+        );
+
+        state.cr0 = Some(0x8001_0033);
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER_LME | EFER_LMA),
+            Err(ProbeConfigError::MissingCpuRegister { register: "CR4" })
+        );
+
+        state.cr4 = Some(0x620);
+        let snapshot = Long64ProbeConfig::from_cpu_state(
+            &state,
+            ROOT | 0x18 | 0x7e0,
+            EFER_LME | EFER_LMA | EFER_NXE,
+        )
+        .unwrap();
+        assert_eq!(snapshot.cr0(), 0x8001_0033);
+        assert_eq!(snapshot.cr3(), ROOT | 0x18 | 0x7e0);
+        assert_eq!(snapshot.cr4(), 0x620);
+        assert_eq!(snapshot.efer(), 0xd00);
+    }
+
+    #[test]
+    fn cpu_state_snapshot_delegates_invalid_raw_inputs_to_existing_validation() {
+        let mut state = od_isa::state::LongModeState::default();
+        state.cr0 = Some(0x8000_0023);
+        state.cr4 = Some(0);
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT | (1 << 36), EFER_LME),
+            Err(ProbeConfigError::Cr0EtRequired { value: 0x8000_0023 })
+        );
+
+        state.cr0 = Some(0x8000_0033);
+        state.cr4 = Some(CR4_PAE | (1 << 7));
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER_LME | EFER_LMA),
+            Err(ProbeConfigError::UnsupportedBits {
+                register: "CR4",
+                value: 0x0a0,
+                offending_bits: 0x80,
+            })
+        );
+
+        state.cr4 = Some(CR4_PAE);
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER_LME),
+            Err(ProbeConfigError::RequiredBits {
+                register: "EFER",
+                bits: EFER_LME | EFER_LMA,
+            })
+        );
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT | (1 << 36), EFER_LME | EFER_LMA,),
+            Err(ProbeConfigError::InvalidCr3 {
+                value: ROOT | (1 << 36),
+                offending_bits: 1 << 36,
+            })
+        );
+    }
+
+    #[test]
+    fn cpu_state_snapshots_are_immutable_and_roots_select_distinct_translations() {
+        let mut state = od_isa::state::LongModeState::default();
+        state.gpr[3] = 0xfeed_face_cafe_beef;
+        state.rip = 0x1234_5678;
+        state.rflags = 0x246;
+        state.fs_base = 0x0000_7fff_1234_0000;
+        state.cr0 = Some(0x8000_0033);
+        state.cr4 = Some(CR4_PAE);
+        let original_state = state.clone();
+
+        let first = Long64ProbeConfig::from_cpu_state(&state, 0x1000, EFER_LME | EFER_LMA).unwrap();
+        assert_eq!(state, original_state);
+        state.cr0 = Some(0x8001_0033);
+        state.cr4 = Some(CR4_PAE | CR4_OSFXSR);
+        let second =
+            Long64ProbeConfig::from_cpu_state(&state, 0x5000, EFER_LME | EFER_LMA).unwrap();
+        assert_eq!(first.cr0(), 0x8000_0033);
+        assert_eq!(first.cr4(), CR4_PAE);
+        assert_eq!(first.cr3(), 0x1000);
+        assert_eq!(second.cr0(), 0x8001_0033);
+        assert_eq!(second.cr4(), CR4_PAE | CR4_OSFXSR);
+        assert_eq!(second.cr3(), 0x5000);
+
+        let mut mem = tables(memory(0xa000), 0x5007);
+        for (address, value) in [
+            (0x5008, 0x6007),
+            (0x6010, 0x7007),
+            (0x7018, 0x8007),
+            (0x8020, 0x9007),
+        ] {
+            mem.write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        let first_translation = result(probe_long64_4k(
+            &mem,
+            &first,
+            GuestLinearAddress::new(LINEAR),
+            AccessKind::Read,
+            context(PrivilegeLevel::Ring0),
+        ));
+        let second_translation = result(probe_long64_4k(
+            &mem,
+            &second,
+            GuestLinearAddress::new(LINEAR),
+            AccessKind::Read,
+            context(PrivilegeLevel::Ring0),
+        ));
+        assert!(matches!(first_translation, ProbeOutcome::Translated(t)
+            if t.physical.get() == 0x5abc && t.leaf_entry_address.get() == 0x4020));
+        assert!(matches!(second_translation, ProbeOutcome::Translated(t)
+            if t.physical.get() == 0x9abc && t.leaf_entry_address.get() == 0x8020));
+
+        assert_eq!(original_state.gpr[3], 0xfeed_face_cafe_beef);
+        assert_eq!(original_state.rip, 0x1234_5678);
+        assert_eq!(original_state.rflags, 0x246);
+        assert_eq!(original_state.fs_base, 0x0000_7fff_1234_0000);
+        assert_eq!(original_state.cr0, Some(0x8000_0033));
+        assert_eq!(original_state.cr4, Some(CR4_PAE));
     }
 
     #[test]
