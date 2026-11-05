@@ -4,7 +4,8 @@
 
 На 2026-11-05 принят только локальный memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access, S4-01a baseline и S4-10a
-admission-boundary slice S4-02—S4-23a. Этап 4 не завершён: S4-00—S4-01,
+admission-boundary slice S4-02—S4-23a, plus bounded S4-06b CPU-connected
+paged MOV. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, devices, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
 
@@ -29,6 +30,21 @@ S4-00 и S4-01 остаются открытыми.
 вне среза. Evidence: [отчёт S4-01a](STAGE_4_S4-01A_2026-11-05.md) и
 [JSON baseline](data/stage4/s4-01a-baseline-2026-11-05.json).
 
+В S4-06b (baseline `b2a093c`) добавлен bounded путь CPU → tracked paged RAM
+для двух точных Long64 MOV: `48 8B 03` и `48 89 0B`. CPU entry выполняет один
+шаг с validated CR0/CR4, явным `Explicit` origin, сохранением исходных
+mode/privilege/CPL и `rflags_defined`. Machine adapter использует
+`Long64ProbeConfig::from_cpu_state` (canonical48, physical36, четыре уровня,
+4 KiB, RAM-only), literal non-identity test mappings, существующий walker и
+единственный RAM owner. A/D writes и callbacks сохраняются в фактическом
+порядке при последующем отказе; failed read не меняет result buffer, а failed
+operand write не коммитит operand частично. Alias page-table/operand допускается,
+поэтому полной rollback RAM гарантии нет. См. [контракт CPU](../specs/CPU_CONTRACT.md#bounded-cpu-to-paged-ram-profile-pagedmovlong64v1-s4-06b),
+[контракт машины](../specs/MACHINE_CONTRACT.md#s4-06b-cpu-connected-paged-mov),
+[отчёт S4-06b](STAGE_4_S4-06B_2026-11-05.md) и
+[JSON evidence](data/stage4/s4-06b-paged-mov.json). Родительский S4-06 остаётся
+открытым.
+
 ## Реализовано
 
 - `od-machine` получил `GuestPhysicalAddress`, `GuestPhysicalRange`,
@@ -46,6 +62,9 @@ S4-00 и S4-01 остаются открытыми.
 - S4-01a повторно подтвердил существующий диагностический CPU-to-RAM путь через
   flat identity adapter и отдельно зафиксировал immutable page-walk snapshot;
   production CPU-integrated paging и Linux boot этим baseline не подтверждены.
+- S4-06b подключил только две MOV формы к tracked RAM path и согласовал их
+  `GuestMemory` guarantees с сохраняющимися A/D effects. Это не полная CPU
+  paging integration и не rollback guarantee для других consumers.
 - MMIO/PIO widths, PIO endpoint/overflow, device errors и отсутствие побочных
   эффектов до commit проверены отдельными unit tests; RAM callback не вызывается
   для device writes.
@@ -138,7 +157,9 @@ S4-00 и S4-01 остаются открытыми.
   P0—P2 не обнаружены.
   S4-22a получил независимое **approve**; два P3 теста усилены и закрыты
   повторным ревью, новых P0—P2 нет; S4-01a получил независимое **approve**,
-  P1—P3 не обнаружены.
+  P1—P3 не обнаружены; S4-06b получил независимое **approve**, ревьюер
+  повторно выполнил 2,014 `od-isa` unit tests и 85 `od-machine` tests, P0—P3
+  замечаний нет.
 
 Архитектурный анализ `gpt-6-astra/high` подтвердил границу среза и отсутствие
 необходимости добавлять зависимости на `od-isa`, `od-jit` или `od-host`.
@@ -149,13 +170,18 @@ S4-00 и S4-01 остаются открытыми.
 linear translation, TLB, полная matrix A/D semantics, exception delivery/CR2 commit, descriptor delivery,
 UART/APIC, JIT invalidation,
 privileged hardware execution, Linux boot и userspace. S4-05 проверяет только
-bus/device boundary, S4-06 — только flat identity integration, S4-07—S4-08 —
+bus/device boundary; S4-06 flat identity integration и S4-06b two-form paged
+MOV slice не закрывают родительскую задачу S4-06. S4-07—S4-08 —
 pure translation probe с record construction, а S4-09 — tracked RAM-only probe,
 S4-10a — только rejection boundary для unsupported huge pages, а не реальные
 гостевые `IN/OUT` instructions, CPU page-fault delivery или
 полный executor integration. S4-11a — только same-page/cross-page admission и
 separate-call evidence, не CPU restart, REP iteration, stack recovery или RMW
-atomicity. Independent review покрывает только bounded slices; полная
+atomicity. S4-06b не доказывает полную paging matrix, TLB/invalidation, CR2
+commit, exception delivery/retry, cross-page operands, REP/stack/atomic
+semantics, JIT/IRQ/devices, SMP или Linux boot. ISSUE-054 остаётся открытой для
+cross-page/partial progress, REP/RMW и иных rollback consumers. Independent
+review покрывает только bounded slices; полная
 S4-08/S4-09/S4-10/S4-11 приёмка остаётся шире. S4-13a не доказывает
 production TLB correctness, invalidation или guest workload benefit.
 S4-14a не доказывает guest INVLPG/CR3/EFER semantics, generations,

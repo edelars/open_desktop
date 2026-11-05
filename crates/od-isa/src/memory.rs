@@ -174,9 +174,21 @@ pub enum MemoryError {
 /// CPL3).
 /// Fetch reads one byte on demand. No method assumes a contiguous host page.
 ///
-/// Reads/writes must either complete the entire supplied access or return an error
-/// without changing destination bytes or guest RAM. CPU instructions with partial
-/// architectural progress (such as REP) issue separate committed accesses.
+/// A successful `read` fills the entire destination buffer. An error from `read`
+/// leaves that result buffer unchanged; a backend must not expose a partial read.
+/// A successful `write` commits the entire supplied operand. An error from
+/// `write` leaves the operand bytes without a partial operand commit. These
+/// guarantees apply to the result buffer and operand transaction, not to every
+/// byte in guest RAM: translation metadata writes, such as page-table A/D
+/// updates, are separate architectural effects and may persist before a later
+/// access fault. Such effects may emit `committed_write` notifications before
+/// the fault is returned.
+///
+/// In particular, a page-table byte may alias the bytes of the requested
+/// operand. A/D updates through that alias are allowed to change guest RAM even
+/// when the later operand read or write fails; implementations must not claim a
+/// full-RAM rollback. CPU instructions with partial architectural progress
+/// (such as REP) issue separate committed accesses.
 /// An MMIO backend must define supported access widths and side-effect ordering
 /// before integration; this contract does not authorize retrying a device access.
 pub trait GuestMemory {

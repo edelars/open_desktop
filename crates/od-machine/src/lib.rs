@@ -5,6 +5,7 @@ mod diagnostic_vcpu;
 mod event_queue;
 mod identity_memory_adapter;
 mod page_walk;
+mod paged_memory_adapter;
 mod physical_memory;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
@@ -32,6 +33,8 @@ pub use page_walk::{
     TrackedAccessRequest, Translation4K, WalkEntry, WalkTrace, access_long64_4k_ram,
     probe_instruction_access, probe_long64_4k,
 };
+
+pub use paged_memory_adapter::{PagedMovStepError, PagedMovStepReport, step_paged_mov};
 
 pub use physical_memory::{
     GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap, MemoryAccessError,

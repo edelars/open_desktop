@@ -10,10 +10,11 @@ Ubuntu 7.0.0-38.38 source/config hashes, совпадающие Build IDs и р�
 
 ## Область
 
-Эта методика покрывает S4-02—S4-10a: валидируемую physical map, production RAM
-owner, committed-write notification, синхронную MMIO/PIO bus, диагностический
-CPU memory bridge, uncached translation probe и bounded tracked RAM access. Она не проверяет CPU-integrated
-paging, guest exception delivery, APIC, JIT, firmware или Linux.
+Эта методика покрывает S4-02—S4-10a и bounded S4-06b: валидируемую physical
+map, production RAM owner, committed-write notification, синхронную MMIO/PIO
+bus, диагностический CPU memory bridge, uncached translation probe, bounded
+tracked RAM access и два CPU-connected paged MOV forms. Она не проверяет полную
+CPU paging matrix, guest exception delivery, APIC, JIT, firmware или Linux.
 
 ## Локальный набор
 
@@ -153,3 +154,37 @@ machine manifest. This baseline does not establish CPU-integrated paging,
 `#PF` delivery/retry, JIT, privileged hardware behavior or Linux boot. The
 captured host page size is metadata only; it does not parameterize guest test
 memory.
+
+## S4-06b: bounded CPU-connected paged MOV
+
+Baseline revision: `b2a093c`. The reviewed code files are listed in the
+[S4-06b report](../reports/STAGE_4_S4-06B_2026-11-05.md). From the repository
+root, reproduce the package-level checks with:
+
+```text
+cargo test -p od-isa --locked --offline
+cargo test -p od-machine --locked --offline
+cargo check --workspace --all-targets --locked --offline
+cargo fmt --all -- --check
+python3 tools/check_layout.py
+git diff --check
+```
+
+The independent `gpt-6.1-sol/high` review reran the two package test commands:
+`od-isa` passed 2,014 unit tests and `od-machine` passed 85 tests. The author
+reported 8 `PagedMov` CPU tests, 3 legacy CR0 tests, 2 legacy CR4 tests, and
+the `paged_mov_step` integration target's 8 tests passing; the package-level
+runs include these regressions. Workspace check, formatting, layout and diff
+checks passed. The review approved the complete code diff with no P0–P3
+findings.
+
+Coverage includes both exact encodings, one-step retirement, CR0/CR4 admission,
+`Explicit` origin with preserved CPL, `rflags_defined`, literal non-identity
+translations, PFEC and saved RIP, A/D and callback ordering, aliasing,
+unchanged read buffers on error, non-partial operand writes, and distinct
+architectural/backend/unsupported outcomes.
+
+This does not establish full paging, TLB/invalidation, CR2 commit or exception
+delivery/retry, cross-page operands, REP/stack/atomic semantics, JIT, IRQ/devices,
+SMP or Linux boot. ISSUE-054 remains open for cross-page/partial progress,
+REP/RMW and broader rollback consumers.

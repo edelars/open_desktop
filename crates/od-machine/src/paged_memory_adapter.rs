@@ -1,0 +1,308 @@
+//! Opt-in one-instruction Long64 MOV bridge through the uncached RAM walker.
+
+use crate::{
+    GuestLinearAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus, RamAccessOperation,
+    TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest,
+};
+use od_isa::LongModeState;
+use od_isa::execute::{RunInputError, RunResult, step_paged_mov as cpu_step_paged_mov};
+use od_isa::memory::{AccessContext, GuestMemory, MemoryError, PageFaultRecord};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedMovStepError {
+    Configuration(crate::ProbeConfigError),
+    CpuInput(RunInputError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovStepReport {
+    pub cpu: RunResult,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains non-architectural walker/backend classifications.
+    pub memory_error: Option<TrackedAccessError>,
+}
+
+/// Execute the CPU profile's exact one-step MOV through four-level 4 KiB RAM paging.
+/// CR3 and EFER are explicit because they are not owned by `LongModeState`.
+///
+/// The adapter forces `AccessOrigin::Explicit` while preserving the caller's CPL.
+/// This entry represents an explicit MOV memory access and must not inherit the
+/// supervisor privilege used by descriptor-table accesses.
+pub fn step_paged_mov(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovStepReport, PagedMovStepError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedMovStepError::Configuration)?;
+    let context = AccessContext {
+        origin: od_isa::memory::AccessOrigin::Explicit,
+        ..context
+    };
+    let instruction_rip = state.rip;
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+    };
+    let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
+        .map_err(PagedMovStepError::CpuInput)?;
+    Ok(PagedMovStepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        memory_error: memory.memory_error,
+    })
+}
+
+/// `GuestMemory` view scoped to one instruction attempt; all backing stays in `MachineBus`.
+///
+/// A failed read leaves the caller's destination buffer unchanged because the
+/// walker result is copied only after a successful complete read. A failed write
+/// does not commit a partial operand. The tracked walker's completed A/D writes
+/// and their `committed_write` callbacks remain observable before a later fault;
+/// this adapter therefore does not promise rollback of all RAM. In particular,
+/// an operand may alias page-table bytes and change them as part of a completed
+/// access.
+pub struct PagedMovMemoryAdapter<'a> {
+    bus: &'a mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+    page_fault: Option<PageFaultRecord>,
+    memory_error: Option<TrackedAccessError>,
+}
+
+impl PagedMovMemoryAdapter<'_> {
+    fn access(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        operation: RamAccessOperation,
+    ) -> Result<TrackedAccessOutcome, MemoryError> {
+        let report = self.bus.access_tracked_ram(
+            &self.paging,
+            TrackedAccessRequest {
+                instruction_rip: self.instruction_rip,
+                address: GuestLinearAddress::new(address),
+                context,
+                operation,
+            },
+            &mut *self.committed_write,
+        );
+        match report.outcome {
+            Ok(outcome) => Ok(outcome),
+            Err(TrackedAccessError::PageFault { record, .. }) => {
+                self.page_fault = Some(record.clone());
+                Err(MemoryError::Architectural(record.fault().clone()))
+            }
+            Err(error) => {
+                let message = format!("tracked Long64 RAM access failed: {error:?}");
+                self.memory_error = Some(error);
+                Err(MemoryError::Backend(message))
+            }
+        }
+    }
+
+    fn unsupported(operation: &'static str) -> MemoryError {
+        MemoryError::Backend(format!("paged MOV profile does not support {operation}"))
+    }
+}
+
+impl GuestMemory for PagedMovMemoryAdapter<'_> {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        match self.access(address, context, RamAccessOperation::Fetch)? {
+            TrackedAccessOutcome::Fetched(value) => Ok(value),
+            _ => Err(Self::unsupported("non-fetch result")),
+        }
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        if destination.len() != 8 {
+            return Err(Self::unsupported("non-qword reads"));
+        }
+        let value = match self.access(
+            address,
+            context,
+            RamAccessOperation::Read {
+                width: crate::AccessWidth::Qword,
+            },
+        )? {
+            TrackedAccessOutcome::Read(value) => value,
+            _ => return Err(Self::unsupported("non-read result")),
+        };
+        destination.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn write(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        source: &[u8],
+    ) -> Result<(), MemoryError> {
+        if source.len() != 8 {
+            return Err(Self::unsupported("non-qword writes"));
+        }
+        let mut bytes = [0; 8];
+        bytes.copy_from_slice(source);
+        let value = u64::from_le_bytes(bytes);
+        match self.access(
+            address,
+            context,
+            RamAccessOperation::Write {
+                width: crate::AccessWidth::Qword,
+                value,
+            },
+        )? {
+            TrackedAccessOutcome::Written => Ok(()),
+            _ => Err(Self::unsupported("non-write result")),
+        }
+    }
+
+    fn atomic_exchange_integer(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: od_isa::OperandSize,
+        _replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(Self::unsupported("atomic exchange"))
+    }
+
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: od_isa::OperandSize,
+        _addend: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(Self::unsupported("atomic fetch-add"))
+    }
+
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _address: u64,
+        _context: AccessContext,
+        _size: od_isa::OperandSize,
+        _expected: u64,
+        _replacement: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(Self::unsupported("atomic compare-exchange"))
+    }
+
+    fn mfence(&mut self, _context: AccessContext) -> Result<(), MemoryError> {
+        Err(Self::unsupported("MFENCE"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AccessWidth, GuestPhysicalAddress, MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec,
+        RamLimits,
+    };
+    use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+
+    const CR0: u64 = 0x8001_0033;
+    const CR4: u64 = 1 << 5;
+    const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+    const ROOT: u64 = 0x1000;
+    const DATA_LINEAR: u64 = 0x0080_0000;
+    const RAM_LEN: u64 = 0x20_000;
+
+    fn context() -> AccessContext {
+        AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        }
+    }
+
+    fn put(bus: &mut MachineBus, address: u64, value: u64) {
+        bus.write_physical(
+            GuestPhysicalAddress::new(address),
+            AccessWidth::Qword,
+            value,
+            |_| {},
+        )
+        .unwrap();
+    }
+
+    fn range(address: u64) -> GuestPhysicalRange {
+        GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+    }
+
+    fn bus(data_pte: u64) -> MachineBus {
+        let range = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_LEN).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(range, MemoryRegionKind::Ram)],
+        )
+        .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_LEN), vec![], vec![], vec![]).unwrap();
+        put(&mut bus, 0x1000, 0x2007);
+        put(&mut bus, 0x2000, 0x3007);
+        put(&mut bus, 0x3010, 0x4007);
+        put(&mut bus, 0x3020, 0x5007);
+        put(&mut bus, 0x4000, 0x7007);
+        put(&mut bus, 0x5000, data_pte);
+        bus
+    }
+
+    fn adapter<'a>(
+        bus: &'a mut MachineBus,
+        callbacks: &'a mut dyn FnMut(GuestPhysicalRange),
+    ) -> PagedMovMemoryAdapter<'a> {
+        PagedMovMemoryAdapter {
+            bus,
+            paging: Long64ProbeConfig::new(CR0, ROOT, CR4, EFER).unwrap(),
+            instruction_rip: 0x0040_0000,
+            committed_write: callbacks,
+            page_fault: None,
+            memory_error: None,
+        }
+    }
+
+    #[test]
+    fn failed_read_keeps_sentinel_buffer_for_page_fault_and_backend_failure() {
+        let mut page_fault_bus = bus(0);
+        let mut callbacks = Vec::new();
+        let mut callback = |range| callbacks.push(range);
+        let mut memory = adapter(&mut page_fault_bus, &mut callback);
+        let mut destination = [0xa5; 8];
+        let error = memory.read(DATA_LINEAR, context(), &mut destination);
+        assert!(matches!(error, Err(MemoryError::Architectural(_))));
+        assert_eq!(destination, [0xa5; 8]);
+        drop(memory);
+        drop(callback);
+        assert_eq!(callbacks, [range(0x1000), range(0x2000), range(0x3020)]);
+
+        let mut backend_bus = bus(0x30_000 | 7);
+        callbacks.clear();
+        let mut callback = |range| callbacks.push(range);
+        let mut memory = adapter(&mut backend_bus, &mut callback);
+        let mut destination = [0x5a; 8];
+        let error = memory.read(DATA_LINEAR, context(), &mut destination);
+        assert!(matches!(error, Err(MemoryError::Backend(_))));
+        assert_eq!(destination, [0x5a; 8]);
+        assert_eq!(
+            callbacks,
+            [range(0x1000), range(0x2000), range(0x3020), range(0x5000),]
+        );
+    }
+}

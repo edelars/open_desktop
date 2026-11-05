@@ -9,7 +9,8 @@ use crate::long_decode::{
     general_protection,
 };
 use crate::memory::{
-    AccessContext, ArchitecturalFault, GuestMemory, InstructionMode, MemoryError, PrivilegeLevel,
+    AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode, MemoryError,
+    PrivilegeLevel,
 };
 use crate::msr::MsrProfile;
 use crate::sep::SepProfile;
@@ -1741,6 +1742,7 @@ pub struct RdtscControls {
 pub enum Cr0Profile {
     FpInitLong64V1,
     EferReadOnlyLong64V1,
+    PagedMovLong64V1,
 }
 
 impl Cr0Profile {
@@ -1759,6 +1761,7 @@ pub enum Cr4Profile {
     FpInitThenFxsave64Long64V1,
     FpInitThenFxrstor64Long64V1,
     FpInitThenFxrstor64MinssLong64V1,
+    PagedMovLong64V1,
 }
 
 impl Cr4Profile {
@@ -15440,13 +15443,42 @@ pub fn run_with_cr4_profile(
     memory: &mut impl GuestMemory,
     config: RunConfig,
     profile: Cr4Profile,
-    mut stop_requested: impl FnMut() -> bool,
+    stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
-    run_configured(
+    run_with_cr4_profile_and_rflags_defined(
         state,
         memory,
         config,
         crate::INTEGER_FLAGS,
+        profile,
+        stop_requested,
+    )
+}
+
+fn run_with_cr4_profile_and_rflags_defined(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    initial_rflags_defined: u64,
+    profile: Cr4Profile,
+    mut stop_requested: impl FnMut() -> bool,
+) -> RunResult {
+    let config = if profile == Cr4Profile::PagedMovLong64V1 {
+        RunConfig {
+            context: AccessContext {
+                origin: AccessOrigin::Explicit,
+                ..config.context
+            },
+            ..config
+        }
+    } else {
+        config
+    };
+    run_configured(
+        state,
+        memory,
+        config,
+        initial_rflags_defined,
         ExecutionProfiles {
             cpuid: None,
             msr: None,
@@ -15572,7 +15604,11 @@ pub fn run_with_cr4_profile(
             cli: None,
             sti: None,
             halt: None,
-            cr0: Some(Cr0Profile::FpInitLong64V1),
+            cr0: Some(if profile == Cr4Profile::PagedMovLong64V1 {
+                Cr0Profile::PagedMovLong64V1
+            } else {
+                Cr0Profile::FpInitLong64V1
+            }),
             cr4: Some(profile),
         },
         StepRuntime {
@@ -15582,6 +15618,44 @@ pub fn run_with_cr4_profile(
             stop_requested: &mut stop_requested,
         },
     )
+}
+
+/// Execute at most one of the exact `48 8B 03` / `48 89 0B` MOV forms with
+/// explicit CR0 and CR4 values carried by `state`.
+///
+/// A completed instruction returns `RunExit::StopAddress` at its next RIP;
+/// architectural faults and backend errors retain the ordinary run result
+/// representation. `instructions_executed` is therefore either zero or one.
+/// The returned `rflags_defined` value is the interpreter's definedness
+/// snapshot for the instruction.
+pub fn step_paged_mov(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> Result<RunResult, RunInputError> {
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return Err(RunInputError::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    let next_rip = state.rip.wrapping_add(3);
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    Ok(run_with_cr4_profile_and_rflags_defined(
+        state,
+        memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(next_rip),
+            context,
+        },
+        initial_rflags_defined,
+        Cr4Profile::PagedMovLong64V1,
+        || false,
+    ))
 }
 
 /// Continue an execution while carrying the caller's explicit RFLAGS
@@ -15993,13 +16067,17 @@ fn run_configured(
     if let Some(profile) = profiles.cr0
         && (config.context.mode != InstructionMode::Long64
             || !state.cr0.is_some_and(|value| profile.accepts(value))
-            || (profile != Cr0Profile::EferReadOnlyLong64V1
-                && state.x87.as_ref().is_none_or(|x87| {
-                    x87.instruction_selector.is_some() || x87.data_selector.is_some()
-                }))
-            || (profile != Cr0Profile::EferReadOnlyLong64V1
-                && (state.activity != Some(crate::CpuActivity::Running)
-                    || state.sti_shadow != Some(crate::StiShadow::Clear))))
+            || (!matches!(
+                profile,
+                Cr0Profile::EferReadOnlyLong64V1 | Cr0Profile::PagedMovLong64V1
+            ) && state.x87.as_ref().is_none_or(|x87| {
+                x87.instruction_selector.is_some() || x87.data_selector.is_some()
+            }))
+            || (!matches!(
+                profile,
+                Cr0Profile::EferReadOnlyLong64V1 | Cr0Profile::PagedMovLong64V1
+            ) && (state.activity != Some(crate::CpuActivity::Running)
+                || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0x0f },
@@ -16010,16 +16088,26 @@ fn run_configured(
     if let Some(profile) = profiles.cr4
         && (config.context.mode != InstructionMode::Long64
             || !state.cr4.is_some_and(|value| profile.accepts(value))
-            || !state
-                .cr0
-                .is_some_and(|value| Cr0Profile::FpInitLong64V1.accepts(value))
-            || (profile != Cr4Profile::EferReadOnlyLong64V1
-                && state.x87.as_ref().is_none_or(|x87| {
-                    x87.instruction_selector.is_some() || x87.data_selector.is_some()
-                }))
-            || (profile != Cr4Profile::EferReadOnlyLong64V1
-                && (state.activity != Some(crate::CpuActivity::Running)
-                    || state.sti_shadow != Some(crate::StiShadow::Clear))))
+            || (profile == Cr4Profile::PagedMovLong64V1
+                && profiles.cr0 != Some(Cr0Profile::PagedMovLong64V1))
+            || !state.cr0.is_some_and(|value| {
+                if profile == Cr4Profile::PagedMovLong64V1 {
+                    Cr0Profile::PagedMovLong64V1.accepts(value)
+                } else {
+                    Cr0Profile::FpInitLong64V1.accepts(value)
+                }
+            })
+            || (!matches!(
+                profile,
+                Cr4Profile::EferReadOnlyLong64V1 | Cr4Profile::PagedMovLong64V1
+            ) && state.x87.as_ref().is_none_or(|x87| {
+                x87.instruction_selector.is_some() || x87.data_selector.is_some()
+            }))
+            || (!matches!(
+                profile,
+                Cr4Profile::EferReadOnlyLong64V1 | Cr4Profile::PagedMovLong64V1
+            ) && (state.activity != Some(crate::CpuActivity::Running)
+                || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0x0f },
@@ -21897,6 +21985,46 @@ fn cmppd_binary64_lanes(lhs: &[u8; 16], rhs: &[u8; 16], predicate: u8) -> ([u8; 
     (results, new_ie, new_de)
 }
 
+fn is_paged_mov_instruction(instruction: &long_decode::Instruction) -> bool {
+    let exact_prefixes = instruction.prefixes
+        == (Prefixes {
+            rex: Some(0x48),
+            ..Prefixes::default()
+        });
+    let qword_rbx = |memory: MemoryOperand| {
+        memory.base == AddressBase::Register(Register::Rbx)
+            && memory.index.is_none()
+            && memory.displacement == 0
+            && memory.address_size == OperandSize::Qword
+            && memory.size == OperandSize::Qword
+    };
+
+    instruction.length == 3
+        && exact_prefixes
+        && instruction.operand_size == OperandSize::Qword
+        && instruction.address_size == OperandSize::Qword
+        && instruction.opcode.map == OpcodeMap::Primary
+        && match instruction.operation {
+            Operation::Mov {
+                dst: Operand::Register(destination),
+                src: Operand::Memory(source),
+            } => {
+                instruction.opcode.byte == 0x8b
+                    && destination == RegisterView::low(Register::Rax, OperandSize::Qword)
+                    && qword_rbx(source)
+            }
+            Operation::Mov {
+                dst: Operand::Memory(destination),
+                src: Operand::Register(source),
+            } => {
+                instruction.opcode.byte == 0x89
+                    && qword_rbx(destination)
+                    && source == RegisterView::low(Register::Rcx, OperandSize::Qword)
+            }
+            _ => false,
+        }
+}
+
 fn step_configured(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -22071,29 +22199,43 @@ fn step_configured(
     if let Some(profile) = cr0_profile
         && (context.mode != InstructionMode::Long64
             || !state.cr0.is_some_and(|value| profile.accepts(value))
-            || (profile != Cr0Profile::EferReadOnlyLong64V1
-                && state.x87.as_ref().is_none_or(|x87| {
-                    x87.instruction_selector.is_some() || x87.data_selector.is_some()
-                }))
-            || (profile != Cr0Profile::EferReadOnlyLong64V1
-                && (state.activity != Some(crate::CpuActivity::Running)
-                    || state.sti_shadow != Some(crate::StiShadow::Clear))))
+            || (!matches!(
+                profile,
+                Cr0Profile::EferReadOnlyLong64V1 | Cr0Profile::PagedMovLong64V1
+            ) && state.x87.as_ref().is_none_or(|x87| {
+                x87.instruction_selector.is_some() || x87.data_selector.is_some()
+            }))
+            || (!matches!(
+                profile,
+                Cr0Profile::EferReadOnlyLong64V1 | Cr0Profile::PagedMovLong64V1
+            ) && (state.activity != Some(crate::CpuActivity::Running)
+                || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
         return Ok(StepOutcome::Unsupported { opcode: 0x0f });
     }
     if let Some(profile) = cr4_profile
         && (context.mode != InstructionMode::Long64
             || !state.cr4.is_some_and(|value| profile.accepts(value))
-            || !state
-                .cr0
-                .is_some_and(|value| Cr0Profile::FpInitLong64V1.accepts(value))
-            || (profile != Cr4Profile::EferReadOnlyLong64V1
-                && state.x87.as_ref().is_none_or(|x87| {
-                    x87.instruction_selector.is_some() || x87.data_selector.is_some()
-                }))
-            || (profile != Cr4Profile::EferReadOnlyLong64V1
-                && (state.activity != Some(crate::CpuActivity::Running)
-                    || state.sti_shadow != Some(crate::StiShadow::Clear))))
+            || (profile == Cr4Profile::PagedMovLong64V1
+                && cr0_profile != Some(Cr0Profile::PagedMovLong64V1))
+            || !state.cr0.is_some_and(|value| {
+                if profile == Cr4Profile::PagedMovLong64V1 {
+                    Cr0Profile::PagedMovLong64V1.accepts(value)
+                } else {
+                    Cr0Profile::FpInitLong64V1.accepts(value)
+                }
+            })
+            || (!matches!(
+                profile,
+                Cr4Profile::EferReadOnlyLong64V1 | Cr4Profile::PagedMovLong64V1
+            ) && state.x87.as_ref().is_none_or(|x87| {
+                x87.instruction_selector.is_some() || x87.data_selector.is_some()
+            }))
+            || (!matches!(
+                profile,
+                Cr4Profile::EferReadOnlyLong64V1 | Cr4Profile::PagedMovLong64V1
+            ) && (state.activity != Some(crate::CpuActivity::Running)
+                || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
         return Ok(StepOutcome::Unsupported { opcode: 0x0f });
     }
@@ -22153,7 +22295,17 @@ fn step_configured(
     } else {
         configured_minss_controls
     };
-    if cr0_profile.is_some() {
+    if cr0_profile == Some(Cr0Profile::PagedMovLong64V1)
+        || cr4_profile == Some(Cr4Profile::PagedMovLong64V1)
+    {
+        let paged_mov_profile = cr0_profile == Some(Cr0Profile::PagedMovLong64V1)
+            && cr4_profile == Some(Cr4Profile::PagedMovLong64V1);
+        if !paged_mov_profile || !is_paged_mov_instruction(&instruction) {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+    } else if cr0_profile.is_some() {
         let efer_only_profiles = cr0_profile == Some(Cr0Profile::EferReadOnlyLong64V1)
             || cr4_profile == Some(Cr4Profile::EferReadOnlyLong64V1);
         let allowed = if efer_only_profiles {
@@ -22162,6 +22314,13 @@ fn step_configured(
                 && cr4_profile == Some(Cr4Profile::EferReadOnlyLong64V1)
         } else {
             match instruction.operation {
+                Operation::Mov { .. }
+                    if cr0_profile == Some(Cr0Profile::PagedMovLong64V1)
+                        && cr4_profile == Some(Cr4Profile::PagedMovLong64V1)
+                        && is_paged_mov_instruction(&instruction) =>
+                {
+                    true
+                }
                 Operation::ReadCr0 | Operation::WriteCr0 | Operation::Fninit => true,
                 Operation::ReadCr4 | Operation::WriteCr4 => cr4_profile.is_some(),
                 Operation::Logic {
@@ -47562,17 +47721,18 @@ fn arithmetic_result(
 mod tests {
     use super::*;
     use crate::Register;
-    use crate::memory::AccessKind;
+    use crate::memory::{AccessKind, page_fault_error_code};
     use crate::state::{Gdtr, SseState, X87State};
 
     pub(super) struct Memory {
         code: Vec<u8>,
         code_base: u64,
         pub(super) fetches: Vec<u64>,
+        pub(super) fetch_contexts: Vec<AccessContext>,
         pub(super) data_base: u64,
         pub(super) bytes: Vec<u8>,
         pub(super) accesses: Vec<(AccessKind, u64, usize)>,
-        contexts: Vec<(AccessKind, AccessContext)>,
+        pub(super) contexts: Vec<(AccessKind, AccessContext)>,
         read_errors: Vec<MemoryError>,
         pub(super) error: Option<MemoryError>,
         pub(super) error_kind: Option<AccessKind>,
@@ -47583,6 +47743,8 @@ mod tests {
         atomic_compare_exchanges: Vec<(u64, OperandSize, u64, u64)>,
         atomic_error: Option<MemoryError>,
         pub(super) fetch_error: Option<(u64, MemoryError)>,
+        pub(super) supervisor_only_code: bool,
+        pub(super) supervisor_only_data: bool,
     }
     impl Memory {
         pub(super) fn new(code: &[u8]) -> Self {
@@ -47593,6 +47755,7 @@ mod tests {
                 code: code.to_vec(),
                 code_base,
                 fetches: vec![],
+                fetch_contexts: vec![],
                 data_base: 0x1000,
                 bytes: (0..32).collect(),
                 accesses: vec![],
@@ -47607,6 +47770,8 @@ mod tests {
                 atomic_compare_exchanges: vec![],
                 atomic_error: None,
                 fetch_error: None,
+                supervisor_only_code: false,
+                supervisor_only_data: false,
             }
         }
         fn range(
@@ -47650,8 +47815,22 @@ mod tests {
         }
     }
     impl GuestMemory for Memory {
-        fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+        fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
             self.fetches.push(address);
+            self.fetch_contexts.push(context);
+            if self.supervisor_only_code && context.page_privilege() == PrivilegeLevel::Ring3 {
+                return Err(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(page_fault_error_code(
+                        AccessKind::Fetch,
+                        context,
+                        true,
+                        false,
+                        false,
+                    )),
+                    linear_address: Some(address),
+                }));
+            }
             if let Some((at, error)) = &self.fetch_error {
                 if *at == address {
                     return Err(error.clone());
@@ -47677,6 +47856,19 @@ mod tests {
             destination: &mut [u8],
         ) -> Result<(), MemoryError> {
             self.contexts.push((AccessKind::Read, context));
+            if self.supervisor_only_data && context.page_privilege() == PrivilegeLevel::Ring3 {
+                return Err(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(page_fault_error_code(
+                        AccessKind::Read,
+                        context,
+                        true,
+                        false,
+                        false,
+                    )),
+                    linear_address: Some(address),
+                }));
+            }
             let range = self.range(address, destination.len(), AccessKind::Read)?;
             destination.copy_from_slice(&self.bytes[range]);
             Ok(())
@@ -47688,6 +47880,19 @@ mod tests {
             source: &[u8],
         ) -> Result<(), MemoryError> {
             self.contexts.push((AccessKind::Write, context));
+            if self.supervisor_only_data && context.page_privilege() == PrivilegeLevel::Ring3 {
+                return Err(MemoryError::Architectural(ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(page_fault_error_code(
+                        AccessKind::Write,
+                        context,
+                        true,
+                        false,
+                        false,
+                    )),
+                    linear_address: Some(address),
+                }));
+            }
             if self.deny_writes {
                 self.accesses
                     .push((AccessKind::Write, address, source.len()));
@@ -145005,6 +145210,429 @@ mod tests {
             assert!(memory.fetches.is_empty());
             assert!(memory.accesses.is_empty());
         }
+    }
+}
+
+#[cfg(test)]
+mod paged_mov_profile_tests {
+    use super::tests::Memory;
+    use super::*;
+    use crate::memory::AccessKind;
+
+    fn state_with_control_registers() -> LongModeState {
+        LongModeState {
+            rip: 0,
+            cr0: Some(Cr0Profile::BASE),
+            cr4: Some(Cr4Profile::BASE),
+            ..LongModeState::default()
+        }
+    }
+
+    #[test]
+    fn paged_mov_load_and_store_retire_exactly_one_instruction() {
+        let definedness = crate::INTEGER_FLAGS & !(1 << 7);
+        let mut load_state = state_with_control_registers();
+        load_state.gpr[Register::Rbx as usize] = 0x1000;
+        load_state.rflags = 0x8d7;
+        let original_flags = load_state.rflags;
+        let mut load_memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        load_memory.bytes[..8].copy_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes());
+
+        let load = step_paged_mov(
+            &mut load_state,
+            &mut load_memory,
+            AccessContext::default(),
+            definedness,
+        )
+        .unwrap();
+        assert_eq!(load.exit, RunExit::StopAddress);
+        assert_eq!(load.instructions_executed, 1);
+        assert_eq!(load.rflags_defined, definedness);
+        assert_eq!(
+            load_state.gpr[Register::Rax as usize],
+            0x8877_6655_4433_2211
+        );
+        assert_eq!(load_state.rip, 3);
+        assert_eq!(load_state.rflags, original_flags);
+        assert_eq!(load_memory.fetches, [0, 1, 2]);
+        assert_eq!(load_memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
+
+        let mut store_state = state_with_control_registers();
+        store_state.gpr[Register::Rbx as usize] = 0x1000;
+        store_state.gpr[Register::Rcx as usize] = 0x0123_4567_89ab_cdef;
+        store_state.rflags = 0x8d7;
+        let original_flags = store_state.rflags;
+        let mut store_memory = Memory::new(&[0x48, 0x89, 0x0b]);
+
+        let store = step_paged_mov(
+            &mut store_state,
+            &mut store_memory,
+            AccessContext::default(),
+            definedness,
+        )
+        .unwrap();
+        assert_eq!(store.exit, RunExit::StopAddress);
+        assert_eq!(store.instructions_executed, 1);
+        assert_eq!(store.rflags_defined, definedness);
+        assert_eq!(store_state.rip, 3);
+        assert_eq!(store_state.rflags, original_flags);
+        assert_eq!(
+            &store_memory.bytes[..8],
+            &0x0123_4567_89ab_cdefu64.to_le_bytes()
+        );
+        assert_eq!(store_memory.fetches, [0, 1, 2]);
+        assert_eq!(store_memory.accesses, [(AccessKind::Write, 0x1000, 8)]);
+    }
+
+    #[test]
+    fn paged_mov_requires_both_valid_control_registers_before_fetch() {
+        let mut missing_cr0 = state_with_control_registers();
+        missing_cr0.cr0 = None;
+        let before = missing_cr0.clone();
+        let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        let result = step_paged_mov(
+            &mut missing_cr0,
+            &mut memory,
+            AccessContext::default(),
+            crate::INTEGER_FLAGS & !(1 << 7),
+        )
+        .unwrap();
+        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(missing_cr0, before);
+        assert!(memory.fetches.is_empty());
+
+        let mut invalid_cr4 = state_with_control_registers();
+        invalid_cr4.cr4 = Some(Cr4Profile::BASE | (1 << 11));
+        let before = invalid_cr4.clone();
+        let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        let result = step_paged_mov(
+            &mut invalid_cr4,
+            &mut memory,
+            AccessContext::default(),
+            crate::INTEGER_FLAGS & !(1 << 7),
+        )
+        .unwrap();
+        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(invalid_cr4, before);
+        assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn paged_mov_rejects_other_and_noncanonical_encodings_without_retirement() {
+        for code in [
+            &[0x48, 0x8b, 0x0b][..],       // MOV RCX,[RBX]
+            &[0x48, 0x89, 0x03][..],       // MOV [RBX],RAX
+            &[0x48, 0x8b, 0x43, 0x00][..], // equivalent displacement encoding
+            &[0x49, 0x8b, 0x03][..],       // different REX
+            &[0x0f, 0x20, 0xc0][..],       // MOV RAX,CR0
+            &[0x0f, 0x22, 0xc0][..],       // MOV CR0,RAX
+            &[0x48, 0x83, 0xe0, 0xf3][..], // AND RAX,-13
+            &[0x90, 0x90, 0x90][..],
+        ] {
+            let mut state = state_with_control_registers();
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = step_paged_mov(
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                crate::INTEGER_FLAGS & !(1 << 7),
+            )
+            .unwrap();
+            assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS & !(1 << 7));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_mov_preserves_architectural_and_backend_memory_failures() {
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(0x1000),
+        };
+        let mut state = state_with_control_registers();
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        memory.error = Some(MemoryError::Architectural(fault.clone()));
+        memory.error_kind = Some(AccessKind::Read);
+        let result = step_paged_mov(
+            &mut state,
+            &mut memory,
+            AccessContext::default(),
+            crate::INTEGER_FLAGS & !(1 << 7),
+        )
+        .unwrap();
+        assert_eq!(result.exit, RunExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS & !(1 << 7));
+        assert_eq!(state, before);
+
+        let mut state = state_with_control_registers();
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        memory.error = Some(MemoryError::Backend("test backend failure".into()));
+        memory.error_kind = Some(AccessKind::Read);
+        let result = step_paged_mov(
+            &mut state,
+            &mut memory,
+            AccessContext::default(),
+            crate::INTEGER_FLAGS & !(1 << 7),
+        )
+        .unwrap();
+        assert_eq!(
+            result.exit,
+            RunExit::MemoryError(MemoryError::Backend("test backend failure".into()))
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS & !(1 << 7));
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn paged_mov_forces_explicit_origin_for_cpl3_code_and_data_faults() {
+        let descriptor_origin_cpl3 = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::DescriptorTable,
+        };
+
+        let mut code_fault_state = state_with_control_registers();
+        let mut code_fault_memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        code_fault_memory.supervisor_only_code = true;
+        let code_fault = step_paged_mov(
+            &mut code_fault_state,
+            &mut code_fault_memory,
+            descriptor_origin_cpl3,
+            crate::INTEGER_FLAGS,
+        )
+        .unwrap();
+        assert_eq!(
+            code_fault.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x05),
+                linear_address: Some(0),
+            })
+        );
+        assert_eq!(code_fault.instructions_executed, 0);
+        assert_eq!(
+            code_fault_memory.fetch_contexts,
+            [AccessContext {
+                mode: InstructionMode::Long64,
+                privilege: PrivilegeLevel::Ring3,
+                origin: AccessOrigin::Explicit,
+            }]
+        );
+
+        let mut data_fault_state = state_with_control_registers();
+        data_fault_state.gpr[Register::Rbx as usize] = 0x1000;
+        let mut data_fault_memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        data_fault_memory.supervisor_only_data = true;
+        let data_fault = step_paged_mov(
+            &mut data_fault_state,
+            &mut data_fault_memory,
+            descriptor_origin_cpl3,
+            crate::INTEGER_FLAGS,
+        )
+        .unwrap();
+        assert_eq!(
+            data_fault.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x05),
+                linear_address: Some(0x1000),
+            })
+        );
+        assert_eq!(data_fault.instructions_executed, 0);
+        assert_eq!(
+            data_fault_memory.contexts,
+            [(
+                AccessKind::Read,
+                AccessContext {
+                    mode: InstructionMode::Long64,
+                    privilege: PrivilegeLevel::Ring3,
+                    origin: AccessOrigin::Explicit,
+                },
+            )]
+        );
+
+        let mut store_state = state_with_control_registers();
+        store_state.gpr[Register::Rbx as usize] = 0x1000;
+        let mut store_memory = Memory::new(&[0x48, 0x89, 0x0b]);
+        store_memory.supervisor_only_data = true;
+        let store_fault = step_paged_mov(
+            &mut store_state,
+            &mut store_memory,
+            descriptor_origin_cpl3,
+            crate::INTEGER_FLAGS,
+        )
+        .unwrap();
+        assert_eq!(
+            store_fault.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x07),
+                linear_address: Some(0x1000),
+            })
+        );
+        assert_eq!(store_fault.instructions_executed, 0);
+        assert_eq!(
+            store_memory.contexts,
+            [(
+                AccessKind::Write,
+                AccessContext {
+                    mode: InstructionMode::Long64,
+                    privilege: PrivilegeLevel::Ring3,
+                    origin: AccessOrigin::Explicit,
+                },
+            )]
+        );
+    }
+
+    #[test]
+    fn paged_mov_allows_cpl3_user_code_and_data_with_explicit_origin() {
+        let descriptor_origin_cpl3 = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::DescriptorTable,
+        };
+        let mut state = state_with_control_registers();
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        memory.bytes[..8].copy_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes());
+
+        let load = step_paged_mov(
+            &mut state,
+            &mut memory,
+            descriptor_origin_cpl3,
+            crate::INTEGER_FLAGS,
+        )
+        .unwrap();
+        assert_eq!(load.exit, RunExit::StopAddress);
+        assert_eq!(state.gpr[Register::Rax as usize], 0x8877_6655_4433_2211);
+        assert!(
+            memory
+                .fetch_contexts
+                .iter()
+                .all(|context| context.privilege == PrivilegeLevel::Ring3)
+        );
+        assert!(
+            memory
+                .fetch_contexts
+                .iter()
+                .all(|context| context.origin == AccessOrigin::Explicit)
+        );
+        assert_eq!(memory.contexts[0].1.origin, AccessOrigin::Explicit);
+        assert_eq!(memory.contexts[0].1.privilege, PrivilegeLevel::Ring3);
+
+        state.rip = 0;
+        state.gpr[Register::Rcx as usize] = 0x0123_4567_89ab_cdef;
+        let mut store_memory = Memory::new(&[0x48, 0x89, 0x0b]);
+        let store = step_paged_mov(
+            &mut state,
+            &mut store_memory,
+            descriptor_origin_cpl3,
+            crate::INTEGER_FLAGS,
+        )
+        .unwrap();
+        assert_eq!(store.exit, RunExit::StopAddress);
+        assert_eq!(
+            &store_memory.bytes[..8],
+            &0x0123_4567_89ab_cdefu64.to_le_bytes()
+        );
+        assert_eq!(store_memory.contexts[0].1.origin, AccessOrigin::Explicit);
+        assert_eq!(store_memory.contexts[0].1.privilege, PrivilegeLevel::Ring3);
+    }
+
+    #[test]
+    fn public_paged_mov_profile_normalizes_descriptor_origin_for_cpl3_faults() {
+        let descriptor_origin_cpl3 = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring3,
+            origin: AccessOrigin::DescriptorTable,
+        };
+        let config = |context| RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(3),
+            context,
+        };
+
+        let mut code_state = state_with_control_registers();
+        let mut code_memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        code_memory.supervisor_only_code = true;
+        let code = run_with_cr4_profile(
+            &mut code_state,
+            &mut code_memory,
+            config(descriptor_origin_cpl3),
+            Cr4Profile::PagedMovLong64V1,
+            || false,
+        );
+        assert_eq!(
+            code.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x05),
+                linear_address: Some(0),
+            })
+        );
+        assert_eq!(code.instructions_executed, 0);
+        assert_eq!(code_memory.fetch_contexts[0].origin, AccessOrigin::Explicit);
+        assert_eq!(
+            code_memory.fetch_contexts[0].privilege,
+            PrivilegeLevel::Ring3
+        );
+
+        let mut data_state = state_with_control_registers();
+        data_state.gpr[Register::Rbx as usize] = 0x1000;
+        let mut data_memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        data_memory.supervisor_only_data = true;
+        let data = run_with_cr4_profile(
+            &mut data_state,
+            &mut data_memory,
+            config(descriptor_origin_cpl3),
+            Cr4Profile::PagedMovLong64V1,
+            || false,
+        );
+        assert_eq!(
+            data.exit,
+            RunExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x05),
+                linear_address: Some(0x1000),
+            })
+        );
+        assert_eq!(data.instructions_executed, 0);
+        assert_eq!(data_memory.contexts[0].1.origin, AccessOrigin::Explicit);
+        assert_eq!(data_memory.contexts[0].1.privilege, PrivilegeLevel::Ring3);
+    }
+
+    #[test]
+    fn paged_mov_validates_definedness_mask_before_execution() {
+        let mut state = state_with_control_registers();
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        let result = step_paged_mov(
+            &mut state,
+            &mut memory,
+            AccessContext::default(),
+            crate::INTEGER_FLAGS | (1 << 63),
+        );
+        assert_eq!(
+            result,
+            Err(RunInputError::InvalidRflagsDefined {
+                value: crate::INTEGER_FLAGS | (1 << 63),
+            })
+        );
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
     }
 }
 

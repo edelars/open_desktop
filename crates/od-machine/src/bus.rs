@@ -172,6 +172,15 @@ pub struct MachineBus {
 }
 
 impl MachineBus {
+    pub(crate) fn access_tracked_ram(
+        &mut self,
+        paging: &crate::Long64ProbeConfig,
+        request: crate::TrackedAccessRequest,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> crate::TrackedAccessReport {
+        crate::access_long64_4k_ram(&mut self.memory, paging, request, committed_write)
+    }
+
     pub(crate) fn memory_kind(
         &self,
         address: GuestPhysicalAddress,

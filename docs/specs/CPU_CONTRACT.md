@@ -17,6 +17,31 @@
 | Память и атомарность | SMP/атомарные операции, fences и memory ordering вне прототипа. Для будущего многопоточного профиля нужен отдельный контракт и проверки соответствующей модели памяти x86. |
 | JIT state | На каждом наблюдаемом exit должны материализоваться определённые архитектурные регистры/флаги и guest instruction offset. Восстановление после исключений и асинхронных событий остаётся отдельной задачей. |
 
+### Bounded CPU-to-paged-RAM profile `PagedMovLong64V1` (S4-06b)
+
+`od_isa::execute::step_paged_mov` is an opt-in one-instruction entry point for
+`PagedMovLong64V1`. It admits only the exact Long64 encodings `48 8B 03`
+(`MOV RAX,[RBX]`) and `48 89 0B` (`MOV [RBX],RCX`). The profile check is
+exhaustive; it does not inherit other operations from the generic CR4-profile
+executor. The generic `run_with_cr4_profile` path applies this same exhaustive
+allowlist when the selected profile is `PagedMovLong64V1`. CR0/CR4 admission is
+validated before fetch. Each call executes at most one instruction through the
+existing decoder and interpreter.
+
+The entry point forces `AccessOrigin::Explicit` for instruction fetch and
+operand accesses while preserving the caller's instruction mode, privilege and
+CPL. This prevents a caller-supplied descriptor-table origin from bypassing
+supervisor page permissions. `rflags_defined` is supplied as validated input
+and preserved across success, architectural fault and unsupported results.
+Architectural faults, backend errors and unsupported instructions remain
+distinct outcomes; a non-retired fault does not update the destination or RIP.
+
+This entry point does not commit CR2, deliver or retry exceptions, or define a
+full CPU paging state. Its machine-side connection and persistent page-walk
+effects are specified in the [bounded S4-06b machine contract](MACHINE_CONTRACT.md#s4-06b-cpu-connected-paged-mov).
+The scope and evidence are recorded in the
+[S4-06b report](../reports/STAGE_4_S4-06B_2026-11-05.md).
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

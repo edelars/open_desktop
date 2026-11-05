@@ -158,6 +158,40 @@ API не реализует `GuestMemory`, cross-page операции, huge pag
 исключение-доставку или SMP/DMA coherence; pure probe выше остаётся без A/D
 эффектов.
 
+## S4-06b CPU-connected paged MOV
+
+The public `od_machine::step_paged_mov` entry uses its internal
+`PagedMovMemoryAdapter` to connect the bounded `od-isa` entry to the existing
+`MachineBus` and its single `PhysicalMemory`
+owner. Each step builds `Long64ProbeConfig::from_cpu_state` and uses the local
+`canonical48 / physical36 / four-level / 4 KiB / RAM-only` profile. The paging
+tests use literal, non-identity linear-to-physical mappings for code and data;
+the adapter does not decode instructions or create another RAM owner.
+
+The adapter routes fetch and operand operations through the tracked walker.
+Successful fetch/read/write and faults retain the walk's actual A/D commits and
+the existing committed-write callback order. A page fault is returned with its
+`PageFaultRecord`, PFEC, linear address and original instruction RIP. Backend,
+unsupported-mode/page-size, cross-page and architectural fault outcomes remain
+distinct. MMIO is not accessed through this RAM-only path.
+
+The `GuestMemory` guarantees for this connection are deliberately scoped:
+
+- A failed read leaves the caller's result buffer unchanged.
+- A failed operand write does not partially commit the operand.
+- Page-walk A/D metadata writes already committed before a later fault or
+  operand failure remain visible and each produces its callback in execution
+  order. There is no whole-RAM rollback guarantee.
+- Page-table bytes may alias operand bytes. Such A/D writes can modify bytes
+  physically addressed by a failing operand, and successful operations keep
+  separate callbacks in their actual order, even for duplicate ranges.
+
+This reconciles the tracked walk with the bounded `GuestMemory` contract only
+for the two admitted MOV forms. It does not establish full paging or settle
+rollback assumptions for other consumers. See the
+[S4-06b report](../reports/STAGE_4_S4-06B_2026-11-05.md) and
+[ISSUE-054](../KNOWN_ISSUES.md#issue-054-s4-11-cross-page-cpu-integration).
+
 ## Huge-page и mode admission boundary
 
 Текущий machine contract принимает только canonical48, physical36, четыре уровня

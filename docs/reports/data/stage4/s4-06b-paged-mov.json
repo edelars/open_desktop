@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "slice": "S4-06b",
+  "title": "Bounded CPU-connected paged MOV",
+  "date": "2026-11-05",
+  "baseline_commit": "b2a093c",
+  "status": "accepted_bounded_slice",
+  "code_files": [
+    "crates/od-isa/src/execute.rs",
+    "crates/od-isa/src/memory.rs",
+    "crates/od-machine/src/bus.rs",
+    "crates/od-machine/src/lib.rs",
+    "crates/od-machine/src/paged_memory_adapter.rs",
+    "crates/od-machine/tests/paged_mov_step.rs"
+  ],
+  "cpu_contract": {
+    "entry": "od_isa::execute::step_paged_mov",
+    "profile": "PagedMovLong64V1",
+    "admitted_encodings": ["48 8B 03", "48 89 0B"],
+    "instructions_per_call_max": 1,
+    "cr0_cr4_validated_before_fetch": true,
+    "origin": "Explicit",
+    "preserves": ["instruction_mode", "privilege", "CPL", "rflags_defined"],
+    "outcomes_distinct": ["architectural_fault", "backend_error", "unsupported"],
+    "cr2_commit_or_exception_delivery_claimed": false
+  },
+  "machine_profile": {
+    "configuration_source": "Long64ProbeConfig::from_cpu_state",
+    "linear_address_bits": 48,
+    "physical_address_bits": 36,
+    "paging_levels": 4,
+    "page_size_bytes": 4096,
+    "backing": "RAM-only",
+    "translation_cases": "literal non-identity mappings",
+    "ram_owner": "existing PhysicalMemory through MachineBus"
+  },
+  "guest_memory_guarantees": {
+    "failed_read_preserves_result_buffer": true,
+    "failed_operand_write_has_no_partial_operand_commit": true,
+    "committed_ad_metadata_writes_survive_later_failure": true,
+    "committed_write_callbacks_follow_actual_order": true,
+    "page_table_operand_alias_allowed": true,
+    "full_ram_rollback": false
+  },
+  "reported_tests": {
+    "od_isa_package_command": "cargo test -p od-isa --locked --offline",
+    "od_isa_unit_tests_passed": 2014,
+    "od_machine_package_command": "cargo test -p od-machine --locked --offline",
+    "od_machine_tests_passed": 85,
+    "od_machine_breakdown": {
+      "unit": 69,
+      "api": 7,
+      "event_queue": 1,
+      "integration": 8
+    },
+    "focused_cpu_paged_mov_tests_passed": 8,
+    "legacy_cr0_tests_passed": 3,
+    "legacy_cr4_tests_passed": 2,
+    "paged_mov_step_integration_tests_passed": 8
+  },
+  "checks": {
+    "commands": [
+      "cargo check --workspace --all-targets --locked --offline",
+      "cargo fmt --all -- --check",
+      "python3 tools/check_layout.py",
+      "git diff --check"
+    ],
+    "result": "passed"
+  },
+  "review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approve",
+    "remaining_p0_p3_findings": 0,
+    "reran_package_tests": true,
+    "graphify_ast_hashes_match_reviewed_code_files": true
+  },
+  "graphify": {
+    "query_performed_before_document_reads": true,
+    "query_scope": "S4-06b, GuestMemory, A/D effects, AccessOrigin and related contracts",
+    "implementation_update": "not_confirmed_complete; graph rebuild lock wait during machine integration",
+    "reviewer_manifest_check": "AST hashes match reviewed code files",
+    "documentation_integration_update": "graphify update . attempted after docs edits; no completion after 35 seconds, interrupted during detect/re-extract; no code changed"
+  },
+  "open_boundaries": [
+    "full paging matrix",
+    "TLB and invalidation",
+    "CR2 commit and exception delivery/retry",
+    "cross-page operands and partial progress",
+    "REP, stack and atomic/RMW semantics",
+    "broader rollback consumers",
+    "JIT, IRQ and devices",
+    "SMP",
+    "Linux boot"
+  ],
+  "issue_054": "open: cross-page/partial progress, REP/RMW and broader rollback consumers; bounded S4-06b contract conflict resolved",
+  "report": "docs/reports/STAGE_4_S4-06B_2026-11-05.md"
+}

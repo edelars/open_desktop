@@ -233,11 +233,18 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-06. Соединить CPU memory contract с машиной
 
-- [x] Принято после ревью.
+- [ ] Открыто: ранее принятый flat identity bridge не закрывает CPU-connected paging; bounded S4-06b ниже принят отдельно.
 - **Где:** `crates/od-isa/src/`, `crates/od-machine/src/`, локальные contract tests.
 - **Сделать:** adapter получает access kind, privilege/context и выполняет fetch/read/write через machine memory. Сохранить complete-or-no-change одного вызова `GuestMemory`; при необходимом изменении контракта сначала согласовать всех callers и тесты.
 - **Проверка:** разные fetch/read/write permissions, RAM/MMIO routing, host error не становится `#PF`, fault возвращается без заранее изменённого CPU destination.
 - **Готово:** интерпретатор использует production memory interface в ограниченном тесте; временный physical adapter явно не объявлен полной Long64 машиной.
+
+#### S4-06b. Bounded CPU-connected paged MOV
+
+- [x] Ограниченный срез принят после независимого `gpt-6.1-sol/high` review.
+- `step_paged_mov` допускает только `48 8B 03` и `48 89 0B`, по одной инструкции за вызов. Публичный `od_machine::step_paged_mov` использует внутренний `PagedMovMemoryAdapter`, tracked walker и RAM owner для literal non-identity mappings; контракт `GuestMemory` уточнён для неизменного read buffer, отсутствия частичного operand write и сохраняющихся A/D effects/callbacks, включая alias.
+- Review rerun: 2,014 `od-isa` unit tests и 85 `od-machine` tests; P0—P3 findings отсутствуют. См. [отчёт S4-06b](../reports/STAGE_4_S4-06B_2026-11-05.md) и [manifest](../reports/data/stage4/s4-06b-paged-mov.json).
+- Это не закрывает родительский S4-06: полная CPU memory integration и остальные guest access forms остаются открытыми. ISSUE-054 остаётся открытой для cross-page/partial progress, REP/RMW и других rollback consumers.
 
 ### S4-07. Сделать uncached page walker
 

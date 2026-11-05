@@ -14,14 +14,14 @@
 
 <a id="issue-054-s4-11-cross-page-cpu-integration"></a>
 
-### ISSUE-054 — S4-11 cross-page and partial-execution integration is not established
+### ISSUE-054 — Cross-page, partial-execution and general rollback integration is not established
 
 - **Дата обнаружения:** 2026-11-04.
-- **Компонент:** `od-machine` tracked RAM access and future CPU/`GuestMemory` integration.
-- **Статус:** открыта; это не подтверждённый дефект runtime, а незакрытая архитектурная граница.
-- **Суть и последствия:** bounded `access_long64_4k_ram` now rejects a same-call cross-page Read/Write before page walk and proves separate-call commits, but it does not implement a two-page preflight/transaction, partial operand semantics, device splitting, CPU restart state, REP iteration state, stack recovery or RMW atomicity. Connecting it directly to the existing `GuestMemory` contract would require reconciling tracked A/D effects with its complete-or-no-change wording.
-- **Основание:** S4-11a tests in `crates/od-machine/src/page_walk.rs` pass 46 cases and preserve the early `CrossesPage` result; the remaining cases are outside that API. Related CPU restart uncertainties remain in [ISSUE-016](#issue-016--не-установлен-restart-state-movs-после-destination-fault) and [ISSUE-014](#issue-014--не-установлено-состояние-rsp-после-fault-у-memory-destination-pop).
-- **Следующий шаг:** after the manifest and CPU memory contract are accepted, design a two-page preflight/commit model with literal fault-address, A/D, device and restart-state evidence; do not infer it from the current same-page tests.
+- **Компонент:** `od-machine` tracked RAM access, `od-isa::GuestMemory` and other consumers that may rely on rollback.
+- **Статус:** открыта; это не подтверждённый runtime-дефект, а незакрытая архитектурная граница. Конфликт контракта для ограниченного S4-06b MOV разрешён документированно.
+- **Суть и последствия:** S4-06b уточнил гарантию для двух точных MOV: failed read сохраняет caller buffer, failed operand write не коммитит operand частично, а уже совершённые A/D metadata writes и callbacks сохраняются, в том числе при alias page-table/operand. Полного RAM rollback нет. Это уточнение не доказывает корректность предположений rollback у других `GuestMemory` consumers. `access_long64_4k_ram` по-прежнему отвергает same-call cross-page Read/Write до page walk; двухстраничная transaction/preflight, partial operand semantics, device splitting, CPU restart state, REP iteration, stack recovery и RMW atomicity не реализованы.
+- **Основание:** S4-06b independent review одобрил связанный CPU/machine diff без P0—P3; reviewer reran 2,014 `od-isa` unit tests и 85 `od-machine` tests. Точные bounded guarantees, callback order, alias cases, commands и границы записаны в [CPU contract](specs/CPU_CONTRACT.md#bounded-cpu-to-paged-ram-profile-pagedmovlong64v1-s4-06b), [machine contract](specs/MACHINE_CONTRACT.md#s4-06b-cpu-connected-paged-mov), [S4-06b report](reports/STAGE_4_S4-06B_2026-11-05.md) и [evidence manifest](reports/data/stage4/s4-06b-paged-mov.json). Related CPU restart uncertainties remain in [ISSUE-016](#issue-016--не-установлен-restart-state-movs-после-destination-fault) and [ISSUE-014](#issue-014--не-установлено-состояние-rsp-после-fault-у-memory-destination-pop).
+- **Следующий шаг:** после принятия manifest и полного CPU memory contract проверить rollback assumptions у всех затронутых consumers; отдельно спроектировать two-page preflight/commit с literal fault-address, A/D, device и restart-state evidence. Не выводить эти свойства из текущих same-page и двух MOV tests.
 
 <a id="issue-034-s2-42e-execute-only-code-not-admitted-by-native-v2"></a>
 
