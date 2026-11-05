@@ -16,6 +16,11 @@ pub mod cow_proto;
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_parse;
 
+/// Byte-addressed write transaction over the prototype commit (S9-11). Not
+/// normative.
+#[cfg(any(test, feature = "test-support"))]
+pub mod cow_tx;
+
 /// In-memory backend and the shared backend contract suite. Enabled by tests
 /// and by the `test-support` feature for host crates that run the same suite.
 #[cfg(any(test, feature = "test-support"))]
@@ -27,5 +32,9 @@ mod cow_open_tests;
 mod cow_parse_tests;
 #[cfg(test)]
 mod cow_proto_tests;
+#[cfg(test)]
+mod cow_recovery_tests;
+#[cfg(test)]
+mod cow_tx_tests;
 #[cfg(test)]
 mod io_tests;

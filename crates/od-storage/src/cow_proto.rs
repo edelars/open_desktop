@@ -41,6 +41,12 @@
 //! after a failed flush the durable state is unknown (see [`CheckedStorage`]'s
 //! sticky reconcile rule).
 //!
+//! A commit writes at most [`MAX_TX_BLOCKS`] blocks (checked before any backend
+//! call). The caller may cancel at the [`CommitStep`]s before barrier 1 (old
+//! state, session usable); after the last step the commit cannot be cancelled.
+//! Partial-block writes and multi-range transactions are built on top of this
+//! in [`crate::cow_tx`].
+//!
 //! # Create
 //!
 //! `create` needs an empty backend. It sizes the file to the header, writes the
@@ -133,6 +139,10 @@ pub const SLOT_SIZE: usize = 512;
 pub const HEADER_LEN: u64 = 2 * SLOT_SIZE as u64;
 /// Prototype limit on logical blocks; bounds allocations driven by a root.
 pub const MAX_BLOCKS: u64 = 1 << 16;
+/// Prototype limit on the blocks one transaction may write (dirty state). A
+/// larger `commit` is rejected before any backend call. Hypothesis, like every
+/// other limit here.
+pub const MAX_TX_BLOCKS: usize = 256;
 
 pub(crate) const MAGIC: [u8; 8] = *b"ODCOWP\0\x01";
 pub(crate) const VERSION: u32 = 1;
@@ -188,7 +198,7 @@ pub enum SlotState {
     Damaged,
 }
 
-/// Which step order [`CowFile::commit_with_order`] uses. Everything except
+/// Which step order the test-only `CowFile::commit_with_order` uses. Everything except
 /// [`Correct`](Self::Correct) is a deliberately broken protocol that exists
 /// only so tests can prove the oracle notices it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,6 +210,39 @@ pub enum CommitOrder {
     /// Skips barrier 1: candidate and root share one barrier, so a crash may
     /// keep the root and lose the data it points to.
     NoDataBarrier,
+}
+
+/// A point inside [`CowFile::commit_cancellable`] where the caller may still
+/// cancel. Every point precedes barrier 1; the last one precedes the write of
+/// the root copy, so a cancelled commit never leaves a complete, adoptable
+/// candidate behind. After `RootCopy` the commit runs to its end and can no
+/// longer be cancelled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitStep {
+    /// About to resize the file to the candidate length.
+    Resize,
+    /// About to write the i-th data block of the candidate.
+    Block(usize),
+    /// About to write the block map.
+    Map,
+    /// About to write the root copy (last cancel point).
+    RootCopy,
+}
+
+/// Why `execute` stopped.
+enum Abort {
+    Failed(CowError),
+    /// Cancelled at a [`CommitStep`]; `mutated` tells whether the backend was
+    /// already changed (a resize or write happened).
+    Cancelled {
+        mutated: bool,
+    },
+}
+
+impl From<StorageError> for Abort {
+    fn from(e: StorageError) -> Self {
+        Self::Failed(CowError::Storage(e))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -293,6 +336,15 @@ pub enum CowError {
     },
     /// Offset arithmetic of a new candidate overflowed.
     LayoutOverflow,
+    /// A transaction wrote more than [`MAX_TX_BLOCKS`] blocks. Rejected before
+    /// any backend call; the session is still usable.
+    TxTooLarge {
+        blocks: usize,
+        limit: usize,
+    },
+    /// The caller cancelled inside `commit` before barrier 1. The published
+    /// state is unchanged and the session is still usable.
+    Cancelled,
     /// Rejected `commit`/`create` input; the session is still usable.
     BadWrite(&'static str),
     /// An earlier commit failed; reopen the file.
@@ -629,6 +681,15 @@ impl<B: StorageBackend> CowView<B> {
         Self::salvage_with(storage, &Capabilities::CURRENT)
     }
 
+    /// Side-effect-free inspection of the media before any mutation: the same
+    /// read-only recovery as [`salvage`](Self::salvage). The report predicts
+    /// what a writable open would do: `rolled_forward` means it would rewrite
+    /// exactly one root slot and flush; any other outcome means it writes
+    /// nothing.
+    pub fn inspect(storage: CheckedStorage<B>) -> Result<(Self, OpenReport), CowError> {
+        Self::salvage(storage)
+    }
+
     /// [`salvage`](Self::salvage) for a caller that understands more mandatory
     /// feature bits than this build defines.
     pub fn salvage_with(
@@ -850,27 +911,63 @@ impl<B: StorageBackend> CowFile<B> {
         ))
     }
 
-    /// Commits `writes` (logical block index, exactly [`BLOCK_SIZE`] bytes).
-    /// Indexes may overwrite existing blocks or extend the file with no gap.
-    /// Returns the barrier-2 [`DurableAck`]; any `Err` poisons the session
-    /// (except [`CowError::BadWrite`], [`CowError::LayoutOverflow`] and
-    /// generation exhaustion, which are rejected before any I/O).
+    /// True after a failed commit: the durable state is unknown and the
+    /// caller must drop the session and reopen (reconcile).
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Commits `writes` (logical block index, exactly [`BLOCK_SIZE`] bytes, at
+    /// most [`MAX_TX_BLOCKS`] of them). Indexes may overwrite existing blocks
+    /// or extend the file with no gap. Returns the barrier-2 [`DurableAck`];
+    /// any `Err` poisons the session (except [`CowError::BadWrite`],
+    /// [`CowError::TxTooLarge`], [`CowError::LayoutOverflow`] and generation
+    /// exhaustion, which are rejected before any I/O).
     pub fn commit(&mut self, writes: &[(u64, &[u8])]) -> Result<DurableAck, CowError> {
-        self.commit_with_order(writes, CommitOrder::Correct)
+        self.commit_inner(writes, CommitOrder::Correct, &mut |_| false)
+    }
+
+    /// [`commit`](Self::commit) with a cancel hook. `cancel` is asked at every
+    /// [`CommitStep`] before barrier 1; returning `true` abandons the commit:
+    /// the unreferenced tail is cut back to the published end, that cut is
+    /// made durable (a barrier), and [`CowError::Cancelled`] is returned
+    /// without poisoning the session. If the cut or its barrier fails the
+    /// session is poisoned and the storage error is returned instead of
+    /// `Cancelled` (the caller must reconcile).
+    /// Nothing can be cancelled after the last step: a successful return is
+    /// a published, durable commit.
+    pub fn commit_cancellable(
+        &mut self,
+        writes: &[(u64, &[u8])],
+        cancel: &mut dyn FnMut(CommitStep) -> bool,
+    ) -> Result<DurableAck, CowError> {
+        self.commit_inner(writes, CommitOrder::Correct, cancel)
     }
 
     /// [`commit`](Self::commit) with a selectable step order; see
-    /// [`CommitOrder`]. Only `Correct` is a protocol.
-    pub fn commit_with_order(
+    /// [`CommitOrder`]. Only `Correct` is a protocol; the broken orders exist
+    /// for oracle tests and are deliberately not part of the non-test API (no
+    /// ack before barrier 2 can be obtained from it).
+    #[cfg(test)]
+    pub(crate) fn commit_with_order(
         &mut self,
         writes: &[(u64, &[u8])],
         order: CommitOrder,
+    ) -> Result<DurableAck, CowError> {
+        self.commit_inner(writes, order, &mut |_| false)
+    }
+
+    fn commit_inner(
+        &mut self,
+        writes: &[(u64, &[u8])],
+        order: CommitOrder,
+        cancel: &mut dyn FnMut(CommitStep) -> bool,
     ) -> Result<DurableAck, CowError> {
         if self.poisoned {
             return Err(CowError::Poisoned);
         }
         let plan = self.plan(writes)?;
-        match self.execute(&plan, writes, order) {
+        match self.execute(&plan, writes, order, cancel) {
             Ok(ack) => {
                 self.view.generation = plan.generation;
                 self.view.map = plan.map;
@@ -878,7 +975,33 @@ impl<B: StorageBackend> CowFile<B> {
                 self.view.end_offset = plan.new_len;
                 Ok(ack)
             }
-            Err(e) => {
+            Err(Abort::Cancelled { mutated }) => {
+                if mutated {
+                    // Cut the abandoned candidate back *and make the cut
+                    // durable* before reporting Cancelled. Without the barrier
+                    // a crash may lose the resize and keep the written
+                    // blocks; together with a stale root copy left in the
+                    // tail by an earlier attempt (which recovery ignored as
+                    // speculative) those blocks could verify and be adopted,
+                    // resurrecting a cancelled commit. The simplest fix is
+                    // chosen over truncating the ignored tail at open: the
+                    // writer that makes a tail is the one that removes it.
+                    // If the cut or its barrier fails the file state is
+                    // unknown: poison, and the caller sees an error, not
+                    // Cancelled.
+                    let end = self.view.end_offset;
+                    let storage = &mut self.view.storage;
+                    let cut = storage
+                        .set_len(end)
+                        .and_then(|()| storage.flush_file_durable().map(|_ack| ()));
+                    if let Err(e) = cut {
+                        self.poisoned = true;
+                        return Err(CowError::Storage(e));
+                    }
+                }
+                Err(CowError::Cancelled)
+            }
+            Err(Abort::Failed(e)) => {
                 self.poisoned = true;
                 Err(e)
             }
@@ -886,6 +1009,12 @@ impl<B: StorageBackend> CowFile<B> {
     }
 
     fn plan(&self, writes: &[(u64, &[u8])]) -> Result<Plan, CowError> {
+        if writes.len() > MAX_TX_BLOCKS {
+            return Err(CowError::TxTooLarge {
+                blocks: writes.len(),
+                limit: MAX_TX_BLOCKS,
+            });
+        }
         let generation = self
             .view
             .generation
@@ -955,7 +1084,8 @@ impl<B: StorageBackend> CowFile<B> {
         plan: &Plan,
         writes: &[(u64, &[u8])],
         order: CommitOrder,
-    ) -> Result<DurableAck, CowError> {
+        cancel: &mut dyn FnMut(CommitStep) -> bool,
+    ) -> Result<DurableAck, Abort> {
         let mut root = new_root(
             plan.generation,
             plan.map.len() as u64,
@@ -969,12 +1099,26 @@ impl<B: StorageBackend> CowFile<B> {
         let storage = &mut self.view.storage;
         // Step 1: candidate [blocks][map][root copy]; nothing below the
         // published end is touched.
+        if cancel(CommitStep::Resize) {
+            return Err(Abort::Cancelled { mutated: false });
+        }
         storage.set_len(plan.new_len)?;
-        for ((_, data), phys) in writes.iter().zip(&plan.block_offsets) {
+        for (i, ((_, data), phys)) in writes.iter().zip(&plan.block_offsets).enumerate() {
+            if cancel(CommitStep::Block(i)) {
+                return Err(Abort::Cancelled { mutated: true });
+            }
             storage.write_all_at(*phys, data)?;
+        }
+        if cancel(CommitStep::Map) {
+            return Err(Abort::Cancelled { mutated: true });
         }
         if !plan.map_bytes.is_empty() {
             storage.write_all_at(plan.map_offset, &plan.map_bytes)?;
+        }
+        // Last cancel point: the root copy is what makes a candidate adoptable
+        // by recovery, so nothing may be cancelled once it is written.
+        if cancel(CommitStep::RootCopy) {
+            return Err(Abort::Cancelled { mutated: true });
         }
         storage.write_all_at(plan.copy_offset, &sector)?;
         // Step 2: barrier 1.
