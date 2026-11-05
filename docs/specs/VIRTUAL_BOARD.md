@@ -16,13 +16,24 @@
 | Платформенные таблицы | ACPI 6.6; начать с RSDP/XSDT/FADT/MADT/MCFG и минимальных описаний устройств по фактическим обращениям Windows/Linux. SMBIOS 3.9 — инвентаризационная таблица после проверки, что её требует выбранный путь. | Использовать один источник данных платы; не заполнять таблицы фиктивными устройствами. Набор таблиц предварительный и требует trace выбранного media. |
 | Прерывания и таймер | Начать с одинарного Local APIC + IOAPIC и явной таблицы маршрутизации; x2APIC, SMP и hot-plug отложить. Выбрать один виртуальный источник системного времени после CPU profile и boot trace. | Типовой x86-64 путь, но точные MSR/interrupt/timer requirements Windows build ещё не сняты. Скорость не использовалась как аргумент. |
 | PCIe | Один root complex, один сегмент и статическая топология; PCIe Base 7.1 программный интерфейс, ACPI MCFG для ECAM. Сначала только необходимые BAR, конфигурация и MSI/MSI-X/INTx варианты, реально нужные выбранным устройствам. | Не реализовывать всю PCIe спецификацию. Набор функций и адресные окна определить после выбора device models. |
-| Диагностика | Один 16550A-compatible UART как COM1 (`I/O 0x3F8`, IRQ4); VMHost сохраняет байты serial output с временными метками. Отдельный собственный wire format для вывода гостевой ОС не вводить. | Предварительный PC-compatible профиль для firmware и раннего Linux serial console. Формат, baud rate, поведение прерываний и фактическая доступность для выбранных Windows/Linux образов предстоит проверить. |
+| Диагностика | Целевой профиль — один 16550A-compatible UART как COM1 (`I/O 0x3F8`, IRQ4); VMHost должен сохранять байты serial output с временными метками. Отдельный собственный wire format для вывода гостевой ОС не вводить. | Это проектная цель. Bounded polling TX slice описан ниже; полный UART, baud rate, IRQ behavior и доступность для выбранных Windows/Linux образов не подтверждены. |
 | Boot storage | RAW disk backend в `od-storage`; для гостя — собственный минимальный NVMe controller, PCIe transport. Планировать только Identify, queue, read/write и flush, если их требует Windows/Linux. | NVMe 2.4 Base, NVM Command Set 1.3, NVMe over PCIe Transport 1.4. В Windows Pro WIM, индекс 6, `stornvme.inf` сопоставляет стандартный PCI class ID `PCI\CC_010802`, а service `stornvme` имеет boot-start. UEFI всё равно нужна собственная реализация NVMe Block I/O для доступа к EFI-разделу; её пока нет. Выбор предварительный, скорость не измерялась. |
 | Network | Для первого подключённого NIC — модель, совместимая с Intel 82540EM, PCI ID `8086:100E`; host NAT/backend остаётся в host-компоненте. | Выбор подтверждён владельцем. В Windows Pro WIM, индекс 6, есть `nete1g3e.inf` с этим hardware ID. `netkvm.inf` в образе не найден, поэтому VirtIO потребует собственного Windows-драйвера. Device emulation, Linux guest driver, host backend и сетевой сценарий не реализованы и не проверены; выбор сделан по наличию Windows inbox-драйвера. |
 | Экран | UEFI GOP framebuffer как firmware/setup/diagnostic output; собственный WDDM 2.0/GPU stack не входит в v0.1 и не подменяется GOP. | Windows 11 заявляет DirectX 12 + WDDM 2.0 в общих требованиях; GOP не доказывает это требование. Сценарий Blender на этапе 0 — только CPU/headless, если выбранная версия это подтвердит. |
 | Ввод | Один стандартный PCI xHCI controller (class `0C0330`, xHCI 1.2) с USB HID keyboard и mouse; дополнительных USB функций в v0.1 нет. Собственная UEFI подключает USB keyboard к `EFI_SIMPLE_TEXT_INPUT_PROTOCOL`; Windows Setup и установленная система используют inbox xHCI/HID stack. | В Windows Pro `install.wim` (index 6) и обоих образах `boot.wim` найдены `usbxhci.inf`, `usbhub3.inf` и `input.inf`. INF связывают xHCI с class ID `PCI\CC_0C0330`, а generic HID с USB class `03`; это подтверждает наличие candidate drivers, но не их запуск или работу ввода. Для UEFI нужен собственный pre-boot USB/HID stack и передача состояния устройства при выходе из Boot Services. |
 | TPM / Secure Boot state | Целевой security device — собственная vTPM 2.0; device state и UEFI variables принадлежат persistent state VM и входят в согласованные snapshots. | Требования Windows задают TPM 2.0. Сверяться с TPM Library v185 и PC Client PTP 1.07/Errata 1.1; ни реализация, ни соответствие/сертификация не заявлены. |
 | Не включено | Audio, USB passthrough, GPU acceleration, nested virtualization, IOMMU, SMP, hot-plug и миграция. | Добавлять по отдельным требованиям и этапам, а не ради полноты виртуальной платы. |
+
+## Текущий COM1 polling slice
+
+Локальная `Uart16550PollingTx` привязывается к PIO диапазону COM1
+`0x3F8–0x3FF`. Она реализует ограниченный byte-only TX профиль с явным
+host-controlled переносом holding → shift и завершением передачи. Это не
+полная модель 16550A и не меняет целевую карту платы.
+
+CPU `IN/OUT` и их privilege checks пока не подключены; IRQ4 и маршрутизация
+через APIC/IOAPIC также остаются открытыми. Поэтому COM1 пока нельзя считать
+доступным из гостевого кода, а целевой Linux serial console не подтверждён.
 
 ## Владение состоянием и адресами
 

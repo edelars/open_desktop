@@ -188,3 +188,33 @@ This does not establish full paging, TLB/invalidation, CR2 commit or exception
 delivery/retry, cross-page operands, REP/stack/atomic semantics, JIT, IRQ/devices,
 SMP or Linux boot. ISSUE-054 remains open for cross-page/partial progress,
 REP/RMW and broader rollback consumers.
+
+## S4-24a: bounded COM1 polling TX
+
+Baseline revision: `6aeb2dd` (the reviewed UART changes were present in the
+shared worktree after this baseline). The [S4-24a report](../reports/STAGE_4_S4-24A_2026-11-05.md)
+records the bounded profile and review result. Reproduce the focused checks
+from the repository root:
+
+```text
+cargo test -p od-machine --lib uart16550::tests --locked --offline
+cargo test -p od-machine --test uart16550_polling --locked --offline
+cargo test -p od-machine --lib bus::tests --locked --offline
+cargo check -p od-machine --all-targets --locked --offline
+cargo fmt --all -- --check
+python3 tools/check_layout.py
+git diff --check
+```
+
+Recorded results: 7 UART unit tests, 2 UART PIO integration tests and 4
+existing `MachineBus` tests passed; the package all-targets check, formatting,
+layout and diff checks passed. Independent `gpt-6.1-sol/high` review approved
+the code diff with no P0–P3 findings.
+
+The integration path binds the device to COM1 and checks byte PIO through the
+production bus, DLAB divisor selection without accidental TX, the literal
+`THRE/TEMT` transitions, raw byte completion, busy/unsupported access atomicity,
+and reset through a handle that aliases the bus-owned state. This verifies only
+the synchronous bounded TX endpoint. Baud timing, RX/FIFO, IRQ4, guest CPU
+`IN/OUT`, Linux serial compatibility, guest boot and scheduler behavior are not
+covered. Parent S4-24 remains open.

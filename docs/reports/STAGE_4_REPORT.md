@@ -2,12 +2,27 @@
 
 ## Текущий статус
 
-На 2026-11-05 принят только локальный memory/bus/bridge/translation,
-bounded page-fault-record, tracked RAM access, S4-01a baseline и S4-10a
-admission-boundary slice S4-02—S4-23a, plus bounded S4-06b CPU-connected
-paged MOV. Этап 4 не завершён: S4-00—S4-01,
-integrated faults/delivery, vCPU/events, devices, JIT
+На 2026-11-05 приняты локальные memory/bus/bridge/translation,
+bounded page-fault-record, tracked RAM access, S4-01a baseline, S4-10a
+admission-boundary, bounded S4-06b CPU-connected paged MOV и bounded S4-24a
+COM1 polling TX slices. Этап 4 не завершён: S4-00—S4-01,
+integrated faults/delivery, vCPU/events, полный UART/IRQ, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
+
+В S4-24a (baseline `6aeb2dd`) добавлен bounded TX-only UART для COM1
+`0x3F8–0x3FF` через существующую PIO bus. `Uart16550PollingTx` и
+`Uart16550Handle` разделяют одно состояние; передача продвигается только
+явными host-вызовами. Проверены byte-only PIO, DLAB/DLL/DLM, 8N1 с ненулевым
+divisor, THRE/TEMT transitions, holding/shift, busy/unsupported atomicity,
+raw-byte completion и reset. Источник ограниченной register semantics —
+[TI PC16550D datasheet, SNLS378C](https://media.digikey.com/pdf/Data%20Sheets/Texas%20Instruments%20PDFs/PC16550D.pdf).
+Не заявляются полная 16550A совместимость, baud timing, RX/FIFO, IRQ4, гостевые
+`IN/OUT`, Linux serial compatibility, boot или scheduler. Результаты: 7 UART
+unit tests, 2 UART integration tests, 4 legacy `MachineBus` tests; package
+all-targets check, fmt, layout и diff checks прошли. Независимое
+`gpt-6.1-sol/high` ревью — approve без замечаний P0–P3. См. [отчёт S4-24a](STAGE_4_S4-24A_2026-11-05.md)
+и [JSON evidence](data/stage4/s4-24a-uart.json). Родительский S4-24 открыт,
+поскольку гостевой I/O path и IRQ не реализованы.
 
 В S4-00a (2026-11-05) восстановлены и захэшированы exact-version source
 package/tree inputs, config и три source-файла Ubuntu 7.0.0-38.38. Повторно

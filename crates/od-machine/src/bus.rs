@@ -89,6 +89,9 @@ pub struct DeviceAccess {
 pub enum DeviceError {
     UnknownOffset,
     UnsupportedWidth,
+    UnsupportedSpace,
+    UnsupportedConfiguration,
+    Busy,
     Misaligned,
     ReadOnly,
     WriteOnly,

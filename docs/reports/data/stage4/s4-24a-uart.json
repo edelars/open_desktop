@@ -1,0 +1,81 @@
+{
+  "slice": "S4-24a",
+  "date": "2026-11-05",
+  "baseline_revision": "6aeb2dd",
+  "status": "accepted_bounded_slice",
+  "parent_status": "S4-24 remains open",
+  "implementation": {
+    "code_files": [
+      "crates/od-machine/src/uart16550.rs",
+      "crates/od-machine/src/lib.rs",
+      "crates/od-machine/src/bus.rs",
+      "crates/od-machine/tests/uart16550_polling.rs"
+    ],
+    "public_types": ["Uart16550PollingTx", "Uart16550Handle"],
+    "shared_state": "Arc<Mutex<UartState>>; device and handle clones alias the same state",
+    "pio": "byte-only, COM1 0x3F8-0x3FF",
+    "registers": ["THR", "DLL", "DLM", "LCR", "LSR", "SCR"],
+    "admission": "8N1, nonzero divisor, IER=0, FIFO disabled, IIR reports no interrupt",
+    "tx_state": "one holding byte and one shift byte",
+    "status_bits": {"THRE": "0x20", "TEMT": "0x40"},
+    "explicit_operations": [
+      "transfer_holding_to_shift",
+      "complete_transmission",
+      "reset"
+    ],
+    "host_output": false
+  },
+  "source": {
+    "name": "TI PC16550D datasheet, SNLS378C",
+    "url": "https://media.digikey.com/pdf/Data%20Sheets/Texas%20Instruments%20PDFs/PC16550D.pdf",
+    "used_for": "register selection and THRE/TEMT status definitions"
+  },
+  "verification": [
+    {
+      "command": "cargo test -p od-machine --lib uart16550::tests --locked --offline",
+      "result": "7 passed"
+    },
+    {
+      "command": "cargo test -p od-machine --test uart16550_polling --locked --offline",
+      "result": "2 passed"
+    },
+    {
+      "command": "cargo test -p od-machine --lib bus::tests --locked --offline",
+      "result": "4 passed"
+    },
+    {
+      "command": "cargo check -p od-machine --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "python3 tools/check_layout.py",
+      "result": "passed: Layout OK"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "independent_review": {
+    "reviewer": "gpt-6.1-sol",
+    "result": "approve",
+    "findings_p0_p3": 0
+  },
+  "not_claimed": [
+    "full 16550A compatibility",
+    "baud-accurate timing",
+    "RX",
+    "FIFO operation",
+    "IRQ4 or APIC/IOAPIC routing",
+    "guest CPU IN/OUT and privilege checks",
+    "Linux serial-driver compatibility",
+    "guest boot",
+    "scheduler behavior",
+    "host serial sink"
+  ],
+  "commit_created": false
+}

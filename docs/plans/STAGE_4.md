@@ -454,11 +454,19 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-24. UART 16550A: сначала polling, затем IRQ
 
-- [ ] Polling принято; IRQ принято отдельно; после обоих пунктов задача закрыта.
+- [ ] Polling slice S4-24a принят; IRQ принято отдельно; после обоих пунктов задача закрыта.
 - **Где:** устройство в `od-machine`, runner serial sink, system tests.
 - **Сделать:** COM1 `0x3F8`, IRQ4 по `VIRTUAL_BOARD.md`; реализовать нужные registers, DLAB, line status, FIFO и interrupt conditions согласно точному профилю. Начать с реального polling TX для первого probe; IRQ подключить после S4-27.
 - **Проверка:** divisor/register selection, TX/RX/status transitions, interrupt enable/ack semantics, повторное чтение side effects, raw serial bytes без добавленных host success markers.
 - **Готово:** guest IN/OUT печатает известные bytes; отдельный IRQ case получает и обслуживает UART interrupt. Имитировать UART прямым вызовом host log из guest loader нельзя.
+
+#### S4-24a. Bounded polling TX через PIO bus
+
+- [x] Ограниченный polling TX срез принят после независимого ревью `gpt-6.1-sol/high`; родительский S4-24 остаётся открытым.
+- **Evidence:** [отчёт S4-24a](../reports/STAGE_4_S4-24A_2026-11-05.md) и [JSON evidence](../reports/data/stage4/s4-24a-uart.json).
+- **Граница:** `Uart16550PollingTx` подключается к COM1 `0x3F8–0x3FF` через byte-only PIO. `Uart16550Handle` управляет тем же `Arc<Mutex<UartState>>`, что и bus-owned device; передача продвигается только явными transfer/complete вызовами. Реализованы THR/DLL/DLM/LCR/LSR/SCR, ограничение 8N1 и ненулевого divisor, IER=0, FIFO disabled, IIR no-interrupt, holding/shift stages и reset.
+- **Проверка:** 7 device unit tests, 2 PIO integration tests и 4 существующих `MachineBus` tests; package check, formatting, layout и diff checks прошли.
+- **Не заявлено:** baud timing, RX/FIFO, IRQ4, guest CPU `IN/OUT`, Linux serial compatibility, boot или scheduler. Полная 16550A совместимость не заявлена.
 
 ### S4-25. Local APIC одного CPU
 

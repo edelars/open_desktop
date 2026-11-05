@@ -9,6 +9,7 @@ mod paged_memory_adapter;
 mod physical_memory;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
+mod uart16550;
 mod virtual_clock;
 
 pub use bus::{
@@ -42,6 +43,8 @@ pub use physical_memory::{
 };
 
 pub use virtual_clock::{VirtualClock, VirtualClockError};
+
+pub use uart16550::{Uart16550Handle, Uart16550PollingTx};
 
 #[cfg(feature = "experimental-translation-probe-cache")]
 pub use translation_probe_cache::{TranslationProbeCache, TranslationProbeCacheOutcome};

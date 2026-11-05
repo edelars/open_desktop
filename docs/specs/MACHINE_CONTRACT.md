@@ -66,6 +66,31 @@ binding может ссылаться только на полный `MemoryRegi
 committed-write callback. CPU `IN/OUT`, I/O privilege checks, guest exceptions
 и преобразование linear address остаются в `od-isa` и CPU bridge.
 
+## Bounded COM1 polling transmitter
+
+`Uart16550PollingTx` is a bounded, synchronous TX-only PIO profile bound by the
+caller to COM1 ports `0x3F8–0x3FF`. It is not a claim of full 16550/16550A
+compatibility. The public `Uart16550Handle` shares the device's
+`Arc<Mutex<UartState>>`; cloning the device or handle aliases the same state.
+The handle exposes explicit `transfer_holding_to_shift`,
+`complete_transmission` and `reset` operations, so host call timing does not
+advance transmission.
+
+Only byte-wide PIO accesses are admitted. The bounded register set is THR,
+DLL/DLM (selected by DLAB), LCR, LSR and SCR. The accepted line format is 8N1
+with a nonzero divisor; IER must remain zero, FIFO is disabled, and IIR reports
+no interrupt. TX state consists of one holding byte and one shift byte. LSR
+reports THRE as `0x20` when the holding register is empty and TEMT as `0x40`
+when both stages are empty. A busy holding register or unsupported access is
+rejected without changing device state. Completion returns the original raw
+byte; the model writes no host output.
+
+The register subset is based on TI [PC16550D datasheet, SNLS378C](https://media.digikey.com/pdf/Data%20Sheets/Texas%20Instruments%20PDFs/PC16550D.pdf),
+including its register selection and THRE/TEMT status definitions. The model
+does not claim baud-accurate timing, RX, FIFO operation, IRQ4, guest CPU
+`IN/OUT`, Linux serial-driver compatibility or boot support. Parent task S4-24
+remains open for the guest I/O instruction path and interrupt integration.
+
 ## Диагностический CPU memory bridge
 
 `IdentityMemoryAdapter` реализует `od_isa::GuestMemory` поверх существующего
