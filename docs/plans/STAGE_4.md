@@ -238,7 +238,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   `PageFaultRecord` construction from S4-07 probe. This does not complete S4-08:
   CPU-owned paging state, full manifest feature matrix, cross-page fetch,
   exception delivery/CR2 commit, system tests and independent agent review remain
-  open. See [machine contract](../specs/MACHINE_CONTRACT.md#диагностическая-запись-page-fault)
+  open. See [machine contract](../specs/MACHINE_CONTRACT.md#bounded-page-fault-record-construction)
   and [stage report](../reports/STAGE_4_REPORT.md).
 - **Где:** MMU в `od-machine`, fault construction/CPU state в `od-isa`, `tests/system/`.
 - **Сделать:** cumulative permissions по уровням, CPL, read/write/fetch, supervisor write protection, NX и остальные обязательные features S4-00. Описать CR2, error bits, сохранённый RIP и порядок конкурирующих проверок по стандарту.
@@ -262,7 +262,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-10. Добавить необходимые page sizes и режимы
 
-- [ ] Принято после ревью.
+- [x] Ограниченный S4-10a admission-boundary срез принят после независимого ревью.
+- Реализовано: для текущего Long64/4 KiB профиля present PS на PDPT/PD
+  отвергается как `UnsupportedPageSize` с сохранением уже committed A у предков;
+  pure probe остаётся без мутаций, PML4 bit 7 остаётся reserved-bit fault, PT
+  bit 7 допускается в 4 KiB leaf. Это не реализация huge pages.
+- Полный S4-10 остаётся открытым до S4-00 manifest: 2 MiB/1 GiB leaves,
+  необходимые modes, alignment/reserved/permissions/A-D matrix и Linux boot
+  prerequisites не приняты. См. [machine contract](../specs/MACHINE_CONTRACT.md#huge-page-и-mode-admission-boundary).
 - **Где:** MMU `od-machine`; недостающие CPU modes — `od-isa` и план этапа 2.
 - **Сделать:** добавить 2 MiB/1 GiB pages и иные paging modes только в объёме manifest. Проверить alignment/reserved bits, права и A/D для leaf каждого размера. Неподдержанную optional возможность отключать согласованно с CPU/boot profile.
 - **Проверка:** границы huge pages, смешанная иерархия, неправильный leaf, переходы требуемых modes. Если Linux неизбежно выполняет 32-bit trampoline, закрыть CPU prerequisite, а не симулировать его host loader.

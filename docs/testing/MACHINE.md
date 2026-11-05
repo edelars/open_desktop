@@ -2,7 +2,7 @@
 
 ## Область
 
-Эта методика покрывает S4-02—S4-09: валидируемую physical map, production RAM
+Эта методика покрывает S4-02—S4-10a: валидируемую physical map, production RAM
 owner, committed-write notification, синхронную MMIO/PIO bus, диагностический
 CPU memory bridge, uncached translation probe и bounded tracked RAM access. Она не проверяет CPU-integrated
 paging, guest exception delivery, APIC, JIT, firmware или Linux.
@@ -58,13 +58,20 @@ git diff --check
     Fetch Byte. Already-set A/D bits do not cause duplicate writes or callbacks,
     ROM/reserved/MMIO errors remain distinct, and cross-page/unsupported
     RAM-only accesses have no operand effect.
+21. Present PS entries at PDPT/PD return the exact unsupported-page-size result
+    without descendant or operand access; pure probes remain mutation-free, and
+    tracked ancestor A updates are retained in order while the rejected entry
+    remains unchanged.
+22. Nonpresent+PS keeps nonpresent precedence; PML4 bit 7 remains a reserved
+    bit, PT bit 7 remains admitted for 4 KiB, and reserved-address/NXE cases do
+    not invent huge-page support or change the admission boundary.
 
 ## Интерпретация
 
 Успешные локальные тесты подтверждают только перечисленный Rust-контракт,
 flat identity integration, tracked RAM-only effects и targeted `od-isa`
-PFEC/record tests.
-и pure translation probe. Они не являются physical x86 evidence и не
+PFEC/record tests, pure translation probe и S4-10a rejection boundary. Они не
+являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не
 являются автоматически архитектурными `#PF`.

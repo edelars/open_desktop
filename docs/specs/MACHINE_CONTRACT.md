@@ -157,3 +157,24 @@ D не устанавливается и callback не получает notifica
 API не реализует `GuestMemory`, cross-page операции, huge pages, TLB,
 исключение-доставку или SMP/DMA coherence; pure probe выше остаётся без A/D
 эффектов.
+
+## Huge-page и mode admission boundary
+
+Текущий machine contract принимает только canonical48, physical36, четыре уровня
+Long64 и страницы 4 KiB. Present PS в PDPT или PD не означает fallback или
+частичную поддержку huge page: `probe_long64_4k` и `access_long64_4k_ram`
+возвращают `UnsupportedPageSize` с уровнем, адресом entry и исходным значением.
+Pure probe не меняет RAM; tracked path сохраняет уже committed A updates
+предков, но не меняет отвергнутую entry, не спускается к нижним таблицам и не
+трогает operand.
+
+Проверка `Present` выполняется раньше размера страницы: nonpresent entry с PS
+остаётся `PageFault`. Для present PDPT/PD PS admission refusal предшествует
+проверке остальной large-page формы в этом диагностическом контракте; это не
+заявление об архитектурном приоритете реального x86 fault. PML4 bit 7 остаётся
+reserved-bit outcome, а PT bit 7 не выбирает huge page и не мешает 4 KiB leaf.
+
+2 MiB/1 GiB leaves, LA57, PCID и другие paging modes не реализованы и не
+объявлены optional до фиксации manifest S4-00. Их добавление потребует отдельной
+проверки alignment, reserved bits, permissions и A/D effects, а также отрицательных
+тестов; текущий admission boundary не заменяет эту работу.
