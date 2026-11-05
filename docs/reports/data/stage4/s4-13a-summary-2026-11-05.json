@@ -1,0 +1,47 @@
+{
+  "schema": "od-bench-page-walk-compare-evidence-v1",
+  "source_revision": "8988681157993cc4a8fa1432d8186881ba63c4b0",
+  "fixture_sha256": "f8fb063f8bf7120907ad8884c7d313fc57f3e09f350224d977744d9704bc049a",
+  "request_profile_sha256": "c66717db7cb2eab4968777c02d2cf9506e674c9ae70a96cb1f66698d8484bc2c",
+  "processes": [
+    {
+      "process_run": 1,
+      "raw_artifact": "docs/reports/data/stage4/raw/run-1.json",
+      "sha256": "6e40c94c9509bdae2b1ff357acda9a52b7fc91b8dd8cebc13e93d16c2735a453",
+      "bytes": 86749
+    },
+    {
+      "process_run": 2,
+      "raw_artifact": "docs/reports/data/stage4/raw/run-2.json",
+      "sha256": "1e77c3cb7948d823ae860ecd09f5d3dbdd90af6172d06504ec09064d81518daa",
+      "bytes": 86724
+    },
+    {
+      "process_run": 3,
+      "raw_artifact": "docs/reports/data/stage4/raw/run-3.json",
+      "sha256": "975b6c6d5be1496a97c3badd89ed858f7b1c15d57bc5466a95c03fa5c80c39da",
+      "bytes": 86730
+    }
+  ],
+  "retained_pairs": 600,
+  "discarded_short_series": 6,
+  "minimum_variant_batch_ns": 200000000,
+  "minimum_retained_baseline_ns": 388217291,
+  "minimum_retained_candidate_ns": 239334959,
+  "aggregation": {
+    "ratio": "median of per-pair candidate_over_baseline values",
+    "sample_median_index": "round((n - 1) * 0.5); n=20 selects sorted index 10 (upper middle)",
+    "quartile_indices": "q1=round((n - 1) * 0.25), q3=round((n - 1) * 0.75)"
+  },
+  "median_ratio_by_profile": [
+    {"profile": "repeated-page", "empty": 0.3975840448732433, "repeated": 0.14930215305481936},
+    {"profile": "alternating-pages", "empty": 1.201127784757906, "repeated": 1.2053477186681918},
+    {"profile": "small-locality-16-pages", "empty": 0.42159413640334054, "repeated": 0.4239516654224456},
+    {"profile": "medium-locality-256-pages", "empty": 0.4231474130466799, "repeated": 0.42142117017986325},
+    {"profile": "large-locality-4096-pages", "empty": 0.42194280400539674, "repeated": 0.42197079401424603}
+  ],
+  "metadata_limitations": [
+    "benchmark git status timed out after 2 seconds; working_tree_dirty is null",
+    "CPU model and host page-size metadata were unavailable"
+  ]
+}

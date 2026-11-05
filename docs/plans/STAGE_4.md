@@ -305,7 +305,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-13. Выбрать простой программный TLB по замерам
 
-- [ ] Принято после ревью.
+- [x] Ограниченный S4-13a measurement slice принят после независимого ревью.
+- Реализованы opt-in one-entry pure-translation cache, correctness gate и
+  reproducible release benchmark. Три процесса × 5 synthetic profiles × 2
+  modes × 20 paired samples завершены; результат и ограничения записаны в
+  [S4-13a report](../reports/STAGE_4_S4-13a_2026-11-05.md).
+- Полный S4-13 остаётся открытым: это не production TLB choice. Нужны tracked
+  A/D semantics, mutable mappings, guest invalidation, CPU/JIT integration и
+  representative boot workloads перед выбором capacity/replacement.
 - **Где:** `od-machine`, `tools/bench/`, отчёт и небольшие данные этапа.
 - **Сделать:** сохранить uncached baseline, сделать минимальный bounded TLB prototype. Ключ/tag отражает address space, access/context, размер страницы и все влияющие на перевод permissions; исключить хранение невалидных указателей на RAM.
 - **Проверка:** одинаковые translations/faults/A/D effects cached/uncached; рабочие наборы разного размера, повторные прогоны, hit/miss, latency и память. Сначала измерить реальные случаи, затем выбрать структуру/размер.

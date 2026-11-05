@@ -81,13 +81,18 @@ git diff --check
     translation context while the old snapshot remains unchanged; explicit EFER
     inputs are preserved and validated; distinct roots produce distinct literal
     physical translations.
+28. The experimental pure-translation cache passes preflight parity against the
+    uncached probe, caches only successful 4 KiB walks, reports Hit versus Walk,
+    and leaves pure-probe RAM unchanged; release performance evidence belongs
+    to the separate [S4-13a report](../reports/STAGE_4_S4-13a_2026-11-05.md).
 
 ## Интерпретация
 
 Успешные локальные тесты подтверждают только перечисленный Rust-контракт,
 flat identity integration, tracked RAM-only effects и targeted `od-isa`
 PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
-cross-page admission и S4-12a snapshot bridge. Они не являются physical x86 evidence и не
+cross-page admission, S4-12a snapshot bridge и S4-13a pure-cache experiment.
+Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не
 являются автоматически архитектурными `#PF`.

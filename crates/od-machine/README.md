@@ -17,6 +17,9 @@ vCPU, JIT integration и Linux boot ещё не реализованы. Admissio
 режимы ещё не реализованы. Cross-page accesses отвергаются до page walk;
 split/transaction semantics и CPU restart/REP/RMW integration ещё не
 реализованы. CPU-state snapshot bridge принимает CR0/CR4 из `LongModeState`,
-но guest CR3/EFER transitions и startup evidence ещё не реализованы. Читать ../AGENTS.md и
+но guest CR3/EFER transitions и startup evidence ещё не реализованы.
+Экспериментальный one-entry pure-translation cache и release benchmark не
+являются production TLB и не покрывают tracked A/D, invalidation или Linux.
+Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости
 добавлять вместе с фактическим использованием.

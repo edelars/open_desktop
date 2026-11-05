@@ -216,3 +216,19 @@ snapshot с другим CR3/EFER.
 значения и явный CR3/EFER context, включая WP/NXE effects уже существующего
 validator. Он не реализует MOV CR3, WRMSR/EFER, privilege checks, mode transition
 history, startup sequencing, TLB invalidation или CPU-connected paging.
+
+## Experimental pure-translation cache boundary
+
+`experimental-translation-probe-cache` — opt-in measurement prototype, а не
+production TLB. One-entry cache владеет immutable borrow одного
+`PhysicalMemory`, хранит только успешный 4 KiB translation и тегирует linear
+page, полный `Long64ProbeConfig`, `AccessKind` и полный `AccessContext`.
+Page-table/host pointers не сохраняются. Hit восстанавливает offset в сохранённом
+physical page; miss вызывает существующий pure probe и различается в отчёте как
+`Walk`. Fault, unsupported-size и другие неуспешные outcomes не кэшируются.
+
+Прототип доказывает только корректность и стоимость synthetic pure-probe workload
+при immutable mapping. Он не кэширует tracked A/D effects или конечный operand,
+не реализует INVLPG/guest invalidation и не разрешает замену `PhysicalMemory` под
+живым cache. Результаты S4-13a не выбирают production capacity, replacement или
+TLB integration.
