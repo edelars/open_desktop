@@ -462,6 +462,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** equal/boundary/past deadlines, cancel ready event, reschedule order, duplicate/full/not-found atomicity, `u64` extremes, sequence rebase и VirtualClock readiness.
 - **Готово:** bounded storage и deterministic extraction реализованы; полный S4-23 остаётся открытым для dispatch, reset/generation, HLT wakeup, IRQ и host wait.
 
+#### S4-23b. Reset и поколения очереди
+
+- [x] Ограниченный S4-23b принят после независимого ревью.
+- **Где:** `crates/od-machine/src/event_queue.rs`, публичный API и `event_queue_api`.
+- **Границы:** непрозрачный `EventGeneration` начинается с `0`; все операции очереди проверяют ожидаемое поколение до поиска/проверок ёмкости/мутаций. Reset атомарно очищает pending entries и sequence, сохраняет capacity и clock и публикует checked next generation. `GenerationExhausted` и stale operations не меняют состояние. Извлечённое событие несёт поколение для последующей проверки. Сохраняются абсолютные deadlines и порядок `(deadline, insertion sequence)`.
+- **Проверка:** 122 теста `od-machine` (81 unit + 41 integration), package/workspace checks, fmt, layout, diff check и Graphify; подробности в [отчёте S4-23b](../reports/STAGE_4_S4-23B_2026-11-05.md) и [JSON evidence](../reports/data/stage4/s4-23b-event-generation.json).
+- **Готово:** защита очереди от stale operations после reset принята. Полный S4-23 остаётся открытым для dispatch, IRQ и timers, HLT wakeup, host wait и конкурентного владения.
+
 ### S4-24. UART 16550A: сначала polling, затем IRQ
 
 - [ ] Полная задача открыта. Bounded slices S4-24a, S4-24b и S4-24c приняты; IRQ и guest-visible acceptance остаются обязательными для закрытия.

@@ -431,5 +431,26 @@ deadlines.
 Очередь упорядочивает события по `(deadline, insertion sequence)`; reschedule
 получает новую sequence. Duplicate/full/not-found не меняют очередь. Очередь
 сама не продвигает время, не вызывает callback, не исполняет CPU, не будит HLT
-и не доставляет IRQ. Dispatch, periodic timers, reset/generation, host wait и
-межмашинное владение остаются за будущими срезами S4-23.
+и не доставляет IRQ.
+
+S4-23b добавляет непрозрачный `EventGeneration` конкретного экземпляра очереди,
+начиная с `0`. Все изменяющие и извлекающие операции (`schedule`, `cancel`,
+`reschedule`, `pop_due`, `reset`) требуют ожидаемое поколение; несовпадение
+возвращает `StaleGeneration` до поиска ключа, проверки ёмкости или изменения
+состояния. Уже извлечённое `ScheduledEvent` сохраняет своё поколение, и владелец
+может проверить его через `validate_generation` перед использованием.
+
+`reset` проверяет текущее поколение и выполняет checked increment. При успехе он
+очищает ожидающие события и сбрасывает insertion sequence, сохраняет выделенную
+ёмкость и публикует новое поколение. Reset не меняет `VirtualClock` и абсолютный
+домен deadlines. При исчерпании поколения возвращается `GenerationExhausted`;
+pending entries, sequence, capacity и clock остаются без изменений. Sequence
+остаётся отдельной от поколения: её rebasing не инвалидирует поколение.
+
+Порядок `(deadline, insertion sequence)`, новая позиция при reschedule,
+готовность `deadline <= now_ns`, извлечение не более одного события и прежняя
+атомарность duplicate/full/not-found сохранены. Проверка поколения и reset не
+реализуют dispatch: periodic timers, HLT wakeup, IRQ, host wait, конкурентный
+доступ и межмашинное владение остаются за пределами bounded generation/reset
+среза S4-23b; HLT wakeup и host wait остаются открытыми требованиями полного
+S4-23.

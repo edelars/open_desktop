@@ -188,6 +188,14 @@ operand write не коммитит operand частично. Alias page-table/o
   deadlines с deterministic `(deadline, sequence)` ordering, explicit cancel/
   reschedule и one-at-a-time `pop_due`. Очередь не двигает clock и не dispatch-ит
   CPU/device/IRQ events.
+- S4-23b добавляет `EventGeneration` с начальным значением `0`, stale-generation
+  checks до любых поисков и изменений очереди, reset с checked increment и
+  проверку поколения извлечённых событий. Успешный reset очищает entries и
+  sequence, сохраняя capacity и `VirtualClock`; stale reset и
+  `GenerationExhausted` атомарны. Порядок и абсолютная семантика deadlines S4-23a
+  сохранены. Это не добавляет dispatch, periodic timers, IRQ, HLT wakeup,
+  concurrent ownership или Linux boot. Подробности и evidence находятся в
+  [отчёте S4-23b](STAGE_4_S4-23B_2026-11-05.md).
 
 ## Проверки
 
@@ -259,6 +267,10 @@ S4-22a не доказывает Linux-visible frequency policy, host monotonic 
 RDTSCP/MSR/CPUID, HLT progression или event deadlines.
 S4-23a не доказывает dispatch, periodic timers, reset/generation, HLT wakeup,
 IRQ delivery, host wait или cross-machine event ownership.
+S4-23b доказывает только bounded reset/generation contract и stale-event
+validation; он не доказывает dispatch, IRQ, periodic timers, HLT wakeup,
+concurrent access или Linux boot. S4-23 и Stage 4 остаются открытыми. S4-32a
+остаётся ограничен отсутствующим воспроизводимым freestanding toolchain.
 
 Открыты manifest S4-00, реализация 2 MiB/1 GiB и необходимых режимов, injected
 table-write failure, полная rights/error matrix, двухстраничная transaction

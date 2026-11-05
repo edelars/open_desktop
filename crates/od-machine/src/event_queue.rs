@@ -1,8 +1,13 @@
 //! Fixed-capacity deterministic deadlines for caller-driven virtual time.
 
+/// Opaque identity for one reset generation of an [`EventQueue`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EventGeneration(u64);
+
 /// An event removed from an [`EventQueue`] after its deadline is due.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScheduledEvent {
+    pub generation: EventGeneration,
     pub key: u64,
     pub deadline_ns: u64,
 }
@@ -20,6 +25,8 @@ pub enum EventQueueError {
     DuplicateKey,
     Full,
     NotFound,
+    StaleGeneration,
+    GenerationExhausted,
 }
 
 /// A bounded collection of absolute deadlines in the virtual clock's ns domain.
@@ -32,6 +39,7 @@ pub struct EventQueue {
     entries: Vec<Entry>,
     capacity: usize,
     next_sequence: u64,
+    generation: EventGeneration,
 }
 
 impl EventQueue {
@@ -41,11 +49,17 @@ impl EventQueue {
             entries: Vec::with_capacity(capacity),
             capacity,
             next_sequence: 0,
+            generation: EventGeneration(0),
         }
     }
 
     pub const fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// Return the token required to operate on the current queue generation.
+    pub const fn generation(&self) -> EventGeneration {
+        self.generation
     }
 
     pub fn len(&self) -> usize {
@@ -57,7 +71,13 @@ impl EventQueue {
     }
 
     /// Add a unique key and its absolute deadline.
-    pub fn schedule(&mut self, key: u64, deadline_ns: u64) -> Result<(), EventQueueError> {
+    pub fn schedule(
+        &mut self,
+        generation: EventGeneration,
+        key: u64,
+        deadline_ns: u64,
+    ) -> Result<(), EventQueueError> {
+        self.validate_generation(generation)?;
         if self.entries.iter().any(|entry| entry.key == key) {
             return Err(EventQueueError::DuplicateKey);
         }
@@ -75,7 +95,8 @@ impl EventQueue {
     }
 
     /// Remove a pending key, whether its deadline is due or still in the future.
-    pub fn cancel(&mut self, key: u64) -> Result<(), EventQueueError> {
+    pub fn cancel(&mut self, generation: EventGeneration, key: u64) -> Result<(), EventQueueError> {
+        self.validate_generation(generation)?;
         let Some(index) = self.entries.iter().position(|entry| entry.key == key) else {
             return Err(EventQueueError::NotFound);
         };
@@ -84,7 +105,13 @@ impl EventQueue {
     }
 
     /// Change a pending deadline and assign the event a new insertion order.
-    pub fn reschedule(&mut self, key: u64, deadline_ns: u64) -> Result<(), EventQueueError> {
+    pub fn reschedule(
+        &mut self,
+        generation: EventGeneration,
+        key: u64,
+        deadline_ns: u64,
+    ) -> Result<(), EventQueueError> {
+        self.validate_generation(generation)?;
         if !self.entries.iter().any(|entry| entry.key == key) {
             return Err(EventQueueError::NotFound);
         }
@@ -104,17 +131,52 @@ impl EventQueue {
     }
 
     /// Remove and return at most one event whose deadline is at or before `now_ns`.
-    pub fn pop_due(&mut self, now_ns: u64) -> Option<ScheduledEvent> {
-        let index = self.earliest_index()?;
+    pub fn pop_due(
+        &mut self,
+        generation: EventGeneration,
+        now_ns: u64,
+    ) -> Result<Option<ScheduledEvent>, EventQueueError> {
+        self.validate_generation(generation)?;
+        let Some(index) = self.earliest_index() else {
+            return Ok(None);
+        };
         let entry = self.entries[index];
         if entry.deadline_ns > now_ns {
-            return None;
+            return Ok(None);
         }
         self.entries.remove(index);
-        Some(ScheduledEvent {
+        Ok(Some(ScheduledEvent {
+            generation: self.generation,
             key: entry.key,
             deadline_ns: entry.deadline_ns,
-        })
+        }))
+    }
+
+    /// Reject a token retained across a reset.
+    pub fn validate_generation(&self, generation: EventGeneration) -> Result<(), EventQueueError> {
+        if generation == self.generation {
+            Ok(())
+        } else {
+            Err(EventQueueError::StaleGeneration)
+        }
+    }
+
+    /// Clear all pending events and invalidate every token and extracted event.
+    pub fn reset(
+        &mut self,
+        generation: EventGeneration,
+    ) -> Result<EventGeneration, EventQueueError> {
+        self.validate_generation(generation)?;
+        let next = self
+            .generation
+            .0
+            .checked_add(1)
+            .ok_or(EventQueueError::GenerationExhausted)?;
+
+        self.entries.clear();
+        self.next_sequence = 0;
+        self.generation = EventGeneration(next);
+        Ok(self.generation)
     }
 
     fn earliest_index(&self) -> Option<usize> {
@@ -145,9 +207,33 @@ impl EventQueue {
 mod tests {
     use super::*;
 
+    fn schedule(queue: &mut EventQueue, key: u64, deadline_ns: u64) -> Result<(), EventQueueError> {
+        let generation = queue.generation();
+        queue.schedule(generation, key, deadline_ns)
+    }
+
+    fn cancel(queue: &mut EventQueue, key: u64) -> Result<(), EventQueueError> {
+        let generation = queue.generation();
+        queue.cancel(generation, key)
+    }
+
+    fn reschedule(
+        queue: &mut EventQueue,
+        key: u64,
+        deadline_ns: u64,
+    ) -> Result<(), EventQueueError> {
+        let generation = queue.generation();
+        queue.reschedule(generation, key, deadline_ns)
+    }
+
+    fn pop_due(queue: &mut EventQueue, now_ns: u64) -> Option<ScheduledEvent> {
+        let generation = queue.generation();
+        queue.pop_due(generation, now_ns).unwrap()
+    }
+
     fn drain(queue: &mut EventQueue, now_ns: u64) -> Vec<ScheduledEvent> {
         let mut events = Vec::new();
-        while let Some(event) = queue.pop_due(now_ns) {
+        while let Some(event) = pop_due(queue, now_ns) {
             events.push(event);
         }
         events
@@ -158,11 +244,14 @@ mod tests {
         let mut queue = EventQueue::new(1);
         assert!(queue.is_empty());
         assert_eq!(queue.next_deadline(), None);
-        assert_eq!(queue.pop_due(u64::MAX), None);
+        assert_eq!(pop_due(&mut queue, u64::MAX), None);
 
-        queue.schedule(1, 5).unwrap();
-        assert_eq!(queue.schedule(1, 6), Err(EventQueueError::DuplicateKey));
-        assert_eq!(queue.schedule(2, 4), Err(EventQueueError::Full));
+        schedule(&mut queue, 1, 5).unwrap();
+        assert_eq!(
+            schedule(&mut queue, 1, 6),
+            Err(EventQueueError::DuplicateKey)
+        );
+        assert_eq!(schedule(&mut queue, 2, 4), Err(EventQueueError::Full));
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.next_deadline(), Some(5));
     }
@@ -170,13 +259,13 @@ mod tests {
     #[test]
     fn equal_deadlines_follow_insertion_order_and_pop_one_at_a_time() {
         let mut queue = EventQueue::new(3);
-        queue.schedule(10, 7).unwrap();
-        queue.schedule(20, 7).unwrap();
-        queue.schedule(30, 7).unwrap();
+        schedule(&mut queue, 10, 7).unwrap();
+        schedule(&mut queue, 20, 7).unwrap();
+        schedule(&mut queue, 30, 7).unwrap();
 
-        assert_eq!(queue.pop_due(6), None);
+        assert_eq!(pop_due(&mut queue, 6), None);
         for key in [10, 20, 30] {
-            assert_eq!(queue.pop_due(7).unwrap().key, key);
+            assert_eq!(pop_due(&mut queue, 7).unwrap().key, key);
         }
         assert!(queue.is_empty());
     }
@@ -184,29 +273,29 @@ mod tests {
     #[test]
     fn exact_boundary_past_deadline_and_due_cancellation() {
         let mut queue = EventQueue::new(3);
-        queue.schedule(1, 10).unwrap();
-        queue.schedule(2, 4).unwrap();
-        queue.schedule(3, 8).unwrap();
+        schedule(&mut queue, 1, 10).unwrap();
+        schedule(&mut queue, 2, 4).unwrap();
+        schedule(&mut queue, 3, 8).unwrap();
 
-        assert_eq!(queue.cancel(2), Ok(()));
-        assert_eq!(queue.pop_due(7), None);
-        assert_eq!(queue.pop_due(8).unwrap().key, 3);
-        assert_eq!(queue.pop_due(10).unwrap().key, 1);
+        assert_eq!(cancel(&mut queue, 2), Ok(()));
+        assert_eq!(pop_due(&mut queue, 7), None);
+        assert_eq!(pop_due(&mut queue, 8).unwrap().key, 3);
+        assert_eq!(pop_due(&mut queue, 10).unwrap().key, 1);
 
-        queue.schedule(4, 2).unwrap();
-        assert_eq!(queue.pop_due(3).unwrap().key, 4);
+        schedule(&mut queue, 4, 2).unwrap();
+        assert_eq!(pop_due(&mut queue, 3).unwrap().key, 4);
     }
 
     #[test]
     fn reschedule_changes_order_for_earlier_later_and_equal_deadlines() {
         let mut queue = EventQueue::new(4);
-        queue.schedule(1, 10).unwrap();
-        queue.schedule(2, 10).unwrap();
-        queue.schedule(3, 20).unwrap();
+        schedule(&mut queue, 1, 10).unwrap();
+        schedule(&mut queue, 2, 10).unwrap();
+        schedule(&mut queue, 3, 20).unwrap();
 
-        queue.reschedule(3, 5).unwrap();
-        queue.reschedule(1, 20).unwrap();
-        queue.reschedule(2, 20).unwrap();
+        reschedule(&mut queue, 3, 5).unwrap();
+        reschedule(&mut queue, 1, 20).unwrap();
+        reschedule(&mut queue, 2, 20).unwrap();
         assert_eq!(
             drain(&mut queue, 20)
                 .into_iter()
@@ -215,55 +304,58 @@ mod tests {
             [3, 1, 2]
         );
 
-        queue.schedule(4, 30).unwrap();
-        queue.reschedule(4, 30).unwrap();
-        assert_eq!(queue.pop_due(30).unwrap().key, 4);
+        schedule(&mut queue, 4, 30).unwrap();
+        reschedule(&mut queue, 4, 30).unwrap();
+        assert_eq!(pop_due(&mut queue, 30).unwrap().key, 4);
 
         let mut equal = EventQueue::new(2);
-        equal.schedule(1, 7).unwrap();
-        equal.schedule(2, 7).unwrap();
-        equal.reschedule(1, 7).unwrap();
-        assert_eq!(equal.pop_due(7).unwrap().key, 2);
-        assert_eq!(equal.pop_due(7).unwrap().key, 1);
+        schedule(&mut equal, 1, 7).unwrap();
+        schedule(&mut equal, 2, 7).unwrap();
+        reschedule(&mut equal, 1, 7).unwrap();
+        assert_eq!(pop_due(&mut equal, 7).unwrap().key, 2);
+        assert_eq!(pop_due(&mut equal, 7).unwrap().key, 1);
     }
 
     #[test]
     fn sequence_rebases_before_counter_wrap() {
         let mut queue = EventQueue::new(2);
         queue.next_sequence = u64::MAX;
-        queue.schedule(1, 5).unwrap();
-        queue.schedule(2, 5).unwrap();
-        assert_eq!(queue.pop_due(5).unwrap().key, 1);
-        assert_eq!(queue.pop_due(5).unwrap().key, 2);
+        schedule(&mut queue, 1, 5).unwrap();
+        schedule(&mut queue, 2, 5).unwrap();
+        assert_eq!(pop_due(&mut queue, 5).unwrap().key, 1);
+        assert_eq!(pop_due(&mut queue, 5).unwrap().key, 2);
     }
 
     #[test]
     fn failed_operations_leave_queue_unchanged() {
         let mut queue = EventQueue::new(1);
-        queue.schedule(1, 9).unwrap();
+        schedule(&mut queue, 1, 9).unwrap();
         let before = (queue.len(), queue.next_deadline());
 
-        assert_eq!(queue.cancel(2), Err(EventQueueError::NotFound));
-        assert_eq!(queue.reschedule(2, 1), Err(EventQueueError::NotFound));
-        assert_eq!(queue.schedule(2, 1), Err(EventQueueError::Full));
-        assert_eq!(queue.schedule(1, 1), Err(EventQueueError::DuplicateKey));
+        assert_eq!(cancel(&mut queue, 2), Err(EventQueueError::NotFound));
+        assert_eq!(reschedule(&mut queue, 2, 1), Err(EventQueueError::NotFound));
+        assert_eq!(schedule(&mut queue, 2, 1), Err(EventQueueError::Full));
+        assert_eq!(
+            schedule(&mut queue, 1, 1),
+            Err(EventQueueError::DuplicateKey)
+        );
         assert_eq!((queue.len(), queue.next_deadline()), before);
-        assert_eq!(queue.pop_due(8), None);
-        assert_eq!(queue.pop_due(9).unwrap().key, 1);
+        assert_eq!(pop_due(&mut queue, 8), None);
+        assert_eq!(pop_due(&mut queue, 9).unwrap().key, 1);
     }
 
     #[test]
     fn deadline_order_handles_u64_extremes() {
         let mut queue = EventQueue::new(3);
-        queue.schedule(1, u64::MAX).unwrap();
-        queue.schedule(2, 0).unwrap();
-        queue.schedule(3, u64::MAX - 1).unwrap();
+        schedule(&mut queue, 1, u64::MAX).unwrap();
+        schedule(&mut queue, 2, 0).unwrap();
+        schedule(&mut queue, 3, u64::MAX - 1).unwrap();
 
         assert_eq!(queue.next_deadline(), Some(0));
-        assert_eq!(queue.pop_due(0).unwrap().key, 2);
-        assert_eq!(queue.pop_due(u64::MAX - 2), None);
-        assert_eq!(queue.pop_due(u64::MAX - 1).unwrap().key, 3);
-        assert_eq!(queue.pop_due(u64::MAX).unwrap().key, 1);
+        assert_eq!(pop_due(&mut queue, 0).unwrap().key, 2);
+        assert_eq!(pop_due(&mut queue, u64::MAX - 2), None);
+        assert_eq!(pop_due(&mut queue, u64::MAX - 1).unwrap().key, 3);
+        assert_eq!(pop_due(&mut queue, u64::MAX).unwrap().key, 1);
     }
 
     #[test]
@@ -272,11 +364,150 @@ mod tests {
         let storage_capacity = queue.entries.capacity();
         for _ in 0..100 {
             for key in 0..8 {
-                queue.schedule(key, key).unwrap();
+                schedule(&mut queue, key, key).unwrap();
             }
             assert_eq!(queue.entries.capacity(), storage_capacity);
             assert_eq!(drain(&mut queue, u64::MAX).len(), 8);
             assert_eq!(queue.entries.capacity(), storage_capacity);
         }
+    }
+
+    #[test]
+    fn reset_empty_and_full_queue_preserves_capacity_and_restarts_sequence() {
+        let mut queue = EventQueue::new(2);
+        let storage_capacity = queue.entries.capacity();
+        let initial = queue.generation();
+        let after_empty_reset = queue.reset(initial).unwrap();
+        assert_ne!(after_empty_reset, initial);
+        assert_eq!(queue.entries.capacity(), storage_capacity);
+
+        schedule(&mut queue, 1, 5).unwrap();
+        schedule(&mut queue, 2, 5).unwrap();
+        assert_eq!(queue.next_sequence, 2);
+        let current = queue.generation();
+        let after_full_reset = queue.reset(current).unwrap();
+        assert_eq!(queue.len(), 0);
+        assert_eq!(queue.next_sequence, 0);
+        assert_eq!(queue.entries.capacity(), storage_capacity);
+        schedule(&mut queue, 2, 5).unwrap();
+        schedule(&mut queue, 1, 5).unwrap();
+        assert_eq!(queue.next_sequence, 2);
+        assert_eq!(pop_due(&mut queue, 5).unwrap().generation, after_full_reset);
+        assert_eq!(pop_due(&mut queue, 5).unwrap().key, 1);
+    }
+
+    #[test]
+    fn stale_operations_are_rejected_before_key_or_capacity_checks() {
+        let mut queue = EventQueue::new(1);
+        let stale = queue.generation();
+        schedule(&mut queue, 1, 10).unwrap();
+        let previous = queue.generation();
+        let current = queue.reset(previous).unwrap();
+        schedule(&mut queue, 1, 10).unwrap();
+        let before = (
+            queue.len(),
+            queue.next_deadline(),
+            queue.next_sequence,
+            queue.generation(),
+        );
+
+        assert_eq!(
+            queue.schedule(stale, 1, 0),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(
+            queue.schedule(stale, 2, 0),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(
+            queue.cancel(stale, 1),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(
+            queue.cancel(stale, 99),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(
+            queue.reschedule(stale, 1, 0),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(
+            queue.reschedule(stale, 99, 0),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(
+            queue.pop_due(stale, u64::MAX),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(queue.reset(stale), Err(EventQueueError::StaleGeneration));
+        assert_eq!(
+            queue.validate_generation(stale),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(
+            (
+                queue.len(),
+                queue.next_deadline(),
+                queue.next_sequence,
+                queue.generation()
+            ),
+            before
+        );
+        assert_eq!(queue.generation(), current);
+        assert_eq!(pop_due(&mut queue, 10).unwrap().key, 1);
+    }
+
+    #[test]
+    fn reset_invalidates_extracted_event_even_when_queue_was_empty() {
+        let mut queue = EventQueue::new(1);
+        let old = queue.generation();
+        schedule(&mut queue, 5, 1).unwrap();
+        let event = pop_due(&mut queue, 1).unwrap();
+        assert!(queue.is_empty());
+
+        let new = queue.reset(old).unwrap();
+        assert_eq!(
+            queue.validate_generation(event.generation),
+            Err(EventQueueError::StaleGeneration)
+        );
+        assert_eq!(queue.validate_generation(new), Ok(()));
+    }
+
+    #[test]
+    fn generation_exhaustion_is_atomic_and_does_not_reuse_tokens() {
+        let mut queue = EventQueue::new(2);
+        queue.generation = EventGeneration(u64::MAX);
+        queue.next_sequence = 17;
+        schedule(&mut queue, 1, 3).unwrap();
+        let generation = queue.generation();
+        let before_entries = queue.entries.clone();
+        let before_capacity = queue.entries.capacity();
+        assert_eq!(
+            queue.reset(generation),
+            Err(EventQueueError::GenerationExhausted)
+        );
+        assert_eq!(queue.generation(), generation);
+        assert_eq!(queue.entries, before_entries);
+        assert_eq!(queue.entries.capacity(), before_capacity);
+        assert_eq!(queue.next_sequence, 18);
+        assert_eq!(pop_due(&mut queue, 3).unwrap().key, 1);
+    }
+
+    #[test]
+    fn generation_is_independent_from_sequence_rebasing() {
+        let mut queue = EventQueue::new(3);
+        let generation = queue.generation();
+        schedule(&mut queue, 1, 7).unwrap();
+        schedule(&mut queue, 2, 7).unwrap();
+        queue.next_sequence = u64::MAX;
+        schedule(&mut queue, 3, 7).unwrap();
+        assert_eq!(queue.generation(), generation);
+        assert_eq!(
+            drain(&mut queue, 7)
+                .into_iter()
+                .map(|event| event.key)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
     }
 }

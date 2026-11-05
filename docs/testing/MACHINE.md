@@ -124,6 +124,12 @@ git diff --check
 39. Duplicate/full/not-found operations, cancellation of due events, `u64`
     extremes and sequence rebasing leave the queue unchanged or ordered by the
     documented contract; VirtualClock readiness does not advance time.
+40. S4-23b checks that `EventGeneration` starts at zero, every queue operation
+    rejects a stale generation before lookup/capacity checks or mutation, and
+    extracted events are validated before use. Successful reset clears pending
+    events and sequence while retaining capacity; stale reset and generation
+    exhaustion preserve entries, sequence, capacity and clock. Deadline/order
+    semantics remain unchanged, and reset never advances `VirtualClock`.
 
 ## Интерпретация
 
@@ -132,7 +138,8 @@ flat identity integration, tracked RAM-only effects и targeted `od-isa`
 PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
 cross-page admission, S4-12a snapshot bridge, S4-13a pure-cache experiment,
 S4-14a cache lifecycle boundary, S4-21a diagnostic vCPU session и S4-22a
-caller-driven clock/RDTSC boundary и S4-23a bounded deadline queue.
+caller-driven clock/RDTSC boundary, S4-23a bounded deadline queue и S4-23b
+reset-generation boundary.
 Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не

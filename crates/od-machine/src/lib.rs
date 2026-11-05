@@ -25,7 +25,7 @@ pub use diagnostic_vcpu::{
     DiagnosticVcpuSession, DiagnosticVcpuState, WorkLimitReason,
 };
 
-pub use event_queue::{EventQueue, EventQueueError, ScheduledEvent};
+pub use event_queue::{EventGeneration, EventQueue, EventQueueError, ScheduledEvent};
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};
 

@@ -1,0 +1,100 @@
+{
+  "slice": "S4-23b",
+  "date": "2026-11-05",
+  "status": "accepted_bounded_slice",
+  "parent_status": "S4-23 remains open",
+  "stage_4_complete": false,
+  "contract": {
+    "type": "EventGeneration",
+    "opaque": true,
+    "initial_value": 0,
+    "scope": "one EventQueue instance",
+    "stale_error": "StaleGeneration",
+    "stale_validation_precedes": [
+      "key lookup",
+      "capacity checks",
+      "queue mutation"
+    ],
+    "generation_checked_operations": [
+      "schedule",
+      "cancel",
+      "reschedule",
+      "pop_due",
+      "reset"
+    ],
+    "extracted_event_validation": "ScheduledEvent carries its generation and can be checked with validate_generation before use",
+    "reset_success": {
+      "generation_increment": "checked",
+      "pending_events": "cleared",
+      "insertion_sequence": "reset",
+      "capacity": "preserved",
+      "virtual_clock": "unchanged",
+      "absolute_deadline_domain": "preserved"
+    },
+    "generation_exhaustion": {
+      "error": "GenerationExhausted",
+      "state_change": false,
+      "preserved": [
+        "generation",
+        "pending events",
+        "insertion sequence",
+        "capacity",
+        "VirtualClock"
+      ]
+    },
+    "ordering_and_deadline_semantics": [
+      "order by (deadline, insertion sequence)",
+      "reschedule receives a new sequence position",
+      "deadline <= now is due",
+      "pop_due removes at most one event",
+      "sequence rebasing does not change generation"
+    ]
+  },
+  "verification": [
+    {
+      "command": "cargo test -p od-machine --all-targets --locked --offline",
+      "result": "122 passed: 81 unit + 41 integration"
+    },
+    {
+      "command": "cargo check -p od-machine --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo check --workspace --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "python3 tools/check_layout.py",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "graphify query and graphify update .",
+      "result": "query preceded source inspection; code graph refreshed; docs-aware semantic extraction not run"
+    }
+  ],
+  "independent_review": {
+    "result": "approved",
+    "findings_p0_p3": 0
+  },
+  "not_claimed": [
+    "S4-23 completion",
+    "Stage 4 completion",
+    "event dispatch",
+    "IRQ",
+    "periodic timers",
+    "HLT wakeup",
+    "host wait",
+    "concurrent access",
+    "cross-machine ownership",
+    "Linux boot"
+  ],
+  "related_open_blocker": "S4-32a freestanding toolchain remains unavailable"
+}
