@@ -140,6 +140,11 @@ pub enum ContractViolation {
     },
     /// After a successful resize the backend reported a different size.
     SizeAfterResize { expected: u64, actual: u64 },
+    /// A durable flush refusal named a different scope than the one asked.
+    DurabilityScopeMismatch {
+        requested: DurabilityScope,
+        reported: DurabilityScope,
+    },
 }
 
 /// Failure reported by a raw backend call.
@@ -149,8 +154,16 @@ pub enum BackendError {
         kind: ErrorKind,
         os_error: Option<i32>,
     },
-    /// The backend does not implement this optional operation.
+    /// The backend does not implement this optional operation. For a durable
+    /// flush this means the backend contradicts its declared capabilities;
+    /// an honest refusal to provide durability is
+    /// [`DurabilityUnsupported`](Self::DurabilityUnsupported).
     Unsupported,
+    /// The backend refused a durable flush for `scope` before performing it
+    /// (for example the file system does not implement the request). Nothing
+    /// was flushed and no acknowledgement may be given; the object's state is
+    /// unchanged by the refusal.
+    DurabilityUnsupported { scope: DurabilityScope },
     /// The exclusive writer no longer owns the object its path names (the
     /// path was replaced, renamed away or unlinked). The mutation was refused.
     WriterIdentityLost,
@@ -280,6 +293,12 @@ pub enum StorageError {
     },
     InconsistentCapabilities(CapabilityInconsistency),
     BackendContract(ContractViolation),
+    /// An earlier durable flush failed after it may have started, so the
+    /// durable state of the object is unknown. Writes, resizes and flushes are
+    /// refused without calling the backend until a separate reconcile
+    /// operation (not part of this API) establishes the state again; no
+    /// [`DurableAck`] can be obtained meanwhile.
+    ReconcileRequired,
 }
 
 impl fmt::Display for StorageError {
@@ -292,7 +311,11 @@ impl std::error::Error for StorageError {}
 
 /// Proof that a backend completed a durable flush for `scope`. This is
 /// distinct from the completion of a write.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// Deliberately neither `Clone` nor `Copy`: an acknowledgement is consumed by
+/// the caller that received it and cannot be duplicated and reused after the
+/// object has entered the sticky reconcile state.
+#[derive(Debug, Eq, PartialEq)]
 pub struct DurableAck {
     scope: DurabilityScope,
 }
@@ -310,6 +333,13 @@ impl DurableAck {
 pub struct CheckedStorage<B: StorageBackend> {
     backend: B,
     capabilities: StorageCapabilities,
+    /// Sticky: set when a durable flush failed in a way other than an explicit
+    /// refusal. It is cleared only by a new reconcile operation, which is
+    /// outside this API. [`into_backend`](Self::into_backend) refuses to
+    /// release the backend while it is set, and building a new
+    /// `CheckedStorage` over a backend that was ever in this state is
+    /// forbidden by protocol: `new()` is not a reset.
+    reconcile_required: bool,
 }
 
 impl<B: StorageBackend> CheckedStorage<B> {
@@ -322,6 +352,7 @@ impl<B: StorageBackend> CheckedStorage<B> {
         Ok(Self {
             backend,
             capabilities,
+            reconcile_required: false,
         })
     }
 
@@ -329,8 +360,16 @@ impl<B: StorageBackend> CheckedStorage<B> {
         self.capabilities
     }
 
-    pub fn into_backend(self) -> B {
-        self.backend
+    /// Releases the backend. While the sticky reconcile state is set the
+    /// backend is not handed out and `self` is returned unchanged, so the
+    /// state cannot be bypassed by re-wrapping the backend with
+    /// [`new`](Self::new).
+    pub fn into_backend(self) -> Result<B, Self> {
+        if self.reconcile_required {
+            Err(self)
+        } else {
+            Ok(self.backend)
+        }
     }
 
     pub fn size(&self) -> Result<u64, StorageError> {
@@ -389,6 +428,7 @@ impl<B: StorageBackend> CheckedStorage<B> {
     /// is an explicit [`set_len`](Self::set_len). Success is write completion,
     /// not durability.
     pub fn write_all_at(&mut self, offset: u64, buf: &[u8]) -> Result<(), StorageError> {
+        self.ensure_no_reconcile()?;
         if !self.capabilities.writable {
             return Err(StorageError::ReadOnly);
         }
@@ -444,6 +484,7 @@ impl<B: StorageBackend> CheckedStorage<B> {
 
     /// Explicitly grows (zero-filled) or shrinks the logical size.
     pub fn set_len(&mut self, len: u64) -> Result<(), StorageError> {
+        self.ensure_no_reconcile()?;
         if !self.capabilities.writable {
             return Err(StorageError::ReadOnly);
         }
@@ -479,27 +520,70 @@ impl<B: StorageBackend> CheckedStorage<B> {
 
     /// Durable flush of file contents. `UnsupportedDurability` unless the
     /// backend declares `file_durability`; the backend is not called then.
+    ///
+    /// Any failure other than an explicit refusal
+    /// ([`BackendError::DurabilityUnsupported`]) may have happened after the
+    /// flush started, so it moves this object into the sticky
+    /// [`StorageError::ReconcileRequired`] state.
     pub fn flush_file_durable(&mut self) -> Result<DurableAck, StorageError> {
+        self.ensure_no_reconcile()?;
         let scope = DurabilityScope::File;
         if !self.capabilities.file_durability {
             return Err(StorageError::UnsupportedDurability { scope });
         }
-        match self.backend.flush_file_durable() {
-            Ok(()) => Ok(DurableAck { scope }),
-            Err(e) => Err(map_durability_error(IoOp::FlushFile, scope, e)),
-        }
+        let result = self.backend.flush_file_durable();
+        self.finish_flush(IoOp::FlushFile, scope, result)
     }
 
     /// Durable flush of the directory entry. `UnsupportedDurability` unless the
     /// backend declares `namespace_durability`.
+    /// Failure handling is the same as for
+    /// [`flush_file_durable`](Self::flush_file_durable).
     pub fn flush_namespace_durable(&mut self) -> Result<DurableAck, StorageError> {
+        self.ensure_no_reconcile()?;
         let scope = DurabilityScope::Namespace;
         if !self.capabilities.namespace_durability {
             return Err(StorageError::UnsupportedDurability { scope });
         }
-        match self.backend.flush_namespace_durable() {
+        let result = self.backend.flush_namespace_durable();
+        self.finish_flush(IoOp::FlushNamespace, scope, result)
+    }
+
+    /// Turns a backend flush result into an ack or a typed error and applies
+    /// the sticky rule: only a refusal that names the requested scope leaves
+    /// the object usable.
+    fn finish_flush(
+        &mut self,
+        op: IoOp,
+        scope: DurabilityScope,
+        result: Result<(), BackendError>,
+    ) -> Result<DurableAck, StorageError> {
+        match result {
             Ok(()) => Ok(DurableAck { scope }),
-            Err(e) => Err(map_durability_error(IoOp::FlushNamespace, scope, e)),
+            Err(BackendError::DurabilityUnsupported { scope: reported }) if reported == scope => {
+                Err(StorageError::UnsupportedDurability { scope })
+            }
+            Err(BackendError::DurabilityUnsupported { scope: reported }) => {
+                self.reconcile_required = true;
+                Err(StorageError::BackendContract(
+                    ContractViolation::DurabilityScopeMismatch {
+                        requested: scope,
+                        reported,
+                    },
+                ))
+            }
+            Err(e) => {
+                self.reconcile_required = true;
+                Err(map_durability_error(op, scope, e))
+            }
+        }
+    }
+
+    fn ensure_no_reconcile(&self) -> Result<(), StorageError> {
+        if self.reconcile_required {
+            Err(StorageError::ReconcileRequired)
+        } else {
+            Ok(())
         }
     }
 }
@@ -525,12 +609,14 @@ fn map_error(op: IoOp, error: BackendError, completed: usize) -> StorageError {
         },
         BackendError::WriterIdentityLost => StorageError::WriterIdentityLost { completed },
         // An unsupported primitive required for a declared operation.
-        BackendError::Unsupported => StorageError::Io {
-            op,
-            kind: ErrorKind::Unsupported,
-            os_error: None,
-            completed,
-        },
+        BackendError::Unsupported | BackendError::DurabilityUnsupported { .. } => {
+            StorageError::Io {
+                op,
+                kind: ErrorKind::Unsupported,
+                os_error: None,
+                completed,
+            }
+        }
     }
 }
 

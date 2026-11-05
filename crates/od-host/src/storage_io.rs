@@ -7,12 +7,33 @@
 //! structures. Persistent state identifies storage by logical identity, never
 //! by this value.
 //!
-//! This backend declares no durability:
+//! # Durability
 //!
-//! * `file_durability` and `namespace_durability` are `false`. Writing and
-//!   closing a file is completion, not a power-loss durable acknowledgement;
-//!   the macOS/APFS guarantee is unconfirmed (ISSUE-055) and the durable path
-//!   belongs to a later task. `sync_all` is intentionally not called.
+//! Writing and closing a file is completion, not a power-loss durable
+//! acknowledgement.
+//!
+//! * `file_durability` is `true` only for a writable instance holding the
+//!   exclusive lock on macOS. [`StorageBackend::flush_file_durable`] there
+//!   calls `fcntl(fd, F_FULLFSYNC)` on the locked descriptor: per `man fcntl`
+//!   (macOS) it is `fsync` followed by a request to the drive to flush all
+//!   buffered data to the permanent storage device, implemented on HFS, FAT,
+//!   UDF and APFS. Volumes or devices that ignore the request (the man page
+//!   mentions FireWire drives) are not detectable here. Only `ENOTSUP` is
+//!   mapped to [`BackendError::DurabilityUnsupported`] (explicit refusal,
+//!   never an acknowledgement, no reconcile state). This is a defensive
+//!   assumption: `man fcntl` on the development machine does not describe
+//!   `ENOTSUP` for `F_FULLFSYNC`, so the branch is not confirmed by a source.
+//!   Every other failure, `EINVAL` included, is an ordinary I/O error with an
+//!   ambiguous outcome, after which the checked layer demands reconciliation. `sync_all`/`fsync` is intentionally never used as a
+//!   substitute: it does not carry the drive-flush request.
+//! * On every other platform `file_durability` is `false`.
+//! * `namespace_durability` is `false` everywhere: no source confirms how to
+//!   make the creation or rename of a directory entry durable (ISSUE-055), so
+//!   `flush_namespace_durable` stays unsupported.
+//! * Read-only instances never claim durability.
+//!
+//! Power loss is not exercised by tests; only the call sequence and that the
+//! written bytes are visible afterwards are checked.
 //!
 //! # Single writer
 //!
@@ -53,7 +74,7 @@
 //! Only Unix targets are supported because the adapter uses positioned I/O
 //! (`pread`/`pwrite`) and `flock(2)`.
 
-use od_storage::io::{BackendError, StorageBackend, StorageCapabilities};
+use od_storage::io::{BackendError, DurabilityScope, StorageBackend, StorageCapabilities};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -73,6 +94,29 @@ unsafe extern "C" {
     // SAFETY contract: `fd` is an open descriptor owned by the caller;
     // `flock` reads no memory and only changes lock state in the kernel.
     fn flock(fd: i32, operation: i32) -> i32;
+}
+
+/// `fcntl(2)` command `F_FULLFSYNC` from the macOS SDK `<sys/fcntl.h>`.
+#[cfg(target_os = "macos")]
+const F_FULLFSYNC: i32 = 51;
+/// macOS `errno` value (`<sys/errno.h>`). Defensive assumption: it is treated
+/// as an explicit "durability unsupported" refusal for `F_FULLFSYNC`, but
+/// `man fcntl` on this machine does not describe it for that command; the
+/// mapping is not confirmed by a source. `EINVAL` is deliberately not mapped:
+/// its meaning here is ambiguous, so it is a plain I/O error (sticky).
+#[cfg(target_os = "macos")]
+const ENOTSUP: i32 = 45;
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    // `fcntl` is variadic in C (`int fcntl(int, int, ...)`). It must be
+    // declared variadic: on Apple arm64 variadic arguments are passed on the
+    // stack, so a fixed-arity declaration would be a different ABI. For
+    // `F_FULLFSYNC` the third argument is ignored by the kernel; a `c_int`
+    // zero is passed anyway.
+    // SAFETY contract: `fd` is an open descriptor owned by the caller;
+    // `F_FULLFSYNC` reads no caller memory.
+    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
 }
 
 /// Stable identity of an open file: device and inode from `fstat`.
@@ -280,7 +324,11 @@ impl StorageBackend for HostFileStorage {
         if self.writable {
             let caps = StorageCapabilities::read_write(HOST_MAX_LEN);
             if self.lock.is_some() {
-                caps.with_exclusive_lock()
+                let mut caps = caps.with_exclusive_lock();
+                // File data durability only for the locked writer on macOS
+                // (`F_FULLFSYNC`); never namespace durability.
+                caps.file_durability = cfg!(target_os = "macos");
+                caps
             } else {
                 caps
             }
@@ -308,6 +356,38 @@ impl StorageBackend for HostFileStorage {
     fn set_len(&mut self, len: u64) -> Result<(), BackendError> {
         self.check_writer_identity()?;
         self.file.set_len(len).map_err(backend_error)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn flush_file_durable(&mut self) -> Result<(), BackendError> {
+        // Only the exclusive writer declares file durability; refuse anything
+        // else, and refuse to acknowledge a file whose path no longer names
+        // the locked object.
+        if !self.writable || self.lock.is_none() {
+            return Err(BackendError::Unsupported);
+        }
+        self.check_writer_identity()?;
+        loop {
+            // SAFETY: the descriptor is owned by `self.file` and open for the
+            // call; `F_FULLFSYNC` ignores the variadic argument and touches no
+            // caller memory (see `man 2 fcntl`).
+            let rc = unsafe { fcntl(self.file.as_raw_fd(), F_FULLFSYNC, 0 as std::ffi::c_int) };
+            if rc != -1 {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            match error.raw_os_error() {
+                // Defensive assumption, not confirmed by `man fcntl` (see the
+                // errno constants above and the module docs).
+                Some(ENOTSUP) => {
+                    return Err(BackendError::DurabilityUnsupported {
+                        scope: DurabilityScope::File,
+                    });
+                }
+                _ if error.kind() == io::ErrorKind::Interrupted => continue,
+                _ => return Err(backend_error(error)),
+            }
+        }
     }
 }
 
@@ -408,12 +488,12 @@ mod tests {
     }
 
     #[test]
-    fn host_backend_declares_no_durability_and_lock_only_for_writer() {
+    fn host_backend_declares_file_durability_only_on_macos_writer_and_lock_only_for_writer() {
         let _serial = serial();
         let mut fixture = HostFixture::new();
         let caps = fixture.create(&[1]).capabilities();
         assert!(caps.writable && caps.resize);
-        assert!(!caps.file_durability);
+        assert_eq!(caps.file_durability, cfg!(target_os = "macos"));
         assert!(!caps.namespace_durability);
         assert!(
             caps.exclusive_lock,
@@ -422,16 +502,77 @@ mod tests {
         assert_eq!(caps.max_len, i64::MAX as u64);
         let read_only = fixture.create_read_only(&[1]).capabilities();
         assert!(!read_only.writable && !read_only.exclusive_lock);
+        assert!(!read_only.file_durability && !read_only.namespace_durability);
         let mut storage = CheckedStorage::new(fixture.create(&[1])).unwrap();
         storage.write_all_at(0, &[2]).expect("write completion");
-        assert!(matches!(
-            storage.flush_file_durable(),
-            Err(StorageError::UnsupportedDurability { .. })
-        ));
         assert!(matches!(
             storage.flush_namespace_durable(),
             Err(StorageError::UnsupportedDurability { .. })
         ));
+        let mut read_only = CheckedStorage::new(fixture.create_read_only(&[1])).unwrap();
+        assert!(matches!(
+            read_only.flush_file_durable(),
+            Err(StorageError::UnsupportedDurability {
+                scope: od_storage::io::DurabilityScope::File
+            })
+        ));
+        assert!(matches!(
+            read_only.flush_namespace_durable(),
+            Err(StorageError::UnsupportedDurability { .. })
+        ));
+    }
+
+    /// Order write -> flush -> reopen read-only, compared with `std::fs::read`.
+    /// This checks the call sequence and that the bytes are visible; it does
+    /// NOT test power loss (not reproducible here).
+    #[test]
+    fn flush_file_durable_after_write_on_exclusive_writer() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "durable.raw");
+        let mut storage =
+            CheckedStorage::new(HostFileStorage::open_read_write_exclusive(&path).unwrap())
+                .unwrap();
+        storage.write_all_at(3, b"durable").expect("write");
+        let ack = storage.flush_file_durable();
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                ack.map(|a| a.scope()),
+                Ok(od_storage::io::DurabilityScope::File)
+            );
+        } else {
+            assert!(matches!(
+                ack,
+                Err(StorageError::UnsupportedDurability { .. })
+            ));
+        }
+        assert!(matches!(
+            storage.flush_namespace_durable(),
+            Err(StorageError::UnsupportedDurability { .. })
+        ));
+        drop(storage);
+        let reopened =
+            CheckedStorage::new(HostFileStorage::open_read_only(&path).unwrap()).unwrap();
+        let mut via_backend = vec![0u8; 64];
+        reopened.read_exact_at(0, &mut via_backend).unwrap();
+        let via_fs = std::fs::read(&path).unwrap();
+        assert_eq!(via_backend, via_fs);
+        assert_eq!(&via_fs[3..10], b"durable");
+    }
+
+    /// A flush on a backend whose path was replaced is refused, not acked.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn flush_file_durable_refuses_lost_writer_identity() {
+        let _serial = serial();
+        let dir = TempDir::new();
+        let path = make_file(&dir, "lost.raw");
+        let mut backend = HostFileStorage::open_read_write_exclusive(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            backend.flush_file_durable(),
+            Err(BackendError::WriterIdentityLost)
+        );
     }
 
     #[test]
@@ -548,7 +689,8 @@ mod tests {
         let writer = HostFileStorage::open_read_write_exclusive(&path).unwrap();
         let caps = writer.capabilities();
         assert!(caps.exclusive_lock && caps.writable);
-        assert!(!caps.file_durability && !caps.namespace_durability);
+        assert_eq!(caps.file_durability, cfg!(target_os = "macos"));
+        assert!(!caps.namespace_durability);
         // Read-only opens never claim a lock, even while a writer holds one.
         assert!(
             !HostFileStorage::open_read_only(&path)

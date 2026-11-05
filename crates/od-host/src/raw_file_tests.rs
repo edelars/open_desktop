@@ -317,16 +317,26 @@ fn file_truncated_behind_open_image_is_incomplete() {
 }
 
 #[test]
-fn host_image_declares_no_durability() {
+fn host_image_declares_file_durability_only_on_macos() {
     let _serial = process_spawn_guard();
     let dir = TempDir::new();
     let image = create(&dir.path("caps.raw"), SIZE);
     let caps = image.capabilities();
     assert!(caps.writable && caps.exclusive_lock);
-    assert!(!caps.file_durability && !caps.namespace_durability);
+    assert_eq!(caps.file_durability, cfg!(target_os = "macos"));
+    assert!(!caps.namespace_durability);
     let mut storage = image.into_storage();
+    let ack = storage.flush_file_durable();
+    if cfg!(target_os = "macos") {
+        assert!(ack.is_ok(), "{ack:?}");
+    } else {
+        assert!(matches!(
+            ack,
+            Err(StorageError::UnsupportedDurability { .. })
+        ));
+    }
     assert!(matches!(
-        storage.flush_file_durable(),
+        storage.flush_namespace_durable(),
         Err(StorageError::UnsupportedDurability { .. })
     ));
 }

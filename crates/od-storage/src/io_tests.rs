@@ -103,7 +103,11 @@ fn bounded_interrupts_are_retried_then_reported() {
             attempts: MAX_INTERRUPTED_RETRIES + 1
         })
     );
-    assert_eq!(s.into_backend().bytes(), [0; 4], "no byte was written");
+    assert_eq!(
+        s.into_backend().ok().expect("not sticky").bytes(),
+        [0; 4],
+        "no byte was written"
+    );
 }
 
 #[test]
@@ -154,7 +158,10 @@ fn partial_progress_then_zero_progress_reports_completed_bytes() {
             completed: 2
         })
     );
-    assert_eq!(s.into_backend().bytes(), [0, 1, 2, 0, 0, 0, 0, 0]);
+    assert_eq!(
+        s.into_backend().ok().expect("not sticky").bytes(),
+        [0, 1, 2, 0, 0, 0, 0, 0]
+    );
 
     let s = faulty(&[1, 2, 3, 4], &[Fault::Limit(3), Fault::ZeroProgress]);
     assert_eq!(
@@ -309,6 +316,221 @@ fn durability_default_is_unsupported_and_backend_is_not_asked() {
             scope: DurabilityScope::Namespace
         })
     );
+}
+
+/// Backend whose durable flush is scripted; counts every backend call so the
+/// tests can prove that refused operations never reach it.
+struct FlushScript {
+    inner: MemoryStorage,
+    flush_result: Result<(), BackendError>,
+    flushes: std::rc::Rc<Cell<u32>>,
+    mutations: std::rc::Rc<Cell<u32>>,
+}
+
+impl StorageBackend for FlushScript {
+    fn capabilities(&self) -> StorageCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn size(&self) -> Result<u64, BackendError> {
+        self.inner.size()
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BackendError> {
+        self.inner.read_at(offset, buf)
+    }
+
+    fn write_at(&mut self, offset: u64, buf: &[u8]) -> Result<usize, BackendError> {
+        self.mutations.set(self.mutations.get() + 1);
+        self.inner.write_at(offset, buf)
+    }
+
+    fn set_len(&mut self, len: u64) -> Result<(), BackendError> {
+        self.mutations.set(self.mutations.get() + 1);
+        self.inner.set_len(len)
+    }
+
+    fn flush_file_durable(&mut self) -> Result<(), BackendError> {
+        self.flushes.set(self.flushes.get() + 1);
+        self.flush_result
+    }
+
+    fn flush_namespace_durable(&mut self) -> Result<(), BackendError> {
+        self.flushes.set(self.flushes.get() + 1);
+        self.flush_result
+    }
+}
+
+fn flush_script(
+    flush_result: Result<(), BackendError>,
+) -> (
+    CheckedStorage<FlushScript>,
+    std::rc::Rc<Cell<u32>>,
+    std::rc::Rc<Cell<u32>>,
+) {
+    let flushes = std::rc::Rc::new(Cell::new(0));
+    let mutations = std::rc::Rc::new(Cell::new(0));
+    let claims_file = StorageCapabilities {
+        file_durability: true,
+        namespace_durability: true,
+        ..StorageCapabilities::read_write(MEMORY_MAX_LEN)
+    };
+    let backend = FlushScript {
+        inner: MemoryStorage::with_capabilities(&[0; 8], claims_file),
+        flush_result,
+        flushes: flushes.clone(),
+        mutations: mutations.clone(),
+    };
+    (CheckedStorage::new(backend).unwrap(), flushes, mutations)
+}
+
+#[test]
+fn failed_flush_makes_storage_reconcile_required_and_sticky() {
+    let io_error = BackendError::Io {
+        kind: ErrorKind::Other,
+        os_error: Some(5),
+    };
+    let (mut s, flushes, mutations) = flush_script(Err(io_error));
+    s.write_all_at(0, &[1]).expect("write completion");
+    assert_eq!(mutations.get(), 1);
+    assert!(matches!(
+        s.flush_file_durable(),
+        Err(StorageError::Io {
+            op: IoOp::FlushFile,
+            os_error: Some(5),
+            ..
+        })
+    ));
+    assert_eq!(flushes.get(), 1);
+    // Sticky: no second flush reaches the backend and no ack is produced,
+    // even though the backend would now succeed.
+    assert_eq!(s.flush_file_durable(), Err(StorageError::ReconcileRequired));
+    assert_eq!(
+        s.flush_namespace_durable(),
+        Err(StorageError::ReconcileRequired)
+    );
+    assert_eq!(
+        s.write_all_at(0, &[2]),
+        Err(StorageError::ReconcileRequired)
+    );
+    assert_eq!(s.set_len(4), Err(StorageError::ReconcileRequired));
+    assert_eq!(flushes.get(), 1, "refused flushes never reach the backend");
+    assert_eq!(mutations.get(), 1, "refused writes never reach the backend");
+    // Reads stay available for inspection.
+    let mut buf = [0u8; 1];
+    s.read_exact_at(0, &mut buf).unwrap();
+    assert_eq!(buf, [1]);
+}
+
+#[test]
+fn contradicting_flush_is_also_reconcile_required() {
+    let (mut s, flushes, mutations) = flush_script(Err(BackendError::Unsupported));
+    assert_eq!(
+        s.flush_file_durable(),
+        Err(StorageError::InconsistentCapabilities(
+            CapabilityInconsistency::ClaimedDurabilityUnsupported(DurabilityScope::File)
+        ))
+    );
+    assert_eq!(flushes.get(), 1);
+    assert_eq!(s.flush_file_durable(), Err(StorageError::ReconcileRequired));
+    assert_eq!(
+        s.write_all_at(0, &[1]),
+        Err(StorageError::ReconcileRequired)
+    );
+    assert_eq!(flushes.get(), 1, "refused flush never reaches the backend");
+    assert_eq!(
+        mutations.get(),
+        0,
+        "refused write never reaches the backend"
+    );
+}
+
+#[test]
+fn failed_namespace_flush_is_sticky() {
+    let (mut s, flushes, mutations) = flush_script(Err(BackendError::Io {
+        kind: ErrorKind::Other,
+        os_error: Some(5),
+    }));
+    assert!(matches!(
+        s.flush_namespace_durable(),
+        Err(StorageError::Io {
+            op: IoOp::FlushNamespace,
+            ..
+        })
+    ));
+    assert_eq!(
+        s.write_all_at(0, &[1]),
+        Err(StorageError::ReconcileRequired)
+    );
+    assert_eq!(s.flush_file_durable(), Err(StorageError::ReconcileRequired));
+    assert_eq!(flushes.get(), 1);
+    assert_eq!(mutations.get(), 0);
+}
+
+#[test]
+fn sticky_storage_does_not_release_the_backend() {
+    let (mut s, _, _) = flush_script(Err(BackendError::Io {
+        kind: ErrorKind::Other,
+        os_error: Some(5),
+    }));
+    assert!(s.flush_file_durable().is_err());
+    // into_backend returns the checked object itself; it is still sticky, so
+    // the backend cannot be re-wrapped by `CheckedStorage::new`.
+    let Err(mut s) = s.into_backend() else {
+        panic!("backend released from sticky storage");
+    };
+    assert_eq!(
+        s.write_all_at(0, &[1]),
+        Err(StorageError::ReconcileRequired)
+    );
+}
+
+#[test]
+fn refusal_naming_another_scope_is_a_contract_violation_and_sticky() {
+    let (mut s, _, mutations) = flush_script(Err(BackendError::DurabilityUnsupported {
+        scope: DurabilityScope::Namespace,
+    }));
+    assert_eq!(
+        s.flush_file_durable(),
+        Err(StorageError::BackendContract(
+            ContractViolation::DurabilityScopeMismatch {
+                requested: DurabilityScope::File,
+                reported: DurabilityScope::Namespace,
+            }
+        ))
+    );
+    assert_eq!(
+        s.write_all_at(0, &[1]),
+        Err(StorageError::ReconcileRequired)
+    );
+    assert_eq!(mutations.get(), 0);
+}
+
+#[test]
+fn explicit_durability_refusal_is_not_an_ack_and_not_sticky() {
+    let (mut s, flushes, _) = flush_script(Err(BackendError::DurabilityUnsupported {
+        scope: DurabilityScope::File,
+    }));
+    for _ in 0..2 {
+        assert_eq!(
+            s.flush_file_durable(),
+            Err(StorageError::UnsupportedDurability {
+                scope: DurabilityScope::File
+            })
+        );
+    }
+    assert_eq!(flushes.get(), 2, "a refusal does not block later attempts");
+    s.write_all_at(0, &[3]).expect("writes stay allowed");
+}
+
+#[test]
+fn successful_flush_acks_and_does_not_set_reconcile() {
+    let (mut s, _, _) = flush_script(Ok(()));
+    assert_eq!(
+        s.flush_file_durable().map(|a| a.scope()),
+        Ok(DurabilityScope::File)
+    );
+    s.write_all_at(0, &[3]).unwrap();
 }
 
 #[test]
