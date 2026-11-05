@@ -41,32 +41,68 @@
 //! after a failed flush the durable state is unknown (see [`CheckedStorage`]'s
 //! sticky reconcile rule).
 //!
-//! # Recovery
+//! # Create
 //!
-//! Open reads both slots, discards blank and CRC-invalid ones, and takes the
-//! valid root with the highest generation `N`. The other slot must be blank
-//! (only for `N == 1`) or hold generation `N - 1`; anything else is
-//! [`CowError::RootInconsistent`]. If the other slot is blank for `N >= 2` or
-//! damaged, recovery looks at the last sector of the file: a CRC-valid root
-//! there with generation `N + 1` and `end_offset == file size` is the copy
+//! `create` needs an empty backend. It sizes the file to the header, writes the
+//! generation-1 root into slot 1 (slot 0, the notional generation 0, stays
+//! blank) and issues one durable barrier; only its [`DurableAck`] is returned.
+//! Before that ack a crash leaves either no valid root ([`CowError::NoValidRoot`],
+//! with the slot states telling "never written" from "torn first root") or the
+//! complete empty state of generation 1; nothing else. After the ack the empty
+//! state of generation 1 always opens.
+//!
+//! # Recovery and root selection
+//!
+//! Every byte of metadata is read through the strict parser in
+//! [`crate::cow_parse`]; this module owns no second decoder. Open reads both
+//! slots and classifies each: blank, structurally valid root, or damaged
+//! (wrong magic or CRC: what a torn or rotted root write looks like). A slot
+//! that is CRC-valid but cannot be honoured (unknown version, geometry or
+//! mandatory feature; impossible fields; generation zero, `u64::MAX` or not
+//! belonging to its slot) is a refusal, never "damaged": a torn write cannot
+//! produce it. Two CRC-valid slots claiming the same generation are
+//! [`CowError::GenerationConflict`]; no tie-break is attempted.
+//!
+//! The valid root with the highest generation `N` is selected. The other slot
+//! must be blank (only for `N == 1`) or hold generation `N - 1`; anything else
+//! is [`CowError::RootInconsistent`]. If the other slot is blank for `N >= 2`
+//! or damaged, recovery looks at the last sector of the file: a root there that
+//! parses, has generation `N + 1` and `end_offset == file size` is the copy
 //! stored before barrier 1, so the candidate was complete on media and the
 //! damaged slot is its torn root write (or bit-rot of it). Recovery **rolls
 //! forward** to it; a writable open first rewrites the copy into the damaged
 //! slot and flushes. Without such a copy the damage is unexplained. The map and
-//! **every** referenced block are verified against their CRCs afterwards; a
-//! failure is a refusal, never a fallback to the other slot and never
-//! zero-fill. No valid root is a refusal.
+//! **every** referenced block are verified against their CRCs afterwards (the
+//! whole reachable graph of this format); a failure is a refusal, never a
+//! fallback to the other slot and never zero-fill. No valid root is a refusal.
+//!
+//! The same copy lookup runs when `N == 1`, the other slot is blank and the
+//! file has a tail: a complete verified candidate of generation 2 is adopted
+//! (roll-forward), so a lost generation-2 root cannot be overwritten by the
+//! next commit. A tail without such a copy is an unfinished candidate (crash
+//! before barrier 1) and cannot be told from a zeroed generation-2 slot whose
+//! copy is also gone; that case opens as generation 1 with
+//! [`OpenClass::UnfinishedCandidate`] (documented limit, not refused, because
+//! it is a legal crash state of the first commit).
+//!
+//! A rolled-forward candidate is verified completely like any root: if its
+//! map or blocks are damaged the open is refused, not shown as `N` with a
+//! flag, because the copy proves the candidate was complete on media.
 //!
 //! Only a crash before barrier 1 or before the root write leaves the other
 //! slot valid (generation `N - 1`): the candidate is simply an unreferenced
-//! tail and `possible_lost_commit` is `false`.
+//! tail ([`OpenReport::tail_len`]) and `possible_lost_commit` is `false`.
+//! [`OpenReport::class`] names the four non-refusal outcomes; corruption and
+//! ambiguity are errors.
 //!
 //! # Writable vs salvage
 //!
-//! [`CowFile::open`] returns a writable file only for a state that is
+//! [`CowFile::open`] (parser access `Writable`: every mandatory feature bit must
+//! be writable by the caller) returns a writable file only for a state that is
 //! explained by the model (clean, or rolled forward and repaired). Unexplained
 //! damage is a refusal ([`CowError::DamagedOtherSlot`]); no path commits on top
-//! of a damaged slot. [`CowView::salvage`] opens the same media read-only (it
+//! of a damaged slot. [`CowView::salvage`] opens the same media read-only (parser
+//! access `ReadOnly`: mandatory bits only need to be understood; it
 //! has no `commit` and never writes): it rolls forward in memory when possible,
 //! otherwise it shows generation `N` and sets
 //! [`OpenReport::possible_lost_commit`] because a newer acknowledged commit may
@@ -75,11 +111,16 @@
 //! # Not covered
 //!
 //! No garbage collection (old blocks and maps stay in the file), no refcounts,
-//! no snapshots, no encryption, no parser hardening beyond the cheap limits
-//! below (that is S9-09), and open verifies all blocks eagerly (O(file)). The
+//! no snapshots, no encryption, and open verifies all blocks eagerly (O(file)). The
 //! copy only helps when the file is not shortened or extended after barrier 1
 //! by something other than this protocol.
 
+use crate::cow_parse::{
+    Access, BLOCK_COUNT_AT, BLOCK_SIZE_AT, BlockDescriptor, Capabilities, END_OFFSET_AT, Features,
+    GENERATION_AT, MAGIC_AT, MANDATORY_AT, MAP_CRC_AT, MAP_OFFSET_AT, OPTIONAL_AT, ParseError,
+    ParseKind, ReadError, RootRecord, SLOT_CRC_AT, Section, Slot, Source, StorageSource,
+    VERSION_AT, parse_map, parse_slot_at, verify_block_data,
+};
 use crate::io::{CheckedStorage, DurableAck, StorageBackend, StorageError};
 use std::ops::Deref;
 
@@ -96,7 +137,6 @@ pub const MAX_BLOCKS: u64 = 1 << 16;
 pub(crate) const MAGIC: [u8; 8] = *b"ODCOWP\0\x01";
 pub(crate) const VERSION: u32 = 1;
 pub(crate) const ENTRY_LEN: usize = 12;
-const CRC_AT: usize = SLOT_SIZE - 4;
 
 // ------------------------------------------------------------------ CRC-32
 
@@ -141,9 +181,10 @@ pub fn crc32(data: &[u8]) -> u32 {
 pub enum SlotState {
     /// Every byte is zero.
     Blank,
-    /// CRC-valid root of this generation.
+    /// Structurally valid root of this generation.
     Valid { generation: u64 },
-    /// Not blank and not a valid root (bad CRC, magic or slot parity).
+    /// Not blank, wrong magic or CRC: what a torn or rotted root write looks
+    /// like. CRC-valid slots that cannot be honoured are errors, not this.
     Damaged,
 }
 
@@ -176,6 +217,42 @@ pub struct OpenReport {
     /// newer acknowledged commit may be lost. Only a salvage open reports this
     /// (a writable open refuses instead).
     pub possible_lost_commit: bool,
+    /// Bytes between the published end of the opened state and the end of the
+    /// file. Non-zero after a crash before the root write (an unfinished
+    /// candidate) and after any abandoned attempt; always zero after a
+    /// roll-forward.
+    pub tail_len: u64,
+}
+
+/// How an open that succeeded relates to the media. Corruption and ambiguity
+/// never reach this type: they are [`CowError`]s.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpenClass {
+    /// Coherent committed state, nothing after it.
+    Committed,
+    /// Coherent committed state; the file holds an unreferenced tail that is
+    /// an unfinished (or abandoned) candidate and is ignored.
+    UnfinishedCandidate,
+    /// The root copy of generation `N + 1` was adopted: the candidate was
+    /// complete and only its root write was torn.
+    RolledForward,
+    /// Read-only salvage of an older root; a newer acknowledged commit may be
+    /// lost.
+    PossibleLostCommit,
+}
+
+impl OpenReport {
+    pub fn class(&self) -> OpenClass {
+        if self.possible_lost_commit {
+            OpenClass::PossibleLostCommit
+        } else if self.rolled_forward {
+            OpenClass::RolledForward
+        } else if self.tail_len > 0 {
+            OpenClass::UnfinishedCandidate
+        } else {
+            OpenClass::Committed
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,15 +268,24 @@ pub enum CowError {
         chosen_generation: u64,
         other: SlotState,
     },
-    /// CRC-valid root with an unknown version or block size.
-    UnsupportedRoot {
-        version: u32,
-        block_size: u32,
+    /// CRC-valid root with an unknown version or block size; the parser error
+    /// names the field.
+    UnsupportedRoot(ParseError),
+    /// A mandatory feature bit (lowest offending index) this open cannot
+    /// honour; writable opens are stricter than read-only ones.
+    UnsupportedMandatoryFeature(u8),
+    /// Two CRC-valid slots claim the same generation. Neither is preferred.
+    GenerationConflict {
+        generation: u64,
     },
     /// Root fields are impossible (limits, ranges, generations).
     RootInconsistent(&'static str),
     MapCorrupt,
     MapEntryOutOfRange {
+        index: u64,
+    },
+    /// Two map entries name overlapping or identical physical blocks.
+    MapEntryCollision {
         index: u64,
     },
     BlockCorrupt {
@@ -227,30 +313,28 @@ impl std::fmt::Display for CowError {
 
 impl std::error::Error for CowError {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Entry {
-    phys: u64,
-    crc: u32,
+/// Byte offset of the slot that holds `generation`.
+pub fn slot_offset(generation: u64) -> u64 {
+    (generation & 1) * SLOT_SIZE as u64
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Root {
+/// A root as the writer builds it: no features, located in its own slot.
+fn new_root(
     generation: u64,
     block_count: u64,
     map_offset: u64,
     map_crc: u32,
     end_offset: u64,
-}
-
-enum Decoded {
-    Blank,
-    Valid(Root),
-    Damaged,
-}
-
-/// Byte offset of the slot that holds `generation`.
-pub fn slot_offset(generation: u64) -> u64 {
-    (generation & 1) * SLOT_SIZE as u64
+) -> RootRecord {
+    RootRecord {
+        slot_offset: slot_offset(generation),
+        generation,
+        block_count,
+        map_offset,
+        map_crc,
+        end_offset,
+        features: Features::default(),
+    }
 }
 
 /// Builds a CRC-valid root sector from raw field values. Exported only so
@@ -262,74 +346,38 @@ pub fn forge_root_sector(
     map_crc: u32,
     end_offset: u64,
 ) -> [u8; SLOT_SIZE] {
-    encode_root(&Root {
+    encode_root(&new_root(
         generation,
         block_count,
         map_offset,
         map_crc,
         end_offset,
-    })
+    ))
 }
 
-fn le_u32(b: &[u8], at: usize) -> u32 {
-    let mut a = [0u8; 4];
-    a.copy_from_slice(&b[at..at + 4]);
-    u32::from_le_bytes(a)
-}
-
-fn le_u64(b: &[u8], at: usize) -> u64 {
-    let mut a = [0u8; 8];
-    a.copy_from_slice(&b[at..at + 8]);
-    u64::from_le_bytes(a)
-}
-
-fn encode_root(root: &Root) -> [u8; SLOT_SIZE] {
+fn encode_root(root: &RootRecord) -> [u8; SLOT_SIZE] {
+    fn put(s: &mut [u8; SLOT_SIZE], at: usize, bytes: &[u8]) {
+        if let Some(dst) = s.get_mut(at..at + bytes.len()) {
+            dst.copy_from_slice(bytes);
+        }
+    }
     let mut s = [0u8; SLOT_SIZE];
-    s[0..8].copy_from_slice(&MAGIC);
-    s[8..12].copy_from_slice(&VERSION.to_le_bytes());
-    s[12..16].copy_from_slice(&(BLOCK_SIZE as u32).to_le_bytes());
-    s[16..24].copy_from_slice(&root.generation.to_le_bytes());
-    s[24..32].copy_from_slice(&root.block_count.to_le_bytes());
-    s[32..40].copy_from_slice(&root.map_offset.to_le_bytes());
-    s[40..44].copy_from_slice(&root.map_crc.to_le_bytes());
-    s[44..52].copy_from_slice(&root.end_offset.to_le_bytes());
-    let crc = crc32(&s[..CRC_AT]);
-    s[CRC_AT..].copy_from_slice(&crc.to_le_bytes());
+    put(&mut s, MAGIC_AT, &MAGIC);
+    put(&mut s, VERSION_AT, &VERSION.to_le_bytes());
+    put(&mut s, BLOCK_SIZE_AT, &(BLOCK_SIZE as u32).to_le_bytes());
+    put(&mut s, GENERATION_AT, &root.generation.to_le_bytes());
+    put(&mut s, BLOCK_COUNT_AT, &root.block_count.to_le_bytes());
+    put(&mut s, MAP_OFFSET_AT, &root.map_offset.to_le_bytes());
+    put(&mut s, MAP_CRC_AT, &root.map_crc.to_le_bytes());
+    put(&mut s, END_OFFSET_AT, &root.end_offset.to_le_bytes());
+    put(&mut s, MANDATORY_AT, &root.features.mandatory.to_le_bytes());
+    put(&mut s, OPTIONAL_AT, &root.features.optional.to_le_bytes());
+    let crc = crc32(s.get(..SLOT_CRC_AT).unwrap_or(&[]));
+    put(&mut s, SLOT_CRC_AT, &crc.to_le_bytes());
     s
 }
 
-fn decode_slot(slot: usize, s: &[u8; SLOT_SIZE]) -> Result<Decoded, CowError> {
-    if s.iter().all(|&b| b == 0) {
-        return Ok(Decoded::Blank);
-    }
-    if crc32(&s[..CRC_AT]) != le_u32(s, CRC_AT) || s[0..8] != MAGIC {
-        return Ok(Decoded::Damaged);
-    }
-    let (version, block_size) = (le_u32(s, 8), le_u32(s, 12));
-    if version != VERSION || block_size as usize != BLOCK_SIZE {
-        return Err(CowError::UnsupportedRoot {
-            version,
-            block_size,
-        });
-    }
-    let generation = le_u64(s, 16);
-    if generation == 0 || (generation & 1) as usize != slot {
-        return Ok(Decoded::Damaged);
-    }
-    if generation == u64::MAX {
-        // `generation + 1` must stay representable.
-        return Err(CowError::RootInconsistent("generation at maximum"));
-    }
-    Ok(Decoded::Valid(Root {
-        generation,
-        block_count: le_u64(s, 24),
-        map_offset: le_u64(s, 32),
-        map_crc: le_u32(s, 40),
-        end_offset: le_u64(s, 44),
-    }))
-}
-
-fn encode_map(map: &[Entry]) -> Vec<u8> {
+fn encode_map(map: &[BlockDescriptor]) -> Vec<u8> {
     let mut out = Vec::with_capacity(map.len() * ENTRY_LEN);
     for e in map {
         out.extend_from_slice(&e.phys.to_le_bytes());
@@ -354,6 +402,205 @@ fn align_up(value: u64) -> Result<u64, CowError> {
         .ok_or(CowError::LayoutOverflow)
 }
 
+// ------------------------------------------------------------ root reading
+
+/// Result of reading one slot through the strict parser.
+enum SlotRead {
+    Blank,
+    Valid(RootRecord),
+    /// Wrong magic or CRC: a torn or rotted write.
+    Damaged,
+    /// CRC-valid root whose generation belongs to the other slot.
+    Misplaced(u64),
+}
+
+fn read_error(e: ReadError) -> CowError {
+    match e {
+        ReadError::Storage(s) => CowError::Storage(s),
+        ReadError::OutOfBounds => CowError::RootInconsistent("slot outside file"),
+    }
+}
+
+/// Maps a parser failure of a CRC-valid root (or of one of its root-declared
+/// fields) to a refusal. `base` is the file offset the root was read from.
+fn root_error(e: ParseError, base: u64) -> CowError {
+    match e.kind {
+        ParseKind::Io(s) => CowError::Storage(s),
+        ParseKind::Version { .. } | ParseKind::Identity => CowError::UnsupportedRoot(e),
+        ParseKind::UnsupportedMandatoryFeature(bit) => CowError::UnsupportedMandatoryFeature(bit),
+        ParseKind::Reserved => CowError::RootInconsistent("reserved bytes not zero"),
+        ParseKind::Generation => CowError::RootInconsistent("generation not valid for its slot"),
+        _ => CowError::RootInconsistent(
+            match usize::try_from(e.offset.saturating_sub(base)).unwrap_or(usize::MAX) {
+                BLOCK_COUNT_AT => "block_count invalid",
+                MAP_OFFSET_AT => "map_offset invalid",
+                END_OFFSET_AT => "end_offset invalid",
+                _ => "root field invalid",
+            },
+        ),
+    }
+}
+
+/// Maps a failure of [`parse_map`] (root fields, map CRC, descriptors).
+fn map_error(e: ParseError, root: &RootRecord) -> CowError {
+    let entry = || e.offset.saturating_sub(root.map_offset) / ENTRY_LEN as u64;
+    match (e.section, e.kind) {
+        (_, ParseKind::Io(s)) => CowError::Storage(s),
+        (Section::Slot, _) => root_error(e, root.slot_offset),
+        (Section::Map, _) => CowError::MapCorrupt,
+        (_, ParseKind::Overlap { .. } | ParseKind::Duplicate { .. }) => {
+            CowError::MapEntryCollision { index: entry() }
+        }
+        _ => CowError::MapEntryOutOfRange { index: entry() },
+    }
+}
+
+fn read_slot<S: Source + ?Sized>(
+    src: &S,
+    slot: usize,
+    caps: &Capabilities,
+    access: Access,
+) -> Result<SlotRead, CowError> {
+    let offset = (slot * SLOT_SIZE) as u64;
+    match parse_slot_at(src, offset, slot, caps, access) {
+        Ok(Slot::Blank) => Ok(SlotRead::Blank),
+        Ok(Slot::Root(root)) => Ok(SlotRead::Valid(root)),
+        Err(e) => match e.kind {
+            ParseKind::Magic { .. } | ParseKind::Crc { .. } => Ok(SlotRead::Damaged),
+            ParseKind::Generation => {
+                let mut raw = [0u8; 8];
+                src.read_at(offset + GENERATION_AT as u64, &mut raw)
+                    .map_err(read_error)?;
+                match u64::from_le_bytes(raw) {
+                    0 => Err(CowError::RootInconsistent("generation zero")),
+                    u64::MAX => Err(CowError::RootInconsistent("generation at maximum")),
+                    g => Ok(SlotRead::Misplaced(g)),
+                }
+            }
+            _ => Err(root_error(e, offset)),
+        },
+    }
+}
+
+/// The root a recovery decided on, before its map is read.
+struct Selection {
+    chosen: RootRecord,
+    /// State of the slot that does not hold `chosen`.
+    other_slot: SlotState,
+    /// The other slot is damaged or unexpectedly blank.
+    damaged: bool,
+    /// Root copy of `chosen.generation + 1` that explains the damage.
+    forward: Option<RootRecord>,
+    /// `forward` was found next to a blank slot of generation 1 rather than
+    /// next to a damaged slot, so nothing proves the candidate was complete.
+    speculative: bool,
+}
+
+fn select_root<S: Source + ?Sized>(
+    src: &S,
+    size: u64,
+    caps: &Capabilities,
+    access: Access,
+) -> Result<Selection, CowError> {
+    let reads = [
+        read_slot(src, 0, caps, access)?,
+        read_slot(src, 1, caps, access)?,
+    ];
+    for (slot, read) in reads.iter().enumerate() {
+        if let SlotRead::Misplaced(generation) = read {
+            return Err(match &reads[1 - slot] {
+                SlotRead::Valid(other) if other.generation == *generation => {
+                    CowError::GenerationConflict {
+                        generation: *generation,
+                    }
+                }
+                _ => CowError::RootInconsistent("generation does not belong to its slot"),
+            });
+        }
+    }
+    let state = |read: &SlotRead| match read {
+        SlotRead::Blank => SlotState::Blank,
+        SlotRead::Valid(r) => SlotState::Valid {
+            generation: r.generation,
+        },
+        SlotRead::Damaged | SlotRead::Misplaced(_) => SlotState::Damaged,
+    };
+    let states = [state(&reads[0]), state(&reads[1])];
+    let [r0, r1] = reads;
+    let (chosen_slot, chosen) = match (r0, r1) {
+        (SlotRead::Valid(a), SlotRead::Valid(b)) if a.generation > b.generation => (0, a),
+        (SlotRead::Valid(_), SlotRead::Valid(b)) => (1, b),
+        (SlotRead::Valid(a), _) => (0, a),
+        (_, SlotRead::Valid(b)) => (1, b),
+        _ => return Err(CowError::NoValidRoot { slots: states }),
+    };
+    let other_index = 1 - chosen_slot;
+    let other_slot = states[other_index];
+    // Generations alternate slots, so the other slot holds `N - 1`.
+    if let SlotState::Valid { generation } = other_slot
+        && generation != chosen.generation - 1
+    {
+        return Err(CowError::RootInconsistent(
+            "valid slots are not consecutive generations",
+        ));
+    }
+    // Blank is normal only for the first generation.
+    let damaged = match other_slot {
+        SlotState::Damaged => true,
+        SlotState::Blank => chosen.generation >= 2,
+        SlotState::Valid { .. } => false,
+    };
+    // The first generation is the one place where a blank other slot is
+    // normal, so a lost root of generation 2 looks the same as a never
+    // published one. A complete, verified candidate in the tail is adopted in
+    // both cases: adopting it is a legal outcome of an unacknowledged commit
+    // and the only safe one for an acknowledged commit whose root was lost.
+    let blank_first = chosen.generation == 1 && other_slot == SlotState::Blank;
+    let forward = if damaged || (blank_first && size > chosen.end_offset) {
+        find_root_copy(src, size, &chosen, other_index, caps, access)?
+    } else {
+        None
+    };
+    Ok(Selection {
+        chosen,
+        other_slot,
+        damaged,
+        forward,
+        speculative: blank_first && !damaged,
+    })
+}
+
+/// The root copy of generation `chosen + 1` in the last sector, if it parses.
+/// A copy that is merely unreadable as a root is "no copy"; a storage read
+/// failure is an error.
+fn find_root_copy<S: Source + ?Sized>(
+    src: &S,
+    size: u64,
+    chosen: &RootRecord,
+    other_slot: usize,
+    caps: &Capabilities,
+    access: Access,
+) -> Result<Option<RootRecord>, CowError> {
+    let last = match size.checked_sub(SLOT_SIZE as u64) {
+        Some(last) if last >= chosen.end_offset => last,
+        _ => return Ok(None),
+    };
+    match parse_slot_at(src, last, other_slot, caps, access) {
+        Ok(Slot::Root(copy))
+            if chosen.generation.checked_add(1) == Some(copy.generation)
+                && copy.end_offset == size =>
+        {
+            Ok(Some(copy))
+        }
+        Ok(_) => Ok(None),
+        Err(ParseError {
+            kind: ParseKind::Io(s),
+            ..
+        }) => Err(CowError::Storage(s)),
+        Err(_) => Ok(None),
+    }
+}
+
 // ------------------------------------------------------------------ view
 
 /// Read-only verified state of a file. It has no way to write: it exposes no
@@ -361,100 +608,96 @@ fn align_up(value: u64) -> Result<u64, CowError> {
 pub struct CowView<B: StorageBackend> {
     storage: CheckedStorage<B>,
     generation: u64,
-    map: Vec<Entry>,
+    map: Vec<BlockDescriptor>,
     map_offset: u64,
     end_offset: u64,
+    /// Feature words of the current root; every commit carries them forward.
+    features: Features,
 }
 
 struct Recovered<B: StorageBackend> {
     view: CowView<B>,
     report: OpenReport,
-    /// Root sector to write into the damaged slot (roll-forward repair).
-    repair: Option<[u8; SLOT_SIZE]>,
+    /// Root to write into the damaged slot (roll-forward repair).
+    repair: Option<RootRecord>,
 }
 
 impl<B: StorageBackend> CowView<B> {
     /// Read-only open of possibly damaged media; never writes. See the module
     /// docs ("Writable vs salvage").
     pub fn salvage(storage: CheckedStorage<B>) -> Result<(Self, OpenReport), CowError> {
-        let recovered = Self::recover(storage)?;
+        Self::salvage_with(storage, &Capabilities::CURRENT)
+    }
+
+    /// [`salvage`](Self::salvage) for a caller that understands more mandatory
+    /// feature bits than this build defines.
+    pub fn salvage_with(
+        storage: CheckedStorage<B>,
+        caps: &Capabilities,
+    ) -> Result<(Self, OpenReport), CowError> {
+        let recovered = Self::recover(storage, caps, Access::ReadOnly)?;
         Ok((recovered.view, recovered.report))
     }
 
-    fn recover(storage: CheckedStorage<B>) -> Result<Recovered<B>, CowError> {
+    fn recover(
+        storage: CheckedStorage<B>,
+        caps: &Capabilities,
+        access: Access,
+    ) -> Result<Recovered<B>, CowError> {
         let size = storage.size()?;
         if size < HEADER_LEN {
             return Err(CowError::NoValidRoot {
                 slots: [SlotState::Blank; 2],
             });
         }
-        let mut roots: [Option<Root>; 2] = [None, None];
-        let mut states = [SlotState::Blank; 2];
-        for slot in 0..2usize {
-            let mut buf = [0u8; SLOT_SIZE];
-            storage.read_exact_at((slot * SLOT_SIZE) as u64, &mut buf)?;
-            match decode_slot(slot, &buf)? {
-                Decoded::Blank => {}
-                Decoded::Damaged => states[slot] = SlotState::Damaged,
-                Decoded::Valid(root) => {
-                    states[slot] = SlotState::Valid {
-                        generation: root.generation,
-                    };
-                    roots[slot] = Some(root);
-                }
+        let src = StorageSource(&storage);
+        let selection = select_root(&src, size, caps, access)?;
+        // Eager verification: the map and every referenced block must read
+        // and match their CRCs. Failure refuses the open; the other slot is
+        // not consulted.
+        let load = |root: &RootRecord| -> Result<Vec<BlockDescriptor>, CowError> {
+            let map = parse_map(&src, root).map_err(|e| map_error(e, root))?;
+            for (index, block) in map.iter().enumerate() {
+                verify_block_data(&src, block).map_err(|e| match e.kind {
+                    ParseKind::Io(s) => CowError::Storage(s),
+                    _ => CowError::BlockCorrupt {
+                        index: index as u64,
+                    },
+                })?;
             }
-        }
-        let (chosen_slot, chosen) = match (roots[0], roots[1]) {
-            (Some(a), Some(b)) if a.generation > b.generation => (0, a),
-            (Some(_), Some(b)) => (1, b),
-            (Some(a), None) => (0, a),
-            (None, Some(b)) => (1, b),
-            (None, None) => return Err(CowError::NoValidRoot { slots: states }),
+            Ok(map)
         };
-        let other_index = 1 - chosen_slot;
-        let other_slot = states[other_index];
-        // Generations alternate slots, so the other slot holds `N - 1`.
-        if let SlotState::Valid { generation } = other_slot
-            && generation != chosen.generation - 1
-        {
-            return Err(CowError::RootInconsistent(
-                "valid slots are not consecutive generations",
-            ));
-        }
-        // Blank is normal only for the first generation.
-        let damaged = match other_slot {
-            SlotState::Damaged => true,
-            SlotState::Blank => chosen.generation >= 2,
-            SlotState::Valid { .. } => false,
+        // A candidate behind a damaged slot is complete on media (the copy was
+        // flushed before the root write), so damage in it is a refusal. Next
+        // to a blank first-generation slot nothing proves that: a crash
+        // before barrier 1 may keep the copy without its data. Only there an
+        // unverifiable candidate is ignored and generation 1 is opened.
+        let (repair, root, map) = match selection.forward {
+            Some(copy) => match load(&copy) {
+                Ok(map) => (Some(copy), copy, map),
+                Err(CowError::Storage(e)) => return Err(CowError::Storage(e)),
+                Err(_) if selection.speculative => {
+                    (None, selection.chosen, load(&selection.chosen)?)
+                }
+                Err(e) => return Err(e),
+            },
+            None => (None, selection.chosen, load(&selection.chosen)?),
         };
-        let forward = if damaged {
-            Self::find_root_copy(&storage, &chosen, other_index, size)?
-        } else {
-            None
+        let report = OpenReport {
+            generation: root.generation,
+            chosen_slot: (root.generation & 1) as usize,
+            other_slot: selection.other_slot,
+            rolled_forward: repair.is_some(),
+            possible_lost_commit: selection.damaged && repair.is_none(),
+            tail_len: size.saturating_sub(root.end_offset),
         };
-        let (root, repair) = match forward {
-            Some((root, sector)) => (root, Some(sector)),
-            None => (chosen, None),
-        };
-        let (map, end_offset) = Self::load_map(&storage, &root, size)?;
         let view = CowView {
             storage,
             generation: root.generation,
             map,
             map_offset: root.map_offset,
-            end_offset,
-        };
-        // Eager verification: every referenced block must read and match its
-        // CRC. Failure refuses the open; the other slot is not consulted.
-        for index in 0..view.map.len() {
-            view.read_block(index as u64)?;
-        }
-        let report = OpenReport {
-            generation: root.generation,
-            chosen_slot: (root.generation & 1) as usize,
-            other_slot,
-            rolled_forward: repair.is_some(),
-            possible_lost_commit: damaged && repair.is_none(),
+            end_offset: root.end_offset,
+            features: root.features,
         };
         Ok(Recovered {
             view,
@@ -463,77 +706,13 @@ impl<B: StorageBackend> CowView<B> {
         })
     }
 
-    /// The root copy of generation `chosen + 1` in the last sector, if valid.
-    /// A copy that is merely unreadable as a root is "no copy"; a storage
-    /// read failure is an error.
-    fn find_root_copy(
-        storage: &CheckedStorage<B>,
-        chosen: &Root,
-        other_slot: usize,
-        size: u64,
-    ) -> Result<Option<(Root, [u8; SLOT_SIZE])>, CowError> {
-        let last = match size.checked_sub(SLOT_SIZE as u64) {
-            Some(last) if last >= chosen.end_offset => last,
-            _ => return Ok(None),
-        };
-        let mut buf = [0u8; SLOT_SIZE];
-        storage.read_exact_at(last, &mut buf)?;
-        let Ok(Decoded::Valid(copy)) = decode_slot(other_slot, &buf) else {
-            return Ok(None);
-        };
-        if chosen.generation.checked_add(1) == Some(copy.generation) && copy.end_offset == size {
-            Ok(Some((copy, buf)))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn load_map(
-        storage: &CheckedStorage<B>,
-        root: &Root,
-        size: u64,
-    ) -> Result<(Vec<Entry>, u64), CowError> {
-        if root.block_count > MAX_BLOCKS {
-            return Err(CowError::RootInconsistent("block_count above limit"));
-        }
-        let end = root.end_offset;
-        if end < HEADER_LEN || !end.is_multiple_of(BLOCK_SIZE as u64) || end > size {
-            return Err(CowError::RootInconsistent("end_offset outside file"));
-        }
-        let count = root.block_count as usize;
-        let map_len = count * ENTRY_LEN;
-        let map_end = root
-            .map_offset
-            .checked_add(map_len as u64)
-            .ok_or(CowError::RootInconsistent("map range overflows"))?;
-        if root.map_offset < HEADER_LEN || map_end > end {
-            return Err(CowError::RootInconsistent("map outside file"));
-        }
-        let bytes = read_vec(storage, root.map_offset, map_len)?;
-        if crc32(&bytes) != root.map_crc {
-            return Err(CowError::MapCorrupt);
-        }
-        let mut map = Vec::with_capacity(count);
-        for i in 0..count {
-            let chunk = &bytes[i * ENTRY_LEN..(i + 1) * ENTRY_LEN];
-            let entry = Entry {
-                phys: le_u64(chunk, 0),
-                crc: le_u32(chunk, 8),
-            };
-            let block_end = entry.phys.checked_add(BLOCK_SIZE as u64);
-            let in_file = entry.phys >= HEADER_LEN
-                && entry.phys.is_multiple_of(BLOCK_SIZE as u64)
-                && block_end.is_some_and(|e| e <= end);
-            if !in_file {
-                return Err(CowError::MapEntryOutOfRange { index: i as u64 });
-            }
-            map.push(entry);
-        }
-        Ok((map, end))
-    }
-
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Feature words of the opened (or last committed) root.
+    pub fn features(&self) -> Features {
+        self.features
     }
 
     pub fn block_count(&self) -> u64 {
@@ -580,7 +759,7 @@ impl<B: StorageBackend> CowView<B> {
 
 struct Plan {
     generation: u64,
-    map: Vec<Entry>,
+    map: Vec<BlockDescriptor>,
     map_offset: u64,
     map_bytes: Vec<u8>,
     copy_offset: u64,
@@ -612,13 +791,7 @@ impl<B: StorageBackend> CowFile<B> {
             return Err(CowError::BadWrite("create needs an empty backend"));
         }
         storage.set_len(HEADER_LEN)?;
-        let root = Root {
-            generation: 1,
-            block_count: 0,
-            map_offset: HEADER_LEN,
-            map_crc: crc32(&[]),
-            end_offset: HEADER_LEN,
-        };
+        let root = new_root(1, 0, HEADER_LEN, crc32(&[]), HEADER_LEN);
         storage.write_all_at(slot_offset(1), &encode_root(&root))?;
         let ack = storage.flush_file_durable()?;
         let view = CowView {
@@ -627,6 +800,7 @@ impl<B: StorageBackend> CowFile<B> {
             map: Vec::new(),
             map_offset: HEADER_LEN,
             end_offset: HEADER_LEN,
+            features: Features::default(),
         };
         Ok((
             Self {
@@ -641,20 +815,30 @@ impl<B: StorageBackend> CowFile<B> {
     /// from a valid root copy (and flushes) before returning. See the module
     /// docs.
     pub fn open(storage: CheckedStorage<B>) -> Result<(Self, OpenReport), CowError> {
+        Self::open_with(storage, &Capabilities::CURRENT)
+    }
+
+    /// [`open`](Self::open) for a caller that can write through the mandatory
+    /// feature bits in `caps` (see [`Capabilities`]); any other mandatory bit
+    /// refuses with [`CowError::UnsupportedMandatoryFeature`].
+    pub fn open_with(
+        storage: CheckedStorage<B>,
+        caps: &Capabilities,
+    ) -> Result<(Self, OpenReport), CowError> {
         let Recovered {
             mut view,
             report,
             repair,
-        } = CowView::recover(storage)?;
+        } = CowView::recover(storage, caps, Access::Writable)?;
         if report.possible_lost_commit {
             return Err(CowError::DamagedOtherSlot {
                 chosen_generation: view.generation,
                 other: report.other_slot,
             });
         }
-        if let Some(sector) = repair {
+        if let Some(root) = repair {
             view.storage
-                .write_all_at(slot_offset(view.generation), &sector)?;
+                .write_all_at(slot_offset(view.generation), &encode_root(&root))?;
             let _ack = view.storage.flush_file_durable()?;
         }
         Ok((
@@ -722,7 +906,8 @@ impl<B: StorageBackend> CowFile<B> {
         if count > MAX_BLOCKS {
             return Err(CowError::BadWrite("block count above limit"));
         }
-        let mut slots: Vec<Option<Entry>> = self.view.map.iter().copied().map(Some).collect();
+        let mut slots: Vec<Option<BlockDescriptor>> =
+            self.view.map.iter().copied().map(Some).collect();
         slots.resize(count as usize, None);
 
         // Append at the published end, not at the file size: anything beyond
@@ -734,13 +919,13 @@ impl<B: StorageBackend> CowFile<B> {
                 .checked_mul(BLOCK_SIZE as u64)
                 .and_then(|o| base.checked_add(o))
                 .ok_or(CowError::LayoutOverflow)?;
-            slots[*index as usize] = Some(Entry {
+            slots[*index as usize] = Some(BlockDescriptor {
                 phys,
                 crc: crc32(data),
             });
             block_offsets.push(phys);
         }
-        let map: Option<Vec<Entry>> = slots.into_iter().collect();
+        let map: Option<Vec<BlockDescriptor>> = slots.into_iter().collect();
         let map = map.ok_or(CowError::BadWrite("write leaves a hole"))?;
         let map_offset = (writes.len() as u64)
             .checked_mul(BLOCK_SIZE as u64)
@@ -771,13 +956,15 @@ impl<B: StorageBackend> CowFile<B> {
         writes: &[(u64, &[u8])],
         order: CommitOrder,
     ) -> Result<DurableAck, CowError> {
-        let root = Root {
-            generation: plan.generation,
-            block_count: plan.map.len() as u64,
-            map_offset: plan.map_offset,
-            map_crc: crc32(&plan.map_bytes),
-            end_offset: plan.new_len,
-        };
+        let mut root = new_root(
+            plan.generation,
+            plan.map.len() as u64,
+            plan.map_offset,
+            crc32(&plan.map_bytes),
+            plan.new_len,
+        );
+        // A feature the opener could write through must survive the commit.
+        root.features = self.view.features;
         let sector = encode_root(&root);
         let storage = &mut self.view.storage;
         // Step 1: candidate [blocks][map][root copy]; nothing below the

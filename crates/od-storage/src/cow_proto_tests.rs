@@ -32,8 +32,8 @@ use crate::testing::rng::SplitMix64;
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 
-type Block = Vec<u8>;
-type Snap = Vec<Block>;
+pub(crate) type Block = Vec<u8>;
+pub(crate) type Snap = Vec<Block>;
 
 // ----------------------------------------------------------------- oracle
 
@@ -52,7 +52,7 @@ enum Outcome {
     After,
 }
 
-struct Oracle {
+pub(crate) struct Oracle {
     /// Snapshots a crash may legally leave behind. `None` is "no file".
     allowed: Vec<Option<Snap>>,
     target: Option<Snap>,
@@ -66,12 +66,12 @@ impl Oracle {
         }
     }
 
-    fn base(&self) -> Snap {
+    pub(crate) fn base(&self) -> Snap {
         assert_eq!(self.allowed.len(), 1, "base() with a transaction in flight");
         self.allowed[0].clone().unwrap_or_default()
     }
 
-    fn target_after(&self, writes: &[(u64, Block)]) -> Snap {
+    pub(crate) fn target_after(&self, writes: &[(u64, Block)]) -> Snap {
         let mut snap = self.base();
         for (index, data) in writes {
             let i = *index as usize;
@@ -148,27 +148,27 @@ fn digest(snap: &Snap) -> u32 {
 // ---------------------------------------------------------------- harness
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OpKind {
+pub(crate) enum OpKind {
     SetLen,
     Write,
     Flush,
 }
 
-fn block(rng: &mut SplitMix64) -> Block {
+pub(crate) fn block(rng: &mut SplitMix64) -> Block {
     rng.bytes(BLOCK_SIZE)
 }
 
-struct Sim {
-    handle: FaultHandle,
-    file: Option<CowFile<FaultBackend>>,
-    oracle: Oracle,
+pub(crate) struct Sim {
+    pub(crate) handle: FaultHandle,
+    pub(crate) file: Option<CowFile<FaultBackend>>,
+    pub(crate) oracle: Oracle,
     order: CommitOrder,
     /// Report of the most recent successful `crash_reopen`.
     last_report: Option<OpenReport>,
 }
 
 impl Sim {
-    fn new(seed: u64, order: CommitOrder) -> Self {
+    pub(crate) fn new(seed: u64, order: CommitOrder) -> Self {
         Self {
             handle: FaultHandle::new(&[], seed),
             file: None,
@@ -178,7 +178,7 @@ impl Sim {
         }
     }
 
-    fn storage(&self) -> CheckedStorage<FaultBackend> {
+    pub(crate) fn storage(&self) -> CheckedStorage<FaultBackend> {
         CheckedStorage::new(self.handle.open()).expect("capabilities are consistent")
     }
 
@@ -193,7 +193,7 @@ impl Sim {
     }
 
     /// Returns whether the create was acknowledged.
-    fn create(&mut self, fault: Option<(u64, Fault)>) -> bool {
+    pub(crate) fn create(&mut self, fault: Option<(u64, Fault)>) -> bool {
         self.script(fault);
         self.oracle.begin(Vec::new());
         self.handle.log("harness: create");
@@ -211,7 +211,7 @@ impl Sim {
     }
 
     /// Returns whether the commit was acknowledged.
-    fn commit(&mut self, writes: &[(u64, Block)], fault: Option<(u64, Fault)>) -> bool {
+    pub(crate) fn commit(&mut self, writes: &[(u64, Block)], fault: Option<(u64, Fault)>) -> bool {
         let target = self.oracle.target_after(writes);
         self.script(fault);
         self.oracle.begin(target);
@@ -295,7 +295,7 @@ fn observe_open(handle: &FaultHandle) -> Opened {
     }
 }
 
-fn parse_kind(line: &str) -> Option<(u64, OpKind)> {
+pub(crate) fn parse_kind(line: &str) -> Option<(u64, OpKind)> {
     let rest = line.strip_prefix('#')?;
     let (ordinal, op) = rest.split_once(' ')?;
     let kind = if op.starts_with("write") {
@@ -312,7 +312,7 @@ fn parse_kind(line: &str) -> Option<(u64, OpKind)> {
 
 /// Kinds of the mutating backend calls one clean transaction of `n` appended
 /// blocks makes, read from the fault backend's own trace.
-fn tx_ops(order: CommitOrder, n: u64) -> Vec<OpKind> {
+pub(crate) fn tx_ops(order: CommitOrder, n: u64) -> Vec<OpKind> {
     let mut sim = Sim::new(0x0907, order);
     assert!(sim.create(None));
     let mut rng = SplitMix64(1);
@@ -332,7 +332,7 @@ fn tx_ops(order: CommitOrder, n: u64) -> Vec<OpKind> {
     ops
 }
 
-fn faults_for(kind: OpKind) -> Vec<Fault> {
+pub(crate) fn faults_for(kind: OpKind) -> Vec<Fault> {
     match kind {
         OpKind::SetLen => vec![
             Fault::Resize(ErrorKind::Other),
@@ -358,11 +358,11 @@ fn faults_for(kind: OpKind) -> Vec<Fault> {
 
 /// A fault that makes the operation (and so the commit) fail. `Short(n>0)` is
 /// a normal short transfer that `CheckedStorage` completes.
-fn is_failing(f: Fault) -> bool {
+pub(crate) fn is_failing(f: Fault) -> bool {
     !matches!(f, Fault::Write(WriteFault::Short(n)) if n > 0)
 }
 
-fn policies() -> Vec<CrashPolicy> {
+pub(crate) fn policies() -> Vec<CrashPolicy> {
     let mut v = vec![CrashPolicy::DropPending, CrashPolicy::KeepPending];
     v.extend((0..8).map(|s| CrashPolicy::Seeded(0xC0DE + s)));
     v
@@ -472,6 +472,7 @@ fn every_cut_point_leaves_old_or_new_never_mixed() {
                         .iter()
                         .map(|&i| (i, block(&mut rng)))
                         .collect();
+                    let first_commit = shape.prior == 0;
                     let acked = sim.commit(&writes, Some((k as u64, fault)));
 
                     // No ack unless the commit really went through.
@@ -491,9 +492,14 @@ fn every_cut_point_leaves_old_or_new_never_mixed() {
                         // Acked: the oracle has no transaction in flight, and
                         // it already required the exact acked snapshot.
                         &[Outcome::Before]
-                    } else if k <= b1 {
+                    } else if k <= b1 && !first_commit {
                         // Root not written yet: the transaction cannot be visible.
                         &[Outcome::Before]
+                    } else if k <= b1 {
+                        // First commit: slot 0 is blank, so a complete candidate
+                        // (copy durable or kept) is adopted by roll-forward;
+                        // anything less is ignored.
+                        &[Outcome::Before, Outcome::After]
                     } else if k == b2 && fault == Fault::Flush(FlushFault::IoAfterDurable) {
                         &[Outcome::After]
                     } else {
@@ -509,7 +515,7 @@ fn every_cut_point_leaves_old_or_new_never_mixed() {
                     if report.possible_lost_commit {
                         sim.fail(&format!("cut {label}: possible_lost_commit"));
                     }
-                    if is_failing(fault) && k <= b1 && report.rolled_forward {
+                    if is_failing(fault) && k <= b1 && !first_commit && report.rolled_forward {
                         sim.fail(&format!(
                             "cut {label}: crash before barrier 1 rolled forward"
                         ));
@@ -531,7 +537,9 @@ fn every_cut_point_leaves_old_or_new_never_mixed() {
                         if torn_deep && policy == CrashPolicy::KeepPending && !rolled {
                             sim.fail(&format!("cut {label}: kept torn root not rolled forward"));
                         }
-                    } else if report.rolled_forward {
+                    } else if report.rolled_forward && !first_commit {
+                        // (first commit: a complete candidate beside the blank
+                        // slot 0 is adopted whenever its copy is on media)
                         sim.fail(&format!("cut {label}: unexpected roll-forward"));
                     }
                     let entry = summary.entry(label).or_default();
@@ -593,7 +601,7 @@ fn create_cut_points_give_no_file_or_empty_file() {
     }
 }
 
-fn history(seed: u64, txs: u64) -> (Sim, Vec<Snap>) {
+pub(crate) fn history(seed: u64, txs: u64) -> (Sim, Vec<Snap>) {
     let mut sim = Sim::new(seed, CommitOrder::Correct);
     let mut rng = SplitMix64(seed);
     assert!(sim.create(None));
@@ -611,17 +619,21 @@ fn history(seed: u64, txs: u64) -> (Sim, Vec<Snap>) {
     (sim, snaps)
 }
 
-fn with_bytes(sim: &Sim, mutate: impl FnOnce(&mut Vec<u8>)) -> FaultHandle {
+pub(crate) fn with_bytes(sim: &Sim, mutate: impl FnOnce(&mut Vec<u8>)) -> FaultHandle {
     let mut bytes = sim.handle.durable_bytes();
     mutate(&mut bytes);
     FaultHandle::new(&bytes, 0xDA7A)
 }
 
-fn writable(handle: &FaultHandle) -> Result<(CowFile<FaultBackend>, OpenReport), CowError> {
+pub(crate) fn writable(
+    handle: &FaultHandle,
+) -> Result<(CowFile<FaultBackend>, OpenReport), CowError> {
     CowFile::open(CheckedStorage::new(handle.open()).expect("caps"))
 }
 
-fn salvage(handle: &FaultHandle) -> Result<(CowView<FaultBackend>, OpenReport), CowError> {
+pub(crate) fn salvage(
+    handle: &FaultHandle,
+) -> Result<(CowView<FaultBackend>, OpenReport), CowError> {
     CowView::salvage(CheckedStorage::new(handle.open()).expect("caps"))
 }
 
@@ -801,7 +813,7 @@ fn damaged_data_under_valid_root_refuses_without_fallback() {
 
 /// A file of `len` zero bytes with `sector` installed in the slot of its
 /// generation. The sector's CRC is valid; only its fields are hostile.
-fn forged(len: usize, sectors: &[[u8; SLOT_SIZE]]) -> Vec<u8> {
+pub(crate) fn forged(len: usize, sectors: &[[u8; SLOT_SIZE]]) -> Vec<u8> {
     let mut bytes = vec![0u8; len];
     for sector in sectors {
         let generation = u64::from_le_bytes(sector[16..24].try_into().expect("8 bytes"));
@@ -868,7 +880,12 @@ fn crc_valid_but_hostile_roots_are_refused() {
         expect_refused(&forged(len, &[root]), inconsistent, label);
     }
 
-    // Map entries with a valid map CRC but hostile physical offsets.
+    // Map entries with a valid map CRC but hostile physical offsets. The
+    // published area is [header][map sector][root copy sector]: the strict
+    // parser (S9-09) reserves the last sector for the root copy, so blocks and
+    // the map must end before it.
+    let end = HEADER_LEN + 2 * SLOT_SIZE as u64;
+    let len = end as usize;
     for (phys, label) in [
         (HEADER_LEN + 1, "phys unaligned"),
         (1u64 << 40, "phys far beyond EOF"),
@@ -1159,6 +1176,9 @@ fn oracle_detects_a_backend_that_acks_without_durability() {
     let mut sim = Sim::new(0xBAD, CommitOrder::Correct);
     let mut rng = SplitMix64(9);
     assert!(sim.create(None));
+    // A first commit that is durable: with a blank slot 0 a lost root of
+    // generation 2 would be rolled forward from its copy and mask the lie.
+    assert!(sim.commit(&[(0, block(&mut rng))], None));
     let ops = tx_ops(CommitOrder::Correct, 1);
     let b2 = (ops.len() - 1) as u64;
     let writes = vec![(0, block(&mut rng))];
