@@ -1932,6 +1932,37 @@ pub enum RunInputError {
     InvalidRflagsDefined { value: u64 },
 }
 
+/// Explicit opt-in marker for the diagnostic CPL0 byte PIO profile.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DiagnosticCpl0PioU8V1;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PioU8AdmissionError {
+    InvalidRflagsDefined { value: u64 },
+    WrongMode,
+    WrongPrivilege,
+    ControlRegistersPresent,
+    Halted,
+    StiShadowActive,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PioU8Exit<E> {
+    Retired,
+    Fault(ArchitecturalFault),
+    Unsupported { opcode: u8 },
+    MemoryError(MemoryError),
+    PortIoError(E),
+    Rejected(PioU8AdmissionError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PioU8Result<E> {
+    pub exit: PioU8Exit<E>,
+    pub instructions_executed: u64,
+    pub rflags_defined: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MaskableRequestRunInputError {
     InvalidRflagsDefined { value: u64 },
@@ -15656,6 +15687,136 @@ pub fn step_paged_mov(
         Cr4Profile::PagedMovLong64V1,
         || false,
     ))
+}
+
+/// Execute at most one exact bare `IN AL, DX` or `OUT DX, AL` instruction.
+/// Admission is checked before fetch; after decode, the selected port callback
+/// runs once before any architectural CPU state is committed.
+pub fn step_pio_u8<P: crate::PortIo>(
+    _profile: DiagnosticCpl0PioU8V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> PioU8Result<P::Error> {
+    let rejected = |error| PioU8Result {
+        exit: PioU8Exit::Rejected(error),
+        instructions_executed: 0,
+        rflags_defined: initial_rflags_defined,
+    };
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return rejected(PioU8AdmissionError::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return rejected(PioU8AdmissionError::WrongMode);
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return rejected(PioU8AdmissionError::WrongPrivilege);
+    }
+    if state.cr0.is_some() || state.cr4.is_some() {
+        return rejected(PioU8AdmissionError::ControlRegistersPresent);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return rejected(PioU8AdmissionError::Halted);
+    }
+    if state.sti_shadow == Some(crate::StiShadow::Blocking) {
+        return rejected(PioU8AdmissionError::StiShadowActive);
+    }
+
+    let fetch_context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let instruction = match long_decode::decode(memory, state.rip, fetch_context) {
+        Ok(instruction) => instruction,
+        Err(DecodeError::Unsupported { opcode, .. }) => {
+            return PioU8Result {
+                exit: PioU8Exit::Unsupported {
+                    opcode: opcode.byte,
+                },
+                instructions_executed: 0,
+                rflags_defined: initial_rflags_defined,
+            };
+        }
+        Err(DecodeError::Invalid { .. }) => {
+            return PioU8Result {
+                exit: PioU8Exit::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }),
+                instructions_executed: 0,
+                rflags_defined: initial_rflags_defined,
+            };
+        }
+        Err(DecodeError::Memory(MemoryError::Architectural(fault))) => {
+            return PioU8Result {
+                exit: PioU8Exit::Fault(fault),
+                instructions_executed: 0,
+                rflags_defined: initial_rflags_defined,
+            };
+        }
+        Err(DecodeError::Memory(error)) => {
+            return PioU8Result {
+                exit: PioU8Exit::MemoryError(error),
+                instructions_executed: 0,
+                rflags_defined: initial_rflags_defined,
+            };
+        }
+    };
+    if instruction.length != 1 || instruction.prefixes != Prefixes::default() {
+        return PioU8Result {
+            exit: PioU8Exit::Unsupported {
+                opcode: instruction.opcode.byte,
+            },
+            instructions_executed: 0,
+            rflags_defined: initial_rflags_defined,
+        };
+    }
+
+    let port = state.gpr[Register::Rdx as usize] as u16;
+    match instruction.operation {
+        Operation::InAlDx => match pio.read_u8(port) {
+            Ok(value) => state.write(
+                RegisterView::low(Register::Rax, OperandSize::Byte),
+                u64::from(value),
+            ),
+            Err(error) => {
+                return PioU8Result {
+                    exit: PioU8Exit::PortIoError(error),
+                    instructions_executed: 0,
+                    rflags_defined: initial_rflags_defined,
+                };
+            }
+        },
+        Operation::OutDxAl => {
+            if let Err(error) = pio.write_u8(port, state.gpr[Register::Rax as usize] as u8) {
+                return PioU8Result {
+                    exit: PioU8Exit::PortIoError(error),
+                    instructions_executed: 0,
+                    rflags_defined: initial_rflags_defined,
+                };
+            }
+        }
+        _ => {
+            return PioU8Result {
+                exit: PioU8Exit::Unsupported {
+                    opcode: instruction.opcode.byte,
+                },
+                instructions_executed: 0,
+                rflags_defined: initial_rflags_defined,
+            };
+        }
+    }
+    state.rip = state.rip.wrapping_add(u64::from(instruction.length));
+    PioU8Result {
+        exit: PioU8Exit::Retired,
+        instructions_executed: 1,
+        rflags_defined: initial_rflags_defined,
+    }
 }
 
 /// Continue an execution while carrying the caller's explicit RFLAGS
@@ -29556,9 +29717,13 @@ fn step_configured(
     // Direct control flow uses the decoded condition/displacement; integer
     // operations below use normalized operands at each accepted width.
     let executable = match instruction.operation {
-        Operation::Cpuid | Operation::Rdtsc | Operation::Cli | Operation::Sti | Operation::Hlt => {
-            false
-        }
+        Operation::Cpuid
+        | Operation::Rdtsc
+        | Operation::Cli
+        | Operation::Sti
+        | Operation::Hlt
+        | Operation::InAlDx
+        | Operation::OutDxAl => false,
         Operation::Swapgs => true,
         Operation::ReadMsr | Operation::WriteMsr => false,
         Operation::Sysenter | Operation::Sysexit => false,
@@ -31748,6 +31913,9 @@ fn step_configured(
         return Ok(StepOutcome::Advanced);
     }
     match instruction.operation {
+        Operation::InAlDx | Operation::OutDxAl => {
+            unreachable!("PIO operations are rejected outside the explicit PIO entry")
+        }
         Operation::Hlt => unreachable!("HLT commits in its profile-gated state path"),
         Operation::ReadCr0 | Operation::WriteCr0 | Operation::ReadCr4 | Operation::WriteCr4 => {
             unreachable!("CR operations commit in their explicit profile path")

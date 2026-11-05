@@ -18,6 +18,7 @@ pub mod long_decode;
 pub mod lretq;
 pub mod memory;
 pub mod msr;
+pub mod port_io;
 mod rational_rounding;
 pub mod sep;
 pub mod state;
@@ -43,6 +44,7 @@ pub use memory::{
     AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode,
     MemoryError, PageFaultRecord, PrivilegeLevel, page_fault_error_code,
 };
+pub use port_io::PortIo;
 pub use state::{
     CodeSegmentDescriptorCache, CpuActivity, DataSegmentDescriptorCache, DsDescriptorCache,
     FragmentAdapterError, FsDescriptorCache, LongModeState, OperandSize, RegisterError,

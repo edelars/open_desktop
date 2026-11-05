@@ -66,30 +66,61 @@ binding может ссылаться только на полный `MemoryRegi
 committed-write callback. CPU `IN/OUT`, I/O privilege checks, guest exceptions
 и преобразование linear address остаются в `od-isa` и CPU bridge.
 
-## Bounded COM1 polling transmitter
+## Bounded COM1 polling UART
 
-`Uart16550PollingTx` is a bounded, synchronous TX-only PIO profile bound by the
-caller to COM1 ports `0x3F8–0x3FF`. It is not a claim of full 16550/16550A
+`Uart16550PollingTx` is a bounded, synchronous byte-wide PIO profile bound by
+the caller to COM1 ports `0x3F8–0x3FF`. It is not a claim of full 16550/16550A
 compatibility. The public `Uart16550Handle` shares the device's
 `Arc<Mutex<UartState>>`; cloning the device or handle aliases the same state.
 The handle exposes explicit `transfer_holding_to_shift`,
 `complete_transmission` and `reset` operations, so host call timing does not
 advance transmission.
 
-Only byte-wide PIO accesses are admitted. The bounded register set is THR,
-DLL/DLM (selected by DLAB), LCR, LSR and SCR. The accepted line format is 8N1
-with a nonzero divisor; IER must remain zero, FIFO is disabled, and IIR reports
-no interrupt. TX state consists of one holding byte and one shift byte. LSR
-reports THRE as `0x20` when the holding register is empty and TEMT as `0x40`
-when both stages are empty. A busy holding register or unsupported access is
-rejected without changing device state. Completion returns the original raw
-byte; the model writes no host output.
+Only byte-wide PIO accesses are admitted. With DLAB clear, offset `0` is the
+shared THR/RBR location: a write submits one TX holding byte and a read is an
+RBR read. With DLAB set, offset `0` and `1` select DLL and DLM. The other
+bounded registers are LCR, LSR and SCR. The accepted line format is 8N1 with
+a nonzero divisor; IER must remain zero, FIFO is disabled, and IIR reports no
+interrupt.
+
+RX is one caller-injected byte. `LSR.DR` is bit `0` and is set exactly while
+the receive register is occupied. Reading RBR at offset `0` returns the byte
+and clears `LSR.DR`; reading an empty RBR returns `DeviceError::WriteOnly` and
+does not create or replace a byte. A second injection while the receive
+register is occupied returns `DeviceError::Busy`.
+
+TX state consists of one holding byte and one shift byte. LSR reports THRE as
+`0x20` when the holding register is empty and TEMT as `0x40` when both stages
+are empty. A busy holding register or unsupported access is rejected without
+changing device state. Completion returns the original raw byte; the model
+writes no host output.
 
 The register subset is based on TI [PC16550D datasheet, SNLS378C](https://media.digikey.com/pdf/Data%20Sheets/Texas%20Instruments%20PDFs/PC16550D.pdf),
 including its register selection and THRE/TEMT status definitions. The model
-does not claim baud-accurate timing, RX, FIFO operation, IRQ4, guest CPU
-`IN/OUT`, Linux serial-driver compatibility or boot support. Parent task S4-24
-remains open for the guest I/O instruction path and interrupt integration.
+does not claim baud-accurate timing, FIFO operation, IRQ4, guest Linux
+serial-driver compatibility or boot support. Parent task S4-24 remains open
+for complete UART behavior and interrupt integration.
+
+## Bounded COM1 polling transmitter and CPU PIO step
+
+`DiagnosticCpl0PioU8V1` connects the CPU to the existing synchronous PIO bus
+through `od_machine::step_diagnostic_pio_u8`. It admits one bare `EC` (`IN
+AL,DX`) or `EE` (`OUT DX,AL`) instruction per call, only in Long64 at CPL0 and
+with CR0/CR4 both `None`. The machine adapter fetches from RAM using flat
+identity addressing (`linear == physical`); the instruction performs exactly
+one byte PIO callback. Success retires once and advances RIP by one; fetch or
+PIO failure does not retire or change CPU state. The CPU contract defines the
+register and definedness details.
+
+When COM1 is bound to `Uart16550PollingTx`, `IN AL,DX` reads and clears its
+single injected RX byte, while `OUT DX,AL` submits one byte to the bounded TX
+holding stage. A second RX injection while occupied and writes to a busy TX
+holding stage are rejected without replacing pending data. TX still advances
+only through explicit handle operations. The slice has no TSS I/O bitmap or
+IOPL matrix and does not claim word/dword/qword port instructions, immediate
+ports, REP/string I/O, IRQ, APIC, Linux serial compatibility or Linux boot.
+See the [S4-24b report](../reports/STAGE_4_S4-24B_2026-11-05.md) and its
+[machine verification record](../testing/MACHINE.md#s4-24b-bounded-cpu-pio-and-com1-rx).
 
 ## Диагностический CPU memory bridge
 

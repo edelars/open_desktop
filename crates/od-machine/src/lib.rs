@@ -7,6 +7,7 @@ mod identity_memory_adapter;
 mod page_walk;
 mod paged_memory_adapter;
 mod physical_memory;
+mod pio_step;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
@@ -36,6 +37,8 @@ pub use page_walk::{
 };
 
 pub use paged_memory_adapter::{PagedMovStepError, PagedMovStepReport, step_paged_mov};
+
+pub use pio_step::step_diagnostic_pio_u8;
 
 pub use physical_memory::{
     GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap, MemoryAccessError,

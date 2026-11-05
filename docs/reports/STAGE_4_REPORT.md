@@ -4,13 +4,29 @@
 
 На 2026-11-05 приняты локальные memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access, S4-01a baseline, S4-10a
-admission-boundary, bounded S4-06b CPU-connected paged MOV и bounded S4-24a
-COM1 polling TX slices. Этап 4 не завершён: S4-00—S4-01,
+admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-24a
+COM1 polling TX и bounded S4-24b CPU PIO slices. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, полный UART/IRQ, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
 
-В S4-24a (baseline `6aeb2dd`) добавлен bounded TX-only UART для COM1
-`0x3F8–0x3FF` через существующую PIO bus. `Uart16550PollingTx` и
+В S4-24b реализован `DiagnosticCpl0PioU8V1`: один bare `EC`/`EE` за вызов,
+Long64 CPL0, CR0/CR4 `None`, instruction fetch через flat identity RAM.
+Успешная инструкция делает один byte PIO callback и одну retirement;
+неуспешные fetch/PIO не меняют CPU state. `IN AL,DX` сохраняет старшие 56
+бит RAX. UART использует offset `0` как RBR при чтении и THR при записи;
+`LSR.DR` — bit `0`, чтение pending RBR очищает его, а пустой RBR возвращает
+`DeviceError::WriteOnly`. Он сохраняет ранее добавленный bounded TX path.
+Проверки: `od-isa`
+2014 unit + 7 integration tests, `od-machine` 98 tests, package/workspace
+checks, fmt и diff check прошли. Независимое `gpt-6.1-sol/high` ревью полного
+code-среза одобрило его без замечаний P0–P3. См. [отчёт S4-24b](STAGE_4_S4-24B_2026-11-05.md)
+и [JSON evidence](data/stage4/s4-24b-pio.json). Не заявляются IOPL/TSS,
+другие widths, immediate/REP/string I/O, IRQ/APIC или Linux support; parent
+S4-24 remains open.
+
+В S4-24a (baseline `6aeb2dd`) добавлен bounded UART polling path для COM1
+`0x3F8–0x3FF` через существующую PIO bus с ограниченным TX состоянием.
+`Uart16550PollingTx` и
 `Uart16550Handle` разделяют одно состояние; передача продвигается только
 явными host-вызовами. Проверены byte-only PIO, DLAB/DLL/DLM, 8N1 с ненулевым
 divisor, THRE/TEMT transitions, holding/shift, busy/unsupported atomicity,

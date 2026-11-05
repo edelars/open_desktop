@@ -1,6 +1,6 @@
 # Этап 4. Системная память, прерывания и машина с одним CPU — пошаговый план реализации
 
-Статус: **план подготовлен; выполнение этапа этим документом не подтверждается**. Исходное состояние проверено 2026-11-04. Все задачи ниже открыты. Чекбокс означает принятую реализацию с указанными проверками и ревью, а не наличие файла или описания.
+Статус: **план подготовлен; этап 4 не завершён**. Исходное состояние проверено 2026-11-04; принятые bounded slices отмечаются ниже отдельно, а родительская задача закрывается только после выполнения полного критерия. Чекбокс означает принятую реализацию с указанными проверками и ревью, а не наличие файла или описания.
 
 Объём задаёт [этап 4 дорожной карты](../ROADMAP.md#этап-4-системная-память-прерывания-и-машина-с-одним-cpu). Обязательные границы: [архитектура](../ARCHITECTURE.md), [карта проекта](../PROJECT_LAYOUT.md), [CPU contract](../specs/CPU_CONTRACT.md), [JIT contract](../specs/JIT_CONTRACT.md), [виртуальная плата](../specs/VIRTUAL_BOARD.md), [профиль гостя](../specs/GUEST_REQUIREMENTS.md). Этот файл декомпозирует существующий этап, а не заменяет эти документы.
 
@@ -454,7 +454,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-24. UART 16550A: сначала polling, затем IRQ
 
-- [ ] Polling slice S4-24a принят; IRQ принято отдельно; после обоих пунктов задача закрыта.
+- [ ] Полная задача открыта. Bounded slices S4-24a и S4-24b приняты; IRQ и guest-visible acceptance остаются обязательными для закрытия.
 - **Где:** устройство в `od-machine`, runner serial sink, system tests.
 - **Сделать:** COM1 `0x3F8`, IRQ4 по `VIRTUAL_BOARD.md`; реализовать нужные registers, DLAB, line status, FIFO и interrupt conditions согласно точному профилю. Начать с реального polling TX для первого probe; IRQ подключить после S4-27.
 - **Проверка:** divisor/register selection, TX/RX/status transitions, interrupt enable/ack semantics, повторное чтение side effects, raw serial bytes без добавленных host success markers.
@@ -467,6 +467,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** `Uart16550PollingTx` подключается к COM1 `0x3F8–0x3FF` через byte-only PIO. `Uart16550Handle` управляет тем же `Arc<Mutex<UartState>>`, что и bus-owned device; передача продвигается только явными transfer/complete вызовами. Реализованы THR/DLL/DLM/LCR/LSR/SCR, ограничение 8N1 и ненулевого divisor, IER=0, FIFO disabled, IIR no-interrupt, holding/shift stages и reset.
 - **Проверка:** 7 device unit tests, 2 PIO integration tests и 4 существующих `MachineBus` tests; package check, formatting, layout и diff checks прошли.
 - **Не заявлено:** baud timing, RX/FIFO, IRQ4, guest CPU `IN/OUT`, Linux serial compatibility, boot или scheduler. Полная 16550A совместимость не заявлена.
+
+#### S4-24b. Bounded CPL0 byte PIO instruction path
+
+- [x] Ограниченный CPU-to-PIO срез принят после независимого ревью `gpt-6.1-sol/high`; родительский S4-24 остаётся открытым.
+- **Evidence:** [отчёт S4-24b](../reports/STAGE_4_S4-24B_2026-11-05.md) и [JSON evidence](../reports/data/stage4/s4-24b-pio.json).
+- **Граница:** `DiagnosticCpl0PioU8V1` исполняет только bare `EC`/`EE` по одному за вызов, Long64 CPL0, CR0/CR4 `None`; fetch идёт через flat identity RAM. Успех вызывает одну byte-PIO операцию, одну retirement и `RIP + 1`. COM1 поддерживает single-byte RX injection/read-clear и bounded TX.
+- **Проверка:** `od-isa` — 2014 unit и 7 integration tests; полный `od-machine` — 98 tests; package/workspace checks, fmt и diff checks прошли.
+- **Не заявлено:** IOPL/TSS, другие widths, immediate I/O, REP/string I/O, IRQ/APIC, Linux serial compatibility или Linux boot.
 
 ### S4-25. Local APIC одного CPU
 

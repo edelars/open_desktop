@@ -2,6 +2,7 @@ use crate::{
     GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap, MemoryAccessError,
     MemoryRegionKind, PhysicalMemory, RamLimits,
 };
+use od_isa::PortIo;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -174,7 +175,23 @@ pub struct MachineBus {
     ports: Vec<PortRegionBinding>,
 }
 
+/// Disjoint PIO view used while the CPU fetch adapter borrows physical RAM.
+pub(crate) struct MachineBusPortIo<'a> {
+    devices: &'a mut [Box<dyn BusDevice>],
+    ports: &'a [PortRegionBinding],
+}
+
 impl MachineBus {
+    pub(crate) fn split_for_pio_step(&mut self) -> (&mut PhysicalMemory, MachineBusPortIo<'_>) {
+        let Self {
+            memory,
+            devices,
+            ports,
+            ..
+        } = self;
+        (memory, MachineBusPortIo { devices, ports })
+    }
+
     pub(crate) fn access_tracked_ram(
         &mut self,
         paging: &crate::Long64ProbeConfig,
@@ -364,36 +381,7 @@ impl MachineBus {
         port: PortAddress,
         width: AccessWidth,
     ) -> Result<u32, BusAccessError> {
-        if width == AccessWidth::Qword {
-            return Err(BusAccessError::UnsupportedWidth);
-        }
-        let len = u32::from(width.bytes());
-        let binding = self
-            .ports
-            .iter()
-            .find(|binding| binding.range.contains(port, len))
-            .ok_or_else(|| {
-                if self.ports.iter().any(|b| {
-                    u32::from(port.0) >= u32::from(b.range.start.0)
-                        && u32::from(port.0) < b.range.end()
-                }) {
-                    BusAccessError::CrossesRegion
-                } else {
-                    BusAccessError::UnmappedPort(port)
-                }
-            })?;
-        let access = DeviceAccess {
-            space: IoSpace::Pio,
-            offset: u64::from(port.0 - binding.range.start.0),
-            width,
-        };
-        self.devices[binding.device_index]
-            .read(access)
-            .map(|v| (v & width.mask()) as u32)
-            .map_err(|source| BusAccessError::Device {
-                device_index: binding.device_index,
-                source,
-            })
+        read_port_from(&mut self.devices, &self.ports, port, width)
     }
 
     pub fn write_port(
@@ -402,35 +390,7 @@ impl MachineBus {
         width: AccessWidth,
         value: u32,
     ) -> Result<(), BusAccessError> {
-        if width == AccessWidth::Qword {
-            return Err(BusAccessError::UnsupportedWidth);
-        }
-        let len = u32::from(width.bytes());
-        let binding = self
-            .ports
-            .iter()
-            .find(|binding| binding.range.contains(port, len))
-            .ok_or_else(|| {
-                if self.ports.iter().any(|b| {
-                    u32::from(port.0) >= u32::from(b.range.start.0)
-                        && u32::from(port.0) < b.range.end()
-                }) {
-                    BusAccessError::CrossesRegion
-                } else {
-                    BusAccessError::UnmappedPort(port)
-                }
-            })?;
-        let access = DeviceAccess {
-            space: IoSpace::Pio,
-            offset: u64::from(port.0 - binding.range.start.0),
-            width,
-        };
-        self.devices[binding.device_index]
-            .write(access, u64::from(value) & width.mask())
-            .map_err(|source| BusAccessError::Device {
-                device_index: binding.device_index,
-                source,
-            })
+        write_port_to(&mut self.devices, &self.ports, port, width, value)
     }
 
     pub(crate) fn read_flat_bytes(
@@ -487,6 +447,102 @@ impl MachineBus {
             ))),
         }
     }
+}
+
+impl PortIo for MachineBusPortIo<'_> {
+    type Error = BusAccessError;
+
+    fn read_u8(&mut self, port: u16) -> Result<u8, Self::Error> {
+        read_port_from(
+            self.devices,
+            self.ports,
+            PortAddress::new(port),
+            AccessWidth::Byte,
+        )
+        .map(|value| value as u8)
+    }
+
+    fn write_u8(&mut self, port: u16, value: u8) -> Result<(), Self::Error> {
+        write_port_to(
+            self.devices,
+            self.ports,
+            PortAddress::new(port),
+            AccessWidth::Byte,
+            u32::from(value),
+        )
+    }
+}
+
+fn read_port_from(
+    devices: &mut [Box<dyn BusDevice>],
+    ports: &[PortRegionBinding],
+    port: PortAddress,
+    width: AccessWidth,
+) -> Result<u32, BusAccessError> {
+    if width == AccessWidth::Qword {
+        return Err(BusAccessError::UnsupportedWidth);
+    }
+    let len = u32::from(width.bytes());
+    let binding = ports
+        .iter()
+        .find(|binding| binding.range.contains(port, len))
+        .ok_or_else(|| {
+            if ports.iter().any(|b| {
+                u32::from(port.0) >= u32::from(b.range.start.0) && u32::from(port.0) < b.range.end()
+            }) {
+                BusAccessError::CrossesRegion
+            } else {
+                BusAccessError::UnmappedPort(port)
+            }
+        })?;
+    let access = DeviceAccess {
+        space: IoSpace::Pio,
+        offset: u64::from(port.0 - binding.range.start.0),
+        width,
+    };
+    devices[binding.device_index]
+        .read(access)
+        .map(|v| (v & width.mask()) as u32)
+        .map_err(|source| BusAccessError::Device {
+            device_index: binding.device_index,
+            source,
+        })
+}
+
+fn write_port_to(
+    devices: &mut [Box<dyn BusDevice>],
+    ports: &[PortRegionBinding],
+    port: PortAddress,
+    width: AccessWidth,
+    value: u32,
+) -> Result<(), BusAccessError> {
+    if width == AccessWidth::Qword {
+        return Err(BusAccessError::UnsupportedWidth);
+    }
+    let len = u32::from(width.bytes());
+    let binding = ports
+        .iter()
+        .find(|binding| binding.range.contains(port, len))
+        .ok_or_else(|| {
+            if ports.iter().any(|b| {
+                u32::from(port.0) >= u32::from(b.range.start.0) && u32::from(port.0) < b.range.end()
+            }) {
+                BusAccessError::CrossesRegion
+            } else {
+                BusAccessError::UnmappedPort(port)
+            }
+        })?;
+    let access = DeviceAccess {
+        space: IoSpace::Pio,
+        offset: u64::from(port.0 - binding.range.start.0),
+        width,
+    };
+    devices[binding.device_index]
+        .write(access, u64::from(value) & width.mask())
+        .map_err(|source| BusAccessError::Device {
+            device_index: binding.device_index,
+            source,
+        })
 }
 
 fn access_width(len: usize) -> Option<AccessWidth> {

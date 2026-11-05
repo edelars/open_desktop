@@ -1,4 +1,4 @@
-//! A bounded, synchronous, transmit-only UART register profile.
+//! A bounded, synchronous UART register profile with single-byte RX and TX.
 //!
 //! This model accepts byte-wide PIO accesses only. Transmission advances only
 //! when the caller explicitly invokes [`Uart16550PollingTx::transfer_holding_to_shift`]
@@ -14,10 +14,11 @@ const IIR_NO_INTERRUPT: u8 = 0x01;
 const LSR_THRE: u8 = 0x20;
 const LSR_TEMT: u8 = 0x40;
 
-/// One synchronous UART polling transmitter with a two-stage bounded TX path.
+/// One synchronous UART polling device with a one-byte RX register and a
+/// two-stage bounded TX path.
 ///
-/// The device models a TX-only subset of a 16550-style register layout. It
-/// does not implement a receive path, FIFO, interrupts, or baud-rate timing.
+/// The device models a bounded subset of a 16550-style register layout. RX is
+/// a single injected byte; there is no FIFO, interrupt delivery, or timing.
 #[derive(Clone, Debug)]
 pub struct Uart16550PollingTx {
     state: Arc<Mutex<UartState>>,
@@ -39,6 +40,7 @@ struct UartState {
     scratch: u8,
     holding: Option<u8>,
     shift: Option<u8>,
+    received: Option<u8>,
 }
 
 impl Uart16550PollingTx {
@@ -99,6 +101,12 @@ impl Uart16550PollingTx {
     pub fn reset(&mut self) {
         self.with_state(UartState::reset);
     }
+
+    /// Supplies one byte to the receive register. A full register is preserved
+    /// and reports `Busy` until the guest reads the current byte.
+    pub fn inject_received_byte(&mut self, value: u8) -> Result<(), DeviceError> {
+        self.with_state(|state| state.inject_received_byte(value))
+    }
 }
 
 impl Default for Uart16550PollingTx {
@@ -138,6 +146,11 @@ impl Uart16550Handle {
     pub fn reset(&self) {
         self.with_state(UartState::reset);
     }
+
+    /// Supplies one byte to the receive register shared with the bus device.
+    pub fn inject_received_byte(&self, value: u8) -> Result<(), DeviceError> {
+        self.with_state(|state| state.inject_received_byte(value))
+    }
 }
 
 impl UartState {
@@ -148,6 +161,7 @@ impl UartState {
             scratch: 0,
             holding: None,
             shift: None,
+            received: None,
         }
     }
 
@@ -167,6 +181,14 @@ impl UartState {
         *self = Self::new();
     }
 
+    fn inject_received_byte(&mut self, value: u8) -> Result<(), DeviceError> {
+        if self.received.is_some() {
+            return Err(DeviceError::Busy);
+        }
+        self.received = Some(value);
+        Ok(())
+    }
+
     fn dlab(&self) -> bool {
         self.line_control & LCR_DLAB != 0
     }
@@ -181,6 +203,9 @@ impl UartState {
 
     fn line_status(&self) -> u8 {
         let mut status = 0;
+        if self.received.is_some() {
+            status |= 0x01; // data ready
+        }
         if self.holding.is_none() {
             status |= LSR_THRE;
         }
@@ -203,11 +228,17 @@ impl UartState {
         Ok(access.offset as u8)
     }
 
-    fn read(&self, access: DeviceAccess) -> Result<u64, DeviceError> {
+    fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
         let offset = Self::validate_access(access)?;
         let value = match offset {
             0 if self.dlab() => self.divisor as u8,
-            0 => return Err(DeviceError::WriteOnly),
+            0 => {
+                return self
+                    .received
+                    .take()
+                    .map(u64::from)
+                    .ok_or(DeviceError::WriteOnly);
+            }
             1 if self.dlab() => (self.divisor >> 8) as u8,
             1 => 0,
             2 => IIR_NO_INTERRUPT,

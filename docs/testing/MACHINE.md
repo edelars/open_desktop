@@ -215,6 +215,42 @@ The integration path binds the device to COM1 and checks byte PIO through the
 production bus, DLAB divisor selection without accidental TX, the literal
 `THRE/TEMT` transitions, raw byte completion, busy/unsupported access atomicity,
 and reset through a handle that aliases the bus-owned state. This verifies only
-the synchronous bounded TX endpoint. Baud timing, RX/FIFO, IRQ4, guest CPU
-`IN/OUT`, Linux serial compatibility, guest boot and scheduler behavior are not
-covered. Parent S4-24 remains open.
+the synchronous bounded TX endpoint. Baud timing, FIFO, IRQ4, Linux serial
+compatibility, guest boot and scheduler behavior are not covered. Parent
+S4-24 remains open.
+
+## S4-24b: bounded CPU PIO and COM1 RX
+
+The [S4-24b report](../reports/STAGE_4_S4-24B_2026-11-05.md) records the
+accepted CPU-to-PIO slice and independent review. The bounded profile is
+`DiagnosticCpl0PioU8V1`: only bare `EC`/`EE` in Long64 CPL0, with CR0/CR4
+`None`; fetch uses flat identity RAM. Each successful call performs one byte
+PIO callback and one retirement. `IN AL,DX` preserves upper RAX and consumes
+the single injected UART RX byte; `OUT DX,AL` uses the existing bounded TX
+holding/shift path. Failed fetch or PIO operations do not retire or mutate CPU
+state.
+
+Recorded verification from the implementation and independent review:
+
+```text
+cargo test -p od-isa --locked --offline                  # 2014 unit + 7 integration passed
+cargo test -p od-machine --locked --offline              # 98 passed
+cargo check -p od-isa --all-targets --locked --offline   # passed
+cargo check --workspace --all-targets --locked --offline # passed
+cargo fmt --all -- --check                              # passed
+git diff --check                                         # passed
+```
+
+The targeted PIO integration tests cover successful byte IN/OUT, exactly one
+callback and retirement, upper-RAX preservation, RBR read-clear, `LSR.DR`,
+unmapped-port errors, fetch errors, unsupported instructions, CPL rejection
+and unchanged CPU state on failures. UART RX accepts one injected byte,
+reports data ready while it is pending, rejects a second injection until the
+guest reads the first, and returns `DeviceError::WriteOnly` when the empty RBR
+is read. The full `od-machine` suite and `od-isa` package tests were reported
+successful; the independent `gpt-6.1-sol/high` review approved the complete
+code slice with no P0–P3 findings.
+
+These results do not establish IOPL/TSS checks, other I/O widths, immediate or
+REP/string forms, IRQ delivery, APIC, Linux serial-driver compatibility or
+Linux boot. Parent S4-24 remains open.

@@ -42,6 +42,37 @@ effects are specified in the [bounded S4-06b machine contract](MACHINE_CONTRACT.
 The scope and evidence are recorded in the
 [S4-06b report](../reports/STAGE_4_S4-06B_2026-11-05.md).
 
+### Bounded CPU-to-PIO profile `DiagnosticCpl0PioU8V1` (S4-24b)
+
+`od_isa::execute::step_pio_u8` is an opt-in one-instruction entry point for
+`DiagnosticCpl0PioU8V1`. It admits only the bare Long64 encodings `EC`
+(`IN AL,DX`) and `EE` (`OUT DX,AL`), at CPL0, with CR0 and CR4 inputs both
+`None`. Admission checks happen before instruction fetch. The entry point
+forces `AccessOrigin::Explicit` for fetch while preserving the supplied CPL.
+This diagnostic profile does not apply a TSS I/O bitmap or IOPL privilege
+matrix.
+
+`IN` reads one byte from port `DX & 0xffff` into AL and preserves the upper 56
+bits of RAX. `OUT` writes AL to port `DX & 0xffff`. A successful call retires
+exactly one instruction, advances RIP by one byte, invokes exactly one PIO
+operation and preserves RFLAGS and `rflags_defined`. A fetch, decode, admission
+or PIO error retires no instruction and leaves CPU state and definedness
+unchanged; fetch/backend, unsupported-instruction and PIO failures remain
+distinct results. The legacy `run` entry point does not admit these forms.
+
+The connected machine adapter fetches through flat identity RAM
+(`linear == physical`) and delegates the single byte operation to the existing
+machine PIO bus. Operand-memory accesses are not part of this profile. UART
+register and single-byte RX/TX limits are specified in the
+[machine contract](MACHINE_CONTRACT.md#bounded-com1-polling-transmitter-and-cpu-pio-step).
+Implementation results and checks are recorded in the
+[S4-24b report](../reports/STAGE_4_S4-24B_2026-11-05.md).
+
+This is not a general I/O privilege implementation and does not establish
+other widths, immediate-port forms, REP/string I/O, IRQ delivery, APIC
+integration, Linux serial compatibility or Linux boot. Parent S4-24 remains
+open.
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

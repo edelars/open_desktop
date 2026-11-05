@@ -1,0 +1,81 @@
+{
+  "slice": "S4-24b",
+  "date": "2026-11-05",
+  "status": "accepted_bounded_slice",
+  "parent_status": "S4-24 remains open",
+  "profile": "DiagnosticCpl0PioU8V1",
+  "instruction_forms": {
+    "in": "bare EC (IN AL, DX)",
+    "out": "bare EE (OUT DX, AL)",
+    "mode": "Long64",
+    "cpl": 0,
+    "cr0": null,
+    "cr4": null,
+    "instructions_per_call": 1
+  },
+  "machine_path": {
+    "fetch": "flat identity RAM (linear == physical)",
+    "pio_width": "byte",
+    "successful_callback_count": 1,
+    "successful_retirement_count": 1,
+    "in_semantics": "read DX & 0xffff into AL; preserve upper 56 bits of RAX",
+    "out_semantics": "write AL to DX & 0xffff",
+    "failure_semantics": "no retirement; CPU state and definedness unchanged"
+  },
+  "uart": {
+    "device": "Uart16550PollingTx",
+    "register_offset_0": "THR on write and RBR on read when DLAB is clear; DLL when DLAB is set",
+    "rx": "one caller-injected byte; LSR.DR bit 0 is set while pending; successful RBR read clears the byte and DR; empty RBR returns DeviceError::WriteOnly; injection while occupied returns Busy",
+    "tx": "bounded holding and shift stages, advanced by explicit handle operations",
+    "fifo": false,
+    "irq_delivery": false
+  },
+  "verification": [
+    {
+      "command": "cargo test -p od-isa --locked --offline",
+      "result": "2014 unit tests and 7 integration tests passed"
+    },
+    {
+      "command": "cargo test -p od-machine --locked --offline",
+      "result": "98 tests passed"
+    },
+    {
+      "command": "cargo test -p od-machine --test pio_u8_step --test uart16550_polling --locked --offline",
+      "result": "6 PIO/UART integration tests passed; RBR read-clear and empty-RBR WriteOnly evidence included"
+    },
+    {
+      "command": "cargo check -p od-isa --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo check --workspace --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "independent_review": {
+    "reviewer": "gpt-6.1-sol",
+    "result": "approve",
+    "findings_p0_p3": 0
+  },
+  "not_claimed": [
+    "IOPL checks",
+    "TSS I/O bitmap checks",
+    "other I/O widths",
+    "immediate-port instructions",
+    "REP or string I/O",
+    "IRQ delivery",
+    "APIC integration",
+    "Linux serial-driver compatibility",
+    "Linux boot",
+    "full 16550A compatibility"
+  ],
+  "stage_4_complete": false
+}
