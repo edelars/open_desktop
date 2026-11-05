@@ -420,6 +420,16 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** unit tests на реальный fetch/load/store через `IdentityMemoryAdapter`, эквивалентность единого бюджета и нескольких квантов вместе с defined-mask, переходы pause/resume/stop, STOP до fetch и на poll point, раздельные fault/unsupported/backend exits, возврат при work-limit.
 - **Готово:** bounded сессия и её проверяемые ограничения реализованы; общий lifecycle S4-21 остаётся открытым до следующих срезов.
 
+#### S4-21b. Единый paged probe quantum с гостевым HLT
+
+- [x] Ограниченный S4-21b принят после независимого ревью; S4-21 остаётся открытым.
+- **Где:** `od-isa::step_paged_probe` и `od-machine::run_paged_probe`.
+- **Контракт:** профиль `PagedCpl0ProbeV1` допускает только `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B` (`MOV [RBX],RCX`), bare `EC`/`EE` и `F4`. CPU проверяет admission и CR0/CR4; machine проверяет CR3/EFER и подаёт page-aware memory. Quantum владеет конечным budget, STOP precedence и одним decode на границе.
+- **Границы:** STOP проверяется первым, затем budget, затем fetch/decode. HLT фиксирует `Halted` и при повторном вызове не делает fetch/effects; HLT не означает guest success. Предыдущие retirement, A/D writes и callbacks остаются committed при позднем выходе; точные архитектурные fault records сохраняются. Нет exception delivery/CR2 update.
+- **Проверка:** один quantum и split quanta для store→load→OUT→HLT; STOP/resume без повтора committed effects; zero/boundary budgets, HLT/no-op repeat, admission/allowlist, page-aware faults, backend/PIO errors и A/D callbacks.
+- **Evidence:** [отчёт S4-21b](../reports/STAGE_4_S4-21B_2026-11-05.md), [JSON](../reports/data/stage4/s4-21b-paged-probe.json), [методика](../testing/MACHINE.md#s4-21b-bounded-paged-probe-quantum). `od-isa`: 2,014 unit + 25 integration; `od-machine`: 116; workspace check, fmt, layout и diff успешны. `graphify update .` обновил code graph; docs-aware semantic extraction не завершена.
+- **Не заявлено:** Linux или собственное kernel boot, IRQ/APIC, exception delivery/CR2, полный S4-21, S4-24 или S4-32. Этап 4 остаётся открытым.
+
 ### S4-22. Virtual clock и TSC
 
 - [ ] Принято после ревью.

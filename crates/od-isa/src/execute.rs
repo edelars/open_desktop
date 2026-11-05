@@ -1941,6 +1941,10 @@ pub struct DiagnosticCpl0PioU8V1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0PioU8V1;
 
+/// Explicit opt-in marker for the bounded mixed paged probe instruction set.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0ProbeV1;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PioU8AdmissionError {
     InvalidRflagsDefined { value: u64 },
@@ -1966,6 +1970,39 @@ pub enum PioU8Exit<E> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PioU8Result<E> {
     pub exit: PioU8Exit<E>,
+    pub instructions_executed: u64,
+    pub rflags_defined: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedProbeRejection {
+    InvalidRflagsDefined { value: u64 },
+    WrongMode,
+    WrongPrivilege,
+    ControlRegistersMissing,
+    ControlRegistersOutsideProfile,
+    ActivityMissing,
+    NotRunning,
+    StiShadowMissing,
+    StiShadowActive,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedProbeExit<E> {
+    Retired,
+    Halted,
+    Unsupported { opcode: u8 },
+    Fault(ArchitecturalFault),
+    Backend(MemoryError),
+    PortIo(E),
+    Rejected(PagedProbeRejection),
+}
+
+/// Result of one paged-probe boundary, suitable for composing bounded
+/// machine quanta. `instructions_executed` is always zero or one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedProbeResult<E> {
+    pub exit: PagedProbeExit<E>,
     pub instructions_executed: u64,
     pub rflags_defined: u64,
 }
@@ -15783,6 +15820,225 @@ pub fn step_paged_pio_u8<P: crate::PortIo>(
     }
 
     execute_pio_u8(state, memory, pio, context, initial_rflags_defined)
+}
+
+/// Execute one instruction from the bounded `PagedCpl0ProbeV1` allowlist.
+/// Fetch/decode happens exactly once through the supplied guest memory; the
+/// machine remains responsible for selecting and validating CR3/EFER.
+pub fn step_paged_probe<P: crate::PortIo>(
+    _profile: PagedCpl0ProbeV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<P::Error> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return reject(PagedProbeRejection::WrongPrivilege);
+    }
+    if state.cr0.is_none() || state.cr4.is_none() {
+        return reject(PagedProbeRejection::ControlRegistersMissing);
+    }
+    if !state
+        .cr0
+        .is_some_and(|value| Cr0Profile::PagedMovLong64V1.accepts(value))
+        || !state
+            .cr4
+            .is_some_and(|value| Cr4Profile::PagedMovLong64V1.accepts(value))
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let instruction = match long_decode::decode(memory, state.rip, context) {
+        Ok(instruction) => instruction,
+        Err(DecodeError::Unsupported { opcode, .. }) => {
+            return result(
+                PagedProbeExit::Unsupported {
+                    opcode: opcode.byte,
+                },
+                0,
+            );
+        }
+        Err(DecodeError::Invalid { .. }) => {
+            return result(
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }),
+                0,
+            );
+        }
+        Err(DecodeError::Memory(MemoryError::Architectural(fault))) => {
+            return result(PagedProbeExit::Fault(fault), 0);
+        }
+        Err(DecodeError::Memory(error)) => {
+            return result(PagedProbeExit::Backend(error), 0);
+        }
+    };
+    let next_rip = state.rip.wrapping_add(u64::from(instruction.length));
+    let unsupported = || {
+        result(
+            PagedProbeExit::Unsupported {
+                opcode: instruction.opcode.byte,
+            },
+            0,
+        )
+    };
+    match instruction.operation {
+        Operation::Mov {
+            dst: Operand::Register(destination),
+            src: Operand::Memory(source),
+        } if instruction.length == 3
+            && instruction.opcode.byte == 0x8b
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && destination == RegisterView::low(Register::Rax, OperandSize::Qword)
+            && source
+                == (MemoryOperand {
+                    base: AddressBase::Register(Register::Rbx),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Qword,
+                }) =>
+        {
+            let address = match source.access_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let value = match memory.read_integer(address, context, OperandSize::Qword) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            state.gpr[Register::Rax as usize] = value;
+            state.rip = next_rip;
+        }
+        Operation::Mov {
+            dst: Operand::Memory(destination),
+            src: Operand::Register(source),
+        } if instruction.length == 3
+            && instruction.opcode.byte == 0x89
+            && instruction.prefixes
+                == (Prefixes {
+                    rex: Some(0x48),
+                    ..Prefixes::default()
+                })
+            && source == RegisterView::low(Register::Rcx, OperandSize::Qword)
+            && destination
+                == (MemoryOperand {
+                    base: AddressBase::Register(Register::Rbx),
+                    index: None,
+                    scale: 1,
+                    displacement: 0,
+                    address_size: OperandSize::Qword,
+                    size: OperandSize::Qword,
+                }) =>
+        {
+            let address = match destination.access_address_48(state, next_rip) {
+                Ok(address) => address,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            if let Err(error) = memory.write_integer(
+                address,
+                context,
+                OperandSize::Qword,
+                state.gpr[Register::Rcx as usize],
+            ) {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
+        Operation::InAlDx
+            if instruction.length == 1
+                && instruction.opcode.byte == 0xec
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            let port = state.gpr[Register::Rdx as usize] as u16;
+            let value = match pio.read_u8(port) {
+                Ok(value) => value,
+                Err(error) => return result(PagedProbeExit::PortIo(error), 0),
+            };
+            state.write(
+                RegisterView::low(Register::Rax, OperandSize::Byte),
+                u64::from(value),
+            );
+            state.rip = next_rip;
+        }
+        Operation::OutDxAl
+            if instruction.length == 1
+                && instruction.opcode.byte == 0xee
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            let port = state.gpr[Register::Rdx as usize] as u16;
+            if let Err(error) = pio.write_u8(port, state.gpr[Register::Rax as usize] as u8) {
+                return result(PagedProbeExit::PortIo(error), 0);
+            }
+            state.rip = next_rip;
+        }
+        Operation::Hlt
+            if instruction.length == 1
+                && instruction.opcode.byte == 0xf4
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            state.rip = next_rip;
+            state.activity = Some(crate::CpuActivity::Halted);
+            return result(PagedProbeExit::Halted, 1);
+        }
+        _ => return unsupported(),
+    }
+
+    result(PagedProbeExit::Retired, 1)
 }
 
 fn execute_pio_u8<P: crate::PortIo>(

@@ -1,0 +1,87 @@
+{
+  "slice": "S4-21b",
+  "date": "2026-11-05",
+  "status": "accepted_bounded_slice",
+  "parent_status": "S4-21 remains open",
+  "related_open_tasks": ["S4-24", "S4-32"],
+  "stage_4_complete": false,
+  "cpu_profile": {
+    "name": "PagedCpl0ProbeV1",
+    "entry_point": "step_paged_probe",
+    "mode": "Long64",
+    "cpl": 0,
+    "instruction_forms": [
+      "48 8B 03 (MOV RAX,[RBX])",
+      "48 89 0B (MOV [RBX],RCX)",
+      "bare EC (IN AL,DX)",
+      "bare EE (OUT DX,AL)",
+      "bare F4 (HLT)"
+    ],
+    "cpu_admission": "profile admission and CR0/CR4",
+    "machine_admission": "CR3/EFER and page-aware memory"
+  },
+  "quantum": {
+    "entry_point": "run_paged_probe",
+    "decode_per_instruction_boundary": 1,
+    "exit_precedence": ["STOP", "budget exhausted", "fetch/decode"],
+    "hlt": "commits halted state; repeated invocation is a no-op without fetch",
+    "prior_effects": "retirements, tracked A/D writes and callbacks remain committed",
+    "faults": "exact architectural fault record retained; backend and PIO errors distinct",
+    "exception_delivery": false,
+    "cr2_update": false
+  },
+  "acceptance_scenarios": [
+    "store-load-OUT-HLT in one quantum and split single-instruction quanta",
+    "STOP and resume without repeating committed store or PIO effects",
+    "zero/boundary budgets, HLT boundary and halted no-op repeat",
+    "admission and exact instruction allowlist",
+    "page-aware exact faults, access context and saved RIP",
+    "A/D bit effects and committed-write callback ranges",
+    "distinct memory-backend and PIO errors"
+  ],
+  "verification": [
+    {
+      "command": "cargo test -p od-isa --all-targets --locked --offline",
+      "result": "2014 unit tests + 25 integration tests passed"
+    },
+    {
+      "command": "cargo test -p od-machine --all-targets --locked --offline",
+      "result": "116 passed"
+    },
+    {
+      "command": "cargo check --workspace --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "python3 tools/check_layout.py",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "graphify update .",
+      "result": "code graph refreshed; docs-aware semantic extraction was not completed"
+    },
+    {
+      "command": "JSON and Markdown link validation",
+      "result": "passed"
+    }
+  ],
+  "independent_review": {
+    "result": "approve",
+    "findings_p0_p3": 0
+  },
+  "not_claimed": [
+    "Linux or own-kernel boot",
+    "IRQ or APIC",
+    "exception delivery/retry or CR2 update",
+    "full S4-21, S4-24 or S4-32 acceptance",
+    "full Stage 4 completion"
+  ]
+}

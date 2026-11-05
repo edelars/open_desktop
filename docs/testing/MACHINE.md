@@ -279,3 +279,29 @@ check passed; workspace check, JSON/link validation and independent
 `gpt-6.1-sol/high` review also passed with no P0–P3 findings. These checks do not establish a mixed-instruction runner,
 exception delivery/CR2 update, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT
 or Linux behavior. Parent S4-24 remains open.
+
+## S4-21b: bounded paged probe quantum
+
+The [S4-21b report](../reports/STAGE_4_S4-21B_2026-11-05.md) and
+[machine contract](../specs/MACHINE_CONTRACT.md#bounded-paged-probe-quantum-s4-21b)
+record the accepted `PagedCpl0ProbeV1` boundary. `step_paged_probe` accepts
+only `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B` (`MOV [RBX],RCX`), bare `EC`
+(`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare `F4` (`HLT`). CPU admission
+checks CR0/CR4; `run_paged_probe` validates CR3/EFER and uses page-aware memory.
+
+The quantum owns a finite instruction budget and decodes once at each boundary.
+STOP wins before budget exhaustion; an exhausted budget wins before fetch.
+The store→load→OUT→HLT probe is checked both in one quantum and across
+single-instruction quanta. STOP/resume checks that committed store/PIO effects
+are not repeated. HLT retires and enters the halted state; a repeated call is a
+no-op with no fetch. It is not interpreted as guest success.
+
+Recorded verification: `od-isa` has 2,014 unit plus 25 integration tests;
+`od-machine` has 116 passing tests. Workspace all-targets check, formatting,
+layout and diff passed. `graphify update .` refreshed the code graph; the
+docs-aware semantic extraction was not completed. The tests cover page-aware instruction
+fetch/data, literal PFEC and fault records, saved RIP/access context, prior
+retirements, tracked A/D bits and callback ranges, plus distinct backend and
+PIO errors. No exception delivery or CR2 update is claimed. The evidence is
+local Rust testing; it does not establish kernel/Linux boot, IRQ/APIC, or full
+S4-21/S4-24/S4-32 acceptance. Stage 4 remains open.

@@ -370,6 +370,40 @@ state и `rflags_defined`, а исчерпание бюджета возвращ
 полный vCPU lifecycle: HLT wakeup, reset, IRQ, MMU, JIT, VMHost/IPC и REP
 continuation semantics остаются вне среза.
 
+## Bounded paged probe quantum (S4-21b)
+
+`od_machine::run_paged_probe` implements the opt-in `PagedCpl0ProbeV1`
+machine quantum over page-aware RAM and the existing PIO bus. The CPU entry
+`step_paged_probe` owns decode and semantics for the exact allowlist
+`48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B` (`MOV [RBX],RCX`), bare `EC`
+(`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare `F4` (`HLT`). CPU admission
+validates profile state and CR0/CR4; the machine validates CR3/EFER and
+constructs the existing page-aware memory context.
+
+One quantum receives a finite instruction budget, STOP predicate, definedness
+and committed-write callback. At each boundary it applies this precedence:
+STOP, exhausted budget, then the single CPU decode/fetch for that boundary.
+The machine does not probe several instruction executors in sequence. It
+returns distinct stopped, budget-exhausted, halted, unsupported, architectural
+fault, memory-backend and PIO outcomes. A successful HLT retires once and
+leaves the CPU halted; a repeated call on that state returns without fetching
+or producing effects. HLT does not mean guest success.
+
+Earlier committed instructions remain committed when a later instruction
+faults or a STOP/budget boundary is reached. Page-table A/D updates and their
+committed-write callbacks are retained. Architectural faults carry the exact
+record, including PFEC, linear address, access kind/origin and saved RIP;
+machine/backend and PIO errors remain distinct. The quantum does not deliver
+exceptions, update CR2 or roll back prior effects.
+
+Acceptance checks a single-quantum store→load→OUT→HLT probe and split
+single-instruction quanta, with STOP/resume and exact-fault cases. The complete
+vCPU lifecycle, S4-24 IRQ path, own-kernel boot, Linux, IRQ/APIC and exception
+delivery remain outside this bounded slice. See the
+[S4-21b report](../reports/STAGE_4_S4-21B_2026-11-05.md),
+[JSON evidence](../reports/data/stage4/s4-21b-paged-probe.json) and
+[verification method](../testing/MACHINE.md#s4-21b-bounded-paged-probe-quantum).
+
 ## Caller-driven virtual clock and RDTSC boundary
 
 S4-22a добавляет `VirtualClock` с начальным `now_ns = 0` и фиксированной

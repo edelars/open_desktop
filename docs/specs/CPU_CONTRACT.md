@@ -101,6 +101,30 @@ CR2 update, IOPL/TSS checks, IRQ/APIC, scheduler, baud timing, JIT or Linux
 support. Parent S4-24 remains open. See the [S4-24c report](../reports/STAGE_4_S4-24C_2026-11-05.md)
 and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu-pio).
 
+### Bounded paged probe instruction profile `PagedCpl0ProbeV1` (S4-21b)
+
+`od_isa::execute::step_paged_probe` admits one instruction from the exact
+Long64 CPL0 allowlist: `48 8B 03` (`MOV RAX,[RBX]`), `48 89 0B`
+(`MOV [RBX],RCX`), bare `EC` (`IN AL,DX`), bare `EE` (`OUT DX,AL`) and bare
+`F4` (`HLT`). The CPU entry validates its profile admission and CR0/CR4 before
+fetch. It receives page-aware `GuestMemory`; CR3/EFER validation and selecting
+the four-level 4 KiB paging context belong to the machine entry.
+
+The machine `run_paged_probe` owns a finite execution quantum and performs one
+decode at each instruction boundary. It checks STOP before budget exhaustion,
+then fetches/decodes only if neither exit applies. A committed HLT returns the
+guest CPU in `Halted`; a later invocation is a no-op and does not fetch. HLT is
+not a successful guest-test result. Prior instructions and their effects stay
+committed if a later instruction faults or exits. Tracked page-table A/D writes
+and their callbacks are retained; faults preserve the exact architectural
+fault record, including access context and saved RIP.
+
+This profile does not implement exception delivery/retry or CR2 update, a
+general-purpose mixed runner, Linux/kernel boot, IRQ/APIC, or the complete
+vCPU lifecycle. S4-21, S4-24, S4-32 and Stage 4 remain open. See the
+[S4-21b report](../reports/STAGE_4_S4-21B_2026-11-05.md) and
+[machine verification record](../testing/MACHINE.md#s4-21b-bounded-paged-probe-quantum).
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции

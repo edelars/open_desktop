@@ -4,10 +4,27 @@
 
 На 2026-11-05 приняты локальные memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access, S4-01a baseline, S4-10a
-admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-24a
-COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO slices. Этап 4 не завершён: S4-00—S4-01,
+admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-21b
+paged probe quantum, bounded S4-24a COM1 polling TX, bounded S4-24b CPU PIO
+and bounded S4-24c paged CPU PIO slices. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, полный UART/IRQ, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
+
+S4-21b принимает `PagedCpl0ProbeV1`: `step_paged_probe` допускает только
+`MOV RAX,[RBX]`, `MOV [RBX],RCX`, bare `IN AL,DX`, `OUT DX,AL` и `HLT`.
+CPU проверяет admission и CR0/CR4; `run_paged_probe` валидирует CR3/EFER и
+исполняет finite quantum через page-aware memory. На каждой границе один
+decode; порядок выхода — STOP, budget exhausted, затем fetch. HLT устанавливает
+guest halted state, а повторный запуск halted CPU ничего не исполняет.
+Ранее committed effects и tracked A/D callbacks сохраняются при позднем
+fault/exit, а точный fault record остаётся доступен вызывающему коду.
+Проверки и ограничения — в [отчёте S4-21b](STAGE_4_S4-21B_2026-11-05.md)
+и [JSON evidence](data/stage4/s4-21b-paged-probe.json).
+`od-isa`: 2,014 unit + 25 integration; `od-machine`: 116; workspace check,
+fmt, layout и diff прошли. `graphify update .` обновил code graph; docs-aware
+semantic extraction не завершена. Это не доказывает exception
+delivery/CR2 update, kernel/Linux boot или IRQ/APIC; S4-21, S4-24, S4-32 и
+Stage 4 остаются открытыми.
 
 В S4-24c принят `PagedCpl0PioU8V1` через CPU `step_paged_pio_u8`: bare `EC`/`EE`
 в Long64 CPL0, с already-selected `GuestMemory` и CPU-side CR0/CR4/admission
