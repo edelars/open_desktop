@@ -6,6 +6,8 @@ pub mod session;
 mod session_abi_v1;
 #[cfg(unix)]
 pub mod storage_io;
+#[cfg(unix)]
+pub mod storage_policy;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use std::ptr::NonNull;

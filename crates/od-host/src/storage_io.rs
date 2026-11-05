@@ -88,8 +88,9 @@
 //! There is deliberately no public way to obtain a writable instance without
 //! this lock: [`HostFileStorage::create_new_exclusive`] and
 //! [`HostFileStorage::open_read_write_exclusive`] are the only writable
-//! constructors. VMHost lifecycle integration and the export/repair busy
-//! policy are not part of this module yet (later S9 work).
+//! constructors. The export/repair busy policy and the parent-lease primitive
+//! live in [`crate::storage_policy`]; VMHost lifecycle integration is not part
+//! of this module yet (later S9 work).
 //!
 //! Only Unix targets are supported because the adapter uses positioned I/O
 //! (`pread`/`pwrite`) and `flock(2)`.
@@ -265,7 +266,18 @@ impl HostFileStorage {
     /// description, in this or another process and through any path, symlink
     /// or hard link to the same inode, holds the lock. Never waits.
     pub fn open_read_write_exclusive(path: &Path) -> Result<Self, WriterOpenError> {
-        Self::open(path, true)?.acquire_writer_lock(path)
+        Self::open_exclusive_checking(path, path)
+    }
+
+    /// Opens `open_path` and, after locking, checks that `check_path` still
+    /// names the locked object. The public constructor passes the same path
+    /// twice; a distinct `check_path` is an internal hook that simulates a
+    /// path swap between `open` and `flock` in tests.
+    pub(crate) fn open_exclusive_checking(
+        open_path: &Path,
+        check_path: &Path,
+    ) -> Result<Self, WriterOpenError> {
+        Self::open(open_path, true)?.acquire_writer_lock(check_path)
     }
 
     /// Takes `LOCK_EX | LOCK_NB` on the already opened file and records its
@@ -393,7 +405,16 @@ impl ReadLease {
     /// and [`LeaseOpenError::IdentityMismatch`] when the path no longer names
     /// the locked inode (replaced or removed between `open` and `flock`).
     pub fn open(path: &Path) -> Result<Self, LeaseOpenError> {
-        Self::lock_opened(open_regular_file(path, false)?, path)
+        Self::open_checking(path, path)
+    }
+
+    /// Opens `open_path` and, after locking, checks that `check_path` still
+    /// names the locked object (see `HostFileStorage::open_exclusive_checking`).
+    pub(crate) fn open_checking(
+        open_path: &Path,
+        check_path: &Path,
+    ) -> Result<Self, LeaseOpenError> {
+        Self::lock_opened(open_regular_file(open_path, false)?, check_path)
     }
 
     /// Locks an already opened file and checks that `path` still names it.
