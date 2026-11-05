@@ -8,11 +8,14 @@
 production-owned RAM backing, checked physical byte/scalar accesses с
 committed-write notification и минимальный синхронный MMIO/PIO bus boundary.
 Диагностический flat identity bridge к `od-isa::GuestMemory` также проверяет
-interpreter integration, bounded uncached translation probe и tracked RAM-only
-Long64 4 KiB A/D access path. An opt-in one-entry immutable-snapshot cache is
+interpreter integration, bounded uncached translation probe and tracked Long64
+4 KiB A/D access path. The tracked physical RAM accessor remains RAM-only; the
+bounded CPU-connected `step_paged_mov` adapter routes its qword operands to RAM
+or mapped MMIO through `MachineBus`. An opt-in one-entry immutable-snapshot cache is
 only a pure-probe experiment for S4-13a; it does not implement production TLB
-invalidation or cache tracked A/D effects. CPU-integrated MMU/page faults, UART/APIC/PCI,
-production vCPU scheduling, JIT integration и Linux boot ещё не реализованы.
+invalidation or cache tracked A/D effects. Full CPU/MMU paging and fault
+delivery, UART/APIC/PCI, production vCPU scheduling, JIT integration и Linux
+boot ещё не реализованы.
 Bounded S4-21a adds a synchronous diagnostic vCPU session owning one
 `LongModeState` and `MachineBus`, with runnable/paused/stopped/terminal states,
 finite interpreter calls, preserved RFLAGS definedness, and distinct fault,

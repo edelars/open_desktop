@@ -6,10 +6,7 @@ use od_machine::{
     IoSpace, MachineBus, MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec, MmioBinding,
     PagedMovStepReport, RamLimits, TrackedAccessError,
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::{Arc, Mutex};
 
 const CR0: u64 = 0x8001_0033;
 const CR4: u64 = 1 << 5;
@@ -46,23 +43,42 @@ fn make_bus() -> MachineBus {
     bus
 }
 
-struct CountingMmio(Arc<AtomicUsize>);
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum JournalEvent {
+    CommittedWrite(GuestPhysicalRange),
+    MmioRead(DeviceAccess),
+    MmioWrite(DeviceAccess, u64),
+}
+
+struct CountingMmio(Arc<Mutex<Vec<JournalEvent>>>, bool);
 
 impl BusDevice for CountingMmio {
     fn read(&mut self, access: DeviceAccess) -> Result<u64, DeviceError> {
-        assert_eq!(access.space, IoSpace::Mmio);
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(0)
+        self.0.lock().unwrap().push(JournalEvent::MmioRead(access));
+        if self.1 {
+            return Err(DeviceError::UnsupportedConfiguration);
+        }
+        Ok(0xfeed_face_cafe_beef)
     }
 
-    fn write(&mut self, access: DeviceAccess, _value: u64) -> Result<(), DeviceError> {
-        assert_eq!(access.space, IoSpace::Mmio);
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+    fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(JournalEvent::MmioWrite(access, value));
+        if self.1 {
+            Err(DeviceError::UnsupportedConfiguration)
+        } else {
+            Ok(())
+        }
     }
 }
 
-fn make_bus_with_mmio(counter: Arc<AtomicUsize>) -> MachineBus {
+fn make_bus_with_mmio(journal: Arc<Mutex<Vec<JournalEvent>>>) -> MachineBus {
+    make_bus_with_mmio_behavior(journal, false)
+}
+
+fn make_bus_with_mmio_behavior(journal: Arc<Mutex<Vec<JournalEvent>>>, fail: bool) -> MachineBus {
     let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_LEN).unwrap();
     let mmio = GuestPhysicalRange::new(GuestPhysicalAddress::new(RAM_LEN), 0x1000).unwrap();
     let map = MachineMemoryMap::new(
@@ -76,7 +92,7 @@ fn make_bus_with_mmio(counter: Arc<AtomicUsize>) -> MachineBus {
     let mut bus = MachineBus::new(
         map,
         RamLimits::new(RAM_LEN),
-        vec![Box::new(CountingMmio(counter))],
+        vec![Box::new(CountingMmio(journal, fail))],
         vec![MmioBinding {
             region_start: GuestPhysicalAddress::new(RAM_LEN),
             device_index: 0,
@@ -332,23 +348,231 @@ fn different_cr3_roots_select_distinct_literal_mappings() {
 }
 
 #[test]
-fn tracked_ram_path_rejects_mmio_without_device_side_effects() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let mut bus = make_bus_with_mmio(Arc::clone(&calls));
+fn paged_mov_mmio_read_dispatches_once_and_commits_destination() {
+    let journal = Arc::new(Mutex::new(Vec::new()));
+    let mut bus = make_bus_with_mmio(Arc::clone(&journal));
     let mut cpu = state(CODE_LINEAR, &[0x48, 0x8b, 0x03], &mut bus);
     cpu.gpr[3] = DATA_LINEAR;
+    cpu.gpr[0] = 0x1111_2222_3333_4444;
     let mut writes = Vec::new();
-    let report = step(&mut cpu, &mut bus, ROOT, PrivilegeLevel::Ring0, &mut writes);
+    let report = od_machine::step_paged_mov(
+        &mut cpu,
+        &mut bus,
+        ROOT,
+        EFER,
+        context(PrivilegeLevel::Ring0),
+        INTEGER_FLAGS,
+        |range| {
+            writes.push(range);
+            journal
+                .lock()
+                .unwrap()
+                .push(JournalEvent::CommittedWrite(range));
+        },
+    )
+    .unwrap();
+    assert_eq!(report.cpu.exit, RunExit::StopAddress);
+    assert_eq!(cpu.gpr[0], 0xfeed_face_cafe_beef);
+    assert_eq!(report.cpu.instructions_executed, 1);
+    let access = DeviceAccess {
+        space: IoSpace::Mmio,
+        offset: 0,
+        width: AccessWidth::Qword,
+    };
+    assert_eq!(
+        *journal.lock().unwrap(),
+        [
+            JournalEvent::CommittedWrite(range(0x1000)),
+            JournalEvent::CommittedWrite(range(0x2000)),
+            JournalEvent::CommittedWrite(range(0x3010)),
+            JournalEvent::CommittedWrite(range(0x4000)),
+            JournalEvent::CommittedWrite(range(0x3020)),
+            JournalEvent::CommittedWrite(range(0x5000)),
+            JournalEvent::MmioRead(access),
+        ]
+    );
+}
+
+#[test]
+fn mmio_device_failure_is_backend_error_with_no_retirement_after_dirty_commit() {
+    let journal = Arc::new(Mutex::new(Vec::new()));
+    let mut bus = make_bus_with_mmio_behavior(Arc::clone(&journal), true);
+    let mut cpu = state(CODE_LINEAR, &[0x48, 0x89, 0x0b], &mut bus);
+    cpu.gpr[3] = DATA_LINEAR;
+    cpu.gpr[1] = 0x1234;
+    let before = cpu.clone();
+    let mut writes = Vec::new();
+    let report = od_machine::step_paged_mov(
+        &mut cpu,
+        &mut bus,
+        ROOT,
+        EFER,
+        context(PrivilegeLevel::Ring0),
+        INTEGER_FLAGS,
+        |range| {
+            writes.push(range);
+            journal
+                .lock()
+                .unwrap()
+                .push(JournalEvent::CommittedWrite(range));
+        },
+    )
+    .unwrap();
     assert!(matches!(
         report.cpu.exit,
         RunExit::MemoryError(MemoryError::Backend(_))
     ));
     assert!(matches!(
         report.memory_error,
-        Some(TrackedAccessError::OperandPhysical { .. })
+        Some(TrackedAccessError::MmioBackend { .. })
     ));
     assert_eq!(report.cpu.instructions_executed, 0);
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(cpu, before);
+    assert_eq!(
+        *journal.lock().unwrap(),
+        [
+            JournalEvent::CommittedWrite(range(0x1000)),
+            JournalEvent::CommittedWrite(range(0x2000)),
+            JournalEvent::CommittedWrite(range(0x3010)),
+            JournalEvent::CommittedWrite(range(0x4000)),
+            JournalEvent::CommittedWrite(range(0x3020)),
+            JournalEvent::CommittedWrite(range(0x5000)),
+            JournalEvent::CommittedWrite(range(0x5000)),
+            JournalEvent::MmioWrite(
+                DeviceAccess {
+                    space: IoSpace::Mmio,
+                    offset: 0,
+                    width: AccessWidth::Qword
+                },
+                0x1234
+            ),
+        ]
+    );
+    assert_eq!(
+        writes,
+        [
+            range(0x1000),
+            range(0x2000),
+            range(0x3010),
+            range(0x4000),
+            range(0x3020),
+            range(0x5000),
+            range(0x5000)
+        ]
+    );
+    assert_eq!(qword(&mut bus, 0x5000), RAM_LEN | 0x67);
+}
+
+#[test]
+fn paged_mov_mmio_write_dispatches_once_after_a_and_d_updates() {
+    let journal = Arc::new(Mutex::new(Vec::new()));
+    let mut bus = make_bus_with_mmio(Arc::clone(&journal));
+    let mut cpu = state(CODE_LINEAR, &[0x48, 0x89, 0x0b], &mut bus);
+    cpu.gpr[3] = DATA_LINEAR;
+    cpu.gpr[1] = 0x1234_5678_9abc_def0;
+    let mut writes = Vec::new();
+    let report = od_machine::step_paged_mov(
+        &mut cpu,
+        &mut bus,
+        ROOT,
+        EFER,
+        context(PrivilegeLevel::Ring0),
+        INTEGER_FLAGS,
+        |range| {
+            writes.push(range);
+            journal
+                .lock()
+                .unwrap()
+                .push(JournalEvent::CommittedWrite(range));
+        },
+    )
+    .unwrap();
+    assert_eq!(report.cpu.exit, RunExit::StopAddress);
+    assert_eq!(report.cpu.instructions_executed, 1);
+    let access = DeviceAccess {
+        space: IoSpace::Mmio,
+        offset: 0,
+        width: AccessWidth::Qword,
+    };
+    assert_eq!(
+        *journal.lock().unwrap(),
+        [
+            JournalEvent::CommittedWrite(range(0x1000)),
+            JournalEvent::CommittedWrite(range(0x2000)),
+            JournalEvent::CommittedWrite(range(0x3010)),
+            JournalEvent::CommittedWrite(range(0x4000)),
+            JournalEvent::CommittedWrite(range(0x3020)),
+            JournalEvent::CommittedWrite(range(0x5000)),
+            JournalEvent::CommittedWrite(range(0x5000)),
+            JournalEvent::MmioWrite(access, 0x1234_5678_9abc_def0),
+        ]
+    );
+    assert_eq!(
+        writes,
+        [
+            range(0x1000),
+            range(0x2000),
+            range(0x3010),
+            range(0x4000),
+            range(0x3020),
+            range(0x5000),
+            range(0x5000)
+        ]
+    );
+    assert_eq!(qword(&mut bus, 0x5000), RAM_LEN | 0x67);
+}
+
+#[test]
+fn mmio_permission_fault_never_calls_device() {
+    let journal = Arc::new(Mutex::new(Vec::new()));
+    let mut bus = make_bus_with_mmio(Arc::clone(&journal));
+    put(&mut bus, 0x5000, RAM_LEN | 5); // read-only for supervisor with WP=1
+    let mut cpu = state(CODE_LINEAR, &[0x48, 0x89, 0x0b], &mut bus);
+    cpu.gpr[3] = DATA_LINEAR;
+    cpu.gpr[1] = 9;
+    let before = cpu.clone();
+    let mut writes = Vec::new();
+    let report = od_machine::step_paged_mov(
+        &mut cpu,
+        &mut bus,
+        ROOT,
+        EFER,
+        context(PrivilegeLevel::Ring0),
+        INTEGER_FLAGS,
+        |range| {
+            writes.push(range);
+            journal
+                .lock()
+                .unwrap()
+                .push(JournalEvent::CommittedWrite(range));
+        },
+    )
+    .unwrap();
+    assert!(matches!(report.cpu.exit, RunExit::Fault(_)));
+    assert_eq!(report.cpu.instructions_executed, 0);
+    assert_eq!(cpu, before);
+    assert_eq!(
+        *journal.lock().unwrap(),
+        [
+            JournalEvent::CommittedWrite(range(0x1000)),
+            JournalEvent::CommittedWrite(range(0x2000)),
+            JournalEvent::CommittedWrite(range(0x3010)),
+            JournalEvent::CommittedWrite(range(0x4000)),
+            JournalEvent::CommittedWrite(range(0x3020)),
+            JournalEvent::CommittedWrite(range(0x5000)),
+        ]
+    );
+    assert_eq!(
+        writes,
+        [
+            range(0x1000),
+            range(0x2000),
+            range(0x3010),
+            range(0x4000),
+            range(0x3020),
+            range(0x5000)
+        ]
+    );
 }
 
 #[test]

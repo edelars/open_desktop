@@ -602,7 +602,19 @@ pub enum TrackedAccessError {
     DeviceUnavailable {
         address: GuestPhysicalAddress,
     },
+    MmioBackend {
+        address: GuestPhysicalAddress,
+        message: String,
+    },
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MmioDispatchError {
+    Backend(String),
+}
+
+type MmioDispatch<'a> =
+    dyn FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError> + 'a;
 
 /// The report retains the walk trace and committed A/D writes. Notifications
 /// for all committed writes, including the final operand, go only to the caller
@@ -625,7 +637,35 @@ pub fn access_long64_4k_ram(
     memory: &mut PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> TrackedAccessReport {
+    access_long64_4k_internal(memory, paging, request, committed_write, false, None)
+}
+
+pub(crate) fn access_long64_4k_with_mmio(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    committed_write: impl FnMut(GuestPhysicalRange),
+    mut mmio: impl FnMut(GuestPhysicalAddress, u8, RamAccessOperation) -> Result<u64, MmioDispatchError>,
+) -> TrackedAccessReport {
+    access_long64_4k_internal(
+        memory,
+        paging,
+        request,
+        committed_write,
+        true,
+        Some(&mut mmio),
+    )
+}
+
+fn access_long64_4k_internal(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
     mut committed_write: impl FnMut(GuestPhysicalRange),
+    set_mmio_dirty_before_dispatch: bool,
+    mut mmio: Option<&mut MmioDispatch<'_>>,
 ) -> TrackedAccessReport {
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 5];
@@ -826,19 +866,9 @@ pub fn access_long64_4k_ram(
             );
         }
     };
-    match memory.locate_region_kind(physical, u64::from(width)) {
-        Ok(MemoryRegionKind::Ram) => {}
-        Ok(MemoryRegionKind::Mmio) => {
-            let error = if access == AccessKind::Write {
-                TrackedAccessError::DeviceUnavailable { address: physical }
-            } else {
-                TrackedAccessError::OperandPhysical {
-                    address: physical,
-                    source: MemoryAccessError::UnreadableRegion(MemoryRegionKind::Mmio),
-                }
-            };
-            return fail(error, trace, ad_updates, ad_update_count);
-        }
+    let is_mmio = match memory.locate_region_kind(physical, u64::from(width)) {
+        Ok(MemoryRegionKind::Ram) => false,
+        Ok(MemoryRegionKind::Mmio) => true,
         Ok(kind) => {
             return fail(
                 TrackedAccessError::OperandPhysical {
@@ -868,30 +898,67 @@ pub fn access_long64_4k_ram(
     };
     let _ = range;
 
+    if is_mmio && mmio.is_none() {
+        let error = if access == AccessKind::Write {
+            TrackedAccessError::DeviceUnavailable { address: physical }
+        } else {
+            TrackedAccessError::OperandPhysical {
+                address: physical,
+                source: MemoryAccessError::UnreadableRegion(MemoryRegionKind::Mmio),
+            }
+        };
+        return fail(error, trace, ad_updates, ad_update_count);
+    }
+
     if let RamAccessOperation::Write { width, value } = request.operation {
-        if leaf.1 & (1 << 6) == 0 {
-            let after = leaf.1 | (1 << 6);
-            if let Err(source) = memory.write_u64(leaf.0, after, &mut committed_write) {
-                return fail(
-                    TrackedAccessError::TableWrite {
-                        level: PageTableLevel::Pt,
-                        entry_address: leaf.0,
-                        bit: AdBit::Dirty,
-                        source,
+        if !is_mmio || set_mmio_dirty_before_dispatch {
+            if leaf.1 & (1 << 6) == 0 {
+                let after = leaf.1 | (1 << 6);
+                if let Err(source) = memory.write_u64(leaf.0, after, &mut committed_write) {
+                    return fail(
+                        TrackedAccessError::TableWrite {
+                            level: PageTableLevel::Pt,
+                            entry_address: leaf.0,
+                            bit: AdBit::Dirty,
+                            source,
+                        },
+                        trace,
+                        ad_updates,
+                        ad_update_count,
+                    );
+                }
+                ad_updates[ad_update_count] = Some(AdUpdate {
+                    level: PageTableLevel::Pt,
+                    address: leaf.0,
+                    before: leaf.1,
+                    after,
+                    bit: AdBit::Dirty,
+                });
+                ad_update_count += 1;
+            }
+        }
+        if is_mmio {
+            return match mmio.as_mut().expect("MMIO dispatch was validated")(
+                physical,
+                width.bytes(),
+                request.operation,
+            ) {
+                Ok(_) => TrackedAccessReport {
+                    outcome: Ok(TrackedAccessOutcome::Written),
+                    trace,
+                    ad_updates,
+                    ad_update_count,
+                },
+                Err(MmioDispatchError::Backend(message)) => fail(
+                    TrackedAccessError::MmioBackend {
+                        address: physical,
+                        message,
                     },
                     trace,
                     ad_updates,
                     ad_update_count,
-                );
-            }
-            ad_updates[ad_update_count] = Some(AdUpdate {
-                level: PageTableLevel::Pt,
-                address: leaf.0,
-                before: leaf.1,
-                after,
-                bit: AdBit::Dirty,
-            });
-            ad_update_count += 1;
+                ),
+            };
         }
         let bytes = value.to_le_bytes();
         if let Err(source) = memory.write_bytes(
@@ -914,6 +981,29 @@ pub fn access_long64_4k_ram(
             trace,
             ad_updates,
             ad_update_count,
+        };
+    }
+    if is_mmio {
+        return match mmio.as_mut().expect("MMIO dispatch was validated")(
+            physical,
+            width,
+            request.operation,
+        ) {
+            Ok(value) => TrackedAccessReport {
+                outcome: Ok(TrackedAccessOutcome::Read(value)),
+                trace,
+                ad_updates,
+                ad_update_count,
+            },
+            Err(MmioDispatchError::Backend(message)) => fail(
+                TrackedAccessError::MmioBackend {
+                    address: physical,
+                    message,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            ),
         };
     }
     if request.operation == RamAccessOperation::Fetch {

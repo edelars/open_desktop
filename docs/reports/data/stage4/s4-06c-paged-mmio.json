@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "slice": "S4-06c",
+  "title": "CPU-connected paged MOV to MMIO",
+  "date": "2026-11-05",
+  "baseline_commit": "833ea99",
+  "status": "accepted_bounded_slice",
+  "code_files": [
+    "crates/od-machine/src/bus.rs",
+    "crates/od-machine/src/page_walk.rs",
+    "crates/od-machine/src/paged_memory_adapter.rs",
+    "crates/od-machine/tests/paged_mov_step.rs"
+  ],
+  "cpu_profile": {
+    "entry": "od_machine::step_paged_mov",
+    "inherited_profile": "PagedMovLong64V1",
+    "admitted_encodings": ["48 8B 03", "48 89 0B"],
+    "instructions_per_call_max": 1,
+    "operand_width_bytes": 8,
+    "translation": "canonical48/physical36/four-level/4KiB",
+    "instruction_fetch_from_mmio": false
+  },
+  "mmio_contract": {
+    "dispatch_source": "existing MachineBus MMIO binding",
+    "dispatch_count_per_successful_operand": 1,
+    "permission_check_precedes_dispatch": true,
+    "write_dirty_update_precedes_device_dispatch": true,
+    "device_error_is_guest_page_fault": false,
+    "device_error_retires_instruction": false,
+    "committed_ad_effects_survive_device_error": true,
+    "automatic_retry": false,
+    "device_failure_must_precede_guest_visible_effect": true
+  },
+  "reported_tests": {
+    "command": "cargo test -p od-machine --test paged_mov_step --locked --offline",
+    "passed": 11,
+    "failed": 0,
+    "coverage": [
+      "full DeviceAccess and exact write payload",
+      "nonzero MMIO read reaches CPU destination",
+      "single device dispatch",
+      "A/D callback ordering before MMIO",
+      "permission failure has no device dispatch",
+      "device backend failure preserves CPU and retirement and exact event order"
+    ]
+  },
+  "checks": {
+    "commands": [
+      "cargo check -p od-machine --all-targets --locked --offline",
+      "cargo fmt --all -- --check",
+      "git diff --check"
+    ],
+    "result": "passed"
+  },
+  "review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approve",
+    "remaining_p0_p3_findings": 0,
+    "reviewed_code_files": 4,
+    "reran_focused_tests": true,
+    "reran_package_check": true
+  },
+  "graphify": {
+    "query_before_source_reads": true,
+    "implementation_update": "completed_in_isolated_worktree_and_main_checkout",
+    "nodes": 26007,
+    "edges": 65253,
+    "communities": 860,
+    "main_checkout_update": "completed"
+  },
+  "open_boundaries": [
+    "cross-page MMIO",
+    "other operand widths",
+    "MMIO instruction fetch",
+    "device read error behavioral fixture",
+    "retry policy beyond no implicit retry",
+    "exception delivery and CR2 commit",
+    "TLB and invalidation",
+    "JIT",
+    "interrupts and SMP",
+    "Linux boot"
+  ],
+  "parent_s4_06": "open",
+  "report": "docs/reports/STAGE_4_S4-06C_2026-11-05.md"
+}

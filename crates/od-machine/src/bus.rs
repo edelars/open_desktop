@@ -1,6 +1,7 @@
 use crate::{
-    GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap, MemoryAccessError,
-    MemoryRegionKind, PhysicalMemory, RamLimits,
+    GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineMemoryMap,
+    MemoryAccessError, MemoryRegionKind, PhysicalMemory, RamAccessOperation, RamLimits,
+    TrackedAccessReport, TrackedAccessRequest,
 };
 use od_isa::PortIo;
 use std::fmt;
@@ -192,13 +193,88 @@ impl MachineBus {
         (memory, MachineBusPortIo { devices, ports })
     }
 
-    pub(crate) fn access_tracked_ram(
+    pub(crate) fn access_tracked(
         &mut self,
-        paging: &crate::Long64ProbeConfig,
-        request: crate::TrackedAccessRequest,
+        paging: &Long64ProbeConfig,
+        request: TrackedAccessRequest,
         committed_write: impl FnMut(GuestPhysicalRange),
-    ) -> crate::TrackedAccessReport {
-        crate::access_long64_4k_ram(&mut self.memory, paging, request, committed_write)
+    ) -> TrackedAccessReport {
+        let Self {
+            memory,
+            devices,
+            mmio,
+            ..
+        } = self;
+        let regions = memory.region_specs().collect::<Vec<_>>();
+        crate::page_walk::access_long64_4k_with_mmio(
+            memory,
+            paging,
+            request,
+            committed_write,
+            |address, width, operation| {
+                let width = match width {
+                    8 => AccessWidth::Qword,
+                    4 => AccessWidth::Dword,
+                    2 => AccessWidth::Word,
+                    1 => AccessWidth::Byte,
+                    _ => {
+                        return Err(crate::page_walk::MmioDispatchError::Backend(format!(
+                            "unsupported MMIO width {width}"
+                        )));
+                    }
+                };
+                let len = u64::from(width.bytes());
+                let region = regions
+                    .iter()
+                    .find(|region| {
+                        region.kind == MemoryRegionKind::Mmio
+                            && region.range.start() <= address
+                            && u128::from(address.get()) + u128::from(len)
+                                <= region.range.end_exclusive()
+                    })
+                    .ok_or_else(|| {
+                        crate::page_walk::MmioDispatchError::Backend(
+                            "MMIO range is not wholly inside one device region".to_owned(),
+                        )
+                    })?;
+                let binding = mmio
+                    .iter()
+                    .find(|binding| binding.region_start == region.range.start())
+                    .ok_or_else(|| {
+                        crate::page_walk::MmioDispatchError::Backend(format!(
+                            "unmapped MMIO address {address:?}"
+                        ))
+                    })?;
+                let access = DeviceAccess {
+                    space: IoSpace::Mmio,
+                    offset: address.get() - region.range.start().get(),
+                    width,
+                };
+                match operation {
+                    RamAccessOperation::Read { .. } => devices[binding.device_index]
+                        .read(access)
+                        .map(|value| value & width.mask())
+                        .map_err(|error| {
+                            crate::page_walk::MmioDispatchError::Backend(format!(
+                                "MMIO device {} read failed: {error:?}",
+                                binding.device_index
+                            ))
+                        }),
+                    RamAccessOperation::Write { value, .. } => devices[binding.device_index]
+                        .write(access, value & width.mask())
+                        .map(|()| 0)
+                        .map_err(|error| {
+                            crate::page_walk::MmioDispatchError::Backend(format!(
+                                "MMIO device {} write failed: {error:?}",
+                                binding.device_index
+                            ))
+                        }),
+                    RamAccessOperation::Fetch => Err(crate::page_walk::MmioDispatchError::Backend(
+                        "instruction fetch from MMIO is unsupported".to_owned(),
+                    )),
+                }
+            },
+        )
     }
 
     pub(crate) fn memory_kind(

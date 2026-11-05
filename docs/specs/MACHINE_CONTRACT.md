@@ -318,6 +318,33 @@ rollback assumptions for other consumers. See the
 [S4-06b report](../reports/STAGE_4_S4-06B_2026-11-05.md) and
 [ISSUE-054](../KNOWN_ISSUES.md#issue-054-s4-11-cross-page-cpu-integration).
 
+## S4-06c CPU-connected paged MOV to MMIO
+
+The same two exact MOV forms may access a qword in a mapped MMIO range after
+the existing uncached walker completes translation and permission checks.
+RAM operands continue through the sole `PhysicalMemory` owner. An MMIO operand
+must fit wholly in one declared MMIO region and resolve to one existing
+`MachineBus` binding; the machine does not synthesize a device or split/replay
+the access. Instruction fetch from MMIO remains unsupported.
+
+For MMIO writes, the leaf dirty bit and its committed-write callback occur
+after successful translation/permission admission and before the single device
+call. For MMIO reads, the CPU destination changes only after the device read
+succeeds. A permission/translation failure never calls the device. A device
+failure is a backend error rather than `#PF`; the MOV does not retire, CPU
+register state stays uncommitted, and A/D writes already committed by the walk
+remain visible with their callbacks. The bus device contract requires a failed
+operation to return before guest-visible device state or effects are committed.
+There is no implicit retry, so a caller must not replay a failed device
+operation as if it were a guest page fault.
+
+The bounded evidence covers only these MOV forms, qword same-page operands,
+the existing canonical48/physical36/four-level/4 KiB profile, and synchronous
+bus devices. It does not establish cross-page MMIO, other operand widths,
+instruction fetch from a device, exception delivery, TLB/invalidation, JIT,
+interrupts or full CPU paging integration. See the
+[S4-06c report](../reports/STAGE_4_S4-06C_2026-11-05.md).
+
 ## Huge-page и mode admission boundary
 
 Текущий machine contract принимает только canonical48, physical36, четыре уровня

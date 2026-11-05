@@ -10,7 +10,7 @@ Ubuntu 7.0.0-38.38 source/config hashes, совпадающие Build IDs и р�
 
 ## Область
 
-Эта методика покрывает S4-02—S4-10a и bounded S4-06b: валидируемую physical
+Эта методика покрывает S4-02—S4-10a и bounded S4-06b/S4-06c: валидируемую physical
 map, production RAM owner, committed-write notification, синхронную MMIO/PIO
 bus, диагностический CPU memory bridge, uncached translation probe, bounded
 tracked RAM access и два CPU-connected paged MOV forms. Она не проверяет полную
@@ -201,6 +201,26 @@ This does not establish full paging, TLB/invalidation, CR2 commit or exception
 delivery/retry, cross-page operands, REP/stack/atomic semantics, JIT, IRQ/devices,
 SMP or Linux boot. ISSUE-054 remains open for cross-page/partial progress,
 REP/RMW and broader rollback consumers.
+
+## S4-06c: CPU-connected paged MOV to MMIO
+
+The [S4-06c report](../reports/STAGE_4_S4-06C_2026-11-05.md) and manifest
+record the focused device-dispatch and ordering evidence. The tests use the
+existing `step_paged_mov` path with a literal guest mapping from the operand
+GVA to a bound MMIO range. The device double records `DeviceAccess`, payload
+and event order alongside committed-write callbacks.
+
+The positive cases require a nonzero device read value to reach the MOV
+destination, a write to carry the exact qword and device offset/width, exactly
+one device operation, and A/D callbacks before MMIO dispatch. Negative cases
+require permission failure to avoid the device call and device backend failure
+to preserve CPU state and retirement count while retaining prior A/D effects.
+The MMIO device contract requires failure before visible device-side effects.
+
+Focused reproduction, check results, reviewer findings, and open boundaries
+are recorded in the S4-06c report and JSON manifest. This does not test cross-page
+device transactions, retries, device read/modify/write, exception delivery,
+TLB/JIT, IRQs or the complete paging matrix.
 
 ## S4-24a: bounded COM1 polling TX
 

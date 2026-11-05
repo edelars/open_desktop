@@ -62,15 +62,18 @@ pub fn step_paged_mov(
     })
 }
 
-/// `GuestMemory` view scoped to one instruction attempt; all backing stays in `MachineBus`.
+/// `GuestMemory` view scoped to one instruction attempt; all RAM and MMIO
+/// backing is routed through `MachineBus`. Page-table walks and their A/D
+/// updates use tracked RAM writes; the final MMIO operand uses one width-sized
+/// device transaction and never accesses MMIO through `PhysicalMemory`.
 ///
 /// A failed read leaves the caller's destination buffer unchanged because the
-/// walker result is copied only after a successful complete read. A failed write
-/// does not commit a partial operand. The tracked walker's completed A/D writes
-/// and their `committed_write` callbacks remain observable before a later fault;
-/// this adapter therefore does not promise rollback of all RAM. In particular,
-/// an operand may alias page-table bytes and change them as part of a completed
-/// access.
+/// walker result is copied only after a successful complete read. A failed RAM
+/// write does not partially commit its operand. Earlier A/D callbacks remain
+/// observable after later faults or device errors, and an operand may alias
+/// page-table bytes. MMIO device errors are backend errors, not guest page
+/// faults, and are not retried; this adapter makes no rollback claim for device
+/// effects.
 pub struct PagedMovMemoryAdapter<'a> {
     bus: &'a mut MachineBus,
     paging: Long64ProbeConfig,
@@ -87,7 +90,7 @@ impl PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         operation: RamAccessOperation,
     ) -> Result<TrackedAccessOutcome, MemoryError> {
-        let report = self.bus.access_tracked_ram(
+        let report = self.bus.access_tracked(
             &self.paging,
             TrackedAccessRequest {
                 instruction_rip: self.instruction_rip,
@@ -102,6 +105,11 @@ impl PagedMovMemoryAdapter<'_> {
             Err(TrackedAccessError::PageFault { record, .. }) => {
                 self.page_fault = Some(record.clone());
                 Err(MemoryError::Architectural(record.fault().clone()))
+            }
+            Err(error @ TrackedAccessError::MmioBackend { .. }) => {
+                let message = format!("tracked Long64 MMIO access failed: {error:?}");
+                self.memory_error = Some(error);
+                Err(MemoryError::Backend(message))
             }
             Err(error) => {
                 let message = format!("tracked Long64 RAM access failed: {error:?}");

@@ -246,6 +246,12 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Review rerun: 2,014 `od-isa` unit tests и 85 `od-machine` tests; P0—P3 findings отсутствуют. См. [отчёт S4-06b](../reports/STAGE_4_S4-06B_2026-11-05.md) и [manifest](../reports/data/stage4/s4-06b-paged-mov.json).
 - Это не закрывает родительский S4-06: полная CPU memory integration и остальные guest access forms остаются открытыми. ISSUE-054 остаётся открытой для cross-page/partial progress, REP/RMW и других rollback consumers.
 
+#### S4-06c. Bounded CPU-connected paged MOV to MMIO
+
+- [x] Принят после независимого `gpt-6.1-sol/high` review. Реализован только для двух `step_paged_mov` форм из S4-06b и существующей 4 KiB Long64 конфигурации. После translation и permission checks qword operand направляется либо в существующий `PhysicalMemory`, либо в один `MachineBus` MMIO binding.
+- MMIO dispatch выполняется ровно один раз после успешной проверки; page-walk A/D writes и callbacks сохраняют фактический порядок. Device backend error остаётся backend error, не `#PF`; instruction не retire-ится. A/D effects, уже совершённые до ошибки устройства, не откатываются; автоматического retry нет.
+- Проверки: 11 focused `paged_mov_step` тестов, `cargo check -p od-machine --all-targets --locked --offline`, `cargo fmt --all -- --check`, `git diff --check` прошли. Graphify обновлён в основном checkout. См. [отчёт S4-06c](../reports/STAGE_4_S4-06C_2026-11-05.md) и [manifest](../reports/data/stage4/s4-06c-paged-mmio.json). Родительский S4-06 остаётся открытым.
+
 ### S4-07. Сделать uncached page walker
 
 - [x] Принято после ревью.

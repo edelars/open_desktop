@@ -4,7 +4,8 @@
 
 На 2026-11-05 приняты локальные memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access, S4-01a baseline, S4-10a
-admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-21b
+admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-06c
+CPU-connected paged MOV to MMIO, bounded S4-21b
 paged probe quantum, bounded S4-23c UART RX event delivery, bounded S4-24a
 COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO
 slices. Этап 4 не завершён: S4-00—S4-01,
@@ -176,6 +177,18 @@ operand write не коммитит operand частично. Alias page-table/o
 [JSON evidence](data/stage4/s4-06b-paged-mov.json). Родительский S4-06 остаётся
 открытым.
 
+В S4-06c на baseline `833ea99` две поддержанные S4-06b MOV-формы получили
+доступ к qword MMIO через существующий `MachineBus` binding после translation
+и permission checks. Тесты подтверждают полный `DeviceAccess`/payload, один
+dispatch, порядок A/D callbacks перед устройством, отсутствие вызова на
+permission fault и сохранение CPU state/нулевого retirement при backend error.
+Финальное независимое `gpt-6.1-sol/high` review одобрило срез без P0—P3;
+11 focused `paged_mov_step` тестов, package check, форматирование и diff check
+прошли. См. [контракт S4-06c](../specs/MACHINE_CONTRACT.md#s4-06c-cpu-connected-paged-mov-to-mmio),
+[отчёт](STAGE_4_S4-06C_2026-11-05.md) и
+[evidence manifest](data/stage4/s4-06c-paged-mmio.json). Родительский S4-06
+остаётся открытым.
+
 ## Реализовано
 
 - `od-machine` получил `GuestPhysicalAddress`, `GuestPhysicalRange`,
@@ -326,7 +339,9 @@ S4-10a — только rejection boundary для unsupported huge pages, а н�
 separate-call evidence, не CPU restart, REP iteration, stack recovery или RMW
 atomicity. S4-06b не доказывает полную paging matrix, TLB/invalidation, CR2
 commit, exception delivery/retry, cross-page operands, REP/stack/atomic
-semantics, JIT/IRQ/devices, SMP или Linux boot. ISSUE-054 остаётся открытой для
+semantics, JIT/IRQ integration, SMP или Linux boot. S4-06c подтверждает только
+qword MMIO через два MOV forms и не подтверждает full device integration.
+ISSUE-054 остаётся открытой для
 cross-page/partial progress, REP/RMW и иных rollback consumers. Independent
 review покрывает только bounded slices; полная
 S4-08/S4-09/S4-10/S4-11 приёмка остаётся шире. S4-13a не доказывает
