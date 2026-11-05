@@ -1111,7 +1111,7 @@ fn access_long64_4k_internal(
     }
 }
 
-pub(crate) fn read_long64_4k_cross_page_ram(
+pub(crate) fn read_long64_4k_bounded_ram_read(
     memory: &mut PhysicalMemory,
     paging: &Long64ProbeConfig,
     request: TrackedAccessRequest,
@@ -1119,8 +1119,8 @@ pub(crate) fn read_long64_4k_cross_page_ram(
 ) -> Result<u64, TrackedAccessError> {
     let (width, access) = match request.operation {
         RamAccessOperation::Read {
-            width: AccessWidth::Qword,
-        } => (8u8, AccessKind::Read),
+            width: width @ (AccessWidth::Dword | AccessWidth::Qword),
+        } => (width.bytes(), AccessKind::Read),
         RamAccessOperation::Write { width, .. } => {
             return Err(TrackedAccessError::CrossesPage {
                 address: request.address,
@@ -1135,20 +1135,8 @@ pub(crate) fn read_long64_4k_cross_page_ram(
         }
     };
     let offset = request.address.0 & 0xfff;
-    let first_len = (4096 - offset) as u8;
-    if first_len == width {
-        return Err(TrackedAccessError::CrossesPage {
-            address: request.address,
-            width,
-        });
-    }
-    let second_linear = request.address.0.checked_add(u64::from(first_len)).ok_or(
-        TrackedAccessError::CrossesPage {
-            address: request.address,
-            width,
-        },
-    )?;
-    let second_address = GuestLinearAddress::new(second_linear);
+    let first_len = (4096 - offset).min(u64::from(width)) as u8;
+    let crosses_page = first_len < width;
     let first = walk_long64_4k(
         memory,
         paging,
@@ -1159,34 +1147,43 @@ pub(crate) fn read_long64_4k_cross_page_ram(
         &mut committed_write,
     )
     .translation?;
-    let second = walk_long64_4k(
-        memory,
-        paging,
-        request.instruction_rip,
-        second_address,
-        request.context,
-        access,
-        &mut committed_write,
-    )
-    .translation?;
-
+    let second = if crosses_page {
+        let second_linear = request.address.0.checked_add(u64::from(first_len)).ok_or(
+            TrackedAccessError::CrossesPage {
+                address: request.address,
+                width,
+            },
+        )?;
+        Some(
+            walk_long64_4k(
+                memory,
+                paging,
+                request.instruction_rip,
+                GuestLinearAddress::new(second_linear),
+                request.context,
+                access,
+                &mut committed_write,
+            )
+            .translation?,
+        )
+    } else {
+        None
+    };
     let second_len = width - first_len;
-    for (physical, len) in [(first.physical, first_len), (second.physical, second_len)] {
-        match memory.locate_region_kind(physical, u64::from(len)) {
-            Ok(MemoryRegionKind::Ram) => {}
-            Ok(kind) => {
-                return Err(TrackedAccessError::OperandPhysical {
-                    address: physical,
-                    source: MemoryAccessError::UnreadableRegion(kind),
-                });
-            }
-            Err(source) => {
-                return Err(TrackedAccessError::OperandPhysical {
-                    address: physical,
-                    source,
-                });
-            }
-        }
+    let check_ram = |physical, len| match memory.locate_region_kind(physical, u64::from(len)) {
+        Ok(MemoryRegionKind::Ram) => Ok(()),
+        Ok(kind) => Err(TrackedAccessError::OperandPhysical {
+            address: physical,
+            source: MemoryAccessError::UnreadableRegion(kind),
+        }),
+        Err(source) => Err(TrackedAccessError::OperandPhysical {
+            address: physical,
+            source,
+        }),
+    };
+    check_ram(first.physical, first_len)?;
+    if let Some(second) = second {
+        check_ram(second.physical, second_len)?;
     }
 
     let mut bytes = [0; 8];
@@ -1196,15 +1193,17 @@ pub(crate) fn read_long64_4k_cross_page_ram(
             address: first.physical,
             source,
         })?;
-    memory
-        .read_bytes(
-            second.physical,
-            &mut bytes[usize::from(first_len)..usize::from(width)],
-        )
-        .map_err(|source| TrackedAccessError::OperandPhysical {
-            address: second.physical,
-            source,
-        })?;
+    if let Some(second) = second {
+        memory
+            .read_bytes(
+                second.physical,
+                &mut bytes[usize::from(first_len)..usize::from(width)],
+            )
+            .map_err(|source| TrackedAccessError::OperandPhysical {
+                address: second.physical,
+                source,
+            })?;
+    }
     Ok(u64::from_le_bytes(bytes))
 }
 

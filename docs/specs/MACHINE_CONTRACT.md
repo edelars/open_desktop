@@ -423,6 +423,33 @@ This slice does not cover cross-page stores, RAM/MMIO or MMIO/MMIO splitting,
 stack/REP/RMW restart behavior, exception delivery/CR2 commit, TLB/JIT, or the
 full S4-11 acceptance. See the [S4-11b report](../reports/STAGE_4_S4-11B_2026-11-05.md).
 
+## Bounded cross-page dword read (S4-11c)
+
+The separate opt-in `PagedMovCrossPageDwordReadLong64V1` CPU-connected
+profile admits only bare Long64 `MOV EAX,[RBX]` (`8B 03`), with no prefixes,
+RBX as the sole address form, one vCPU, and the existing canonical48,
+physical36, four-level 4 KiB uncached page-walk configuration. It does not
+broaden `PagedMovLong64V1` or the S4-11b qword profile.
+
+Same-page dword RAM read is the control. A crossing dword is accepted only at
+linear offsets `0xffd`, `0xffe`, or `0xfff`. Both page walks, permissions and
+physical RAM admissions complete before operand reads. A/D effects from each
+completed walk persist in actual walk order; read access does not set D. After
+both segments are admitted, bytes are read in increasing linear order into a
+private four-byte buffer. Only a complete successful read commits that buffer
+to CPU state as zero-extended EAX, advances RIP by two and retires once. Any
+failure leaves full RAX, RIP and retirement unchanged. A second-page fault
+identifies that segment's first inaccessible linear byte, vector 14, original
+instruction RIP, and Read/Long64/Explicit access context.
+
+Page-table aliases follow S4-11b's deterministic walk-then-sample behavior:
+both walks and their A updates happen before sampling operand bytes, and an
+earlier walk's committed writes can affect the later walk. This is a local
+uncached adapter contract and makes no universal x86 ordering or atomicity
+claim. Cross-page MMIO is not dispatched; stores and all other widths/forms
+remain unsupported here. This does not implement general guest exception
+delivery or complete S4-11. See the [S4-11c CPU contract](CPU_CONTRACT.md#exact-paged-dword-read-profile-pagedmovcrosspagedwordreadlong64v1-s4-11c).
+
 ## CPU-state to diagnostic translation snapshot
 
 `Long64ProbeConfig::from_cpu_state` строит immutable diagnostic snapshot из

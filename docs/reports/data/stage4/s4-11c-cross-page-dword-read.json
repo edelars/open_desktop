@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "slice": "S4-11c",
+  "title": "Bounded CPU-connected cross-page dword read",
+  "date": "2026-11-05",
+  "baseline_commit": "d6306c9",
+  "status": "implemented_reviewed",
+  "code_files": [
+    "crates/od-isa/src/execute.rs",
+    "crates/od-machine/src/bus.rs",
+    "crates/od-machine/src/lib.rs",
+    "crates/od-machine/src/page_walk.rs",
+    "crates/od-machine/src/paged_memory_adapter.rs",
+    "crates/od-machine/tests/paged_mov_step.rs"
+  ],
+  "cpu_profile": {
+    "name": "PagedMovCrossPageDwordReadLong64V1",
+    "entry": "od_machine::step_paged_mov_dword_read",
+    "encoding": "8B 03",
+    "operation": "MOV EAX,[RBX]",
+    "prefixes": "none",
+    "instructions_per_call": 1,
+    "operand_width_bytes": 4,
+    "guest_page_size_bytes": 4096,
+    "same_page_control": true,
+    "crossing_offsets": ["0xffd", "0xffe", "0xfff"],
+    "physical_mapping": "literal non-identity; two non-contiguous RAM pages",
+    "paging_profile": "canonical48/physical36/four-level/4KiB/uncached",
+    "vcpus": 1
+  },
+  "contract": {
+    "exact_form_allowlist": true,
+    "qword_profile_unchanged": true,
+    "translations_permissions_and_ram_admission_precede_operand_read": true,
+    "operand_read_order": "first segment then second segment",
+    "private_temporary_buffer": true,
+    "zero_extend_eax_rip_and_retirement_commit_only_after_full_read": true,
+    "fault_preserves_full_rax_rip_and_retirement": true,
+    "precise_second_page_page_fault_record": true,
+    "read_sets_dirty_bit": false,
+    "cross_page_mmio_dispatch": false,
+    "cross_page_stores_supported": false,
+    "alias_walk_then_sample_semantics": true,
+    "universal_hardware_atomicity_or_walk_order_claimed": false
+  },
+  "checks": {
+    "focused_command": "cargo test -p od-machine --test paged_mov_step --locked --offline s4_11c",
+    "focused_passed": 5,
+    "integration_command": "cargo test -p od-machine --test paged_mov_step --locked --offline",
+    "integration_passed": 20,
+    "unit_command": "cargo test -p od-machine --lib --locked --offline",
+    "unit_passed": 82,
+    "package_check": "cargo check -p od-machine --all-targets --locked --offline",
+    "format": "cargo fmt --all -- --check",
+    "diff_check": "git diff --check",
+    "result": "all passed"
+  },
+  "review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approved",
+    "findings": "one P3 evidence mismatch fixed; no P0-P2 correctness defects"
+  },
+  "graphify": {
+    "query_before_source_reads": true,
+    "worktree_update": "completed after code changes",
+    "nodes": 24701,
+    "edges": 63688,
+    "communities": 858,
+    "global_graph_updated": false
+  },
+  "issue_054": "open",
+  "parent_s4_11": "open",
+  "report": "docs/reports/STAGE_4_S4-11C_2026-11-05.md"
+}

@@ -13,7 +13,9 @@ interpreter integration, bounded uncached translation probe and tracked Long64
 bounded CPU-connected `step_paged_mov` adapter routes its qword operands to RAM
 or mapped MMIO through `MachineBus`; its separate S4-11b path permits only the
 `MOV RAX,[RBX]` qword read across two guest RAM pages. Cross-page stores and
-device splitting remain unsupported. An opt-in one-entry immutable-snapshot cache is
+device splitting remain unsupported. S4-11c adds a separate exact `MOV EAX,[RBX]`
+(`8B 03`) dword-read profile through same-page or two-page RAM; it does not
+change the qword allowlist. An opt-in one-entry immutable-snapshot cache is
 only a pure-probe experiment for S4-13a; it does not implement production TLB
 invalidation or cache tracked A/D effects. Full CPU/MMU paging and fault
 delivery, UART/APIC/PCI, production vCPU scheduling, JIT integration и Linux

@@ -324,6 +324,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Только `48 8B 03`, qword read через две 4 KiB страницы, все семь offsets `0xff9..0xfff`, literal non-identity mappings и две non-contiguous RAM pages. Оба walk/permission/RAM admission завершаются до operand read; A updates остаются при последующем fault; D не ставится; caller buffer и CPU state коммитятся только после полного чтения.
 - Cross-page store, RAM/MMIO splitting, stack/REP/RMW и full exception delivery остаются открытыми. См. [S4-11b report](../reports/STAGE_4_S4-11B_2026-11-05.md) и [manifest](../reports/data/stage4/s4-11b-cross-page-read.json).
 
+#### S4-11c. Bounded CPU-connected cross-page dword read
+
+- [x] Принят после независимого `gpt-6.1-sol/high` review без оставшихся P0—P3 замечаний; первое ревью P3 evidence несоответствие исправлено и подтверждено повторно.
+- Реализован отдельный точный opt-in profile `PagedMovCrossPageDwordReadLong64V1` только для bare `8B 03` (`MOV EAX,[RBX]`), Long64, RBX addressing, одному vCPU и действующей canonical48/physical36/four-level/4 KiB uncached paging configuration. Профиль S4-11b не расширен.
+- Одностраничный RAM read служит контролем; проверены все crossing offsets `0xffd..0xfff`, две non-contiguous RAM pages, EAX zero-extension, RIP+2, одна retirement, точный second-page #PF, alias walk-then-sample и отказ от cross-page MMIO. Walk/permission/RAM admission предшествуют operand reads; D не устанавливается.
+- Реализация и проверки записаны в [S4-11c report](../reports/STAGE_4_S4-11C_2026-11-05.md) и [manifest](../reports/data/stage4/s4-11c-cross-page-dword-read.json). Полный S4-11 остаётся открытым для stores, иных форм/widths, restart behavior и прочих memory consumers.
+
 ### S4-12. Подключить CR0/CR3/CR4, EFER и system instructions
 
 - [x] Ограниченный S4-12a snapshot-bridge срез принят после независимого ревью.

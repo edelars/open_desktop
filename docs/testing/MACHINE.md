@@ -238,6 +238,18 @@ partial operand value. A page-table alias case confirms both walks and A
 updates precede operand sampling. Cross-page stores and device splitting remain
 outside this method.
 
+## S4-11c: CPU-connected cross-page dword read
+
+`od_machine::step_paged_mov_dword_read` admits a separate exact Long64 `8B 03`
+(`MOV EAX,[RBX]`) profile. Reproduce with
+`cargo test -p od-machine --test paged_mov_step --locked --offline s4_11c`.
+The same-page RAM case is the control; crossing offsets `0xffd`, `0xffe` and
+`0xfff` use two non-contiguous RAM mappings. Tests check zero-extension, RIP+2,
+single retirement, unchanged qword profile neighbors, alias sampling after
+both A-bit updates, no D update, exact second-page #PF data and refusal of
+cross-page MMIO dispatch. This is a synthetic installed-Long64 profile, not a
+full guest or hardware acceptance.
+
 ## S4-24a: bounded COM1 polling TX
 
 Baseline revision: `6aeb2dd` (the reviewed UART changes were present in the

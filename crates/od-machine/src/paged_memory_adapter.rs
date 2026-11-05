@@ -5,6 +5,9 @@ use crate::{
     TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest,
 };
 use od_isa::LongModeState;
+use od_isa::execute::{
+    PagedMovCrossPageDwordReadLong64V1, step_paged_mov_dword_read as cpu_step_paged_mov_dword_read,
+};
 use od_isa::execute::{RunInputError, RunResult, step_paged_mov as cpu_step_paged_mov};
 use od_isa::memory::{AccessContext, GuestMemory, MemoryError, PageFaultRecord};
 
@@ -52,9 +55,52 @@ pub fn step_paged_mov(
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
+        dword_read_profile: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
+    Ok(PagedMovStepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        memory_error: memory.memory_error,
+    })
+}
+
+/// Execute the exact S4-11c EAX dword-read profile through the same tracked
+/// walker as the existing paged MOV bridge.
+pub fn step_paged_mov_dword_read(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovStepReport, PagedMovStepError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedMovStepError::Configuration)?;
+    let context = AccessContext {
+        origin: od_isa::memory::AccessOrigin::Explicit,
+        ..context
+    };
+    let instruction_rip = state.rip;
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+        dword_read_profile: true,
+    };
+    let cpu = cpu_step_paged_mov_dword_read(
+        PagedMovCrossPageDwordReadLong64V1,
+        state,
+        &mut memory,
+        context,
+        rflags_defined,
+    )
+    .map_err(PagedMovStepError::CpuInput)?;
     Ok(PagedMovStepReport {
         cpu,
         page_fault: memory.page_fault,
@@ -81,6 +127,7 @@ pub struct PagedMovMemoryAdapter<'a> {
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
+    dword_read_profile: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -110,16 +157,15 @@ impl PagedMovMemoryAdapter<'_> {
         &mut self,
         address: u64,
         context: AccessContext,
+        width: crate::AccessWidth,
     ) -> Result<u64, MemoryError> {
-        let result = self.bus.read_tracked_cross_page_ram(
+        let result = self.bus.read_tracked_bounded_ram_read(
             &self.paging,
             TrackedAccessRequest {
                 instruction_rip: self.instruction_rip,
                 address: GuestLinearAddress::new(address),
                 context,
-                operation: RamAccessOperation::Read {
-                    width: crate::AccessWidth::Qword,
-                },
+                operation: RamAccessOperation::Read { width },
             },
             &mut *self.committed_write,
         );
@@ -164,24 +210,21 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
-        if destination.len() != 8 {
-            return Err(Self::unsupported("non-qword reads"));
-        }
-        let value = if (address & 0xfff) + 8 > 4096 {
-            self.access_cross_page_read(address, context)?
-        } else {
-            match self.access(
-                address,
-                context,
-                RamAccessOperation::Read {
-                    width: crate::AccessWidth::Qword,
-                },
-            )? {
-                TrackedAccessOutcome::Read(value) => value,
-                _ => return Err(Self::unsupported("non-read result")),
-            }
+        let width = match destination.len() {
+            4 if self.dword_read_profile => crate::AccessWidth::Dword,
+            8 if !self.dword_read_profile => crate::AccessWidth::Qword,
+            _ => return Err(Self::unsupported("read width")),
         };
-        destination.copy_from_slice(&value.to_le_bytes());
+        let value =
+            if self.dword_read_profile || (address & 0xfff) + u64::from(width.bytes()) > 4096 {
+                self.access_cross_page_read(address, context, width)?
+            } else {
+                match self.access(address, context, RamAccessOperation::Read { width })? {
+                    TrackedAccessOutcome::Read(value) => value,
+                    _ => return Err(Self::unsupported("non-read result")),
+                }
+            };
+        destination.copy_from_slice(&value.to_le_bytes()[..destination.len()]);
         Ok(())
     }
 
@@ -313,6 +356,7 @@ mod tests {
             committed_write: callbacks,
             page_fault: None,
             memory_error: None,
+            dword_read_profile: false,
         }
     }
 

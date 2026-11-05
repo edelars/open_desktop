@@ -42,6 +42,31 @@ effects are specified in the [bounded S4-06b machine contract](MACHINE_CONTRACT.
 The scope and evidence are recorded in the
 [S4-06b report](../reports/STAGE_4_S4-06B_2026-11-05.md).
 
+### Exact paged dword-read profile `PagedMovCrossPageDwordReadLong64V1` (S4-11c)
+
+This separate opt-in profile admits exactly bare Long64 `8B 03`
+(`MOV EAX,[RBX]`) for a dword read. It uses the existing canonical48,
+physical36, four-level 4 KiB uncached translation profile and one vCPU. No
+prefixes, alternate addressing forms, or inherited instructions are admitted;
+the S4-11b qword profile remains unchanged.
+
+For page-crossing operands, only linear offsets `0xffd`, `0xffe`, and
+`0xfff` are covered. Same-page dword RAM reads are the control case. Machine
+execution completes both page walks, permission checks and RAM-region
+admissions before reading operand bytes. A private four-byte buffer receives
+the bytes; only after the complete read succeeds does the CPU commit the
+zero-extended EAX result, RIP+2 and one retirement. A fault preserves full
+RAX, RIP and retirement count. A second-page fault reports the precise failing
+linear address, vector 14, saved instruction RIP, and Read/Long64/Explicit
+context. Reads do not set D. Aliased page-table effects follow S4-11b's
+walk-then-sample behavior; this local uncached contract makes no universal x86
+atomicity or page-walk ordering claim.
+
+This profile does not admit cross-page MMIO, stores, other widths/forms,
+prefixes, full guest exception delivery, or a full-guest claim. The separate
+machine effects contract is in
+[S4-11c machine contract](MACHINE_CONTRACT.md#bounded-cross-page-dword-read-s4-11c).
+
 ### Bounded CPU-to-PIO profile `DiagnosticCpl0PioU8V1` (S4-24b)
 
 `od_isa::execute::step_pio_u8` is an opt-in one-instruction entry point for

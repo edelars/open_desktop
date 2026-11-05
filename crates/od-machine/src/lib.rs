@@ -43,7 +43,9 @@ pub use page_walk::{
     probe_instruction_access, probe_long64_4k,
 };
 
-pub use paged_memory_adapter::{PagedMovStepError, PagedMovStepReport, step_paged_mov};
+pub use paged_memory_adapter::{
+    PagedMovStepError, PagedMovStepReport, step_paged_mov, step_paged_mov_dword_read,
+};
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
     PagedProbeExit, PagedProbeQuantumReport, PagedProbeRejection, run_paged_probe,

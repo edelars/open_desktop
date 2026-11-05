@@ -5,7 +5,8 @@
 На 2026-11-05 приняты локальные memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access, S4-01a baseline, S4-10a
 admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-06c
-CPU-connected paged MOV to MMIO, bounded S4-11b cross-page qword read, bounded S4-21b
+CPU-connected paged MOV to MMIO, bounded S4-11b cross-page qword read and
+reviewed S4-11c cross-page dword read. Также приняты bounded S4-21b
 paged probe quantum, bounded S4-23c UART RX event delivery, bounded S4-24a
 COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO
 slices. Этап 4 не завершён: S4-00—S4-01,
@@ -249,6 +250,17 @@ permission fault и сохранение CPU state/нулевого retirement �
   noncontiguous mappings проверены. См. [контракт](../specs/MACHINE_CONTRACT.md#bounded-cross-page-qword-read-s4-11b),
   [отчёт](STAGE_4_S4-11B_2026-11-05.md) и
   [manifest](data/stage4/s4-11b-cross-page-read.json). Родительский S4-11 открыт.
+- S4-11c добавляет отдельный `PagedMovCrossPageDwordReadLong64V1`, допускающий
+  только bare `MOV EAX,[RBX]` (`8B 03`). Same-page RAM control и crossing offsets
+  `0xffd..0xfff` проверены на двух non-contiguous RAM pages. Оба walk/permission/
+  RAM admission предшествуют read; результат zero-extends в EAX, RIP advances на
+  2, retirement происходит один раз только после полного чтения; second-page
+  #PF сохраняет full RAX/RIP, reads не ставят D, alias sampling следует
+  S4-11b walk-then-sample. Cross-page MMIO не dispatch-ится. Проверки и границы:
+  [S4-11c report](STAGE_4_S4-11C_2026-11-05.md), [machine contract](../specs/MACHINE_CONTRACT.md#bounded-cross-page-dword-read-s4-11c),
+  [manifest](data/stage4/s4-11c-cross-page-dword-read.json). Независимое
+  `gpt-6.1-sol/high` review принято после исправления одного P3 evidence
+  несоответствия; P0—P2 замечаний нет. Родительский S4-11 остаётся открытым.
 - S4-12a добавляет `Long64ProbeConfig::from_cpu_state`: CR0 и CR4 читаются из
   `LongModeState` с явной ошибкой отсутствующего регистра, CR3 и EFER остаются
   явными входами, а вся существующая validation переиспользуется без defaults,
@@ -345,7 +357,7 @@ pure translation probe с record construction, а S4-09 — tracked RAM-only pro
 S4-10a — только rejection boundary для unsupported huge pages, а не реальные
 гостевые `IN/OUT` instructions, CPU page-fault delivery или
 полный executor integration. S4-11a — только same-page/cross-page admission и
-separate-call evidence. S4-11b — только cross-page qword read; он не закрывает
+separate-call evidence. S4-11b/c — только bounded qword/dword read profiles; они не закрывают
 cross-page stores, CPU restart, REP iteration, stack recovery или RMW atomicity.
 S4-06b не доказывает полную paging matrix, TLB/invalidation, CR2
 commit, exception delivery/retry, general cross-page operands, REP/stack/atomic
