@@ -1,6 +1,6 @@
 # Методика испытаний storage recovery
 
-Статус: **черновик S9-00, ожидает ревью**. Документ описывает уровни испытаний и правила evidence. Ни одно испытание ещё не выполнялось: storage не реализован ([`od-storage`](../../crates/od-storage/src/lib.rs) — scaffold). Все уровни имеют статус `not_run`; уровень 3 — дополнительно `blocked` до подготовки стенда и разрешения пользователя.
+Статус: **S9-00 принято с оговорками по архитектурному ревью**. Документ описывает уровни испытаний и правила evidence. Фактические статусы на 2026-11-05 — в §3.1: уровень 0 выполнен на модели для RAW (S9-07) и прототипа CoW (S9-08…12); уровень 1 выполнен частично (lock и SIGKILL, S9-04); уровень 2 `not_run`; уровень 3 `blocked`/`not_run` до подготовки стенда и разрешения пользователя.
 
 Контракт гарантий и модель отказов — [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md) (§6 уровни подтверждения, §8 модель отказов). Операции VM — [VM_STATE.md](../specs/VM_STATE.md). План — [этап 9](../plans/STAGE_9.md), разделы 5 и 8. Стенд x86 — [STAND.md](STAND.md).
 
@@ -67,6 +67,19 @@
 | S9-39 power loss | — | — | по процедуре | обязателен |
 | S9-41 repeated recovery/soak | обязателен | обязателен | — | — |
 
+### 3.1. Фактические статусы (2026-11-05, коммит `7d23bf9`)
+
+| Задача | Уровень 0 | Уровень 1 | Уровень 2 | Уровень 3 |
+|---|---|---|---|---|
+| S9-07 RAW write→flush→crash→reopen | `passed` на модели: [`testing/fault_tests.rs`](../../crates/od-storage/src/testing/fault_tests.rs), самопроверка oracle (`oracle_detects_ack_without_durability`, `seeded_runs_detect_broken_flush_and_ack`); namespace в fault backend не моделируется | `not_run` | `not_run` | `blocked`/`not_run` |
+| S9-04 writer lock и read lease | — | `partial`: `writer_in_another_process_blocks_us_and_crash_releases_it` и `lease_in_another_process_blocks_writer_allows_readers_and_sigkill_releases_it` (SIGKILL процесса, lock освобождён) в [`storage_io.rs`](../../crates/od-host/src/storage_io.rs); нет kill writer во время write/flush и в VMHost | `not_run` | `blocked`/`not_run` |
+| S9-06 durability path | `partial`: sticky `reconcile_required` на memory-backend ([`io_tests.rs`](../../crates/od-storage/src/io_tests.rs)); реальный `F_FULLFSYNC` вызывается в тестах host backend, но без журнала порядка операций; namespace не реализован | `not_run` | `not_run` | `blocked`/`not_run` |
+| S9-08, S9-10…12 CoW (прототип) | `passed` на модели: cut-point sweeps ([`cow_proto_tests.rs`](../../crates/od-storage/src/cow_proto_tests.rs), [`cow_open_tests.rs`](../../crates/od-storage/src/cow_open_tests.rs), [`cow_tx_tests.rs`](../../crates/od-storage/src/cow_tx_tests.rs), [`cow_recovery_tests.rs`](../../crates/od-storage/src/cow_recovery_tests.rs)); открыт ISSUE-057; формат не принят | `not_run` | `not_run` | `blocked`/`not_run` |
+| S9-09 parser corruption | fuzz 80000 мутаций (soundness) в [`cow_parse_tests.rs`](../../crates/od-storage/src/cow_parse_tests.rs) | — | — | — |
+| S9-36, S9-38, S9-39, S9-41 | `not_run` | `not_run` | `not_run` | `blocked`/`not_run` |
+
+Все результаты уровня 0 относятся к модели и не доказывают поведение реального host API, filesystem и накопителя.
+
 Claim «durable после power loss» допустим только для комбинации с `passed` на уровне 3. До этого документация говорит «durable в модели уровня 0/1/2», явно перечисляя уровень.
 
 ## 4. Повреждения (corruption)
@@ -75,6 +88,6 @@ Claim «durable после power loss» допустим только для к�
 
 ## 5. Открытые условия
 
-- Host durability API не подтверждён ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); уровни 2–3 бессмысленны до выбора протокола S9-06.
+- Семантика `F_FULLFSYNC` подтверждена локальной man-страницей `fcntl`, но namespace durability и исполнение на выбранном накопителе не подтверждены ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); уровни 2–3 не выполнялись.
 - Модель накопителя/контроллера внутреннего SSD не зафиксирована.
 - Стенд для уровня 3 не подготовлен.

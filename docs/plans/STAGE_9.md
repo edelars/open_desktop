@@ -164,7 +164,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-00. Зафиксировать область поддержки и failure model
 
 - [ ] Принято после архитектурного ревью.
-- **Текущий статус (2026-11-05):** черновики [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md), [VM_STATE.md](../specs/VM_STATE.md) и [STORAGE_RECOVERY.md](../testing/STORAGE_RECOVERY.md) созданы; архитектурное ревью не выполнено. Durability API не подтверждён ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)). Не разрешены лимиты logical size диска, virtual capacity CoW, глубины цепочек и числа snapshots, а также LBA/CoW block size — TBD в [STORAGE_FORMAT §4](../specs/STORAGE_FORMAT.md#4-единицы-размеры-и-лимиты).
+- **Текущий статус (2026-11-05):** принято с оговорками по архитектурному ревью (чекбокс не отмечен): [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md), [VM_STATE.md](../specs/VM_STATE.md), [STORAGE_RECOVERY.md](../testing/STORAGE_RECOVERY.md) исправлены. Оговорки: лимит logical size RAW не задан (открытый вопрос), лимиты CoW, глубины цепочек, числа snapshots и LBA/CoW block size остаются TBD ([STORAGE_FORMAT §4](../specs/STORAGE_FORMAT.md#4-единицы-размеры-и-лимиты)); durability — [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed) (namespace, power-loss, ENOTSUP/EINVAL); формат CoW не принят.
 - **Где:** будущие `STORAGE_FORMAT.md`, `VM_STATE.md`, `STORAGE_RECOVERY.md`; ссылки на текущую support matrix.
 - **Сделать:** выбрать первую host/filesystem/media комбинацию, размеры guest sector/Cow block, limits диска/цепочек, single-writer policy, crash model, acknowledged durability и checksum scope. Размеры/структуры на горячем пути пока гипотеза для замеров S9-08. Определить minimal offline и целевой full-VM profiles.
 - **Проверить:** каждый advertised режим имеет source/API основание, сценарий и владельца; network/removable/непроверенные backends не получают случайно те же гарантии.
@@ -173,7 +173,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-01. Проверить prerequisites по фактическому коду
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** матрица в [VM_STATE.md §2](../specs/VM_STATE.md#2-инвентаризация-prerequisites-s9-01) составлена по коду; ревью не выполнено; `STAGE_9_REPORT.md` ещё не создан. Следующий runnable срез — S9-03; full-VM prerequisites заблокированы ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)).
+- **Текущий статус (2026-11-05):** не принято по архитектурному ревью: [VM_STATE.md §2.1](../specs/VM_STATE.md#2-инвентаризация-prerequisites-s9-01) описывал `od-storage` как scaffold и `od-host` без file I/O; переписан по коду, нужно повторное ревью. Full-VM prerequisites заблокированы ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)). Ближайшие срезы: read leases и запрет изменения parent (остаток S9-04), namespace-часть S9-06 при появлении источника. Отчёт — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md).
 - **Где:** отчёт этапа и матрица зависимости в `VM_STATE.md`.
 - **Сделать:** перечислить готовность RAW/device backend, guest storage commands, всех CPU/RAM/device/time/I/O states, UEFI variables, vTPM и guest agents. Для каждого обязательного state указать реального owner и его versioned save/load contract либо точный blocker.
 - **Проверить:** методы snapshot в testkit и session ABI не приняты за сериализацию всей машины; нет зависимости offline CoW от всей Windows. Нужные задачи этапов 4–8 связаны с roadmap/фактическим кодом, без выдуманных IDs.
@@ -182,7 +182,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-02. Описать операции, состояния и результаты
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** таблицы операций в [VM_STATE.md §3](../specs/VM_STATE.md#3-операции-и-состояния-s9-02); ревью не выполнено.
+- **Текущий статус (2026-11-05):** принято с оговорками по архитектурному ревью (чекбокс не отмечен): таблицы операций в [VM_STATE.md §3](../specs/VM_STATE.md#3-операции-и-состояния-s9-02); состояние диска при forced stop сформулировано как «не старше последнего `durable_ack`». Операции VM не реализованы.
 - **Где:** `VM_STATE.md`, storage contract; control protocol меняется только при интеграции S9-33.
 - **Сделать:** таблица для pause/resume, suspend, guest shutdown, forced stop, disk-only snapshot, full checkpoint, restore, clone, export, repair. Для каждой: prerequisites, consistency, durability, allowed transitions, cancellation point, operation ID и recoverable/uncertain failure.
 - **Проверить:** потеря ответа после commit не приводит к повторному destructive действию; pause не называется suspend; shutdown timeout не выдаётся за успешный clean shutdown.
@@ -200,7 +200,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-04. Обеспечить единственного writer
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** частично, коммит `ba77773`: межпроцессный exclusive writer lock (`flock`) с проверкой identity. Не сделаны read leases, интеграция с VMHost, запрет изменения parent, busy при export/repair; lock advisory. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-04-единственный-writer--частично).
+- **Текущий статус (2026-11-05):** частично, коммиты `ba77773`, `31b8c2a`: межпроцессный exclusive writer lock (`flock`) с проверкой identity и `ReadLease` (shared `flock`, конфликт с writer в обе стороны, identity-проверка; `open_read_only` без lease не является lease). Не сделаны busy-политика для export/repair, запрет изменения parent, интеграция с VMHost lifecycle; lock advisory. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-04-единственный-writer--частично).
 - **Где:** `od-storage` ownership, `od-host` file locking, VMHost lifecycle.
 - **Сделать:** exclusive writer ownership для backing и mutating metadata; стабильная file/object identity, read leases и освобождение при shutdown/crash. Path string и PID-файл сами по себе недостаточны; same-file aliases учитывать по поддержанной платформе. Один timeout или возраст lock-файла не разрешает отобрать ownership у живого writer.
 - **Проверить:** два процесса, повторное открытие через alias, writer после crash, stale handle и запрещённое изменение parent, занятый диск при export/repair.
