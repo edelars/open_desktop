@@ -1046,6 +1046,46 @@ mod tracked_access_tests {
         );
         assert_eq!(report.ad_update_count, 5);
         assert_eq!(
+            report.ad_updates,
+            [
+                Some(AdUpdate {
+                    level: PageTableLevel::Pml4,
+                    address: GuestPhysicalAddress::new(0x1008),
+                    before: 0x2007,
+                    after: 0x2027,
+                    bit: AdBit::Accessed,
+                }),
+                Some(AdUpdate {
+                    level: PageTableLevel::Pdpt,
+                    address: GuestPhysicalAddress::new(0x2010),
+                    before: 0x3007,
+                    after: 0x3027,
+                    bit: AdBit::Accessed,
+                }),
+                Some(AdUpdate {
+                    level: PageTableLevel::Pd,
+                    address: GuestPhysicalAddress::new(0x3018),
+                    before: 0x4007,
+                    after: 0x4027,
+                    bit: AdBit::Accessed,
+                }),
+                Some(AdUpdate {
+                    level: PageTableLevel::Pt,
+                    address: GuestPhysicalAddress::new(0x4020),
+                    before: 0x4007,
+                    after: 0x4027,
+                    bit: AdBit::Accessed,
+                }),
+                Some(AdUpdate {
+                    level: PageTableLevel::Pt,
+                    address: GuestPhysicalAddress::new(0x4020),
+                    before: 0x4027,
+                    after: 0x4067,
+                    bit: AdBit::Dirty,
+                }),
+            ]
+        );
+        assert_eq!(
             logged(&log),
             [
                 (0x1008, 8),
@@ -1376,6 +1416,752 @@ mod tracked_access_tests {
         );
         assert!(matches!(pure.outcome, Ok(ProbeOutcome::Translated(_))));
         assert_eq!(entries(&memory), before);
+    }
+
+    #[test]
+    fn present_ps_at_pdpt_and_pd_is_rejected_without_descending_or_touching_operand() {
+        for (level, address, value, expected_trace, expected_a_writes) in [
+            (
+                PageTableLevel::Pdpt,
+                0x2010,
+                0x4007 | ENTRY_PS_OR_PAT,
+                vec![
+                    (PageTableLevel::Pml4, 0x1008, 0x2007),
+                    (PageTableLevel::Pdpt, 0x2010, 0x4007 | ENTRY_PS_OR_PAT),
+                ],
+                vec![(0x1008, 8)],
+            ),
+            (
+                PageTableLevel::Pd,
+                0x3018,
+                0x4007 | ENTRY_PS_OR_PAT,
+                vec![
+                    (PageTableLevel::Pml4, 0x1008, 0x2007),
+                    (PageTableLevel::Pdpt, 0x2010, 0x3007),
+                    (PageTableLevel::Pd, 0x3018, 0x4007 | ENTRY_PS_OR_PAT),
+                ],
+                vec![(0x1008, 8), (0x2010, 8)],
+            ),
+        ] {
+            let (mut memory, paging) = setup(0x4007, 0x6000);
+            memory
+                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+            let before = entries(&memory);
+            let expected_trace_len = expected_trace.len();
+
+            let pure = probe_long64_4k(
+                &memory,
+                &paging,
+                GuestLinearAddress::new(LINEAR),
+                AccessKind::Read,
+                request(RamAccessOperation::Read {
+                    width: AccessWidth::Byte,
+                })
+                .context,
+            );
+            assert_eq!(
+                pure.outcome,
+                Err(ProbeError::UnsupportedPageSize {
+                    level,
+                    entry_address: GuestPhysicalAddress::new(address),
+                    entry_value: value,
+                })
+            );
+            assert_eq!(pure.trace.len(), expected_trace.len());
+            for (actual, (expected_level, expected_address, expected_value)) in pure
+                .trace
+                .entries()
+                .iter()
+                .take(expected_trace_len)
+                .zip(expected_trace.iter().copied())
+            {
+                assert_eq!(
+                    *actual,
+                    Some(WalkEntry {
+                        level: expected_level,
+                        index: match expected_level {
+                            PageTableLevel::Pml4 => 1,
+                            PageTableLevel::Pdpt => 2,
+                            PageTableLevel::Pd => 3,
+                            PageTableLevel::Pt => unreachable!(),
+                        },
+                        entry_address: GuestPhysicalAddress::new(expected_address),
+                        entry_value: expected_value,
+                    })
+                );
+            }
+            assert_eq!(
+                entries(&memory),
+                before,
+                "pure probe mutated RAM at {level:?}"
+            );
+
+            let mut callbacks = Vec::new();
+            let tracked = access_long64_4k_ram(
+                &mut memory,
+                &paging,
+                request(RamAccessOperation::Write {
+                    width: AccessWidth::Byte,
+                    value: 0xaa,
+                }),
+                |range| callbacks.push(range),
+            );
+            assert_eq!(
+                tracked.outcome,
+                Err(TrackedAccessError::UnsupportedPageSize {
+                    level,
+                    entry_address: GuestPhysicalAddress::new(address),
+                    entry_value: value,
+                })
+            );
+            assert_eq!(tracked.trace.len(), expected_trace_len);
+            for (actual, (expected_level, expected_address, expected_value)) in tracked
+                .trace
+                .entries()
+                .iter()
+                .take(expected_trace_len)
+                .zip(expected_trace.iter().copied())
+            {
+                assert_eq!(
+                    *actual,
+                    Some(WalkEntry {
+                        level: expected_level,
+                        index: match expected_level {
+                            PageTableLevel::Pml4 => 1,
+                            PageTableLevel::Pdpt => 2,
+                            PageTableLevel::Pd => 3,
+                            PageTableLevel::Pt => unreachable!(),
+                        },
+                        entry_address: GuestPhysicalAddress::new(expected_address),
+                        entry_value: expected_value,
+                    })
+                );
+            }
+            assert_eq!(tracked.ad_update_count, expected_a_writes.len());
+            assert_eq!(
+                logged(&callbacks),
+                expected_a_writes
+                    .iter()
+                    .map(|(address, len)| (*address, *len))
+                    .collect::<Vec<_>>()
+            );
+            let after = entries(&memory);
+            assert_eq!(after[0], before[0] | (1 << 5));
+            assert_eq!(
+                after[1],
+                if level == PageTableLevel::Pdpt {
+                    value
+                } else {
+                    before[1] | (1 << 5)
+                }
+            );
+            assert_eq!(
+                after[2],
+                if level == PageTableLevel::Pd {
+                    value
+                } else {
+                    before[2]
+                }
+            );
+            assert_eq!(
+                after[3], before[3],
+                "walk descended to the PT or touched operand"
+            );
+            assert_eq!(
+                memory.read_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn present_ps_rejection_is_identical_for_read_write_and_fetch() {
+        for (level, address, value, trace) in [
+            (
+                PageTableLevel::Pdpt,
+                0x2010,
+                0x4007 | ENTRY_PS_OR_PAT,
+                vec![
+                    (PageTableLevel::Pml4, 0x1008, 0x2007),
+                    (PageTableLevel::Pdpt, 0x2010, 0x4007 | ENTRY_PS_OR_PAT),
+                ],
+            ),
+            (
+                PageTableLevel::Pd,
+                0x3018,
+                0x4007 | ENTRY_PS_OR_PAT,
+                vec![
+                    (PageTableLevel::Pml4, 0x1008, 0x2007),
+                    (PageTableLevel::Pdpt, 0x2010, 0x3007),
+                    (PageTableLevel::Pd, 0x3018, 0x4007 | ENTRY_PS_OR_PAT),
+                ],
+            ),
+        ] {
+            for (operation, access) in [
+                (
+                    RamAccessOperation::Read {
+                        width: AccessWidth::Byte,
+                    },
+                    AccessKind::Read,
+                ),
+                (
+                    RamAccessOperation::Write {
+                        width: AccessWidth::Byte,
+                        value: 0x5a,
+                    },
+                    AccessKind::Write,
+                ),
+                (RamAccessOperation::Fetch, AccessKind::Fetch),
+            ] {
+                let (mut memory, paging) = setup(0x4007, 0x6000);
+                memory
+                    .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                    .unwrap();
+                let before = entries(&memory);
+                let pure = probe_long64_4k(
+                    &memory,
+                    &paging,
+                    GuestLinearAddress::new(LINEAR),
+                    access,
+                    request(operation).context,
+                );
+                assert_eq!(
+                    pure.outcome,
+                    Err(ProbeError::UnsupportedPageSize {
+                        level,
+                        entry_address: GuestPhysicalAddress::new(address),
+                        entry_value: value,
+                    })
+                );
+                assert_eq!(pure.trace.len(), trace.len());
+                for (actual, (expected_level, expected_address, expected_value)) in pure
+                    .trace
+                    .entries()
+                    .iter()
+                    .take(trace.len())
+                    .zip(trace.iter().copied())
+                {
+                    assert_eq!(
+                        actual.map(|entry| (
+                            entry.level,
+                            entry.entry_address.get(),
+                            entry.entry_value
+                        )),
+                        Some((expected_level, expected_address, expected_value))
+                    );
+                }
+                assert_eq!(entries(&memory), before);
+
+                let mut callbacks = Vec::new();
+                let tracked =
+                    access_long64_4k_ram(&mut memory, &paging, request(operation), |range| {
+                        callbacks.push(range)
+                    });
+                assert_eq!(
+                    tracked.outcome,
+                    Err(TrackedAccessError::UnsupportedPageSize {
+                        level,
+                        entry_address: GuestPhysicalAddress::new(address),
+                        entry_value: value,
+                    })
+                );
+                assert_eq!(tracked.trace.len(), trace.len());
+                for (actual, (expected_level, expected_address, expected_value)) in tracked
+                    .trace
+                    .entries()
+                    .iter()
+                    .take(trace.len())
+                    .zip(trace.iter().copied())
+                {
+                    assert_eq!(
+                        actual.map(|entry| (
+                            entry.level,
+                            entry.entry_address.get(),
+                            entry.entry_value
+                        )),
+                        Some((expected_level, expected_address, expected_value))
+                    );
+                }
+                assert_eq!(
+                    entries(&memory),
+                    [
+                        before[0] | 0x20,
+                        before[1] | if level == PageTableLevel::Pd { 0x20 } else { 0 },
+                        before[2],
+                        before[3]
+                    ]
+                );
+                assert_eq!(
+                    logged(&callbacks),
+                    if level == PageTableLevel::Pdpt {
+                        vec![(0x1008, 8)]
+                    } else {
+                        vec![(0x1008, 8), (0x2010, 8)]
+                    }
+                );
+                assert_eq!(tracked.ad_update_count, callbacks.len());
+                assert_eq!(
+                    tracked.ad_updates,
+                    if level == PageTableLevel::Pdpt {
+                        [
+                            Some(AdUpdate {
+                                level: PageTableLevel::Pml4,
+                                address: GuestPhysicalAddress::new(0x1008),
+                                before: 0x2007,
+                                after: 0x2027,
+                                bit: AdBit::Accessed,
+                            }),
+                            None,
+                            None,
+                            None,
+                            None,
+                        ]
+                    } else {
+                        [
+                            Some(AdUpdate {
+                                level: PageTableLevel::Pml4,
+                                address: GuestPhysicalAddress::new(0x1008),
+                                before: 0x2007,
+                                after: 0x2027,
+                                bit: AdBit::Accessed,
+                            }),
+                            Some(AdUpdate {
+                                level: PageTableLevel::Pdpt,
+                                address: GuestPhysicalAddress::new(0x2010),
+                                before: 0x3007,
+                                after: 0x3027,
+                                bit: AdBit::Accessed,
+                            }),
+                            None,
+                            None,
+                            None,
+                        ]
+                    }
+                );
+                assert_eq!(
+                    memory.read_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn present_ps_after_preset_ancestor_accessed_bit_has_no_duplicate_callback() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        memory
+            .write_u64(GuestPhysicalAddress::new(0x1008), 0x2027, |_| {})
+            .unwrap();
+        memory
+            .write_u64(
+                GuestPhysicalAddress::new(0x2010),
+                0x4007 | ENTRY_PS_OR_PAT,
+                |_| {},
+            )
+            .unwrap();
+        let rejected_before = memory.read_u64(GuestPhysicalAddress::new(0x2010)).unwrap();
+        let mut callbacks = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |range| callbacks.push(range),
+        );
+        assert_eq!(
+            report.outcome,
+            Err(TrackedAccessError::UnsupportedPageSize {
+                level: PageTableLevel::Pdpt,
+                entry_address: GuestPhysicalAddress::new(0x2010),
+                entry_value: rejected_before,
+            })
+        );
+        assert_eq!(report.trace.len(), 2);
+        assert_eq!(report.ad_update_count, 0);
+        assert!(callbacks.is_empty());
+        assert_eq!(
+            memory.read_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
+            rejected_before
+        );
+        assert_eq!(
+            memory.read_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn present_ps_wins_over_reserved_address_bits_and_nx_when_nxe_is_disabled() {
+        let paging =
+            Long64ProbeConfig::new(0x8000_0033, 0x1000, CR4_PAE, EFER_LME | EFER_LMA).unwrap();
+        for (level, address) in [(PageTableLevel::Pdpt, 0x2010), (PageTableLevel::Pd, 0x3018)] {
+            for extra in [1u64 << 36, ENTRY_NX] {
+                let value = 0x4007 | ENTRY_PS_OR_PAT | extra;
+                let (mut memory, _) = setup(0x4007, 0x6000);
+                memory
+                    .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                    .unwrap();
+                let pure = probe_long64_4k(
+                    &memory,
+                    &paging,
+                    GuestLinearAddress::new(LINEAR),
+                    AccessKind::Write,
+                    request(RamAccessOperation::Read {
+                        width: AccessWidth::Byte,
+                    })
+                    .context,
+                );
+                assert_eq!(
+                    pure.outcome,
+                    Err(ProbeError::UnsupportedPageSize {
+                        level,
+                        entry_address: GuestPhysicalAddress::new(address),
+                        entry_value: value,
+                    })
+                );
+                assert_eq!(
+                    pure.trace
+                        .entries()
+                        .get(pure.trace.len() - 1)
+                        .and_then(|entry| *entry),
+                    Some(WalkEntry {
+                        level,
+                        index: if level == PageTableLevel::Pdpt { 2 } else { 3 },
+                        entry_address: GuestPhysicalAddress::new(address),
+                        entry_value: value,
+                    })
+                );
+
+                let mut callbacks = Vec::new();
+                let tracked = access_long64_4k_ram(
+                    &mut memory,
+                    &paging,
+                    request(RamAccessOperation::Write {
+                        width: AccessWidth::Byte,
+                        value: 0x77,
+                    }),
+                    |range| callbacks.push(range),
+                );
+                assert_eq!(
+                    tracked.outcome,
+                    Err(TrackedAccessError::UnsupportedPageSize {
+                        level,
+                        entry_address: GuestPhysicalAddress::new(address),
+                        entry_value: value,
+                    })
+                );
+                assert_eq!(
+                    memory.read_u64(GuestPhysicalAddress::new(address)).unwrap(),
+                    value
+                );
+                assert_eq!(
+                    logged(&callbacks),
+                    if level == PageTableLevel::Pdpt {
+                        vec![(0x1008, 8)]
+                    } else {
+                        vec![(0x1008, 8), (0x2010, 8)]
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_ps_does_not_read_an_unmapped_descendant_or_operand() {
+        for (level, ram_end, address, prefix) in [
+            (PageTableLevel::Pdpt, 0x3000, 0x2010, vec![(0x1008, 0x2007)]),
+            (
+                PageTableLevel::Pd,
+                0x4000,
+                0x3018,
+                vec![(0x1008, 0x2007), (0x2010, 0x3007)],
+            ),
+        ] {
+            let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), ram_end).unwrap();
+            let map =
+                MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                    .unwrap();
+            let mut memory = PhysicalMemory::new(&map, RamLimits::new(ram_end)).unwrap();
+            for (table_address, entry) in prefix {
+                memory
+                    .write_u64(GuestPhysicalAddress::new(table_address), entry, |_| {})
+                    .unwrap();
+            }
+            let value = 0x4007 | ENTRY_PS_OR_PAT;
+            memory
+                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+            let paging = Long64ProbeConfig::new(
+                0x8000_0033,
+                0x1000,
+                CR4_PAE,
+                EFER_LME | EFER_LMA | EFER_NXE,
+            )
+            .unwrap();
+            assert_eq!(
+                memory.read_u64(GuestPhysicalAddress::new(0x4000)),
+                Err(MemoryAccessError::Unmapped(GuestPhysicalAddress::new(
+                    0x4000
+                )))
+            );
+            assert_eq!(
+                memory.read_u8(GuestPhysicalAddress::new(0x4abc)),
+                Err(MemoryAccessError::Unmapped(GuestPhysicalAddress::new(
+                    0x4abc
+                )))
+            );
+
+            let pure = probe_long64_4k(
+                &memory,
+                &paging,
+                GuestLinearAddress::new(LINEAR),
+                AccessKind::Read,
+                request(RamAccessOperation::Read {
+                    width: AccessWidth::Byte,
+                })
+                .context,
+            );
+            assert_eq!(
+                pure.outcome,
+                Err(ProbeError::UnsupportedPageSize {
+                    level,
+                    entry_address: GuestPhysicalAddress::new(address),
+                    entry_value: value,
+                })
+            );
+
+            let mut callbacks = Vec::new();
+            let tracked = access_long64_4k_ram(
+                &mut memory,
+                &paging,
+                request(RamAccessOperation::Read {
+                    width: AccessWidth::Byte,
+                }),
+                |range| callbacks.push(range),
+            );
+            assert_eq!(
+                tracked.outcome,
+                Err(TrackedAccessError::UnsupportedPageSize {
+                    level,
+                    entry_address: GuestPhysicalAddress::new(address),
+                    entry_value: value,
+                })
+            );
+            assert_eq!(
+                tracked.trace.len(),
+                if level == PageTableLevel::Pdpt { 2 } else { 3 }
+            );
+            assert_eq!(
+                logged(&callbacks),
+                if level == PageTableLevel::Pdpt {
+                    vec![(0x1008, 8)]
+                } else {
+                    vec![(0x1008, 8), (0x2010, 8)]
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_write_preserves_preset_accessed_and_dirty_bits() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let rejected_value = 0x4007 | ENTRY_PS_OR_PAT | (1 << 5) | (1 << 6);
+        memory
+            .write_u64(GuestPhysicalAddress::new(0x1008), 0x2027, |_| {})
+            .unwrap();
+        memory
+            .write_u64(GuestPhysicalAddress::new(0x2010), rejected_value, |_| {})
+            .unwrap();
+        let mut callbacks = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 0x11,
+            }),
+            |range| callbacks.push(range),
+        );
+        assert_eq!(
+            report.outcome,
+            Err(TrackedAccessError::UnsupportedPageSize {
+                level: PageTableLevel::Pdpt,
+                entry_address: GuestPhysicalAddress::new(0x2010),
+                entry_value: rejected_value,
+            })
+        );
+        assert_eq!(report.ad_update_count, 0);
+        assert_eq!(report.ad_updates, [None; 5]);
+        assert!(callbacks.is_empty());
+        assert_eq!(
+            memory.read_u64(GuestPhysicalAddress::new(0x1008)).unwrap(),
+            0x2027
+        );
+        assert_eq!(
+            memory.read_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
+            rejected_value
+        );
+        assert_eq!(
+            memory.read_u8(GuestPhysicalAddress::new(0x4abc)).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn nonpresent_ps_is_a_page_fault_and_pml4_pt_bit_seven_keep_their_roles() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        memory
+            .write_u64(GuestPhysicalAddress::new(0x2010), ENTRY_PS_OR_PAT, |_| {})
+            .unwrap();
+        let pure = probe_long64_4k(
+            &memory,
+            &paging,
+            GuestLinearAddress::new(LINEAR),
+            AccessKind::Read,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            })
+            .context,
+        );
+        assert!(matches!(
+            pure.outcome,
+            Ok(ProbeOutcome::PageFault(PageFaultProbe {
+                error_code: 0,
+                reason: PageFaultReason::NotPresent {
+                    level: PageTableLevel::Pdpt
+                },
+                ..
+            }))
+        ));
+        assert_eq!(pure.trace.len(), 2);
+        let mut callbacks = Vec::new();
+        let tracked = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |range| callbacks.push(range),
+        );
+        assert!(matches!(
+            tracked.outcome,
+            Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::NotPresent {
+                    level: PageTableLevel::Pdpt
+                },
+                ..
+            })
+        ));
+        assert_eq!(tracked.trace.len(), 2);
+        assert_eq!(tracked.ad_update_count, 1);
+        assert_eq!(
+            tracked.ad_updates,
+            [
+                Some(AdUpdate {
+                    level: PageTableLevel::Pml4,
+                    address: GuestPhysicalAddress::new(0x1008),
+                    before: 0x2007,
+                    after: 0x2027,
+                    bit: AdBit::Accessed,
+                }),
+                None,
+                None,
+                None,
+                None,
+            ]
+        );
+        assert_eq!(logged(&callbacks), [(0x1008, 8)]);
+        assert_eq!(
+            memory.read_u64(GuestPhysicalAddress::new(0x1008)).unwrap(),
+            0x2027
+        );
+        assert_eq!(
+            memory.read_u64(GuestPhysicalAddress::new(0x2010)).unwrap(),
+            ENTRY_PS_OR_PAT
+        );
+
+        let mut pml4_ps = setup(0x4007, 0x6000).0;
+        pml4_ps
+            .write_u64(
+                GuestPhysicalAddress::new(0x1008),
+                0x2007 | ENTRY_PS_OR_PAT,
+                |_| {},
+            )
+            .unwrap();
+        let pml4 = probe_long64_4k(
+            &pml4_ps,
+            &paging,
+            GuestLinearAddress::new(LINEAR),
+            AccessKind::Read,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            })
+            .context,
+        );
+        assert!(matches!(
+            pml4.outcome,
+            Ok(ProbeOutcome::PageFault(PageFaultProbe {
+                reason: PageFaultReason::ReservedBits {
+                    level: PageTableLevel::Pml4,
+                    offending_bits: ENTRY_PS_OR_PAT
+                },
+                ..
+            }))
+        ));
+        assert_eq!(pml4.trace.len(), 1);
+        let mut pml4_tracked = pml4_ps;
+        let pml4_access = access_long64_4k_ram(
+            &mut pml4_tracked,
+            &paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |_| {},
+        );
+        assert!(matches!(
+            pml4_access.outcome,
+            Err(TrackedAccessError::PageFault {
+                reason: PageFaultReason::ReservedBits {
+                    level: PageTableLevel::Pml4,
+                    offending_bits: ENTRY_PS_OR_PAT
+                },
+                ..
+            })
+        ));
+        assert_eq!(pml4_access.trace.len(), 1);
+        assert_eq!(pml4_access.ad_update_count, 0);
+
+        let (mut pt_pat, paging) = setup(0x4007 | ENTRY_PS_OR_PAT, 0x6000);
+        pt_pat
+            .write_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
+            .unwrap();
+        let pt = probe_long64_4k(
+            &pt_pat,
+            &paging,
+            GuestLinearAddress::new(LINEAR),
+            AccessKind::Read,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            })
+            .context,
+        );
+        assert!(matches!(
+            pt.outcome,
+            Ok(ProbeOutcome::Translated(translation)) if translation.physical.get() == 0x4abc
+        ));
+        assert_eq!(pt.trace.len(), 4);
+        let pt_access = access_long64_4k_ram(
+            &mut pt_pat,
+            &paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |_| {},
+        );
+        assert_eq!(pt_access.outcome, Ok(TrackedAccessOutcome::Read(0x5a)));
+        assert_eq!(pt_access.trace.len(), 4);
+        assert_eq!(pt_access.ad_update_count, 4);
     }
 }
 
