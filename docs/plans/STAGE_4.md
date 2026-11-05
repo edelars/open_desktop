@@ -470,6 +470,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** 122 теста `od-machine` (81 unit + 41 integration), package/workspace checks, fmt, layout, diff check и Graphify; подробности в [отчёте S4-23b](../reports/STAGE_4_S4-23B_2026-11-05.md) и [JSON evidence](../reports/data/stage4/s4-23b-event-generation.json).
 - **Готово:** защита очереди от stale operations после reset принята. Полный S4-23 остаётся открытым для dispatch, IRQ и timers, HLT wakeup, host wait и конкурентного владения.
 
+#### S4-23c. Bounded доставка UART RX по deadlines
+
+- [x] Ограниченный S4-23c принят после независимого ревью; S4-23 и S4-24 остаются открытыми.
+- **Где:** `crates/od-machine/src/uart_rx_events.rs`, `event_queue.rs`, публичный API и `uart_rx_events` integration tests.
+- **Границы:** `UartRxEventPump` хранит bounded RX payload для одного UART. Capacity фиксирована; generation, deadlines и deterministic order принадлежат `EventQueue`. Dispatch соблюдает порядок generation → STOP → event budget → readiness. Успешная инъекция удаляет ровно одно событие и payload; `ReceiverBusy` сохраняет earliest event, payload, deadline и ordering position. Reset/stale generation invalidates pending work. Pump не двигает clock, не меняет CPU и не пробуждает HLT.
+- **Проверка:** 129 тестов `od-machine` (81 unit + 48 integration), включая `uart_rx_events` 7/7; package/workspace checks, fmt, layout и diff check. Подробности в [отчёте S4-23c](../reports/STAGE_4_S4-23C_2026-11-05.md) и [JSON evidence](../reports/data/stage4/s4-23c-uart-rx-events.json).
+- **Готово:** bounded event-to-UART-RX delivery принята. Не заявляются IRQ/APIC, baud timing, HLT wakeup, host wait или Linux boot. S4-23, S4-24 и Stage 4 остаются открытыми.
+
 ### S4-24. UART 16550A: сначала polling, затем IRQ
 
 - [ ] Полная задача открыта. Bounded slices S4-24a, S4-24b и S4-24c приняты; IRQ и guest-visible acceptance остаются обязательными для закрытия.

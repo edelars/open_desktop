@@ -130,6 +130,12 @@ git diff --check
     events and sequence while retaining capacity; stale reset and generation
     exhaustion preserve entries, sequence, capacity and clock. Deadline/order
     semantics remain unchanged, and reset never advances `VirtualClock`.
+41. S4-23c checks bounded UART RX payload capacity and dispatch ordering:
+    generation, STOP, event budget, then readiness. Deadlines and equal-deadline
+    order remain owned by `EventQueue`. Successful injection removes exactly one
+    event/payload; `ReceiverBusy` preserves the earliest event, payload,
+    deadline and order for retry. Reset invalidates stale pending work without
+    changing `VirtualClock`, CPU state or HLT state.
 
 ## Интерпретация
 
@@ -138,8 +144,8 @@ flat identity integration, tracked RAM-only effects и targeted `od-isa`
 PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
 cross-page admission, S4-12a snapshot bridge, S4-13a pure-cache experiment,
 S4-14a cache lifecycle boundary, S4-21a diagnostic vCPU session и S4-22a
-caller-driven clock/RDTSC boundary, S4-23a bounded deadline queue и S4-23b
-reset-generation boundary.
+caller-driven clock/RDTSC boundary, S4-23a bounded deadline queue, S4-23b
+reset-generation boundary and S4-23c bounded UART RX event delivery.
 Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не

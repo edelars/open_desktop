@@ -137,6 +137,38 @@ impl EventQueue {
         now_ns: u64,
     ) -> Result<Option<ScheduledEvent>, EventQueueError> {
         self.validate_generation(generation)?;
+        self.remove_due(generation, now_ns)
+    }
+
+    /// Inspect the earliest due event without changing its order or contents.
+    pub(crate) fn peek_due(
+        &self,
+        generation: EventGeneration,
+        now_ns: u64,
+    ) -> Result<Option<ScheduledEvent>, EventQueueError> {
+        self.validate_generation(generation)?;
+        let Some(index) = self.earliest_index() else {
+            return Ok(None);
+        };
+        let entry = self.entries[index];
+        if entry.deadline_ns > now_ns {
+            return Ok(None);
+        }
+        Ok(Some(ScheduledEvent {
+            generation: self.generation,
+            key: entry.key,
+            deadline_ns: entry.deadline_ns,
+        }))
+    }
+
+    /// Remove the earliest event when due. The owner may inspect first and call
+    /// this only after its side effect succeeds, preserving the event on retry.
+    pub(crate) fn remove_due(
+        &mut self,
+        generation: EventGeneration,
+        now_ns: u64,
+    ) -> Result<Option<ScheduledEvent>, EventQueueError> {
+        self.validate_generation(generation)?;
         let Some(index) = self.earliest_index() else {
             return Ok(None);
         };

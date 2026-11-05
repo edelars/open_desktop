@@ -454,3 +454,23 @@ pending entries, sequence, capacity и clock остаются без измен�
 доступ и межмашинное владение остаются за пределами bounded generation/reset
 среза S4-23b; HLT wakeup и host wait остаются открытыми требованиями полного
 S4-23.
+
+## Bounded UART RX event pump (S4-23c)
+
+`UartRxEventPump` connects a bounded payload store to one UART RX endpoint. Its
+payload capacity is fixed and bounded. `EventQueue` owns generations, absolute
+deadlines, equal-deadline insertion order, cancellation, rescheduling and reset
+invalidation; the pump does not maintain a second deadline/order structure.
+
+Dispatch checks the expected generation first, then STOP, then the finite event
+budget, then readiness of the earliest event at the current `VirtualClock`
+time. Successful delivery injects the byte exactly once and removes its event
+and payload. If the receiver is busy, dispatch returns `ReceiverBusy` and
+preserves the earliest event, payload, deadline and ordering position; later
+events do not bypass it. A later dispatch can retry that same event after the
+guest consumes the pending RX byte.
+
+Reset and stale-generation rejection follow `EventQueue` and invalidate pending
+work. The pump does not change `VirtualClock` or CPU state, execute guest code,
+or wake HLT. IRQ/APIC delivery, baud timing, HLT wakeup and host waiting remain
+outside this bounded slice and open in S4-23/S4-24.

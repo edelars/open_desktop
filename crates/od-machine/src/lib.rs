@@ -13,6 +13,7 @@ mod pio_step;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
+mod uart_rx_events;
 mod virtual_clock;
 
 pub use bus::{
@@ -53,6 +54,9 @@ pub use physical_memory::{
 
 pub use virtual_clock::{VirtualClock, VirtualClockError};
 
+pub use uart_rx_events::{
+    UartRxDispatchExit, UartRxDispatchReport, UartRxEventPump, UartRxPumpError,
+};
 pub use uart16550::{Uart16550Handle, Uart16550PollingTx};
 
 #[cfg(feature = "experimental-translation-probe-cache")]

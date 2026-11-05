@@ -1,0 +1,91 @@
+{
+  "slice": "S4-23c",
+  "date": "2026-11-05",
+  "status": "accepted_bounded_slice",
+  "parent_status": {
+    "S4-23": "open",
+    "S4-24": "open",
+    "stage_4": "open"
+  },
+  "contract": {
+    "component": "UartRxEventPump",
+    "uart_endpoints": 1,
+    "payload_capacity": "fixed and bounded",
+    "deadline_and_order_owner": "EventQueue",
+    "dispatch_order": [
+      "generation validation",
+      "STOP predicate",
+      "finite event budget",
+      "event readiness"
+    ],
+    "successful_delivery": {
+      "inject_count": 1,
+      "remove_event": true,
+      "remove_payload": true
+    },
+    "receiver_busy": {
+      "result": "ReceiverBusy",
+      "preserves": [
+        "earliest event",
+        "payload",
+        "absolute deadline",
+        "ordering position"
+      ],
+      "later_events_bypass": false
+    },
+    "reset_and_stale_generations": "follow EventQueue invalidation and stale-operation contract",
+    "unchanged_by_pump": [
+      "VirtualClock",
+      "CPU state",
+      "HLT state"
+    ],
+    "executes_cpu": false,
+    "wakes_hlt": false
+  },
+  "verification": [
+    {
+      "command": "cargo test -p od-machine --all-targets --locked --offline",
+      "result": "129 passed: 81 unit + 48 integration"
+    },
+    {
+      "command": "cargo test -p od-machine --test uart_rx_events --locked --offline",
+      "result": "7 passed"
+    },
+    {
+      "command": "cargo check -p od-machine --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo check --workspace --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "python3 tools/check_layout.py",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "independent_review": {
+    "result": "approved",
+    "findings_p0_p3": 0
+  },
+  "not_claimed": [
+    "S4-23 completion",
+    "S4-24 completion",
+    "Stage 4 completion",
+    "IRQ/APIC delivery",
+    "baud timing",
+    "HLT wakeup",
+    "host wait",
+    "Linux serial compatibility",
+    "Linux boot"
+  ],
+  "related_open_blocker": "S4-32a reproducible freestanding toolchain remains unavailable"
+}

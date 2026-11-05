@@ -5,10 +5,28 @@
 На 2026-11-05 приняты локальные memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access, S4-01a baseline, S4-10a
 admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-21b
-paged probe quantum, bounded S4-24a COM1 polling TX, bounded S4-24b CPU PIO
-and bounded S4-24c paged CPU PIO slices. Этап 4 не завершён: S4-00—S4-01,
+paged probe quantum, bounded S4-23c UART RX event delivery, bounded S4-24a
+COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO
+slices. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, полный UART/IRQ, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
+
+S4-23c adds a bounded `UartRxEventPump` between `EventQueue` and one UART RX
+endpoint. Its dispatch order is generation → STOP → finite event budget →
+readiness. Payload capacity is fixed; the queue owns generations, absolute
+deadlines and ordering. Successful injection consumes exactly one event and
+payload. `ReceiverBusy` preserves the earliest event, payload, deadline and
+order for retry. Reset/stale-generation invalidation follows `EventQueue`; the
+pump does not advance `VirtualClock`, change CPU state or wake HLT. Evidence:
+[S4-23c report](STAGE_4_S4-23C_2026-11-05.md) and
+[JSON evidence](data/stage4/s4-23c-uart-rx-events.json).
+
+The complete `od-machine` suite passed **129 tests (81 unit + 48 integration)**,
+including `uart_rx_events` **7/7**. Package/workspace checks, formatting, layout
+and diff checks passed; independent review approved with no P0–P3 findings.
+S4-23, S4-24 and Stage 4 remain open. This slice does not claim IRQ/APIC, baud
+timing, HLT wakeup, host wait or Linux boot. The S4-32a reproducible freestanding
+toolchain blocker remains open.
 
 S4-21b принимает `PagedCpl0ProbeV1`: `step_paged_probe` допускает только
 `MOV RAX,[RBX]`, `MOV [RBX],RCX`, bare `IN AL,DX`, `OUT DX,AL` и `HLT`.
@@ -196,6 +214,14 @@ operand write не коммитит operand частично. Alias page-table/o
   сохранены. Это не добавляет dispatch, periodic timers, IRQ, HLT wakeup,
   concurrent ownership или Linux boot. Подробности и evidence находятся в
   [отчёте S4-23b](STAGE_4_S4-23B_2026-11-05.md).
+- S4-23c добавляет bounded `UartRxEventPump` для доставки RX bytes в один UART.
+  Порядок dispatch — generation → STOP → budget → readiness; capacity payload
+  bounded, а поколения, deadlines и порядок принадлежат `EventQueue`. Успешная
+  доставка инжектирует byte ровно один раз и удаляет событие/payload; при
+  `ReceiverBusy` самое раннее событие и его deadline/order сохраняются для
+  повтора. Reset/stale invalidation следует контракту очереди; clock, CPU и HLT
+  не изменяются. Подробности в [отчёте S4-23c](STAGE_4_S4-23C_2026-11-05.md)
+  и [JSON evidence](data/stage4/s4-23c-uart-rx-events.json).
 
 ## Проверки
 
@@ -271,6 +297,10 @@ S4-23b доказывает только bounded reset/generation contract и st
 validation; он не доказывает dispatch, IRQ, periodic timers, HLT wakeup,
 concurrent access или Linux boot. S4-23 и Stage 4 остаются открытыми. S4-32a
 остаётся ограничен отсутствующим воспроизводимым freestanding toolchain.
+S4-23c доказывает только bounded RX event delivery to UART; он не подтверждает
+IRQ/APIC, baud timing, HLT wakeup, host wait или Linux boot. S4-23, S4-24 и Stage
+4 остаются открытыми; blocker воспроизводимого freestanding toolchain для
+S4-32a сохраняется.
 
 Открыты manifest S4-00, реализация 2 MiB/1 GiB и необходимых режимов, injected
 table-write failure, полная rights/error matrix, двухстраничная transaction
