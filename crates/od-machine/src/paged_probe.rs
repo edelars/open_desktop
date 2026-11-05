@@ -6,8 +6,8 @@ use crate::{
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
-    PagedCpl0ProbeV1, PagedProbeExit as CpuProbeExit, PagedProbeRejection as CpuProbeRejection,
-    step_paged_probe,
+    PagedCpl0ProbeV1, PagedCpl0StackProbeV1, PagedProbeExit as CpuProbeExit,
+    PagedProbeRejection as CpuProbeRejection, step_paged_probe, step_paged_stack_probe,
 };
 use od_isa::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
@@ -46,6 +46,60 @@ pub struct PagedProbeQuantumReport {
 /// CR3/EFER context. At each boundary, STOP is polled before the budget and
 /// both are checked before any next instruction fetch.
 pub fn run_paged_probe(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> PagedProbeQuantumReport {
+    run_paged_probe_inner(
+        false,
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        stop,
+        committed_write,
+    )
+}
+
+/// Run the opt-in stack-extended quantum. The machine reuses the same
+/// page-aware loop and selects only the CPU profile marker that admits PUSH
+/// RCX and POP RAX.
+pub fn run_paged_stack_probe(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> PagedProbeQuantumReport {
+    run_paged_probe_inner(
+        true,
+        state,
+        bus,
+        cr3,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        stop,
+        committed_write,
+    )
+}
+
+fn run_paged_probe_inner(
+    stack_profile: bool,
     state: &mut LongModeState,
     bus: &mut MachineBus,
     cr3: u64,
@@ -102,17 +156,31 @@ pub fn run_paged_probe(
         };
         // One selected CPU entry owns decode and instruction choice. The
         // machine never peeks at guest opcodes or retries another entry.
-        let cpu = step_paged_probe(
-            PagedCpl0ProbeV1,
-            state,
-            &mut memory,
-            &mut pio,
-            AccessContext {
-                origin: AccessOrigin::Explicit,
-                ..context
-            },
-            current_rflags_defined,
-        );
+        let cpu = if stack_profile {
+            step_paged_stack_probe(
+                PagedCpl0StackProbeV1,
+                state,
+                &mut memory,
+                &mut pio,
+                AccessContext {
+                    origin: AccessOrigin::Explicit,
+                    ..context
+                },
+                current_rflags_defined,
+            )
+        } else {
+            step_paged_probe(
+                PagedCpl0ProbeV1,
+                state,
+                &mut memory,
+                &mut pio,
+                AccessContext {
+                    origin: AccessOrigin::Explicit,
+                    ..context
+                },
+                current_rflags_defined,
+            )
+        };
         current_rflags_defined = cpu.rflags_defined;
         let page_fault = memory.page_fault;
         let memory_error = memory.memory_error;

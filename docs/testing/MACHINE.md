@@ -371,3 +371,25 @@ retirements, tracked A/D bits and callback ranges, plus distinct backend and
 PIO errors. No exception delivery or CR2 update is claimed. The evidence is
 local Rust testing; it does not establish kernel/Linux boot, IRQ/APIC, or full
 S4-21/S4-24/S4-32 acceptance. Stage 4 remains open.
+
+## S4-32c: bounded freestanding stack probe
+
+The `stack-probe` builder profile assembles a real ELF64 fixture and converts it
+to the exact `0x9000`-byte raw image used by the S4-32b loader. Its code is
+`51 58 EE F4`; the payload qword is artifact-owned at raw offset `0x8000`.
+`od-machine::load_stage4_stack_probe` validates the same fixed page-table
+layout, code bytes and image size, then hands the payload to `RCX`. The runner
+invokes the opt-in `run_paged_stack_probe` path and reports stack qword, `RAX`,
+`RSP`, retirement count, UART bytes and exit/activity as JSON.
+
+The focused machine test checks budgets 0…4, split PUSH/POP/OUT/HLT calls,
+stack canaries, qword handoff, `RAX/RSP/RIP`, `rflags_defined`, UART output and
+an inert repeated call after HLT. The builder-to-runner test builds two equal
+payloads and one different payload, verifies reproducibility, runs every budget,
+and rejects corrupted code and page-table artifacts. Direct ISA regression
+also verifies that the legacy `PagedCpl0ProbeV1` still rejects `PUSH RCX` and
+`POP RAX`. Stack-fault tests cover nonpresent PUSH/POP and read-only PUSH
+PFEC/CPU-commit boundaries. This is bounded local
+Long64/CPL0 interpreter evidence only: stack exception delivery/repair, CR2,
+cross-page transactions, IRQ/APIC, HLT wakeup, JIT, Linux, privileged hardware
+and parent S4-32/S4-33 remain unclaimed until separate evidence exists.

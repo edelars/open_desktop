@@ -187,16 +187,21 @@ def validate_image(elf: bytes, raw: bytes, profile: str, payload: int, initial: 
         raise BuildError(f"ELF entry is 0x{entry:x}, expected 0x{CODE_GVA:x}")
     code_symbol, code_size = elf_symbol(elf, "_start")
     code_end, _ = elf_symbol(elf, "stage4_code_end")
-    code = bytes.fromhex("488b03eef4") if profile == "flat-probe" else bytes.fromhex("48890b488b03eef4")
-    data_size = 8 if profile == "flat-probe" else 16
+    code = {
+        "flat-probe": bytes.fromhex("488b03eef4"),
+        "store-load-probe": bytes.fromhex("48890b488b03eef4"),
+        "stack-probe": bytes.fromhex("5158eef4"),
+    }[profile]
+    data_size = 16 if profile == "store-load-probe" else 8
     if (code_symbol, code_size, code_end - code_symbol) != (CODE_GVA, len(code), len(code)):
         raise BuildError(
             "assembled entry must match the selected profile at its linked address; "
             f"got address=0x{code_symbol:x}, symbol_size={code_size}, end_delta={code_end - code_symbol}"
         )
+    code_segment_size = 4 if profile == "stack-probe" else 8
     expected_segments = [
         (0x1000, 0x1000, 0x6000, 6),
-        (CODE_GVA, CODE_GPA, 8, 5),
+        (CODE_GVA, CODE_GPA, code_segment_size, 5),
         (PAYLOAD_GVA, PAYLOAD_GPA, data_size, 6),
     ]
     if len(segments) != len(expected_segments):
@@ -232,7 +237,11 @@ def validate_image(elf: bytes, raw: bytes, profile: str, payload: int, initial: 
         actual = struct.unpack_from("<Q", raw, offset)[0]
         if actual != expected:
             raise BuildError(f"page-table entry at raw offset 0x{offset:x} is 0x{actual:x}, expected 0x{expected:x}")
-    expected_data = struct.pack("<Q", payload) if profile == "flat-probe" else struct.pack("<QQ", initial, store_value)
+    expected_data = (
+        struct.pack("<QQ", initial, store_value)
+        if profile == "store-load-probe"
+        else struct.pack("<Q", payload)
+    )
     if raw[0x8000 : 0x8000 + len(expected_data)] != expected_data:
         raise BuildError("guest data bytes do not match selected profile inputs")
     if raw[0x6000 : 0x6000 + len(code)] != code:
@@ -295,7 +304,12 @@ def build(args: argparse.Namespace) -> int:
     script = Path(__file__).resolve()
     repo_root = script.parents[2]
     profile = args.profile
-    fixture_dir = repo_root / "tests/fixtures/guest/stage4" / ("flat_probe" if profile == "flat-probe" else "store_load_probe")
+    fixture_name = {
+        "flat-probe": "flat_probe",
+        "store-load-probe": "store_load_probe",
+        "stack-probe": "stack_probe",
+    }[profile]
+    fixture_dir = repo_root / "tests/fixtures/guest/stage4" / fixture_name
     source = fixture_dir / "entry.S"
     linker_script = fixture_dir / "layout.ld"
     payload, initial, store_value = args.payload, args.initial_value, args.store_value
@@ -304,9 +318,9 @@ def build(args: argparse.Namespace) -> int:
             raise BuildError(f"{name} must fit in an unsigned 64-bit integer")
     if profile == "store-load-probe" and (initial is None or store_value is None):
         raise BuildError("--profile store-load-probe requires --initial-value and --store-value")
-    if profile == "flat-probe" and (initial is not None or store_value is not None):
+    if profile != "store-load-probe" and (initial is not None or store_value is not None):
         raise BuildError("--initial-value and --store-value require --profile store-load-probe")
-    payload = payload if profile == "flat-probe" else 0
+    payload = payload if profile != "store-load-probe" else 0
     initial = initial or 0
     store_value = store_value or 0
 
@@ -375,7 +389,11 @@ def build(args: argparse.Namespace) -> int:
     source_revision = run(["git", "rev-parse", "HEAD"], env=build_env, cwd=repo_root).strip()
     manifest = {
         "schema": "stage4-flat-probe-build-v1",
-        "profile": "Stage4FlatProbeV1" if profile == "flat-probe" else "Stage4StoreLoadProbeV1",
+        "profile": {
+            "flat-probe": "Stage4FlatProbeV1",
+            "store-load-probe": "Stage4StoreLoadProbeV1",
+            "stack-probe": "Stage4StackProbeV1",
+        }[profile],
         "source_revision": source_revision,
         "source": {
             "entry.S": sha256(source.read_bytes()),
@@ -422,7 +440,7 @@ def parse_payload(value: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("flat-probe", "store-load-probe"), default="flat-probe")
+    parser.add_argument("--profile", choices=("flat-probe", "store-load-probe", "stack-probe"), default="flat-probe")
     parser.add_argument("--payload", type=parse_payload, default=0x5354473441424331)
     parser.add_argument("--initial-value", type=parse_payload)
     parser.add_argument("--store-value", type=parse_payload)

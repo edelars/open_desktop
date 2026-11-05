@@ -591,6 +591,26 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверяется:** same-input raw reproducibility, два store-value через реальный builder→CLI путь, полные RAM/RAX/UART/HLT результаты, budget 1/2/3 с частичным committed state и corrupted/equal-data rejection.
 - **Граница:** это bounded interpreter/loader probe, а не общий kernel loader. Не заявляются stack execution, exception delivery/repair, alias/cross-page, IRQ/APIC, HLT wakeup, JIT, Linux boot или S4-33 completion.
 
+#### S4-32c. Freestanding stack→UART probe
+
+- [x] Ограниченный срез принят после независимого ревью; parent S4-32 и Stage 4 остаются открытыми.
+- **Контракт:** профиль `Stage4StackProbeV1` использует отдельный opt-in
+  `PagedCpl0StackProbeV1` и содержит точные байты `51 58 EE F4`
+  (`PUSH RCX; POP RAX; OUT DX,AL; HLT`). Loader передаёт artifact payload в
+  `RCX`, начинает с `RAX=0` и `RSP=0xa01000`; PUSH пишет qword в GPA `0xaff8`,
+  POP восстанавливает `RSP=0xa01000`, а после четырёх retirement ожидаются
+  payload в `RAX` и UART, `RIP=0x400004` и `Halted`.
+- **Проверка:** builder→raw image→strict loader→existing paged quantum→UART;
+  два payload, повторяемая сборка, бюджеты 0…4, split calls, canaries,
+  corrupted code/page tables и duplicate budget. Machine tests проверяют
+  committed A/D callbacks и их порядок, точный `PageFaultRecord`, полный CPU
+  snapshot при stack faults, read-only PUSH без retirement, noncanonical #SS,
+  cross-page/backend отказ, STOP/resume и неподдерживаемые opcode/prefix.
+- **Граница:** это только bounded Long64/CPL0 interpreter evidence с уже
+  принятым fixed board layout. Не закрывает parent S4-32, stack exception
+  delivery/repair, CR2 commit, IRQ/APIC, HLT wakeup, JIT, Linux, hardware или
+  full S4-33; ISSUE-054 остаётся открытой.
+
 ### S4-33. Принять system-набор собственного ядра
 
 - [ ] Принято после ревью.

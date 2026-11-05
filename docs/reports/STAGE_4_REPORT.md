@@ -353,3 +353,19 @@ semantics, guest MOV CR3/WRMSR transitions, CPU execution integration, startup
 state, production TLB choice и system acceptance. S4-13a измеряет только
 synthetic pure-probe workload; ошибки этого слоя нельзя подменять host marker
 или автоматически превращать в guest exception.
+
+## S4-32c: freestanding stack→UART probe
+
+The S4-32c slice adds a real `Stage4StackProbeV1` artifact with exact
+entry bytes `51 58 EE F4`. The fixed loader passes the artifact payload qword
+to `RCX`; the opt-in stack paged quantum performs `PUSH RCX`, `POP RAX`, `OUT DX,AL`
+and `HLT` against the mapped guest stack and COM1 UART. Evidence checks the
+stack qword at GPA `0xaff8`, restored `RSP`, `RAX`, `RIP`, retirement, UART,
+strict image rejection, A/D callback ordering and fault metadata through
+machine and build-to-runner tests. Independent `gpt-6.1-sol/high` review
+approved this bounded slice with no P0–P3 findings.
+The boundary is local Long64/CPL0
+interpreter evidence only; exception delivery/repair, CR2, cross-page
+transactions, IRQ/APIC, HLT wakeup, JIT, Linux, hardware and parent S4-32/S4-33
+remain open. See the [slice report](STAGE_4_S4-32C_2026-11-05.md) and
+[evidence JSON](data/stage4/s4-32c-stack-probe.json).

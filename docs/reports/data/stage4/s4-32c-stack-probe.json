@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "profile": "Stage4StackProbeV1",
+  "status": "accepted_bounded_slice",
+  "commit": null,
+  "contract": {
+    "code_bytes": "5158eef4",
+    "payload_raw_offset": "0x8000",
+    "payload_gpa": "0x9000",
+    "stack_write_gpa": "0xaff8",
+    "stack_top": "0xa01000",
+    "entry_gva": "0x400000",
+    "handoff": "artifact payload to RCX; RAX=0; Long64/CPL0; existing CR3/EFER"
+  },
+  "verification": [
+    {"name": "od-machine stack probe integration", "status": "passed", "result": "7 tests; budgets, split execution, HLT repeat, canaries, A/D callback ordering, exact page-fault records, full CPU fault snapshots, noncanonical #SS, cross-page/backend refusal, POP-only A/D behavior, STOP after committed PUSH/POP with resume, and negative opcode/prefix"},
+    {"name": "od-isa legacy paged profile regression", "status": "passed", "result": "13 tests; legacy PagedCpl0ProbeV1 rejects PUSH RCX and POP RAX"},
+    {"name": "od-runner real builder-to-runner integration", "status": "passed", "result": "2 tests; two payloads, budgets 0..4, corruption and duplicate budget"},
+    {"name": "S4-32a and S4-32b regressions", "status": "passed", "result": "stage4_probe_cli 5, stage4_flat_probe_load 4, stage4_store_load_build_cli 1"},
+    {"name": "builder negative and reproducibility checks", "status": "passed", "result": "tools/build/test_build_stage4_flat_probe.py: 1"},
+    {"name": "package checks/layout/diff", "status": "passed", "result": "package scope only: cargo check -p od-machine and -p od-runner --all-targets --locked --offline; cargo fmt; tools/check_layout.py; git diff --check"},
+    {"name": "graphify update", "status": "passed", "result": "25946 nodes, 65082 edges, 933 communities; graph.json/graph.html/GRAPH_REPORT.md refreshed"}
+  ],
+  "independent_review": {
+    "reviewer": "gpt-6.1-sol",
+    "reasoning": "high",
+    "status": "approved",
+    "findings_p0_p3": []
+  },
+  "not_claimed": [
+    "full S4-32",
+    "exception delivery or CR2 commit",
+    "cross-page stack transactions",
+    "IRQ/APIC and HLT wakeup",
+    "JIT integration",
+    "Linux boot or userspace",
+    "privileged hardware acceptance"
+  ]
+}

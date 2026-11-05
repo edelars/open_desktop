@@ -524,3 +524,31 @@ Reset and stale-generation rejection follow `EventQueue` and invalidate pending
 work. The pump does not change `VirtualClock` or CPU state, execute guest code,
 or wake HLT. IRQ/APIC delivery, baud timing, HLT wakeup and host waiting remain
 outside this bounded slice and open in S4-23/S4-24.
+
+## S4-32c: freestanding stack probe
+
+`Stage4StackProbeV1` is a strict raw-image profile layered on the existing
+S4-32b fixed board. Its entry bytes are exactly `51 58 EE F4`: `PUSH RCX`,
+`POP RAX`, `OUT DX,AL`, `HLT`. The artifact owns one payload qword at raw
+offset `0x8000` / GPA `0x9000`; the loader passes that qword to `RCX` and does
+not synthesize guest code or stack contents.
+
+The fixed handoff starts in Long64/CPL0 with `RAX=0`, `RSP=0xa01000`,
+`RDX=0x3f8`, and the existing CR3/EFER and four-level 4 KiB page tables. The
+stack page is GPA `0xa000..0xafff`. A successful four-instruction run writes
+the payload qword at GPA `0xaff8`, restores `RSP=0xa01000`, places the payload
+in `RAX`, emits its low byte through COM1, advances `RIP` to `0x400004`, and
+enters `Halted`. The opt-in `run_paged_stack_probe` selects
+`PagedCpl0StackProbeV1` and owns decoding, page walking, MMU access and UART
+dispatch through the same internal quantum as `run_paged_probe`. The legacy
+`PagedCpl0ProbeV1` allowlist remains unchanged and still rejects stack forms;
+the profile loader and runner do not duplicate those semantics.
+
+The bounded evidence covers deterministic artifacts, budgets 0…4, split
+single-instruction calls, stack canaries, halted repeat no-op and strict
+corrupt-image rejection. A stack access failure preserves the current
+instruction's register commit boundary while already committed page-walk
+effects follow the existing tracked-memory contract. Exception delivery/repair,
+CR2 update, two-page stack transactions, IRQ/APIC, HLT wakeup, JIT, Linux,
+hardware and parent S4-32 acceptance are outside this profile; ISSUE-054 stays
+open.

@@ -1945,6 +1945,11 @@ pub struct PagedCpl0PioU8V1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0ProbeV1;
 
+/// Explicit opt-in marker for the paged probe profile that additionally
+/// admits the exact qword `PUSH RCX` and `POP RAX` stack forms.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0StackProbeV1;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PioU8AdmissionError {
     InvalidRflagsDefined { value: u64 },
@@ -15833,6 +15838,31 @@ pub fn step_paged_probe<P: crate::PortIo>(
     context: AccessContext,
     initial_rflags_defined: u64,
 ) -> PagedProbeResult<P::Error> {
+    step_paged_probe_inner(false, state, memory, pio, context, initial_rflags_defined)
+}
+
+/// Execute one instruction from the bounded `PagedCpl0StackProbeV1`
+/// allowlist. It shares the same fetch/admission/quantum implementation as
+/// `PagedCpl0ProbeV1` but has an explicit opt-in for the two stack forms.
+pub fn step_paged_stack_probe<P: crate::PortIo>(
+    _profile: PagedCpl0StackProbeV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<P::Error> {
+    step_paged_probe_inner(true, state, memory, pio, context, initial_rflags_defined)
+}
+
+fn step_paged_probe_inner<P: crate::PortIo>(
+    allow_stack_forms: bool,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<P::Error> {
     let result = |exit, instructions_executed| PagedProbeResult {
         exit,
         instructions_executed,
@@ -15920,6 +15950,53 @@ pub fn step_paged_probe<P: crate::PortIo>(
         )
     };
     match instruction.operation {
+        Operation::StackRegister {
+            push: true,
+            register: Register::Rcx,
+        } if allow_stack_forms
+            && instruction.length == 1
+            && instruction.opcode.byte == 0x51
+            && instruction.prefixes == Prefixes::default()
+            && instruction.operand_size == OperandSize::Qword =>
+        {
+            let value = state.gpr[Register::Rcx as usize];
+            if let Err(error) = push_stack_value(state, memory, context, value, OperandSize::Qword)
+            {
+                return match error {
+                    MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+                    error => result(PagedProbeExit::Backend(error), 0),
+                };
+            }
+            state.rip = next_rip;
+        }
+        Operation::StackRegister {
+            push: false,
+            register: Register::Rax,
+        } if allow_stack_forms
+            && instruction.length == 1
+            && instruction.opcode.byte == 0x58
+            && instruction.prefixes == Prefixes::default()
+            && instruction.operand_size == OperandSize::Qword =>
+        {
+            let old_rsp = state.gpr[Register::Rsp as usize];
+            let stack_address = match stack_access_address(old_rsp, false, OperandSize::Qword) {
+                Ok(address) => address,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            let value = match memory.read_integer(stack_address, context, OperandSize::Qword) {
+                Ok(value) => value,
+                Err(MemoryError::Architectural(fault)) => {
+                    return result(PagedProbeExit::Fault(fault), 0);
+                }
+                Err(error) => return result(PagedProbeExit::Backend(error), 0),
+            };
+            state.gpr[Register::Rsp as usize] = old_rsp.wrapping_add(8);
+            state.gpr[Register::Rax as usize] = value;
+            state.rip = next_rip;
+        }
         Operation::Mov {
             dst: Operand::Register(destination),
             src: Operand::Memory(source),

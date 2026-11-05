@@ -4,7 +4,7 @@ use crate::{
     AccessWidth, BusAccessError, BusBuildError, GuestPhysicalAddress, GuestPhysicalRange,
     MachineBus, MachineMemoryMap, MemoryAccessError, MemoryRegionKind, MemoryRegionSpec,
     PagedProbeQuantumReport, PortAddress, PortRange, PortRegionBinding, RamLimits, Uart16550Handle,
-    Uart16550PollingTx, run_paged_probe,
+    Uart16550PollingTx, run_paged_probe, run_paged_stack_probe,
 };
 use od_isa::LongModeState;
 use od_isa::memory::{AccessContext, InstructionMode, PrivilegeLevel};
@@ -117,6 +117,33 @@ impl LoadedStage4FlatProbe {
         let efer = self.efer();
         let rflags_defined = self.rflags_defined;
         run_paged_probe(
+            &mut self.state,
+            &mut self.bus,
+            cr3,
+            efer,
+            AccessContext {
+                mode: InstructionMode::Long64,
+                privilege: PrivilegeLevel::Ring0,
+                origin: od_isa::memory::AccessOrigin::Explicit,
+            },
+            instruction_budget,
+            rflags_defined,
+            stop,
+            committed_write,
+        )
+    }
+
+    /// Execute the opt-in stack-extended quantum for `Stage4StackProbeV1`.
+    pub fn run_stack(
+        &mut self,
+        instruction_budget: u64,
+        stop: impl FnMut() -> bool,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> PagedProbeQuantumReport {
+        let cr3 = self.cr3();
+        let efer = self.efer();
+        let rflags_defined = self.rflags_defined;
+        run_paged_stack_probe(
             &mut self.state,
             &mut self.bus,
             cr3,

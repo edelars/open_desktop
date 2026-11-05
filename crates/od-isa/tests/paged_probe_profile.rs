@@ -229,6 +229,31 @@ fn page_fault(error_code: u32, address: u64) -> MemoryError {
 }
 
 #[test]
+fn legacy_paged_probe_profile_keeps_stack_forms_unsupported() {
+    for code in [[0x51], [0x58]] {
+        let mut memory = Memory::new(&code);
+        let mut cpu = state();
+        cpu.gpr[Register::Rcx as usize] = 0x1122_3344_5566_7788;
+        cpu.gpr[Register::Rax as usize] = 0xaabb_ccdd_eeff_0011;
+        cpu.gpr[Register::Rsp as usize] = 0x2000;
+        let before = cpu.clone();
+        let mut pio = Pio::default();
+
+        let result = step(
+            &mut cpu,
+            &mut memory,
+            &mut pio,
+            context(InstructionMode::Long64, PrivilegeLevel::Ring0),
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: code[0] });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!(memory.writes, 0);
+    }
+}
+
+#[test]
 fn paged_mov_load_uses_nonidentity_fetch_and_preserves_flags() {
     let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
     memory.bytes[DATA_PHYSICAL..DATA_PHYSICAL + 8]

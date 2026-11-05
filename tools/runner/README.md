@@ -75,6 +75,26 @@ the store-value, `rflags_defined: "0x0000000000000cd7"`, and one serial byte.
 Budgets 1/2/3 report the committed store/load/UART prefixes and do not claim
 guest completion.
 
+## Stage 4 stack probe
+
+Build and run the real freestanding `PUSH RCX; POP RAX; OUT DX,AL; HLT`
+profile:
+
+```sh
+python3 tools/build/build_stage4_flat_probe.py \
+  --profile stack-probe \
+  --payload 0x1122334455667788 \
+  --output-dir work/stage4/stack_probe
+cargo run --offline -p od-runner -- \
+  --stage4-stack-probe work/stage4/stack_probe/flat_probe.bin \
+  --budget 4
+```
+
+The runner reports the payload observed in the guest stack and `RAX`, the
+restored `RSP`, retirement count, UART bytes and the bounded quantum exit. The
+profile is local interpreter evidence and does not claim exception delivery,
+IRQ/APIC, HLT wakeup, Linux or full S4-32 acceptance.
+
 ## Versioned fixture results
 
 Run a JSON fixture once per engine. The result is the only stdout content; diagnostics go to stderr.
