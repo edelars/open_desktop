@@ -4,6 +4,8 @@ mod bus;
 mod identity_memory_adapter;
 mod page_walk;
 mod physical_memory;
+#[cfg(feature = "experimental-translation-probe-cache")]
+mod translation_probe_cache;
 
 pub use bus::{
     AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError, IoSpace,
@@ -25,3 +27,6 @@ pub use physical_memory::{
     GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap, MemoryAccessError,
     MemoryRegionKind, MemoryRegionSpec, PhysicalMemory, PhysicalWidthError, RamLimits,
 };
+
+#[cfg(feature = "experimental-translation-probe-cache")]
+pub use translation_probe_cache::{TranslationProbeCache, TranslationProbeCacheOutcome};

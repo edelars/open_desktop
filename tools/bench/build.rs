@@ -14,6 +14,8 @@ fn main() {
         "Cargo.lock",
         "crates/od-isa/src",
         "crates/od-jit/src",
+        "crates/od-machine/src",
+        "crates/od-machine/Cargo.toml",
         "crates/od-host/src",
         "crates/od-testkit/src",
         "tools/bench/src",

@@ -9,7 +9,9 @@ production-owned RAM backing, checked physical byte/scalar accesses с
 committed-write notification и минимальный синхронный MMIO/PIO bus boundary.
 Диагностический flat identity bridge к `od-isa::GuestMemory` также проверяет
 interpreter integration, bounded uncached translation probe и tracked RAM-only
-Long64 4 KiB A/D access path; CPU-integrated MMU/page faults, UART/APIC/PCI,
+Long64 4 KiB A/D access path. An opt-in one-entry immutable-snapshot cache is
+only a pure-probe experiment for S4-13a; it does not implement production TLB
+invalidation or cache tracked A/D effects. CPU-integrated MMU/page faults, UART/APIC/PCI,
 vCPU, JIT integration и Linux boot ещё не реализованы. Admission boundary для
 неподдержанных 2 MiB/1 GiB pages закреплён тестами, но сами huge pages и новые
 режимы ещё не реализованы. Cross-page accesses отвергаются до page walk;

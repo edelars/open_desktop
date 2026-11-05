@@ -138,6 +138,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|error| format!("benchmark failed: {error:?}"))?;
             write_json(output.as_ref(), &report)?;
         }
+        "page-walk-compare" => {
+            let report = od_bench::page_walk_compare::run(process_run)?;
+            write_json(output.as_ref(), &report)?;
+        }
         "dispatch-cache" => {
             let case_list = case_list.ok_or("dispatch-cache requires --case-list PATH")?;
             let trace = trace_path.ok_or("dispatch-cache requires --trace PATH")?;
@@ -740,7 +744,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             print_usage();
             return Err(
-                "expected record, measure, synthetic, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, cached-native-loop, cached-native-loop-phases, cached-native-loop-reuse, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
+                "expected record, measure, synthetic, page-walk-compare, dispatch-cache, cold-first-run, cold-phases, warm-first-run, warm-branch-helper, warm-dispatch-phases, warm-native-fallback, two-site-memory-cold, two-site-memory-warm, two-site-memory-cache, cache-churn, cache-lifecycle, cache-lifecycle-stress-calibrate, cache-lifecycle-stress, flags-compare, cached-flags-compare, cached-native-flags-compare, cached-native-loop, cached-native-loop-phases, cached-native-loop-reuse, allocator-cost, allocator-cost-branch-routing, or allocator-cost-s3-32a".into(),
             );
         }
     }
@@ -780,7 +784,7 @@ fn two_site_memory_cache_journal_path(output: &PathBuf) -> PathBuf {
 
 fn print_usage() {
     eprintln!(
-        "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n\
+        "Usage:\n  od-bench record --case-list PATH [--output trace.json]\n  od-bench measure --trace trace.json [--process-run 1..3] [--output report.json]\n  od-bench synthetic [--process-run 1..3] [--output report.json]\n  od-bench page-walk-compare --process-run 1..3 --output report.json\n  od-bench dispatch-cache --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n  od-bench cold-first-run --case-list PATH --trace trace.json --process-run 1..3 --output report.json\n\
   od-bench cold-phases --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-first-run --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
   od-bench warm-branch-helper --case-list PATH --trace PATH --process-run 1..3 --output report.json\n\
@@ -802,7 +806,7 @@ fn print_usage() {
   od-bench two-site-memory-cold [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench two-site-memory-warm [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
   od-bench two-site-memory-cache [--preflight-only | --calibration-only] --process-run 1..3 --output report.json\n\
-         `record` requires macOS ARM64. `measure` rebuilds all keys before timing."
+         `record` requires macOS ARM64. `measure` rebuilds all keys before timing. `page-walk-compare` uses a deterministic synthetic Long64 fixture."
     );
 }
 

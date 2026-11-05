@@ -1415,3 +1415,53 @@ admission сценариев, parity вариантов и stale hit. Для loo
 prototype default не выбран и ускорение не заявляется. Recorded corpus runs
 для dispatch/cache, cold first execution, warm resident execution и FIFO16
 churn описаны отдельно в отчётах S3-18d1, S3-35a, S3-36a и S3-37a.
+
+## S4-13a: uncached page walk versus experimental one-entry probe cache
+
+`od-bench page-walk-compare` compares the existing pure `probe_long64_4k`
+baseline against the opt-in `od-machine` feature
+`experimental-translation-probe-cache`. It does not measure tracked A/D writes,
+operand accesses, guest invalidation, CPU/JIT integration, or Linux-derived
+traces. The one-entry candidate borrows one immutable `PhysicalMemory`; it
+caches only successful 4 KiB translations and reports `Hit` separately from a
+fresh `Walk`. A miss calls the pure probe. This experiment does not select a
+production TLB or invalidation policy.
+
+The synthetic fixture is fixed at 32 MiB RAM, physical width 36, CR0
+`0x80010011`, CR3 `0x1000`, CR4 `0x20`, EFER `0xd00`, Long64 canonical48,
+four-level paging, 4 KiB pages, and explicit Ring3 reads. A versioned SHA-256
+covers the complete RAM image and ordered request profile. Profiles contain
+1, 2, 16, 256, or 4,096 pages and offsets 0, 8, 64, and 4,088. The 2-page
+profile alternates pages for each offset; the other profiles visit all four
+offsets before moving to the next page. Before timing, every request must match
+its literal expected physical address and the cache result must equal the
+baseline. RAM hashes before and after preflight/timing must match. Expected
+address/parity comparisons run only in preflight; timed paths share the same
+request loop, per-request checksum barrier, and per-episode checksum barrier.
+
+Each profile has two modes: clear the one-entry cache at the start of each
+episode, and prewarm one complete episode before retaining the cache across
+timed episodes. Calibration doubles a common episode count until both variants
+exceed 200 ms. Each mode then records 20 paired samples with alternating
+baseline/candidate order; if any sample falls below 200 ms, the whole series is
+discarded and retained in the JSON, the batch count is increased, and the full
+series restarts. Three release processes run sequentially on the same host.
+Reports retain raw pairs, calibration attempts, discarded short series, hit and
+walk counts, ns/request, requests/second, candidate/baseline ratios and their
+median/min/max/IQR, fixture/request/cache storage sizes, hashes, and host/build
+metadata. No process RSS or cold-host-cache claim is made.
+
+Run from the repository root, writing a separate artifact for each process:
+
+```sh
+cargo run --release -p od-bench --offline -- page-walk-compare \
+  --process-run 1 --output work/tmp/stage4/s4-13a/run-1.json
+cargo run --release -p od-bench --offline -- page-walk-compare \
+  --process-run 2 --output work/tmp/stage4/s4-13a/run-2.json
+cargo run --release -p od-bench --offline -- page-walk-compare \
+  --process-run 3 --output work/tmp/stage4/s4-13a/run-3.json
+```
+
+These synthetic probes establish only the cost of this diagnostic pure-walk
+API on the measured host and Rust release build. They do not establish a
+representative guest workload or determine whether a production TLB is useful.
