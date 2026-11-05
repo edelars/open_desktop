@@ -198,3 +198,21 @@ RAM/MMIO destinations. Нет implicit retry, transaction или device replay.
 `CrossesPage` или другой fault. Adjacent byte fetches с одним `instruction_rip`
 являются только диагностической последовательностью вызовов; CPU restart,
 REP-iteration, stack recovery и RMW atomicity остаются вне этого контракта.
+
+## CPU-state to diagnostic translation snapshot
+
+`Long64ProbeConfig::from_cpu_state` строит immutable diagnostic snapshot из
+`LongModeState::cr0` и `LongModeState::cr4`; отсутствующий CR0 отвергается
+раньше отсутствующего CR4 через `MissingCpuRegister`. CR3 и EFER остаются
+явными аргументами, поскольку текущий `LongModeState` ими не владеет.
+
+После извлечения raw values метод вызывает существующий `Long64ProbeConfig::new`.
+Он не подставляет defaults, не маскирует unsupported bits, не меняет CPU/RAM/A/D
+и не создаёт guest exception. Ошибки остаются configuration-admission results;
+snapshot не меняется, если caller позже изменит CPU state или построит новый
+snapshot с другим CR3/EFER.
+
+Этот bridge позволяет диагностическому probe использовать CPU-owned CR0/CR4
+значения и явный CR3/EFER context, включая WP/NXE effects уже существующего
+validator. Он не реализует MOV CR3, WRMSR/EFER, privilege checks, mode transition
+history, startup sequencing, TLB invalidation или CPU-connected paging.

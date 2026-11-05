@@ -291,7 +291,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-12. Подключить CR0/CR3/CR4, EFER и system instructions
 
-- [ ] Принято после ревью.
+- [x] Ограниченный S4-12a snapshot-bridge срез принят после независимого ревью.
+- Реализовано: `Long64ProbeConfig::from_cpu_state` требует CR0 затем CR4 из
+  `LongModeState`, принимает CR3/EFER явно и делегирует raw values текущему
+  validator. Snapshot immutable; guest instructions и transitions не добавлены.
+- Полный S4-12 остаётся открытым: MOV CR3, EFER writes, transition/privilege
+  faults, startup state, TLB/invalidation и system acceptance не приняты.
+  См. [machine contract](../specs/MACHINE_CONTRACT.md#cpu-state-to-diagnostic-translation-snapshot).
 - **Где:** semantics и decode — `od-isa`; effects на translation — `od-machine`; соответствующие задачи этапа 2.
 - **Сделать:** реализовать исполняемые формы и валидацию переходов выбранного профиля, MSR allowlist, width/reserved/privilege checks, явные эффекты context change. Согласовать INVLPG и поддержку глобальных страниц/PCID с S4-14.
 - **Проверка:** guest instructions меняют действующий перевод; запрещённые записи дают правильное исключение и не оставляют частично обновлённый CR state. Проверить startup state и порядок включения обязательных bits.

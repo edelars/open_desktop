@@ -14,6 +14,7 @@ vCPU, JIT integration и Linux boot ещё не реализованы. Admissio
 неподдержанных 2 MiB/1 GiB pages закреплён тестами, но сами huge pages и новые
 режимы ещё не реализованы. Cross-page accesses отвергаются до page walk;
 split/transaction semantics и CPU restart/REP/RMW integration ещё не
-реализованы. Читать ../AGENTS.md и
+реализованы. CPU-state snapshot bridge принимает CR0/CR4 из `LongModeState`,
+но guest CR3/EFER transitions и startup evidence ещё не реализованы. Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости
 добавлять вместе с фактическим использованием.

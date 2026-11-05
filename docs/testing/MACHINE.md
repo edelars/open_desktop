@@ -74,13 +74,20 @@ git diff --check
 25. A successful same-page call remains committed when a later crossing call is
     rejected. Adjacent caller-issued Fetch bytes use separate reports; a later
     fault does not erase the earlier byte or its A/D/callback effects.
+26. `Long64ProbeConfig::from_cpu_state` requires CR0 before CR4, preserves raw
+    CR0/CR4/CR3/EFER inputs through existing validation, and returns exact
+    missing/invalid configuration errors without changing CPU state or memory.
+27. Rebuilding snapshots after CR0/CR4 or explicit CR3 changes observes the new
+    translation context while the old snapshot remains unchanged; explicit EFER
+    inputs are preserved and validated; distinct roots produce distinct literal
+    physical translations.
 
 ## Интерпретация
 
 Успешные локальные тесты подтверждают только перечисленный Rust-контракт,
 flat identity integration, tracked RAM-only effects и targeted `od-isa`
-PFEC/record tests, pure translation probe, S4-10a rejection boundary и S4-11a
-cross-page admission. Они не являются physical x86 evidence и не
+PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
+cross-page admission и S4-12a snapshot bridge. Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не
 являются автоматически архитектурными `#PF`.
