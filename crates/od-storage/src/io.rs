@@ -66,8 +66,10 @@ pub struct StorageCapabilities {
     /// `flush_namespace_durable` provides a verified durable acknowledgement
     /// for the directory entry. Requires `file_durability`.
     pub namespace_durability: bool,
-    /// The backend can hold an exclusive writer lock. Declaration only; the
-    /// acquisition API is introduced together with the single-writer task.
+    /// This backend instance currently holds an exclusive writer lock on its
+    /// backing object, enforced by the host across processes. Must be `true`
+    /// only for an instance that actually acquired the lock; the acquisition
+    /// API belongs to the host backend, not to this contract.
     pub exclusive_lock: bool,
 }
 
@@ -94,6 +96,13 @@ impl StorageCapabilities {
             namespace_durability: false,
             exclusive_lock: false,
         }
+    }
+
+    /// Same capabilities, additionally declaring that the instance holds an
+    /// exclusive writer lock. Call only after the lock was actually acquired.
+    pub const fn with_exclusive_lock(mut self) -> Self {
+        self.exclusive_lock = true;
+        self
     }
 
     /// Rejects combinations that cannot be true together.
@@ -142,6 +151,9 @@ pub enum BackendError {
     },
     /// The backend does not implement this optional operation.
     Unsupported,
+    /// The exclusive writer no longer owns the object its path names (the
+    /// path was replaced, renamed away or unlinked). The mutation was refused.
+    WriterIdentityLost,
 }
 
 impl BackendError {
@@ -250,6 +262,16 @@ pub enum StorageError {
     },
     /// A mutating call on a backend that declares `writable == false`.
     ReadOnly,
+    /// The exclusive writer's backing path no longer names the object whose
+    /// lock this writer holds, so the mutation was refused. The identity
+    /// check is a `stat(path)` before the transfer, so it is best-effort:
+    /// the path may change between the check and the write. A write still
+    /// goes through the locked descriptor and cannot reach another file.
+    /// `completed` bytes of a multi-chunk write were transferred before the
+    /// refusal; the affected range may be partially modified.
+    WriterIdentityLost {
+        completed: usize,
+    },
     /// The backend does not declare resize.
     UnsupportedResize,
     /// The backend does not declare durability for this scope.
@@ -496,6 +518,7 @@ fn map_error(op: IoOp, error: BackendError, completed: usize) -> StorageError {
             os_error,
             completed,
         },
+        BackendError::WriterIdentityLost => StorageError::WriterIdentityLost { completed },
         // An unsupported primitive required for a declared operation.
         BackendError::Unsupported => StorageError::Io {
             op,

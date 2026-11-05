@@ -77898,6 +77898,9 @@ pub(crate) mod tests {
         use std::os::unix::process::ExitStatusExt;
         use std::process::{Command, Stdio};
 
+        // Do not fork while a storage test holds a writer lock (see
+        // `storage_io::process_spawn_guard`).
+        let _spawn_guard = crate::storage_io::process_spawn_guard();
         let status = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
