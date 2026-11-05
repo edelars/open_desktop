@@ -276,6 +276,23 @@ same-page/cross-page MMIO, alias walk-then-sample and profile exclusions are
 covered. CPL0 and CPL3 require AC=0. This is a synthetic bounded profile, not
 general cross-page memory or hardware acceptance.
 
+## S4-11f: CPU-connected cross-page word instruction fetch
+
+Reproduce with `cargo test -p od-machine --test paged_mov_step --locked --offline s4_11f`.
+The exact `66 8B 03` profile executes only at CPL0 with AC clear and NXE enabled.
+Starts at offsets `0xffe` and `0xfff` fetch from non-contiguous RAM code pages;
+the operand remains within a separate RAM page. Offset `0xffd` is the same-page
+control with the next page absent. Check exact second-page non-present/NX fetch
+faults (`0x10`/`0x11`), original RIP and linear fault byte, saved CPU state, A
+updates, no D, and no operand walk or retirement. A missing or MMIO code page
+must not dispatch a device. A case with both a fetch fault and unavailable
+operand verifies fetch priority. The existing S4-11e profile remains restricted
+to same-page instruction fetch. Reject other encodings, CPL3 and AC=1 through
+both the specialized and generic profile entries. Reject a word operand at
+data offset `0xfff` after decode and before any operand walk; reject CR0-only
+profile entry through both run and step APIs before fetch. This is not general
+cross-page fetch support.
+
 ## S4-24a: bounded COM1 polling TX
 
 Baseline revision: `6aeb2dd` (the reviewed UART changes were present in the

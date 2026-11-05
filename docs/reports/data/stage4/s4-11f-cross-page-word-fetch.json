@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "slice": "S4-11f",
+  "title": "CPU-connected cross-page word MOV instruction fetch",
+  "date": "2026-11-05",
+  "baseline_commit": "bc3e755",
+  "status": "implemented_reviewed",
+  "profile": {
+    "name": "PagedMovCrossPageWordFetchLong64V1",
+    "encoding": "66 8B 03",
+    "operation": "MOV AX,[RBX]",
+    "vcpus": 1,
+    "mode": "Long64",
+    "privilege": "CPL0",
+    "alignment_check": "RFLAGS.AC=0",
+    "nxe": true,
+    "paging": "canonical48/physical36/four-level/4KiB/uncached",
+    "instruction_offsets": [
+      "0xffe",
+      "0xfff"
+    ],
+    "code_mapping": "two non-contiguous RAM pages",
+    "operand_mapping": "separate single RAM page",
+    "preserves_s4_11e_profile": "cross-page fetch remains rejected"
+  },
+  "success": {
+    "destination": "AX",
+    "upper_rax_preserved": true,
+    "other_cpu_state_flags_definedness_preserved": true,
+    "rip_advance": 3,
+    "retirement": 1
+  },
+  "fault_contract": {
+    "second_page_nonpresent_pfec": "0x10",
+    "second_page_nx_pfec": "0x11",
+    "fault_byte_linear_address": true,
+    "saved_rip_is_instruction_start": true,
+    "context": "Fetch/Long64/Explicit",
+    "cpu_state_preserved": true,
+    "retirement_on_fault": 0,
+    "prior_accessed_updates_persist": true,
+    "dirty_bit_set": false,
+    "operand_walk_reached": false,
+    "hole_mmio_device_dispatch": false,
+    "fetch_fault_precedes_operand_fault": true,
+    "cross_page_operand_rejected_after_decode_before_walk": true,
+    "nxe_disabled_rejected_before_fetch": true
+  },
+  "controls": [
+    "same-page instruction at 0xffd with second code page absent",
+    "fetch fault while operand translation would also fail"
+  ],
+  "exclusions": [
+    "cross-page operand",
+    "stores",
+    "delivery/CR2/retry",
+    "restart",
+    "JIT/TLB",
+    "IRQ",
+    "Linux"
+  ],
+  "public_entry_gates": {
+    "matching_cr0_cr4_required": true,
+    "cr0_only_run_rejected_before_fetch": true,
+    "cr0_only_step_rejected_before_fetch": true
+  },
+  "architecture_review": {
+    "model": "gpt-6-astra",
+    "reasoning": "high",
+    "verdict": "approved"
+  },
+  "implementation_review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approved",
+    "findings": "three P2 and three P3 findings fixed; no remaining P0-P3",
+    "prior_findings": [
+      {
+        "severity": "P2",
+        "finding": "Cross-page word operand was not rejected before the operand walk.",
+        "resolution": "Reject after complete instruction decode and before operand translation; regression covered."
+      },
+      {
+        "severity": "P2",
+        "finding": "CR0-only public run and step entry could bypass the required CR0/CR4 pair.",
+        "resolution": "Require matching CR0/CR4 profile before fetch; run and step regressions covered."
+      },
+      {
+        "severity": "P2",
+        "finding": "NXE-disabled CPU state could enter the cross-page fetch profile.",
+        "resolution": "Reject EFER.NXE=0 before fetch while preserving definedness; regression covered."
+      },
+      {
+        "severity": "P3",
+        "finding": "Public profile name differed from the agreed S4-11f name.",
+        "resolution": "Normalized public API and documentation to PagedMovCrossPageWordFetchLong64V1."
+      },
+      {
+        "severity": "P3",
+        "finding": "Dedicated report and plan had stale implementation/review status.",
+        "resolution": "Synchronized status with completed implementation and approved review."
+      },
+      {
+        "severity": "P3",
+        "finding": "Stage 4 summary still said implementation and review were pending.",
+        "resolution": "Updated the summary to reflect the accepted slice."
+      }
+    ]
+  },
+  "graphify": {
+    "query_before_source_reads": true,
+    "global_update_after_latest_code": true,
+    "global_nodes": 26267,
+    "global_edges": 65802,
+    "global_communities": 970
+  },
+  "issue_054": "open",
+  "parent_s4_11": "open",
+  "report": "docs/reports/STAGE_4_S4-11F_2026-11-05.md",
+  "checks": {
+    "integration_tests": 33,
+    "machine_unit_tests": 82,
+    "isa_profile_tests": 3,
+    "package_check": "cargo check -p od-machine --all-targets --locked --offline: passed",
+    "format": "cargo fmt --all -- --check: passed",
+    "diff_check": "passed",
+    "layout_check": "passed: 48 required directories, 6 crate scaffolds, 14 instruction scopes"
+  }
+}

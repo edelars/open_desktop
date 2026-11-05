@@ -488,6 +488,32 @@ Linux execution are outside this slice. See the
 [S4-11e CPU contract](CPU_CONTRACT.md#exact-paged-word-read-profile-pagedmovcrosspagewordreadlong64v1-s4-11e)
 for the encoding and normative references.
 
+## Bounded word-read instruction fetch across a 4 KiB page (S4-11f)
+
+The separate opt-in `PagedMovCrossPageWordFetchLong64V1` profile admits exact
+`66 8B 03` fetch from offsets `0xffe` and `0xfff` across two non-contiguous RAM
+code pages, with the two-byte operand wholly in a separate RAM page. It uses
+one vCPU, CPL0, Long64, canonical48/physical36, four-level 4 KiB uncached
+paging, NXE=1 and AC=0. The S4-11e `PagedMovCrossPageWordReadLong64V1` profile
+retains its no-crossing-fetch gate. The fixture has no aliases between code,
+operand and page-table mappings.
+
+The same-page instruction at `0xffd` is the control and may execute with the
+next code page absent. For crossing instructions, all required code bytes are
+fetched before an operand translation/read. A second-page non-present or NX
+fetch fault reports the second page's first required linear byte, original
+instruction RIP and Fetch/Long64/Explicit context (PFEC `0x10` or `0x11`),
+without CPU commit or retirement. Earlier A updates persist; D remains clear;
+no operand page walk occurs. Hole and MMIO code-page outcomes do not dispatch a
+device. A simultaneous unavailable operand does not outrank the fetch fault.
+After complete decode, a word operand starting at data-page offset `0xfff` is
+rejected before a data-page walk; the profile never splits its operand. Every
+public entry requires the matching CR0/CR4 profile pair before fetching.
+
+This slice adds no cross-page operand support, stores, exception delivery/CR2,
+restart, JIT/TLB or Linux integration. See the [CPU contract](CPU_CONTRACT.md#exact-paged-word-read-and-cross-page-instruction-fetch-profile-pagedmovcrosspagewordfetchlong64v1-s4-11f)
+and the [S4-11d fetch contract](MACHINE_CONTRACT.md#bounded-cross-page-instruction-fetch-s4-11d).
+
 ## Bounded cross-page instruction fetch (S4-11d)
 
 This is a narrow fetch extension for the existing opt-in

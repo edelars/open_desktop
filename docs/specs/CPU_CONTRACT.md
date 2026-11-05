@@ -115,6 +115,37 @@ behavior. See the [official Intel SDM page](https://www.intel.com/content/www/us
 [Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436), and
 [Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199).
 
+### Exact paged word-read and cross-page instruction-fetch profile `PagedMovCrossPageWordFetchLong64V1` (S4-11f)
+
+This separate opt-in profile admits only `66 8B 03` (`MOV AX,[RBX]`) in
+Long64, one vCPU, canonical48/physical36, four-level 4 KiB uncached paging,
+CPL0, `RFLAGS.AC=0`, and NXE=1. The instruction may begin at code-page offset
+`0xffe` or `0xfff`; the next code page maps non-contiguous RAM. The operand is
+wholly within a separate RAM page. Code, operand and page-table mappings have
+no aliases in this fixture. This profile does not alter the S4-11e
+word-read profile, which continues to reject cross-page instruction fetch.
+
+A same-page instruction at offset `0xffd` is the control. On success, AX is
+updated, RAX[63:16], other registers, flags and definedness are preserved, RIP
+advances by 3, and the instruction retires once. Fetch of all instruction bytes
+completes before any operand walk. If the first byte on the next page is
+non-present or NX, report a precise Fetch/Long64/Explicit fault at that byte,
+retain the original RIP and CPU state, and retire zero instructions. PFEC is
+`0x10` for non-present and `0x11` for NX. Accessed updates from earlier
+completed fetch walks persist; fetch does not set Dirty. A faulting fetch must
+not reach the operand page, even if it would also fault.
+
+Code mappings are RAM-only. A hole or MMIO second code page preserves its
+backend classification and invokes no device. Stores, crossing operands,
+stack/REP/RMW, exception delivery/CR2/retry, JIT/TLB and Linux are excluded.
+The instruction-fetch boundary behavior follows the established
+[S4-11d contract](CPU_CONTRACT.md#cross-page-fetch-for-pagedmovcrosspagedwordreadlong64v1-s4-11d); word destination semantics and normative references follow the
+[S4-11e contract](CPU_CONTRACT.md#exact-paged-word-read-profile-pagedmovcrosspagewordreadlong64v1-s4-11e).
+After successful decode, an operand whose two bytes would cross a 4 KiB data
+page boundary is unsupported before any operand translation. The CR0-only
+public profile entry points are also unsupported; this profile requires the
+matching CR0 and CR4 pair before instruction fetch.
+
 ### Cross-page fetch for `PagedMovCrossPageDwordReadLong64V1` (S4-11d)
 
 Only for the exact `8B 03` form in this opt-in profile, one vCPU, synthetic

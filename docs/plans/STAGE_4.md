@@ -344,6 +344,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Проверены same-page RAM control и crossing offset `0xfff` между non-contiguous RAM pages. Обе translation/permission/RAM admission завершаются до read; AX обновляется только после полного чтения, RAX[63:16] и остальные CPU state сохраняются. Проверены точные CPL0/CPL3 second-page faults, prior A effects, отсутствие D, no-commit/no-retirement, RAM hole/MMIO отказ, alias walk-then-sample и negative profile cases.
 - Реализация, проверки и reviewer findings записаны в: [S4-11e report](../reports/STAGE_4_S4-11E_2026-11-05.md), [manifest](../reports/data/stage4/s4-11e-cross-page-word-read.json), [machine contract](../specs/MACHINE_CONTRACT.md#bounded-cross-page-word-read-s4-11e). Полный S4-11 и ISSUE-054 остаются открытыми для прочих форм, stores и rollback consumers.
 
+#### S4-11f. Bounded CPU-connected cross-page fetch for word MOV
+
+- [x] Accepted after independent `gpt-6.1-sol/high` review with no remaining P0—P3 findings; three P2 and three P3 findings were fixed during review. Separate opt-in `PagedMovCrossPageWordFetchLong64V1` profile for exact `66 8B 03`, CPL0/AC=0/NXE=1; S4-11e V1 continues to reject split instruction fetch.
+- Cover code offsets `0xffe` and `0xfff` across non-contiguous RAM pages; same-page control at `0xffd` with next page absent; operand wholly on separate RAM page. No code/operand/page-table aliases. Success preserves upper RAX and other state, advances RIP by 3 and retires once.
+- Verify precise second-page non-present/NX fetch faults (`PFEC=0x10/0x11`), exact byte address/original RIP/context, A-prefix persistence, no D, no operand walk/retirement; hole/MMIO without dispatch; fetch fault precedence over an inaccessible operand; reject a cross-page data operand after decode but before its walk; require matching CR0/CR4 in all public entries; negative profile cases.
+- Architecture: `gpt-6-astra/high` approved the bounded contract. Implementation, focused checks and independent review are complete with no remaining P0—P3 findings. See [S4-11f report](../reports/STAGE_4_S4-11F_2026-11-05.md), [manifest](../reports/data/stage4/s4-11f-cross-page-word-fetch.json), and [machine contract](../specs/MACHINE_CONTRACT.md#bounded-word-read-instruction-fetch-across-a-4-kib-page-s4-11f). ISSUE-054 and parent S4-11 remain open.
+
 ### S4-12. Подключить CR0/CR3/CR4, EFER и system instructions
 
 - [x] Ограниченный S4-12a snapshot-bridge срез принят после независимого ревью.

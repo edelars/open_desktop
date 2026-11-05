@@ -10,7 +10,9 @@ reviewed S4-11c cross-page dword read. Также приняты bounded S4-21b
 paged probe quantum, bounded S4-23c UART RX event delivery, bounded S4-24a
 COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO
 slices. S4-11e cross-page word read is implemented and accepted after independent
-review; its findings were fixed and no P0—P3 items remain. Этап 4 не завершён: S4-00—S4-01,
+review; its findings were fixed and no P0—P3 items remain. S4-11f word-MOV
+cross-page fetch is implemented and accepted after independent review with no
+remaining P0—P3 findings. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, полный UART/IRQ, JIT
 integration, hardware cases и Linux userspace остаются открытыми. Ограниченный
 срез S4-32a принят после независимого ревью и зафиксирован ниже; родительский
@@ -271,6 +273,7 @@ permission fault и сохранение CPU state/нулевого retirement �
   и [manifest](data/stage4/s4-11d-cross-page-instruction-fetch.json). Полный
   S4-11 остаётся открытым.
 - S4-11e добавляет отдельный exact `PagedMovCrossPageWordReadLong64V1` для `66 8B 03` (`MOV AX,[RBX]`). Same-page контроль и crossing read из offset `0xfff` проходят только через две non-contiguous RAM pages; обе walks, права и RAM admission происходят до чтения. Успех меняет AX, сохраняет RAX[63:16], продвигает RIP на 3 и retire-ит один раз. CPL0/CPL3 second-page faults проверены с точным PFEC, A-prefix persistence, без D, CPU/buffer commit и retirement; hole/MMIO/alias и negative profiles покрыты. Для профиля требуется AC=0. Независимое `gpt-6.1-sol/high` review одобрило срез после исправления двух P2 admission findings и P3 рассинхронизации Graphify evidence; оставшихся P0—P3 нет. См. [отчёт](STAGE_4_S4-11E_2026-11-05.md), [контракт](../specs/MACHINE_CONTRACT.md#bounded-cross-page-word-read-s4-11e), [CPU contract](../specs/CPU_CONTRACT.md#exact-paged-word-read-profile-pagedmovcrosspagewordreadlong64v1-s4-11e) и [manifest](data/stage4/s4-11e-cross-page-word-read.json). Родительский S4-11 и ISSUE-054 остаются открытыми.
+- S4-11f adds only a separate word-MOV profile: exact `66 8B 03` may start at code-page offsets `0xffe` and `0xfff`, while its operand remains within a separate RAM page. S4-11e V1 retains its no-crossing-fetch restriction. Same-page, PFEC, A/D, no-operand-walk, hole/MMIO, fetch-priority, cross-page-operand rejection, CR0/CR4 pairing and NXE admission are verified; 33 integration, 82 machine unit and 3 focused ISA tests pass. `gpt-6.1-sol/high` review approved after fixing three P2 and three P3 findings; no P0—P3 remain. See [S4-11f report](STAGE_4_S4-11F_2026-11-05.md) and [manifest](data/stage4/s4-11f-cross-page-word-fetch.json). ISSUE-054 and parent S4-11 remain open.
 - S4-12a добавляет `Long64ProbeConfig::from_cpu_state`: CR0 и CR4 читаются из
   `LongModeState` с явной ошибкой отсутствующего регистра, CR3 и EFER остаются
   явными входами, а вся существующая validation переиспользуется без defaults,

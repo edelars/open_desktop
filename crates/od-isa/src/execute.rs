@@ -1745,6 +1745,7 @@ pub enum Cr0Profile {
     PagedMovLong64V1,
     PagedMovCrossPageDwordReadLong64V1,
     PagedMovCrossPageWordReadLong64V1,
+    PagedMovCrossPageWordFetchLong64V1,
 }
 
 impl Cr0Profile {
@@ -1766,6 +1767,7 @@ pub enum Cr4Profile {
     PagedMovLong64V1,
     PagedMovCrossPageDwordReadLong64V1,
     PagedMovCrossPageWordReadLong64V1,
+    PagedMovCrossPageWordFetchLong64V1,
 }
 
 impl Cr4Profile {
@@ -1960,6 +1962,10 @@ pub struct PagedMovCrossPageDwordReadLong64V1;
 /// Exact opt-in CPU profile for bounded `MOV AX,[RBX]` paged word reads.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedMovCrossPageWordReadLong64V1;
+
+/// Exact opt-in CPU profile for the S4-11f cross-page fetch plus word read.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedMovCrossPageWordFetchLong64V1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PioU8AdmissionError {
@@ -15559,6 +15565,7 @@ fn run_with_cr4_profile_and_rflags_defined(
         Cr4Profile::PagedMovLong64V1
             | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
             | Cr4Profile::PagedMovCrossPageWordReadLong64V1
+            | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
     ) {
         RunConfig {
             context: AccessContext {
@@ -15708,6 +15715,9 @@ fn run_with_cr4_profile_and_rflags_defined(
                 Cr4Profile::PagedMovCrossPageWordReadLong64V1 => {
                     Cr0Profile::PagedMovCrossPageWordReadLong64V1
                 }
+                Cr4Profile::PagedMovCrossPageWordFetchLong64V1 => {
+                    Cr0Profile::PagedMovCrossPageWordFetchLong64V1
+                }
                 _ => Cr0Profile::FpInitLong64V1,
             }),
             cr4: Some(profile),
@@ -15820,6 +15830,39 @@ pub fn step_paged_mov_word_read(
         },
         initial_rflags_defined,
         Cr4Profile::PagedMovCrossPageWordReadLong64V1,
+        || false,
+    ))
+}
+
+/// Execute one exact `66 8B 03` whose fetch may cross one 4 KiB code-page
+/// boundary, under the independent S4-11f profile.
+pub fn step_paged_mov_word_read_cross_page_fetch(
+    _profile: PagedMovCrossPageWordFetchLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> Result<RunResult, RunInputError> {
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return Err(RunInputError::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let next_rip = state.rip.wrapping_add(3);
+    Ok(run_with_cr4_profile_and_rflags_defined(
+        state,
+        memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(next_rip),
+            context,
+        },
+        initial_rflags_defined,
+        Cr4Profile::PagedMovCrossPageWordFetchLong64V1,
         || false,
     ))
 }
@@ -16719,6 +16762,7 @@ fn run_configured(
                     | Cr0Profile::PagedMovLong64V1
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
+                    | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -16728,6 +16772,7 @@ fn run_configured(
                     | Cr0Profile::PagedMovLong64V1
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
+                    | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -16750,6 +16795,8 @@ fn run_configured(
                             && Cr0Profile::PagedMovCrossPageDwordReadLong64V1.accepts(value)
                         || profile == Cr4Profile::PagedMovCrossPageWordReadLong64V1
                             && Cr0Profile::PagedMovCrossPageWordReadLong64V1.accepts(value)
+                        || profile == Cr4Profile::PagedMovCrossPageWordFetchLong64V1
+                            && Cr0Profile::PagedMovCrossPageWordFetchLong64V1.accepts(value)
                 } else {
                     Cr0Profile::FpInitLong64V1.accepts(value)
                 }
@@ -16760,6 +16807,7 @@ fn run_configured(
                     | Cr4Profile::PagedMovLong64V1
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
+                    | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -16769,8 +16817,18 @@ fn run_configured(
                     | Cr4Profile::PagedMovLong64V1
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
+                    | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
+    {
+        return RunResult {
+            exit: RunExit::Unsupported { opcode: 0x0f },
+            instructions_executed: 0,
+            rflags_defined,
+        };
+    }
+    if profiles.cr0.is_some_and(is_paged_mov_cr0)
+        && !matching_paged_mov_profiles(profiles.cr0, profiles.cr4)
     {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0x0f },
@@ -22740,6 +22798,7 @@ fn is_paged_mov_cr0(profile: Cr0Profile) -> bool {
         Cr0Profile::PagedMovLong64V1
             | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
             | Cr0Profile::PagedMovCrossPageWordReadLong64V1
+            | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
     )
 }
 
@@ -22749,6 +22808,7 @@ fn is_paged_mov_cr4(profile: Cr4Profile) -> bool {
         Cr4Profile::PagedMovLong64V1
             | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
             | Cr4Profile::PagedMovCrossPageWordReadLong64V1
+            | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
     )
 }
 
@@ -22764,6 +22824,9 @@ fn matching_paged_mov_profiles(cr0: Option<Cr0Profile>, cr4: Option<Cr4Profile>)
         ) | (
             Some(Cr0Profile::PagedMovCrossPageWordReadLong64V1),
             Some(Cr4Profile::PagedMovCrossPageWordReadLong64V1)
+        ) | (
+            Some(Cr0Profile::PagedMovCrossPageWordFetchLong64V1),
+            Some(Cr4Profile::PagedMovCrossPageWordFetchLong64V1)
         )
     )
 }
@@ -22948,6 +23011,7 @@ fn step_configured(
                     | Cr0Profile::PagedMovLong64V1
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
+                    | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -22957,6 +23021,7 @@ fn step_configured(
                     | Cr0Profile::PagedMovLong64V1
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
+                    | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -22975,6 +23040,8 @@ fn step_configured(
                             && Cr0Profile::PagedMovCrossPageDwordReadLong64V1.accepts(value)
                         || profile == Cr4Profile::PagedMovCrossPageWordReadLong64V1
                             && Cr0Profile::PagedMovCrossPageWordReadLong64V1.accepts(value)
+                        || profile == Cr4Profile::PagedMovCrossPageWordFetchLong64V1
+                            && Cr0Profile::PagedMovCrossPageWordFetchLong64V1.accepts(value)
                 } else {
                     Cr0Profile::FpInitLong64V1.accepts(value)
                 }
@@ -22985,6 +23052,7 @@ fn step_configured(
                     | Cr4Profile::PagedMovLong64V1
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
+                    | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -22994,8 +23062,14 @@ fn step_configured(
                     | Cr4Profile::PagedMovLong64V1
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
+                    | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
+    {
+        return Ok(StepOutcome::Unsupported { opcode: 0x0f });
+    }
+    if cr0_profile.is_some_and(is_paged_mov_cr0)
+        && !matching_paged_mov_profiles(cr0_profile, cr4_profile)
     {
         return Ok(StepOutcome::Unsupported { opcode: 0x0f });
     }
@@ -23028,6 +23102,13 @@ fn step_configured(
             PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
         ) || state.rflags & (1 << 18) != 0
             || state.rip & 0xfff > 0xffd)
+    {
+        return Ok(StepOutcome::Unsupported { opcode: 0x66 });
+    }
+    if cr4_profile == Some(Cr4Profile::PagedMovCrossPageWordFetchLong64V1)
+        && (context.privilege != PrivilegeLevel::Ring0
+            || state.rflags & (1 << 18) != 0
+            || !(0xffd..=0xfff).contains(&(state.rip & 0xfff)))
     {
         return Ok(StepOutcome::Unsupported { opcode: 0x66 });
     }
@@ -23077,9 +23158,20 @@ fn step_configured(
                 Some(Cr0Profile::PagedMovCrossPageWordReadLong64V1),
                 Some(Cr4Profile::PagedMovCrossPageWordReadLong64V1),
             ) => is_paged_mov_word_read(&instruction),
+            (
+                Some(Cr0Profile::PagedMovCrossPageWordFetchLong64V1),
+                Some(Cr4Profile::PagedMovCrossPageWordFetchLong64V1),
+            ) => is_paged_mov_word_read(&instruction),
             _ => false,
         };
         if !supported {
+            return Ok(StepOutcome::Unsupported {
+                opcode: instruction.opcode.byte,
+            });
+        }
+        if cr4_profile == Some(Cr4Profile::PagedMovCrossPageWordFetchLong64V1)
+            && state.gpr[Register::Rbx as usize] & 0xfff > 0xffe
+        {
             return Ok(StepOutcome::Unsupported {
                 opcode: instruction.opcode.byte,
             });
@@ -146457,6 +146549,144 @@ mod paged_mov_profile_tests {
             assert_eq!(state, before);
             assert!(memory.fetches.is_empty());
         }
+    }
+
+    #[test]
+    fn paged_word_fetch_profile_generic_entry_admits_only_boundary_starts() {
+        for offset in [0xffd, 0xffe, 0xfff] {
+            let rip = 0x1000 + offset;
+            let mut state = state_with_control_registers();
+            state.rip = rip;
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            state.gpr[Register::Rax as usize] = 0x1234_5678_9abc_ffff;
+            let mut memory = Memory::at(&[0x66, 0x8b, 0x03], rip);
+            memory.bytes[..2].copy_from_slice(&0xbeefu16.to_le_bytes());
+            let result = run_with_cr4_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: Some(rip + 3),
+                    context: AccessContext {
+                        privilege: crate::memory::PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                },
+                Cr4Profile::PagedMovCrossPageWordFetchLong64V1,
+                || false,
+            );
+            assert_eq!(result.exit, RunExit::StopAddress, "offset {offset:#x}");
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, rip + 3);
+            assert_eq!(state.gpr[Register::Rax as usize], 0x1234_5678_9abc_beef);
+            assert_eq!(
+                memory.fetches,
+                [rip, rip + 1, rip + 2],
+                "offset {offset:#x}"
+            );
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 2)]);
+        }
+
+        let rip = 0x1ffc;
+        let mut state = state_with_control_registers();
+        state.rip = rip;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x66, 0x8b, 0x03], rip);
+        let result = run_with_cr4_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext {
+                    privilege: crate::memory::PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            Cr4Profile::PagedMovCrossPageWordFetchLong64V1,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn paged_word_fetch_profile_rejects_cross_page_operand_after_fetch() {
+        let rip = 0x1ffe;
+        let mut state = state_with_control_registers();
+        state.rip = rip;
+        state.gpr[Register::Rbx as usize] = 0x1fff;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x66, 0x8b, 0x03], rip);
+        let result = run_with_cr4_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: Some(rip + 3),
+                context: AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+            },
+            Cr4Profile::PagedMovCrossPageWordFetchLong64V1,
+            || false,
+        );
+        assert!(matches!(result.exit, RunExit::Unsupported { .. }));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [rip, rip + 1, rip + 2]);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn paged_word_fetch_cr0_only_public_entries_reject_before_fetch() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring1,
+            ..AccessContext::default()
+        };
+        let mut run_state = LongModeState {
+            rip: 0x1000,
+            cr0: Some(Cr0Profile::BASE),
+            cr4: None,
+            rflags: 1 << 18,
+            ..LongModeState::default()
+        };
+        let mut run_memory = Memory::at(&[0x66, 0x8b, 0x03], 0x1000);
+        let run = run_with_cr0_profile(
+            &mut run_state,
+            &mut run_memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context,
+            },
+            Cr0Profile::PagedMovCrossPageWordFetchLong64V1,
+            || false,
+        );
+        assert!(matches!(run.exit, RunExit::Unsupported { opcode: 0x0f }));
+        assert_eq!(run.instructions_executed, 0);
+        assert!(run_memory.fetches.is_empty());
+
+        let mut step_state = LongModeState {
+            rip: 0x1000,
+            cr0: Some(Cr0Profile::BASE),
+            cr4: None,
+            rflags: 1 << 18,
+            ..LongModeState::default()
+        };
+        let mut step_memory = Memory::at(&[0x66, 0x8b, 0x03], 0x1000);
+        let step = step_with_cr0_profile(
+            &mut step_state,
+            &mut step_memory,
+            context,
+            Cr0Profile::PagedMovCrossPageWordFetchLong64V1,
+        )
+        .unwrap();
+        assert!(matches!(step, StepOutcome::Unsupported { opcode: 0x0f }));
+        assert!(step_memory.fetches.is_empty());
     }
 }
 
