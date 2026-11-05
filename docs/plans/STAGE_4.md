@@ -233,7 +233,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-08. Права доступа и точный page fault
 
-- [ ] Принято после ревью.
+- [x] Принято после ревью.
+- Bounded local sub-slice implemented: shared `od-isa` PFEC helper and precise
+  `PageFaultRecord` construction from S4-07 probe. This does not complete S4-08:
+  CPU-owned paging state, full manifest feature matrix, cross-page fetch,
+  exception delivery/CR2 commit, system tests and independent agent review remain
+  open. See [machine contract](../specs/MACHINE_CONTRACT.md#диагностическая-запись-page-fault)
+  and [stage report](../reports/STAGE_4_REPORT.md).
 - **Где:** MMU в `od-machine`, fault construction/CPU state в `od-isa`, `tests/system/`.
 - **Сделать:** cumulative permissions по уровням, CPL, read/write/fetch, supervisor write protection, NX и остальные обязательные features S4-00. Описать CR2, error bits, сохранённый RIP и порядок конкурирующих проверок по стандарту.
 - **Проверка:** матрица present/nonpresent, user/supervisor, read/write/fetch, WP/NXE, reserved bits и boundary faults. Для instruction fetch проверять точный faulting address, а не только исходный RIP.

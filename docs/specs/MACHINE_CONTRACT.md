@@ -5,7 +5,7 @@
 
 Нормативная карта платы и будущие boot reservations остаются в
 [VIRTUAL_BOARD.md](VIRTUAL_BOARD.md) и в принятом manifest S4-00. Этот документ
-фиксирует уже реализованные bounded-срезы S4-02—S4-07.
+фиксирует уже реализованные bounded-срезы S4-02—S4-08.
 
 ## Адреса и карта
 
@@ -98,8 +98,25 @@ entries; canonicality проверяется до чтения таблиц. PFE
 а не доставка vector 14, запись CR2 или выбор `#GP/#SS`. Эффективные US/RW/XD,
 WP и NXE проверяются в заявленном профиле, но A/D bytes остаются неизменными.
 
-Этот probe не подключён к CPU execution path и не закрывает S4-08/S4-09. Для
+Этот probe не подключён к CPU execution path и не закрывает S4-09. Для
 `GuestMemory` по-прежнему действует отдельный linear-address contract; adapter
 S4-06 остаётся явно flat identity mode.
 
-Следующий допустимый срез — precise page-fault construction and CPU delivery.
+## Bounded page-fault record construction
+
+`od-isa` владеет `PageFaultRecord` и общей функцией `page_fault_error_code`.
+Запись содержит vector 14, обязательные error code и linear address,
+сохранённый RIP инструкции, `AccessKind` и полный `AccessContext`. Проверка
+PFEC использует независимые literal cases; для descriptor-table origin CPL
+сохраняется, а paging privilege остаётся supervisor.
+
+`od-machine::probe_instruction_access` оборачивает существующий чистый probe:
+перевод остаётся переводом, а только `ProbeOutcome::PageFault` становится
+`PageFaultRecord`. Machine outcome сохраняет `PageFaultReason` и trace, включая
+уровень таблицы и offending bits. Noncanonical, unsupported page size и ошибки
+чтения таблиц остаются отдельными `ProbeError` и не создают запись.
+
+`saved_rip` и `cr2_value()` имеют разные значения: второе — адрес, предназначенный
+для будущей записи в CR2. Создание записи не доставляет исключение, не меняет
+CR2 или `LongModeState`, не повторяет инструкцию и не меняет RAM/A-D bits.
+Cross-page fetch, IDT и exception delivery остаются вне этого bounded среза.

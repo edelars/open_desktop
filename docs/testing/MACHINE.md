@@ -2,7 +2,7 @@
 
 ## Область
 
-Эта методика покрывает S4-02—S4-07: валидируемую physical map, production RAM
+Эта методика покрывает S4-02—S4-08: валидируемую physical map, production RAM
 owner, committed-write notification, синхронную MMIO/PIO bus, диагностический
 CPU memory bridge и uncached translation probe. Она не проверяет CPU-integrated
 paging, guest exception delivery, APIC, JIT, firmware или Linux.
@@ -15,6 +15,7 @@ paging, guest exception delivery, APIC, JIT, firmware или Linux.
 cargo fmt --all -- --check
 cargo check -p od-machine --all-targets --offline
 cargo test -p od-machine --offline -- --test-threads=1
+cargo test -p od-isa --locked --offline page_fault
 git diff --check
 ```
 
@@ -42,11 +43,17 @@ git diff --check
     literal PFEC, trace, table-read errors and no A/D mutation;
 16. PTE mutation and CR3 changes are observed on the next call, proving no TLB
     or translation cache in the probe.
+17. `od-isa` PFEC helper matches literal nonpresent, write, reserved, NX-fetch
+    and descriptor-table cases; record vector/error/address/RIP fields stay
+    distinct and retain full `AccessContext`.
+18. The `od-machine` orchestration converts only probe page faults; translated,
+    noncanonical, unsupported-page-size and table-read results remain distinct.
+    Page tables (including A/D bits) remain byte-for-byte unchanged.
 
 ## Интерпретация
 
 Успешные локальные тесты подтверждают только перечисленный Rust-контракт и
-flat identity integration.
+flat identity integration and the targeted `od-isa` PFEC/record tests.
 и pure translation probe. Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не
