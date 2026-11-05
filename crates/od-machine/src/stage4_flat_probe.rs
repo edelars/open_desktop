@@ -175,6 +175,23 @@ pub(crate) fn load_stage4_image(
     code: &[u8],
     initial_rcx: u64,
 ) -> Result<LoadedStage4FlatProbe, Stage4FlatProbeLoadError> {
+    load_stage4_image_profile(image, code, initial_rcx, false)
+}
+
+pub(crate) fn load_stage4_alias_image(
+    image: &[u8],
+    code: &[u8],
+    initial_rcx: u64,
+) -> Result<LoadedStage4FlatProbe, Stage4FlatProbeLoadError> {
+    load_stage4_image_profile(image, code, initial_rcx, true)
+}
+
+fn load_stage4_image_profile(
+    image: &[u8],
+    code: &[u8],
+    initial_rcx: u64,
+    alias: bool,
+) -> Result<LoadedStage4FlatProbe, Stage4FlatProbeLoadError> {
     if image.len() != STAGE4_FLAT_PROBE_IMAGE_BYTES {
         return Err(Stage4FlatProbeLoadError::ImageSize {
             expected: STAGE4_FLAT_PROBE_IMAGE_BYTES,
@@ -199,7 +216,7 @@ pub(crate) fn load_stage4_image(
             ram_bytes: STAGE4_FLAT_PROBE_RAM_BYTES,
         });
     }
-    validate_image(image, code)?;
+    validate_image(image, code, alias)?;
 
     let ram_range =
         GuestPhysicalRange::new(GuestPhysicalAddress::new(0), STAGE4_FLAT_PROBE_RAM_BYTES)
@@ -251,7 +268,11 @@ pub(crate) fn load_stage4_image(
     };
     state.gpr[od_isa::Register::Rbx as usize] = STAGE4_FLAT_PROBE_DATA_GVA;
     state.gpr[od_isa::Register::Rcx as usize] = initial_rcx;
-    state.gpr[od_isa::Register::Rsp as usize] = STAGE4_FLAT_PROBE_STACK_TOP_GVA;
+    state.gpr[od_isa::Register::Rsp as usize] = if alias {
+        0x00a0_0000
+    } else {
+        STAGE4_FLAT_PROBE_STACK_TOP_GVA
+    };
     state.gpr[od_isa::Register::Rdx as usize] = u64::from(STAGE4_FLAT_PROBE_UART_BASE);
 
     Ok(LoadedStage4FlatProbe {
@@ -262,16 +283,23 @@ pub(crate) fn load_stage4_image(
     })
 }
 
-fn validate_image(image: &[u8], code: &[u8]) -> Result<(), Stage4FlatProbeLoadError> {
+fn validate_image(image: &[u8], code: &[u8], alias: bool) -> Result<(), Stage4FlatProbeLoadError> {
     let expected_entries = [
         (0x1000, 0x2003),
         (0x2000, 0x3003),
-        (0x3010, 0x4003),                    // code at 4 MiB
-        (0x3020, 0x5003),                    // data at 8 MiB
-        (0x3028, 0x6003),                    // stack at 10 MiB
-        (0x4000, 0x7001),                    // supervisor read/execute code
-        (0x5000, 0x9003 | (1 << 63)),        // supervisor read/write, NX data
-        (0x6000, STACK_GPA | 3 | (1 << 63)), // supervisor read/write, NX stack
+        (0x3010, 0x4003),             // code at 4 MiB
+        (0x3020, 0x5003),             // data at 8 MiB
+        (0x3028, 0x6003),             // stack at 10 MiB
+        (0x4000, 0x7001),             // supervisor read/execute code
+        (0x5000, 0x9003 | (1 << 63)), // supervisor read/write, NX data
+        (
+            0x6000,
+            if alias {
+                0x9003 | (1 << 63)
+            } else {
+                STACK_GPA | 3 | (1 << 63)
+            },
+        ), // supervisor read/write, NX stack
     ];
     for (gpa, expected) in expected_entries {
         let actual = image_entry(image, gpa);

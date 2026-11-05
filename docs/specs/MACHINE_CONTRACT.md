@@ -552,3 +552,15 @@ effects follow the existing tracked-memory contract. Exception delivery/repair,
 CR2 update, two-page stack transactions, IRQ/APIC, HLT wakeup, JIT, Linux,
 hardware and parent S4-32 acceptance are outside this profile; ISSUE-054 stays
 open.
+
+## S4-33a: guest RAM aliases
+
+`Stage4AliasProbeV1` is a separate strict raw-image profile. Its page tables
+map data GVA `0x800000` and stack GVA `0xa00000` to the same GPA page
+`0x9000..0xa000`; the stack alias is inside the raw image backing. The image
+contains different initial and store qwords. Guest `MOV [RBX],RCX` changes the
+shared page and `POP RAX` reads the changed qword through the other GVA before
+polling UART and halting. Result acceptance checks the stored qword and RAX;
+HLT alone does not pass. The older S4-32 loaders continue to require their
+original non-alias layouts. This evidence covers uncached interpreter access,
+not TLB/JIT invalidation, cross-page access, or system acceptance.

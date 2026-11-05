@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "profile": "Stage4AliasProbeV1",
+  "status": "accepted_bounded_slice",
+  "commit": null,
+  "contract": {
+    "code_bytes": "48890b58eef4",
+    "data_gva": "0x800000",
+    "stack_gva": "0xa00000",
+    "shared_gpa_page": "0x9000..0xa000",
+    "initial_qword_raw_offset": "0x8000",
+    "store_qword_raw_offset": "0x8008"
+  },
+  "verification": [
+    {"name": "machine alias integration", "status": "passed", "result": "3 tests; guest store changes shared RAM, POP reads through alias, exact A/D and committed callback order, split alias rejection"},
+    {"name": "builder-to-runner", "status": "passed", "result": "1 integration test; alias artifacts, two initial/store pairs, budgets, manifest layout, and injected broken alias that reaches HLT but fails acceptance"},
+    {"name": "S4-32 regressions", "status": "passed", "result": "13 machine tests, 8 runner tests, paged_probe_profile 13 tests"},
+    {"name": "builder validator", "status": "passed", "result": "tools/build/test_build_stage4_flat_probe.py"},
+    {"name": "package checks", "status": "passed", "result": "od-machine and od-runner all-targets checks in alias worktree; local alias and runner integration tests rerun after cherry-pick; cargo fmt --all -- --check; git diff --check"},
+    {"name": "Graphify", "status": "passed", "result": "25985 nodes, 65177 edges, 875 communities"}
+  ],
+  "independent_review": {
+    "reviewer": "gpt-6.1-sol",
+    "reasoning": "high",
+    "status": "approved",
+    "findings_p0_p2": [],
+    "non_blocking_p3": "Runner regression checks the operand callback in JSON trace but not the complete sequence; exact callback order is asserted by the machine test."
+  },
+  "not_claimed": [
+    "complete S4-33",
+    "TLB-on or JIT alias invalidation",
+    "cross-page access semantics",
+    "guest page-fault repair/retry",
+    "Linux boot or userspace",
+    "physical hardware acceptance"
+  ]
+}

@@ -619,6 +619,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** interpreter с TLB off/on и JIT только для реально поддержанных частей; injected regression обязан ломать соответствующую проверку. Сохранять guest state и event trace, а не одну строку PASS.
 - **Готово:** все обязательные cases имеют факт выполнения. Общая CPU/MMU семантика ещё требует независимого evidence S4-34; локальная приёмка не выдаётся за physical.
 
+#### S4-33a. Guest RAM alias store→load
+
+- [x] Ограниченный case принят после независимого ревью; полный S4-33 остаётся открытым.
+- **Контракт:** `Stage4AliasProbeV1` отображает GVA `0x800000` и `0xa00000` на одну RAM-страницу GPA `0x9000`. Guest исполняет `MOV [RBX],RCX; POP RAX; OUT DX,AL; HLT`; initial qword и store qword различны. Acceptance требует изменения RAM через первый GVA и чтения нового значения через stack alias, а одного HLT недостаточно.
+- **Проверка:** builder manifest отражает обе mappings без противоречий; builder→runner проверяет два store values, budgets, UART, guest state и injected broken-alias outcome; machine case проверяет leaf A/D и точный порядок committed callbacks. Legacy profiles остаются строгими.
+- **Граница:** uncached interpreter evidence для RAM alias. Не подтверждает TLB-on/JIT alias invalidation, cross-page semantics, fault repair, Linux или physical hardware; S4-13/14/16 и S4-18/19 остаются отдельными prerequisites.
+
 ### S4-34. Подготовить и выполнить независимые системные hardware cases
 
 - [ ] Методика/harness приняты; физический запуск принят отдельно.

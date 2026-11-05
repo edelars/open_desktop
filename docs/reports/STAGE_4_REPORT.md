@@ -369,3 +369,15 @@ interpreter evidence only; exception delivery/repair, CR2, cross-page
 transactions, IRQ/APIC, HLT wakeup, JIT, Linux, hardware and parent S4-32/S4-33
 remain open. See the [slice report](STAGE_4_S4-32C_2026-11-05.md) and
 [evidence JSON](data/stage4/s4-32c-stack-probe.json).
+
+## S4-33a: guest RAM alias store→load
+
+The separate `Stage4AliasProbeV1` artifact maps data GVA `0x800000` and stack
+GVA `0xa00000` to GPA `0x9000`. Its distinct initial/store qwords let the guest
+change RAM through the first mapping and load the changed value through the
+stack alias. Acceptance verifies RAM, RAX, callback order, manifest layout and
+UART; a guest HLT by itself is insufficient, including in the injected broken
+alias case. See the [S4-33a slice report](STAGE_4_S4-33A_2026-11-05.md) and
+[evidence](data/stage4/s4-33a-ram-alias.json). This is uncached interpreter
+evidence only; independent `gpt-6.1-sol/high` review approved the bounded case
+with no P0–P2 findings. S4-33 and Stage 4 remain open.

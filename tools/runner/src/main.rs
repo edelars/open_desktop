@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use od_isa::{CpuState, ExecutionResult, interpret};
 
 mod diagnostic;
+mod stage4_alias_probe;
 mod stage4_probe;
 mod stage4_stack_probe;
 mod stage4_store_load_probe;
@@ -65,6 +66,7 @@ fn main() -> ExitCode {
         Some("--diagnostic-replay") => return diagnostic::replay(&args[1..]),
         Some("--stage4-probe") => return stage4_probe::run(&args),
         Some("--stage4-stack-probe") => return stage4_stack_probe::run(&args),
+        Some("--stage4-alias-probe") => return stage4_alias_probe::run(&args),
         Some("--stage4-store-load-probe") => return stage4_store_load_probe::run(&args),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
         _ => {}

@@ -393,3 +393,16 @@ PFEC/CPU-commit boundaries. This is bounded local
 Long64/CPL0 interpreter evidence only: stack exception delivery/repair, CR2,
 cross-page transactions, IRQ/APIC, HLT wakeup, JIT, Linux, privileged hardware
 and parent S4-32/S4-33 remain unclaimed until separate evidence exists.
+
+## S4-33a: guest RAM alias
+
+The strict `alias-probe` builder profile places a distinct initial qword and
+store value in its image and maps data GVA `0x800000` plus stack GVA `0xa00000`
+to GPA `0x9000`. Machine tests check that budget zero preserves the initial
+value, guest store changes the shared physical qword, POP reads the new value
+through the stack alias, each leaf PTE receives the expected A/D bits, and
+committed callback ranges occur in exact order. Builder/runner tests compare
+multiple payloads and reject an injected remapping that still reaches HLT but
+does not satisfy the alias-result oracle. The manifest's `mappings` and `stack`
+fields must agree. This is uncached interpreter evidence; TLB/JIT, Linux and
+physical hardware claims are outside the case.

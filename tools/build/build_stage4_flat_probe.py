@@ -191,8 +191,9 @@ def validate_image(elf: bytes, raw: bytes, profile: str, payload: int, initial: 
         "flat-probe": bytes.fromhex("488b03eef4"),
         "store-load-probe": bytes.fromhex("48890b488b03eef4"),
         "stack-probe": bytes.fromhex("5158eef4"),
+        "alias-probe": bytes.fromhex("48890b58eef4"),
     }[profile]
-    data_size = 16 if profile == "store-load-probe" else 8
+    data_size = 16 if profile in ("store-load-probe", "alias-probe") else 8
     if (code_symbol, code_size, code_end - code_symbol) != (CODE_GVA, len(code), len(code)):
         raise BuildError(
             "assembled entry must match the selected profile at its linked address; "
@@ -231,7 +232,7 @@ def validate_image(elf: bytes, raw: bytes, profile: str, payload: int, initial: 
         (0x2028, 0x6003),
         (0x3000, 0x7001),
         (0x4000, NX | 0x9003),
-        (0x5000, NX | 0xA003),
+        (0x5000, NX | (0x9003 if profile == "alias-probe" else 0xA003)),
     ]
     for offset, expected in entries:
         actual = struct.unpack_from("<Q", raw, offset)[0]
@@ -239,7 +240,7 @@ def validate_image(elf: bytes, raw: bytes, profile: str, payload: int, initial: 
             raise BuildError(f"page-table entry at raw offset 0x{offset:x} is 0x{actual:x}, expected 0x{expected:x}")
     expected_data = (
         struct.pack("<QQ", initial, store_value)
-        if profile == "store-load-probe"
+        if profile in ("store-load-probe", "alias-probe")
         else struct.pack("<Q", payload)
     )
     if raw[0x8000 : 0x8000 + len(expected_data)] != expected_data:
@@ -274,13 +275,25 @@ def validate_image(elf: bytes, raw: bytes, profile: str, payload: int, initial: 
         ],
         "page_table_entries_checked": len(entries),
         "payload_gva": f"0x{PAYLOAD_GVA:x}",
-        "stack": {
+        "mappings": ([
+            {"gva": "0x800000", "gpa": "0x9000", "permissions": "rw-nx", "raw_offset": "0x8000", "entry_raw_offset": "0x4000"},
+            {"gva": "0xa00000", "gpa": "0x9000", "permissions": "rw-nx", "raw_offset": "0x8000", "entry_raw_offset": "0x5000"},
+        ] if profile == "alias-probe" else None),
+        "alias_data": ({"initial_qword_gpa": "0x9000", "initial_qword_raw_offset": "0x8000", "store_value_raw_offset": "0x8008"} if profile == "alias-probe" else None),
+        "stack": ({
+            "gva_start": "0xa00000",
+            "gva_end": "0xa01000",
+            "gpa_start": "0x9000",
+            "gpa_end": "0xa000",
+            "in_raw_image": True,
+            "raw_offset": "0x8000",
+        } if profile == "alias-probe" else {
             "gva_start": f"0x{STACK_GVA:x}",
             "gva_end": f"0x{STACK_GVA + PAGE_SIZE:x}",
             "gpa_start": f"0x{STACK_GPA:x}",
             "gpa_end": f"0x{STACK_GPA + PAGE_SIZE:x}",
             "in_raw_image": False,
-        },
+        }),
     }
 
 
@@ -308,6 +321,7 @@ def build(args: argparse.Namespace) -> int:
         "flat-probe": "flat_probe",
         "store-load-probe": "store_load_probe",
         "stack-probe": "stack_probe",
+        "alias-probe": "alias_probe",
     }[profile]
     fixture_dir = repo_root / "tests/fixtures/guest/stage4" / fixture_name
     source = fixture_dir / "entry.S"
@@ -316,11 +330,11 @@ def build(args: argparse.Namespace) -> int:
     for name, value in (("--payload", payload), ("--initial-value", initial), ("--store-value", store_value)):
         if value is not None and not 0 <= value <= 0xFFFFFFFFFFFFFFFF:
             raise BuildError(f"{name} must fit in an unsigned 64-bit integer")
-    if profile == "store-load-probe" and (initial is None or store_value is None):
-        raise BuildError("--profile store-load-probe requires --initial-value and --store-value")
-    if profile != "store-load-probe" and (initial is not None or store_value is not None):
-        raise BuildError("--initial-value and --store-value require --profile store-load-probe")
-    payload = payload if profile != "store-load-probe" else 0
+    if profile in ("store-load-probe", "alias-probe") and (initial is None or store_value is None):
+        raise BuildError(f"--profile {profile} requires --initial-value and --store-value")
+    if profile not in ("store-load-probe", "alias-probe") and (initial is not None or store_value is not None):
+        raise BuildError("--initial-value and --store-value require store-load-probe or alias-probe")
+    payload = payload if profile not in ("store-load-probe", "alias-probe") else 0
     initial = initial or 0
     store_value = store_value or 0
 
@@ -393,6 +407,7 @@ def build(args: argparse.Namespace) -> int:
             "flat-probe": "Stage4FlatProbeV1",
             "store-load-probe": "Stage4StoreLoadProbeV1",
             "stack-probe": "Stage4StackProbeV1",
+            "alias-probe": "Stage4AliasProbeV1",
         }[profile],
         "source_revision": source_revision,
         "source": {
@@ -400,8 +415,8 @@ def build(args: argparse.Namespace) -> int:
             "layout.ld": sha256(linker_script.read_bytes()),
         },
         "payload_u64": f"0x{payload:016x}",
-        "initial_u64": f"0x{initial:016x}" if profile == "store-load-probe" else None,
-        "store_value_u64": f"0x{store_value:016x}" if profile == "store-load-probe" else None,
+        "initial_u64": f"0x{initial:016x}" if profile in ("store-load-probe", "alias-probe") else None,
+        "store_value_u64": f"0x{store_value:016x}" if profile in ("store-load-probe", "alias-probe") else None,
         "target": "x86_64-unknown-none-elf",
         "toolchain": {
             "clang": {"path": str(clang), "version": clang_version},
@@ -440,7 +455,7 @@ def parse_payload(value: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("flat-probe", "store-load-probe", "stack-probe"), default="flat-probe")
+    parser.add_argument("--profile", choices=("flat-probe", "store-load-probe", "stack-probe", "alias-probe"), default="flat-probe")
     parser.add_argument("--payload", type=parse_payload, default=0x5354473441424331)
     parser.add_argument("--initial-value", type=parse_payload)
     parser.add_argument("--store-value", type=parse_payload)
