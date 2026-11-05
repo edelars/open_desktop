@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "slice": "S4-11d",
+  "title": "CPU-connected cross-page instruction fetch for bounded dword MOV",
+  "date": "2026-11-05",
+  "baseline_commit": "cb98d59",
+  "status": "implemented_reviewed",
+  "code_files": [
+    "crates/od-isa/src/long_decode.rs",
+    "crates/od-machine/tests/paged_mov_step.rs"
+  ],
+  "profile": {
+    "name": "PagedMovCrossPageDwordReadLong64V1",
+    "encoding": "8B 03",
+    "operation": "MOV EAX,[RBX]",
+    "vcpus": 1,
+    "mode": "Long64",
+    "privilege": "CPL0",
+    "nxe": true,
+    "paging": "canonical48/physical36/four-level/4KiB/uncached",
+    "opcode_linear_offset": "0xfff",
+    "code_mapping": "two non-contiguous RAM pages",
+    "operand_mapping": "separate RAM page",
+    "allowlist_expanded": false
+  },
+  "fault_contract": {
+    "second_fetch_nonpresent_pfec": "0x10",
+    "second_fetch_nx_pfec": "0x11",
+    "fault_byte_linear_address": true,
+    "saved_rip_is_instruction_start": true,
+    "context": "Fetch/Long64/Explicit",
+    "cpu_state_preserved": true,
+    "retirement_on_fault": 0,
+    "committed_accessed_updates_persist": true,
+    "dirty_bit_set": false,
+    "operand_walk_reached": false,
+    "hole_mmio_device_dispatch": false
+  },
+  "decoder_boundary_control": {
+    "instruction": "HLT",
+    "location": "last byte of mapped page",
+    "next_page_mapped": false,
+    "extra_fetch": false,
+    "expands_cpu_allowlist": false
+  },
+  "checks": {
+    "focused_integration_passed": 3,
+    "integration_passed": 23,
+    "decoder_control_passed": 1,
+    "package_check": "cargo check -p od-machine --all-targets --locked --offline",
+    "format": "cargo fmt --all -- --check",
+    "diff_check": "passed"
+  },
+  "review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approved",
+    "findings": "two P3 findings fixed; no remaining P0-P3 findings"
+  },
+  "graphify": {
+    "query_before_source_reads": true,
+    "worktree_update_after_code": true,
+    "worktree_nodes": 24715,
+    "worktree_edges": 63726,
+    "worktree_communities": 834,
+    "global_graph_updated": false
+  },
+  "issue_054": "open",
+  "parent_s4_11": "open",
+  "report": "docs/reports/STAGE_4_S4-11D_2026-11-05.md"
+}

@@ -8339,6 +8339,17 @@ mod tests {
     }
 
     #[test]
+    fn one_byte_instruction_at_page_end_does_not_fetch_next_page() {
+        // HLT is decoded here only as a decoder boundary control. It is not
+        // admitted by the S4-11d CPU-connected MOV profile.
+        let mut memory = Memory::new(&[0xf4]);
+        let decoded = memory.decode().expect("one-byte HLT decodes");
+        assert_eq!(decoded.operation, Operation::Hlt);
+        assert_eq!(decoded.length, 1);
+        assert_eq!(memory.fetched, [0xfff]);
+    }
+
+    #[test]
     fn xorps_register_decodes_all_xmm_pairs_and_rejects_out_of_slice_encodings() {
         for destination in 0..16u8 {
             for source in 0..16u8 {

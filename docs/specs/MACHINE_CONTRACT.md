@@ -394,8 +394,9 @@ boundary. It splits the linear range into its first-page and second-page
 segments in increasing linear-address order. Each segment is translated and
 checked using the existing Long64/4 KiB access context; the corresponding
 physical range must be wholly RAM. The two physical ranges may be discontiguous.
-No MMIO device is dispatched by this cross-page path. Cross-page writes and
-instruction fetch remain rejected by their existing boundaries.
+No MMIO device is dispatched by this cross-page path. Cross-page writes remain
+rejected. Cross-page instruction fetch is admitted only by the separate bounded
+S4-11d case below; all other fetch forms retain their existing boundaries.
 
 Both translations, permissions and RAM-region admissions complete before
 either operand segment is read. Accessed-bit writes commit as each walk
@@ -449,6 +450,38 @@ uncached adapter contract and makes no universal x86 ordering or atomicity
 claim. Cross-page MMIO is not dispatched; stores and all other widths/forms
 remain unsupported here. This does not implement general guest exception
 delivery or complete S4-11. See the [S4-11c CPU contract](CPU_CONTRACT.md#exact-paged-dword-read-profile-pagedmovcrosspagedwordreadlong64v1-s4-11c).
+
+## Bounded cross-page instruction fetch (S4-11d)
+
+This is a narrow fetch extension for the existing opt-in
+`PagedMovCrossPageDwordReadLong64V1` profile and exact bare `MOV EAX,[RBX]`
+(`8B 03`). It uses one vCPU, synthetic Long64, canonical48/physical36,
+four-level 4 KiB uncached translation, CPL0 and NXE=1. The opcode byte `8B` is
+at linear `RIP = page + 0xfff`; the ModRM byte `03` is on the next linear page.
+The two code pages map to non-contiguous RAM pages, and the dword operand lies
+entirely in a separate RAM page. This does not broaden the profile's opcode or
+data operand allowlist.
+
+Fetch proceeds byte by byte through the existing decoder and paged memory
+adapter. Success fetches exactly the two instruction bytes, completes the
+existing dword read, zero-extends EAX, advances RIP by two and retires once;
+all other CPU state is preserved. A second-byte non-present fault records
+PFEC `0x10`; an NX fault with NXE enabled records PFEC `0x11`. In either case
+the record identifies the faulting linear byte, original RIP and
+Fetch/Long64/Explicit context. CPU state and retirement remain unchanged,
+already committed A effects remain visible, no D bit is set, and operand
+translation/read is not reached.
+
+Fetch from a hole and fetch from MMIO retain their distinct backend outcomes;
+the device is never dispatched. As a decoder-level control only, a one-byte
+instruction whose final byte is at the end of a mapped page succeeds with the
+next page unmapped, proving the decoder does not speculatively fetch beyond the
+instruction boundary. This control does not broaden the CPU-connected profile
+allowlist. Code, operand and page-table backing do not alias in these cases.
+
+This local profile adds no exception delivery, CR2 update, retry, stores,
+JIT/TLB behavior or Linux claim. It does not establish general cross-page
+instruction fetch support. See the [S4-11d CPU contract](CPU_CONTRACT.md#cross-page-fetch-for-pagedmovcrosspagedwordreadlong64v1-s4-11d).
 
 ## CPU-state to diagnostic translation snapshot
 

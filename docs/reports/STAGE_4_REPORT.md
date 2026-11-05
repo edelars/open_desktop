@@ -261,6 +261,14 @@ permission fault и сохранение CPU state/нулевого retirement �
   [manifest](data/stage4/s4-11c-cross-page-dword-read.json). Независимое
   `gpt-6.1-sol/high` review принято после исправления одного P3 evidence
   несоответствия; P0—P2 замечаний нет. Родительский S4-11 остаётся открытым.
+- S4-11d допускает cross-page instruction fetch только для bare `8B 03` в том
+  же bounded profile. Проверены second-byte nonpresent/NX fault semantics,
+  сохранение CPU/retirement, точные A-update journals, отсутствие operand
+  walk/device dispatch и decoder-level контроль отсутствия лишнего fetch.
+  `gpt-6.1-sol/high` review одобрило срез без оставшихся P0—P3 замечаний;
+  см. [отчёт](STAGE_4_S4-11D_2026-11-05.md), [контракт](../specs/MACHINE_CONTRACT.md#bounded-cross-page-instruction-fetch-s4-11d)
+  и [manifest](data/stage4/s4-11d-cross-page-instruction-fetch.json). Полный
+  S4-11 остаётся открытым.
 - S4-12a добавляет `Long64ProbeConfig::from_cpu_state`: CR0 и CR4 читаются из
   `LongModeState` с явной ошибкой отсутствующего регистра, CR3 и EFER остаются
   явными входами, а вся существующая validation переиспользуется без defaults,

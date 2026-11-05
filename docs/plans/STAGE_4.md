@@ -331,6 +331,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Одностраничный RAM read служит контролем; проверены все crossing offsets `0xffd..0xfff`, две non-contiguous RAM pages, EAX zero-extension, RIP+2, одна retirement, точный second-page #PF, alias walk-then-sample и отказ от cross-page MMIO. Walk/permission/RAM admission предшествуют operand reads; D не устанавливается.
 - Реализация и проверки записаны в [S4-11c report](../reports/STAGE_4_S4-11C_2026-11-05.md) и [manifest](../reports/data/stage4/s4-11c-cross-page-dword-read.json). Полный S4-11 остаётся открытым для stores, иных форм/widths, restart behavior и прочих memory consumers.
 
+#### S4-11d. Bounded CPU-connected instruction fetch across a 4 KiB page
+
+- [x] Принят после независимого `gpt-6.1-sol/high` review без оставшихся P0—P3 замечаний; добавлены точные assertions A-update journal и evidence.
+- В существующем opt-in profile `PagedMovCrossPageDwordReadLong64V1` проверить только точную bare `8B 03` (`MOV EAX,[RBX]`): opcode по `RIP=page+0xfff`, ModRM на следующей linear page, две non-contiguous RAM code pages и отдельная RAM operand page. Allowlist не расширяется.
+- Проверить успешное исполнение, second-fetch nonpresent (`PFEC=0x10`) и NX (`PFEC=0x11`) faults с точными адресом/сохранённым RIP, без retirement и operand walk; проверить hole/MMIO второй code page без device callback. Decoder-level однобайтовый end-of-page control подтверждает отсутствие лишней выборки вне CPU profile.
+- Результаты: [S4-11d report](../reports/STAGE_4_S4-11D_2026-11-05.md) и [manifest](../reports/data/stage4/s4-11d-cross-page-instruction-fetch.json). Общий S4-11 и ISSUE-054 остаются открытыми.
+
 ### S4-12. Подключить CR0/CR3/CR4, EFER и system instructions
 
 - [x] Ограниченный S4-12a snapshot-bridge срез принят после независимого ревью.

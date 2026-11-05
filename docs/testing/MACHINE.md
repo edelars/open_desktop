@@ -250,6 +250,19 @@ both A-bit updates, no D update, exact second-page #PF data and refusal of
 cross-page MMIO dispatch. This is a synthetic installed-Long64 profile, not a
 full guest or hardware acceptance.
 
+## S4-11d: CPU-connected cross-page instruction fetch
+
+Reproduce with `cargo test -p od-machine --test paged_mov_step --locked --offline s4_11d`.
+The exact `8B 03` profile places the opcode at linear page offset `0xfff`, the
+ModRM byte on a second non-contiguous RAM code page and the dword operand on a
+separate RAM page. Success checks the normal single retirement. Second-fetch
+nonpresent and NX faults check PFEC `0x10`/`0x11`, the faulting linear byte,
+saved RIP, full CPU rollback, no retirement and no operand-page walk. A hole or
+MMIO second code page must fail without device callback. A decoder unit control
+places one-byte HLT at the last byte of a page and verifies no next-page fetch;
+HLT is not admitted by the CPU profile. This does not establish general
+cross-page instruction-fetch support.
+
 ## S4-24a: bounded COM1 polling TX
 
 Baseline revision: `6aeb2dd` (the reviewed UART changes were present in the

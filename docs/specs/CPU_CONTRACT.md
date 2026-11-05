@@ -67,6 +67,31 @@ prefixes, full guest exception delivery, or a full-guest claim. The separate
 machine effects contract is in
 [S4-11c machine contract](MACHINE_CONTRACT.md#bounded-cross-page-dword-read-s4-11c).
 
+### Cross-page fetch for `PagedMovCrossPageDwordReadLong64V1` (S4-11d)
+
+Only for the exact `8B 03` form in this opt-in profile, one vCPU, synthetic
+Long64, canonical48/physical36/four-level/4 KiB uncached paging, CPL0 and
+NXE=1, instruction fetch may cross one 4 KiB boundary. The opcode `8B` is at
+`RIP = page + 0xfff`; ModRM `03` is on the next linear page, mapped to a
+non-contiguous RAM page. The operand is in a separate RAM page. This does not
+admit other instructions, prefixes, addressing forms or operand placements.
+
+The decoder fetches only the bytes required by this two-byte instruction. On
+success, ordinary S4-11c execution commits zero-extended EAX, RIP+2 and one
+retirement while preserving the rest of CPU state. A second-byte non-present
+fault has PFEC `0x10`; a second-byte NX fault has PFEC `0x11`. The precise
+record carries that byte's linear address, original RIP and
+Fetch/Long64/Explicit context. Both faults preserve CPU state and zero
+retirement, retain prior committed A effects, set no D bit and prevent the
+operand access from starting. Hole and MMIO fetches remain distinct backend
+outcomes and do not call a device. As a decoder-level control only, a one-byte
+instruction ending at page end must succeed when the next page is unmapped,
+without an extra fetch; it does not broaden the CPU-connected profile allowlist.
+
+This synthetic case does not implement exception delivery, CR2, retry,
+cross-page stores, JIT/TLB or Linux support, and makes no general cross-page
+fetch claim. See the [S4-11d machine contract](MACHINE_CONTRACT.md#bounded-cross-page-instruction-fetch-s4-11d).
+
 ### Bounded CPU-to-PIO profile `DiagnosticCpl0PioU8V1` (S4-24b)
 
 `od_isa::execute::step_pio_u8` is an opt-in one-instruction entry point for

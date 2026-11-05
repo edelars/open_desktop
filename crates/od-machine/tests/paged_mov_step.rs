@@ -17,6 +17,7 @@ const ROOT: u64 = 0x1000;
 const CODE_LINEAR: u64 = 0x0040_0000;
 const DATA_LINEAR: u64 = 0x0080_0000;
 const CODE_PHYSICAL: u64 = 0x7000;
+const NEXT_CODE_PHYSICAL: u64 = 0xb000;
 const DATA_PHYSICAL: u64 = 0x9000;
 const RAM_LEN: u64 = 0x20_000;
 
@@ -829,6 +830,157 @@ fn s4_11c_profile_rejects_prefix_other_width_and_other_address_form() {
         assert_eq!(report.cpu.instructions_executed, 0);
         assert_eq!(cpu, before);
     }
+}
+
+#[test]
+fn s4_11d_exact_dword_instruction_fetch_crosses_to_noncontiguous_ram() {
+    let mut bus = make_bus();
+    put(&mut bus, 0x4008, NEXT_CODE_PHYSICAL | 7);
+    put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x8b);
+    put_byte(&mut bus, NEXT_CODE_PHYSICAL, 0x03);
+    put(&mut bus, DATA_PHYSICAL, 0x8877_6655_4433_2211);
+    let rip = CODE_LINEAR + 0xfff;
+    let mut cpu = LongModeState {
+        rip,
+        cr0: Some(CR0),
+        cr4: Some(CR4),
+        ..LongModeState::default()
+    };
+    cpu.gpr[3] = DATA_LINEAR;
+    cpu.gpr[0] = 0xdead_beef_cafe_babe;
+    cpu.rflags = 0x8d7;
+    let old_gprs = cpu.gpr;
+    let old_flags = cpu.rflags;
+    let mut writes = Vec::new();
+
+    let report = step_dword(&mut cpu, &mut bus, ROOT, PrivilegeLevel::Ring0, &mut writes);
+
+    assert_eq!(report.cpu.exit, RunExit::StopAddress);
+    assert_eq!(report.cpu.instructions_executed, 1);
+    assert!(report.page_fault.is_none());
+    assert!(report.memory_error.is_none());
+    assert_eq!(cpu.rip, rip + 2);
+    assert_eq!(cpu.gpr[0], 0x4433_2211);
+    for index in 1..cpu.gpr.len() {
+        assert_eq!(cpu.gpr[index], old_gprs[index]);
+    }
+    assert_eq!(cpu.gpr[3], old_gprs[3]);
+    assert_eq!(cpu.rflags, old_flags);
+    assert_eq!(
+        writes,
+        [0x1000, 0x2000, 0x3010, 0x4000, 0x4008, 0x3020, 0x5000].map(range)
+    );
+    for pte in [0x4000, 0x4008, 0x5000] {
+        assert_ne!(qword(&mut bus, pte) & (1 << 5), 0, "PTE {pte:#x}");
+        assert_eq!(qword(&mut bus, pte) & (1 << 6), 0, "PTE {pte:#x}");
+    }
+}
+
+#[test]
+fn s4_11d_second_fetch_fault_is_precise_and_prevents_operand_walk() {
+    for (second_pte, expected_pfec, expected_writes, second_pte_accessed) in [
+        (0, 0x10, [0x1000, 0x2000, 0x3010, 0x4000].as_slice(), false),
+        (
+            NEXT_CODE_PHYSICAL | 7 | (1 << 63),
+            0x11,
+            [0x1000, 0x2000, 0x3010, 0x4000, 0x4008].as_slice(),
+            true,
+        ),
+    ] {
+        let mut bus = make_bus();
+        put(&mut bus, 0x4008, second_pte);
+        put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x8b);
+        let rip = CODE_LINEAR + 0xfff;
+        let mut cpu = LongModeState {
+            rip,
+            cr0: Some(CR0),
+            cr4: Some(CR4),
+            ..LongModeState::default()
+        };
+        cpu.gpr[3] = DATA_LINEAR;
+        cpu.gpr[0] = 0xdead_beef_cafe_babe;
+        let before = cpu.clone();
+        let mut writes = Vec::new();
+
+        let report = step_dword(&mut cpu, &mut bus, ROOT, PrivilegeLevel::Ring0, &mut writes);
+
+        assert!(matches!(report.cpu.exit, RunExit::Fault(_)));
+        let fault = report.page_fault.as_ref().expect("second-byte fetch #PF");
+        assert_eq!(fault.fault().vector, 14);
+        assert_eq!(fault.fault().error_code, Some(expected_pfec));
+        assert_eq!(fault.fault().linear_address, Some(CODE_LINEAR + 0x1000));
+        assert_eq!(fault.saved_rip(), rip);
+        assert_eq!(fault.access(), AccessKind::Fetch);
+        assert_eq!(fault.context(), context(PrivilegeLevel::Ring0));
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!(qword(&mut bus, 0x4000) & (1 << 5), 1 << 5);
+        assert_eq!(qword(&mut bus, 0x4000) & (1 << 6), 0);
+        assert_eq!(
+            qword(&mut bus, 0x4008) & (1 << 5) != 0,
+            second_pte_accessed,
+            "second code PTE A bit for PFEC {expected_pfec:#x}"
+        );
+        assert_eq!(qword(&mut bus, 0x4008) & (1 << 6), 0);
+        assert_eq!(qword(&mut bus, 0x5000) & (1 << 5), 0);
+        assert!(!writes.contains(&range(0x5000)));
+        assert_eq!(
+            writes,
+            expected_writes
+                .iter()
+                .copied()
+                .map(range)
+                .collect::<Vec<_>>(),
+            "page-table write journal for PFEC {expected_pfec:#x}"
+        );
+    }
+}
+
+#[test]
+fn s4_11d_second_fetch_hole_and_mmio_keep_backend_classification() {
+    let mut bus = make_bus();
+    put(&mut bus, 0x4008, 0x30000 | 7);
+    put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x8b);
+    let rip = CODE_LINEAR + 0xfff;
+    let mut cpu = LongModeState {
+        rip,
+        cr0: Some(CR0),
+        cr4: Some(CR4),
+        ..LongModeState::default()
+    };
+    let before = cpu.clone();
+    let mut writes = Vec::new();
+    let hole = step_dword(&mut cpu, &mut bus, ROOT, PrivilegeLevel::Ring0, &mut writes);
+    assert!(matches!(hole.cpu.exit, RunExit::MemoryError(_)));
+    assert!(matches!(
+        hole.memory_error,
+        Some(TrackedAccessError::OperandPhysical { .. })
+    ));
+    assert!(hole.page_fault.is_none());
+    assert_eq!(hole.cpu.instructions_executed, 0);
+    assert_eq!(cpu, before);
+
+    let journal = Arc::new(Mutex::new(Vec::new()));
+    let mut bus = make_bus_with_mmio(Arc::clone(&journal));
+    put(&mut bus, 0x4008, RAM_LEN | 7);
+    put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x8b);
+    let mut cpu = LongModeState {
+        rip,
+        cr0: Some(CR0),
+        cr4: Some(CR4),
+        ..LongModeState::default()
+    };
+    let before = cpu.clone();
+    let mmio = step_dword(&mut cpu, &mut bus, ROOT, PrivilegeLevel::Ring0, &mut writes);
+    assert!(matches!(mmio.cpu.exit, RunExit::MemoryError(_)));
+    assert!(matches!(
+        mmio.memory_error,
+        Some(TrackedAccessError::MmioBackend { .. })
+    ));
+    assert!(mmio.page_fault.is_none());
+    assert_eq!(mmio.cpu.instructions_executed, 0);
+    assert_eq!(cpu, before);
+    assert!(journal.lock().unwrap().is_empty());
 }
 
 #[test]
