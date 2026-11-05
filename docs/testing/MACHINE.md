@@ -2,9 +2,9 @@
 
 ## Область
 
-Эта методика покрывает S4-02—S4-08: валидируемую physical map, production RAM
+Эта методика покрывает S4-02—S4-09: валидируемую physical map, production RAM
 owner, committed-write notification, синхронную MMIO/PIO bus, диагностический
-CPU memory bridge и uncached translation probe. Она не проверяет CPU-integrated
+CPU memory bridge, uncached translation probe и bounded tracked RAM access. Она не проверяет CPU-integrated
 paging, guest exception delivery, APIC, JIT, firmware или Linux.
 
 ## Локальный набор
@@ -49,11 +49,21 @@ git diff --check
 18. The `od-machine` orchestration converts only probe page faults; translated,
     noncanonical, unsupported-page-size and table-read results remain distinct.
     Page tables (including A/D bits) remain byte-for-byte unchanged.
+19. Tracked RAM access commits missing A bits immediately during a valid walk,
+    preserves those effects on later nonpresent/reserved/protection/table-read
+    failures, commits D only for an allowed write after full RAM operand
+    validation, and commits the operand last.
+20. The tracked API accepts Read/Write widths 1/2/4/8 and Fetch remains
+    byte-only; current success cases cover Read Dword, Write Byte/Word and
+    Fetch Byte. Already-set A/D bits do not cause duplicate writes or callbacks,
+    ROM/reserved/MMIO errors remain distinct, and cross-page/unsupported
+    RAM-only accesses have no operand effect.
 
 ## Интерпретация
 
-Успешные локальные тесты подтверждают только перечисленный Rust-контракт и
-flat identity integration and the targeted `od-isa` PFEC/record tests.
+Успешные локальные тесты подтверждают только перечисленный Rust-контракт,
+flat identity integration, tracked RAM-only effects и targeted `od-isa`
+PFEC/record tests.
 и pure translation probe. Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не
