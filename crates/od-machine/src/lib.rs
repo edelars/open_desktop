@@ -2,6 +2,7 @@
 
 mod bus;
 mod diagnostic_vcpu;
+mod event_queue;
 mod identity_memory_adapter;
 mod page_walk;
 mod physical_memory;
@@ -18,6 +19,8 @@ pub use diagnostic_vcpu::{
     DiagnosticExit, DiagnosticRunResult, DiagnosticTerminalExit, DiagnosticVcpuControlError,
     DiagnosticVcpuSession, DiagnosticVcpuState, WorkLimitReason,
 };
+
+pub use event_queue::{EventQueue, EventQueueError, ScheduledEvent};
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};
 

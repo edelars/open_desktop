@@ -109,6 +109,12 @@ git diff --check
 37. Bounded RDTSC uses the caller-driven clock and preserves EDX:EAX, RIP and
     `rflags_defined` across split budgets. TSD/CPL denial, fetch-boundary failure,
     zero budget and invalid defined masks remain explicit outcomes.
+38. S4-23a verifies fixed-capacity one-shot deadlines: equal deadlines preserve
+    insertion order, reschedule gets a new position, `deadline <= now` is due,
+    and `pop_due` removes at most one event.
+39. Duplicate/full/not-found operations, cancellation of due events, `u64`
+    extremes and sequence rebasing leave the queue unchanged or ordered by the
+    documented contract; VirtualClock readiness does not advance time.
 
 ## Интерпретация
 
@@ -117,7 +123,7 @@ flat identity integration, tracked RAM-only effects и targeted `od-isa`
 PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
 cross-page admission, S4-12a snapshot bridge, S4-13a pure-cache experiment,
 S4-14a cache lifecycle boundary, S4-21a diagnostic vCPU session и S4-22a
-caller-driven clock/RDTSC boundary.
+caller-driven clock/RDTSC boundary и S4-23a bounded deadline queue.
 Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не

@@ -23,6 +23,10 @@ TSC source for bare Long64 RDTSC. Runs, polling and host delay do not advance
 time; overflow is rejected atomically. The legacy session constructor remains
 without RDTSC. Linux frequency discovery, host monotonic integration, HLT
 progression, events, and RDTSCP/MSR/CPUID support remain outside this slice.
+Bounded S4-23a adds a fixed-capacity deterministic one-shot deadline queue.
+It uses absolute nanosecond deadlines, explicit extraction and stable ordering;
+it does not advance the virtual clock or dispatch CPU/device/IRQ work. Full
+event lifecycle, reset/generation, HLT wakeup and host waiting remain open.
 Admission boundary для неподдержанных 2 MiB/1 GiB pages закреплён тестами, но сами huge pages и новые
 режимы ещё не реализованы. Cross-page accesses отвергаются до page walk;
 split/transaction semantics и CPU restart/REP/RMW integration ещё не

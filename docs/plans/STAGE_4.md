@@ -421,6 +421,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** одинаковые deadlines, cancel уже готового события, repeated reset, событие при pause/STOP, timer storm. Переполнение — явный результат согласно контракту.
 - **Готово:** событие не теряется и не применяется к новой машине после reset; выбор структуры подтверждать замерами при оптимизации.
 
+#### S4-23a. Bounded очередь одноразовых deadlines
+
+- [x] Ограниченный S4-23a принят после независимого ревью.
+- **Где:** `crates/od-machine/src/event_queue.rs` и public export crate.
+- **Границы:** fixed-capacity queue хранит абсолютные `u64` deadlines в домене `VirtualClock`; `schedule`, `cancel`, `reschedule`, `next_deadline` и одноэлементный `pop_due` не двигают часы и не dispatch-ят CPU/device events. Порядок — deadline, затем insertion sequence; reschedule получает новую позицию среди равных deadlines.
+- **Проверка:** equal/boundary/past deadlines, cancel ready event, reschedule order, duplicate/full/not-found atomicity, `u64` extremes, sequence rebase и VirtualClock readiness.
+- **Готово:** bounded storage и deterministic extraction реализованы; полный S4-23 остаётся открытым для dispatch, reset/generation, HLT wakeup, IRQ и host wait.
+
 ### S4-24. UART 16550A: сначала polling, затем IRQ
 
 - [ ] Polling принято; IRQ принято отдельно; после обоих пунктов задача закрыта.

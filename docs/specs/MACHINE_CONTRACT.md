@@ -274,3 +274,18 @@ Long64 `RDTSC`, сохраняя существующие TSD/CPL checks, `EDX:E
 `rflags_defined`. Legacy constructor остаётся без clock/RDTSC source. RDTSCP,
 MSR/CPUID frequency advertisement, host monotonic coupling, HLT progression,
 IRQ/deadlines и reset не входят в срез; полный S4-22 остаётся открытым.
+
+## Bounded one-shot deadline queue boundary
+
+S4-23a добавляет `EventQueue` с фиксированной логической ёмкостью и
+абсолютными `u64` deadlines в том же наносекундном домене, что и
+`VirtualClock`. Pending key уникален. `schedule`, `cancel`, `reschedule`,
+`next_deadline` и `pop_due(now_ns)` имеют явные результаты; `pop_due` удаляет не
+более одного события и считает `deadline <= now_ns` готовым, включая прошлые
+deadlines.
+
+Очередь упорядочивает события по `(deadline, insertion sequence)`; reschedule
+получает новую sequence. Duplicate/full/not-found не меняют очередь. Очередь
+сама не продвигает время, не вызывает callback, не исполняет CPU, не будит HLT
+и не доставляет IRQ. Dispatch, periodic timers, reset/generation, host wait и
+межмашинное владение остаются за будущими срезами S4-23.

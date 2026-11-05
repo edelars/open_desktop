@@ -4,7 +4,7 @@
 
 На 2026-11-05 принят только локальный memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access и S4-10a admission-boundary slice
-S4-02—S4-22a. Этап 4 не завершён: S4-00—S4-01,
+S4-02—S4-23a. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, devices, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
 
@@ -74,6 +74,10 @@ integration, hardware cases и Linux userspace остаются открытым
   сохранение `rflags_defined`, TSD/CPL/fetch checks и отсутствие auto-advance.
   RDTSCP, MSR/CPUID, HLT progression, IRQ/deadlines и host-clock coupling не
   реализованы.
+- S4-23a добавляет bounded fixed-capacity очередь одноразовых absolute
+  deadlines с deterministic `(deadline, sequence)` ordering, explicit cancel/
+  reschedule и one-at-a-time `pop_due`. Очередь не двигает clock и не dispatch-ит
+  CPU/device/IRQ events.
 
 ## Проверки
 
@@ -135,6 +139,8 @@ S4-21a не доказывает HLT wakeup, reset, IRQ delivery, MMU/JIT integr
 REP continuation или VMHost/IPC scheduling.
 S4-22a не доказывает Linux-visible frequency policy, host monotonic time,
 RDTSCP/MSR/CPUID, HLT progression или event deadlines.
+S4-23a не доказывает dispatch, periodic timers, reset/generation, HLT wakeup,
+IRQ delivery, host wait или cross-machine event ownership.
 
 Открыты manifest S4-00, реализация 2 MiB/1 GiB и необходимых режимов, injected
 table-write failure, полная rights/error matrix, двухстраничная transaction
