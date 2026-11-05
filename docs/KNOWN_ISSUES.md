@@ -12,6 +12,28 @@
 
 ## Записи
 
+<a id="issue-055-s9-host-durability-guarantee-unconfirmed"></a>
+
+### ISSUE-055 — Host durability guarantee for macOS/APFS is unconfirmed
+
+- **Дата обнаружения:** 2026-11-05.
+- **Компонент:** будущий host storage backend `od-host` / `od-storage` (S9-03, S9-06), контракт [STORAGE_FORMAT.md](specs/STORAGE_FORMAT.md#7-host-durability-api--статус-открыт).
+- **Статус:** открыта. Это неподтверждённая платформенная гарантия, а не обнаруженный runtime-дефект: кода file I/O пока нет.
+- **Суть и последствия:** для выбранной кандидатной комбинации (macOS Tahoe 26.7.1, APFS, внутренний SSD) нет проверяемого источника, какой API даёт durability содержимого до энергонезависимой памяти накопителя и durability namespace (create, rename, directory entry). Без этого нельзя выдавать `durable_ack`, доказывать порядок data → metadata → publication → ack и заявлять power-loss свойства; S9-06 и все claims durability заблокированы.
+- **Основание:** Context7 Rust std (`/websites/doc_rust-lang_stable_std`): `File::sync_all` описан как «attempts to sync … to disk», `sync_data` может не синхронизировать metadata; платформенный механизм на macOS и namespace durability не описаны. Источники по `fsync`/`F_FULLFSYNC`/`F_BARRIERFSYNC` и APFS в рамках S9-00 не получены. Правило плана [этапа 9 §3, п. 3](plans/STAGE_9.md#3-правила-исполнителя-и-размещение) запрещает угадывать гарантию.
+- **Следующий шаг:** получить проверяемый источник (официальная документация Apple/man pages конкретной версии), выбрать протокол в S9-06, затем испытания уровней 1–3 по [STORAGE_RECOVERY.md](testing/STORAGE_RECOVERY.md). До этого durable операции отвечают `unsupported_durability`.
+
+<a id="issue-056-s9-cpu-state-not-single-owner"></a>
+
+### ISSUE-056 — Architectural CPU state has no single versioned owner
+
+- **Дата обнаружения:** 2026-11-05.
+- **Компонент:** `od-isa::LongModeState`, `od-isa::MsrProfile`, `od-machine::Long64ProbeConfig`; будущий S9-24.
+- **Статус:** открыта; архитектурная граница для checkpoint, не runtime-дефект текущих bounded срезов.
+- **Суть и последствия:** [`LongModeState`](../crates/od-isa/src/state.rs) несёт многие поля как `Option`, заполняемые только отдельными профилями, и не содержит CR2, CR3, CR8, EFER, DR*, LDTR, TR, XSAVE/AVX, general MSR и pending event state. CR3/EFER передаются отдельно через [`Long64ProbeConfig`](../crates/od-machine/src/page_walk.rs) и синтетический `MsrProfile::EferReadOnlyV1` ([`msr.rs`](../crates/od-isa/src/msr.rs)). Versioned codec отсутствует (только `Clone`/`PartialEq`). Полный CPU checkpoint по плану этапа 9 требует одного owner всего объявленного архитектурного состояния в `od-isa`; сейчас его нельзя собрать из одного объекта без потери полей или подстановки defaults.
+- **Основание:** инвентаризация S9-01 ([VM_STATE.md](specs/VM_STATE.md#22-cpu-ram-устройства-время)), `rg` по `crates/od-isa/src/state.rs` 2026-11-05. Предположение, требующее проверки при S4-12/S4-18…21: возможно, часть состояния намеренно остаётся probe-конфигурацией до полного lifecycle.
+- **Следующий шаг:** при закрытии этапа 4 задать единый versioned CPU state профиля в `od-isa` и его validation (S9-24); до этого full-VM checkpoint заблокирован.
+
 <a id="issue-054-s4-11-cross-page-cpu-integration"></a>
 
 ### ISSUE-054 — Cross-page, partial-execution and general rollback integration is not established

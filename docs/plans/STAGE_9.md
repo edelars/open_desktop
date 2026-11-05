@@ -164,6 +164,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-00. Зафиксировать область поддержки и failure model
 
 - [ ] Принято после архитектурного ревью.
+- **Текущий статус (2026-11-05):** черновики [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md), [VM_STATE.md](../specs/VM_STATE.md) и [STORAGE_RECOVERY.md](../testing/STORAGE_RECOVERY.md) созданы; архитектурное ревью не выполнено. Durability API не подтверждён ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)). Не разрешены лимиты logical size диска, virtual capacity CoW, глубины цепочек и числа snapshots, а также LBA/CoW block size — TBD в [STORAGE_FORMAT §4](../specs/STORAGE_FORMAT.md#4-единицы-размеры-и-лимиты).
 - **Где:** будущие `STORAGE_FORMAT.md`, `VM_STATE.md`, `STORAGE_RECOVERY.md`; ссылки на текущую support matrix.
 - **Сделать:** выбрать первую host/filesystem/media комбинацию, размеры guest sector/Cow block, limits диска/цепочек, single-writer policy, crash model, acknowledged durability и checksum scope. Размеры/структуры на горячем пути пока гипотеза для замеров S9-08. Определить minimal offline и целевой full-VM profiles.
 - **Проверить:** каждый advertised режим имеет source/API основание, сценарий и владельца; network/removable/непроверенные backends не получают случайно те же гарантии.
@@ -172,6 +173,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-01. Проверить prerequisites по фактическому коду
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** матрица в [VM_STATE.md §2](../specs/VM_STATE.md#2-инвентаризация-prerequisites-s9-01) составлена по коду; ревью не выполнено; `STAGE_9_REPORT.md` ещё не создан. Следующий runnable срез — S9-03; full-VM prerequisites заблокированы ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)).
 - **Где:** отчёт этапа и матрица зависимости в `VM_STATE.md`.
 - **Сделать:** перечислить готовность RAW/device backend, guest storage commands, всех CPU/RAM/device/time/I/O states, UEFI variables, vTPM и guest agents. Для каждого обязательного state указать реального owner и его versioned save/load contract либо точный blocker.
 - **Проверить:** методы snapshot в testkit и session ABI не приняты за сериализацию всей машины; нет зависимости offline CoW от всей Windows. Нужные задачи этапов 4–8 связаны с roadmap/фактическим кодом, без выдуманных IDs.
@@ -180,6 +182,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-02. Описать операции, состояния и результаты
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** таблицы операций в [VM_STATE.md §3](../specs/VM_STATE.md#3-операции-и-состояния-s9-02); ревью не выполнено.
 - **Где:** `VM_STATE.md`, storage contract; control protocol меняется только при интеграции S9-33.
 - **Сделать:** таблица для pause/resume, suspend, guest shutdown, forced stop, disk-only snapshot, full checkpoint, restore, clone, export, repair. Для каждой: prerequisites, consistency, durability, allowed transitions, cancellation point, operation ID и recoverable/uncertain failure.
 - **Проверить:** потеря ответа после commit не приводит к повторному destructive действию; pause не называется suspend; shutdown timeout не выдаётся за успешный clean shutdown.
@@ -406,7 +409,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 - [ ] Принято после ревью.
 - **Где:** `od-machine`, component validators, `od-storage`, host resource lifecycle.
 - **Сделать:** сначала verify всю dependency graph и compatibility; отклонить restore running/paused VM в первой версии. До создания target зарезервировать identity узким межпроцессным host session lease; stopped прежний VMHost должен освободить/передать право активации, старый owner generation утрачивает это право. Затем создать private stopped machine и восстановить участников. Для writable продолжения создать новые children/persistent generations от immutable checkpoint. Rebuild TLB/JIT/cache/handles; activate только после общего успеха и проверки единоличного identity lease.
-- **Проверить:** incompatible CPU/device/schema, missing parent/key, allocation/host-resource error, wrong epoch, stale executable handle и failure на середине restore; два разных restore/resume requests одной VM, живой прежний VMHost и crash при передаче lease. Разные disk children не разрешают одновременно запустить одинаковые UUID/MAC/vTPM identities. Не запускать CPU частично восстановленной VM.
+- **Проверить:** incompatible CPU/device/schema, missing parent/key, allocation/host-resource error, wrong epoch, stale executable handle и failure на середине restore, включая прерванную activation после publication (известное состояние после отказа: `failed_after_publication`/`interrupted_activation`, VM `stopped` с новыми generations, см. [VM_STATE §3.2](../specs/VM_STATE.md#32-operation-id)); два разных restore/resume requests одной VM, живой прежний VMHost и crash при передаче lease. Разные disk children не разрешают одновременно запустить одинаковые UUID/MAC/vTPM identities. Не запускать CPU частично восстановленной VM.
 - **Готово:** либо активировано полное нужное состояние с одним owner, либо target не запущен и исходные artifacts не повреждены; состояния старой/новой sessions после отказа известны. Host lease действует в поддержанном локальном scope, без нового daemon/distributed locking. Derived host state не переживает restore как сохранённые pointers.
 
 ### S9-31. Suspend/resume и различимые lifecycle operations
