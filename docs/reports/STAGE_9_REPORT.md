@@ -1,6 +1,6 @@
 # Этап 9. Отчёт: надёжность данных и управление состоянием
 
-Статус отчёта: **промежуточный. Этап 9 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и тестами ветки `feat/s9-stage` на коммите `69e0b02`. Gates G1–G6 не закрыты.
+Статус отчёта: **промежуточный. Этап 9 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и тестами ветки `feat/s9-stage` на коммите `000c1da`. Gates G1–G6 не закрыты.
 
 Связанные документы: [план этапа 9](../plans/STAGE_9.md), [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md), [VM_STATE.md](../specs/VM_STATE.md), [STORAGE_RECOVERY.md](../testing/STORAGE_RECOVERY.md), [реестр проблем](../KNOWN_ISSUES.md), [SUPPORT_MATRIX.md](../specs/SUPPORT_MATRIX.md).
 
@@ -10,14 +10,15 @@
 
 | Статус | Количество | Задачи |
 |---|---|---|
-| Реализовано, ревью пройдено (по сведениям из задания на отчёт) | 2 | S9-03, S9-05 |
+| Реализовано, ревью пройдено (по сведениям из заданий на отчёт) | 3 | S9-03, S9-05, S9-07 |
+| Прототип реализован и проверен, ревью протокола пройдено; формат НЕ принят | 1 | S9-08 |
 | Частично | 5 | S9-04, S9-06 (код, с оговорками ниже); S9-00, S9-01, S9-02 (только черновики документов, архитектурное ревью не выполнено) |
-| `not_started` | 2 | S9-07, S9-08 |
+| `not_started` | 0 | — |
 | `blocked` | 36 | S9-09…S9-44 |
 
-Принятого этапа или принятого gate нет. «Реализовано, ревью пройдено» относится к самой задаче и не означает принятие gate G1. Чекбоксы `[ ]` в плане не отмечены.
+Принятого этапа или принятого gate нет. «Реализовано, ревью пройдено» относится к самой задаче и не означает принятие gate G1. S9-08 не принят: нормативных bytes и лимитов нет, замеров нет. Чекбоксы `[ ]` в плане не отмечены.
 
-## 2. Задачи S9-00…S9-06
+## 2. Задачи S9-00…S9-08
 
 ### S9-00. Область поддержки и failure model — частично (черновик)
 
@@ -79,13 +80,31 @@
   - Поведение на non-APFS, сетевых и внешних volumes не проверено; на не-macOS durability не объявляется.
   - Задание «flush error до/после потенциального commit, delayed completion, file creation/rename publication; лог порядка операций» из плана выполнено не полностью (нет публикации через rename и лога порядка на реальном host).
 
-## 3. Задачи S9-07…S9-44
+### S9-07. Fault backend и независимый oracle — реализовано, ревью пройдено (нет блокеров и мажоров)
+
+- Коммит: `a7874b8`.
+- Файлы: [testing/fault.rs](../../crates/od-storage/src/testing/fault.rs), [testing/fault_tests.rs](../../crates/od-storage/src/testing/fault_tests.rs), [testing/rng.rs](../../crates/od-storage/src/testing/rng.rs), [testing/contract.rs](../../crates/od-storage/src/testing/contract.rs), [testing/mod.rs](../../crates/od-storage/src/testing/mod.rs).
+- Факт: `FaultBackend` моделирует volatile и durable bytes, pending writes и resize, скриптовые сбои (short, torn по 512-байтовым секторам, I/O errors, потерянные или лживые flush acknowledgements) и seeded crash policies. Независимый oracle на `Vec<u8>` ведёт последний подтверждённый snapshot и допустимые исходы pending; не использует backend и `RawImage`. Seeded-прогоны сверяют каждый шаг с oracle и при сбое печатают seed и operation trace.
+- Проверки: `raw_write_flush_crash_reopen_guarantee`, `oracle_detects_ack_without_durability`, `seeded_runs_detect_broken_flush_and_ack`, `seeded_runs_match_oracle`, `run_is_deterministic_for_a_seed`, `lost_ack_outcome_is_old_or_new_and_indistinguishable`, `torn_write_before_flush_is_not_guaranteed_but_flushed_is`, `flush_error_is_sticky_and_not_an_ack`, `resize_error_and_resize_loss`. На момент коммита в `od-storage` было 45 тестов.
+- НЕ доказано: модель не включает namespace (rename, create, directory) и реальный power-loss; исходы lost-ack проверяются только как «старое или новое». Реальный накопитель моделью не заменяется (S9-39).
+
+### S9-08. Минимальный собственный CoW format — прототип реализован и проверен; формат НЕ принят
+
+- Коммит: `000c1da`.
+- Файлы: [cow_proto.rs](../../crates/od-storage/src/cow_proto.rs), [cow_proto_tests.rs](../../crates/od-storage/src/cow_proto_tests.rs), [lib.rs](../../crates/od-storage/src/lib.rs).
+- Факт: прототип протокола фиксации (не нормативный формат): два root slot с чётностью generation, копия корня N+1 записывается до первого barrier, `DurableAck` только после второго barrier. Recovery проверяет CRC корней, карты и каждого блока, отказывает при повреждённых зависимостях без молчаливого отката, выполняет roll-forward только от CRC-валидной копии с совпадающими generation и end offset; исход roll-forward — неподтверждённое состояние. Salvage только на чтение.
+- Проверки: 1440 прогонов cut-point (`every_cut_point_leaves_old_or_new_never_mixed`, `create_cut_points_give_no_file_or_empty_file`), seeded-прогоны против независимого oracle (`seeded_sequences_match_the_oracle`), отрицательные тесты (`oracle_detects_ack_before_barrier_2`, `oracle_detects_root_without_data_barrier`, `oracle_detects_a_backend_that_acks_without_durability`, `crc_valid_but_hostile_roots_are_refused`, `damaged_data_under_valid_root_refuses_without_fallback`, `both_slots_damaged_refuses_to_open`, `generation_exhaustion_is_rejected_before_any_io`).
+- НЕ сделано / НЕ доказано:
+  - Размер блока, раскладка корня, плоская карта и все лимиты — гипотезы; замеры (S9-40) не сделаны. Нормативных bytes, root selection как спецификации, обработки unreachable garbage и feature bits нет; [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md#9-требования-к-cow-формату-bytes--tbd-s9-08) остаётся TBD.
+  - Не реализованы GC, refcount, snapshots, шифрование и hardening парсера сверх лимитов (S9-09, S9-14 и далее).
+  - Защита построена на модели отказов `FaultBackend`; реальный power-loss и namespace durability (публикация файла, ISSUE-055) не проверены.
+  - Критерий «Готово» плана (нормативные bytes и лимиты определены) не выполнен.
+
+## 3. Задачи S9-09…S9-44
 
 | Задача | Статус | Причина |
 |---|---|---|
-| S9-07 | `not_started` | Fault backend и oracle; формально зависит от принятого S9-06, у которого не реализована namespace durability (ISSUE-055) |
-| S9-08 | `not_started` | Выбор CoW format требует прототипных замеров по правилам `AGENTS.md`; замеров нет |
-| S9-09…S9-12 | `blocked` | Зависят от CoW-формата S9-08 (parser, create/root, write transaction, crash recovery); S9-12 дополнительно от S9-11 |
+| S9-09…S9-12 | `blocked` | Нужен принятый нормативный CoW-формат S9-08 (сейчас только прототип протокола, замеры не сделаны); parser, create/root, write transaction и crash recovery строятся на нём; S9-12 дополнительно от S9-11 |
 | S9-13 | `blocked` | Нужно устройство хранения гостя из этапов 5/7 и S9-12 |
 | S9-14…S9-22 | `blocked` | Цепочка зависимостей от S9-12 и формата S9-08 (snapshots, branch, leases, reclamation, capacity, CLI, import/export, salvage, migration) |
 | S9-23 | `blocked` | Зависит от S9-16 (не начат) |
@@ -98,40 +117,40 @@
 | S9-39 | `blocked` | Требуется отдельное разрешение на стенд power-loss и описанная схема; без него gate остаётся `not_run` |
 | S9-40…S9-44 | `blocked` | Зависят от S9-18, S9-31, S9-38, S9-39, S9-41 и не начатых задач |
 
-Дополнительно: namespace-часть S9-06 заблокирована ISSUE-055 и влияет на S9-10, S9-11, S9-29 (публикация root/manifest).
+Для S9-07/S9-08 в таблице строк нет: они описаны в §2. Дополнительно: namespace-часть S9-06 заблокирована ISSUE-055 и влияет на S9-10, S9-11, S9-29 (публикация root/manifest).
 
 ## 4. Gates (план, раздел 8)
 
 | Gate | Статус | Доказательство или недостаток |
 |---|---|---|
-| G1 — independent storage (S9-03…12) | `partial` | Есть: I/O contract, writer lock, RAW, file-data flush. Нет: namespace durability, fault backend/oracle, CoW, recovery с durable watermark, power-loss |
+| G1 — independent storage (S9-03…12) | `partial` | Есть: I/O contract, writer lock, RAW, file-data flush, fault backend с независимым oracle (S9-07), прототип CoW-протокола с проверкой всех cut points на модели (S9-08). Нет: принятого формата (S9-08), S9-09…12 (parser, create/root, write transaction, recovery с durable watermark), namespace durability, read leases (S9-04), power-loss |
 | G2 — snapshots/tools (S9-14…22) | `not_met` | Не начато |
 | G3 — coherent full VM (S9-13, 23…31) | `not_met` | Не начато; блокированы ISSUE-056 и отсутствующие компоненты |
 | G4 — identity/integration (S9-32…37) | `not_met` | Не начато |
-| G5 — failure qualification (S9-38/39/41) | `not_met` | Есть только unit-тесты sticky reconcile и kill процесса (в S9-04); power-loss не выполнялся |
+| G5 — failure qualification (S9-38/39/41) | `not_met` | Есть deterministic fault model для RAW и прототипа CoW (S9-07/08), unit-тесты sticky reconcile и kill процесса (S9-04); полной fault/corruption matrix, repeated recovery и power-loss нет |
 | G6 — reproducibility (S9-40…44) | `not_met` | Замеров, матрицы и независимого итогового ревью нет |
 
 ## 5. Открытые блокеры и записи
 
 - [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed): гарантия durability macOS/APFS не подтверждена. Реализован `F_FULLFSYNC` для данных файла (см. S9-06), но namespace durability, проверенный источник по API и испытания уровней 1–3 отсутствуют; запись ещё описывает состояние до кода и требует актуализации.
 - [ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner): у архитектурного CPU state нет единого versioned owner; блокирует S9-24 и full-VM checkpoint.
-- Нет принятого CoW-формата и замеров (S9-08).
+- Нет принятого CoW-формата и замеров (S9-08): есть только прототип протокола; блокирует S9-09…12 и далее.
 - Нет устройства хранения гостя (S9-13), UEFI, vTPM (S9-26/27).
 - Нет разрешения на power-loss стенд (S9-39).
 - S9-04: нет read leases, интеграции с VMHost, запрета изменения parent, busy при export/repair.
-- STORAGE_FORMAT.md и ISSUE-055 содержат устаревшие утверждения (§1, §5, §7; «кода file I/O пока нет»).
+- STORAGE_FORMAT.md и ISSUE-055 синхронизированы с кодом S9-03…06 (коммит `e9fe0ab`); состояние S9-07/S9-08 в STORAGE_FORMAT.md не отражено, §9 остаётся TBD.
 
 ## 6. Тесты
 
-Команды и результаты на `69e0b02` (2026-11-05):
+Команды и результаты на `000c1da` (2026-11-05):
 
 | Команда | Итог |
 |---|---|
-| `cargo test -p od-storage` | 36 passed, 0 failed |
+| `cargo test -p od-storage` | 59 passed, 0 failed (36 до S9-07/08; 45 на коммите `a7874b8`) |
 | `cargo test -p od-host --lib storage_io` | 19 passed, 0 failed |
 | `cargo test -p od-host --lib raw_file_tests` | 9 passed, 0 failed |
 | `cargo test -p od-host` | 253 passed, **21 failed** (`s3_20*` и `native_register_v1_corpus::reduce_saved_native_register_v1_case`) |
 
 21 падение в полном `cargo test -p od-host` существовало до этапа 9 (по сведениям из задания, проверено на чистом HEAD до S9); в этой сессии падения воспроизведены на текущем состоянии, повторная проверка на чистом HEAD не выполнялась. Они не относятся к коду S9-03…06 и не закрыты. Тесты S9 на этих падениях не основаны.
 
-Что тесты не доказывают: power-loss, namespace durability, поведение на других volumes и в реальных VMHost.
+Что тесты не доказывают: power-loss, namespace durability, поведение на других volumes и в реальных VMHost; результаты на `FaultBackend` не заменяют испытаний реального носителя.

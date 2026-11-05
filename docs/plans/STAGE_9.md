@@ -227,6 +227,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-07. Сделать fault backend и независимый oracle
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено (нет блокеров/мажоров), коммит `a7874b8`. Namespace и реальный power-loss в модель не входят — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-07-fault-backend-и-независимый-oracle--реализовано-ревью-пройдено-нет-блокеров-и-мажоров).
 - **Где:** unit tests `od-storage`, общая orchestration `tests/system/` и при необходимости `od-testkit` без production dependency.
 - **Сделать:** модель volatile/durable bytes и namespace, loss/reorder/torn/short writes в пределах failure model, errors на sync/rename/allocate. Вне faulted target вести sequence и durable watermark; ожидаемое состояние считать простой отдельной логической моделью.
 - **Проверить:** специально сломанный flush order/ack должен обнаруживаться; сохранять seed и operation trace; не сравнивать reader с writer, использующими одну ошибку parser.
@@ -235,6 +236,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-08. Выбрать минимальный собственный CoW format
 
 - [ ] Принято после архитектурного ревью и нужных прототипных замеров.
+- **Текущий статус (2026-11-05):** прототип реализован и проверен, ревью протокола пройдено, коммит `000c1da`; формат НЕ принят (гипотезы: размер блока, карта; замеры S9-40 не сделаны), нормативных bytes и лимитов нет — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-08-минимальный-собственный-cow-format--прототип-реализован-и-проверен-формат-не-принят).
 - **Где:** `STORAGE_FORMAT.md`, `od-storage`, ADR при выборе среди вариантов.
 - **Сделать:** versioned superblock/root descriptors, block map, generation/transaction IDs, checksums и bounded snapshot metadata. Первый кандидат: один файл и writer, фиксированная virtual capacity/block size, append-only immutable extents, полная bounded map поколения и два root slots. Протокол-кандидат: data/map → durability barrier → неактивный root → durability barrier → ack. До writer доказать все cuts; не предполагать atomic sector write и не добавлять journal/B-tree/refcounts без необходимости.
 - **Проверить:** на бумаге и минимальном fault prototype разобрать каждый durability cut. Для размера blocks/map и hot path сравнить минимальные варианты на одинаковой нагрузке; выбрать простейший удовлетворяющий измеренным требованиям.
