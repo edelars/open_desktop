@@ -12,11 +12,17 @@ pub mod raw;
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_proto;
 
+/// Strict read-only parser for the prototype layout (S9-09). Not normative.
+#[cfg(any(test, feature = "test-support"))]
+pub mod cow_parse;
+
 /// In-memory backend and the shared backend contract suite. Enabled by tests
 /// and by the `test-support` feature for host crates that run the same suite.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
+#[cfg(test)]
+mod cow_parse_tests;
 #[cfg(test)]
 mod cow_proto_tests;
 #[cfg(test)]

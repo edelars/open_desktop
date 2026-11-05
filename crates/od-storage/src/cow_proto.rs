@@ -93,9 +93,9 @@ pub const HEADER_LEN: u64 = 2 * SLOT_SIZE as u64;
 /// Prototype limit on logical blocks; bounds allocations driven by a root.
 pub const MAX_BLOCKS: u64 = 1 << 16;
 
-const MAGIC: [u8; 8] = *b"ODCOWP\0\x01";
-const VERSION: u32 = 1;
-const ENTRY_LEN: usize = 12;
+pub(crate) const MAGIC: [u8; 8] = *b"ODCOWP\0\x01";
+pub(crate) const VERSION: u32 = 1;
+pub(crate) const ENTRY_LEN: usize = 12;
 const CRC_AT: usize = SLOT_SIZE - 4;
 
 // ------------------------------------------------------------------ CRC-32
