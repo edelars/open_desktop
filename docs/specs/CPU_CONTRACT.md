@@ -146,6 +146,44 @@ page boundary is unsupported before any operand translation. The CR0-only
 public profile entry points are also unsupported; this profile requires the
 matching CR0 and CR4 pair before instruction fetch.
 
+### Exact MOV CR3 execution profile `MovCr3Long64V1` (S4-12b)
+
+`step_mov_cr3` admits only bare Long64 `0F 22 D8` (`MOV CR3,RAX`). The
+profile fixes EFER=`0xd00`, CR0=`Cr0Profile::BASE`, CR4=`Cr4Profile::BASE`,
+PCIDE=0, LA57=0, PGE=0, canonical48/physical36/four-level paging, and one
+vCPU. Initial CR3 must be present in `LongModeState` and have no bits above
+MAXPHYADDR=36; missing or invalid initial state is an API input error before
+fetch.
+
+LOCK-prefixed form raises #UD only through this profile; other prefixes/forms
+remain unsupported. CPL other than 0 raises #GP(0). With PCIDE=0, CR3[2:0]
+and CR3[11:5] are ignored by the paging format, CR3[3:4] select PWT/PCD, and
+CR3[35:12] hold the root physical address. Source bits [63:36] are reserved
+and fault with #GP(0). Accepted source bits are retained in the CPU-owned CR3
+value. A successful write commits CR3 and RIP+3, retires once, preserves
+concrete RFLAGS and clears arithmetic-flag definedness. Every success returns
+a typed `TranslationContextChange::Cr3Write`, including identical-value
+writes. The caller must stop at this boundary before another instruction can
+use a stale translation snapshot.
+
+This version refuses instruction starts at code-page offsets `0xff2` through
+`0xfff` before fetch, so even a maximal 15-byte x86 encoding cannot cross a
+page while unsupported prefixes are classified. Cross-page instruction fetch
+is outside the profile.
+The LOCK #UD case is recognized only for the exact prefix sequence `F0`.
+
+This CPU slice does not update machine translation state, walk the replacement
+root, invalidate a TLB, deliver exceptions, update CR2, enable PCID/global
+pages, write EFER, or establish startup state. S4-12c owns active machine
+translation integration.
+
+Normative source: Intel 64 and IA-32 Architectures Software Developer's
+Manual, Revision 093, Vol. 3A §5.5.2, Table 5-12 (CR3 format with PCIDE=0),
+and Vol. 2B, `MOV—Move to/from Control Registers`. See the
+[official Intel SDM page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+[Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190), and
+[Vol. 2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
+
 ### Cross-page fetch for `PagedMovCrossPageDwordReadLong64V1` (S4-11d)
 
 Only for the exact `8B 03` form in this opt-in profile, one vCPU, synthetic

@@ -270,6 +270,7 @@ fn scheduled_rx_bytes_feed_paged_in_in_in_and_hlt_execution() {
     pump.schedule(generation, 2, 20, 0xc3).unwrap();
 
     let mut cpu = LongModeState {
+        cr3: None,
         rip: CODE_LINEAR,
         cr0: Some(CR0),
         cr4: Some(CR4),

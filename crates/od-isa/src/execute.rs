@@ -1746,6 +1746,7 @@ pub enum Cr0Profile {
     PagedMovCrossPageDwordReadLong64V1,
     PagedMovCrossPageWordReadLong64V1,
     PagedMovCrossPageWordFetchLong64V1,
+    MovCr3Long64V1,
 }
 
 impl Cr0Profile {
@@ -1768,6 +1769,7 @@ pub enum Cr4Profile {
     PagedMovCrossPageDwordReadLong64V1,
     PagedMovCrossPageWordReadLong64V1,
     PagedMovCrossPageWordFetchLong64V1,
+    MovCr3Long64V1,
 }
 
 impl Cr4Profile {
@@ -1915,6 +1917,7 @@ struct ExecutionProfiles<'a> {
     halt: Option<&'a crate::HaltProfile>,
     cr0: Option<Cr0Profile>,
     cr4: Option<Cr4Profile>,
+    mov_cr3: Option<MovCr3Long64V1>,
 }
 
 struct StepRuntime<'source, 'sti, 'stop> {
@@ -1933,9 +1936,48 @@ pub struct RunResult {
     pub rflags_defined: u64,
 }
 
+/// Cause of an explicit CPU-side translation-context change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TranslationContextChangeReason {
+    Cr3Write,
+}
+
+/// Mandatory execution-boundary effect emitted by every successful MOV CR3.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TranslationContextChange {
+    pub reason: TranslationContextChangeReason,
+    pub old_cr3: u64,
+    pub new_cr3: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MovCr3Exit {
+    TranslationContextChange(TranslationContextChange),
+    Fault(ArchitecturalFault),
+    Unsupported { opcode: u8 },
+    MemoryError(MemoryError),
+}
+
+/// Result of the single-instruction MOV CR3 entry point.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MovCr3Result {
+    pub exit: MovCr3Exit,
+    pub instructions_executed: u64,
+    pub rflags_defined: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RunInputError {
     InvalidRflagsDefined { value: u64 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MovCr3InputError {
+    InvalidRflagsDefined { value: u64 },
+    MissingCr3,
+    InvalidInitialCr3 { value: u64 },
+    InvalidProfileState,
+    WrongInstructionMode,
 }
 
 /// Explicit opt-in marker for the diagnostic CPL0 byte PIO profile.
@@ -1962,6 +2004,10 @@ pub struct PagedMovCrossPageDwordReadLong64V1;
 /// Exact opt-in CPU profile for bounded `MOV AX,[RBX]` paged word reads.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedMovCrossPageWordReadLong64V1;
+
+/// Exact opt-in CPU profile for one bare `MOV CR3, RAX` in Long64.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MovCr3Long64V1;
 
 /// Exact opt-in CPU profile for the S4-11f cross-page fetch plus word read.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2034,6 +2080,7 @@ pub enum MaskableRequestRunInputError {
     InvalidRflagsDefined { value: u64 },
     IncompatibleEntryFlags { value: u64 },
     Cr0StateOutsideSelectedProfile,
+    Cr3StateOutsideSelectedProfile,
     InterruptInhibitionActive,
     InvalidHaltedState,
 }
@@ -2143,6 +2190,7 @@ pub enum RepRunInputError {
     InvalidRflagsDefined { value: u64 },
     InterruptInhibitionActive,
     Cr0StateOutsideSelectedProfile,
+    Cr3StateOutsideSelectedProfile,
     ContinuationStateMismatch,
     ContinuationInstructionMismatch,
 }
@@ -2158,6 +2206,9 @@ pub fn run_with_rep_continuation(
     continuation: &mut Option<RepContinuation>,
     mut stop_requested: impl FnMut() -> bool,
 ) -> Result<RunResult, RepRunInputError> {
+    if state.cr3.is_some() {
+        return Err(RepRunInputError::Cr3StateOutsideSelectedProfile);
+    }
     if state.cr0.is_some() || state.cr4.is_some() {
         return Err(RepRunInputError::Cr0StateOutsideSelectedProfile);
     }
@@ -2909,6 +2960,7 @@ pub fn run_with_maxss_unmasked_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -3059,6 +3111,7 @@ pub fn run_with_minsd_unmasked_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -3209,6 +3262,7 @@ pub fn run_with_maxsd_unmasked_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -3359,6 +3413,7 @@ pub fn run_with_minpd_unmasked_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -3509,6 +3564,7 @@ pub fn run_with_minps_unmasked_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -3659,6 +3715,7 @@ pub fn run_with_maxps_unmasked_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -3809,6 +3866,7 @@ pub fn run_with_maxpd_unmasked_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -3959,6 +4017,7 @@ pub fn run_with_cvtsi2sd_r32_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -4109,6 +4168,7 @@ pub fn run_with_cvtsi2sd_r32_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -4259,6 +4319,7 @@ pub fn run_with_cvtsi2sd_r64_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -4409,6 +4470,7 @@ pub fn run_with_cvtsi2sd_r64_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -4559,6 +4621,7 @@ pub fn run_with_cvtsi2sd_registers_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -4709,6 +4772,7 @@ pub fn run_with_cvtsi2ss_registers_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -4859,6 +4923,7 @@ pub fn run_with_cvtsi2ss_r32_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -5009,6 +5074,7 @@ pub fn run_with_cvtsi2ss_r64_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -5159,6 +5225,7 @@ pub fn run_with_cvtss2si_registers_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -5309,6 +5376,7 @@ pub fn run_with_cvttss2si_registers_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -5458,6 +5526,7 @@ pub fn run_with_cvtsd2si_registers_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -5641,6 +5710,7 @@ fn run_with_cvtsd2si_r32_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -5791,6 +5861,7 @@ pub fn run_with_cvtsd2si_r64_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -5976,6 +6047,7 @@ fn run_with_cvttsd2si_r32_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -6130,6 +6202,7 @@ pub fn run_with_cvttsd2si_r64_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -6313,6 +6386,7 @@ fn run_with_cvtss2si_r32_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -6463,6 +6537,7 @@ pub fn run_with_cvtss2si_r64_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -6613,6 +6688,7 @@ pub fn run_with_cvttss2si_r64_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -6796,6 +6872,7 @@ fn run_with_cvttss2si_r32_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -6947,6 +7024,7 @@ pub fn run_with_cvttsd2si_registers_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -7097,6 +7175,7 @@ pub fn run_with_cvtdq2pd_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -7247,6 +7326,7 @@ pub fn run_with_cvtdq2pd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -7396,6 +7476,7 @@ pub fn run_with_cvtdq2pd_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -7546,6 +7627,7 @@ pub fn run_with_cvtdq2ps_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -7729,6 +7811,7 @@ fn run_with_cvtdq2ps_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -7879,6 +7962,7 @@ pub fn run_with_cvtps2dq_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -8029,6 +8113,7 @@ pub fn run_with_cvttps2dq_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -8212,6 +8297,7 @@ fn run_with_cvtps2dq_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -8395,6 +8481,7 @@ fn run_with_cvttps2dq_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -8578,6 +8665,7 @@ fn run_with_cvttpd2dq_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -8761,6 +8849,7 @@ fn run_with_cvtpd2dq_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -8911,6 +9000,7 @@ pub fn run_with_cvtpd2dq_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -9061,6 +9151,7 @@ pub fn run_with_cvtpd2ps_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -9211,6 +9302,7 @@ pub fn run_with_cvttpd2dq_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -9361,6 +9453,7 @@ pub fn run_with_cvtss2sd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -9511,6 +9604,7 @@ pub fn run_with_cvtpi2pd_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -9697,6 +9791,7 @@ fn run_with_cvtpi2ps_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -10014,6 +10109,7 @@ pub fn run_with_cvtsd2ss_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -10164,6 +10260,7 @@ pub fn run_with_cvtps2pd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -10314,6 +10411,7 @@ pub fn run_with_cvtps2pd_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -10464,6 +10562,7 @@ pub fn run_with_cvtss2sd_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -10613,6 +10712,7 @@ pub fn run_with_cvtsd2ss_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -10763,6 +10863,7 @@ pub fn run_with_comiss_ucomiss_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -10971,6 +11072,7 @@ fn run_with_cmpss_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -11121,6 +11223,7 @@ pub fn run_with_cmpsd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -11271,6 +11374,7 @@ pub fn run_with_cmppd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -11420,6 +11524,7 @@ pub fn run_with_cmppd_memory_rax_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -11569,6 +11674,7 @@ pub fn run_with_cmpps_memory_rax_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -11741,6 +11847,7 @@ fn run_with_minsd_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -11891,6 +11998,7 @@ pub fn run_with_maxsd_memory_rax_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -12068,6 +12176,7 @@ pub fn run_with_maxsd_memory_unmasked_rax_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -12230,6 +12339,7 @@ fn run_with_minpd_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -12415,6 +12525,7 @@ fn run_with_minps_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -12565,6 +12676,7 @@ pub fn run_with_rcpps_memory_rax_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -12715,6 +12827,7 @@ pub fn run_with_rcpss_memory_rax_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -12864,6 +12977,7 @@ pub fn run_with_rsqrtss_memory_rax_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -13013,6 +13127,7 @@ pub fn run_with_sqrtss_memory_rax_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -13162,6 +13277,7 @@ pub fn run_with_sqrtss_memory_rax_unmasked_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -13344,6 +13460,7 @@ fn run_with_sqrtps_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -13493,6 +13610,7 @@ pub fn run_with_rsqrtps_memory_rax_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -13674,6 +13792,7 @@ fn run_with_sqrtpd_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -13855,6 +13974,7 @@ fn run_with_sqrtsd_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -14043,6 +14163,7 @@ fn run_with_maxpd_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -14231,6 +14352,7 @@ fn run_with_maxps_memory_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -14433,6 +14555,7 @@ fn run_minss_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -14625,6 +14748,7 @@ fn run_maxss_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -14774,6 +14898,7 @@ pub fn run_with_cmpps_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -14924,6 +15049,7 @@ pub fn run_with_cr4_fxrstor64_minss_profile(
             sti: None,
             halt: None,
             cr0: Some(Cr0Profile::FpInitLong64V1),
+            mov_cr3: None,
             cr4: Some(Cr4Profile::FpInitThenFxrstor64MinssLong64V1),
         },
         StepRuntime {
@@ -15127,6 +15253,7 @@ pub fn run_with_efer_rdmsr_profile(
             sti: None,
             halt: None,
             cr0: Some(Cr0Profile::EferReadOnlyLong64V1),
+            mov_cr3: None,
             cr4: Some(Cr4Profile::EferReadOnlyLong64V1),
         },
         StepRuntime {
@@ -15522,6 +15649,7 @@ pub fn run_with_cr0_profile(
             sti: None,
             halt: None,
             cr0: Some(profile),
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -15548,6 +15676,7 @@ pub fn run_with_cr4_profile(
         config,
         crate::INTEGER_FLAGS,
         profile,
+        None,
         stop_requested,
     )
 }
@@ -15558,8 +15687,16 @@ fn run_with_cr4_profile_and_rflags_defined(
     config: RunConfig,
     initial_rflags_defined: u64,
     profile: Cr4Profile,
+    mov_cr3_profile: Option<MovCr3Long64V1>,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
+    if (profile == Cr4Profile::MovCr3Long64V1) != mov_cr3_profile.is_some() {
+        return RunResult {
+            exit: RunExit::Unsupported { opcode: 0x0f },
+            instructions_executed: 0,
+            rflags_defined: initial_rflags_defined,
+        };
+    }
     let config = if matches!(
         profile,
         Cr4Profile::PagedMovLong64V1
@@ -15718,8 +15855,10 @@ fn run_with_cr4_profile_and_rflags_defined(
                 Cr4Profile::PagedMovCrossPageWordFetchLong64V1 => {
                     Cr0Profile::PagedMovCrossPageWordFetchLong64V1
                 }
+                Cr4Profile::MovCr3Long64V1 => Cr0Profile::MovCr3Long64V1,
                 _ => Cr0Profile::FpInitLong64V1,
             }),
+            mov_cr3: mov_cr3_profile,
             cr4: Some(profile),
         },
         StepRuntime {
@@ -15765,6 +15904,7 @@ pub fn step_paged_mov(
         },
         initial_rflags_defined,
         Cr4Profile::PagedMovLong64V1,
+        None,
         || false,
     ))
 }
@@ -15798,6 +15938,7 @@ pub fn step_paged_mov_dword_read(
         },
         initial_rflags_defined,
         Cr4Profile::PagedMovCrossPageDwordReadLong64V1,
+        None,
         || false,
     ))
 }
@@ -15830,6 +15971,7 @@ pub fn step_paged_mov_word_read(
         },
         initial_rflags_defined,
         Cr4Profile::PagedMovCrossPageWordReadLong64V1,
+        None,
         || false,
     ))
 }
@@ -15863,8 +16005,80 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         },
         initial_rflags_defined,
         Cr4Profile::PagedMovCrossPageWordFetchLong64V1,
+        None,
         || false,
     ))
+}
+
+/// Execute one exact bare `0F 22 D8` MOV CR3,RAX and stop at the mandatory
+/// translation-context boundary after a successful commit.
+pub fn step_mov_cr3(
+    _profile: MovCr3Long64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> Result<MovCr3Result, MovCr3InputError> {
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return Err(MovCr3InputError::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return Err(MovCr3InputError::WrongInstructionMode);
+    }
+    if efer != 0xd00 || state.cr0 != Some(Cr0Profile::BASE) || state.cr4 != Some(Cr4Profile::BASE) {
+        return Err(MovCr3InputError::InvalidProfileState);
+    }
+    let old_cr3 = state.cr3.ok_or(MovCr3InputError::MissingCr3)?;
+    if old_cr3 & !((1u64 << 36) - 1) != 0 {
+        return Err(MovCr3InputError::InvalidInitialCr3 { value: old_cr3 });
+    }
+    if state.rip & 0xfff >= 0xff2 {
+        return Ok(MovCr3Result {
+            exit: MovCr3Exit::Unsupported { opcode: 0x0f },
+            instructions_executed: 0,
+            rflags_defined: initial_rflags_defined,
+        });
+    }
+
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let next_rip = state.rip.wrapping_add(3);
+    let run = run_with_cr4_profile_and_rflags_defined(
+        state,
+        memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(next_rip),
+            context,
+        },
+        initial_rflags_defined,
+        Cr4Profile::MovCr3Long64V1,
+        Some(MovCr3Long64V1),
+        || false,
+    );
+    let exit = match run.exit {
+        RunExit::StopAddress if run.instructions_executed == 1 => {
+            MovCr3Exit::TranslationContextChange(TranslationContextChange {
+                reason: TranslationContextChangeReason::Cr3Write,
+                old_cr3,
+                new_cr3: state.cr3.expect("successful MOV CR3 keeps CR3 modeled"),
+            })
+        }
+        RunExit::Fault(fault) => MovCr3Exit::Fault(fault),
+        RunExit::Unsupported { opcode } => MovCr3Exit::Unsupported { opcode },
+        RunExit::MemoryError(error) => MovCr3Exit::MemoryError(error),
+        _ => MovCr3Exit::Unsupported { opcode: 0x0f },
+    };
+    Ok(MovCr3Result {
+        exit,
+        instructions_executed: run.instructions_executed,
+        rflags_defined: run.rflags_defined,
+    })
 }
 
 /// Execute at most one exact bare `IN AL, DX` or `OUT DX, AL` instruction.
@@ -15894,7 +16108,7 @@ pub fn step_pio_u8<P: crate::PortIo>(
     if context.privilege != PrivilegeLevel::Ring0 {
         return rejected(PioU8AdmissionError::WrongPrivilege);
     }
-    if state.cr0.is_some() || state.cr4.is_some() {
+    if state.cr0.is_some() || state.cr3.is_some() || state.cr4.is_some() {
         return rejected(PioU8AdmissionError::ControlRegistersPresent);
     }
     if state.activity == Some(crate::CpuActivity::Halted) {
@@ -15933,6 +16147,9 @@ pub fn step_paged_pio_u8<P: crate::PortIo>(
     }
     if context.privilege != PrivilegeLevel::Ring0 {
         return rejected(PioU8AdmissionError::WrongPrivilege);
+    }
+    if state.cr3.is_some() {
+        return rejected(PioU8AdmissionError::ControlRegistersOutsideProfile);
     }
     if state.cr0.is_none() || state.cr4.is_none() {
         return rejected(PioU8AdmissionError::ControlRegistersMissing);
@@ -16010,6 +16227,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     if context.privilege != PrivilegeLevel::Ring0 {
         return reject(PagedProbeRejection::WrongPrivilege);
     }
+    if state.cr3.is_some() {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
     if state.cr0.is_none() || state.cr4.is_none() {
         return reject(PagedProbeRejection::ControlRegistersMissing);
     }
@@ -16045,6 +16265,14 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     let instruction = match long_decode::decode(memory, state.rip, context) {
         Ok(instruction) => instruction,
         Err(DecodeError::Unsupported { opcode, .. }) => {
+            return result(
+                PagedProbeExit::Unsupported {
+                    opcode: opcode.byte,
+                },
+                0,
+            );
+        }
+        Err(DecodeError::InvalidMovCr3Lock { opcode, .. }) => {
             return result(
                 PagedProbeExit::Unsupported {
                     opcode: opcode.byte,
@@ -16269,6 +16497,15 @@ fn execute_pio_u8<P: crate::PortIo>(
                 rflags_defined: initial_rflags_defined,
             };
         }
+        Err(DecodeError::InvalidMovCr3Lock { opcode, .. }) => {
+            return PioU8Result {
+                exit: PioU8Exit::Unsupported {
+                    opcode: opcode.byte,
+                },
+                instructions_executed: 0,
+                rflags_defined: initial_rflags_defined,
+            };
+        }
         Err(DecodeError::Invalid { .. }) => {
             return PioU8Result {
                 exit: PioU8Exit::Fault(ArchitecturalFault {
@@ -16394,6 +16631,9 @@ pub fn run_with_maskable_request(
     request: Option<u8>,
     mut stop_requested: impl FnMut() -> bool,
 ) -> Result<MaskableRequestRunResult, MaskableRequestRunInputError> {
+    if state.cr3.is_some() {
+        return Err(MaskableRequestRunInputError::Cr3StateOutsideSelectedProfile);
+    }
     if state.cr0.is_some() || state.cr4.is_some() {
         return Err(MaskableRequestRunInputError::Cr0StateOutsideSelectedProfile);
     }
@@ -16721,6 +16961,7 @@ fn run_execution_loop_with_profiles_and_rdtsc_and_sti(
             sti: sti_profile,
             halt: halt_profile,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -16746,6 +16987,14 @@ fn run_configured(
     let stop_requested = &mut runtime.stop_requested;
     if (state.cr0.is_some() && profiles.cr0.is_none())
         || (state.cr4.is_some() && profiles.cr4.is_none())
+        || (state.cr3.is_some() && profiles.mov_cr3.is_none())
+        || (state.cr3.is_none() && profiles.mov_cr3.is_some())
+        || ((profiles.cr0 == Some(Cr0Profile::MovCr3Long64V1)
+            || profiles.cr4 == Some(Cr4Profile::MovCr3Long64V1))
+            != profiles.mov_cr3.is_some())
+        || (profiles.mov_cr3.is_some()
+            && (profiles.cr0 != Some(Cr0Profile::MovCr3Long64V1)
+                || profiles.cr4 != Some(Cr4Profile::MovCr3Long64V1)))
     {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0x0f },
@@ -16763,6 +17012,7 @@ fn run_configured(
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
+                    | Cr0Profile::MovCr3Long64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -16773,6 +17023,7 @@ fn run_configured(
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
+                    | Cr0Profile::MovCr3Long64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -16808,6 +17059,7 @@ fn run_configured(
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
+                    | Cr4Profile::MovCr3Long64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -16818,8 +17070,25 @@ fn run_configured(
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
+                    | Cr4Profile::MovCr3Long64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
+    {
+        return RunResult {
+            exit: RunExit::Unsupported { opcode: 0x0f },
+            instructions_executed: 0,
+            rflags_defined,
+        };
+    }
+    if profiles.mov_cr3.is_some()
+        && (config.context.mode != InstructionMode::Long64
+            || profiles.cr0 != Some(Cr0Profile::MovCr3Long64V1)
+            || profiles.cr4 != Some(Cr4Profile::MovCr3Long64V1)
+            || !state.cr0.is_some_and(|value| value == Cr0Profile::BASE)
+            || !state.cr4.is_some_and(|value| value == Cr4Profile::BASE)
+            || !state
+                .cr3
+                .is_some_and(|value| value & !((1u64 << 36) - 1) == 0))
     {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0x0f },
@@ -17102,6 +17371,7 @@ pub fn step_with_cr0_profile(
             sti: None,
             halt: None,
             cr0: Some(profile),
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -17495,6 +17765,7 @@ fn step_tracked_with_profiles_and_rdtsc(
             sti: sti_profile,
             halt: halt_profile,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -17645,6 +17916,7 @@ pub fn run_with_comisd_ucomisd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -18019,6 +18291,7 @@ fn run_with_comparison_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -18171,6 +18444,7 @@ pub fn run_with_sqrtss_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -18321,6 +18595,7 @@ pub fn run_with_sqrtsd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -18471,6 +18746,7 @@ pub fn run_with_sqrtps_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -18621,6 +18897,7 @@ pub fn run_with_sqrtpd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -18776,6 +19053,7 @@ fn run_with_subpd_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -18981,6 +19259,7 @@ pub fn run_with_mulpd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -19134,6 +19413,7 @@ fn run_with_addpd_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -19317,6 +19597,7 @@ fn run_with_mulpd_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -19522,6 +19803,7 @@ pub fn run_with_addsd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -19672,6 +19954,7 @@ pub fn run_with_divpd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -19855,6 +20138,7 @@ fn run_with_divpd_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -20005,6 +20289,7 @@ pub fn run_with_addss_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -20189,6 +20474,7 @@ fn run_with_addss_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -20372,6 +20658,7 @@ fn run_with_addsd_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -20558,6 +20845,7 @@ fn run_with_addps_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -20708,6 +20996,7 @@ pub fn run_with_divsd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -20894,6 +21183,7 @@ fn run_with_divps_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -21044,6 +21334,7 @@ pub fn run_with_divss_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -21194,6 +21485,7 @@ pub fn run_with_mulsd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -21344,6 +21636,7 @@ pub fn run_with_mulss_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -21530,6 +21823,7 @@ fn run_with_mulps_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -21680,6 +21974,7 @@ pub fn run_with_subsd_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -21830,6 +22125,7 @@ pub fn run_with_subss_register_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -21980,6 +22276,7 @@ fn run_with_scalar_float_memory_rax_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -22374,6 +22671,7 @@ fn run_with_subps_profile(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -22523,6 +22821,7 @@ pub fn run_with_cvtpd2ps_memory_controls(
             sti: None,
             halt: None,
             cr0: None,
+            mov_cr3: None,
             cr4: None,
         },
         StepRuntime {
@@ -22967,6 +23266,7 @@ fn step_configured(
         sti: sti_profile,
         halt: halt_profile,
         cr0: cr0_profile,
+        mov_cr3: mov_cr3_profile,
         cr4: cr4_profile,
     } = profiles;
     let configured_cvtss2si_memory_r32_controls = match configured_cvtss2si_memory_r32_profile {
@@ -22999,6 +23299,13 @@ fn step_configured(
     } = runtime;
     if (state.cr0.is_some() && cr0_profile.is_none())
         || (state.cr4.is_some() && cr4_profile.is_none())
+        || (state.cr3.is_some() != mov_cr3_profile.is_some())
+        || ((cr0_profile == Some(Cr0Profile::MovCr3Long64V1)
+            || cr4_profile == Some(Cr4Profile::MovCr3Long64V1))
+            != mov_cr3_profile.is_some())
+        || (mov_cr3_profile.is_some()
+            && (cr0_profile != Some(Cr0Profile::MovCr3Long64V1)
+                || cr4_profile != Some(Cr4Profile::MovCr3Long64V1)))
     {
         return Ok(StepOutcome::Unsupported { opcode: 0x0f });
     }
@@ -23012,6 +23319,7 @@ fn step_configured(
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
+                    | Cr0Profile::MovCr3Long64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -23022,6 +23330,7 @@ fn step_configured(
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
+                    | Cr0Profile::MovCr3Long64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -23053,6 +23362,7 @@ fn step_configured(
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
+                    | Cr4Profile::MovCr3Long64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -23063,6 +23373,7 @@ fn step_configured(
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
+                    | Cr4Profile::MovCr3Long64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -23070,6 +23381,18 @@ fn step_configured(
     }
     if cr0_profile.is_some_and(is_paged_mov_cr0)
         && !matching_paged_mov_profiles(cr0_profile, cr4_profile)
+    {
+        return Ok(StepOutcome::Unsupported { opcode: 0x0f });
+    }
+    if mov_cr3_profile.is_some()
+        && (context.mode != InstructionMode::Long64
+            || cr0_profile != Some(Cr0Profile::MovCr3Long64V1)
+            || cr4_profile != Some(Cr4Profile::MovCr3Long64V1)
+            || state.cr0 != Some(Cr0Profile::BASE)
+            || state.cr4 != Some(Cr4Profile::BASE)
+            || !state
+                .cr3
+                .is_some_and(|value| value & !((1u64 << 36) - 1) == 0))
     {
         return Ok(StepOutcome::Unsupported { opcode: 0x0f });
     }
@@ -23115,6 +23438,23 @@ fn step_configured(
     let instruction = match long_decode::decode(memory, state.rip, context) {
         Ok(instruction) => instruction,
         Err(DecodeError::Unsupported { opcode, .. }) => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: opcode.byte,
+            });
+        }
+        Err(DecodeError::InvalidMovCr3Lock { .. }) if mov_cr3_profile.is_some() => {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }));
+        }
+        Err(DecodeError::InvalidMovCr3Lock { opcode, .. }) => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: opcode.byte,
+            });
+        }
+        Err(DecodeError::Invalid { opcode, .. }) if mov_cr3_profile.is_some() => {
             return Ok(StepOutcome::Unsupported {
                 opcode: opcode.byte,
             });
@@ -23179,7 +23519,17 @@ fn step_configured(
     } else if cr0_profile.is_some() {
         let efer_only_profiles = cr0_profile == Some(Cr0Profile::EferReadOnlyLong64V1)
             || cr4_profile == Some(Cr4Profile::EferReadOnlyLong64V1);
-        let allowed = if efer_only_profiles {
+        let allowed = if mov_cr3_profile.is_some() {
+            cr0_profile == Some(Cr0Profile::MovCr3Long64V1)
+                && cr4_profile == Some(Cr4Profile::MovCr3Long64V1)
+                && instruction.operation == Operation::WriteCr3
+                && instruction.opcode.map == OpcodeMap::Escape0f
+                && instruction.opcode.byte == 0x22
+                && instruction.length == 3
+                && instruction.prefixes == Prefixes::default()
+                && instruction.operand_size == OperandSize::Qword
+                && instruction.address_size == OperandSize::Qword
+        } else if efer_only_profiles {
             instruction.operation == Operation::ReadMsr
                 && cr0_profile == Some(Cr0Profile::EferReadOnlyLong64V1)
                 && cr4_profile == Some(Cr4Profile::EferReadOnlyLong64V1)
@@ -23301,7 +23651,8 @@ fn step_configured(
             && matches!(
                 instruction.operation,
                 Operation::ReadCr4 | Operation::WriteCr4
-            )))
+            ))
+        || (mov_cr3_profile.is_some() && instruction.operation == Operation::WriteCr3))
         && context.privilege != PrivilegeLevel::Ring0
     {
         return Ok(StepOutcome::Fault(ArchitecturalFault {
@@ -28581,6 +28932,20 @@ fn step_configured(
             *rflags_defined &= !crate::ARITHMETIC_FLAGS;
             return Ok(StepOutcome::Advanced);
         }
+        Operation::WriteCr3 if mov_cr3_profile.is_some() => {
+            let value = state.gpr[Register::Rax as usize];
+            if value & !((1u64 << 36) - 1) != 0 {
+                return Ok(StepOutcome::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }));
+            }
+            state.cr3 = Some(value);
+            state.rip = next_rip;
+            *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+            return Ok(StepOutcome::Advanced);
+        }
         _ => {}
     }
     if instruction.operation == Operation::Hlt {
@@ -30440,6 +30805,7 @@ fn step_configured(
         Operation::Sysenter | Operation::Sysexit => false,
         Operation::ReadCr0 | Operation::WriteCr0 => cr0_profile.is_some(),
         Operation::ReadCr4 | Operation::WriteCr4 => cr4_profile.is_some(),
+        Operation::WriteCr3 => mov_cr3_profile.is_some(),
         Operation::MovImmediate { .. }
         | Operation::Mov { .. }
         | Operation::MovFsLoad { .. }
@@ -32628,7 +32994,11 @@ fn step_configured(
             unreachable!("PIO operations are rejected outside the explicit PIO entry")
         }
         Operation::Hlt => unreachable!("HLT commits in its profile-gated state path"),
-        Operation::ReadCr0 | Operation::WriteCr0 | Operation::ReadCr4 | Operation::WriteCr4 => {
+        Operation::ReadCr0
+        | Operation::WriteCr0
+        | Operation::ReadCr4
+        | Operation::WriteCr4
+        | Operation::WriteCr3 => {
             unreachable!("CR operations commit in their explicit profile path")
         }
         Operation::Cpuid => unreachable!("CPUID is executed before transfer dispatch"),
@@ -50786,6 +51156,7 @@ mod tests {
     fn direct_relative_branches_use_next_rip_and_preserve_flags() {
         let flags = crate::CF | crate::PF | crate::ZF;
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -50823,7 +51194,10 @@ mod tests {
             step_tracked(
                 &mut state,
                 &mut memory,
-                AccessContext::default(),
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
                 &mut defined
             ),
             Ok(StepOutcome::Branched)
@@ -50865,6 +51239,7 @@ mod tests {
     #[test]
     fn indirect_register_jmp_updates_rip_or_faults_before_commit() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -50914,6 +51289,7 @@ mod tests {
         assert_eq!(defined, crate::CF | crate::ZF);
 
         let before = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -50971,6 +51347,7 @@ mod tests {
     fn indirect_memory_jmp_reads_exact_qword_before_target_validation() {
         let base = 0x2000;
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51014,6 +51391,7 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 8)]);
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51081,6 +51459,7 @@ mod tests {
     #[test]
     fn indirect_memory_call_reads_source_then_pushes_and_faults_without_commit() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51157,6 +51536,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -51203,6 +51583,7 @@ mod tests {
         }
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51254,6 +51635,7 @@ mod tests {
     #[test]
     fn popfq_updates_only_profile_flags_and_commits_after_stack_read() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51314,6 +51696,7 @@ mod tests {
     #[test]
     fn popfq_stack_fault_and_out_of_profile_event_flags_do_not_commit() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51430,6 +51813,7 @@ mod tests {
     #[test]
     fn pushfq_stores_the_sdm_mask_and_preserves_flags() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51481,6 +51865,7 @@ mod tests {
     #[test]
     fn pushfq_bounded_write_failure_does_not_commit_cpu_state() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51535,6 +51920,7 @@ mod tests {
     #[test]
     fn pushfw_stores_the_low_flags_word_and_preserves_flags() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51583,6 +51969,7 @@ mod tests {
     #[test]
     fn pushfw_bounded_write_failure_does_not_commit_cpu_state() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51638,6 +52025,7 @@ mod tests {
     fn ret_imm16_reads_qword_then_commits_pop_and_zero_extended_adjustment() {
         for (immediate, expected_rsp) in [(0u16, 0x1008u64), (0x20, 0x1028), (u16::MAX, 0x1_1007)] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -51686,6 +52074,7 @@ mod tests {
     #[test]
     fn ret_imm16_truncation_stack_read_and_noncanonical_target_do_not_commit() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51766,6 +52155,7 @@ mod tests {
     fn direct_branch_wraps_rip_and_taken_noncanonical_target_faults_without_commit() {
         let base = u64::MAX - 1;
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51806,6 +52196,7 @@ mod tests {
 
         let base = 0x0000_7fff_ffff_fffd;
         let before = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51865,6 +52256,7 @@ mod tests {
             &[0xf3, 0xeb, 0][..],
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -51906,6 +52298,7 @@ mod tests {
         }
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -51988,6 +52381,7 @@ mod tests {
             ), // REX.R / ignored ModRM.reg does not change AL destination
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -52046,6 +52440,7 @@ mod tests {
     fn setcc_memory_store_is_one_byte_and_faults_do_not_commit() {
         let code = [0x0f, 0x94, 0x45, 0x00]; // SETZ byte ptr [RBP]
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -52145,6 +52540,7 @@ mod tests {
     #[test]
     fn setcc_accepts_address_override_and_rejects_unsupported_repeat_or_segment_forms() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -52191,6 +52587,7 @@ mod tests {
             &[0x64, 0x0f, 0x94, 0x00][..],
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -52237,6 +52634,7 @@ mod tests {
     fn cmovcc_reads_memory_even_when_false_and_commits_only_after_success() {
         let code = [0x0f, 0x44, 0x03]; // CMOVE EAX, dword ptr [RBX]
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -52289,6 +52687,7 @@ mod tests {
         assert_eq!(defined, crate::INTEGER_FLAGS);
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -52337,6 +52736,7 @@ mod tests {
     fn cmovcc_false_memory_read_faults_before_any_architectural_commit() {
         let code = [0x0f, 0x44, 0x45, 0x00]; // CMOVE EAX, dword ptr [RBP]
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -52416,6 +52816,7 @@ mod tests {
     #[test]
     fn cmovcc_accepts_operand_and_address_overrides_and_rejects_group1_and_fs_gs_memory() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -52464,6 +52865,7 @@ mod tests {
             &[0x65, 0x0f, 0x44, 0x00][..],
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -52535,6 +52937,7 @@ mod tests {
                     let mut memory = Memory::new(&code);
                     let before_ram = memory.bytes.clone();
                     let mut state = LongModeState {
+                        cr3: None,
                         cr4: None,
                         cr0: None,
                         sti_shadow: None,
@@ -52620,6 +53023,7 @@ mod tests {
     #[test]
     fn high_byte_register_mov_load_and_store_use_legacy_aliases() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -52693,6 +53097,7 @@ mod tests {
                 );
                 code.extend_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes()[..size.bytes()]);
                 let mut state = LongModeState {
+                    cr3: None,
                     cr4: None,
                     cr0: None,
                     sti_shadow: None,
@@ -52770,6 +53175,7 @@ mod tests {
     #[test]
     fn multiply_forms_write_the_correct_halves_and_truncated_result() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -52912,6 +53318,7 @@ mod tests {
 
         for (code, target, initial_rax, initial_target, expected) in cases {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -53057,6 +53464,7 @@ mod tests {
         });
         // AX / BL produces a quotient above AL's representable range.
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -53103,6 +53511,7 @@ mod tests {
 
         // The byte signed minimum divided by -1 has a quotient outside i8.
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -53148,6 +53557,7 @@ mod tests {
         assert_eq!(state, before);
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -53203,6 +53613,7 @@ mod tests {
 
         // This exact case exercises signed 128-bit minimum divided by -1.
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -53248,6 +53659,7 @@ mod tests {
 
         // Zero divisor has the same architectural exception and exact RIP.
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -53322,6 +53734,7 @@ mod tests {
     #[test]
     fn memory_bit_scan_read_fault_does_not_commit_cpu_or_definedness() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -53419,6 +53832,7 @@ mod tests {
                 memory.error = Some(error.clone());
                 let before_ram = memory.bytes.clone();
                 let mut state = LongModeState {
+                    cr3: None,
                     cr4: None,
                     cr0: None,
                     sti_shadow: None,
@@ -53566,6 +53980,7 @@ mod tests {
             (&[0x4c, 0xc7, 0xc0, 1, 0, 0, 0], 1), // REX.R ignored for /0
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -53660,6 +54075,7 @@ mod tests {
                     );
                     code.extend_from_slice(&0x1001u64.to_le_bytes()[..if addr32 { 4 } else { 8 }]);
                     let mut state = LongModeState {
+                        cr3: None,
                         cr4: None,
                         cr0: None,
                         sti_shadow: None,
@@ -53752,6 +54168,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -53829,6 +54246,7 @@ mod tests {
             (&[0x48, 0x8d, 0x05, 0xff, 0xff, 0xff, 0xff], 0, 6),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -53880,6 +54298,7 @@ mod tests {
     fn xchg_captures_aliases_before_writes_and_distinguishes_nop_from_eax_self_write() {
         for code in [&[0x90][..], &[0x40, 0x90], &[0x48, 0x90], &[0x66, 0x90]] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -53942,6 +54361,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -53990,6 +54410,7 @@ mod tests {
     fn locked_qword_memory_xchg_uses_one_atomic_call_and_commits_only_on_success() {
         let code = [0xf0, 0x48, 0x87, 0x00]; // LOCK XCHG [RAX], RAX
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -54061,6 +54482,7 @@ mod tests {
             MemoryError::Backend("atomic exchange failed".into()),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -54128,6 +54550,7 @@ mod tests {
     fn qword_memory_xadd_uses_one_atomic_call_and_commits_only_on_success() {
         let code = [0x48, 0x0f, 0xc1, 0x00]; // XADD [RAX], RAX
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -54196,6 +54619,7 @@ mod tests {
             MemoryError::Backend("atomic fetch-add failed".into()),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -54264,6 +54688,7 @@ mod tests {
     fn lock_qword_memory_xadd_uses_one_atomic_call_and_delays_commit_on_error() {
         let code = [0xf0, 0x48, 0x0f, 0xc1, 0x00]; // LOCK XADD [RAX], RAX
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -54332,6 +54757,7 @@ mod tests {
             MemoryError::Backend("locked atomic fetch-add failed".into()),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -54400,6 +54826,7 @@ mod tests {
     fn qword_memory_cmpxchg_uses_one_atomic_call_and_preserves_prestate_on_error() {
         let code = [0x48, 0x0f, 0xb1, 0x00]; // CMPXCHG [RAX], RAX
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -54468,6 +54895,7 @@ mod tests {
             MemoryError::Backend("atomic compare-exchange failed".into()),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -54536,6 +54964,7 @@ mod tests {
     fn qword_register_xadd_alias_doubles_destination_and_sets_add_flags() {
         let code = [0x48, 0x0f, 0xc1, 0xc0]; // XADD RAX, RAX
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -54593,6 +55022,7 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let mut extended_state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -54649,6 +55079,7 @@ mod tests {
             for cut in 0..code.len() {
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        cr3: None,
                         cr4: None,
                         cr0: None,
                         sti_shadow: None,
@@ -54721,6 +55152,7 @@ mod tests {
             &[0x48, 0xc7, 0x03, 1, 2, 3, 4],
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -54940,6 +55372,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -55033,6 +55466,7 @@ mod tests {
                 }
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        cr3: None,
                         cr4: None,
                         cr0: None,
                         sti_shadow: None,
@@ -55105,6 +55539,7 @@ mod tests {
             for cut in 0..code.len() {
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        cr3: None,
                         cr4: None,
                         cr0: None,
                         sti_shadow: None,
@@ -55280,6 +55715,7 @@ mod tests {
             (&[0xf7, 0xd0][..], 0xffff_ffff_0000_0000, 0, 0xffff_ffff),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -55323,6 +55759,7 @@ mod tests {
             assert!(memory.accesses.is_empty());
         }
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -55377,6 +55814,7 @@ mod tests {
             &[0x48, 0xf7, 0x03, 0xff, 0xff, 0xff, 0xff],
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -55436,6 +55874,7 @@ mod tests {
             &[0x48, 0xf7, 0xc0, 0, 0, 0, 0x80],
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -55495,6 +55934,7 @@ mod tests {
                     continue;
                 }
                 let mut state = LongModeState {
+                    cr3: None,
                     cr4: None,
                     cr0: None,
                     sti_shadow: None,
@@ -55547,6 +55987,7 @@ mod tests {
             }
             for cut in 0..code.len() {
                 let mut state = LongModeState {
+                    cr3: None,
                     cr4: None,
                     cr0: None,
                     sti_shadow: None,
@@ -55621,6 +56062,7 @@ mod tests {
             (&[0x31, 0xc0, 0x48, 0x21, 0x03][..], 0xcc7, 1), // unmapped AND fault
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -55697,6 +56139,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -55752,6 +56195,7 @@ mod tests {
         // Rotates reduce the loop count modulo the ring, but flag definedness
         // still follows the architectural masked count before that reduction.
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -55803,6 +56247,7 @@ mod tests {
         );
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -55854,6 +56299,7 @@ mod tests {
         );
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -55905,6 +56351,7 @@ mod tests {
             (&[0x41, 0xc1, 0xe0, 0][..], 8, 0x1234_5678), // SHL R8D,0
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -55947,6 +56394,7 @@ mod tests {
 
         for access in [AccessKind::Read, AccessKind::Write] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -55998,6 +56446,7 @@ mod tests {
 
         // Through-carry rotation of AL includes the incoming CF as a ninth bit.
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -56043,6 +56492,7 @@ mod tests {
 
         // SHLD RAX,RCX,1 moves RAX's MSB to CF and RCX's MSB into bit 0.
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -56095,6 +56545,7 @@ mod tests {
             &[0x66, 0x0f, 0xac, 0xc8, 17][..],
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -56147,6 +56598,7 @@ mod tests {
         // dword alias still applies normal register write semantics.
         let code = [0x48, 0xc1, 0xe0, 0x40];
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -56197,6 +56649,7 @@ mod tests {
 
         for access in [AccessKind::Read, AccessKind::Write] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -56289,6 +56742,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0,
@@ -56324,6 +56778,7 @@ mod tests {
         // 66 selects the SDM's undefined 16-bit result; execution must leave
         // the entire state untouched while reporting the encoding unsupported.
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -56486,6 +56941,7 @@ mod tests {
                 Operation::Bit { kind: decoded_kind, .. } if decoded_kind == kind
             ));
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0,
@@ -56537,6 +56993,7 @@ mod tests {
     #[test]
     fn bit_immediate_truncation_and_memory_boundaries_do_not_commit() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -56593,6 +57050,7 @@ mod tests {
     fn bit_immediate_memory_uses_width_mask_exact_access_and_delayed_commit() {
         let code = [0x0f, 0xba, 0x20, 0xff]; // BT dword [RAX],255 => bit 31 at [RAX]
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -56637,6 +57095,7 @@ mod tests {
         // the ordinary exact-width write before committing flags and RIP.
         let code = [0x0f, 0xba, 0x28, 0]; // BTS dword [RAX],0
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -56693,6 +57152,7 @@ mod tests {
     fn bit_immediate_memory_read_fault_does_not_commit_and_rip_relative_uses_immediate_end() {
         let code = [0x0f, 0xba, 0x28, 0xff]; // BTS dword [RAX],255
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -56740,6 +57200,7 @@ mod tests {
         // The displacement makes next_rip (including imm8) land at 0x1000.
         let code = [0x0f, 0xba, 0x3d, 0xf8, 0x0f, 0, 0, 0];
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -56810,6 +57271,7 @@ mod tests {
                 let mut code = prefix.to_vec();
                 code.extend([0x0f, opcode, 0x08]); // [RAX], CX
                 let mut state = LongModeState {
+                    cr3: None,
                     cr4: None,
                     sti_shadow: None,
                     rip: 0,
@@ -56863,6 +57325,7 @@ mod tests {
         // Positive offset equal to the operand width selects the next element.
         let code = [0x0f, 0xab, 0x08]; // BTS dword [RAX], ECX
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -56889,6 +57352,7 @@ mod tests {
         let code = [0x0f, 0xab, 0x08]; // BTS dword [RAX], ECX
         for fault_kind in [Some(AccessKind::Read), Some(AccessKind::Write)] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0,
@@ -56950,6 +57414,7 @@ mod tests {
         // leaves all CPU state and flag definedness untouched.
         let code = [0x0f, 0xab, 0x08];
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -56995,6 +57460,7 @@ mod tests {
         // architectural 32-bit address-size wrap and exact-width access.
         let code = [0x67, 0x0f, 0xa3, 0x08]; // BT dword [EAX], ECX
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -57043,6 +57509,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0,
@@ -57092,6 +57559,7 @@ mod tests {
         // beyond the canonical edge, so the exact-width check faults before read.
         let code = [0x48, 0x0f, 0xa3, 0x08];
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -57144,6 +57612,7 @@ mod tests {
             (&[0x66, 0x0f, 0xbb, 0xc0][..], BitKind::Complement, 0x8003),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0,
@@ -57186,6 +57655,7 @@ mod tests {
 
         let code = [0x4d, 0x0f, 0xbb, 0xd1]; // BTC R9,R10
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -57319,6 +57789,7 @@ mod tests {
 
         for (code, kind, dst, src, width, source, old_dst, expected_index) in cases {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -57388,6 +57859,7 @@ mod tests {
     #[test]
     fn fs_selector_read_zero_extends_and_preserves_other_state() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -57434,6 +57906,7 @@ mod tests {
     #[test]
     fn gs_selector_read_zero_extends_and_preserves_other_state() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: None,
             sti_shadow: None,
@@ -57481,6 +57954,7 @@ mod tests {
 
     fn verw_state(selector: u16, limit: u16) -> LongModeState {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             gdtr: Some(crate::state::Gdtr {
@@ -57708,6 +58182,7 @@ mod tests {
 
     fn fs_load_state(selector: u16, limit: u16) -> LongModeState {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             gdtr: Some(crate::state::Gdtr {
@@ -58135,6 +58610,7 @@ mod tests {
     fn fs_base_qword_load_uses_prestate_alias_and_faults_without_commit() {
         let code = [0x64, 0x48, 0x8b, 0x00];
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -58155,6 +58631,7 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -58176,6 +58653,7 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let mut edge_state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -58196,6 +58674,7 @@ mod tests {
         assert!(edge_memory.accesses.is_empty());
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -58215,6 +58694,7 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -58239,6 +58719,7 @@ mod tests {
             &[0x48, 0x64, 0x48, 0x8b, 0x00], // earlier ignored REX
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0,
@@ -58262,6 +58743,7 @@ mod tests {
     fn gs_base_qword_load_uses_prestate_alias_and_faults_without_commit() {
         let code = [0x65, 0x48, 0x8b, 0x00];
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -58297,6 +58779,7 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1000, 8)]);
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -58333,6 +58816,7 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -58368,6 +58852,7 @@ mod tests {
 
     fn gs_load_state(selector: u16, limit: u16) -> LongModeState {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             gdtr: Some(crate::state::Gdtr {
@@ -134672,6 +135157,7 @@ mod tests {
 
         let mut memory = Memory::at(&[0x66, 0x0f, 0x57, 0xc1], 0x2000);
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x2000,
@@ -137454,6 +137940,7 @@ mod tests {
             (&[0x8e, 0xd8, 0x8e, 0xd8][..], true, false),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 ds_selector: 0x2b,
@@ -137581,6 +138068,7 @@ mod tests {
 
     fn ds_load_state(selector: u64) -> LongModeState {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             ds_selector: 0x23,
@@ -138069,6 +138557,7 @@ mod tests {
         code.extend([0x48, 0x8b, 0x18]); // MOV RBX, [RAX]
 
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             ds_cache: Some(crate::state::DsDescriptorCache {
@@ -144869,6 +145358,7 @@ mod tests {
             ..AccessContext::default()
         };
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x1000,
@@ -145235,6 +145725,7 @@ mod tests {
 
     fn lgdt_state(rbp: u64) -> LongModeState {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             gdtr: Some(crate::state::Gdtr {
@@ -145555,6 +146046,7 @@ mod tests {
 
     fn lidt_state(rsp: u64) -> LongModeState {
         LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             gpr: {
@@ -145759,6 +146251,7 @@ mod tests {
     #[test]
     fn maskable_request_notification_is_pre_fetch_preserving_and_idempotent() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x1000,
@@ -145807,6 +146300,7 @@ mod tests {
             context: AccessContext::default(),
         };
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x1000,
@@ -145885,6 +146379,7 @@ mod tests {
     fn maskable_request_without_request_or_if_matches_event_free_run() {
         for (request, flags) in [(None, 2 | (1 << 9)), (Some(0x30), 2)] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0x1000,
@@ -145926,6 +146421,7 @@ mod tests {
     #[test]
     fn maskable_request_definedness_and_incompatible_flag_gates_fail_closed() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x1000,
@@ -145973,6 +146469,7 @@ mod tests {
     #[test]
     fn maskable_request_never_relabels_fetch_or_data_faults_on_event_free_path() {
         let mut fetch_state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x1000,
@@ -146004,6 +146501,7 @@ mod tests {
         ));
 
         let mut data_state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x1000,
@@ -146093,6 +146591,479 @@ mod tests {
 }
 
 #[cfg(test)]
+mod mov_cr3_profile_tests {
+    use super::tests::Memory;
+    use super::*;
+
+    #[derive(Default)]
+    struct NoPio;
+
+    impl crate::PortIo for NoPio {
+        type Error = ();
+
+        fn read_u8(&mut self, _port: u16) -> Result<u8, Self::Error> {
+            panic!("rejected CR3 state must not reach port I/O")
+        }
+
+        fn write_u8(&mut self, _port: u16, _value: u8) -> Result<(), Self::Error> {
+            panic!("rejected CR3 state must not reach port I/O")
+        }
+    }
+
+    fn make_state(old_cr3: u64, new_cr3: u64) -> LongModeState {
+        let mut state = LongModeState {
+            cr0: Some(Cr0Profile::BASE),
+            cr3: Some(old_cr3),
+            cr4: Some(Cr4Profile::BASE),
+            rip: 0,
+            ..LongModeState::default()
+        };
+        state.gpr[Register::Rax as usize] = new_cr3;
+        state.rflags = 0x8d7;
+        state
+    }
+
+    fn run(
+        state: &mut LongModeState,
+        memory: &mut Memory,
+        context: AccessContext,
+        efer: u64,
+        defined: u64,
+    ) -> MovCr3Result {
+        step_mov_cr3(MovCr3Long64V1, state, memory, context, efer, defined).unwrap()
+    }
+
+    #[test]
+    fn mov_cr3_commits_one_instruction_and_emits_even_for_identical_value() {
+        let defined = crate::INTEGER_FLAGS;
+        for new_cr3 in [
+            0x2000,
+            0x2000 | (1 << 3),
+            0x2000 | (1 << 4),
+            0x2000 | (3 << 3),
+            0x2000 | 0x07,
+            0x2000 | 0xfe0,
+            0x0000_000f_ffff_f000,
+            0x1000,
+        ] {
+            let old_cr3 = 0x1000;
+            let mut state = make_state(old_cr3, new_cr3);
+            let before_flags = state.rflags;
+            let mut memory = Memory::new(&[0x0f, 0x22, 0xd8, 0x48, 0x8b, 0x03]);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                defined,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::TranslationContextChange(TranslationContextChange {
+                    reason: TranslationContextChangeReason::Cr3Write,
+                    old_cr3,
+                    new_cr3,
+                })
+            );
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(result.rflags_defined, defined & !crate::ARITHMETIC_FLAGS);
+            assert_eq!(state.cr3, Some(new_cr3));
+            assert_eq!(state.rip, 3);
+            assert_eq!(state.rflags, before_flags);
+            assert_eq!(memory.fetches, [0, 1, 2]);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn reserved_cr3_bits_fault_atomically_after_fetch() {
+        let defined = crate::INTEGER_FLAGS;
+        for bit in 36..64 {
+            let mut state = make_state(0x1000, 1u64 << bit);
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                defined,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                "reserved source bit {bit}"
+            );
+            assert_eq!(state, before, "reserved source bit {bit}");
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, defined);
+            assert_eq!(memory.fetches, [0, 1, 2]);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn privilege_lock_and_prefix_admission_are_ordered_after_fetch() {
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches, [0, 1, 2]);
+        }
+
+        for (bytes, privilege, expected) in [
+            (
+                &[0xf0, 0x0f, 0x22, 0xd8][..],
+                PrivilegeLevel::Ring3,
+                MovCr3Exit::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }),
+            ),
+            (
+                &[0xf3, 0x0f, 0x22, 0xd8][..],
+                PrivilegeLevel::Ring0,
+                MovCr3Exit::Unsupported { opcode: 0x22 },
+            ),
+            (
+                &[0xf0, 0x0f, 0x22, 0xc0][..],
+                PrivilegeLevel::Ring0,
+                MovCr3Exit::Unsupported { opcode: 0x22 },
+            ),
+            (
+                &[0x40, 0xf0, 0x0f, 0x22, 0xd8][..],
+                PrivilegeLevel::Ring0,
+                MovCr3Exit::Unsupported { opcode: 0x22 },
+            ),
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            let before = state.clone();
+            let mut memory = Memory::new(bytes);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(state, before);
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn fetch_and_input_failures_do_not_commit_or_emit_an_effect() {
+        let mut state = make_state(0x1000, 0x2000);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x0f, 0x22]);
+        let result = run(
+            &mut state,
+            &mut memory,
+            AccessContext::default(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert!(matches!(result.exit, MovCr3Exit::MemoryError(_)));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0, 1, 2]);
+
+        let mut state = make_state(0x1000, 0x2000);
+        state.cr3 = None;
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+        assert_eq!(
+            step_mov_cr3(
+                MovCr3Long64V1,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            ),
+            Err(MovCr3InputError::MissingCr3)
+        );
+        assert!(memory.fetches.is_empty());
+
+        let mut state = make_state(0x1000, 0x2000);
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+        assert_eq!(
+            step_mov_cr3(
+                MovCr3Long64V1,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                0,
+                crate::INTEGER_FLAGS,
+            ),
+            Err(MovCr3InputError::InvalidProfileState)
+        );
+        assert!(memory.fetches.is_empty());
+
+        let mut state = make_state(1u64 << 36, 0x2000);
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+        assert_eq!(
+            step_mov_cr3(
+                MovCr3Long64V1,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            ),
+            Err(MovCr3InputError::InvalidInitialCr3 { value: 1u64 << 36 })
+        );
+        assert!(memory.fetches.is_empty());
+
+        let mut state = make_state(0x1000, 0x2000);
+        state.cr0 = Some(0);
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+        assert_eq!(
+            step_mov_cr3(
+                MovCr3Long64V1,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            ),
+            Err(MovCr3InputError::InvalidProfileState)
+        );
+        assert!(memory.fetches.is_empty());
+
+        let mut state = make_state(0x1000, 0x2000);
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+        assert_eq!(
+            step_mov_cr3(
+                MovCr3Long64V1,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                0xd00,
+                1u64 << 63,
+            ),
+            Err(MovCr3InputError::InvalidRflagsDefined { value: 1u64 << 63 })
+        );
+        assert!(memory.fetches.is_empty());
+
+        for offset in 0xff2..=0xfff {
+            let mut state = make_state(0x1000, 0x2000);
+            state.rip = offset;
+            let mut memory = Memory::at(&[0xf0, 0x0f, 0x22, 0xd8], offset);
+            let result = run(
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, MovCr3Exit::Unsupported { opcode: 0x0f });
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.fetches.is_empty(), "RIP={offset:#x}");
+        }
+    }
+
+    #[test]
+    fn legacy_step_cannot_consume_cr3_or_fetch_the_next_instruction() {
+        let mut state = make_state(0x1000, 0x2000);
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xd8, 0x90]);
+        let result = step(&mut state, &mut memory, AccessContext::default()).unwrap();
+        assert_eq!(result, StepOutcome::Unsupported { opcode: 0x0f });
+        assert!(memory.fetches.is_empty());
+
+        state.cr3 = None;
+        state.cr0 = None;
+        state.cr4 = None;
+        let mut memory = Memory::new(&[0xf0, 0x0f, 0x22, 0xd8]);
+        let result = step(&mut state, &mut memory, AccessContext::default()).unwrap();
+        assert_eq!(result, StepOutcome::Unsupported { opcode: 0x22 });
+        assert_eq!(memory.fetches, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn cr0_profile_marker_cannot_enable_mov_cr3_or_bypass_fp_state_gates() {
+        let mut state = LongModeState {
+            cr0: Some(Cr0Profile::BASE),
+            cr3: None,
+            ..LongModeState::default()
+        };
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xc0]);
+        let result = step_with_cr0_profile(
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            Cr0Profile::MovCr3Long64V1,
+        )
+        .unwrap();
+        assert_eq!(result, StepOutcome::Unsupported { opcode: 0x0f });
+        assert_eq!(state.cr0, Some(Cr0Profile::BASE));
+        assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn legacy_special_entry_points_reject_cpu_owned_cr3_before_side_effects() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let mut state = make_state(0x1000, 0x2000);
+        let mut memory = Memory::new(&[0xee]);
+        let mut pio = NoPio;
+        let pio_result = step_pio_u8(
+            DiagnosticCpl0PioU8V1,
+            &mut state,
+            &mut memory,
+            &mut pio,
+            context,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            pio_result.exit,
+            PioU8Exit::Rejected(PioU8AdmissionError::ControlRegistersPresent)
+        );
+        assert!(memory.fetches.is_empty());
+
+        let mut state = make_state(0x1000, 0x2000);
+        let mut memory = Memory::new(&[0xee]);
+        let mut pio = NoPio;
+        let paged_pio = step_paged_pio_u8(
+            PagedCpl0PioU8V1,
+            &mut state,
+            &mut memory,
+            &mut pio,
+            context,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            paged_pio.exit,
+            PioU8Exit::Rejected(PioU8AdmissionError::ControlRegistersOutsideProfile)
+        );
+        assert!(memory.fetches.is_empty());
+
+        let mut state = make_state(0x1000, 0x2000);
+        let mut memory = Memory::new(&[0xee]);
+        let mut pio = NoPio;
+        let probe = step_paged_probe(
+            PagedCpl0ProbeV1,
+            &mut state,
+            &mut memory,
+            &mut pio,
+            context,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            probe.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile)
+        );
+        assert!(memory.fetches.is_empty());
+
+        let mut state = make_state(0x1000, 0x2000);
+        let mut memory = Memory::new(&[0x90]);
+        let mut continuation = None;
+        assert_eq!(
+            run_with_rep_continuation(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context,
+                },
+                crate::INTEGER_FLAGS,
+                &mut continuation,
+                || false,
+            ),
+            Err(RepRunInputError::Cr3StateOutsideSelectedProfile)
+        );
+        assert!(memory.fetches.is_empty());
+
+        let mut state = make_state(0x1000, 0x2000);
+        let mut memory = Memory::new(&[0x90]);
+        assert_eq!(
+            run_with_maskable_request(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context,
+                },
+                crate::INTEGER_FLAGS,
+                None,
+                || false,
+            ),
+            Err(MaskableRequestRunInputError::Cr3StateOutsideSelectedProfile)
+        );
+        assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn generic_cr4_profile_entry_cannot_enable_mov_cr3() {
+        let mut state = make_state(0x1000, 0x2000);
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+        let result = run_with_cr4_profile(
+            &mut state,
+            &mut memory,
+            RunConfig {
+                instruction_budget: 1,
+                stop_rip: None,
+                context: AccessContext::default(),
+            },
+            Cr4Profile::MovCr3Long64V1,
+            || false,
+        );
+        assert_eq!(result.exit, RunExit::Unsupported { opcode: 0x0f });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state.cr3, Some(0x1000));
+        assert!(memory.fetches.is_empty());
+    }
+}
+
+#[cfg(test)]
 mod paged_mov_profile_tests {
     use super::tests::Memory;
     use super::*;
@@ -146100,6 +147071,7 @@ mod paged_mov_profile_tests {
 
     fn state_with_control_registers() -> LongModeState {
         LongModeState {
+            cr3: None,
             rip: 0,
             cr0: Some(Cr0Profile::BASE),
             cr4: Some(Cr4Profile::BASE),
@@ -146648,6 +147620,7 @@ mod paged_mov_profile_tests {
             ..AccessContext::default()
         };
         let mut run_state = LongModeState {
+            cr3: None,
             rip: 0x1000,
             cr0: Some(Cr0Profile::BASE),
             cr4: None,
@@ -146671,6 +147644,7 @@ mod paged_mov_profile_tests {
         assert!(run_memory.fetches.is_empty());
 
         let mut step_state = LongModeState {
+            cr3: None,
             rip: 0x1000,
             cr0: Some(Cr0Profile::BASE),
             cr4: None,
@@ -148317,6 +149291,7 @@ mod fxsave_rip_tests {
         ] {
             for cr4_tsd in [false, true] {
                 let mut state = LongModeState {
+                    cr3: None,
                     cr4: None,
                     sti_shadow: None,
                     rip: 0x1000,
@@ -148379,6 +149354,7 @@ mod fxsave_rip_tests {
     #[test]
     fn rdtsc_legacy_prefix_and_boundary_paths_do_not_read_the_source() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x1000,
@@ -148440,6 +149416,7 @@ mod fxsave_rip_tests {
 
         for code in [&[0x48, 0x0f, 0x31][..], &[0xf3, 0x0f, 0x31][..]] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0x1000,
@@ -148470,6 +149447,7 @@ mod fxsave_rip_tests {
         }
 
         let mut truncated_state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x1000,
@@ -149303,6 +150281,7 @@ mod swapgs_profile_tests {
     fn exact_swapgs_exchanges_bases_and_profile_gates_are_atomic() {
         let profile = SwapgsProfile::SwapgsV1;
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x1000,
@@ -149334,6 +150313,7 @@ mod swapgs_profile_tests {
         assert_eq!(state.rip, 0x1003);
 
         let mut user = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0x1000,
@@ -149393,6 +150373,7 @@ mod swapgs_profile_tests {
         };
         for (gs, kernel) in [(0x2000, 0x3000), (0, 0x3000), (0x2000, 0x2000), (0, 0)] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0,
@@ -149462,6 +150443,7 @@ mod swapgs_profile_tests {
             PrivilegeLevel::Ring3,
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0,
@@ -149498,6 +150480,7 @@ mod swapgs_profile_tests {
             assert!(memory.accesses.is_empty());
         }
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: 0,
@@ -149525,6 +150508,7 @@ mod swapgs_profile_tests {
             (0, Some(0x0000_8000_0000_0000)),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 rip: 0,
@@ -149603,6 +150587,7 @@ mod swapgs_profile_tests {
         };
         for length in 0..3 {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 kernel_gs_base: Some(0),
@@ -149634,6 +150619,7 @@ mod swapgs_profile_tests {
             (1, Some(0), RunExit::StopAddress),
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 kernel_gs_base: Some(0),
@@ -149656,6 +150642,7 @@ mod swapgs_profile_tests {
             assert!(memory.fetches.is_empty());
         }
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             kernel_gs_base: Some(0x2000),
@@ -149685,6 +150672,7 @@ mod swapgs_profile_tests {
 
     fn cr0_fp_init_state(cr0: u64) -> LongModeState {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: Some(cr0),
             activity: Some(crate::CpuActivity::Running),
@@ -154067,6 +155055,7 @@ mod swapgs_profile_tests {
             &[0xf3, 0x48, 0x0f, 0x2d, 0xc0][..],
         ] {
             let mut state = LongModeState {
+                cr3: None,
                 rip: 0x8d00,
                 sse: Some(SseState {
                     xmm: [[0x5a; 16]; 16],
@@ -154096,6 +155085,7 @@ mod swapgs_profile_tests {
 
         let code = [0xf3, 0x0f, 0x2c, 0xc0];
         let mut state = LongModeState {
+            cr3: None,
             rip: 0x8d00,
             sse: Some(SseState {
                 xmm: [[0x5a; 16]; 16],
@@ -154123,6 +155113,7 @@ mod swapgs_profile_tests {
 
         let code = [0xf3, 0x0f, 0x2c, 0x00];
         let mut state = LongModeState {
+            cr3: None,
             rip: 0x8d00,
             gpr: [0x9000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             sse: Some(SseState {
@@ -154158,6 +155149,7 @@ mod swapgs_profile_tests {
         );
 
         let mut state = LongModeState {
+            cr3: None,
             rip: 0x8d00,
             sse: Some(SseState {
                 xmm: [[0x5a; 16]; 16],
@@ -154194,6 +155186,7 @@ mod swapgs_profile_tests {
         // neither runtime profile may consume the other instruction.
         let cvtsi2ss = [0xf3, 0x0f, 0x2a, 0xc0];
         let mut state = LongModeState {
+            cr3: None,
             rip: 0x8d00,
             sse: Some(SseState {
                 xmm: [[0x5a; 16]; 16],
@@ -154222,6 +155215,7 @@ mod swapgs_profile_tests {
         assert!(memory.accesses.is_empty());
 
         let mut state = LongModeState {
+            cr3: None,
             rip: 0x8d00,
             sse: Some(SseState {
                 xmm: [[0x5a; 16]; 16],

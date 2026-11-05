@@ -294,6 +294,7 @@ fn owner_loop(
             }
             Command::Run(run) => {
                 let mut guest = LongModeState {
+                    cr3: None,
                     gpr: [
                         run.state.gpr[0],
                         run.state.gpr[1],

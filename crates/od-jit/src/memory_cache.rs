@@ -335,6 +335,7 @@ pub enum MemoryCacheError {
 pub enum MemoryPairCacheRunError<E> {
     Cache(MemoryCacheError),
     Backend(E),
+    UnsupportedCr3State { value: u64 },
 }
 
 /// One resident compiled/published two-site artifact. `&mut self` ensures
@@ -528,6 +529,9 @@ impl<H> MemoryPairCache<H> {
     where
         B: CachedMemoryPairBackend<Published = H>,
     {
+        if let Some(value) = state.cr3 {
+            return Err(MemoryPairCacheRunError::UnsupportedCr3State { value });
+        }
         let code_end = code.code_end();
         if state.rip < code.base_rip() || state.rip > code_end {
             return Err(MemoryPairCacheRunError::Cache(MemoryCacheError::Key(
@@ -1145,6 +1149,7 @@ mod tests {
         let mut backend = MockBackend::default();
         let mut memory = UnusedMemory;
         let mut state = LongModeState {
+            cr3: None,
             rip: BASE + 3,
             ..Default::default()
         };
@@ -1366,6 +1371,7 @@ mod tests {
         let oversized = vec![existing.dependencies[0]; MAX_MEMORY_PAIR_DEPENDENCIES + 1];
         let mut memory = UnusedMemory;
         let mut state = LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -1410,6 +1416,7 @@ mod tests {
         let mut backend = MockBackend::default();
         let mut memory = UnusedMemory;
         let mut state = LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -1527,6 +1534,7 @@ mod tests {
         let mut backend = MockBackend::default();
         let mut memory = UnusedMemory;
         let mut state = LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };

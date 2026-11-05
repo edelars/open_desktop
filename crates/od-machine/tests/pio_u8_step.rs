@@ -80,6 +80,7 @@ fn cpu(code: &[u8]) -> (LongModeState, MachineBus, Uart16550Handle, Arc<AtomicUs
     let (mut bus, handle, accesses) = make_bus();
     put_code(&mut bus, code);
     let mut state = LongModeState {
+        cr3: None,
         rip: 0,
         ..LongModeState::default()
     };

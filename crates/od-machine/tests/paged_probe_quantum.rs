@@ -4,8 +4,8 @@ use od_isa::memory::{
 use od_isa::{CpuActivity, INTEGER_FLAGS, LongModeState, Register};
 use od_machine::{
     AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
-    MemoryRegionKind, MemoryRegionSpec, PagedProbeExit, PortAddress, PortRange, PortRegionBinding,
-    RamLimits, Uart16550Handle, Uart16550PollingTx, run_paged_probe,
+    MemoryRegionKind, MemoryRegionSpec, PagedProbeExit, PagedProbeRejection, PortAddress,
+    PortRange, PortRegionBinding, RamLimits, Uart16550Handle, Uart16550PollingTx, run_paged_probe,
 };
 
 const CR0: u64 = 0x8001_0033;
@@ -115,6 +115,7 @@ fn context() -> AccessContext {
 
 fn initial_state(payload: u64) -> LongModeState {
     let mut state = LongModeState {
+        cr3: None,
         rip: CODE_LINEAR,
         cr0: Some(CR0),
         cr4: Some(CR4),
@@ -198,6 +199,27 @@ fn mixed_nonidentity_stream_runs_as_one_or_one_step_quanta() {
         assert_eq!(split_writes, writes);
         assert_payload(&mut split_bus, &split_handle, payload);
     }
+}
+
+#[test]
+fn cpu_owned_cr3_is_rejected_before_stop_callback() {
+    let (mut bus, _) = fixture();
+    let mut state = initial_state(0);
+    state.cr3 = Some(ROOT);
+    let mut writes = Vec::new();
+    let result = run(
+        &mut state,
+        &mut bus,
+        4,
+        || panic!("must reject before STOP"),
+        &mut writes,
+    );
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Rejected(PagedProbeRejection::CpuOwnedCr3State { value: ROOT })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert!(writes.is_empty());
 }
 
 #[test]

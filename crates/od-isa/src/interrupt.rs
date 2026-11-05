@@ -26,6 +26,7 @@ pub enum InterruptFrameSlot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InterruptOutsideProfile {
     UnsupportedCr0State,
+    UnsupportedCr3State,
     InvalidRflagsDefined(u64),
     NotRing0Long64,
     InterruptsMasked,
@@ -77,6 +78,9 @@ pub fn deliver_maskable_interrupt(
     context: AccessContext,
     rflags_defined: u64,
 ) -> InterruptDeliveryResult {
+    if state.cr3.is_some() {
+        return outside(InterruptOutsideProfile::UnsupportedCr3State);
+    }
     if state.cr0.is_some() || state.cr4.is_some() {
         return outside(InterruptOutsideProfile::UnsupportedCr0State);
     }
@@ -413,6 +417,7 @@ mod tests {
 
     fn ready_state(rsp: u64) -> LongModeState {
         LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             gpr: {
@@ -502,6 +507,22 @@ mod tests {
                 InterruptOutsideProfile::HaltedWithoutClearShadow
             )
         );
+        assert!(ram.reads.is_empty());
+        assert!(ram.writes.is_empty());
+    }
+
+    #[test]
+    fn cpu_owned_cr3_rejects_interrupt_delivery_before_any_memory_callback() {
+        let mut state = ready_state(0x8000);
+        state.cr3 = Some(0x1000);
+        let before = state.clone();
+        let mut ram = Ram::new();
+        assert_eq!(
+            deliver(&mut state, &mut ram, 0x20),
+            InterruptDeliveryResult::OutsideProfile(InterruptOutsideProfile::UnsupportedCr3State)
+        );
+        assert_eq!(state, before);
+        assert_eq!(ram.fetches, 0);
         assert!(ram.reads.is_empty());
         assert!(ram.writes.is_empty());
     }

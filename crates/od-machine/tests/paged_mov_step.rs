@@ -1246,6 +1246,7 @@ fn s4_11e_ram_hole_mmio_alias_and_profile_boundaries() {
     put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x8b);
     put_byte(&mut bus, NEXT_CODE_PHYSICAL, 0x03);
     let mut cpu = LongModeState {
+        cr3: None,
         rip: CODE_LINEAR + 0xffe,
         cr0: Some(CR0),
         cr4: Some(CR4),
@@ -1657,6 +1658,7 @@ fn s4_11f_negative_admission_and_s4_11e_fetch_boundary() {
         let mut bus = make_bus();
         put(&mut bus, 0x4008, NEXT_CODE_PHYSICAL | 7);
         let mut cpu = LongModeState {
+            cr3: None,
             rip: CODE_LINEAR + offset,
             cr0: Some(CR0),
             cr4: Some(CR4),
@@ -1678,6 +1680,7 @@ fn s4_11f_negative_admission_and_s4_11e_fetch_boundary() {
             put_byte(&mut bus, CODE_PHYSICAL + offset + index as u64, byte);
         }
         let mut cpu = LongModeState {
+            cr3: None,
             rip: CODE_LINEAR + offset,
             cr0: Some(CR0),
             cr4: Some(CR4),
@@ -1708,6 +1711,7 @@ fn s4_11f_negative_admission_and_s4_11e_fetch_boundary() {
             put_byte(&mut bus, physical, byte);
         }
         let mut cpu = LongModeState {
+            cr3: None,
             rip: CODE_LINEAR + offset,
             cr0: Some(CR0),
             cr4: Some(CR4),
@@ -1731,6 +1735,7 @@ fn s4_11f_rejects_nxe_disabled_before_any_code_fetch() {
     put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x8b);
     put_byte(&mut bus, NEXT_CODE_PHYSICAL, 0x03);
     let mut cpu = LongModeState {
+        cr3: None,
         rip: CODE_LINEAR + 0xffe,
         cr0: Some(CR0),
         cr4: Some(CR4),
@@ -1771,6 +1776,7 @@ fn s4_11f_cross_page_operand_is_rejected_after_fetch_before_data_walk() {
     put_byte(&mut bus, NEXT_DATA_PHYSICAL, 0xbe);
 
     let mut cpu = LongModeState {
+        cr3: None,
         rip: CODE_LINEAR + offset,
         cr0: Some(CR0),
         cr4: Some(CR4),

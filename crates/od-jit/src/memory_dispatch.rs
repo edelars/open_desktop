@@ -62,6 +62,9 @@ pub struct BoundedArithmeticLoadResult {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoundedArithmeticLoadError<NE, ME> {
+    UnsupportedCr3State {
+        value: u64,
+    },
     InvalidPlan {
         rip: u64,
     },
@@ -129,6 +132,9 @@ where
     E: ControlledBlockExecutor,
     M: MemoryBlockExecutor,
 {
+    if let Some(value) = state.cr3 {
+        return Err(BoundedArithmeticLoadError::UnsupportedCr3State { value });
+    }
     let plan = bounded_arithmetic_load_plan(code)
         .ok_or(BoundedArithmeticLoadError::InvalidPlan { rip: state.rip })?;
     if !plan.admits_entry(state.rip) {
@@ -1048,6 +1054,9 @@ impl FixtureExecutionBoundary {
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoundedMemoryError<E> {
     Executor(E),
+    UnsupportedCr3State {
+        value: u64,
+    },
     InvalidExecutionBoundary {
         end_rip: u64,
     },
@@ -1155,6 +1164,9 @@ pub unsafe fn run_controlled<E: MemoryBlockExecutor>(
     let mut remaining = total_budget;
     let mut retired = 0u64;
     let mut blocks = 0u64;
+    if let Some(value) = state.cr3 {
+        return Err(BoundedMemoryError::UnsupportedCr3State { value });
+    }
     if boundary.end_rip < code.base_rip() || boundary.end_rip > code.code_end() {
         return Err(BoundedMemoryError::InvalidExecutionBoundary {
             end_rip: boundary.end_rip,
@@ -1686,6 +1698,7 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
     let decoded = match long_decode::decode(&mut source, rip, AccessContext::default()) {
         Ok(decoded) => decoded,
         Err(DecodeError::Unsupported { .. }) => return CompileAt::Unsupported,
+        Err(DecodeError::InvalidMovCr3Lock { .. }) => return CompileAt::Unsupported,
         Err(DecodeError::Invalid { .. }) => return CompileAt::Invalid,
         Err(DecodeError::Memory(MemoryError::Unmapped {
             address,
@@ -3285,6 +3298,7 @@ mod tests {
         let code = CodeView::new(ENTRY, &source).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -3505,6 +3519,42 @@ mod tests {
     }
 
     #[test]
+    fn cpu_owned_cr3_is_rejected_before_memory_block_execution() {
+        const ENTRY: u64 = 0x99b0;
+        let source = [0x48, 0x8b, 0x30];
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let mut state = LongModeState {
+            cr3: Some(0x2000),
+            rip: ENTRY,
+            ..LongModeState::default()
+        };
+        let mut memory = EmptyMemory;
+        let stop = AtomicU8::new(0);
+        let mut executor = AdvancingExecutor::default();
+        let result = unsafe {
+            run_controlled(
+                code,
+                boundary,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                None,
+                &mut executor,
+            )
+        };
+        assert_eq!(
+            result,
+            Err(BoundedMemoryError::UnsupportedCr3State { value: 0x2000 })
+        );
+        assert!(executor.entries.is_empty());
+        assert_eq!(state.rip, ENTRY);
+    }
+
+    #[test]
     fn event_after_publication_skips_entry_and_stop_wins() {
         const ENTRY: u64 = 0x99c0;
         let source = [0x48, 0x8b, 0x30];
@@ -3512,6 +3562,7 @@ mod tests {
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut memory = EmptyMemory;
         let initial = LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -3561,6 +3612,7 @@ mod tests {
         let code = CodeView::new(ENTRY, &source).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -3596,6 +3648,7 @@ mod tests {
         let stop_requested = AtomicU8::new(0);
         let event_requested = AtomicBool::new(true);
         let initial = LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -3717,6 +3770,7 @@ mod tests {
             let stop = AtomicU8::new(0);
             let event = AtomicBool::new(false);
             let mut state = LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -3778,6 +3832,7 @@ mod tests {
             stop_requested.store(stop, Ordering::Release);
             let boundary = FixtureExecutionBoundary::new(code, end).unwrap();
             let mut state = LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -3812,6 +3867,7 @@ mod tests {
         let stop_requested = AtomicU8::new(0);
         let event_requested = AtomicBool::new(false);
         let mut state = LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -3887,6 +3943,7 @@ mod tests {
         let code = CodeView::new(ENTRY, &source).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let initial = LongModeState {
+            cr3: None,
             gpr: [
                 0x1234_5678_9abc_def0,
                 0x0123_4567_89ab_cdef,
@@ -3984,6 +4041,7 @@ mod tests {
         let boundary = FixtureExecutionBoundary::new(code, u64::MAX).unwrap();
         let stop = AtomicU8::new(0);
         let mut state = LongModeState {
+            cr3: None,
             rip: base,
             ..Default::default()
         };
@@ -4035,6 +4093,7 @@ mod tests {
                         let boundary =
                             FixtureExecutionBoundary::new(code, ENTRY + window as u64).unwrap();
                         let mut state = LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             ..Default::default()
                         };
@@ -4068,6 +4127,7 @@ mod tests {
                     let boundary =
                         FixtureExecutionBoundary::new(code, ENTRY + source.len() as u64).unwrap();
                     let mut state = LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };
@@ -4105,6 +4165,7 @@ mod tests {
                     assert_eq!(state.rip, ENTRY + source.len() as u64);
 
                     let mut guarded_state = LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };

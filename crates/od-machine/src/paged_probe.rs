@@ -17,6 +17,7 @@ use od_isa::memory::{
 pub enum PagedProbeRejection {
     Configuration(crate::ProbeConfigError),
     Cpu(CpuProbeRejection),
+    CpuOwnedCr3State { value: u64 },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -112,6 +113,15 @@ fn run_paged_probe_inner(
 ) -> PagedProbeQuantumReport {
     let mut instructions_executed = 0;
     let mut current_rflags_defined = rflags_defined;
+    if let Some(value) = state.cr3 {
+        return report(
+            PagedProbeExit::Rejected(PagedProbeRejection::CpuOwnedCr3State { value }),
+            instructions_executed,
+            current_rflags_defined,
+            None,
+            None,
+        );
+    }
     loop {
         if stop() {
             return report(

@@ -100,13 +100,22 @@ impl Long64ProbeConfig {
         })
     }
 
-    /// Builds an immutable diagnostic snapshot from the CR0/CR4 values carried by CPU state.
-    /// CR3 and EFER remain explicit inputs because `LongModeState` does not own them.
+    /// Builds an immutable diagnostic snapshot from CPU-owned control state.
+    /// CR3 remains an explicit argument for callers without modeled CR3; when
+    /// the CPU state carries CR3, it must match this snapshot value.
     pub fn from_cpu_state(
         state: &od_isa::state::LongModeState,
         cr3: u64,
         efer: u64,
     ) -> Result<Self, ProbeConfigError> {
+        if let Some(cpu_cr3) = state.cr3
+            && cpu_cr3 != cr3
+        {
+            return Err(ProbeConfigError::Cr3Mismatch {
+                cpu_cr3,
+                snapshot_cr3: cr3,
+            });
+        }
         let cr0 = state
             .cr0
             .ok_or(ProbeConfigError::MissingCpuRegister { register: "CR0" })?;
@@ -144,6 +153,10 @@ impl Long64ProbeConfig {
 pub enum ProbeConfigError {
     MissingCpuRegister {
         register: &'static str,
+    },
+    Cr3Mismatch {
+        cpu_cr3: u64,
+        snapshot_cr3: u64,
     },
     Cr0EtRequired {
         value: u64,
@@ -2983,6 +2996,7 @@ mod tests {
         );
 
         state.cr4 = Some(0x620);
+        state.cr3 = Some(ROOT | 0x18 | 0x7e0);
         let snapshot = Long64ProbeConfig::from_cpu_state(
             &state,
             ROOT | 0x18 | 0x7e0,
@@ -2993,6 +3007,13 @@ mod tests {
         assert_eq!(snapshot.cr3(), ROOT | 0x18 | 0x7e0);
         assert_eq!(snapshot.cr4(), 0x620);
         assert_eq!(snapshot.efer(), 0xd00);
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER_LME | EFER_LMA),
+            Err(ProbeConfigError::Cr3Mismatch {
+                cpu_cr3: ROOT | 0x18 | 0x7e0,
+                snapshot_cr3: ROOT,
+            })
+        );
     }
 
     #[test]

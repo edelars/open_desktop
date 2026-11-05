@@ -321,6 +321,7 @@ trait CachedEntryStore<H> {
 pub enum ExecutionContextError {
     UnsupportedProfile(ExecutionProfile),
     GenerationNotAdvanced { current: u64, requested: u64 },
+    UnsupportedCr3State { value: u64 },
 }
 
 fn validate_execution_context(
@@ -1220,6 +1221,11 @@ fn run_cached_native_register_v1_strategy_controlled<
     strategy: NativeRegisterV1CacheStrategy,
     mut reuse_counts: Option<&mut PreparedKeyReuseCounts>,
 ) -> Result<FallbackDispatchResult, DispatchError<B::Error>> {
+    if let Some(value) = state.cr3 {
+        return Err(DispatchError::ExecutionContext(
+            ExecutionContextError::UnsupportedCr3State { value },
+        ));
+    }
     if execution_context.profile != ExecutionProfile::NATIVE_REGISTER_V1_LONG64_CANONICAL48 {
         return Err(DispatchError::ExecutionContext(
             ExecutionContextError::UnsupportedProfile(execution_context.profile),
@@ -1716,6 +1722,11 @@ where
     B: MultiBlockCachedBackend,
     O: PhaseObserver,
 {
+    if let Some(value) = state.cr3 {
+        return Err(DispatchError::ExecutionContext(
+            ExecutionContextError::UnsupportedCr3State { value },
+        ));
+    }
     if !execution_context.profile.is_supported_fixture() {
         return Err(DispatchError::ExecutionContext(
             ExecutionContextError::UnsupportedProfile(execution_context.profile),
@@ -1761,6 +1772,11 @@ where
     C: CachedEntryStore<B::Published>,
     O: PhaseObserver,
 {
+    if let Some(value) = state.cr3 {
+        return Err(DispatchError::ExecutionContext(
+            ExecutionContextError::UnsupportedCr3State { value },
+        ));
+    }
     if !execution_context.profile.is_supported_fixture() {
         return Err(DispatchError::ExecutionContext(
             ExecutionContextError::UnsupportedProfile(execution_context.profile),
@@ -2107,6 +2123,11 @@ pub fn run<E: BlockExecutor>(
     total_budget: u64,
     executor: &mut E,
 ) -> Result<DispatchResult, DispatchError<E::Error>> {
+    if let Some(value) = state.cr3 {
+        return Err(DispatchError::ExecutionContext(
+            ExecutionContextError::UnsupportedCr3State { value },
+        ));
+    }
     if !admission.matches_code(code) {
         return Err(DispatchError::AdmissionDoesNotMatchCode);
     }
@@ -3139,6 +3160,11 @@ fn run_with_nop_fallback_strategy<E: ControlledBlockExecutor>(
     executor: &mut E,
     compilation: NopFallbackCompilation,
 ) -> Result<FallbackDispatchResult, DispatchError<E::Error>> {
+    if let Some(value) = state.cr3 {
+        return Err(DispatchError::ExecutionContext(
+            ExecutionContextError::UnsupportedCr3State { value },
+        ));
+    }
     if !admission.matches_code(code) {
         return Err(DispatchError::NopAdmissionDoesNotMatchCode);
     }
@@ -4279,6 +4305,7 @@ mod tests {
             event_requested: None,
         };
         let mut state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -4358,6 +4385,7 @@ mod tests {
             event_requested: None,
         };
         let mut state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -4377,6 +4405,7 @@ mod tests {
 
         tracker.borrow_mut().loop_to_entry = true;
         let initial = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -4418,6 +4447,7 @@ mod tests {
         assert_eq!(candidate.remaining_budget, 0);
 
         let mut second_state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -4443,6 +4473,7 @@ mod tests {
 
         tracker.borrow_mut().fail_execute_once = true;
         let mut error_state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -4488,6 +4519,7 @@ mod tests {
         )
         .unwrap();
         let mut post_error_state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -4540,6 +4572,7 @@ mod tests {
             event_requested: None,
         };
         let initial = LongModeState {
+            cr3: None,
             rip: base,
             rflags: 0x202,
             ..LongModeState::default()
@@ -4660,6 +4693,7 @@ mod tests {
             event_requested: None,
         };
         let mut state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -4757,6 +4791,7 @@ mod tests {
             event_requested: None,
         };
         let mut state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -4911,6 +4946,7 @@ mod tests {
         let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
         let mut backend = mock_cached_backend(tracker.clone());
         let mut state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -4949,6 +4985,7 @@ mod tests {
             let mut backend = mock_cached_backend(tracker.clone());
             let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
             let mut state = LongModeState {
+                cr3: None,
                 rip: base,
                 ..LongModeState::default()
             };
@@ -4996,6 +5033,7 @@ mod tests {
         let mut backend = mock_cached_backend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -5027,6 +5065,7 @@ mod tests {
         let mut backend = mock_cached_backend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -5081,6 +5120,7 @@ mod tests {
         let tracker = Rc::new(RefCell::new(PublishedTracker::default()));
         let mut backend = mock_cached_backend(tracker);
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -5244,6 +5284,7 @@ mod tests {
         let (view, dependencies) = owner.snapshot().expect("fixture mapping exists");
         let (_, admission) = admitted(view.bytes(), view.base_rip());
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -5275,6 +5316,7 @@ mod tests {
         let (view, admission) = cached_fixture(bytes, base);
         let dependencies = dependency(view, 1);
         let mut state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };
@@ -5451,6 +5493,7 @@ mod tests {
         let code = [0x74, 0x00];
         let (view, admission) = admitted(&code, 0x1000);
         let mut state = LongModeState {
+            cr3: None,
             rip: view.code_end(),
             ..LongModeState::default()
         };
@@ -5477,6 +5520,7 @@ mod tests {
         let code = [0x74, 0x00, 0x48, 0xB8, 7, 0, 0, 0, 0, 0, 0, 0];
         let (view, admission) = admitted(&code, 0x2000);
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -5508,6 +5552,7 @@ mod tests {
         let code = [0x74, 0x00];
         let (view, admission) = admitted(&code, 0x3000);
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -5599,6 +5644,7 @@ mod tests {
         let code = [0x74, 0x00];
         let (view, admission) = admitted(&code, 0x4000);
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -5637,6 +5683,7 @@ mod tests {
         let changed_code = [0x90];
         let changed_view = CodeView::new(view.base_rip(), &changed_code).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: changed_view.base_rip(),
             ..LongModeState::default()
         };
@@ -5682,6 +5729,7 @@ mod tests {
             event_requested: None,
         };
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             rflags: 0xAD0F,
             ..LongModeState::default()
@@ -5730,6 +5778,7 @@ mod tests {
         code.push(0x90);
         let (view, admission) = nop_admission(&code, 0x5400);
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -5847,6 +5896,7 @@ mod tests {
         let event = AtomicBool::new(true);
 
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             rflags: 0xA55,
             ..LongModeState::default()
@@ -5921,6 +5971,7 @@ mod tests {
 
         let (nop_view, nop_admission) = nop_admission(&[0x90], 0x5500);
         let mut nop_state = LongModeState {
+            cr3: None,
             rip: nop_view.base_rip(),
             rflags: 0xAD0F,
             ..LongModeState::default()
@@ -5965,6 +6016,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -6061,6 +6113,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             rflags: 0xA55,
             ..LongModeState::default()
@@ -6124,6 +6177,7 @@ mod tests {
             let mut backend = MockCachedBackend(tracker.clone());
             let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
             let mut state = LongModeState {
+                cr3: None,
                 rip: view.base_rip(),
                 rflags: 0xA55,
                 ..LongModeState::default()
@@ -6183,6 +6237,7 @@ mod tests {
             )
             .unwrap();
             let mut state = LongModeState {
+                cr3: None,
                 rip: view.base_rip(),
                 ..LongModeState::default()
             };
@@ -6247,6 +6302,7 @@ mod tests {
         code.extend_from_slice(&9_u64.to_le_bytes()); // MOV RAX,9 after NOP
         let (view, admission) = nop_admission(&code, 0x5600);
         let initial = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             rflags: 0x242, // ZF is set, so the native JZ is taken.
             ..LongModeState::default()
@@ -6373,6 +6429,7 @@ mod tests {
 
         let stop_rip = AtomicU8::new(0);
         let mut at_entry = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -6521,6 +6578,7 @@ mod tests {
         let dependencies = dependency(cached_view, 1);
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut cached_state = LongModeState {
+            cr3: None,
             rip: cached_view.base_rip(),
             ..LongModeState::default()
         };
@@ -6552,6 +6610,7 @@ mod tests {
         code.push(0x90);
         let (view, admission) = nop_admission(&code, 0x5480);
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -6585,6 +6644,7 @@ mod tests {
         let (view, admission) = nop_admission(&code, 0x5500);
         let stop = AtomicU8::new(0);
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             rflags: 0x202,
             ..LongModeState::default()
@@ -6657,6 +6717,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -6733,6 +6794,7 @@ mod tests {
         let exact_tracker = Rc::new(RefCell::new(PublishedTracker::default()));
         let mut exact_backend = MockCachedBackend(exact_tracker.clone());
         let mut exact_state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -6757,6 +6819,7 @@ mod tests {
         let short_tracker = Rc::new(RefCell::new(PublishedTracker::default()));
         let mut short_backend = MockCachedBackend(short_tracker.clone());
         let mut short_state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -6778,6 +6841,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -6888,6 +6952,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -6946,6 +7011,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view_a.base_rip(),
             ..LongModeState::default()
         };
@@ -7011,6 +7077,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -7087,6 +7154,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut tiny_cache = SingleEntryBlockCache::new(1, 1).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -7137,6 +7205,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, 1_000).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -7182,6 +7251,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -7238,6 +7308,7 @@ mod tests {
         let dependencies = dependency(view, 1);
         let stop_requested = AtomicU8::new(0);
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -7331,6 +7402,7 @@ mod tests {
         let mut loop_cache =
             MultiEntryBlockCache::new(2, 4096, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -7400,6 +7472,7 @@ mod tests {
         let mut backend = MockCachedBackend(tracker.clone());
         let mut cache = SingleEntryBlockCache::new(1, MAX_SINGLE_ENTRY_CACHE_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -7682,6 +7755,7 @@ mod tests {
         let before_exec = tracker.borrow().executions;
         let (view, admission) = cached_fixture(&a, 0x7400);
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -7777,6 +7851,7 @@ mod tests {
         let mut cache =
             MultiEntryBlockCache::new(2, 4096, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: view.base_rip(),
             ..LongModeState::default()
         };
@@ -7844,6 +7919,7 @@ mod tests {
             event_requested: None,
         };
         let mut plain_state = LongModeState {
+            cr3: None,
             rip: base,
             ..LongModeState::default()
         };

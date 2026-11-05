@@ -551,7 +551,8 @@ instruction fetch support. See the [S4-11d CPU contract](CPU_CONTRACT.md#cross-p
 `Long64ProbeConfig::from_cpu_state` строит immutable diagnostic snapshot из
 `LongModeState::cr0` и `LongModeState::cr4`; отсутствующий CR0 отвергается
 раньше отсутствующего CR4 через `MissingCpuRegister`. CR3 и EFER остаются
-явными аргументами, поскольку текущий `LongModeState` ими не владеет.
+явными аргументами adapter; если CPU state содержит CR3, он обязан совпасть
+с переданным значением snapshot.
 
 После извлечения raw values метод вызывает существующий `Long64ProbeConfig::new`.
 Он не подставляет defaults, не маскирует unsupported bits, не меняет CPU/RAM/A/D
@@ -561,8 +562,19 @@ snapshot с другим CR3/EFER.
 
 Этот bridge позволяет диагностическому probe использовать CPU-owned CR0/CR4
 значения и явный CR3/EFER context, включая WP/NXE effects уже существующего
-validator. Он не реализует MOV CR3, WRMSR/EFER, privilege checks, mode transition
-history, startup sequencing, TLB invalidation или CPU-connected paging.
+validator. Он не реализует WRMSR/EFER, mode transition history, startup
+sequencing, TLB invalidation или CPU-connected paging.
+
+## CPU MOV CR3 execution boundary (S4-12b)
+
+`MovCr3Long64V1` returns a typed CR3 context-change effect only after a
+successful instruction commit. It retires exactly one instruction and stops
+before any following fetch. The machine caller must build its next translation
+snapshot from the committed CR3 before resuming execution. The active machine
+path does not yet consume this effect or replace its translation configuration;
+that integration is S4-12c. See the
+[CPU contract](CPU_CONTRACT.md#exact-mov-cr3-execution-profile-movcr3long64v1-s4-12b)
+and [S4-12b report](../reports/STAGE_4_S4-12B_2026-11-05.md).
 
 ## Experimental pure-translation cache boundary
 

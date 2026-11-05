@@ -162,6 +162,7 @@ fn context(mode: InstructionMode, privilege: PrivilegeLevel) -> AccessContext {
 
 fn initial_state() -> LongModeState {
     let mut state = LongModeState {
+        cr3: None,
         rip: RIP,
         rflags: 0x8d7,
         cr0: Some(CR0),

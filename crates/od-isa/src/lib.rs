@@ -26,7 +26,10 @@ pub mod sti;
 pub mod swapgs;
 pub mod x87;
 pub use cli::CliProfile;
-pub use execute::Cr0Profile;
+pub use execute::{
+    Cr0Profile, MovCr3Exit, MovCr3InputError, MovCr3Long64V1, MovCr3Result,
+    TranslationContextChange, TranslationContextChangeReason, step_mov_cr3,
+};
 pub use hlt::HaltProfile;
 pub use interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,

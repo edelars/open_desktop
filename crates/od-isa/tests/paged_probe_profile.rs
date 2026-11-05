@@ -191,6 +191,7 @@ fn context(mode: InstructionMode, privilege: PrivilegeLevel) -> AccessContext {
 
 fn state() -> LongModeState {
     LongModeState {
+        cr3: None,
         rip: RIP,
         rflags: 0x8d7,
         cr0: Some(CR0),

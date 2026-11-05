@@ -2785,7 +2785,7 @@ fn build_block_with_profile(
                     ));
                 }
                 let reason = match error {
-                    DecodeError::Unsupported { .. } => {
+                    DecodeError::Unsupported { .. } | DecodeError::InvalidMovCr3Lock { .. } => {
                         BlockStopReason::UnsupportedEncoding { guest_rip, error }
                     }
                     error => BlockStopReason::DecodeBoundary(deferred_boundary(guest_rip, error)),
@@ -8538,9 +8538,9 @@ fn deferred_boundary(guest_rip: u64, error: DecodeError) -> DecodeBoundary {
         DecodeError::Memory(MemoryError::Unmapped { address, .. }) => address
             .checked_sub(guest_rip)
             .and_then(|length| u8::try_from(length).ok()),
-        DecodeError::Unsupported { length, .. } | DecodeError::Invalid { length, .. } => {
-            Some(*length)
-        }
+        DecodeError::Unsupported { length, .. }
+        | DecodeError::InvalidMovCr3Lock { length, .. }
+        | DecodeError::Invalid { length, .. } => Some(*length),
         DecodeError::Memory(_) => None,
     };
     DecodeBoundary {

@@ -9116,6 +9116,7 @@ mod tests {
             );
 
             let arbitrary_state = od_isa::LongModeState {
+                cr3: None,
                 rip: entry ^ 0x1234_0000,
                 gpr: [0xfeed_face_dead_beef; 16],
                 ..Default::default()
@@ -9238,6 +9239,7 @@ mod tests {
             );
 
             let poisoned_state = od_isa::LongModeState {
+                cr3: None,
                 gpr: [0xfeed_face_ffff_fffe; 16],
                 ..Default::default()
             };
@@ -9357,6 +9359,7 @@ mod tests {
             );
 
             let poisoned_state = od_isa::LongModeState {
+                cr3: None,
                 gpr: [0xfeed_face_ffff_fffe; 16],
                 ..Default::default()
             };
@@ -9493,6 +9496,7 @@ mod tests {
                 );
 
                 let poisoned_state = od_isa::LongModeState {
+                    cr3: None,
                     gpr: [0xa55a_f00d_dead_beef; 16],
                     ..Default::default()
                 };
@@ -9634,6 +9638,7 @@ mod tests {
                 );
 
                 let poisoned_state = od_isa::LongModeState {
+                    cr3: None,
                     gpr: [0xfeed_face_ffff_fffe; 16],
                     ..Default::default()
                 };
@@ -13998,6 +14003,7 @@ mod tests {
                 );
 
                 let poisoned_state = od_isa::LongModeState {
+                    cr3: None,
                     gpr: [0xfeed_face_ffff_fffe; 16],
                     ..Default::default()
                 };
@@ -21002,6 +21008,7 @@ mod tests {
                         .artifact
                 };
                 let state = od_isa::LongModeState {
+                    cr3: None,
                     gpr: [100, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     ..od_isa::LongModeState::default()
                 };
@@ -22826,6 +22833,7 @@ mod tests {
                             assert_eq!(site.operand.scale, 1);
 
                             let mut state = od_isa::LongModeState {
+                                cr3: None,
                                 rip: 0x5e00,
                                 ..Default::default()
                             };
@@ -22873,6 +22881,7 @@ mod tests {
                 .unwrap();
         assert_ne!(first.source_bytes(), second.source_bytes());
         let state = od_isa::LongModeState {
+            cr3: None,
             gpr: [0x1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ..Default::default()
         };
@@ -23013,6 +23022,7 @@ mod tests {
                             assert_eq!(site.operand.scale, 1);
                         }
                         let mut state = od_isa::LongModeState {
+                            cr3: None,
                             rip: 0x5d00,
                             ..Default::default()
                         };
@@ -23062,6 +23072,7 @@ mod tests {
             second.site().operand.displacement
         );
         let state = od_isa::LongModeState {
+            cr3: None,
             gpr: [0, 0, 0, 0, 0, 0, 0x1000, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ..Default::default()
         };
@@ -23137,6 +23148,7 @@ mod tests {
                             assert_eq!(site.operand.scale, 1);
                             assert_eq!(site.operand.displacement, i64::from(displacement));
                             let state = od_isa::LongModeState {
+                                cr3: None,
                                 gpr: [
                                     0,
                                     0,
@@ -23307,6 +23319,7 @@ mod tests {
                             assert_eq!(site.operand.scale, 1);
                             assert_eq!(site.operand.displacement, i64::from(displacement));
                             let state = od_isa::LongModeState {
+                                cr3: None,
                                 gpr: [
                                     0,
                                     0,
@@ -23461,6 +23474,7 @@ mod tests {
 
                         let base_index = base as usize;
                         let state = od_isa::LongModeState {
+                            cr3: None,
                             gpr: {
                                 let mut gpr = [0_u64; 16];
                                 gpr[base_index] = 0xdead_beef_ffff_ffff;

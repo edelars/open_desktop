@@ -215,6 +215,8 @@ pub struct LongModeState {
     pub cr0: Option<u64>,
     /// Optional CR4 value carried only by the bounded S2-25b FP-init profile.
     pub cr4: Option<u64>,
+    /// Optional authoritative CR3 value carried only by explicit paging profiles.
+    pub cr3: Option<u64>,
     /// FS base in the limited canonical48 data-address profile.
     pub fs_base: u64,
     /// GS base in the limited canonical48 data-address profile.
@@ -329,6 +331,7 @@ impl Default for LongModeState {
             rflags: 2,
             cr0: None,
             cr4: None,
+            cr3: None,
             fs_base: 0,
             gs_base: 0,
             kernel_gs_base: None,
@@ -377,6 +380,7 @@ impl LongModeState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FragmentAdapterError {
     UnsupportedCr0(u64),
+    UnsupportedCr3(u64),
     UnsupportedCr4(u64),
     ExtraRegister(Register),
     UnsupportedFsBase(u64),
@@ -419,6 +423,9 @@ impl TryFrom<&LongModeState> for FragmentState {
     fn try_from(state: &LongModeState) -> Result<Self, Self::Error> {
         if let Some(cr0) = state.cr0 {
             return Err(FragmentAdapterError::UnsupportedCr0(cr0));
+        }
+        if let Some(cr3) = state.cr3 {
+            return Err(FragmentAdapterError::UnsupportedCr3(cr3));
         }
         if let Some(cr4) = state.cr4 {
             return Err(FragmentAdapterError::UnsupportedCr4(cr4));
@@ -594,8 +601,21 @@ mod tests {
     }
 
     #[test]
+    fn fragment_adapter_rejects_cr3_state_instead_of_dropping_it() {
+        let state = LongModeState {
+            cr3: Some(0x1000),
+            ..LongModeState::default()
+        };
+        assert_eq!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedCr3(0x1000))
+        );
+    }
+
+    #[test]
     fn fragment_adapter_rejects_cr4_state_instead_of_dropping_it() {
         let state = LongModeState {
+            cr3: None,
             cr4: Some(0x20),
             ..LongModeState::default()
         };
@@ -622,6 +642,7 @@ mod tests {
     fn fragment_adapter_rejects_any_modeled_sti_shadow() {
         for shadow in [StiShadow::Clear, StiShadow::Blocking] {
             let state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: Some(shadow),
                 ..LongModeState::default()
@@ -637,6 +658,7 @@ mod tests {
     fn fragment_adapter_rejects_any_modeled_cpu_activity() {
         for activity in [CpuActivity::Running, CpuActivity::Halted] {
             let state = LongModeState {
+                cr3: None,
                 cr4: None,
                 activity: Some(activity),
                 ..LongModeState::default()
@@ -698,6 +720,7 @@ mod tests {
                     OperandSize::Qword,
                 ] {
                     let mut state = LongModeState {
+                        cr3: None,
                         cr4: None,
                         cr0: None,
                         sti_shadow: None,
@@ -755,6 +778,7 @@ mod tests {
             let rex = RegisterView::decode_byte(encoding, true).unwrap();
             assert_eq!(rex.register() as u8, encoding);
             let mut state = LongModeState {
+                cr3: None,
                 cr4: None,
                 sti_shadow: None,
                 gpr: [u64::MAX; 16],

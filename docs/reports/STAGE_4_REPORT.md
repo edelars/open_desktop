@@ -278,6 +278,15 @@ permission fault и сохранение CPU state/нулевого retirement �
   `LongModeState` с явной ошибкой отсутствующего регистра, CR3 и EFER остаются
   явными входами, а вся существующая validation переиспользуется без defaults,
   masking или mode-transition effects. Snapshot immutable и диагностический.
+- S4-12b реализует точный CPU-профиль `0F 22 D8` (`MOV CR3,RAX`) с CPL0,
+  reserved-bit validation, CPU-owned CR3 и typed context-change exit после
+  единственного retired instruction. Старты на `0xff2–0xfff` отклоняются до
+  fetch, а legacy/JIT пути отказываются исполнять CPU-owned CR3. Активная
+  machine translation смена ещё не подключена: это следующий S4-12c. Независимое
+  `gpt-6.1-sol/high` ревью приняло срез после пяти раундов и исправления
+  найденных дефектов. Результаты записаны в
+  [отчёте](STAGE_4_S4-12B_2026-11-05.md) и
+  [manifest](data/stage4/s4-12b-mov-cr3.json).
 - S4-13a добавляет opt-in one-entry pure-translation cache и release comparison
   harness. Три процесса завершили 600 retained paired samples на synthetic
   profiles; результаты включают locality wins и two-page alternating slowdown,

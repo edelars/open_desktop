@@ -1390,6 +1390,8 @@ pub enum Operation {
     ReadCr4,
     /// Exact `0F 22 E0` MOV CR4, RAX for the bounded S2-25b profile.
     WriteCr4,
+    /// Exact `0F 22 D8` MOV CR3, RAX for the bounded Stage 4 profile.
+    WriteCr3,
     /// Bare `DB E2` FNCLEX in the local profile with an existing x87 state.
     Fnclex,
     /// Bare `DF E0` FNSTSW AX in the local profile with an existing x87 state.
@@ -2033,6 +2035,11 @@ pub enum DecodeError {
         opcode: Opcode,
         length: u8,
     },
+    /// LOCK-prefixed `MOV CR3,RAX`: its #UD is gated by the opt-in CPU profile.
+    InvalidMovCr3Lock {
+        opcode: Opcode,
+        length: u8,
+    },
     Memory(MemoryError),
 }
 
@@ -2238,7 +2245,19 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 && prefixes.rex.is_none()
             {
                 let modrm = self.byte()?;
-                if matches!(modrm, 0xc0 | 0xe0) {
+                if matches!(modrm, 0xc0 | 0xd8 | 0xe0) {
+                    if opcode.byte == 0x22 && modrm == 0xd8 {
+                        if prefix_count != 1 || prefix_bytes[0] != 0xf0 {
+                            return Err(self.unsupported(opcode));
+                        }
+                        return Err(DecodeError::InvalidMovCr3Lock {
+                            opcode,
+                            length: self.length,
+                        });
+                    }
+                    if opcode.byte == 0x20 && modrm == 0xd8 {
+                        return Err(self.unsupported(opcode));
+                    }
                     return Err(DecodeError::Invalid {
                         opcode,
                         length: self.length,
@@ -2250,7 +2269,10 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 return Err(self.unsupported(opcode));
             }
             let modrm = self.byte()?;
-            if !matches!(modrm, 0xc0 | 0xe0) {
+            if !matches!(modrm, 0xc0 | 0xd8 | 0xe0) {
+                return Err(self.unsupported(opcode));
+            }
+            if opcode.byte == 0x20 && modrm == 0xd8 {
                 return Err(self.unsupported(opcode));
             }
             return Ok(Instruction {
@@ -2262,6 +2284,7 @@ impl<M: GuestMemory> Fetch<'_, M> {
                 operation: match (opcode.byte, modrm) {
                     (0x20, 0xc0) => Operation::ReadCr0,
                     (0x22, 0xc0) => Operation::WriteCr0,
+                    (0x22, 0xd8) => Operation::WriteCr3,
                     (0x20, 0xe0) => Operation::ReadCr4,
                     (0x22, 0xe0) => Operation::WriteCr4,
                     _ => unreachable!("control-register opcode was validated"),
@@ -21513,6 +21536,7 @@ mod tests {
             let mut memory = Memory::new(&bytes);
             assert!(memory.decode().is_ok());
             let mut state = crate::LongModeState {
+                cr3: None,
                 cr4: None,
                 cr0: None,
                 sti_shadow: None,
@@ -21555,6 +21579,7 @@ mod tests {
         }
         let mut memory = Memory::new(&[0x0f, 0x0b]);
         let mut state = crate::LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             rip: memory.base,
@@ -21771,6 +21796,7 @@ mod tests {
     #[test]
     fn canonical48_checks_select_ss_only_for_rsp_rbp_bases() {
         let mut state = LongModeState {
+            cr3: None,
             cr4: None,
             sti_shadow: None,
             gpr: [0x8000_0000_0000; 16],
@@ -23556,6 +23582,7 @@ mod tests {
         for (bytes, operation) in [
             (&[0x0f, 0x20, 0xc0][..], Operation::ReadCr0),
             (&[0x0f, 0x22, 0xc0][..], Operation::WriteCr0),
+            (&[0x0f, 0x22, 0xd8][..], Operation::WriteCr3),
         ] {
             let mut memory = Memory::new(bytes);
             let instruction = memory.decode().unwrap();
@@ -23574,6 +23601,15 @@ mod tests {
             assert!(matches!(memory.decode(), Err(DecodeError::Invalid { .. })));
             assert_eq!(memory.fetched.len(), bytes.len());
         }
+
+        assert!(matches!(
+            Memory::new(&[0x0f, 0x20, 0xd8]).decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            Memory::new(&[0xf0, 0x0f, 0x22, 0xd8]).decode(),
+            Err(DecodeError::InvalidMovCr3Lock { .. })
+        ));
 
         for bytes in [&[0x0f, 0x20, 0xc1][..], &[0x0f, 0x22, 0xc1][..]] {
             let mut memory = Memory::new(bytes);

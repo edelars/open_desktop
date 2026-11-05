@@ -482,6 +482,7 @@ fn save_reduced_artifact(artifact: &ReplayArtifact) -> std::io::Result<PathBuf> 
 
 fn initial_state(input: &DwordStoreCorpusInput) -> LongModeState {
     LongModeState {
+        cr3: None,
         gpr: input.gpr,
         rip: ENTRY_RIP,
         rflags: input.flags,
