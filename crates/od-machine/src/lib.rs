@@ -1,6 +1,7 @@
 //! Guest physical memory, MMU, devices, virtual CPUs, and virtual time.
 
 mod bus;
+mod diagnostic_vcpu;
 mod identity_memory_adapter;
 mod page_walk;
 mod physical_memory;
@@ -10,6 +11,11 @@ mod translation_probe_cache;
 pub use bus::{
     AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError, IoSpace,
     MachineBus, MmioBinding, PortAddress, PortRange, PortRegionBinding,
+};
+
+pub use diagnostic_vcpu::{
+    DiagnosticExit, DiagnosticRunResult, DiagnosticTerminalExit, DiagnosticVcpuControlError,
+    DiagnosticVcpuSession, DiagnosticVcpuState, WorkLimitReason,
 };
 
 pub use identity_memory_adapter::{DiagnosticFlatAccess, IdentityMemoryAdapter};

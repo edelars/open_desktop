@@ -168,7 +168,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-00. Зафиксировать одну целевую машину и вход в Linux
 
-- [ ] Принято после ревью.
+- [x] Ограниченный S4-21a принят после независимого ревью.
 - **Где:** `docs/specs/MACHINE_CONTRACT.md`, существующие `CPU_CONTRACT.md`, `GUEST_REQUIREMENTS.md`, `VIRTUAL_BOARD.md`; факты — в отчёте этапа.
 - **Сделать:** составить manifest: один vCPU; точный Linux artifact; guest RAM; physical address width; CPU identity/features/MSR allowlist; paging modes/page sizes; APIC mode; timer; UART; PCI discovery; boot entry; initramfs; boot data; success evidence. Использовать существующий synthetic target `od-x86-64-v1-neutral-v0.1` как основу согласования, не копировать CPUID Mac mini.
 - **Разрешить до кода:** кандидат — 64-bit direct entry; сопоставить его с исходниками и config точного Ubuntu kernel. Проверить достижимые 32-bit trampoline/LA57 transitions: название «64-bit entry» само по себе их не исключает. При обязательном пути добавить prerequisite в этап 2 или обосновать поддержанный вариант входа. Зафиксировать точные первичные спецификации и версии.
@@ -387,6 +387,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** определить reset/entry, running, halted, paused, stopping/stopped, guest shutdown и faulted host session. Ввести bounded execution/poll points, сохранение точного состояния и единый STOP path.
 - **Проверка:** STOP во время исполнения и HLT, pause/resume без потерянного состояния, отсутствие busy loop у остановленной машины, корректный reset без старых pending events.
 - **Готово:** runner различает guest completion и host cancellation; HLT сам по себе не сообщает успешное завершение теста.
+
+#### S4-21a. Синхронная bounded диагностическая сессия
+
+- [ ] Принято после ревью.
+- **Где:** `crates/od-machine/src/diagnostic_vcpu.rs` и экспорт crate.
+- **Сделать:** одна сессия владеет `LongModeState` и `MachineBus`; синхронное выполнение только в runnable, конечный instruction budget, pause/resume без изменения CPU/RAM, идемпотентный STOP и сохранение `rflags_defined` между вызовами.
+- **Границы:** STOP во время вызова поступает через существующий `od-isa` poll callback. Work-limit возвращает управление без автоматического продолжения; guest fault, unsupported instruction и backend error сохраняются как разные терминальные причины. Нет HLT wakeup, reset, IRQ, MMU, JIT, VMHost/IPC или REP continuation.
+- **Проверка:** unit tests на реальный fetch/load/store через `IdentityMemoryAdapter`, эквивалентность единого бюджета и нескольких квантов вместе с defined-mask, переходы pause/resume/stop, STOP до fetch и на poll point, раздельные fault/unsupported/backend exits, возврат при work-limit.
+- **Готово:** bounded сессия и её проверяемые ограничения реализованы; общий lifecycle S4-21 остаётся открытым до следующих срезов.
 
 ### S4-22. Virtual clock и TSC
 

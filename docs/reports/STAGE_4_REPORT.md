@@ -4,7 +4,7 @@
 
 На 2026-11-05 принят только локальный memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access и S4-10a admission-boundary slice
-S4-02—S4-14a. Этап 4 не завершён: S4-00—S4-01,
+S4-02—S4-21a. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, devices, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
 
@@ -65,6 +65,10 @@ integration, hardware cases и Linux userspace остаются открытым
   не пишет RAM/A-D, failed replacement не resident, а remap и изменения RW/NX
   наблюдаются только после завершения старого immutable-borrow scope и создания
   нового cache. Guest invalidation и CPU hooks не добавлены.
+- S4-21a добавляет синхронную bounded diagnostic vCPU session над одним
+  `LongModeState` и `MachineBus`: runnable/paused/stopped/terminal states,
+  finite instruction budget, сохранение `rflags_defined`, STOP callback и
+  отдельные fault/unsupported/backend exits. Полный vCPU lifecycle не закрыт.
 
 ## Проверки
 
@@ -117,6 +121,8 @@ S4-08/S4-09/S4-10/S4-11 приёмка остаётся шире. S4-13a не д
 production TLB correctness, invalidation или guest workload benefit.
 S4-14a не доказывает guest INVLPG/CR3/EFER semantics, generations,
 global/PCID, CPU/JIT invalidation или concurrent memory ownership.
+S4-21a не доказывает HLT wakeup, reset, IRQ delivery, MMU/JIT integration,
+REP continuation или VMHost/IPC scheduling.
 
 Открыты manifest S4-00, реализация 2 MiB/1 GiB и необходимых режимов, injected
 table-write failure, полная rights/error matrix, двухстраничная transaction

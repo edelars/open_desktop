@@ -242,3 +242,20 @@ S4-14a проверяет этот lifecycle через remap, tighten/relax lea
 NX fetch rights и committed-write callback ranges. Это host-controlled
 disposal/reconstruction boundary, а не guest invalidation protocol. Результаты
 S4-13a не выбирают production capacity, replacement или TLB integration.
+
+## Bounded diagnostic vCPU session boundary
+
+S4-21a добавляет `DiagnosticVcpuSession` как синхронную caller-driven оболочку
+над одним `LongModeState` и `MachineBus`. Сессия имеет состояния
+`Runnable`, `Paused`, `Stopped` и terminal cause; исполнение разрешено только из
+`Runnable`. Каждый вызов получает конечный instruction budget, сохраняет CPU
+state и `rflags_defined`, а исчерпание бюджета возвращает `WorkLimit` без
+автоматического продолжения.
+
+`pause` и `resume` действуют только между вызовами и не меняют CPU/RAM. `stop`
+идемпотентен; callback STOP передаётся существующим CPU poll points, поэтому
+остановка до fetch и во время исполнения возвращает `Stopped` без дальнейшего
+вызова. Fault, unsupported instruction, backend error и halted/stop-address
+остаются разными terminal causes. Это диагностический synchronous boundary, не
+полный vCPU lifecycle: HLT wakeup, reset, IRQ, MMU, JIT, VMHost/IPC и REP
+continuation semantics остаются вне среза.
