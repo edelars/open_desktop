@@ -405,6 +405,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** монотонность, переход через большие значения, pause, delayed host scheduling, HLT и STOP; одинаковые scheduled events в deterministic test mode.
 - **Готово:** Linux-visible frequency/time fields согласованы; unsupported deadline/feature не объявлен. Временная модель не зависит от числа случайных host вызовов.
 
+#### S4-22a. Caller-driven virtual clock и bounded RDTSC
+
+- [x] Ограниченный S4-22a принят после независимого ревью.
+- **Где:** `crates/od-machine/src/virtual_clock.rs`, `diagnostic_vcpu.rs` и узкий `od-isa` execution entry.
+- **Границы:** clock начинается с `now_ns=0`, имеет ненулевой фиксированный `tsc_hz` и продвигается только явным `advance_time_ns` между вызовами в Runnable. TSC вычисляется как `floor(now_ns * tsc_hz / 1e9)` с checked overflow и atomic failure. Только bare Long64 RDTSC использует clock и существующие TSD/CPL checks. Нет host-time coupling, auto-advance, RDTSCP, MSR/CPUID advertisement, HLT, IRQ, deadlines или reset.
+- **Проверка:** clock rounding/large/overflow/split equivalence; реальный RDTSC через MachineBus; маска flags, EDX:EAX/RIP, split budgets, pause/STOP/zero budget, TSD/CPL/fetch failure и invalid defined mask.
+- **Готово:** bounded deterministic clock/RDTSC boundary реализованы; общий S4-22 остаётся открытым для согласования частоты Linux, host monotonic time и будущей progression для HLT/events.
+
 ### S4-23. Очередь событий и deadlines
 
 - [ ] Принято после ревью.

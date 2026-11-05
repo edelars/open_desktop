@@ -103,6 +103,12 @@ git diff --check
 35. S4-21a keeps halted, architectural fault, unsupported instruction, backend
     memory error and stop-address outcomes distinct; it does not claim HLT
     wakeup, reset, IRQ, MMU or JIT lifecycle.
+36. S4-22a checks zero/rounding/large virtual-clock conversions, atomic time/TSC
+    overflow rejection and split-advance equivalence; time does not advance from
+    execution, budgets, polling or host calls.
+37. Bounded RDTSC uses the caller-driven clock and preserves EDX:EAX, RIP and
+    `rflags_defined` across split budgets. TSD/CPL denial, fetch-boundary failure,
+    zero budget and invalid defined masks remain explicit outcomes.
 
 ## Интерпретация
 
@@ -110,7 +116,8 @@ git diff --check
 flat identity integration, tracked RAM-only effects и targeted `od-isa`
 PFEC/record tests, pure translation probe, S4-10a rejection boundary, S4-11a
 cross-page admission, S4-12a snapshot bridge, S4-13a pure-cache experiment,
-S4-14a cache lifecycle boundary и S4-21a diagnostic vCPU session.
+S4-14a cache lifecycle boundary, S4-21a diagnostic vCPU session и S4-22a
+caller-driven clock/RDTSC boundary.
 Они не являются physical x86 evidence и не
 подтверждают, что guest 4 KiB
 страницы уже имеют независимые paging permissions. Отдельные failure values не

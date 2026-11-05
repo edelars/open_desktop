@@ -1,7 +1,11 @@
 //! Synchronous, bounded diagnostic execution over one owned CPU and machine.
 
 use crate::{IdentityMemoryAdapter, MachineBus};
-use od_isa::execute::{RunConfig, RunExit, run_with_rflags_defined};
+use crate::{VirtualClock, VirtualClockError};
+use od_isa::execute::{
+    RdtscControls, RunConfig, RunExit, run_with_rflags_defined,
+    run_with_rflags_defined_and_rdtsc_source,
+};
 use od_isa::memory::{AccessContext, ArchitecturalFault, MemoryError};
 use od_isa::{INTEGER_FLAGS, LongModeState};
 
@@ -48,6 +52,7 @@ pub enum DiagnosticVcpuControlError {
     CannotPause(DiagnosticVcpuState),
     CannotResume(DiagnosticVcpuState),
     ExecutionInput(od_isa::execute::RunInputError),
+    Clock(VirtualClockError),
 }
 
 /// One caller-driven vCPU session. It owns its CPU state and machine bus and
@@ -58,6 +63,8 @@ pub struct DiagnosticVcpuSession {
     access_context: AccessContext,
     rflags_defined: u64,
     status: DiagnosticVcpuState,
+    clock: Option<VirtualClock>,
+    rdtsc_controls: Option<RdtscControls>,
 }
 
 impl DiagnosticVcpuSession {
@@ -78,7 +85,55 @@ impl DiagnosticVcpuSession {
             access_context,
             rflags_defined,
             status: DiagnosticVcpuState::Runnable,
+            clock: None,
+            rdtsc_controls: None,
         })
+    }
+
+    /// Construct a session with explicit caller-driven virtual time and RDTSC.
+    pub fn new_with_tsc(
+        state: LongModeState,
+        bus: MachineBus,
+        access_context: AccessContext,
+        rflags_defined: u64,
+        tsc_hz: u64,
+        rdtsc_controls: RdtscControls,
+    ) -> Result<Self, DiagnosticVcpuControlError> {
+        if rflags_defined & !INTEGER_FLAGS != 0 {
+            return Err(DiagnosticVcpuControlError::ExecutionInput(
+                od_isa::execute::RunInputError::InvalidRflagsDefined {
+                    value: rflags_defined,
+                },
+            ));
+        }
+        let clock = VirtualClock::new(tsc_hz).map_err(DiagnosticVcpuControlError::Clock)?;
+        Ok(Self {
+            state,
+            bus,
+            access_context,
+            rflags_defined,
+            status: DiagnosticVcpuState::Runnable,
+            clock: Some(clock),
+            rdtsc_controls: Some(rdtsc_controls),
+        })
+    }
+
+    pub const fn virtual_clock(&self) -> Option<&VirtualClock> {
+        self.clock.as_ref()
+    }
+
+    /// Advance virtual time only between runnable calls.
+    pub fn advance_time_ns(&mut self, delta_ns: u64) -> Result<(), DiagnosticVcpuControlError> {
+        if self.status != DiagnosticVcpuState::Runnable {
+            return Err(DiagnosticVcpuControlError::NotRunnable(self.status.clone()));
+        }
+        self.clock
+            .as_mut()
+            .ok_or(DiagnosticVcpuControlError::Clock(
+                VirtualClockError::ClockNotConfigured,
+            ))?
+            .advance_time_ns(delta_ns)
+            .map_err(DiagnosticVcpuControlError::Clock)
     }
 
     pub fn state(&self) -> &LongModeState {
@@ -132,18 +187,34 @@ impl DiagnosticVcpuSession {
 
         let mut committed_write = |_| {};
         let mut memory = IdentityMemoryAdapter::new(&mut self.bus, &mut committed_write);
-        let result = run_with_rflags_defined(
-            &mut self.state,
-            &mut memory,
-            RunConfig {
-                instruction_budget,
-                stop_rip: None,
-                context: self.access_context,
-            },
-            self.rflags_defined,
-            &mut stop_requested,
-        )
-        .map_err(DiagnosticVcpuControlError::ExecutionInput)?;
+        let config = RunConfig {
+            instruction_budget,
+            stop_rip: None,
+            context: self.access_context,
+        };
+        let result = if let (Some(clock), Some(rdtsc_controls)) = (&self.clock, self.rdtsc_controls)
+        {
+            let mut source = || clock.tsc();
+            run_with_rflags_defined_and_rdtsc_source(
+                &mut self.state,
+                &mut memory,
+                config,
+                self.rflags_defined,
+                rdtsc_controls,
+                &mut source,
+                &mut stop_requested,
+            )
+            .map_err(DiagnosticVcpuControlError::ExecutionInput)?
+        } else {
+            run_with_rflags_defined(
+                &mut self.state,
+                &mut memory,
+                config,
+                self.rflags_defined,
+                &mut stop_requested,
+            )
+            .map_err(DiagnosticVcpuControlError::ExecutionInput)?
+        };
         self.rflags_defined = result.rflags_defined;
 
         let exit = match result.exit {

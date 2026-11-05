@@ -4,7 +4,7 @@
 
 На 2026-11-05 принят только локальный memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access и S4-10a admission-boundary slice
-S4-02—S4-21a. Этап 4 не завершён: S4-00—S4-01,
+S4-02—S4-22a. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, devices, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
 
@@ -69,6 +69,11 @@ integration, hardware cases и Linux userspace остаются открытым
   `LongModeState` и `MachineBus`: runnable/paused/stopped/terminal states,
   finite instruction budget, сохранение `rflags_defined`, STOP callback и
   отдельные fault/unsupported/backend exits. Полный vCPU lifecycle не закрыт.
+- S4-22a добавляет caller-driven `VirtualClock` и bounded RDTSC boundary:
+  checked `u128` conversion, atomic overflow rejection, explicit time advance,
+  сохранение `rflags_defined`, TSD/CPL/fetch checks и отсутствие auto-advance.
+  RDTSCP, MSR/CPUID, HLT progression, IRQ/deadlines и host-clock coupling не
+  реализованы.
 
 ## Проверки
 
@@ -90,6 +95,9 @@ integration, hardware cases и Linux userspace остаются открытым
   тестов успешно; полный feature-enabled `od-machine` — 60 тестов успешно;
 - `cargo check -p od-machine --all-targets --features
   experimental-translation-probe-cache --locked --offline` — успешно;
+- `cargo test -p od-machine --locked --offline --test diagnostic_vcpu_api` — 7
+  integration tests S4-21a/S4-22a успешно; targeted `od-isa` RDTSC и
+  definedness tests успешно;
 - независимое ревью `gpt-6.1-sol/high` — для S4-02—S4-06 подтверждённые
   замечания исправлены с повторным approve; для S4-07 найден ET=0 P2, затем
   добавлена fail-closed проверка и повторное ревью: **approve**; S4-08 получил
@@ -100,6 +108,8 @@ integration, hardware cases и Linux userspace остаются открытым
   независимое **approve**; S4-13a получил независимое **approve** после
   исправления benchmark parity P2; S4-14a получил независимое **approve**,
   P0—P2 не обнаружены.
+  S4-22a получил независимое **approve**; два P3 теста усилены и закрыты
+  повторным ревью, новых P0—P2 нет.
 
 Архитектурный анализ `gpt-6-astra/high` подтвердил границу среза и отсутствие
 необходимости добавлять зависимости на `od-isa`, `od-jit` или `od-host`.
@@ -123,6 +133,8 @@ S4-14a не доказывает guest INVLPG/CR3/EFER semantics, generations,
 global/PCID, CPU/JIT invalidation или concurrent memory ownership.
 S4-21a не доказывает HLT wakeup, reset, IRQ delivery, MMU/JIT integration,
 REP continuation или VMHost/IPC scheduling.
+S4-22a не доказывает Linux-visible frequency policy, host monotonic time,
+RDTSCP/MSR/CPUID, HLT progression или event deadlines.
 
 Открыты manifest S4-00, реализация 2 MiB/1 GiB и необходимых режимов, injected
 table-write failure, полная rights/error matrix, двухстраничная transaction

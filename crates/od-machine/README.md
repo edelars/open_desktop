@@ -17,8 +17,13 @@ Bounded S4-21a adds a synchronous diagnostic vCPU session owning one
 `LongModeState` and `MachineBus`, with runnable/paused/stopped/terminal states,
 finite interpreter calls, preserved RFLAGS definedness, and distinct fault,
 unsupported, and backend exits. It does not implement HLT wakeup, reset, IRQ,
-MMU, JIT, VMHost/IPC, or REP continuation. Admission boundary для
-неподдержанных 2 MiB/1 GiB pages закреплён тестами, но сами huge pages и новые
+MMU, JIT, VMHost/IPC, or REP continuation.
+Bounded S4-22a adds an explicitly advanced virtual clock and fixed-frequency
+TSC source for bare Long64 RDTSC. Runs, polling and host delay do not advance
+time; overflow is rejected atomically. The legacy session constructor remains
+without RDTSC. Linux frequency discovery, host monotonic integration, HLT
+progression, events, and RDTSCP/MSR/CPUID support remain outside this slice.
+Admission boundary для неподдержанных 2 MiB/1 GiB pages закреплён тестами, но сами huge pages и новые
 режимы ещё не реализованы. Cross-page accesses отвергаются до page walk;
 split/transaction semantics и CPU restart/REP/RMW integration ещё не
 реализованы. CPU-state snapshot bridge принимает CR0/CR4 из `LongModeState`,

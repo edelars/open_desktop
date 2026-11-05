@@ -259,3 +259,18 @@ state и `rflags_defined`, а исчерпание бюджета возвращ
 остаются разными terminal causes. Это диагностический synchronous boundary, не
 полный vCPU lifecycle: HLT wakeup, reset, IRQ, MMU, JIT, VMHost/IPC и REP
 continuation semantics остаются вне среза.
+
+## Caller-driven virtual clock and RDTSC boundary
+
+S4-22a добавляет `VirtualClock` с начальным `now_ns = 0` и фиксированной
+ненулевой частотой `tsc_hz`. Время изменяется только явным
+`advance_time_ns(delta)` между execution calls в состоянии `Runnable`;
+`run`, instruction budget, polling и host delay его не продвигают. Значение TSC
+равно `floor(now_ns * tsc_hz / 1_000_000_000)` с `u128` intermediate. Overflow
+времени или результата отвергается до изменения состояния.
+
+`DiagnosticVcpuSession::new_with_tsc` использует этот источник только для bare
+Long64 `RDTSC`, сохраняя существующие TSD/CPL checks, `EDX:EAX`, RIP и
+`rflags_defined`. Legacy constructor остаётся без clock/RDTSC source. RDTSCP,
+MSR/CPUID frequency advertisement, host monotonic coupling, HLT progression,
+IRQ/deadlines и reset не входят в срез; полный S4-22 остаётся открытым.

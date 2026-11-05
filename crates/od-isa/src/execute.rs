@@ -15246,6 +15246,42 @@ pub fn run_with_rdtsc_source(
     )
 }
 
+/// Continue execution with explicit RFLAGS definedness and the exact bare
+/// Long64 RDTSC profile.
+pub fn run_with_rflags_defined_and_rdtsc_source(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    config: RunConfig,
+    initial_rflags_defined: u64,
+    controls: RdtscControls,
+    source: &mut impl FnMut() -> u64,
+    mut stop_requested: impl FnMut() -> bool,
+) -> Result<RunResult, RunInputError> {
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return Err(RunInputError::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    Ok(run_execution_loop_with_profiles_and_rdtsc(
+        state,
+        memory,
+        config,
+        initial_rflags_defined,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        Some(controls),
+        Some(source),
+        None,
+        None,
+        &mut stop_requested,
+    ))
+}
+
 /// Execute the local CR0/FNINIT initialization profile with fixed Long64,
 /// active IA32e/CR4.PAE/FPU-available assumptions.
 pub fn run_with_cr0_profile(
