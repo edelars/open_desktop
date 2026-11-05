@@ -37,14 +37,14 @@
 
 <a id="issue-057-s9-cow-zeroed-gen2-slot-indistinguishable"></a>
 
-### ISSUE-057 — S9-10 CoW: обнулённый слот поколения 2 вместе с повреждённой копией корня неотличим от обрыва до барьера 1 первого commit
+### ISSUE-057 (закрыто) — S9-10 CoW: обнулённый слот поколения 2 вместе с повреждённой копией корня неотличим от обрыва до барьера 1 первого commit
 
 - **Дата обнаружения:** 2026-11-05.
 - **Компонент:** `od-storage`, прототип CoW ([`cow_proto.rs`](../crates/od-storage/src/cow_proto.rs), коммит `61a99e0`; тесты [`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)).
-- **Статус:** открыта; предел модели прототипного формата (формат не принят, S9-40), не дефект реализации по принятой спецификации.
+- **Статус:** закрыто (2026-11-05), коммит `01ef35d`. Формат CoW при этом по-прежнему не принят (S9-40).
 - **Суть и последствия:** если слот подтверждённого поколения 2 обнулён, а копия корня поколения 2 в конце файла тоже повреждена, байты файла совпадают с состоянием после обрыва до первого barrier первого commit (поколение 1 есть, хвост без валидного корня). Writable open трактует это как `UnfinishedCandidate` на поколении 1, и следующий commit может затереть подтверждённое поколение 2: потеря acked данных при двойном повреждении. Salvage сообщает случай как незавершённый кандидат и ничего не пишет.
 - **Основание:** тест в `cow_open_tests.rs` и комментарий к нему (строки около «zeroed slot of generation 2 … indistinguishable»); описание в сообщении коммита `61a99e0`.
-- **Следующий шаг:** ввести в формат отдельную marker-запись или счётчик, различающий первый commit и подтверждённое поколение 2 (решение в S9-08/S9-40). До этого формат не принимается, а гарантия «recovery не возвращает состояние старше durable_ack» ([STORAGE_FORMAT.md §8](specs/STORAGE_FORMAT.md#8-модель-отказов-crash-model)) не заявляется для двойного повреждения.
+- **Решение и результат:** `create` пишет два пустых корня (поколение 1 в slot 1 и поколение 2 в slot 0) под одним барьером; первый пользовательский commit — поколение 3. После подтверждённого `create` пустой слот — повреждение, а не норма. Спекулятивная ветка «первый commit» удалена. Один валидный пустой корень в файле размером с заголовок — незавершённый create: `CowError::IncompleteCreate` для writable open (read-only — `NoValidRoot`). Writable open с повреждённым новейшим слотом и повреждённой копией корня отклоняется (`DamagedOtherSlot`); salvage показывает предыдущее поколение с `possible_lost_commit`. Проверено sweeps по каждому cut create и commit против независимого oracle: `create_makes_two_empty_roots_under_one_barrier`, `power_cut_at_every_create_step`, `every_sector_state_of_an_unfinished_create`, `damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state`, `zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward` ([`cow_open_tests.rs`](../crates/od-storage/src/cow_open_tests.rs)); `cargo test -p od-storage` — 114 passed. Ограничение: двойное повреждение вне модели отказов по-прежнему обнаруживается и отклоняется, но не восстанавливается.
 
 <a id="issue-054-s4-11-cross-page-cpu-integration"></a>
 

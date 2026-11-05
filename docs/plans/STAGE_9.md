@@ -173,7 +173,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-01. Проверить prerequisites по фактическому коду
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** принято: сверка [VM_STATE.md §2](../specs/VM_STATE.md#2-инвентаризация-prerequisites-s9-01) с кодом HEAD `4dedff2` выполнена. Следующий runnable срез — устранение [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) в прототипе CoW. Full-VM prerequisites заблокированы ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)); namespace-часть S9-06 — при появлении источника. Отчёт — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md).
+- **Текущий статус (2026-11-05):** принято: сверка [VM_STATE.md §2](../specs/VM_STATE.md#2-инвентаризация-prerequisites-s9-01) с кодом HEAD `4dedff2` выполнена. [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт (`01ef35d`); следующий runnable срез — недостающие замеры S9-40 (см. [VM_STATE.md §2.5](../specs/VM_STATE.md#25-вывод-s9-01)). Full-VM prerequisites заблокированы ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)); namespace-часть S9-06 — при появлении источника. Отчёт — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md).
 - **Где:** отчёт этапа и матрица зависимости в `VM_STATE.md`.
 - **Сделать:** перечислить готовность RAW/device backend, guest storage commands, всех CPU/RAM/device/time/I/O states, UEFI variables, vTPM и guest agents. Для каждого обязательного state указать реального owner и его versioned save/load contract либо точный blocker.
 - **Проверить:** методы snapshot в testkit и session ABI не приняты за сериализацию всей машины; нет зависимости offline CoW от всей Windows. Нужные задачи этапов 4–8 связаны с roadmap/фактическим кодом, без выдуманных IDs.
@@ -236,7 +236,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-08. Выбрать минимальный собственный CoW format
 
 - [ ] Принято после архитектурного ревью и нужных прототипных замеров.
-- **Текущий статус (2026-11-05):** прототип реализован и проверен, ревью протокола пройдено, коммит `000c1da`; формат НЕ принят (гипотезы: размер блока, карта; замеры S9-40 не сделаны), нормативных bytes и лимитов нет — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-08-минимальный-собственный-cow-format--прототип-реализован-и-проверен-формат-не-принят).
+- **Текущий статус (2026-11-05):** протокол принят с оговорками: 2 root slot, копия корня, 2 барьера, create заполняет оба слота (`IncompleteCreate`), коммиты `000c1da`, `01ef35d`; проверен sweeps на fault backend. Формат НЕ принят как нормативный: размеры блока и карты — гипотезы до полного S9-40; нормативных bytes и лимитов нет — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-08-минимальный-собственный-cow-format--протокол-принят-с-оговорками-формат-не-принят-как-нормативный).
 - **Где:** `STORAGE_FORMAT.md`, `od-storage`, ADR при выборе среди вариантов.
 - **Сделать:** versioned superblock/root descriptors, block map, generation/transaction IDs, checksums и bounded snapshot metadata. Первый кандидат: один файл и writer, фиксированная virtual capacity/block size, append-only immutable extents, полная bounded map поколения и два root slots. Протокол-кандидат: data/map → durability barrier → неактивный root → durability barrier → ack. До writer доказать все cuts; не предполагать atomic sector write и не добавлять journal/B-tree/refcounts без необходимости.
 - **Проверить:** на бумаге и минимальном fault prototype разобрать каждый durability cut. Для размера blocks/map и hot path сравнить минимальные варианты на одинаковой нагрузке; выбрать простейший удовлетворяющий измеренным требованиям.
@@ -254,7 +254,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-10. Реализовать создание и выбор корня
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** реализовано, ревью пройдено после одного major (исправлен), коммиты `61a99e0`, `88b9f42`. Открытый предел: [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable). Формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-10-createopen-и-выбор-корня--реализовано-ревью-пройдено-после-одного-major-исправлен-есть-открытый-предел-issue-057).
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено после одного major (исправлен), коммиты `61a99e0`, `88b9f42`, `01ef35d`. [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт: create пишет два пустых корня под одним барьером, пустой слот после ack — повреждение, `IncompleteCreate`. Формат НЕ принят как нормативный (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-10-createopen-и-выбор-корня--реализовано-ревью-пройдено-после-одного-major-исправлен-issue-057-закрыт).
 - **Где:** `od-storage`.
 - **Сделать:** create пустого диска и open только полностью валидируемого состояния. Root validation включает reachable metadata/data integrity в заявленном checksum scope; generation и publication status проверяются по S9-08.
 - **Проверить:** power cut model на каждом шаге create/publication, damaged root copies, same generation conflict, generation overflow, валидный header с невалидной map, отсутствие пригодного root. Для маленького correctness profile проверить весь reachable graph; lazy validation вводить отдельно по замерам.
@@ -263,7 +263,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-11. Реализовать CoW write transaction
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** реализовано, ревью пройдено (один major исправлен), коммит `7d23bf9`. Не покрыто: real power loss, reclaim/GC, snapshots; формат НЕ принят (S9-40), открыт [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-11-cow-write-transaction--реализовано-ревью-пройдено-один-major-исправлен).
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено (один major исправлен), коммит `7d23bf9`. Не покрыто: real power loss, reclaim/GC, snapshots; формат НЕ принят как нормативный (S9-40); [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-11-cow-write-transaction--реализовано-ревью-пройдено-один-major-исправлен).
 - **Где:** `od-storage` writer и transaction tests.
 - **Сделать:** подготовить новые extents/map, обеспечить нужную durability и опубликовать root по protocol; published objects неизменяемы. Ограничить размер transaction/dirty state; cancellation до/после publication имеет разные результаты.
 - **Проверить:** overwrite, partial logical block, несколько extents, flush boundary, commit error и reader view. Старая root generation остаётся пригодной до разрешённого reclaim.
@@ -272,7 +272,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-12. Проверить crash recovery по durable watermark
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** реализовано (recovery tests), ревью пройдено, коммит `7d23bf9`. Не покрыто: real power loss, reclaim/GC, snapshots; формат НЕ принят (S9-40), открыт [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-12-crash-recovery-по-durable-watermark--реализовано-recovery-tests-ревью-пройдено).
+- **Текущий статус (2026-11-05):** реализовано (recovery tests), ревью пройдено, коммит `7d23bf9`. Не покрыто: real power loss, reclaim/GC, snapshots; формат НЕ принят как нормативный (S9-40); [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-12-crash-recovery-по-durable-watermark--реализовано-recovery-tests-ревью-пройдено).
 - **Где:** storage recovery, fault harness, report/data.
 - **Сделать:** восстановление после каждого допустимого cut S9-11, cleanup только доказанного garbage; side-effect-free inspect перед возможной mutation. Сравнивать с последним durable acknowledgement и разрешёнными более поздними outcomes.
 - **Проверить:** repeated reopen/recovery, crash во время recovery, delayed writes, corrupt committed extent и unack-but-committed root. Старый valid root с потерянным acknowledged write обязан провалить oracle.
@@ -497,6 +497,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-40. Измерить стоимость корректных операций
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** частично: замер commit-latency выполнен, сводка в [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md) (p50: 4.05 / 4.90 / 8.93 / 13.00 мс для схем A/B/C/D, барьер ≈4 мс). Не закрыто: замеры RAW против CoW по throughput, чтению, write amplification, recovery и памяти; отчёт S9-40 не принят — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-40-измерение-стоимости-корректных-операций--частично).
 - **Где:** `tools/bench/`, отчёт и small data.
 - **Сделать:** RAW baseline против CoW на одинаковых размерах/flush guarantees; sequential/random read/write, durable latency distribution, write amplification, chain depth, fragmentation, export/reclaim, checkpoint pause/duration, restore и память. Повторные прогоны, cold/warm, realistic dirty data.
 - **Проверить:** одинаковая correctness/durability, hardware/FS/build fingerprint, variance и retained disk space. Нельзя получить ускорение отключением flush, checksums или barrier; не принимать сложную структуру только по asymptotic claim.
