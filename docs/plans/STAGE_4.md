@@ -168,7 +168,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-00. Зафиксировать одну целевую машину и вход в Linux
 
-- [x] Ограниченный S4-21a принят после независимого ревью.
+- [ ] Принято после ревью.
 - **Где:** `docs/specs/MACHINE_CONTRACT.md`, существующие `CPU_CONTRACT.md`, `GUEST_REQUIREMENTS.md`, `VIRTUAL_BOARD.md`; факты — в отчёте этапа.
 - **Сделать:** составить manifest: один vCPU; точный Linux artifact; guest RAM; physical address width; CPU identity/features/MSR allowlist; paging modes/page sizes; APIC mode; timer; UART; PCI discovery; boot entry; initramfs; boot data; success evidence. Использовать существующий synthetic target `od-x86-64-v1-neutral-v0.1` как основу согласования, не копировать CPUID Mac mini.
 - **Разрешить до кода:** кандидат — 64-bit direct entry; сопоставить его с исходниками и config точного Ubuntu kernel. Проверить достижимые 32-bit trampoline/LA57 transitions: название «64-bit entry» само по себе их не исключает. При обязательном пути добавить prerequisite в этап 2 или обосновать поддержанный вариант входа. Зафиксировать точные первичные спецификации и версии.
@@ -390,7 +390,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-21a. Синхронная bounded диагностическая сессия
 
-- [ ] Принято после ревью.
+- [x] Ограниченный S4-21a принят после независимого ревью.
 - **Где:** `crates/od-machine/src/diagnostic_vcpu.rs` и экспорт crate.
 - **Сделать:** одна сессия владеет `LongModeState` и `MachineBus`; синхронное выполнение только в runnable, конечный instruction budget, pause/resume без изменения CPU/RAM, идемпотентный STOP и сохранение `rflags_defined` между вызовами.
 - **Границы:** STOP во время вызова поступает через существующий `od-isa` poll callback. Work-limit возвращает управление без автоматического продолжения; guest fault, unsupported instruction и backend error сохраняются как разные терминальные причины. Нет HLT wakeup, reset, IRQ, MMU, JIT, VMHost/IPC или REP continuation.
