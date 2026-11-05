@@ -4,5 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
+[features]
+# Exposes the in-memory test backend and the shared contract suite.
+test-support = []
+
 [lints]
 workspace = true
