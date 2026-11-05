@@ -64,10 +64,13 @@
   "graphify": {
     "query_before_source_reads": true,
     "worktree_update": "completed after code changes",
-    "nodes": 24701,
-    "edges": 63688,
-    "communities": 858,
-    "global_graph_updated": false
+    "worktree_nodes": 24701,
+    "worktree_edges": 63688,
+    "worktree_communities": 858,
+    "global_graph_updated": true,
+    "global_nodes": 26053,
+    "global_edges": 65425,
+    "global_communities": 867
   },
   "issue_054": "open",
   "parent_s4_11": "open",
