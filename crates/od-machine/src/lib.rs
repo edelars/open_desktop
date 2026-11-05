@@ -49,8 +49,8 @@ pub use paged_memory_adapter::{
 };
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
-    PagedProbeExit, PagedProbeQuantumReport, PagedProbeRejection, run_paged_probe,
-    run_paged_stack_probe,
+    PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
+    run_paged_cr3_probe, run_paged_probe, run_paged_stack_probe,
 };
 pub use stage4_alias_probe::load_stage4_alias_probe;
 pub use stage4_flat_probe::{

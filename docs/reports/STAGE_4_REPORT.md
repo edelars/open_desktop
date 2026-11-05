@@ -282,11 +282,22 @@ permission fault и сохранение CPU state/нулевого retirement �
   reserved-bit validation, CPU-owned CR3 и typed context-change exit после
   единственного retired instruction. Старты на `0xff2–0xfff` отклоняются до
   fetch, а legacy/JIT пути отказываются исполнять CPU-owned CR3. Активная
-  machine translation смена ещё не подключена: это следующий S4-12c. Независимое
+  machine translation смена не входила в этот CPU-срез. Независимое
   `gpt-6.1-sol/high` ревью приняло срез после пяти раундов и исправления
   найденных дефектов. Результаты записаны в
   [отчёте](STAGE_4_S4-12B_2026-11-05.md) и
   [manifest](data/stage4/s4-12b-mov-cr3.json).
+- S4-12c добавляет opt-in bounded CPU-owned CR3 machine quantum: после
+  успешного `MOV CR3` проверяется typed effect, строится новый immutable
+  translation snapshot, и следующий fetch/operand access использует новый
+  root. Доказаны A→B code/data mappings, quantum handoff и precise fetch fault
+  после переключения с сохранённым retirement. Профиль ограничен `MOV CR3,RAX`
+  и exact `MOV RAX,[RBX]`; stores, PIO и HLT отклоняются. Независимое
+  `gpt-6.1-sol/high` одобрило код; синхронизированы evidence и результаты
+  Graphify после замечания к манифесту. См. [отчёт](STAGE_4_S4-12C_2026-11-05.md),
+  [контракт](../specs/MACHINE_CONTRACT.md#cpu-owned-cr3-translation-handoff-s4-12c)
+  и [manifest](data/stage4/s4-12c-mov-cr3-machine.json). Родитель S4-12 остаётся
+  открытым для EFER, startup transitions и TLB/invalidation.
 - S4-13a добавляет opt-in one-entry pure-translation cache и release comparison
   harness. Три процесса завершили 600 retained paired samples на synthetic
   profiles; результаты включают locality wins и two-page alternating slowdown,

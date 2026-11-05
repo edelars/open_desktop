@@ -5,7 +5,8 @@ use od_isa::{CpuActivity, INTEGER_FLAGS, LongModeState, Register};
 use od_machine::{
     AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
     MemoryRegionKind, MemoryRegionSpec, PagedProbeExit, PagedProbeRejection, PortAddress,
-    PortRange, PortRegionBinding, RamLimits, Uart16550Handle, Uart16550PollingTx, run_paged_probe,
+    PortRange, PortRegionBinding, RamLimits, Uart16550Handle, Uart16550PollingTx,
+    run_paged_cr3_probe, run_paged_probe,
 };
 
 const CR0: u64 = 0x8001_0033;
@@ -56,6 +57,42 @@ fn fixture() -> (MachineBus, Uart16550Handle) {
             .unwrap();
     }
     (bus, handle)
+}
+
+fn cr3_switch_fixture() -> MachineBus {
+    let (mut bus, _uart) = fixture();
+    const ROOT_B: u64 = 0x11_000;
+    const PDPT_B: u64 = 0x12_000;
+    const PD_B: u64 = 0x13_000;
+    const CODE_PT_B: u64 = 0x14_000;
+    const DATA_PT_B: u64 = 0x15_000;
+    const CODE_B_PHYSICAL: u64 = 0x16_000;
+    const DATA_A_PHYSICAL: u64 = 0x9000;
+    const DATA_B_PHYSICAL: u64 = 0x17_000;
+
+    // Build an independent four-level tree for root B. It maps the same code
+    // and data virtual addresses to different physical pages from root A.
+    put(&mut bus, ROOT_B, PDPT_B | 7);
+    put(&mut bus, PDPT_B, PD_B | 7);
+    put(&mut bus, PD_B + 0x10, CODE_PT_B | 7);
+    put(&mut bus, PD_B + 0x20, DATA_PT_B | 7);
+    put(&mut bus, CODE_PT_B, CODE_B_PHYSICAL | 7);
+    put(&mut bus, CODE_PT_B + 0x20, DATA_B_PHYSICAL | 7);
+    put(&mut bus, DATA_PT_B, DATA_B_PHYSICAL | 7);
+
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x0f, 0x22, 0xd8, 0x90]);
+    put_bytes_at(&mut bus, CODE_B_PHYSICAL + 3, &[0x48, 0x8b, 0x03]);
+    put(&mut bus, DATA_A_PHYSICAL, 0x1111_2222_3333_4444);
+    put(&mut bus, DATA_B_PHYSICAL, 0xaabb_ccdd_eeff_1234);
+    bus
+}
+
+fn initial_cr3_state() -> LongModeState {
+    let mut state = initial_state(0);
+    state.cr3 = Some(ROOT);
+    state.gpr[Register::Rax as usize] = 0x11_000;
+    state.gpr[Register::Rbx as usize] = DATA_LINEAR;
+    state
 }
 
 fn put(bus: &mut MachineBus, address: u64, value: u64) {
@@ -220,6 +257,175 @@ fn cpu_owned_cr3_is_rejected_before_stop_callback() {
     );
     assert_eq!(result.instructions_executed, 0);
     assert!(writes.is_empty());
+}
+
+#[test]
+fn mov_cr3_replaces_translation_root_before_next_fetch_and_operand() {
+    let mut bus = cr3_switch_fixture();
+    assert_eq!(qword(&mut bus, 0x13_020), 0x15_007);
+    assert_eq!(qword(&mut bus, 0x15_000), 0x17_007);
+    assert_eq!(qword(&mut bus, 0x17_000), 0xaabb_ccdd_eeff_1234);
+    let mut state = initial_cr3_state();
+    let result = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.cr3, Some(0x11_000));
+    assert_eq!(state.rip, CODE_LINEAR + 6);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xaabb_ccdd_eeff_1234);
+    assert_eq!(
+        result.translation_context_changes,
+        [od_isa::execute::TranslationContextChange {
+            reason: od_isa::execute::TranslationContextChangeReason::Cr3Write,
+            old_cr3: ROOT,
+            new_cr3: 0x11_000,
+        }]
+    );
+}
+
+#[test]
+fn mov_cr3_snapshot_is_rebuilt_before_stop_and_budget_handoff() {
+    let mut bus = cr3_switch_fixture();
+    let mut state = initial_cr3_state();
+    let first = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        1,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+    assert_eq!(first.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(first.instructions_executed, 1);
+    assert_eq!(state.cr3, Some(0x11_000));
+    assert_eq!(state.rip, CODE_LINEAR + 3);
+    assert_eq!(first.translation_context_changes.len(), 1);
+
+    let second = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        1,
+        first.rflags_defined,
+        || false,
+        |_| {},
+    );
+    assert_eq!(second.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(second.instructions_executed, 1);
+    assert_eq!(second.translation_context_changes, []);
+    assert_eq!(state.rip, CODE_LINEAR + 6);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xaabb_ccdd_eeff_1234);
+}
+
+#[test]
+fn stop_after_mov_cr3_precedes_any_walk_under_new_root() {
+    let mut bus = cr3_switch_fixture();
+    let root_b_entries = [
+        (0x11_000, 0x12_007),
+        (0x12_000, 0x13_007),
+        (0x13_010, 0x14_007),
+        (0x13_020, 0x15_007),
+        (0x14_000, 0x16_007),
+        (0x15_000, 0x17_007),
+    ];
+    let mut state = initial_cr3_state();
+    let mut polls = 0;
+    let result = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || {
+            polls += 1;
+            polls == 2
+        },
+        |_| {},
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Stopped);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.cr3, Some(0x11_000));
+    assert_eq!(state.rip, CODE_LINEAR + 3);
+    assert_eq!(result.translation_context_changes.len(), 1);
+    for (address, expected) in root_b_entries {
+        assert_eq!(
+            qword(&mut bus, address),
+            expected,
+            "root B entry {address:#x}"
+        );
+    }
+}
+
+#[test]
+fn new_root_fetch_fault_keeps_mov_cr3_retirement_and_fault_context() {
+    let mut bus = cr3_switch_fixture();
+    // Root B is valid, but its code PTE is non-present. The MOV itself still
+    // fetches through root A; only the following fetch observes this fault.
+    put(&mut bus, 0x14_000, 0);
+    let mut state = initial_cr3_state();
+    let result = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+
+    let expected_fault = od_isa::memory::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x10),
+        linear_address: Some(CODE_LINEAR + 3),
+    };
+    assert_eq!(result.exit, PagedProbeExit::Fault(expected_fault.clone()));
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.cr3, Some(0x11_000));
+    assert_eq!(state.rip, CODE_LINEAR + 3);
+    assert_eq!(result.translation_context_changes.len(), 1);
+    let record = result.page_fault.as_ref().expect("next-root fetch fault");
+    assert_eq!(record.fault(), &expected_fault);
+    assert_eq!(record.saved_rip(), CODE_LINEAR + 3);
+    assert_eq!(record.access(), AccessKind::Fetch);
+}
+
+#[test]
+fn cpu_owned_cr3_profile_rejects_stores_io_and_hlt() {
+    for bytes in [&[0x48, 0x89, 0x0b][..], &[0xec], &[0xee], &[0xf4]] {
+        let (mut bus, _) = fixture();
+        put_bytes_at(&mut bus, CODE_PHYSICAL, bytes);
+        let mut state = initial_cr3_state();
+        let before = state.clone();
+        let result = run_paged_cr3_probe(
+            &mut state,
+            &mut bus,
+            EFER,
+            context(),
+            1,
+            FLAGS_DEFINED,
+            || false,
+            |_| {},
+        );
+        let opcode = if bytes[0] == 0x48 { bytes[1] } else { bytes[0] };
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
 }
 
 #[test]

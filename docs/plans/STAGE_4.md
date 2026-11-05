@@ -358,13 +358,18 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   независимого `gpt-6.1-sol/high` ревью; старты `0xff2–0xfff` отклоняются до
   fetch. Контракт и результаты: [отчёт](../reports/STAGE_4_S4-12B_2026-11-05.md)
   и [manifest](../reports/data/stage4/s4-12b-mov-cr3.json).
-- [ ] S4-12c должен применить новый CR3 к активному machine translation state
-  и доказать, что следующая инструкция использует новый root.
-- Реализовано: `Long64ProbeConfig::from_cpu_state` требует CR0 затем CR4 из
-  `LongModeState`, принимает CR3/EFER явно и делегирует raw values текущему
-  validator. Snapshot immutable; guest instructions и transitions не добавлены.
-- Полный S4-12 остаётся открытым: machine integration S4-12c, EFER writes,
-  startup transitions, TLB/invalidation и system acceptance не приняты.
+- [x] S4-12c применяет новый CR3 к активному machine translation state;
+  следующая инструкция fetch-ится и читает данные через новый root. Проверены
+  precise fetch fault после переключения и STOP сразу после MOV CR3 без walk
+  root B. Независимое `gpt-6.1-sol/high` ревью одобрило код; отчётность
+  синхронизирована с итогами Graphify и проверок. См.
+  [отчёт](../reports/STAGE_4_S4-12C_2026-11-05.md).
+- S4-12a реализует `Long64ProbeConfig::from_cpu_state`: он требует CR0 затем
+  CR4 из `LongModeState`, принимает CR3/EFER явно и делегирует raw values
+  текущему validator. Snapshot immutable; в этом bridge guest instructions и
+  transitions не добавлены.
+- Полный S4-12 остаётся открытым: EFER writes, startup transitions,
+  TLB/invalidation и system acceptance не приняты.
   См. [machine contract](../specs/MACHINE_CONTRACT.md#cpu-state-to-diagnostic-translation-snapshot).
 - **Где:** semantics и decode — `od-isa`; effects на translation — `od-machine`; соответствующие задачи этапа 2.
 - **Сделать:** реализовать исполняемые формы и валидацию переходов выбранного профиля, MSR allowlist, width/reserved/privilege checks, явные эффекты context change. Согласовать INVLPG и поддержку глобальных страниц/PCID с S4-14.

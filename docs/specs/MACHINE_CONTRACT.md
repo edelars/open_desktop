@@ -569,12 +569,38 @@ sequencing, TLB invalidation или CPU-connected paging.
 
 `MovCr3Long64V1` returns a typed CR3 context-change effect only after a
 successful instruction commit. It retires exactly one instruction and stops
-before any following fetch. The machine caller must build its next translation
-snapshot from the committed CR3 before resuming execution. The active machine
-path does not yet consume this effect or replace its translation configuration;
-that integration is S4-12c. See the
+before any following fetch. The caller must consume the effect before resuming
+execution. S4-12c integrates it into the opt-in paged CPU profile below. See the
 [CPU contract](CPU_CONTRACT.md#exact-mov-cr3-execution-profile-movcr3long64v1-s4-12b)
 and [S4-12b report](../reports/STAGE_4_S4-12B_2026-11-05.md).
+
+## CPU-owned CR3 translation handoff (S4-12c)
+
+`run_paged_cr3_probe` is the opt-in machine quantum for
+`PagedCpl0Cr3ProbeV1`. It builds the active `Long64ProbeConfig` from CPU-owned
+CR0/CR3/CR4 and fixed EFER before STOP polling. Each instruction gets a fresh
+page-aware memory adapter holding that immutable snapshot.
+
+Its instruction allowlist is exact `MOV CR3,RAX` and exact `MOV RAX,[RBX]`;
+stores, other memory forms, stack operations, PIO and HLT are unsupported.
+
+After a retired `MOV CR3`, the machine verifies that the effect's full old CR3
+matches the active snapshot and that committed `LongModeState.cr3` equals the
+effect's new CR3. It validates a candidate snapshot from that committed CPU
+state and replaces the active value before the next STOP poll or instruction
+fetch. The next fetch and operand access therefore walk the replacement root;
+applying the effect itself performs no page walk or RAM/A-D update. The quantum
+reports consumed context changes in retirement order.
+
+Effect mismatch or candidate-validation failure is a terminal machine
+integration error. The committed MOV and its retirement remain visible; the
+machine does not resume using a stale snapshot. An unavailable or invalid page
+table under the new root is observed only by the next real access with the
+existing precise fault/backend classification. The old `run_paged_probe`
+continues to reject CPU-owned CR3. This profile adds no TLB caching,
+invalidation, PCID, global pages, exception delivery, or EFER transitions. See
+the [CPU profile](CPU_CONTRACT.md#paged-cpu-owned-cr3-profile-pagedcpl0cr3probev1-s4-12c)
+and [S4-12c report](../reports/STAGE_4_S4-12C_2026-11-05.md).
 
 ## Experimental pure-translation cache boundary
 

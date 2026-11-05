@@ -84,6 +84,7 @@ pub fn run(args: &[String]) -> ExitCode {
         PagedProbeExit::Fault(_) => "fault",
         PagedProbeExit::Backend(_) => "backend_error",
         PagedProbeExit::PortIo(_) => "pio_error",
+        PagedProbeExit::IntegrationError(_) => "integration_error",
     };
     let rax = s.gpr[Register::Rax as usize];
     let complete = matches!(report.exit, PagedProbeExit::Halted);

@@ -177,6 +177,27 @@ root, invalidate a TLB, deliver exceptions, update CR2, enable PCID/global
 pages, write EFER, or establish startup state. S4-12c owns active machine
 translation integration.
 
+### Paged CPU-owned CR3 profile `PagedCpl0Cr3ProbeV1` (S4-12c)
+
+`step_paged_cr3_probe` is a separate opt-in CPU entry that requires a modeled,
+valid `LongModeState.cr3`, CR0=`Cr0Profile::BASE`, CR4=`Cr4Profile::BASE`,
+EFER=`0xd00`, Long64/CPL0, and the running/clear-interrupt-shadow state of the
+existing paged probe. It admits exact bare `0F 22 D8` (`MOV CR3,RAX`) and the
+existing exact `MOV RAX,[RBX]` memory-read form. Stores, other memory forms,
+stack operations, PIO and HLT remain unsupported. The old `step_paged_probe`
+continues to reject CPU-owned CR3.
+
+`MOV CR3` uses the shared S4-12b commit logic: reserved source bits fault
+atomically with #GP(0); success commits CR3 and RIP, clears arithmetic-flag
+definedness, retires once, and returns the typed
+`TranslationContextChange::Cr3Write` at a mandatory boundary. The CPU does not
+select or retain a translation snapshot. Starts at code-page offsets
+`0xff2–0xfff` are unsupported before fetch so unsupported maximum-length
+prefix sequences cannot cross a page while being classified.
+
+See the [machine contract](MACHINE_CONTRACT.md#cpu-owned-cr3-translation-handoff-s4-12c)
+for snapshot replacement and subsequent access behavior.
+
 Normative source: Intel 64 and IA-32 Architectures Software Developer's
 Manual, Revision 093, Vol. 3A §5.5.2, Table 5-12 (CR3 format with PCIDE=0),
 and Vol. 2B, `MOV—Move to/from Control Registers`. See the

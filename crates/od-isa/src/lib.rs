@@ -27,8 +27,9 @@ pub mod swapgs;
 pub mod x87;
 pub use cli::CliProfile;
 pub use execute::{
-    Cr0Profile, MovCr3Exit, MovCr3InputError, MovCr3Long64V1, MovCr3Result,
-    TranslationContextChange, TranslationContextChangeReason, step_mov_cr3,
+    Cr0Profile, MovCr3Exit, MovCr3InputError, MovCr3Long64V1, MovCr3Result, PagedCpl0Cr3ProbeV1,
+    PagedProbeExit, PagedProbeRejection, PagedProbeResult, TranslationContextChange,
+    TranslationContextChangeReason, step_mov_cr3, step_paged_cr3_probe,
 };
 pub use hlt::HaltProfile;
 pub use interrupt::{
