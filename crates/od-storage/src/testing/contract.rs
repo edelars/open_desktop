@@ -26,26 +26,7 @@ pub trait ContractFixture {
     }
 }
 
-/// Deterministic byte generator, independent of the code under test.
-struct Gen(u64);
-
-impl Gen {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, bound: u64) -> u64 {
-        self.next() % bound
-    }
-
-    fn bytes(&mut self, len: usize) -> Vec<u8> {
-        (0..len).map(|_| self.next() as u8).collect()
-    }
-}
+use crate::testing::rng::SplitMix64 as Gen;
 
 fn checked<B: StorageBackend>(backend: B) -> CheckedStorage<B> {
     CheckedStorage::new(backend).expect("backend declares consistent capabilities")
