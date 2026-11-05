@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "slice": "S4-11e",
+  "title": "CPU-connected cross-page word read",
+  "date": "2026-11-05",
+  "baseline_commit": "510268d",
+  "status": "implemented_reviewed",
+  "code_files": [
+    "crates/od-isa/src/execute.rs",
+    "crates/od-machine/src/page_walk.rs",
+    "crates/od-machine/src/paged_memory_adapter.rs",
+    "crates/od-machine/tests/paged_mov_step.rs"
+  ],
+  "profile": {
+    "name": "PagedMovCrossPageWordReadLong64V1",
+    "encoding": "66 8B 03",
+    "operation": "MOV AX,[RBX]",
+    "vcpus": 1,
+    "mode": "Long64",
+    "privilege": [
+      "CPL0",
+      "CPL3"
+    ],
+    "alignment_check": "RFLAGS.AC=0 required",
+    "paging": "canonical48/physical36/four-level/4KiB/uncached",
+    "crossing_offset": "0xfff",
+    "mapping": "two non-contiguous RAM pages",
+    "allowlist_expanded": false
+  },
+  "success": {
+    "destination": "AX",
+    "upper_rax_preserved": true,
+    "rip_advance": 3,
+    "retirement": 1,
+    "walk_permissions_and_ram_admission_before_read": true
+  },
+  "fault_contract": {
+    "cpl0_nonpresent_pfec": "0x0",
+    "cpl3_supervisor_only_pfec": "0x5",
+    "fault_byte_linear_address": true,
+    "saved_rip_is_instruction_start": true,
+    "cpu_and_caller_buffer_preserved": true,
+    "retirement_on_fault": 0,
+    "committed_accessed_updates_persist": true,
+    "dirty_bit_set": false,
+    "mmio_device_dispatch": false
+  },
+  "checks": {
+    "integration_passed": 26,
+    "unit_passed": 82,
+    "package_check": "cargo check -p od-machine --all-targets --locked --offline",
+    "format": "cargo fmt --all -- --check",
+    "diff_check": "passed",
+    "cpu_profile_gate_test": "cargo test -p od-isa paged_word_profile_shared_entry_enforces_privilege_ac_and_fetch_page --locked --offline: 1 passed",
+    "layout_check": "pending integrated main checkout"
+  },
+  "review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approved",
+    "findings": "two P2 shared-entry admission findings fixed; P3 Graphify evidence synchronized; no remaining P0-P3"
+  },
+  "graphify": {
+    "query_before_source_reads": true,
+    "worktree_update_after_code": true,
+    "worktree_nodes": 24739,
+    "worktree_edges": 63802,
+    "worktree_communities": 825,
+    "global_update": "pending"
+  },
+  "issue_054": "open",
+  "parent_s4_11": "open",
+  "report": "docs/reports/STAGE_4_S4-11E_2026-11-05.md"
+}

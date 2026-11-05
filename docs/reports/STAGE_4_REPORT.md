@@ -9,7 +9,8 @@ CPU-connected paged MOV to MMIO, bounded S4-11b cross-page qword read and
 reviewed S4-11c cross-page dword read. Также приняты bounded S4-21b
 paged probe quantum, bounded S4-23c UART RX event delivery, bounded S4-24a
 COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO
-slices. Этап 4 не завершён: S4-00—S4-01,
+slices. S4-11e cross-page word read is implemented and accepted after independent
+review; its findings were fixed and no P0—P3 items remain. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, полный UART/IRQ, JIT
 integration, hardware cases и Linux userspace остаются открытыми. Ограниченный
 срез S4-32a принят после независимого ревью и зафиксирован ниже; родительский
@@ -269,6 +270,7 @@ permission fault и сохранение CPU state/нулевого retirement �
   см. [отчёт](STAGE_4_S4-11D_2026-11-05.md), [контракт](../specs/MACHINE_CONTRACT.md#bounded-cross-page-instruction-fetch-s4-11d)
   и [manifest](data/stage4/s4-11d-cross-page-instruction-fetch.json). Полный
   S4-11 остаётся открытым.
+- S4-11e добавляет отдельный exact `PagedMovCrossPageWordReadLong64V1` для `66 8B 03` (`MOV AX,[RBX]`). Same-page контроль и crossing read из offset `0xfff` проходят только через две non-contiguous RAM pages; обе walks, права и RAM admission происходят до чтения. Успех меняет AX, сохраняет RAX[63:16], продвигает RIP на 3 и retire-ит один раз. CPL0/CPL3 second-page faults проверены с точным PFEC, A-prefix persistence, без D, CPU/buffer commit и retirement; hole/MMIO/alias и negative profiles покрыты. Для профиля требуется AC=0. Независимое `gpt-6.1-sol/high` review одобрило срез после исправления двух P2 admission findings и P3 рассинхронизации Graphify evidence; оставшихся P0—P3 нет. См. [отчёт](STAGE_4_S4-11E_2026-11-05.md), [контракт](../specs/MACHINE_CONTRACT.md#bounded-cross-page-word-read-s4-11e), [CPU contract](../specs/CPU_CONTRACT.md#exact-paged-word-read-profile-pagedmovcrosspagewordreadlong64v1-s4-11e) и [manifest](data/stage4/s4-11e-cross-page-word-read.json). Родительский S4-11 и ISSUE-054 остаются открытыми.
 - S4-12a добавляет `Long64ProbeConfig::from_cpu_state`: CR0 и CR4 читаются из
   `LongModeState` с явной ошибкой отсутствующего регистра, CR3 и EFER остаются
   явными входами, а вся существующая validation переиспользуется без defaults,

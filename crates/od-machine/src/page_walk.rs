@@ -1119,7 +1119,7 @@ pub(crate) fn read_long64_4k_bounded_ram_read(
 ) -> Result<u64, TrackedAccessError> {
     let (width, access) = match request.operation {
         RamAccessOperation::Read {
-            width: width @ (AccessWidth::Dword | AccessWidth::Qword),
+            width: width @ (AccessWidth::Word | AccessWidth::Dword | AccessWidth::Qword),
         } => (width.bytes(), AccessKind::Read),
         RamAccessOperation::Write { width, .. } => {
             return Err(TrackedAccessError::CrossesPage {

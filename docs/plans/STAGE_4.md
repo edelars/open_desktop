@@ -338,6 +338,12 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Проверить успешное исполнение, second-fetch nonpresent (`PFEC=0x10`) и NX (`PFEC=0x11`) faults с точными адресом/сохранённым RIP, без retirement и operand walk; проверить hole/MMIO второй code page без device callback. Decoder-level однобайтовый end-of-page control подтверждает отсутствие лишней выборки вне CPU profile.
 - Результаты: [S4-11d report](../reports/STAGE_4_S4-11D_2026-11-05.md) и [manifest](../reports/data/stage4/s4-11d-cross-page-instruction-fetch.json). Общий S4-11 и ISSUE-054 остаются открытыми.
 
+#### S4-11e. Bounded CPU-connected cross-page word read
+
+- [x] Принят после независимого `gpt-6.1-sol/high` review без оставшихся P0—P3 замечаний; исправлены два P2 admission findings и P3 рассинхронизация Graphify evidence. для точного `66 8B 03` (`MOV AX,[RBX]`), Long64, одного vCPU, canonical48/physical36/four-level/4 KiB uncached paging, CPL0/CPL3 и `RFLAGS.AC=0`.
+- Проверены same-page RAM control и crossing offset `0xfff` между non-contiguous RAM pages. Обе translation/permission/RAM admission завершаются до read; AX обновляется только после полного чтения, RAX[63:16] и остальные CPU state сохраняются. Проверены точные CPL0/CPL3 second-page faults, prior A effects, отсутствие D, no-commit/no-retirement, RAM hole/MMIO отказ, alias walk-then-sample и negative profile cases.
+- Реализация, проверки и reviewer findings записаны в: [S4-11e report](../reports/STAGE_4_S4-11E_2026-11-05.md), [manifest](../reports/data/stage4/s4-11e-cross-page-word-read.json), [machine contract](../specs/MACHINE_CONTRACT.md#bounded-cross-page-word-read-s4-11e). Полный S4-11 и ISSUE-054 остаются открытыми для прочих форм, stores и rollback consumers.
+
 ### S4-12. Подключить CR0/CR3/CR4, EFER и system instructions
 
 - [x] Ограниченный S4-12a snapshot-bridge срез принят после независимого ревью.

@@ -1744,6 +1744,7 @@ pub enum Cr0Profile {
     EferReadOnlyLong64V1,
     PagedMovLong64V1,
     PagedMovCrossPageDwordReadLong64V1,
+    PagedMovCrossPageWordReadLong64V1,
 }
 
 impl Cr0Profile {
@@ -1764,6 +1765,7 @@ pub enum Cr4Profile {
     FpInitThenFxrstor64MinssLong64V1,
     PagedMovLong64V1,
     PagedMovCrossPageDwordReadLong64V1,
+    PagedMovCrossPageWordReadLong64V1,
 }
 
 impl Cr4Profile {
@@ -1954,6 +1956,10 @@ pub struct PagedCpl0StackProbeV1;
 
 /// Exact opt-in CPU profile for the bounded `MOV EAX,[RBX]` paged dword read.
 pub struct PagedMovCrossPageDwordReadLong64V1;
+
+/// Exact opt-in CPU profile for bounded `MOV AX,[RBX]` paged word reads.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedMovCrossPageWordReadLong64V1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PioU8AdmissionError {
@@ -15550,7 +15556,9 @@ fn run_with_cr4_profile_and_rflags_defined(
 ) -> RunResult {
     let config = if matches!(
         profile,
-        Cr4Profile::PagedMovLong64V1 | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
+        Cr4Profile::PagedMovLong64V1
+            | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
+            | Cr4Profile::PagedMovCrossPageWordReadLong64V1
     ) {
         RunConfig {
             context: AccessContext {
@@ -15697,6 +15705,9 @@ fn run_with_cr4_profile_and_rflags_defined(
                 Cr4Profile::PagedMovCrossPageDwordReadLong64V1 => {
                     Cr0Profile::PagedMovCrossPageDwordReadLong64V1
                 }
+                Cr4Profile::PagedMovCrossPageWordReadLong64V1 => {
+                    Cr0Profile::PagedMovCrossPageWordReadLong64V1
+                }
                 _ => Cr0Profile::FpInitLong64V1,
             }),
             cr4: Some(profile),
@@ -15777,6 +15788,38 @@ pub fn step_paged_mov_dword_read(
         },
         initial_rflags_defined,
         Cr4Profile::PagedMovCrossPageDwordReadLong64V1,
+        || false,
+    ))
+}
+
+/// Execute one exact `66 8B 03` Long64 word read under its independent profile.
+pub fn step_paged_mov_word_read(
+    _profile: PagedMovCrossPageWordReadLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> Result<RunResult, RunInputError> {
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return Err(RunInputError::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let next_rip = state.rip.wrapping_add(3);
+    Ok(run_with_cr4_profile_and_rflags_defined(
+        state,
+        memory,
+        RunConfig {
+            instruction_budget: 1,
+            stop_rip: Some(next_rip),
+            context,
+        },
+        initial_rflags_defined,
+        Cr4Profile::PagedMovCrossPageWordReadLong64V1,
         || false,
     ))
 }
@@ -16675,6 +16718,7 @@ fn run_configured(
                 Cr0Profile::EferReadOnlyLong64V1
                     | Cr0Profile::PagedMovLong64V1
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
+                    | Cr0Profile::PagedMovCrossPageWordReadLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -16683,6 +16727,7 @@ fn run_configured(
                 Cr0Profile::EferReadOnlyLong64V1
                     | Cr0Profile::PagedMovLong64V1
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
+                    | Cr0Profile::PagedMovCrossPageWordReadLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -16703,6 +16748,8 @@ fn run_configured(
                         && Cr0Profile::PagedMovLong64V1.accepts(value)
                         || profile == Cr4Profile::PagedMovCrossPageDwordReadLong64V1
                             && Cr0Profile::PagedMovCrossPageDwordReadLong64V1.accepts(value)
+                        || profile == Cr4Profile::PagedMovCrossPageWordReadLong64V1
+                            && Cr0Profile::PagedMovCrossPageWordReadLong64V1.accepts(value)
                 } else {
                     Cr0Profile::FpInitLong64V1.accepts(value)
                 }
@@ -16712,6 +16759,7 @@ fn run_configured(
                 Cr4Profile::EferReadOnlyLong64V1
                     | Cr4Profile::PagedMovLong64V1
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
+                    | Cr4Profile::PagedMovCrossPageWordReadLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -16720,6 +16768,7 @@ fn run_configured(
                 Cr4Profile::EferReadOnlyLong64V1
                     | Cr4Profile::PagedMovLong64V1
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
+                    | Cr4Profile::PagedMovCrossPageWordReadLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -22660,17 +22709,46 @@ fn is_paged_mov_dword_read(instruction: &long_decode::Instruction) -> bool {
         )
 }
 
+fn is_paged_mov_word_read(instruction: &long_decode::Instruction) -> bool {
+    instruction.length == 3
+        && instruction.prefixes
+            == (Prefixes {
+                operand_override: true,
+                ..Prefixes::default()
+            })
+        && instruction.operand_size == OperandSize::Word
+        && instruction.address_size == OperandSize::Qword
+        && instruction.opcode.map == OpcodeMap::Primary
+        && instruction.opcode.byte == 0x8b
+        && matches!(
+            instruction.operation,
+            Operation::Mov {
+                dst: Operand::Register(destination),
+                src: Operand::Memory(source),
+            } if destination == RegisterView::low(Register::Rax, OperandSize::Word)
+                && source.base == AddressBase::Register(Register::Rbx)
+                && source.index.is_none()
+                && source.displacement == 0
+                && source.address_size == OperandSize::Qword
+                && source.size == OperandSize::Word
+        )
+}
+
 fn is_paged_mov_cr0(profile: Cr0Profile) -> bool {
     matches!(
         profile,
-        Cr0Profile::PagedMovLong64V1 | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
+        Cr0Profile::PagedMovLong64V1
+            | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
+            | Cr0Profile::PagedMovCrossPageWordReadLong64V1
     )
 }
 
 fn is_paged_mov_cr4(profile: Cr4Profile) -> bool {
     matches!(
         profile,
-        Cr4Profile::PagedMovLong64V1 | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
+        Cr4Profile::PagedMovLong64V1
+            | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
+            | Cr4Profile::PagedMovCrossPageWordReadLong64V1
     )
 }
 
@@ -22683,6 +22761,9 @@ fn matching_paged_mov_profiles(cr0: Option<Cr0Profile>, cr4: Option<Cr4Profile>)
         ) | (
             Some(Cr0Profile::PagedMovCrossPageDwordReadLong64V1),
             Some(Cr4Profile::PagedMovCrossPageDwordReadLong64V1)
+        ) | (
+            Some(Cr0Profile::PagedMovCrossPageWordReadLong64V1),
+            Some(Cr4Profile::PagedMovCrossPageWordReadLong64V1)
         )
     )
 }
@@ -22866,6 +22947,7 @@ fn step_configured(
                 Cr0Profile::EferReadOnlyLong64V1
                     | Cr0Profile::PagedMovLong64V1
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
+                    | Cr0Profile::PagedMovCrossPageWordReadLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -22874,6 +22956,7 @@ fn step_configured(
                 Cr0Profile::EferReadOnlyLong64V1
                     | Cr0Profile::PagedMovLong64V1
                     | Cr0Profile::PagedMovCrossPageDwordReadLong64V1
+                    | Cr0Profile::PagedMovCrossPageWordReadLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -22890,6 +22973,8 @@ fn step_configured(
                         && Cr0Profile::PagedMovLong64V1.accepts(value)
                         || profile == Cr4Profile::PagedMovCrossPageDwordReadLong64V1
                             && Cr0Profile::PagedMovCrossPageDwordReadLong64V1.accepts(value)
+                        || profile == Cr4Profile::PagedMovCrossPageWordReadLong64V1
+                            && Cr0Profile::PagedMovCrossPageWordReadLong64V1.accepts(value)
                 } else {
                     Cr0Profile::FpInitLong64V1.accepts(value)
                 }
@@ -22899,6 +22984,7 @@ fn step_configured(
                 Cr4Profile::EferReadOnlyLong64V1
                     | Cr4Profile::PagedMovLong64V1
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
+                    | Cr4Profile::PagedMovCrossPageWordReadLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -22907,6 +22993,7 @@ fn step_configured(
                 Cr4Profile::EferReadOnlyLong64V1
                     | Cr4Profile::PagedMovLong64V1
                     | Cr4Profile::PagedMovCrossPageDwordReadLong64V1
+                    | Cr4Profile::PagedMovCrossPageWordReadLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -22934,6 +23021,15 @@ fn step_configured(
         && (state.activity != Some(crate::CpuActivity::Running) || state.sti_shadow.is_none())
     {
         return Ok(StepOutcome::Unsupported { opcode: 0xf4 });
+    }
+    if cr4_profile == Some(Cr4Profile::PagedMovCrossPageWordReadLong64V1)
+        && (!matches!(
+            context.privilege,
+            PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+        ) || state.rflags & (1 << 18) != 0
+            || state.rip & 0xfff > 0xffd)
+    {
+        return Ok(StepOutcome::Unsupported { opcode: 0x66 });
     }
     let instruction = match long_decode::decode(memory, state.rip, context) {
         Ok(instruction) => instruction,
@@ -22977,6 +23073,10 @@ fn step_configured(
                 Some(Cr0Profile::PagedMovCrossPageDwordReadLong64V1),
                 Some(Cr4Profile::PagedMovCrossPageDwordReadLong64V1),
             ) => is_paged_mov_dword_read(&instruction),
+            (
+                Some(Cr0Profile::PagedMovCrossPageWordReadLong64V1),
+                Some(Cr4Profile::PagedMovCrossPageWordReadLong64V1),
+            ) => is_paged_mov_word_read(&instruction),
             _ => false,
         };
         if !supported {
@@ -22996,7 +23096,8 @@ fn step_configured(
                 Operation::Mov { .. }
                     if matching_paged_mov_profiles(cr0_profile, cr4_profile)
                         && (is_paged_mov_instruction(&instruction)
-                            || is_paged_mov_dword_read(&instruction)) =>
+                            || is_paged_mov_dword_read(&instruction)
+                            || is_paged_mov_word_read(&instruction)) =>
                 {
                     true
                 }
@@ -146319,6 +146420,43 @@ mod paged_mov_profile_tests {
         );
         assert_eq!(state, before);
         assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn paged_word_profile_shared_entry_enforces_privilege_ac_and_fetch_page() {
+        for (privilege, ac, rip) in [
+            (PrivilegeLevel::Ring1, false, 0x1000),
+            (PrivilegeLevel::Ring2, false, 0x1000),
+            (PrivilegeLevel::Ring0, true, 0x1000),
+            (PrivilegeLevel::Ring3, true, 0x1000),
+            (PrivilegeLevel::Ring0, false, 0x1ffe),
+            (PrivilegeLevel::Ring3, false, 0x1fff),
+        ] {
+            let mut state = state_with_control_registers();
+            state.rip = rip;
+            state.rflags = u64::from(ac) << 18;
+            state.gpr[Register::Rbx as usize] = 0x3000;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x66, 0x8b, 0x03]);
+            let result = run_with_cr4_profile(
+                &mut state,
+                &mut memory,
+                RunConfig {
+                    instruction_budget: 1,
+                    stop_rip: None,
+                    context: AccessContext {
+                        privilege,
+                        ..AccessContext::default()
+                    },
+                },
+                Cr4Profile::PagedMovCrossPageWordReadLong64V1,
+                || false,
+            );
+            assert!(matches!(result.exit, RunExit::Unsupported { opcode: 0x66 }));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+        }
     }
 }
 

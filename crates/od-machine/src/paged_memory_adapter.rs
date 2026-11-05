@@ -6,7 +6,9 @@ use crate::{
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
-    PagedMovCrossPageDwordReadLong64V1, step_paged_mov_dword_read as cpu_step_paged_mov_dword_read,
+    PagedMovCrossPageDwordReadLong64V1, PagedMovCrossPageWordReadLong64V1,
+    step_paged_mov_dword_read as cpu_step_paged_mov_dword_read,
+    step_paged_mov_word_read as cpu_step_paged_mov_word_read,
 };
 use od_isa::execute::{RunInputError, RunResult, step_paged_mov as cpu_step_paged_mov};
 use od_isa::memory::{AccessContext, GuestMemory, MemoryError, PageFaultRecord};
@@ -56,9 +58,52 @@ pub fn step_paged_mov(
         page_fault: None,
         memory_error: None,
         dword_read_profile: false,
+        word_read_profile: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
+    Ok(PagedMovStepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        memory_error: memory.memory_error,
+    })
+}
+
+/// Execute the exact S4-11e AX word-read profile through the uncached RAM walker.
+pub fn step_paged_mov_word_read(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovStepReport, PagedMovStepError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedMovStepError::Configuration)?;
+    let context = AccessContext {
+        origin: od_isa::memory::AccessOrigin::Explicit,
+        ..context
+    };
+    let instruction_rip = state.rip;
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+        dword_read_profile: false,
+        word_read_profile: true,
+    };
+    let cpu = cpu_step_paged_mov_word_read(
+        PagedMovCrossPageWordReadLong64V1,
+        state,
+        &mut memory,
+        context,
+        rflags_defined,
+    )
+    .map_err(PagedMovStepError::CpuInput)?;
     Ok(PagedMovStepReport {
         cpu,
         page_fault: memory.page_fault,
@@ -92,6 +137,7 @@ pub fn step_paged_mov_dword_read(
         page_fault: None,
         memory_error: None,
         dword_read_profile: true,
+        word_read_profile: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -128,6 +174,7 @@ pub struct PagedMovMemoryAdapter<'a> {
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
     dword_read_profile: bool,
+    word_read_profile: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -211,19 +258,22 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         destination: &mut [u8],
     ) -> Result<(), MemoryError> {
         let width = match destination.len() {
+            2 if self.word_read_profile => crate::AccessWidth::Word,
             4 if self.dword_read_profile => crate::AccessWidth::Dword,
-            8 if !self.dword_read_profile => crate::AccessWidth::Qword,
+            8 if !self.dword_read_profile && !self.word_read_profile => crate::AccessWidth::Qword,
             _ => return Err(Self::unsupported("read width")),
         };
-        let value =
-            if self.dword_read_profile || (address & 0xfff) + u64::from(width.bytes()) > 4096 {
-                self.access_cross_page_read(address, context, width)?
-            } else {
-                match self.access(address, context, RamAccessOperation::Read { width })? {
-                    TrackedAccessOutcome::Read(value) => value,
-                    _ => return Err(Self::unsupported("non-read result")),
-                }
-            };
+        let value = if self.dword_read_profile
+            || self.word_read_profile
+            || (address & 0xfff) + u64::from(width.bytes()) > 4096
+        {
+            self.access_cross_page_read(address, context, width)?
+        } else {
+            match self.access(address, context, RamAccessOperation::Read { width })? {
+                TrackedAccessOutcome::Read(value) => value,
+                _ => return Err(Self::unsupported("non-read result")),
+            }
+        };
         destination.copy_from_slice(&value.to_le_bytes()[..destination.len()]);
         Ok(())
     }
@@ -357,6 +407,7 @@ mod tests {
             page_fault: None,
             memory_error: None,
             dword_read_profile: false,
+            word_read_profile: false,
         }
     }
 
@@ -399,6 +450,23 @@ mod tests {
         let error = memory.read(DATA_LINEAR + 0xff9, context(), &mut destination);
         assert!(matches!(error, Err(MemoryError::Architectural(_))));
         assert_eq!(destination, [0x6d; 8]);
+        drop(memory);
+        drop(callback);
+        assert_eq!(
+            callbacks,
+            [range(0x1000), range(0x2000), range(0x3020), range(0x5000)]
+        );
+
+        let mut word_bus = self::bus(0x9007);
+        put(&mut word_bus, 0x5008, 0);
+        callbacks.clear();
+        let mut callback = |range| callbacks.push(range);
+        let mut memory = adapter(&mut word_bus, &mut callback);
+        memory.word_read_profile = true;
+        let mut destination = [0x4c; 2];
+        let error = memory.read(DATA_LINEAR + 0xfff, context(), &mut destination);
+        assert!(matches!(error, Err(MemoryError::Architectural(_))));
+        assert_eq!(destination, [0x4c; 2]);
         drop(memory);
         drop(callback);
         assert_eq!(

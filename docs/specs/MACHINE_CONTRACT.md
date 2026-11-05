@@ -451,6 +451,43 @@ claim. Cross-page MMIO is not dispatched; stores and all other widths/forms
 remain unsupported here. This does not implement general guest exception
 delivery or complete S4-11. See the [S4-11c CPU contract](CPU_CONTRACT.md#exact-paged-dword-read-profile-pagedmovcrosspagedwordreadlong64v1-s4-11c).
 
+## Bounded cross-page word read (S4-11e)
+
+The separate opt-in `PagedMovCrossPageWordReadLong64V1` CPU-connected profile
+admits only exact Long64 `MOV AX,[RBX]` (`66 8B 03`). It uses one vCPU,
+synthetic Long64 state, canonical48/physical36, four-level 4 KiB paging, and
+uncached translation. The profile covers CPL0 and CPL3 only when
+`RFLAGS.AC=0`. The complete three-byte instruction resides on a code RAM page
+separate from the operand RAM pages; this profile does not extend
+cross-page instruction fetch. The shared CPU entry rejects CPL1/CPL2, AC=1 and
+instruction starts at offsets `0xffe`/`0xfff` before a fetch or page walk.
+
+A same-page two-byte RAM read is the control. The crossing case starts at
+linear operand offset `0xfff`, with its two bytes mapped to non-contiguous
+physical RAM pages. Both page walks, permission checks, and RAM-region
+admissions complete before operand sampling. After both bytes have been read
+into a private two-byte buffer, a complete successful read commits AX only,
+preserving `RAX[63:16]`, all other registers, flags, and definedness; it then
+advances RIP by three and retires once. The caller buffer and CPU state are
+committed only after the complete read succeeds.
+
+A second-page #PF identifies the first inaccessible byte on that page,
+reports vector 14, the original instruction RIP, and Read/Long64/Explicit
+context. For the admitted cases, a nonpresent second-page translation at CPL0
+has PFEC `0`; a supervisor-only second-page translation at CPL3 has PFEC
+`5`. Either fault preserves the complete CPU state and caller buffer and
+retires zero instructions. Accessed-bit updates from completed walks persist
+in walk order; reads do not set Dirty.
+
+This profile is RAM-only: same-page MMIO and any crossing MMIO are rejected
+without device callbacks. Aliased page-table effects follow S4-11c's
+walk-then-sample contract; this local behavior makes no hardware atomicity
+claim. Stores, other encodings or address forms, cross-page instruction fetch
+in this profile, stack/REP/RMW behavior, exception delivery/CR2, JIT/TLB, and
+Linux execution are outside this slice. See the
+[S4-11e CPU contract](CPU_CONTRACT.md#exact-paged-word-read-profile-pagedmovcrosspagewordreadlong64v1-s4-11e)
+for the encoding and normative references.
+
 ## Bounded cross-page instruction fetch (S4-11d)
 
 This is a narrow fetch extension for the existing opt-in

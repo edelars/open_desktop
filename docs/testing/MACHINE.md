@@ -263,6 +263,19 @@ places one-byte HLT at the last byte of a page and verifies no next-page fetch;
 HLT is not admitted by the CPU profile. This does not establish general
 cross-page instruction-fetch support.
 
+## S4-11e: CPU-connected cross-page word read
+
+Reproduce with `cargo test -p od-machine --test paged_mov_step --locked --offline s4_11e`
+and `cargo test -p od-machine --lib --locked --offline failed_second_cross_page_walk_keeps_caller_buffer_unchanged`.
+The exact `66 8B 03` (`MOV AX,[RBX]`) profile checks same-page RAM and an operand
+starting at offset `0xfff` across two non-contiguous RAM pages. Success preserves
+RAX[63:16], updates AX, advances RIP by 3 and retires once. CPL0 non-present and
+CPL3 supervisor-only second-page faults verify exact PFEC, fault byte, saved RIP,
+no CPU/buffer commit or retirement, prior A updates and no D update. RAM holes,
+same-page/cross-page MMIO, alias walk-then-sample and profile exclusions are
+covered. CPL0 and CPL3 require AC=0. This is a synthetic bounded profile, not
+general cross-page memory or hardware acceptance.
+
 ## S4-24a: bounded COM1 polling TX
 
 Baseline revision: `6aeb2dd` (the reviewed UART changes were present in the

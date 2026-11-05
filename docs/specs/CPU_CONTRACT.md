@@ -67,6 +67,54 @@ prefixes, full guest exception delivery, or a full-guest claim. The separate
 machine effects contract is in
 [S4-11c machine contract](MACHINE_CONTRACT.md#bounded-cross-page-dword-read-s4-11c).
 
+### Exact paged word-read profile `PagedMovCrossPageWordReadLong64V1` (S4-11e)
+
+This is a separate opt-in CPU-connected profile and admits exactly the
+three-byte Long64 encoding `66 8B 03` (`MOV AX,[RBX]`). It uses one vCPU,
+synthetic Long64 state, canonical48/physical36 addresses, four-level 4 KiB
+pages, and uncached translation. The profile supports CPL0 and CPL3 only with
+`RFLAGS.AC=0`; other privilege/AC combinations are outside its contract. The
+instruction is wholly resident on a RAM code page distinct from the operand
+RAM pages. Cross-page instruction fetch is not admitted by this profile.
+Shared profile entry rejects CPL1/CPL2, AC=1, and instruction starts at offsets
+`0xffe`/`0xfff` before fetching any bytes, including through the generic
+CR4-profile API.
+
+The same-page control reads two bytes from RAM. The crossing case reads two
+bytes beginning at linear offset `0xfff`, whose translations resolve to
+non-contiguous physical RAM pages. Execution completes both page walks,
+permission checks, and RAM-region admissions before sampling operand bytes.
+The bytes are collected in a private two-byte buffer. Only a complete
+successful read commits the destination: AX is updated while `RAX[63:16]`,
+all other registers, flags, and their definedness remain unchanged; RIP
+advances by three and one instruction retires. The caller's destination
+buffer and CPU state commit only after the entire operand read succeeds.
+
+A second-page #PF identifies the first inaccessible byte on that page and
+preserves the original instruction RIP with Read/Long64/Explicit context. A
+nonpresent translation at CPL0 reports PFEC `0`; a supervisor-only
+translation at CPL3 reports PFEC `5`. The fault leaves complete CPU state and
+caller buffer unchanged and retires zero instructions. Accessed-bit writes
+from completed walks persist in walk order; a read sets no Dirty bit.
+
+The adapter admits RAM only. Same-page MMIO and crossing MMIO are rejected
+without device callbacks. Page-table aliases use the S4-11c walk-then-sample
+behavior: complete both walks and their Accessed updates before sampling the
+operand. This is a local uncached contract, not a claim of hardware atomicity
+or universal x86 ordering. Stores, other encodings/address forms, this
+profile's cross-page instruction fetch, stack/REP/RMW, exception
+delivery/CR2, JIT/TLB, and Linux execution are excluded. The machine-side
+effects contract is in the
+[S4-11e machine contract](MACHINE_CONTRACT.md#bounded-cross-page-word-read-s4-11e).
+
+Normative sources: Intel 64 and IA-32 Architectures Software Developer's
+Manual, Revision 093, Vol. 2A §2.2 and the `MOV` instruction entry, pp. 4-28
+and following, for the `66` operand-size override and encoding; Vol. 1
+§3.4.1.1, pp. 3-12–3-13, for 8- and 16-bit general-purpose register write
+behavior. See the [official Intel SDM page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+[Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436), and
+[Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199).
+
 ### Cross-page fetch for `PagedMovCrossPageDwordReadLong64V1` (S4-11d)
 
 Only for the exact `8B 03` form in this opt-in profile, one vCPU, synthetic
