@@ -7,6 +7,7 @@ use od_isa::{CpuState, ExecutionResult, interpret};
 
 mod diagnostic;
 mod stage4_probe;
+mod stage4_store_load_probe;
 mod test_cli;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +63,7 @@ fn main() -> ExitCode {
         Some("--diagnostic") => return diagnostic::run(&args[1..]),
         Some("--diagnostic-replay") => return diagnostic::replay(&args[1..]),
         Some("--stage4-probe") => return stage4_probe::run(&args),
+        Some("--stage4-store-load-probe") => return stage4_store_load_probe::run(&args),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
         _ => {}
     }

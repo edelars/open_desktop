@@ -583,6 +583,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверено:** две clean builds с одинаковым payload дали одинаковый raw hash; loader integration — 4/4; runner CLI — 5/5; package checks, fmt и diff check прошли; реальный CLI подтвердил `MOV → OUT → HLT` и budget exhaustion с частичным состоянием.
 - **Граница:** полный runner all-targets прогон не завершён и aggregate count не заявляется. Не заявляются general kernel loader, Linux boot protocol, exception delivery/CR2, IRQ/APIC, scheduler, JIT, physical hardware или полная приёмка S4-32/Stage 4.
 
+#### S4-32b. Freestanding store→load→UART probe
+
+- [x] Ограниченный срез принят после независимого ревью; родительский S4-32 остаётся открытым.
+- **Evidence:** [отчёт S4-32b](../reports/STAGE_4_S4-32B_2026-11-05.md) и [JSON evidence](../reports/data/stage4/s4-32b-store-load-probe.json).
+- **Сделано:** профиль `Stage4StoreLoadProbeV1` сохраняет layout S4-32a, но реальный guest artifact выполняет `MOV [RBX],RCX → MOV RAX,[RBX] → OUT DX,AL → HLT`. Initial qword и store-value находятся в image; loader передаёт store-value в RCX как явную часть handoff и не подставляет UART marker.
+- **Проверяется:** same-input raw reproducibility, два store-value через реальный builder→CLI путь, полные RAM/RAX/UART/HLT результаты, budget 1/2/3 с частичным committed state и corrupted/equal-data rejection.
+- **Граница:** это bounded interpreter/loader probe, а не общий kernel loader. Не заявляются stack execution, exception delivery/repair, alias/cross-page, IRQ/APIC, HLT wakeup, JIT, Linux boot или S4-33 completion.
+
 ### S4-33. Принять system-набор собственного ядра
 
 - [ ] Принято после ревью.

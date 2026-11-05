@@ -39,6 +39,23 @@ Full artifact, loader, runner and review evidence is in the
 [S4-32a report](STAGE_4_S4-32A_2026-11-05.md) and
 [JSON evidence](data/stage4/s4-32a-flat-probe.json).
 
+## S4-32b: freestanding store→load→UART probe
+
+S4-32b adds a separate `Stage4StoreLoadProbeV1` artifact with real guest code
+`MOV [RBX],RCX → MOV RAX,[RBX] → OUT DX,AL → HLT`. The image keeps the fixed
+S4-32a paging/layout contract but stores distinct initial and store-value
+qwords. The loader hands the artifact's store-value to `RCX`; the guest, not
+the host runner, performs the RAM write and serial output.
+
+The machine test and permanent build-to-CLI test verify four retirements,
+full data/RAX/UART/HLT state, same-input raw reproducibility, two different
+store-values, budget 1/2/3 committed prefixes, corrupted-code rejection and
+equal-data rejection. This bounded slice does not claim general kernel loading,
+stack execution, exception repair, cross-page/alias behavior, IRQ/APIC,
+HLT wakeup, JIT, Linux boot or S4-33 completion. Evidence:
+[report](STAGE_4_S4-32B_2026-11-05.md) and
+[JSON](data/stage4/s4-32b-store-load-probe.json).
+
 S4-23c adds a bounded `UartRxEventPump` between `EventQueue` and one UART RX
 endpoint. Its dispatch order is generation → STOP → finite event budget →
 readiness. Payload capacity is fixed; the queue owns generations, absolute

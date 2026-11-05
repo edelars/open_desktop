@@ -1,0 +1,82 @@
+{
+  "slice": "S4-32b",
+  "date": "2026-11-05",
+  "status": "accepted_bounded_slice",
+  "parent_status": {
+    "S4-32": "open",
+    "stage_4": "open"
+  },
+  "profile": {
+    "name": "Stage4StoreLoadProbeV1",
+    "code_bytes": "48890b488b03eef4",
+    "image_bytes": "0x9000",
+    "load_gpa": "0x1000",
+    "initial_data_gpa": "0x9000",
+    "store_value_gpa": "0x9008",
+    "entry_gva": "0x400000",
+    "data_gva": "0x800000",
+    "handoff": {
+      "rbx": "0x800000",
+      "rdx": "0x3f8",
+      "rflags_defined": "0x0cd7",
+      "mode": "Long64",
+      "cpl": 0
+    }
+  },
+  "verification": [
+    {
+      "command": "cargo test -p od-machine --test stage4_store_load_probe --locked --offline",
+      "result": "2 passed"
+    },
+    {
+      "command": "cargo test -p od-runner --test stage4_store_load_build_cli --locked --offline",
+      "result": "1 passed; three real builds, two values, budgets 1/2/3, duplicate-budget rejection and negative artifacts"
+    },
+    {
+      "command": "python3 tools/build/test_build_stage4_flat_probe.py",
+      "result": "1 passed; exact opcode substitution rejected by builder validator"
+    },
+    {
+      "command": "cargo check -p od-machine --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo check -p od-runner --all-targets --locked --offline",
+      "result": "passed; existing unrelated od-jit dead_code warning"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "python3 tools/check_layout.py",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "check": "tracked A/D callbacks",
+      "result": "exact sequence: PML4, PDPT, PD, code PTE, data PD, data PTE A, data PTE D, target data write"
+    }
+  ],
+  "independent_review": {
+    "reviewer": "gpt-6.1-sol",
+    "result": "approved",
+    "findings_p0_p3": 0
+  },
+  "not_claimed": [
+    "S4-32 completion",
+    "S4-33 completion",
+    "stack execution",
+    "exception delivery or repair",
+    "cross-page or alias behavior",
+    "IRQ or APIC",
+    "HLT wakeup",
+    "JIT integration",
+    "Linux boot",
+    "physical hardware",
+    "Stage 4 completion"
+  ]
+}

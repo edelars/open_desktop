@@ -11,6 +11,7 @@ mod paged_probe;
 mod physical_memory;
 mod pio_step;
 mod stage4_flat_probe;
+mod stage4_store_load_probe;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
@@ -52,6 +53,7 @@ pub use stage4_flat_probe::{
     STAGE4_FLAT_PROBE_UART_BASE, Stage4FlatProbeLayoutError, Stage4FlatProbeLoadError,
     load_stage4_flat_probe,
 };
+pub use stage4_store_load_probe::load_stage4_store_load_probe;
 
 pub use pio_step::step_diagnostic_pio_u8;
 

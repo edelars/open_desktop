@@ -52,6 +52,29 @@ Exit codes are:
 Failures still emit the same JSON envelope and include a stable error category
 and diagnostic detail. The runner does not dispatch guest opcodes itself.
 
+## Stage 4 store/load probe
+
+Build and run the distinct store/load artifact:
+
+```sh
+python3 tools/build/build_stage4_flat_probe.py \
+  --profile store-load-probe \
+  --initial-value 0x0102030405060708 \
+  --store-value 0x1122334455667788 \
+  --output-dir work/stage4/store_load_probe
+cargo run --offline -p od-runner -- \
+  --stage4-store-load-probe work/stage4/store_load_probe/flat_probe.bin \
+  --budget 16
+```
+
+The artifact contains separate initial and store-value qwords. The loader uses
+the store-value only to initialize the documented `RCX` handoff; the guest
+`MOV [RBX],RCX` performs the RAM write. A successful JSON result has profile
+`Stage4StoreLoadProbeV1`, `retired: 4`, `exit: "halted"`, data and RAX equal to
+the store-value, `rflags_defined: "0x0000000000000cd7"`, and one serial byte.
+Budgets 1/2/3 report the committed store/load/UART prefixes and do not claim
+guest completion.
+
 ## Versioned fixture results
 
 Run a JSON fixture once per engine. The result is the only stdout content; diagnostics go to stderr.

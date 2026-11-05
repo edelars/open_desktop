@@ -34,6 +34,7 @@ const CODE: [u8; 5] = [0x48, 0x8b, 0x03, 0xee, 0xf4];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Stage4FlatProbeLayoutError {
+    DataQwordsEqual,
     PageTableEntry {
         gpa: u64,
         expected: u64,
@@ -139,6 +140,14 @@ impl LoadedStage4FlatProbe {
 pub fn load_stage4_flat_probe(
     image: &[u8],
 ) -> Result<LoadedStage4FlatProbe, Stage4FlatProbeLoadError> {
+    load_stage4_image(image, &CODE, 0)
+}
+
+pub(crate) fn load_stage4_image(
+    image: &[u8],
+    code: &[u8],
+    initial_rcx: u64,
+) -> Result<LoadedStage4FlatProbe, Stage4FlatProbeLoadError> {
     if image.len() != STAGE4_FLAT_PROBE_IMAGE_BYTES {
         return Err(Stage4FlatProbeLoadError::ImageSize {
             expected: STAGE4_FLAT_PROBE_IMAGE_BYTES,
@@ -163,7 +172,7 @@ pub fn load_stage4_flat_probe(
             ram_bytes: STAGE4_FLAT_PROBE_RAM_BYTES,
         });
     }
-    validate_image(image)?;
+    validate_image(image, code)?;
 
     let ram_range =
         GuestPhysicalRange::new(GuestPhysicalAddress::new(0), STAGE4_FLAT_PROBE_RAM_BYTES)
@@ -214,6 +223,7 @@ pub fn load_stage4_flat_probe(
         ..LongModeState::default()
     };
     state.gpr[od_isa::Register::Rbx as usize] = STAGE4_FLAT_PROBE_DATA_GVA;
+    state.gpr[od_isa::Register::Rcx as usize] = initial_rcx;
     state.gpr[od_isa::Register::Rsp as usize] = STAGE4_FLAT_PROBE_STACK_TOP_GVA;
     state.gpr[od_isa::Register::Rdx as usize] = u64::from(STAGE4_FLAT_PROBE_UART_BASE);
 
@@ -225,7 +235,7 @@ pub fn load_stage4_flat_probe(
     })
 }
 
-fn validate_image(image: &[u8]) -> Result<(), Stage4FlatProbeLoadError> {
+fn validate_image(image: &[u8], code: &[u8]) -> Result<(), Stage4FlatProbeLoadError> {
     let expected_entries = [
         (0x1000, 0x2003),
         (0x2000, 0x3003),
@@ -272,7 +282,7 @@ fn validate_image(image: &[u8]) -> Result<(), Stage4FlatProbeLoadError> {
     }
     let code_offset =
         usize::try_from(0x7000 - STAGE4_FLAT_PROBE_IMAGE_GPA).expect("fixed code image offset");
-    if image.get(code_offset..code_offset + CODE.len()) != Some(CODE.as_slice()) {
+    if image.get(code_offset..code_offset + code.len()) != Some(code) {
         return Err(Stage4FlatProbeLoadError::Layout(
             Stage4FlatProbeLayoutError::CodeBytes { gpa: 0x7000 },
         ));

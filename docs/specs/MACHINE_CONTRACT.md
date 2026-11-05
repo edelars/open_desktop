@@ -168,6 +168,30 @@ exception-delivery path, IRQ/APIC path or physical-hardware oracle. See the
 [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) and
 [verification record](../testing/MACHINE.md#s4-32a-reproducible-flat-probe).
 
+## Stage 4 store/load probe image (S4-32b)
+
+`Stage4StoreLoadProbeV1` preserves the S4-32a image size, page tables, code/data
+placement, Long64/CPL0 mode and COM1 binding. Its code page contains exactly
+`48 89 0B 48 8B 03 EE F4`: `MOV [RBX],RCX`, `MOV RAX,[RBX]`, `OUT DX,AL`,
+`HLT`. The data page contains two artifact-owned qwords at GPA `0x9000` and
+`0x9008`: the initial value and the value that the loader copies into `RCX` for
+the documented handoff. The loader rejects equal qwords, validates the exact
+page-table/code layout and does not generate the store value or serial output.
+
+Successful execution retires four instructions, changes only the target data
+qword among guest RAM data, leaves `RAX` equal to the handed-off store value,
+emits its low byte through the bounded UART and enters `Halted` at
+`RIP=0x400008`. The `rflags_defined` mask remains `0x0cd7`. Budgets below four
+expose the committed prefix: the store is visible after one retirement, the
+load result after two and UART output after three. These are bounded quantum
+observations, not exception delivery or rollback semantics.
+
+The profile is separate from `Stage4FlatProbeV1`; its runner subcommand is
+`--stage4-store-load-probe`. It reuses `run_paged_probe` and the existing
+machine loader boundary rather than dispatching guest instructions in the
+runner. See the [S4-32b report](../reports/STAGE_4_S4-32B_2026-11-05.md) and
+[verification record](../testing/MACHINE.md#s4-32b-freestanding-storeload-probe).
+
 ## Диагностический CPU memory bridge
 
 `IdentityMemoryAdapter` реализует `od_isa::GuestMemory` поверх существующего

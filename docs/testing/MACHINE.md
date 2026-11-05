@@ -321,6 +321,31 @@ pass count is claimed. This remains a bounded interpreter probe: no Linux boot
 protocol, general kernel loader, exception delivery, IRQ/APIC, scheduler,
 physical hardware or full S4-32 acceptance is established.
 
+## S4-32b: freestanding store/load probe
+
+The [S4-32b report](../reports/STAGE_4_S4-32B_2026-11-05.md) records a second
+real-artifact path after S4-32a. The builder's explicit `store-load-probe`
+profile produces the eight-byte guest sequence
+`MOV [RBX],RCX; MOV RAX,[RBX]; OUT DX,AL; HLT` and stores distinct initial and
+store-value qwords in the image. `od-machine` reads the artifact-owned
+store-value into the documented `RCX` handoff, while the runner only invokes
+the existing `run_paged_probe` quantum.
+
+The permanent `stage4_store_load_build_cli` integration test builds two
+identical inputs and one different input, compares same-input raw bytes,
+executes both real `flat_probe.bin` outputs through
+`--stage4-store-load-probe`, and checks the full data/RAX/UART/HLT result. It
+also checks budget 1/2/3 partial state, a corrupted code artifact and an
+equal-data artifact rejected by the loader. The focused machine test checks
+the same handoff and committed store independently, including the exact page
+table A/D and target-data committed-write callback sequence. The builder's
+negative test rejects an ELF/raw pair with a substituted opcode, and the CLI
+rejects repeated budget options.
+
+This slice remains bounded interpreter evidence. It does not establish stack
+execution, exception delivery/repair, alias or cross-page behavior, IRQ/APIC,
+HLT wakeup, JIT integration, Linux boot or full S4-32/S4-33 acceptance.
+
 ## S4-21b: bounded paged probe quantum
 
 The [S4-21b report](../reports/STAGE_4_S4-21B_2026-11-05.md) and

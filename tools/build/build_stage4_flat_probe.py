@@ -181,21 +181,23 @@ def elf_symbol(elf: bytes, wanted: str) -> tuple[int, int]:
     raise BuildError(f"ELF symbol {wanted!r} is missing")
 
 
-def validate_image(elf: bytes, raw: bytes, payload: int) -> dict[str, Any]:
+def validate_image(elf: bytes, raw: bytes, profile: str, payload: int, initial: int, store_value: int) -> dict[str, Any]:
     entry, segments = parse_elf_load_segments(elf)
     if entry != CODE_GVA:
         raise BuildError(f"ELF entry is 0x{entry:x}, expected 0x{CODE_GVA:x}")
     code_symbol, code_size = elf_symbol(elf, "_start")
     code_end, _ = elf_symbol(elf, "stage4_code_end")
-    if (code_symbol, code_size, code_end - code_symbol) != (CODE_GVA, 5, 5):
+    code = bytes.fromhex("488b03eef4") if profile == "flat-probe" else bytes.fromhex("48890b488b03eef4")
+    data_size = 8 if profile == "flat-probe" else 16
+    if (code_symbol, code_size, code_end - code_symbol) != (CODE_GVA, len(code), len(code)):
         raise BuildError(
-            "assembled entry must be exactly five bytes at its linked address; "
+            "assembled entry must match the selected profile at its linked address; "
             f"got address=0x{code_symbol:x}, symbol_size={code_size}, end_delta={code_end - code_symbol}"
         )
     expected_segments = [
         (0x1000, 0x1000, 0x6000, 6),
         (CODE_GVA, CODE_GPA, 8, 5),
-        (PAYLOAD_GVA, PAYLOAD_GPA, 8, 6),
+        (PAYLOAD_GVA, PAYLOAD_GPA, data_size, 6),
     ]
     if len(segments) != len(expected_segments):
         raise BuildError(f"expected 3 PT_LOAD segments, found {len(segments)}")
@@ -230,13 +232,19 @@ def validate_image(elf: bytes, raw: bytes, payload: int) -> dict[str, Any]:
         actual = struct.unpack_from("<Q", raw, offset)[0]
         if actual != expected:
             raise BuildError(f"page-table entry at raw offset 0x{offset:x} is 0x{actual:x}, expected 0x{expected:x}")
-    if raw[0x8000:0x8008] != struct.pack("<Q", payload):
-        raise BuildError("payload bytes at raw offset 0x8000 do not match --payload")
-    if raw[0x6000:0x6005] != elf[
+    expected_data = struct.pack("<Q", payload) if profile == "flat-probe" else struct.pack("<QQ", initial, store_value)
+    if raw[0x8000 : 0x8000 + len(expected_data)] != expected_data:
+        raise BuildError("guest data bytes do not match selected profile inputs")
+    if raw[0x6000 : 0x6000 + len(code)] != code:
+        raise BuildError(
+            f"guest code bytes do not match {profile} profile: "
+            f"{raw[0x6000 : 0x6000 + len(code)].hex()} != {code.hex()}"
+        )
+    if raw[0x6000 : 0x6000 + len(code)] != elf[
         segments[1]["offset"] : segments[1]["offset"] + code_size
     ]:
-        raise BuildError("the five assembled instruction bytes were not preserved in the raw image")
-    if raw[0x6005:0x6008] != bytes(3):
+        raise BuildError("assembled guest instruction bytes were not preserved in the raw image")
+    if raw[0x6000 + len(code) : 0x6008] != bytes(8 - len(code)):
         raise BuildError("the three code-segment alignment bytes must be zero")
     if raw[0x7000:0x8000] != bytes(PAGE_SIZE):
         raise BuildError("the physical gap between code and data is not zero-filled")
@@ -286,12 +294,21 @@ def output_directory(repo_root: Path, requested: str | None) -> Path:
 def build(args: argparse.Namespace) -> int:
     script = Path(__file__).resolve()
     repo_root = script.parents[2]
-    fixture_dir = repo_root / "tests/fixtures/guest/stage4/flat_probe"
+    profile = args.profile
+    fixture_dir = repo_root / "tests/fixtures/guest/stage4" / ("flat_probe" if profile == "flat-probe" else "store_load_probe")
     source = fixture_dir / "entry.S"
     linker_script = fixture_dir / "layout.ld"
-    payload = args.payload
-    if not 0 <= payload <= 0xFFFFFFFFFFFFFFFF:
-        raise BuildError("--payload must fit in an unsigned 64-bit integer")
+    payload, initial, store_value = args.payload, args.initial_value, args.store_value
+    for name, value in (("--payload", payload), ("--initial-value", initial), ("--store-value", store_value)):
+        if value is not None and not 0 <= value <= 0xFFFFFFFFFFFFFFFF:
+            raise BuildError(f"{name} must fit in an unsigned 64-bit integer")
+    if profile == "store-load-probe" and (initial is None or store_value is None):
+        raise BuildError("--profile store-load-probe requires --initial-value and --store-value")
+    if profile == "flat-probe" and (initial is not None or store_value is not None):
+        raise BuildError("--initial-value and --store-value require --profile store-load-probe")
+    payload = payload if profile == "flat-probe" else 0
+    initial = initial or 0
+    store_value = store_value or 0
 
     out_dir = output_directory(repo_root, args.output_dir)
     clang = resolve_executable(os.environ.get("STAGE4_CLANG"), "clang")
@@ -313,6 +330,8 @@ def build(args: argparse.Namespace) -> int:
             "-fno-pie",
             "-mno-red-zone",
             f"-DPROBE_PAYLOAD=0x{payload:016x}",
+            f"-DPROBE_INITIAL=0x{initial:016x}",
+            f"-DPROBE_STORE_VALUE=0x{store_value:016x}",
             "-c",
             str(source),
             "-o",
@@ -348,7 +367,7 @@ def build(args: argparse.Namespace) -> int:
     if len(raw) > IMAGE_SIZE:
         raise BuildError(f"objcopy image exceeds fixed size: {len(raw):#x} > {IMAGE_SIZE:#x}")
     raw = raw + bytes(IMAGE_SIZE - len(raw))
-    layout = validate_image(elf, raw, payload)
+    layout = validate_image(elf, raw, profile, payload, initial, store_value)
     raw_path = out_dir / "flat_probe.bin"
     raw_path.write_bytes(raw)
     unpadded_path.unlink()
@@ -356,12 +375,15 @@ def build(args: argparse.Namespace) -> int:
     source_revision = run(["git", "rev-parse", "HEAD"], env=build_env, cwd=repo_root).strip()
     manifest = {
         "schema": "stage4-flat-probe-build-v1",
+        "profile": "Stage4FlatProbeV1" if profile == "flat-probe" else "Stage4StoreLoadProbeV1",
         "source_revision": source_revision,
         "source": {
             "entry.S": sha256(source.read_bytes()),
             "layout.ld": sha256(linker_script.read_bytes()),
         },
         "payload_u64": f"0x{payload:016x}",
+        "initial_u64": f"0x{initial:016x}" if profile == "store-load-probe" else None,
+        "store_value_u64": f"0x{store_value:016x}" if profile == "store-load-probe" else None,
         "target": "x86_64-unknown-none-elf",
         "toolchain": {
             "clang": {"path": str(clang), "version": clang_version},
@@ -400,7 +422,10 @@ def parse_payload(value: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", choices=("flat-probe", "store-load-probe"), default="flat-probe")
     parser.add_argument("--payload", type=parse_payload, default=0x5354473441424331)
+    parser.add_argument("--initial-value", type=parse_payload)
+    parser.add_argument("--store-value", type=parse_payload)
     parser.add_argument("--output-dir")
     args = parser.parse_args()
     try:
