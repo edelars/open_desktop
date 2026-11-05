@@ -263,6 +263,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-11. Реализовать CoW write transaction
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено (один major исправлен), коммит `7d23bf9`. Не покрыто: real power loss, reclaim/GC, snapshots; формат НЕ принят (S9-40), открыт [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-11-cow-write-transaction--реализовано-ревью-пройдено-один-major-исправлен).
 - **Где:** `od-storage` writer и transaction tests.
 - **Сделать:** подготовить новые extents/map, обеспечить нужную durability и опубликовать root по protocol; published objects неизменяемы. Ограничить размер transaction/dirty state; cancellation до/после publication имеет разные результаты.
 - **Проверить:** overwrite, partial logical block, несколько extents, flush boundary, commit error и reader view. Старая root generation остаётся пригодной до разрешённого reclaim.
@@ -271,6 +272,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-12. Проверить crash recovery по durable watermark
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано (recovery tests), ревью пройдено, коммит `7d23bf9`. Не покрыто: real power loss, reclaim/GC, snapshots; формат НЕ принят (S9-40), открыт [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-12-crash-recovery-по-durable-watermark--реализовано-recovery-tests-ревью-пройдено).
 - **Где:** storage recovery, fault harness, report/data.
 - **Сделать:** восстановление после каждого допустимого cut S9-11, cleanup только доказанного garbage; side-effect-free inspect перед возможной mutation. Сравнивать с последним durable acknowledgement и разрешёнными более поздними outcomes.
 - **Проверить:** repeated reopen/recovery, crash во время recovery, delayed writes, corrupt committed extent и unack-but-committed root. Старый valid root с потерянным acknowledged write обязан провалить oracle.
