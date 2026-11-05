@@ -77,7 +77,7 @@ Guest page size (4 KiB) не равен host page size (16 KiB на основн
 - Enforcement межпроцессный (S9-04, host primitive в `od-host`); Rust ownership внутри процесса недостаточна. Path string и PID-файл не являются identity: нужна стабильная file/object identity с учётом same-file aliases на поддержанной платформе.
 - Timeout или возраст lock-файла не разрешает отобрать ownership у живого writer.
 - Readers immutable snapshots держат read lease конкретной generation (S9-16/S9-37); parent не мутируется и не освобождается, пока на него есть ссылки.
-- Реализовано (S9-04 частично, `ba77773`, [`storage_io.rs`](../../crates/od-host/src/storage_io.rs)): `flock(LOCK_EX|LOCK_NB)` на том же fd, что используется для записи; identity `(dev, ino)` проверяется после lock и перед каждой мутацией; symlink/hard-link aliases попадают на тот же lock; lock освобождается при SIGKILL процесса (тест с re-spawned бинарником). Lock advisory: процесс, не вызывающий `flock`, не остановлен. Read lease реализован (`31b8c2a`): shared `flock`, конфликт с writer в обе стороны, identity-проверка; `open_read_only` без lease не является lease. Не сделаны busy-политика для export/repair, запрет изменения parent, интеграция с VMHost. Поведение на сетевых и non-APFS volumes не проверено.
+- Реализовано (S9-04 частично, `ba77773`, [`storage_io.rs`](../../crates/od-host/src/storage_io.rs)): `flock(LOCK_EX|LOCK_NB)` на том же fd, что используется для записи; identity `(dev, ino)` проверяется после lock и перед каждой мутацией; symlink/hard-link aliases попадают на тот же lock; lock освобождается при SIGKILL процесса (тест с re-spawned бинарником). Lock advisory: процесс, не вызывающий `flock`, не остановлен. Read lease реализован (`31b8c2a`): shared `flock`, конфликт с writer в обе стороны, identity-проверка; `open_read_only` без lease не является lease. Busy-политика export/repair и `ParentLease` реализованы (`bc7b675`, [`storage_policy.rs`](../../crates/od-host/src/storage_policy.rs)). Не сделаны проверка parent в цепочке (S9-14/16), интеграция с VMHost, non-advisory lock. Поведение на сетевых и non-APFS volumes не проверено.
 
 ## 6. Уровни подтверждения записи
 
@@ -160,7 +160,7 @@ Storage API возвращает типизированные результат
 | Вопрос | Блокирует | Следующий шаг |
 |---|---|---|
 | Namespace durability на APFS; подтверждение `F_FULLFSYNC` испытаниями и источником | S9-06 (приёмка) и `durable_ack` для создания/публикации | Источник + испытания уровней 1–3; иначе гарантия остаётся открытой |
-| VMHost lifecycle, запрет изменения parent, busy-политика export/repair | S9-04 (приёмка) | Реализовать; `flock`, alias identity и read lease уже покрыты multiprocess tests (`ba77773`, `31b8c2a`) |
+| VMHost lifecycle, проверка parent в цепочке (S9-14/16), non-advisory lock на сетевых ФС | S9-04 (приёмка) | Реализовать; `flock`, alias identity и read lease уже покрыты multiprocess tests (`ba77773`, `31b8c2a`) |
 | LBA size guest device | S9-13 | Решить по требованиям выбранного NVMe профиля |
 | CoW block size, map layout, checksum алгоритм | Принятие формата S9-08 | Прототип есть (CRC-32, плоская карта, 512-байтовый slot — гипотезы); замеры на одинаковой нагрузке (S9-40) |
 | [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable): различение первого commit и подтверждённого поколения 2 | Принятие формата S9-08; гарантия «не старше `durable_ack`» при двойном повреждении | Marker-запись или счётчик в формате (S9-08/S9-40) |

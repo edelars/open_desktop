@@ -173,7 +173,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-01. Проверить prerequisites по фактическому коду
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** не принято по архитектурному ревью: [VM_STATE.md §2.1](../specs/VM_STATE.md#2-инвентаризация-prerequisites-s9-01) описывал `od-storage` как scaffold и `od-host` без file I/O; переписан по коду, нужно повторное ревью. Full-VM prerequisites заблокированы ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)). Ближайшие срезы: read leases и запрет изменения parent (остаток S9-04), namespace-часть S9-06 при появлении источника. Отчёт — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md).
+- **Текущий статус (2026-11-05):** принято: сверка [VM_STATE.md §2](../specs/VM_STATE.md#2-инвентаризация-prerequisites-s9-01) с кодом HEAD `4dedff2` выполнена. Следующий runnable срез — устранение [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) в прототипе CoW. Full-VM prerequisites заблокированы ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)); namespace-часть S9-06 — при появлении источника. Отчёт — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md).
 - **Где:** отчёт этапа и матрица зависимости в `VM_STATE.md`.
 - **Сделать:** перечислить готовность RAW/device backend, guest storage commands, всех CPU/RAM/device/time/I/O states, UEFI variables, vTPM и guest agents. Для каждого обязательного state указать реального owner и его versioned save/load contract либо точный blocker.
 - **Проверить:** методы snapshot в testkit и session ABI не приняты за сериализацию всей машины; нет зависимости offline CoW от всей Windows. Нужные задачи этапов 4–8 связаны с roadmap/фактическим кодом, без выдуманных IDs.
@@ -200,7 +200,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-04. Обеспечить единственного writer
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** частично, коммиты `ba77773`, `31b8c2a`: межпроцессный exclusive writer lock (`flock`) с проверкой identity и `ReadLease` (shared `flock`, конфликт с writer в обе стороны, identity-проверка; `open_read_only` без lease не является lease). Не сделаны busy-политика для export/repair, запрет изменения parent, интеграция с VMHost lifecycle; lock advisory. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-04-единственный-writer--частично).
+- **Текущий статус (2026-11-05):** частично, коммиты `ba77773`, `31b8c2a`, `bc7b675`: межпроцессный exclusive writer lock (`flock`) с проверкой identity, `ReadLease`, busy-политика export/repair и `ParentLease` ([storage_policy.rs](../../crates/od-host/src/storage_policy.rs), 9 тестов). Не сделаны проверка parent в цепочке (S9-14/16), интеграция с VMHost lifecycle, non-advisory lock на сетевых ФС; lock advisory. Задача не принята — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-04-единственный-writer--частично).
 - **Где:** `od-storage` ownership, `od-host` file locking, VMHost lifecycle.
 - **Сделать:** exclusive writer ownership для backing и mutating metadata; стабильная file/object identity, read leases и освобождение при shutdown/crash. Path string и PID-файл сами по себе недостаточны; same-file aliases учитывать по поддержанной платформе. Один timeout или возраст lock-файла не разрешает отобрать ownership у живого writer.
 - **Проверить:** два процесса, повторное открытие через alias, writer после crash, stale handle и запрещённое изменение parent, занятый диск при export/repair.

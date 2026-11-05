@@ -12,8 +12,7 @@
 |---|---|---|
 | Реализовано, ревью пройдено (по сведениям из заданий на отчёт) | 7 | S9-03, S9-05, S9-07, S9-09, S9-10, S9-11, S9-12 |
 | Прототип реализован и проверен, ревью протокола пройдено; формат НЕ принят | 1 | S9-08 |
-| Принято с оговорками (документы, архитектурное ревью 2026-11-05) | 2 | S9-00, S9-02 |
-| Не принято (нужна переработка и повторное ревью) | 1 | S9-01 |
+| Принято (документы, архитектурное ревью 2026-11-05; S9-00 и S9-02 с оговорками) | 3 | S9-00, S9-01, S9-02 |
 | Частично | 2 | S9-04, S9-06 (код, с оговорками ниже) |
 | `not_started` | 0 | — |
 | `blocked` | 32 | S9-13…S9-44 |
@@ -29,13 +28,13 @@
 - Проверки: только документальные; кода в коммите нет.
 - Ревью: принято с оговорками после правок документов (STORAGE_FORMAT.md, ISSUE-055, STORAGE_RECOVERY.md). НЕ разрешены: лимит logical size RAW (в `raw.rs` явного лимита нет — открытый вопрос), лимиты virtual capacity CoW, глубины цепочек, числа snapshots, LBA/CoW block size ([STORAGE_FORMAT §4](../specs/STORAGE_FORMAT.md#4-единицы-размеры-и-лимиты)). Первая host/filesystem/media комбинация (macOS 26.7.1, APFS, внутренний SSD) только предложена и не испытана.
 - Расхождения STORAGE_FORMAT.md и ISSUE-055 с кодом после S9-03…06 устранены (`e9fe0ab`, затем правки по архитектурному ревью).
-- Архитектурное ревью S9-00…02 (2026-11-05): S9-00 — принято с оговорками (поправлены шапка, §1–§2, §5, §7–§9, §12 STORAGE_FORMAT.md, ISSUE-055, STORAGE_RECOVERY.md); S9-01 — не принято (§2.1 VM_STATE.md переписан по коду, нужно повторное ревью); S9-02 — принято с оговорками (формулировка «не старше последнего `durable_ack`» в VM_STATE.md §3.3–§3.4). Оговорки: лимит logical size RAW не задан (открытый вопрос), ENOTSUP/EINVAL — предположение.
+- Архитектурное ревью S9-00…02 (2026-11-05): S9-00 — принято с оговорками (поправлены шапка, §1–§2, §5, §7–§9, §12 STORAGE_FORMAT.md, ISSUE-055, STORAGE_RECOVERY.md); S9-01 — принято после переписывания §2 VM_STATE.md и сверки с кодом HEAD `4dedff2`; S9-02 — принято с оговорками (формулировка «не старше последнего `durable_ack`» в VM_STATE.md §3.3–§3.4). Оговорки: лимит logical size RAW не задан (открытый вопрос), ENOTSUP/EINVAL — предположение.
 
-### S9-01. Prerequisites по фактическому коду — не принято (§2.1 переписан, нужно повторное ревью)
+### S9-01. Prerequisites по фактическому коду — принято
 
 - Коммит: `d773cc2`.
 - Файл: [VM_STATE.md §2](../specs/VM_STATE.md#2-инвентаризация-prerequisites-s9-01).
-- Проверки: инвентаризация по коду на 2026-11-05. Ревью: не принято — §2.1 описывал `od-storage` как scaffold и `od-host` без file I/O; переписан по коду, повторное ревью не проведено.
+- Проверки: инвентаризация по коду на 2026-11-05. Ревью: первичная редакция §2.1 описывала `od-storage` как scaffold и `od-host` без file I/O; §2 переписан по коду, сверка с HEAD `4dedff2` выполнена, S9-01 принято. Следующий срез — ISSUE-057 в prototype CoW. Инвентаризация описывает код на момент сверки и требует обновления при изменениях.
 - НЕ доказано: полнота инвентаризации не проверена независимо. Full-VM prerequisites заблокированы ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)).
 
 ### S9-02. Операции, состояния, результаты — принято с оговорками
@@ -55,12 +54,13 @@
 
 ### S9-04. Единственный writer — частично
 
-- Коммиты: `ba77773` (writer lock), `31b8c2a` (read lease).
+- Коммиты: `ba77773` (writer lock), `31b8c2a` (read lease), `bc7b675` (busy-политика export/repair, `ParentLease`).
 - Файлы: [storage_io.rs](../../crates/od-host/src/storage_io.rs), [io.rs](../../crates/od-storage/src/io.rs).
 - Сделано: `open_read_write_exclusive` и `create_new_exclusive` берут `flock(LOCK_EX|LOCK_NB)` на том же fd, что используется для записи; identity `(dev, ino)` проверяется после lock и перед каждой мутацией (`WriterIdentityLost`).
 - Проверки: `second_exclusive_open_is_busy_until_first_is_dropped`, `symlink_and_hard_link_aliases_hit_the_same_lock`, `writer_in_another_process_blocks_us_and_crash_releases_it` (в т.ч. SIGKILL, перезапуск тестового бинарника), `writer_in_this_process_blocks_another_process`, `replaced_path_refuses_writes_instead_of_touching_either_file`, `unlinked_path_refuses_writes`, `read_only_open_neither_blocks_nor_is_blocked_by_writer`.
 - Сделано (`31b8c2a`): `ReadLease` — shared `flock(LOCK_SH|LOCK_NB)` на read-only дескрипторе с проверкой, что заблокированный inode остаётся тем, что по пути; конфликтует с exclusive writer в обе стороны, мутаций не предоставляет, несколько lease сосуществуют; writer и lease используют один nonblocking helper `flock` с повтором при EINTR. Проверки: `lease_blocks_writer_in_this_process_until_dropped`, `lease_is_busy_while_writer_holds_the_lock_and_works_after`, `several_leases_coexist_and_writer_waits_for_the_last`, `lease_refuses_every_mutation`, `lease_refuses_path_that_names_another_or_no_inode`, `lease_in_another_process_blocks_writer_allows_readers_and_sigkill_releases_it`, `writer_in_this_process_makes_lease_busy_in_another_process`. `HostFileStorage::open_read_only` без lease сохранён и документирован как не-lease (не блокирует и не блокируется).
-- НЕ сделано: busy-политика для export/repair; запрет изменения parent; интеграция с lifecycle VMHost. Read lease на конкретную generation CoW и привязка к immutable root (S9-16/S9-37) не реализованы.
+- Сделано (`bc7b675`, [storage_policy.rs](../../crates/od-host/src/storage_policy.rs)): `export_with_lease` держит read lease на весь проход, `repair_with_writer` — exclusive writer lock; оба сразу отказывают типизированным `Busy` и не вызывают closure при занятом lock. `ParentLease` проверяет identity inode при открытии и перед каждым size/read: подменённый parent даёт `IdentityMismatch`, а не чтение. Проверки (9 тестов `storage_policy`): `export_during_active_writer_is_busy_without_waiting_or_calling_f`, `repair_during_active_lease_or_writer_is_busy_without_calling_f`, `export_lease_is_held_for_the_whole_closure_and_repair_writer_blocks_export`, `repair_is_busy_while_another_process_leases_and_works_after_sigkill`, `hard_link_and_symlink_aliases_share_the_lease_conflict`, `swap_between_check_and_use_is_identity_mismatch_and_never_writes_foreign_file`, `parent_lease_verifies_identity_on_every_use`, `export_does_not_change_file_bytes`.
+- НЕ сделано: проверка parent в цепочке (S9-14/16); интеграция с lifecycle VMHost; non-advisory lock на сетевых файловых системах. Сами export и repair (S9-20/21) не реализованы — есть только политика доступа. Read lease на конкретную generation CoW и привязка к immutable root (S9-16/S9-37) не реализованы.
 - НЕ доказано: lock advisory (known limit из коммита `4fcd5c4`): процесс, не вызывающий `flock`, может изменить файл; поведение на сетевых и non-APFS volumes. Критерий «Готово» плана («две VMHost не могут писать один backing») для реальных VMHost не проверен.
 
 ### S9-05. RAW backend — реализовано, ревью пройдено
@@ -172,7 +172,7 @@
 - [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable): обнулённый слот поколения 2 вместе с повреждённой копией корня неотличим от обрыва первого commit; возможна потеря acked данных при двойном повреждении.
 - Нет устройства хранения гостя (S9-13), UEFI, vTPM (S9-26/27).
 - Нет разрешения на power-loss стенд (S9-39).
-- S9-04: read lease реализован (`31b8c2a`); нет busy-политики для export/repair, запрета изменения parent и интеграции с VMHost.
+- S9-04: read lease (`31b8c2a`), busy-политика export/repair и `ParentLease` (`bc7b675`) реализованы; нет проверки parent в цепочке (S9-14/16), интеграции с VMHost lifecycle и non-advisory lock на сетевых ФС; locks advisory.
 - Пункты 1–3 расхождений документов с кодом (STORAGE_FORMAT.md шапка, §5, §7; ISSUE-055) закрыты; прочие пункты архитектурного ревью S9-00…02 применены в документах (см. S9-00…02 выше). Остаются: [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed) (namespace, power-loss, ENOTSUP/EINVAL), [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable), лимит logical size RAW, §9 STORAGE_FORMAT.md остаётся прототипным.
 
 ## 6. Тесты
@@ -183,6 +183,7 @@
 |---|---|
 | `cargo test -p od-storage` | 113 passed, 0 failed (36 до S9-07/08; 45 на `a7874b8`; 59 на `000c1da`; 90 на `88b9f42`) |
 | `cargo test -p od-host --lib storage_io` | 30 passed, 0 failed (19 до `31b8c2a`) |
+| `cargo test -p od-host --lib storage_policy` | 9 passed, 0 failed |
 | `cargo test -p od-host --lib raw_file_tests` | 9 passed, 0 failed |
 | `cargo test -p od-host` | 253 passed, **21 failed** (`s3_20*` и `native_register_v1_corpus::reduce_saved_native_register_v1_case`) |
 
