@@ -1,0 +1,110 @@
+{
+  "slice": "S4-32a",
+  "date": "2026-11-05",
+  "status": "accepted_bounded_slice",
+  "parent_status": {
+    "S4-32": "open",
+    "stage_4": "open"
+  },
+  "artifact": {
+    "profile": "Stage4FlatProbeV1",
+    "raw_image_bytes": "0x9000",
+    "load_gpa": "0x1000",
+    "entry_gva": "0x400000",
+    "code_gpa": "0x7000",
+    "data_gva": "0x800000",
+    "data_gpa": "0x9000",
+    "stack_gva": "0xa00000",
+    "stack_gpa": "0xa000",
+    "instructions": ["48 8b 03 MOV RAX,[RBX]", "ee OUT DX,AL", "f4 HLT"],
+    "handoff": {
+      "cr0": "0x80010033",
+      "cr3": "0x1000",
+      "cr4": "0x20",
+      "efer": "0xd00",
+      "rip": "0x400000",
+      "rbx": "0x800000",
+      "rsp": "0xa01000",
+      "dx": "0x3f8",
+      "mode": "Long64",
+      "cpl": 0
+    }
+  },
+  "reproducibility": {
+    "same_payload": "0x1122334455667788",
+    "elf_sha256": "4484a6a9246ac64b4b888e24879d94757b150142b16e2131b2c1ef2a6573ce65",
+    "raw_sha256": "e78a7af7306e31fa316f1d64332ea4bd64abf0e854883106b1933f68bef97204",
+    "different_payload": "0x8877665544332211",
+    "different_raw_sha256": "e9254476ccd24bf4c741309365bd3825e11fd48c848c636cb07b146e608a6c34",
+    "code_bytes": "488b03eef4",
+    "code_padding": "000000"
+  },
+  "verification": [
+    {
+      "command": "cargo test -p od-machine --test stage4_flat_probe_load --locked --offline",
+      "result": "4 passed"
+    },
+    {
+      "command": "cargo check -p od-machine --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo test -p od-runner --test stage4_probe_cli --locked --offline",
+      "result": "5 passed"
+    },
+    {
+      "command": "cargo test -p od-runner --test stage4_probe_build_cli --locked --offline",
+      "result": "1 passed; builds real fixture artifacts, compares same-payload bytes, checks two payload UART bytes and rejects corruption"
+    },
+    {
+      "command": "cargo check -p od-runner --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo check -p od-runner --all-targets --locked --offline",
+      "result": "passed; existing unrelated od-jit dead_code warning"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "scenario": "real CLI with payload 0x1122334455667788 and budget 16",
+      "result": "halted after 3 retirements; serial_bytes [0x88]"
+    },
+    {
+      "scenario": "real CLI with payload 0x8877665544332211 and budget 2",
+      "result": "budget_exhausted after 2 retirements; serial_bytes [0x11]"
+    }
+  ],
+  "independent_review": {
+    "reviewer": "gpt-6.1-sol",
+    "initial_result": "changes_requested",
+    "initial_findings_p0_p3": 5,
+    "initial_findings": [
+      "P2: runner README named nonexistent probe.raw and had invalid escaped Markdown",
+      "P2: stale stage report wording called the freestanding toolchain a blocker",
+      "P2: direct handoff definedness omitted AF and reported 0xcc7 instead of 0xcd7",
+      "P2: no permanent build-to-CLI acceptance test used real fixture artifacts",
+      "P3: objcopy provenance recorded only the first version line"
+    ],
+    "repeat_result": "approved",
+    "repeat_findings_p0_p3": 0
+  },
+  "not_claimed": [
+    "S4-32 completion",
+    "Stage 4 completion",
+    "general kernel loader",
+    "Linux boot protocol",
+    "exception delivery or CR2",
+    "IOPL or TSS",
+    "IRQ or APIC",
+    "scheduler",
+    "physical hardware execution",
+    "JIT integration"
+  ]
+}

@@ -575,6 +575,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** artifact reproducibility/hash, bounds/overlap при загрузке, реальный instruction fetch через MMU и serial bytes из guest OUT. Неправильный entry/stack должен завершаться ошибкой, а не marker success.
 - **Готово:** guest kernel исполняется на production memory через interpreter. Его загрузчик не выдаётся за Linux boot protocol; boot contract явно отдельный.
 
+#### S4-32a. Воспроизводимый freestanding flat probe
+
+- [x] Ограниченный срез принят после независимого ревью; родительский S4-32 остаётся открытым.
+- **Evidence:** [отчёт S4-32a](../reports/STAGE_4_S4-32A_2026-11-05.md) и [JSON evidence](../reports/data/stage4/s4-32a-flat-probe.json).
+- **Сделано:** `entry.S` и `layout.ld` формируют реальный ELF64 и фиксированный raw image; build validator проверяет PT_LOAD, page tables, code/padding, payload и hashes. `od-machine` загружает ровно `0x9000` байт verbatim по GPA `0x1000`, отвергает aliases/unexpected present entries и устанавливает фиксированный Long64/CPL0 handoff. `od-runner --stage4-probe` передаёт image в существующий bounded paged quantum и выводит фактический guest UART byte.
+- **Проверено:** две clean builds с одинаковым payload дали одинаковый raw hash; loader integration — 4/4; runner CLI — 5/5; package checks, fmt и diff check прошли; реальный CLI подтвердил `MOV → OUT → HLT` и budget exhaustion с частичным состоянием.
+- **Граница:** полный runner all-targets прогон не завершён и aggregate count не заявляется. Не заявляются general kernel loader, Linux boot protocol, exception delivery/CR2, IRQ/APIC, scheduler, JIT, physical hardware или полная приёмка S4-32/Stage 4.
+
 ### S4-33. Принять system-набор собственного ядра
 
 - [ ] Принято после ревью.

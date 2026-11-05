@@ -31,9 +31,11 @@
 host-controlled переносом holding → shift и завершением передачи. Это не
 полная модель 16550A и не меняет целевую карту платы.
 
-CPU `IN/OUT` и их privilege checks пока не подключены; IRQ4 и маршрутизация
-через APIC/IOAPIC также остаются открытыми. Поэтому COM1 пока нельзя считать
-доступным из гостевого кода, а целевой Linux serial console не подтверждён.
+Ограниченный CPU path для bare `IN AL,DX` и `OUT DX,AL` в Long64/CPL0 теперь
+подключён к COM1 через bounded paged probe (`S4-24b/c`). Это не общий I/O
+privilege matrix: IOPL/TSS, остальные widths/forms, IRQ4 и маршрутизация через
+APIC/IOAPIC остаются открытыми. Поэтому целевой Linux serial console и полная
+16550A совместимость не подтверждены.
 
 ## Владение состоянием и адресами
 

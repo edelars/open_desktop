@@ -9,7 +9,35 @@ paged probe quantum, bounded S4-23c UART RX event delivery, bounded S4-24a
 COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO
 slices. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, полный UART/IRQ, JIT
-integration, hardware cases и Linux userspace остаются открытыми.
+integration, hardware cases и Linux userspace остаются открытыми. Ограниченный
+срез S4-32a принят после независимого ревью и зафиксирован ниже; родительский
+S4-32 и этап 4 остаются открытыми.
+
+## S4-32a: reproducible freestanding flat probe
+
+The accepted bounded S4-32a slice adds a real assembly/linker fixture, a strict
+`Stage4FlatProbeV1` raw-image loader, and a runner path that invokes the
+existing bounded paged quantum. The image is exactly `0x9000` bytes at GPA
+`0x1000`, with fixed page tables, code/data/stack mappings and a direct
+Long64/CPL0 handoff. The guest executes `MOV RAX,[RBX]`, `OUT DX,AL`, `HLT`;
+the runner reports the UART byte actually produced by the guest and never
+injects an expected output.
+
+Two clean builds with payload `0x1122334455667788` matched raw SHA-256
+`e78a7af7306e31fa316f1d64332ea4bd64abf0e854883106b1933f68bef97204`.
+Loader tests passed 4/4, runner CLI tests 5/5, and the build-to-CLI acceptance
+test passed 1/1. Real CLI smoke covered both halted output and budget
+exhaustion with partial state. The complete runner
+all-targets suite was started but not completed, so no aggregate pass count is
+claimed. Independent `gpt-6.1-sol/high` reviews found no remaining P0–P3
+findings. The follow-up fixed the initial documentation, definedness,
+build-to-CLI and provenance findings: the runner example now names
+`flat_probe.bin` and renders as valid Markdown, stale toolchain-blocker wording
+was removed, the handoff preserves `0x0cd7`, real artifacts are exercised by a
+permanent test, and the full objcopy version is recorded.
+Full artifact, loader, runner and review evidence is in the
+[S4-32a report](STAGE_4_S4-32A_2026-11-05.md) and
+[JSON evidence](data/stage4/s4-32a-flat-probe.json).
 
 S4-23c adds a bounded `UartRxEventPump` between `EventQueue` and one UART RX
 endpoint. Its dispatch order is generation → STOP → finite event budget →
@@ -25,8 +53,9 @@ The complete `od-machine` suite passed **129 tests (81 unit + 48 integration)**,
 including `uart_rx_events` **7/7**. Package/workspace checks, formatting, layout
 and diff checks passed; independent review approved with no P0–P3 findings.
 S4-23, S4-24 and Stage 4 remain open. This slice does not claim IRQ/APIC, baud
-timing, HLT wakeup, host wait or Linux boot. The S4-32a reproducible freestanding
-toolchain blocker remains open.
+timing, HLT wakeup, host wait or Linux boot. The S4-32a evidence below records
+the bounded freestanding toolchain path; it is not a general kernel or Linux
+loader.
 
 S4-21b принимает `PagedCpl0ProbeV1`: `step_paged_probe` допускает только
 `MOV RAX,[RBX]`, `MOV [RBX],RCX`, bare `IN AL,DX`, `OUT DX,AL` и `HLT`.
@@ -295,12 +324,11 @@ S4-23a не доказывает dispatch, periodic timers, reset/generation, HL
 IRQ delivery, host wait или cross-machine event ownership.
 S4-23b доказывает только bounded reset/generation contract и stale-event
 validation; он не доказывает dispatch, IRQ, periodic timers, HLT wakeup,
-concurrent access или Linux boot. S4-23 и Stage 4 остаются открытыми. S4-32a
-остаётся ограничен отсутствующим воспроизводимым freestanding toolchain.
+concurrent access или Linux boot. S4-23 и Stage 4 остаются открытыми.
 S4-23c доказывает только bounded RX event delivery to UART; он не подтверждает
 IRQ/APIC, baud timing, HLT wakeup, host wait или Linux boot. S4-23, S4-24 и Stage
-4 остаются открытыми; blocker воспроизводимого freestanding toolchain для
-S4-32a сохраняется.
+4 остаются открытыми. S4-32a отдельно подтверждает bounded freestanding
+toolchain/flat-probe path, но не general kernel loading или Linux boot.
 
 Открыты manifest S4-00, реализация 2 MiB/1 GiB и необходимых режимов, injected
 table-write failure, полная rights/error matrix, двухстраничная transaction

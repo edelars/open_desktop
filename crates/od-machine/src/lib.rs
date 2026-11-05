@@ -10,6 +10,7 @@ mod paged_pio_step;
 mod paged_probe;
 mod physical_memory;
 mod pio_step;
+mod stage4_flat_probe;
 #[cfg(feature = "experimental-translation-probe-cache")]
 mod translation_probe_cache;
 mod uart16550;
@@ -43,6 +44,13 @@ pub use paged_memory_adapter::{PagedMovStepError, PagedMovStepReport, step_paged
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
     PagedProbeExit, PagedProbeQuantumReport, PagedProbeRejection, run_paged_probe,
+};
+pub use stage4_flat_probe::{
+    LoadedStage4FlatProbe, STAGE4_FLAT_PROBE_CR3, STAGE4_FLAT_PROBE_DATA_GVA,
+    STAGE4_FLAT_PROBE_EFER, STAGE4_FLAT_PROBE_ENTRY_GVA, STAGE4_FLAT_PROBE_IMAGE_BYTES,
+    STAGE4_FLAT_PROBE_IMAGE_GPA, STAGE4_FLAT_PROBE_RAM_BYTES, STAGE4_FLAT_PROBE_STACK_TOP_GVA,
+    STAGE4_FLAT_PROBE_UART_BASE, Stage4FlatProbeLayoutError, Stage4FlatProbeLoadError,
+    load_stage4_flat_probe,
 };
 
 pub use pio_step::step_diagnostic_pio_u8;

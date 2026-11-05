@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 od-isa = { path = "../../crates/od-isa" }
 od-jit = { path = "../../crates/od-jit" }
+od-machine = { path = "../../crates/od-machine" }
 od-testkit = { path = "../../crates/od-testkit" }
 serde_json = "=1.0.151"
 

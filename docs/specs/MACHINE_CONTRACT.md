@@ -142,6 +142,32 @@ update. See the [S4-24c report](../reports/STAGE_4_S4-24C_2026-11-05.md),
 [CPU contract](CPU_CONTRACT.md#bounded-paged-cpu-to-pio-profile-pagedcpl0piou8v1-s4-24c)
 and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu-pio).
 
+## Stage 4 flat probe image and direct handoff (S4-32a)
+
+`Stage4FlatProbeV1` is a bounded, project-owned freestanding image contract.
+The build fixture produces an exact `0x9000`-byte raw image from assembly and a
+linker layout; the loader copies those bytes verbatim at GPA `0x1000` and does
+not synthesize instructions, page tables or expected serial output. It accepts
+only the fixed PML4/PDPT/PD and three 4 KiB page-table pages, code mapping at
+GVA `0x400000` → GPA `0x7000`, payload mapping at GVA `0x800000` → GPA
+`0x9000`, and NX stack mapping at GVA `0xa00000` → GPA `0xa000`.
+
+The direct handoff is Long64/CPL0 with `CR0=0x80010033`, `CR4=0x20`,
+`CR3=0x1000`, `EFER=0xd00`, `RIP=0x400000`, `RBX=0x800000`,
+`RSP=0xa01000` and `DX=0x3f8`. The accepted fixture executes exactly
+`MOV RAX,[RBX]`, `OUT DX,AL`, `HLT`; the runner invokes the existing bounded
+paged quantum and reports the UART byte actually produced by the guest.
+Budget exhaustion, loader rejection and I/O failures remain host-side result
+categories; they are not converted into a success marker or guest exception.
+
+The loader validates the complete present-entry set in the six table pages and
+rejects aliases or unexpected mappings. The stack page is allocated as part of
+the fixed RAM profile but is outside the raw image. This is a local interpreter
+and runner acceptance slice, not a Linux boot protocol, general kernel loader,
+exception-delivery path, IRQ/APIC path or physical-hardware oracle. See the
+[S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) and
+[verification record](../testing/MACHINE.md#s4-32a-reproducible-flat-probe).
+
 ## Диагностический CPU memory bridge
 
 `IdentityMemoryAdapter` реализует `od_isa::GuestMemory` поверх существующего

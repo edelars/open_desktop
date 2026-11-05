@@ -16,6 +16,42 @@ cargo run --offline -p od-runner -- --hex-file tests/fixtures/x86/s0_09_sub_jnz_
 
 Specify exactly one code source, `--hex` or `--hex-file`. The command prints interpreter and JIT state and exits with an error if they differ. The runner does not boot a guest OS or provide a VMHost/Swift supervisor.
 
+## Stage 4 freestanding probe
+
+Run a fixed raw image produced by the Stage 4 probe build:
+
+```sh
+cargo run --offline -p od-runner -- \
+  --stage4-probe work/stage4/flat_probe/flat_probe.bin --budget 16
+```
+
+The image must be exactly 0x9000 bytes and satisfy the `Stage4FlatProbeV1`
+layout accepted by `od-machine::load_stage4_flat_probe`. The runner reads the
+image bytes from the named file, loads that image, and runs one bounded paged
+CPU quantum. `--budget` accepts 0 through 1024 instructions and defaults to
+16. The probe's guest instructions determine the result; the CLI has no
+expected-output input. Once the quantum returns, the runner completes pending
+polling-UART transmission and reports the bytes actually produced by the guest.
+
+Standard output contains one deterministic JSON object. It includes
+`schema_version`, `profile`, `status`, `exit`, `retired`, `rip`, `activity`,
+`rflags_defined`, `serial_bytes`, `observed_data_qword`, and `error`. Values
+that do not exist before machine handoff are `null`; guest integers are
+hexadecimal strings and serial output is an array of byte values.
+
+Exit codes are:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Guest reached HLT (`exit: "halted"`). |
+| `3` | Invalid arguments, unreadable image, or image size mismatch. |
+| `4` | Image rejected by the Stage 4 loader. |
+| `5` | Guest did not reach HLT, including budget exhaustion, unsupported instruction, guest fault, or memory backend error. |
+| `6` | Port-I/O failure. |
+
+Failures still emit the same JSON envelope and include a stable error category
+and diagnostic detail. The runner does not dispatch guest opcodes itself.
+
 ## Versioned fixture results
 
 Run a JSON fixture once per engine. The result is the only stdout content; diagnostics go to stderr.

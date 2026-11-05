@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use od_isa::{CpuState, ExecutionResult, interpret};
 
 mod diagnostic;
+mod stage4_probe;
 mod test_cli;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +61,7 @@ fn main() -> ExitCode {
         Some("--fixture") => return test_cli::run_fixture(&args[1..]),
         Some("--diagnostic") => return diagnostic::run(&args[1..]),
         Some("--diagnostic-replay") => return diagnostic::replay(&args[1..]),
+        Some("--stage4-probe") => return stage4_probe::run(&args),
         Some("--compare-results") => return test_cli::compare_results(&args[1..]),
         _ => {}
     }

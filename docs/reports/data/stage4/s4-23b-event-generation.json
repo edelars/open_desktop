@@ -96,5 +96,5 @@
     "cross-machine ownership",
     "Linux boot"
   ],
-  "related_open_blocker": "S4-32a freestanding toolchain remains unavailable"
+  "related_follow_up": "S4-32a bounded reproducible freestanding toolchain path is accepted; parent S4-32 remains open"
 }

@@ -293,6 +293,34 @@ check passed; workspace check, JSON/link validation and independent
 exception delivery/CR2 update, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT
 or Linux behavior. Parent S4-24 remains open.
 
+## S4-32a: reproducible flat probe
+
+The [S4-32a report](../reports/STAGE_4_S4-32A_2026-11-05.md) records the
+artifact-to-runner acceptance path. The freestanding fixture is assembled and
+linked into ELF64, then converted to a fixed raw image by the active Rust
+toolchain's `ld.lld` and `rust-objcopy`. The build validator checks the entry,
+three PT_LOAD segments, exact page-table entries, code bytes and zero padding,
+payload bytes, raw size and hashes. Two clean builds with payload
+`0x1122334455667788` produced the same raw SHA-256
+`e78a7af7306e31fa316f1d64332ea4bd64abf0e854883106b1933f68bef97204`.
+
+`od_machine::load_stage4_flat_probe` accepts only the exact image layout,
+copies it verbatim to GPA `0x1000`, installs the fixed Long64/CPL0 handoff and
+binds the bounded COM1 polling UART. It rejects short/oversized images, aliases,
+NX code and unexpected present page-table entries. `od-runner --stage4-probe`
+passes the loaded image to the existing `run_paged_probe` quantum; it does not
+inject an expected byte or dispatch the guest instructions itself. A real CLI
+run retired `MOV`, `OUT` and `HLT`, reported the payload's low byte on serial,
+and a budget of `2` returned a nonzero `budget_exhausted` result after two
+retirements with the partial UART byte visible.
+
+Focused verification passed: loader integration **4/4**, runner CLI tests
+**5/5**, runner package check, formatting and diff check. The full runner
+all-targets suite was started but not completed in this slice, so no aggregate
+pass count is claimed. This remains a bounded interpreter probe: no Linux boot
+protocol, general kernel loader, exception delivery, IRQ/APIC, scheduler,
+physical hardware or full S4-32 acceptance is established.
+
 ## S4-21b: bounded paged probe quantum
 
 The [S4-21b report](../reports/STAGE_4_S4-21B_2026-11-05.md) and
