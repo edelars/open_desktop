@@ -5,9 +5,28 @@
 На 2026-11-05 приняты локальные memory/bus/bridge/translation,
 bounded page-fault-record, tracked RAM access, S4-01a baseline, S4-10a
 admission-boundary, bounded S4-06b CPU-connected paged MOV, bounded S4-24a
-COM1 polling TX и bounded S4-24b CPU PIO slices. Этап 4 не завершён: S4-00—S4-01,
+COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO slices. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, полный UART/IRQ, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
+
+В S4-24c принят `PagedCpl0PioU8V1` через CPU `step_paged_pio_u8`: bare `EC`/`EE`
+в Long64 CPL0, с already-selected `GuestMemory` и CPU-side CR0/CR4/admission
+validation. Machine `step_paged_pio_u8` отдельно валидирует CR3/EFER через
+существующую `Long64ProbeConfig` для four-level 4 KiB paging и передаёт реальный
+page-aware memory adapter. Fetch следует таблицам страниц с
+`AccessOrigin::Explicit`.
+Проверены not-present PFEC `0x10` и NX protection PFEC `0x11`. Сквозной machine
+тест выполняет `MOV RAX,[RBX]` → `OUT DX,AL` без host mutation и передаёт
+definedness между шагами; UART output совпадает с байтом из guest RAM. При PIO
+failure уже совершённые A/D записи и callbacks сохраняются.
+
+Full tests: `od-isa --all-targets` — 2,014 unit, 6 paged и 7 legacy тестов;
+`od-machine --all-targets` — 105 тестов, включая 7 paged. Workspace check,
+formatting, layout, diff, JSON/link checks прошли; независимое
+`gpt-6.1-sol/high` review одобрило code diff без замечаний P0–P3. См. [отчёт S4-24c](STAGE_4_S4-24C_2026-11-05.md)
+и [JSON evidence](data/stage4/s4-24c-paged-pio.json). Не заявляются mixed
+runner, exception delivery/CR2, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT
+или Linux support. Parent S4-24 и Stage 4 остаются открытыми.
 
 В S4-24b реализован `DiagnosticCpl0PioU8V1`: один bare `EC`/`EE` за вызов,
 Long64 CPL0, CR0/CR4 `None`, instruction fetch через flat identity RAM.

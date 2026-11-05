@@ -454,7 +454,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-24. UART 16550A: сначала polling, затем IRQ
 
-- [ ] Полная задача открыта. Bounded slices S4-24a и S4-24b приняты; IRQ и guest-visible acceptance остаются обязательными для закрытия.
+- [ ] Полная задача открыта. Bounded slices S4-24a, S4-24b и S4-24c приняты; IRQ и guest-visible acceptance остаются обязательными для закрытия.
 - **Где:** устройство в `od-machine`, runner serial sink, system tests.
 - **Сделать:** COM1 `0x3F8`, IRQ4 по `VIRTUAL_BOARD.md`; реализовать нужные registers, DLAB, line status, FIFO и interrupt conditions согласно точному профилю. Начать с реального polling TX для первого probe; IRQ подключить после S4-27.
 - **Проверка:** divisor/register selection, TX/RX/status transitions, interrupt enable/ack semantics, повторное чтение side effects, raw serial bytes без добавленных host success markers.
@@ -475,6 +475,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** `DiagnosticCpl0PioU8V1` исполняет только bare `EC`/`EE` по одному за вызов, Long64 CPL0, CR0/CR4 `None`; fetch идёт через flat identity RAM. Успех вызывает одну byte-PIO операцию, одну retirement и `RIP + 1`. COM1 поддерживает single-byte RX injection/read-clear и bounded TX.
 - **Проверка:** `od-isa` — 2014 unit и 7 integration tests; полный `od-machine` — 98 tests; package/workspace checks, fmt и diff checks прошли.
 - **Не заявлено:** IOPL/TSS, другие widths, immediate I/O, REP/string I/O, IRQ/APIC, Linux serial compatibility или Linux boot.
+
+#### S4-24c. Bounded paged CPL0 byte PIO
+
+- [x] Ограниченный paged CPU-to-PIO срез принят после независимого ревью `gpt-6.1-sol/high`; родительский S4-24 остаётся открытым.
+- **Evidence:** [отчёт S4-24c](../reports/STAGE_4_S4-24C_2026-11-05.md) и [JSON evidence](../reports/data/stage4/s4-24c-paged-pio.json).
+- **Граница:** CPU `step_paged_pio_u8` принимает already-selected `GuestMemory` и проверяет только CPU-side admission/CR0/CR4. Machine `step_paged_pio_u8` валидирует CR3/EFER через существующую `Long64ProbeConfig` для четырёх уровней и 4 KiB и передаёт реальный page-aware memory adapter; fetch использует `Explicit`. Машинный сценарий выполняет `MOV RAX,[RBX] → OUT DX,AL` без host mutation и переносит definedness. При PIO failure уже выполненные A/D callbacks сохраняются. Проверены UART output bytes.
+- **Проверка:** `cargo test -p od-isa --all-targets --locked --offline` — 2014 unit, 6 paged и 7 legacy тестов; `cargo test -p od-machine --all-targets --locked --offline` — 105 тестов, включая 7 paged. Workspace check, fmt, layout, diff, JSON/link validation и independent review прошли.
+- **Не заявлено:** mixed runner, exception delivery/CR2, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT или Linux. Полный Stage 4 и parent S4-24 остаются открытыми.
 
 ### S4-25. Local APIC одного CPU
 

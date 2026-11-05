@@ -122,6 +122,26 @@ ports, REP/string I/O, IRQ, APIC, Linux serial compatibility or Linux boot.
 See the [S4-24b report](../reports/STAGE_4_S4-24B_2026-11-05.md) and its
 [machine verification record](../testing/MACHINE.md#s4-24b-bounded-cpu-pio-and-com1-rx).
 
+## Bounded paged CPU PIO step
+
+`od_machine::step_paged_pio_u8` connects `PagedCpl0PioU8V1` to the existing
+tracked RAM page walker and `MachineBusPortIo`. The machine entry accepts CR3
+and EFER, validates them through the existing `Long64ProbeConfig` four-level,
+4 KiB profile, and supplies the CPU entry with the real page-aware
+`GuestMemory` adapter. The CPU entry validates only CPU-side admission and
+CR0/CR4 requirements. Fetch is page-aware and explicitly marked
+`AccessOrigin::Explicit`. Only bare Long64 `EC`/`EE` at CPL0 are admitted.
+
+The integration evidence executes a non-identity `MOV RAX,[RBX]` and then
+`OUT DX,AL` without host mutation between the two CPU steps, transferring the
+first result's definedness. It checks that UART output matches the byte loaded
+from guest RAM. If PIO fails after fetch, the CPU result and definedness remain
+uncommitted, while page-table A/D writes and callbacks already performed by
+fetch remain visible. The slice does not provide exception delivery or CR2
+update. See the [S4-24c report](../reports/STAGE_4_S4-24C_2026-11-05.md),
+[CPU contract](CPU_CONTRACT.md#bounded-paged-cpu-to-pio-profile-pagedcpl0piou8v1-s4-24c)
+and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu-pio).
+
 ## Диагностический CPU memory bridge
 
 `IdentityMemoryAdapter` реализует `od_isa::GuestMemory` поверх существующего

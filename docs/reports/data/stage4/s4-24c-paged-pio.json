@@ -1,0 +1,77 @@
+{
+  "slice": "S4-24c",
+  "date": "2026-11-05",
+  "status": "accepted_bounded_slice",
+  "parent_status": "S4-24 remains open",
+  "stage_4_complete": false,
+  "cpu_profile": {
+    "name": "PagedCpl0PioU8V1",
+    "entry_point": "step_paged_pio_u8",
+    "mode": "Long64",
+    "cpl": 0,
+    "instruction_forms": ["bare EC (IN AL, DX)", "bare EE (OUT DX, AL)"],
+    "guest_memory": "already-selected GuestMemory supplied to the CPU entry",
+    "cpu_validation": "CPU-side CR0/CR4 and profile admission only",
+    "paging_inputs": ["CR3", "EFER"],
+    "machine_validation": "existing Long64ProbeConfig: four-level, 4 KiB",
+    "machine_fetch": "real page-aware memory adapter; AccessOrigin::Explicit"
+  },
+  "fault_evidence": {
+    "not_present_pfec": "0x10",
+    "nx_protection_pfec": "0x11"
+  },
+  "machine_acceptance": {
+    "sequence": "MOV RAX,[RBX] then OUT DX,AL",
+    "host_mutation_between_steps": false,
+    "definedness_transferred": true,
+    "pio_failure": "CPU state and definedness unchanged; already committed A/D writes and callbacks retained",
+    "uart_output": "raw bytes match guest-loaded data"
+  },
+  "verification": [
+    {
+      "command": "cargo test -p od-isa --all-targets --locked --offline",
+      "result": "2014 unit tests, 6 paged PIO tests and 7 legacy PIO tests passed"
+    },
+    {
+      "command": "cargo test -p od-machine --all-targets --locked --offline",
+      "result": "105 passed, including 7 paged PIO tests"
+    },
+    {
+      "command": "cargo check --workspace --all-targets --locked --offline",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "python3 tools/check_layout.py",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "JSON validation and S4-24c Markdown link validation",
+      "result": "passed"
+    }
+  ],
+  "independent_review": {
+    "reviewer": "gpt-6.1-sol",
+    "result": "approve",
+    "findings_p0_p3": 0,
+    "reported_additional_evidence": "2014 od-isa unit + 6 paged + 7 legacy tests; 105 od-machine all-targets tests including 7 paged; workspace check, formatting, layout, diff, JSON and link checks passed"
+  },
+  "not_claimed": [
+    "mixed-instruction runner",
+    "exception delivery or CR2 update",
+    "IOPL or TSS checks",
+    "IRQ or APIC",
+    "scheduler",
+    "baud timing",
+    "JIT",
+    "Linux behavior",
+    "full Stage 4 completion"
+  ]
+}

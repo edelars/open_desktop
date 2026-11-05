@@ -1936,12 +1936,19 @@ pub enum RunInputError {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DiagnosticCpl0PioU8V1;
 
+/// Explicit opt-in marker for byte PIO instructions fetched through a
+/// page-aware `GuestMemory` implementation with the bounded paged CR profile.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0PioU8V1;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PioU8AdmissionError {
     InvalidRflagsDefined { value: u64 },
     WrongMode,
     WrongPrivilege,
     ControlRegistersPresent,
+    ControlRegistersMissing,
+    ControlRegistersOutsideProfile,
     Halted,
     StiShadowActive,
 }
@@ -15726,6 +15733,65 @@ pub fn step_pio_u8<P: crate::PortIo>(
         return rejected(PioU8AdmissionError::StiShadowActive);
     }
 
+    execute_pio_u8(state, memory, pio, context, initial_rflags_defined)
+}
+
+/// Execute at most one exact bare `IN AL, DX` or `OUT DX, AL` instruction
+/// using the page-aware fetch behavior supplied by `GuestMemory`. The CPU
+/// profile admits only the CR0/CR4 values already supported by paged MOV.
+pub fn step_paged_pio_u8<P: crate::PortIo>(
+    _profile: PagedCpl0PioU8V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> PioU8Result<P::Error> {
+    let rejected = |error| PioU8Result {
+        exit: PioU8Exit::Rejected(error),
+        instructions_executed: 0,
+        rflags_defined: initial_rflags_defined,
+    };
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return rejected(PioU8AdmissionError::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return rejected(PioU8AdmissionError::WrongMode);
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return rejected(PioU8AdmissionError::WrongPrivilege);
+    }
+    if state.cr0.is_none() || state.cr4.is_none() {
+        return rejected(PioU8AdmissionError::ControlRegistersMissing);
+    }
+    if !state
+        .cr0
+        .is_some_and(|value| Cr0Profile::PagedMovLong64V1.accepts(value))
+        || !state
+            .cr4
+            .is_some_and(|value| Cr4Profile::PagedMovLong64V1.accepts(value))
+    {
+        return rejected(PioU8AdmissionError::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return rejected(PioU8AdmissionError::Halted);
+    }
+    if state.sti_shadow == Some(crate::StiShadow::Blocking) {
+        return rejected(PioU8AdmissionError::StiShadowActive);
+    }
+
+    execute_pio_u8(state, memory, pio, context, initial_rflags_defined)
+}
+
+fn execute_pio_u8<P: crate::PortIo>(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    initial_rflags_defined: u64,
+) -> PioU8Result<P::Error> {
     let fetch_context = AccessContext {
         origin: AccessOrigin::Explicit,
         ..context

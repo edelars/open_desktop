@@ -254,3 +254,28 @@ code slice with no P0–P3 findings.
 These results do not establish IOPL/TSS checks, other I/O widths, immediate or
 REP/string forms, IRQ delivery, APIC, Linux serial-driver compatibility or
 Linux boot. Parent S4-24 remains open.
+
+## S4-24c: bounded paged CPU PIO
+
+The [S4-24c report](../reports/STAGE_4_S4-24C_2026-11-05.md) records the
+accepted paged CPU-to-PIO slice and independent review. `step_paged_pio_u8`
+uses profile `PagedCpl0PioU8V1`: bare `EC`/`EE`, Long64 CPL0, with CR3/EFER
+validated by the existing `Long64ProbeConfig` four-level 4 KiB configuration.
+Fetch follows guest page tables with `AccessOrigin::Explicit`. Literal fault
+coverage expects PFEC `0x10` for not-present and `0x11` for NX protection.
+
+The CPU entry accepts an already-selected `GuestMemory` and performs only
+CPU-side CR0/CR4 and profile admission. The machine entry validates CR3/EFER
+through the existing `Long64ProbeConfig` and supplies the real page-aware
+memory adapter. The machine acceptance executes `MOV RAX,[RBX]` then `OUT DX,AL` with no host
+mutation between steps and passes the first result's definedness into the
+second. UART output is checked against the guest-loaded byte. On a PIO failure,
+CPU/definedness are unchanged while already committed A/D writes and callbacks
+remain. Full tests passed: `od-isa --all-targets` — 2,014 unit, 6 paged and 7
+legacy tests; `od-machine --all-targets` — 105 tests, including 7 paged.
+
+Recorded additional checks: package checks, formatting, diff check and layout
+check passed; workspace check, JSON/link validation and independent
+`gpt-6.1-sol/high` review also passed with no P0–P3 findings. These checks do not establish a mixed-instruction runner,
+exception delivery/CR2 update, IOPL/TSS, IRQ/APIC, scheduler, baud timing, JIT
+or Linux behavior. Parent S4-24 remains open.

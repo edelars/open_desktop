@@ -6,6 +6,7 @@ mod event_queue;
 mod identity_memory_adapter;
 mod page_walk;
 mod paged_memory_adapter;
+mod paged_pio_step;
 mod physical_memory;
 mod pio_step;
 #[cfg(feature = "experimental-translation-probe-cache")]
@@ -37,6 +38,7 @@ pub use page_walk::{
 };
 
 pub use paged_memory_adapter::{PagedMovStepError, PagedMovStepReport, step_paged_mov};
+pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 
 pub use pio_step::step_diagnostic_pio_u8;
 

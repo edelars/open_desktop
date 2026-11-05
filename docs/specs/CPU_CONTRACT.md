@@ -73,6 +73,34 @@ other widths, immediate-port forms, REP/string I/O, IRQ delivery, APIC
 integration, Linux serial compatibility or Linux boot. Parent S4-24 remains
 open.
 
+### Bounded paged CPU-to-PIO profile `PagedCpl0PioU8V1` (S4-24c)
+
+`od_isa::execute::step_paged_pio_u8` is an opt-in one-instruction entry point
+for `PagedCpl0PioU8V1`. It admits only bare Long64 `EC` (`IN AL,DX`) and `EE`
+(`OUT DX,AL`) at CPL0. The CPU entry accepts an already-selected
+`GuestMemory` implementation and validates only CPU-side admission, including
+Long64/CPL0 and the CR0/CR4 requirements. It does not accept or validate CR3
+or EFER. Instruction fetch is delegated to the supplied `GuestMemory` and uses
+`AccessOrigin::Explicit`.
+
+The machine entry `od_machine::step_paged_pio_u8` validates CR3 and EFER through
+the existing `Long64ProbeConfig` four-level, 4 KiB profile, then supplies the
+CPU entry with the real page-aware memory adapter.
+
+The bounded profile retains the byte PIO behavior of S4-24b while fetching
+through the page tables. Tests cover a not-present fetch fault with PFEC
+`0x10` and an NX protection fetch fault with PFEC `0x11`. Machine integration
+also exercises `MOV RAX,[RBX]` followed by `OUT DX,AL` without host mutation
+between calls and transfers the first step's definedness to the second.
+Page-table A/D writes and their callbacks already committed during fetch remain
+visible if the later PIO operation fails. The connected UART output is checked
+as the raw byte produced by the guest instruction.
+
+This profile does not add a mixed-instruction runner, exception delivery or
+CR2 update, IOPL/TSS checks, IRQ/APIC, scheduler, baud timing, JIT or Linux
+support. Parent S4-24 remains open. See the [S4-24c report](../reports/STAGE_4_S4-24C_2026-11-05.md)
+and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu-pio).
+
 ### Локальный CPUID-профиль `DiagnosticV1` (S2-26a)
 
 `DiagnosticV1` — узкий диагностический profile для одной bare-инструкции
