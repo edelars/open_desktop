@@ -22,6 +22,8 @@ pub mod cow_parse;
 pub mod testing;
 
 #[cfg(test)]
+mod cow_open_tests;
+#[cfg(test)]
 mod cow_parse_tests;
 #[cfg(test)]
 mod cow_proto_tests;
