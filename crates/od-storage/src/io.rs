@@ -395,6 +395,11 @@ impl<B: StorageBackend> CheckedStorage<B> {
         let requested = buf.len();
         let size = self.size()?;
         check_range(offset, requested, size)?;
+        // The exclusive lock is advisory: the file can shrink between the
+        // `size()` above and the backend write. A positioned write past the
+        // new end then extends the file with zeros and reports no error. Full
+        // protection needs a mandatory lock or a size check after the write;
+        // both are outside this slice.
         let mut completed = 0usize;
         let mut interrupted = 0u32;
         while completed < requested {

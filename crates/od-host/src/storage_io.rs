@@ -148,6 +148,11 @@ impl HostFileStorage {
     /// removed, so that this call never deletes a path that another party may
     /// have replaced meanwhile.
     pub fn create_new_exclusive(path: &Path, len: u64) -> Result<Self, WriterOpenError> {
+        // Known limits: (1) if `flock` or `set_len` fails below, the empty
+        // file stays on disk (not removed, so a path replaced meanwhile is
+        // never touched); (2) between `create_new` and `flock` another
+        // process can open the new file and take the lock first, in which
+        // case this call returns `WriterBusy`.
         if len > HOST_MAX_LEN {
             return Err(WriterOpenError::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,

@@ -1,5 +1,7 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
+#[cfg(all(unix, test))]
+mod raw_file_tests;
 pub mod session;
 mod session_abi_v1;
 #[cfg(unix)]
