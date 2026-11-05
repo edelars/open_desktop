@@ -191,6 +191,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** воспроизвести существующие проверки затронутых контрактов; сохранить commit, host/toolchain, команды и исходный результат. Старый successful report не выдавать за текущий прогон.
 - **Готово:** локальные работы отделены от CPU-blocked и hardware-blocked. Составлен один небольшой список задач для ближайшего вертикального среза; full-stage JIT не становится искусственной общей зависимостью.
 
+#### S4-01a. Воспроизводимый diagnostic CPU-to-RAM baseline
+
+- [x] Ограниченный baseline принят после независимого ревью `gpt-6.1-sol/high`; родительский S4-01 остаётся открытым.
+- **Evidence:** [отчёт S4-01a](../reports/STAGE_4_S4-01A_2026-11-05.md) и [JSON baseline](../reports/data/stage4/s4-01a-baseline-2026-11-05.json).
+- **Подтверждено:** два exact-теста реально исполнили по одному тесту: CPU interpreter через `IdentityMemoryAdapter → MachineBus → PhysicalMemory` с успешными load/store и отказом на hole `0x3000` без retirement/mutation; отдельный immutable page-walk snapshot control с разными CR3 roots. Профиль — diagnostic flat identity (`linear == physical`), не Linux manifest.
+- **Матрица границ:** translation integration остаётся владельцем `od-machine`; page-fault probe/record отделён от S4-19 delivery/retry; JIT и Linux entry не покрыты. Нет claims о CPU-integrated paging, `#PF`, privileged hardware или Linux boot.
+- **Проверки:** обе команды из отчёта завершились с exit code 0 и `1 passed, 0 failed, 0 ignored; 67 filtered out`; toolchain/host/page-size и исходный clean status сохранены в JSON.
+
 ### S4-02. Описать единую карту машины
 
 - [x] Принято после ревью.

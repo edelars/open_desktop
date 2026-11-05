@@ -1,0 +1,97 @@
+{
+  "slice": "S4-01a",
+  "date": "2026-11-05",
+  "captured_at": "2026-11-05T03:11:35-03:00",
+  "repository": {
+    "head": "f99484ee08e58f08351ba82da5cd8a3ba8ece2bb",
+    "git_status_short_before_slice": "clean"
+  },
+  "host": {
+    "os": "Darwin 25.6.0",
+    "architecture": "arm64",
+    "page_size_bytes": 16384,
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)"
+  },
+  "profile": {
+    "name": "diagnostic flat identity",
+    "linear_equals_physical": true,
+    "linux_machine_manifest": false
+  },
+  "tests": [
+    {
+      "purpose": "CPU interpreter through IdentityMemoryAdapter, MachineBus and PhysicalMemory; successful load/store then backend fault without retirement",
+      "command": "cargo test -p od-machine --locked --offline --lib identity_memory_adapter::tests::interpreter_executes_through_production_bus_then_faults_without_retirement -- --exact",
+      "exit_code": 0,
+      "executed_tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 67,
+      "result": "ok",
+      "compact_output": "running 1 test; identity_memory_adapter::tests::interpreter_executes_through_production_bus_then_faults_without_retirement ... ok; test result: ok. 1 passed; 0 failed; 0 ignored; 67 filtered out"
+    },
+    {
+      "purpose": "Independent immutable page-walk snapshot control; distinct CR3 roots select distinct translations",
+      "command": "cargo test -p od-machine --locked --offline --lib page_walk::tests::cpu_state_snapshots_are_immutable_and_roots_select_distinct_translations -- --exact",
+      "exit_code": 0,
+      "executed_tests": 1,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 67,
+      "result": "ok",
+      "compact_output": "running 1 test; page_walk::tests::cpu_state_snapshots_are_immutable_and_roots_select_distinct_translations ... ok; test result: ok. 1 passed; 0 failed; 0 ignored; 67 filtered out"
+    }
+  ],
+  "observed_contract": {
+    "path": [
+      "od_isa::execute::run",
+      "IdentityMemoryAdapter",
+      "MachineBus",
+      "PhysicalMemory"
+    ],
+    "instructions": [
+      "MOV RAX,[RBX]",
+      "MOV [RBX],RCX",
+      "MOV RCX,[RDX]"
+    ],
+    "successful_first_two": {
+      "retired_instructions": 2,
+      "rip_after_successes": "0x1006",
+      "load_result": "original RAM qword loaded into RAX",
+      "store_result": "replacement RCX qword committed to RAM",
+      "committed_write_callbacks": 1,
+      "callback_range": "one 8-byte write at the data address"
+    },
+    "hole_fault": {
+      "address": "0x3000",
+      "error": "MemoryError::Backend",
+      "retired_instructions": 0,
+      "cpu_state_and_rip_unchanged": true,
+      "ram_unchanged_by_faulting_instruction": true,
+      "committed_write_history_unchanged_by_faulting_instruction": true
+    },
+    "snapshot_control": {
+      "immutable": true,
+      "cr3_roots": ["0x1000", "0x5000"],
+      "same_linear_address_physical_results": ["0x5abc", "0x9abc"],
+      "separate_from_cpu_execution_memory_path": true
+    }
+  },
+  "prerequisites": {
+    "fetch_load_store": "od-machine translation integration",
+    "cr0_cr4_to_snapshot": "diagnostic snapshot validation only",
+    "page_fault_probe_record": "separate from S4-19 delivery and retry",
+    "jit_memory": "not covered; S4-15/S4-16 owners",
+    "linux_entry": "S4-00 and ISSUE-027/ISSUE-036 remain prerequisites"
+  },
+  "non_claims": [
+    "No production CPU-integrated paging",
+    "No #PF delivery or retry",
+    "No JIT memory behavior",
+    "No privileged hardware behavior",
+    "No Linux boot",
+    "This diagnostic profile is not a Linux machine manifest"
+  ]
+}

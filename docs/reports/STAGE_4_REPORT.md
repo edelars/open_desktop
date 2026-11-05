@@ -3,8 +3,8 @@
 ## Текущий статус
 
 На 2026-11-05 принят только локальный memory/bus/bridge/translation,
-bounded page-fault-record, tracked RAM access и S4-10a admission-boundary slice
-S4-02—S4-23a. Этап 4 не завершён: S4-00—S4-01,
+bounded page-fault-record, tracked RAM access, S4-01a baseline и S4-10a
+admission-boundary slice S4-02—S4-23a. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, devices, JIT
 integration, hardware cases и Linux userspace остаются открытыми.
 
@@ -20,6 +20,15 @@ authenticated source/config-to-binary mapping не подтвержден. По�
 [JSON manifest](data/stage4/s4-00a-source-audit-2026-11-05.json). Родительские
 S4-00 и S4-01 остаются открытыми.
 
+В S4-01a (2026-11-05) зафиксирован свежий исполняемый baseline диагностического
+пути `od_isa::execute::run → IdentityMemoryAdapter → MachineBus → PhysicalMemory`:
+успешные load/store и backend fault на hole `0x3000` без retirement или мутаций,
+а также отдельный immutable page-walk snapshot control с разными CR3. Оба exact-
+теста прошли по одному тесту. Это flat identity fixture, не production paging и
+не Linux manifest; `#PF` delivery/retry, JIT, privileged hardware и boot остаются
+вне среза. Evidence: [отчёт S4-01a](STAGE_4_S4-01A_2026-11-05.md) и
+[JSON baseline](data/stage4/s4-01a-baseline-2026-11-05.json).
+
 ## Реализовано
 
 - `od-machine` получил `GuestPhysicalAddress`, `GuestPhysicalRange`,
@@ -34,6 +43,9 @@ S4-00 и S4-01 остаются открытыми.
 - Width 64 отдельно проверен для диапазона, содержащего `u64::MAX`.
 - `MachineBus` добавляет отдельную checked PIO map, validated MMIO bindings и
   синхронный `BusDevice` dispatch без partial/cross-window операций.
+- S4-01a повторно подтвердил существующий диагностический CPU-to-RAM путь через
+  flat identity adapter и отдельно зафиксировал immutable page-walk snapshot;
+  production CPU-integrated paging и Linux boot этим baseline не подтверждены.
 - MMIO/PIO widths, PIO endpoint/overflow, device errors и отсутствие побочных
   эффектов до commit проверены отдельными unit tests; RAM callback не вызывается
   для device writes.
@@ -125,7 +137,8 @@ S4-00 и S4-01 остаются открытыми.
   исправления benchmark parity P2; S4-14a получил независимое **approve**,
   P0—P2 не обнаружены.
   S4-22a получил независимое **approve**; два P3 теста усилены и закрыты
-  повторным ревью, новых P0—P2 нет.
+  повторным ревью, новых P0—P2 нет; S4-01a получил независимое **approve**,
+  P1—P3 не обнаружены.
 
 Архитектурный анализ `gpt-6-astra/high` подтвердил границу среза и отсутствие
 необходимости добавлять зависимости на `od-isa`, `od-jit` или `od-host`.

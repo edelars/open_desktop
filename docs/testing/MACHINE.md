@@ -140,3 +140,16 @@ caller-driven clock/RDTSC boundary и S4-23a bounded deadline queue.
 После изменения кода Graphify обновляется командой `graphify update .`. При
 переходе к MMU/CPU-срезам каждый тест должен дополнительно сохранять fault state,
 CR2, A/D effects и source of expected result.
+
+## S4-01a: diagnostic CPU-to-RAM baseline
+
+The [S4-01a report](../reports/STAGE_4_S4-01A_2026-11-05.md) records a fresh
+run of the exact CPU-through-RAM integration test and a separate immutable
+page-walk snapshot control. Run both exact commands from that report and
+require one executed test per command. The integration contract covers
+`od_isa::execute::run → IdentityMemoryAdapter → MachineBus → PhysicalMemory`
+in diagnostic flat identity mode (`linear == physical`); it is not a Linux
+machine manifest. This baseline does not establish CPU-integrated paging,
+`#PF` delivery/retry, JIT, privileged hardware behavior or Linux boot. The
+captured host page size is metadata only; it does not parameterize guest test
+memory.
