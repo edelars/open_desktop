@@ -1,6 +1,6 @@
 # Этап 9. Отчёт: надёжность данных и управление состоянием
 
-Статус отчёта: **промежуточный. Этап 9 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и тестами ветки `feat/s9-stage` на коммите `000c1da`. Gates G1–G6 не закрыты.
+Статус отчёта: **промежуточный. Этап 9 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и тестами ветки `feat/s9-stage` на коммите `88b9f42`. Gates G1–G6 не закрыты.
 
 Связанные документы: [план этапа 9](../plans/STAGE_9.md), [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md), [VM_STATE.md](../specs/VM_STATE.md), [STORAGE_RECOVERY.md](../testing/STORAGE_RECOVERY.md), [реестр проблем](../KNOWN_ISSUES.md), [SUPPORT_MATRIX.md](../specs/SUPPORT_MATRIX.md).
 
@@ -10,15 +10,15 @@
 
 | Статус | Количество | Задачи |
 |---|---|---|
-| Реализовано, ревью пройдено (по сведениям из заданий на отчёт) | 3 | S9-03, S9-05, S9-07 |
+| Реализовано, ревью пройдено (по сведениям из заданий на отчёт) | 5 | S9-03, S9-05, S9-07, S9-09, S9-10 |
 | Прототип реализован и проверен, ревью протокола пройдено; формат НЕ принят | 1 | S9-08 |
 | Частично | 5 | S9-04, S9-06 (код, с оговорками ниже); S9-00, S9-01, S9-02 (только черновики документов, архитектурное ревью не выполнено) |
-| `not_started` | 0 | — |
-| `blocked` | 36 | S9-09…S9-44 |
+| `not_started` | 2 | S9-11, S9-12 (отдельной реализации и ревью нет; на уровне прототипа покрыты `cow_proto`, не принято) |
+| `blocked` | 32 | S9-13…S9-44 |
 
-Принятого этапа или принятого gate нет. «Реализовано, ревью пройдено» относится к самой задаче и не означает принятие gate G1. S9-08 не принят: нормативных bytes и лимитов нет, замеров нет. Чекбоксы `[ ]` в плане не отмечены.
+Принятого этапа или принятого gate нет. «Реализовано, ревью пройдено» относится к самой задаче и не означает принятие gate G1. S9-08 не принят: нормативных bytes и лимитов нет, замеров нет. «Ревью пройдено» у S9-09 и S9-10 не делает формат принятым (S9-40). Чекбоксы `[ ]` в плане не отмечены.
 
-## 2. Задачи S9-00…S9-08
+## 2. Задачи S9-00…S9-10
 
 ### S9-00. Область поддержки и failure model — частично (черновик)
 
@@ -96,15 +96,31 @@
 - Проверки: 1440 прогонов cut-point (`every_cut_point_leaves_old_or_new_never_mixed`, `create_cut_points_give_no_file_or_empty_file`), seeded-прогоны против независимого oracle (`seeded_sequences_match_the_oracle`), отрицательные тесты (`oracle_detects_ack_before_barrier_2`, `oracle_detects_root_without_data_barrier`, `oracle_detects_a_backend_that_acks_without_durability`, `crc_valid_but_hostile_roots_are_refused`, `damaged_data_under_valid_root_refuses_without_fallback`, `both_slots_damaged_refuses_to_open`, `generation_exhaustion_is_rejected_before_any_io`).
 - НЕ сделано / НЕ доказано:
   - Размер блока, раскладка корня, плоская карта и все лимиты — гипотезы; замеры (S9-40) не сделаны. Нормативных bytes, root selection как спецификации, обработки unreachable garbage и feature bits нет; [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md#9-требования-к-cow-формату-bytes--tbd-s9-08) остаётся TBD.
-  - Не реализованы GC, refcount, snapshots, шифрование и hardening парсера сверх лимитов (S9-09, S9-14 и далее).
+  - Не реализованы GC, refcount, snapshots, шифрование (S9-14 и далее). Строгий parser добавлен отдельно (S9-09, ниже).
   - Защита построена на модели отказов `FaultBackend`; реальный power-loss и namespace durability (публикация файла, ISSUE-055) не проверены.
   - Критерий «Готово» плана (нормативные bytes и лимиты определены) не выполнен.
 
-## 3. Задачи S9-09…S9-44
+### S9-09. Строгий read-only parser — реализовано, ревью пройдено (нет блокеров и мажоров; minor в сообщении коммита)
+
+- Коммит: `17c9ce6`.
+- Файлы: [cow_parse.rs](../../crates/od-storage/src/cow_parse.rs), [cow_parse_tests.rs](../../crates/od-storage/src/cow_parse_tests.rs), [cow_proto.rs](../../crates/od-storage/src/cow_proto.rs), [lib.rs](../../crates/od-storage/src/lib.rs).
+- Факт: `cow_parse` разбирает слоты, карту блоков и дескрипторы без записи и мутаций backend. Все смещения и длины — checked arithmetic, лимиты проверяются до allocation, ошибки несут секцию, абсолютный offset и тип. Feature words лежат в padding слота: неизвестный mandatory bit запрещает writable open и read-only open (если не объявлен понятым); reserved bytes обязаны быть нулевыми.
+- Проверки: литеральные offsets и независимый CRC, каждая точка усечения, overflow, duplicate и overlap, 80000 детерминированных мутаций (fuzz) без паник и с независимой проверкой каждого `Ok`; на момент коммита 76 тестов. Проверки cycle и depth не применимы: ссылок между metadata в прототипном формате нет.
+- НЕ доказано: fuzz проверяет soundness, не полноту; параметры формата — гипотезы (формат не принят, S9-40); parser не отражает нормативную спецификацию, которой нет.
+
+### S9-10. Create/open и выбор корня — реализовано, ревью пройдено (после одного major, исправлен); есть открытый предел ISSUE-057
+
+- Коммиты: `61a99e0`, `88b9f42` (регистрация модуля).
+- Файлы: [cow_proto.rs](../../crates/od-storage/src/cow_proto.rs), [cow_open_tests.rs](../../crates/od-storage/src/cow_open_tests.rs), [lib.rs](../../crates/od-storage/src/lib.rs).
+- Факт: `CowFile::open` проверяет всю metadata через строгий parser, writable или read-only; неизвестные mandatory features отклоняются. Выбор корня — по максимальному валидному generation; torn write считается повреждённым слотом; hostile и конфликтующие корни (`GenerationConflict`) отклоняются; молчаливого отката на старый корень нет. При пустом втором слоте на generation 1 с непустым хвостом проверяется копия корня N+1 и выполняется roll-forward. Create пишет generation 1 с одним barrier до ack.
+- Проверки: 90 тестов `od-storage` на момент коммита, включая sweep по create и публикациям против независимого oracle.
+- НЕ доказано / предел: обнулённый слот поколения 2 вместе с повреждённой копией корня неотличим от обрыва до barrier 1 первого commit; writable open откроет generation 1, и следующий commit может затереть подтверждённый generation 2 ([ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable)). Формат не принят.
+
+## 3. Задачи S9-11…S9-44
 
 | Задача | Статус | Причина |
 |---|---|---|
-| S9-09…S9-12 | `blocked` | Нужен принятый нормативный CoW-формат S9-08 (сейчас только прототип протокола, замеры не сделаны); parser, create/root, write transaction и crash recovery строятся на нём; S9-12 дополнительно от S9-11 |
+| S9-11, S9-12 | `not_started` | Отдельной задачи реализации и ревью нет. Протокол commit и roll-forward на уровне прототипа есть в `cow_proto` (S9-08/S9-10), он не принят; CoW write transaction и recovery с durable watermark по плану S9-11/12 не выполнены. Формат не принят (S9-40, ISSUE-057) |
 | S9-13 | `blocked` | Нужно устройство хранения гостя из этапов 5/7 и S9-12 |
 | S9-14…S9-22 | `blocked` | Цепочка зависимостей от S9-12 и формата S9-08 (snapshots, branch, leases, reclamation, capacity, CLI, import/export, salvage, migration) |
 | S9-23 | `blocked` | Зависит от S9-16 (не начат) |
@@ -117,24 +133,25 @@
 | S9-39 | `blocked` | Требуется отдельное разрешение на стенд power-loss и описанная схема; без него gate остаётся `not_run` |
 | S9-40…S9-44 | `blocked` | Зависят от S9-18, S9-31, S9-38, S9-39, S9-41 и не начатых задач |
 
-Для S9-07/S9-08 в таблице строк нет: они описаны в §2. Дополнительно: namespace-часть S9-06 заблокирована ISSUE-055 и влияет на S9-10, S9-11, S9-29 (публикация root/manifest).
+Для S9-07…S9-10 в таблице строк нет: они описаны в §2. Дополнительно: namespace-часть S9-06 заблокирована ISSUE-055 и влияет на S9-10, S9-11, S9-29 (публикация root/manifest).
 
 ## 4. Gates (план, раздел 8)
 
 | Gate | Статус | Доказательство или недостаток |
 |---|---|---|
-| G1 — independent storage (S9-03…12) | `partial` | Есть: I/O contract, writer lock, RAW, file-data flush, fault backend с независимым oracle (S9-07), прототип CoW-протокола с проверкой всех cut points на модели (S9-08). Нет: принятого формата (S9-08), S9-09…12 (parser, create/root, write transaction, recovery с durable watermark), namespace durability, read leases (S9-04), power-loss |
+| G1 — independent storage (S9-03…12) | `partial` | Есть: I/O contract, writer lock, RAW, file-data flush, fault backend с независимым oracle (S9-07), прототип CoW-протокола с проверкой cut points на модели (S9-08), строгий parser (S9-09), open и выбор корня (S9-10). Нет: принятого формата (S9-08, S9-40); S9-11 (CoW write transaction) и S9-12 (recovery с durable watermark) только на уровне прототипа и не приняты; открыт ISSUE-057; namespace durability, read leases (S9-04), power-loss |
 | G2 — snapshots/tools (S9-14…22) | `not_met` | Не начато |
 | G3 — coherent full VM (S9-13, 23…31) | `not_met` | Не начато; блокированы ISSUE-056 и отсутствующие компоненты |
 | G4 — identity/integration (S9-32…37) | `not_met` | Не начато |
-| G5 — failure qualification (S9-38/39/41) | `not_met` | Есть deterministic fault model для RAW и прототипа CoW (S9-07/08), unit-тесты sticky reconcile и kill процесса (S9-04); полной fault/corruption matrix, repeated recovery и power-loss нет |
+| G5 — failure qualification (S9-38/39/41) | `not_met` | Есть deterministic fault model для RAW и прототипа CoW (S9-07/08/10), unit-тесты sticky reconcile и kill процесса (S9-04); полной fault/corruption matrix, repeated recovery и power-loss нет |
 | G6 — reproducibility (S9-40…44) | `not_met` | Замеров, матрицы и независимого итогового ревью нет |
 
 ## 5. Открытые блокеры и записи
 
 - [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed): гарантия durability macOS/APFS не подтверждена. Реализован `F_FULLFSYNC` для данных файла (см. S9-06), но namespace durability, проверенный источник по API и испытания уровней 1–3 отсутствуют; запись ещё описывает состояние до кода и требует актуализации.
 - [ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner): у архитектурного CPU state нет единого versioned owner; блокирует S9-24 и full-VM checkpoint.
-- Нет принятого CoW-формата и замеров (S9-08): есть только прототип протокола; блокирует S9-09…12 и далее.
+- Нет принятого CoW-формата и замеров (S9-08, S9-40): есть прототип протокола, parser и open; S9-11/12 не выполнены; блокирует S9-13 и далее.
+- [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable): обнулённый слот поколения 2 вместе с повреждённой копией корня неотличим от обрыва первого commit; возможна потеря acked данных при двойном повреждении.
 - Нет устройства хранения гостя (S9-13), UEFI, vTPM (S9-26/27).
 - Нет разрешения на power-loss стенд (S9-39).
 - S9-04: нет read leases, интеграции с VMHost, запрета изменения parent, busy при export/repair.
@@ -142,11 +159,11 @@
 
 ## 6. Тесты
 
-Команды и результаты на `000c1da` (2026-11-05):
+Команды и результаты на `88b9f42` (2026-11-05):
 
 | Команда | Итог |
 |---|---|
-| `cargo test -p od-storage` | 59 passed, 0 failed (36 до S9-07/08; 45 на коммите `a7874b8`) |
+| `cargo test -p od-storage` | 90 passed, 0 failed (36 до S9-07/08; 45 на `a7874b8`; 59 на `000c1da`; 76 на S9-09 по сообщению коммита) |
 | `cargo test -p od-host --lib storage_io` | 19 passed, 0 failed |
 | `cargo test -p od-host --lib raw_file_tests` | 9 passed, 0 failed |
 | `cargo test -p od-host` | 253 passed, **21 failed** (`s3_20*` и `native_register_v1_corpus::reduce_saved_native_register_v1_case`) |

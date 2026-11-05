@@ -245,6 +245,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-09. Написать строгий readonly parser
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено (нет блокеров/мажоров, minor в сообщении коммита `17c9ce6`); fuzz 80000 разборов без паник. Формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-09-строгий-read-only-parser--реализовано-ревью-пройдено-нет-блокеров-и-мажоров-minor-в-сообщении-коммита).
 - **Где:** `od-storage`, малые manually specified fixtures.
 - **Сделать:** декодирование header/root/map с version/capability negotiation, проверкой lengths/offset arithmetic/size limits, checksum и references. Unknown mandatory feature запрещает writable open; readonly допустим только при доказанно понятной семантике.
 - **Проверить:** truncation, overflow, overlap, duplicate/conflicting entries, wrong endian/version/identity, cycle/depth limits. Expected bytes независимы от encoder.
@@ -253,6 +254,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-10. Реализовать создание и выбор корня
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено после одного major (исправлен), коммиты `61a99e0`, `88b9f42`. Открытый предел: [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable). Формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-10-createopen-и-выбор-корня--реализовано-ревью-пройдено-после-одного-major-исправлен-есть-открытый-предел-issue-057).
 - **Где:** `od-storage`.
 - **Сделать:** create пустого диска и open только полностью валидируемого состояния. Root validation включает reachable metadata/data integrity в заявленном checksum scope; generation и publication status проверяются по S9-08.
 - **Проверить:** power cut model на каждом шаге create/publication, damaged root copies, same generation conflict, generation overflow, валидный header с невалидной map, отсутствие пригодного root. Для маленького correctness profile проверить весь reachable graph; lazy validation вводить отдельно по замерам.
