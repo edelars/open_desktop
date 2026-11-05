@@ -494,7 +494,7 @@ fn a_cancelled_retry_is_not_resurrected_by_a_stale_tail_copy() {
                 assert_eq!(v, Verdict::Before, "seed {seed} stop {stop} {policy:?}");
                 assert_eq!(
                     sim.file().generation(),
-                    1,
+                    2,
                     "seed {seed} stop {stop} {policy:?}"
                 );
                 assert!(sim.oracle.base().is_empty());

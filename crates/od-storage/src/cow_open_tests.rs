@@ -3,9 +3,10 @@
 //! `cow_proto_tests` proves the commit protocol against a snapshot oracle.
 //! This file checks the other half of the contract: *which state an open
 //! decides on* and which media it refuses. Expectations are written as
-//! (generation, [`OpenClass`], snapshot) triples or as the refusal kind; the
-//! snapshot of generation `g` is `snaps[g - 1]` (generation 1 is the empty
-//! state made by `create`).
+//! (generation, [`OpenClass`], snapshot) triples or as the refusal kind. `create`
+//! leaves two empty roots (generations 1 and 2) and the first commit is
+//! generation 3, so the snapshot of generation `g` is `snaps[g - 2]` (and the
+//! empty `snaps[0]` also stands for generation 1).
 //!
 //! Every media image comes from a real run on the fault backend, optionally
 //! followed by an explicit byte mutation, so the layout is never re-derived
@@ -51,6 +52,9 @@ enum Want {
     /// Opens at this generation with this class.
     Open(u64, OpenClass),
     NoRoot,
+    /// Writable refusal: an unfinished create (the read-only open of the same
+    /// media is `NoRoot`).
+    Incomplete,
     /// Writable refusal: damaged other slot, with the generation that was
     /// chosen.
     DamagedOther(u64),
@@ -62,9 +66,10 @@ fn expect(label: &str, who: &str, got: &Opened, want: Want, snaps: &[Snap]) {
             *g == wg
                 && r.class() == class
                 && r.chosen_slot == (wg & 1) as usize
-                && snaps.get((wg - 1) as usize) == Some(snap)
+                && snaps.get(wg.saturating_sub(2) as usize) == Some(snap)
         }
         (Err(CowError::NoValidRoot { .. }), Want::NoRoot) => true,
+        (Err(CowError::IncompleteCreate { .. }), Want::Incomplete) => true,
         (
             Err(CowError::DamagedOtherSlot {
                 chosen_generation, ..
@@ -119,10 +124,10 @@ fn first_flush(ops: &[OpKind]) -> usize {
 
 /// What `create` leaves behind, byte for byte, and how it opens.
 #[test]
-fn create_makes_two_slots_and_a_barrier_before_the_ack() {
+fn create_makes_two_empty_roots_under_one_barrier() {
     let mut sim = Sim::new(0x10, CommitOrder::Correct);
     assert!(sim.create(None));
-    // Ordered backend calls: size, one root write, one barrier; the ack is the
+    // Ordered backend calls: size, two root writes, one barrier; the ack is the
     // barrier's, so nothing is pending when create returns.
     let ops: Vec<OpKind> = sim
         .handle
@@ -131,31 +136,29 @@ fn create_makes_two_slots_and_a_barrier_before_the_ack() {
         .filter_map(|l| crate::cow_proto_tests::parse_kind(l))
         .map(|(_, k)| k)
         .collect();
-    assert_eq!(ops, [OpKind::SetLen, OpKind::Write, OpKind::Flush]);
+    assert_eq!(
+        ops,
+        [OpKind::SetLen, OpKind::Write, OpKind::Write, OpKind::Flush]
+    );
     assert_eq!(sim.handle.pending_len(), 0);
 
     let bytes = sim.handle.durable_bytes();
     assert_eq!(bytes.len(), HEADER_LEN as usize);
-    assert!(
-        bytes[..SLOT_SIZE].iter().all(|&b| b == 0),
-        "slot 0 (generation 0) stays blank"
-    );
-    assert_eq!(
-        bytes[SLOT_SIZE..],
-        forge_root_sector(1, 0, HEADER_LEN, 0, HEADER_LEN)
-    );
+    let empty = |g| forge_root_sector(g, 0, HEADER_LEN, 0, HEADER_LEN);
+    assert_eq!(bytes[..SLOT_SIZE], empty(2));
+    assert_eq!(bytes[SLOT_SIZE..], empty(1));
 
     let snaps = vec![Vec::new()];
     check_open(
         "fresh create",
         &bytes,
         &snaps,
-        Want::Open(1, OpenClass::Committed),
-        Want::Open(1, OpenClass::Committed),
+        Want::Open(2, OpenClass::Committed),
+        Want::Open(2, OpenClass::Committed),
     );
-    // The empty state of generation 1 reports a blank other slot and no tail.
+    // The created state reports the companion root and no tail.
     let (_, _, report) = do_salvage(&FaultHandle::new(&bytes, 1)).expect("open");
-    assert_eq!(report.other_slot, SlotState::Blank);
+    assert_eq!(report.other_slot, SlotState::Valid { generation: 1 });
     assert_eq!(report.tail_len, 0);
     assert!(!report.rolled_forward && !report.possible_lost_commit);
 
@@ -166,26 +169,80 @@ fn create_makes_two_slots_and_a_barrier_before_the_ack() {
     assert_eq!(h.next_ordinal(), 0);
 }
 
-/// A file that was never created, or whose first root was torn, has no root;
-/// the slot states tell the two apart.
-#[test]
-fn unfinished_create_is_no_valid_root_and_says_why() {
-    let blank = |bytes: &[u8]| match do_writable(&FaultHandle::new(bytes, 3)) {
-        Err(CowError::NoValidRoot { slots }) => slots,
-        other => panic!("expected NoValidRoot, got {:?}", other.map(|r| r.0)),
-    };
-    assert_eq!(blank(&[]), [SlotState::Blank; 2]);
-    assert_eq!(blank(&[0u8; 1024]), [SlotState::Blank; 2]);
+#[derive(Clone, Copy, Debug)]
+enum Sector {
+    Blank,
+    Written,
+    Torn,
+}
 
+/// Every combination of (blank / written / torn) for the two root sectors of a
+/// header-sized file, judged by a plain rule that does not look at the code
+/// under test: both roots written is the clean generation 2; exactly one is an
+/// unfinished create (refused by a writable open, `NoValidRoot` read-only);
+/// none is `NoValidRoot`. A shorter file never opens.
+#[test]
+fn every_sector_state_of_an_unfinished_create() {
     let mut sim = Sim::new(0x11, CommitOrder::Correct);
     assert!(sim.create(None));
     let created = sim.handle.durable_bytes();
-    let mut torn = created.clone();
-    torn[SLOT_SIZE + 100..SLOT_SIZE + 200].fill(0xAA); // first root half-written
-    assert_eq!(blank(&torn), [SlotState::Blank, SlotState::Damaged]);
-    let mut torn = created;
-    torn[SLOT_SIZE + 7] ^= 0xFF; // damaged magic
-    assert_eq!(blank(&torn), [SlotState::Blank, SlotState::Damaged]);
+    let snaps: Vec<Snap> = vec![Vec::new()];
+    let states = [Sector::Blank, Sector::Written, Sector::Torn];
+    for s0 in states {
+        for s1 in states {
+            for (how, torn_edit) in [
+                ("magic", (7usize, 0xFFu8)),
+                ("crc", (SLOT_SIZE - 1, 0x01)),
+                ("body", (20, 0x40)),
+            ] {
+                let mut bytes = created.clone();
+                for (i, st) in [s0, s1].into_iter().enumerate() {
+                    let at = i * SLOT_SIZE;
+                    match st {
+                        Sector::Written => {}
+                        Sector::Blank => bytes[at..at + SLOT_SIZE].fill(0),
+                        Sector::Torn => bytes[at + torn_edit.0] ^= torn_edit.1,
+                    }
+                }
+                let written = [s0, s1]
+                    .iter()
+                    .filter(|s| matches!(s, Sector::Written))
+                    .count();
+                let (w, r) = match written {
+                    2 => (
+                        Want::Open(2, OpenClass::Committed),
+                        Want::Open(2, OpenClass::Committed),
+                    ),
+                    1 => (Want::Incomplete, Want::NoRoot),
+                    _ => (Want::NoRoot, Want::NoRoot),
+                };
+                check_open(&format!("{s0:?}/{s1:?} ({how})"), &bytes, &snaps, w, r);
+            }
+        }
+    }
+    // The slot states of an unfinished create say what is missing.
+    let mut bytes = created.clone();
+    bytes[..SLOT_SIZE].fill(0);
+    match do_writable(&FaultHandle::new(&bytes, 3)) {
+        Err(CowError::IncompleteCreate { slots }) => {
+            assert_eq!(
+                slots,
+                [SlotState::Blank, SlotState::Valid { generation: 1 }]
+            );
+        }
+        other => panic!("{:?}", other.map(|r| r.0)),
+    }
+    // A file shorter than the header, or never written, has no root at all.
+    for len in [0usize, 1, 1023] {
+        check_open(
+            &format!("len {len}"),
+            &created[..len],
+            &snaps,
+            Want::NoRoot,
+            Want::NoRoot,
+        );
+    }
+    check_open("zeros", &[0u8; 1024], &snaps, Want::NoRoot, Want::NoRoot);
 }
 
 // ------------------------------------------------------- power cut sweeps
@@ -216,13 +273,19 @@ fn crash_and_check(sim: &mut Sim, policy: CrashPolicy, exp: Expected, label: &st
     let fail = |msg: String| -> ! { panic!("{label} {policy:?}: {msg}\n{}", h.report("")) };
 
     let key = match (&salvaged, &opened) {
-        (Err(CowError::NoValidRoot { slots: a }), Err(CowError::NoValidRoot { slots: b })) => {
+        (
+            Err(CowError::NoValidRoot { slots: a }),
+            Err(CowError::NoValidRoot { slots: b } | CowError::IncompleteCreate { slots: b }),
+        ) => {
             if exp.prev.is_some() {
                 fail("no valid root although a committed state existed".into());
             }
             assert_eq!(a, b);
-            assert_eq!(a[0], SlotState::Blank, "{label}: slot 0 is never written");
-            "NoRoot".to_string()
+            if matches!(opened, Err(CowError::IncompleteCreate { .. })) {
+                "IncompleteCreate".to_string()
+            } else {
+                "NoRoot".to_string()
+            }
         }
         (Ok((sg, ss, sr)), Ok((wg, ws, wr))) => {
             if (sg, ss, sr.rolled_forward) != (wg, ws, wr.rolled_forward) {
@@ -246,6 +309,14 @@ fn crash_and_check(sim: &mut Sim, policy: CrashPolicy, exp: Expected, label: &st
                 ))
             };
             let class = wr.class();
+            if class == OpenClass::UnfinishedCandidate
+                && !matches!(wr.other_slot, SlotState::Valid { .. })
+            {
+                fail(format!(
+                    "UnfinishedCandidate with a {:?} slot",
+                    wr.other_slot
+                ));
+            }
             let class_ok = match side {
                 "target" => matches!(class, OpenClass::Committed | OpenClass::RolledForward),
                 _ => matches!(class, OpenClass::Committed | OpenClass::UnfinishedCandidate),
@@ -288,16 +359,16 @@ fn crash_and_check(sim: &mut Sim, policy: CrashPolicy, exp: Expected, label: &st
 }
 
 /// Every step of `create`, every fault kind at that step, every crash policy:
-/// no root or exactly the empty generation-1 state. An acknowledged create
-/// always opens.
+/// only no root, an unfinished create, or the clean empty generation 2. An
+/// acknowledged create always opens; nothing else is ever visible.
 #[test]
 fn power_cut_at_every_create_step() {
     let empty: Snap = Vec::new();
     let exp = Expected {
         prev: None,
-        target: (1, &empty),
+        target: (2, &empty),
     };
-    let ops = [OpKind::SetLen, OpKind::Write, OpKind::Flush];
+    let ops = [OpKind::SetLen, OpKind::Write, OpKind::Write, OpKind::Flush];
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
     for (k, kind) in ops.iter().enumerate() {
         for fault in faults_for(*kind) {
@@ -317,12 +388,14 @@ fn power_cut_at_every_create_step() {
             }
         }
     }
-    assert!(seen.contains_key("NoRoot"), "{seen:?}");
-    assert!(seen.contains_key("target:Committed"), "{seen:?}");
-    assert_eq!(seen.len(), 2, "unexpected outcome: {seen:?}");
+    for needed in ["NoRoot", "IncompleteCreate", "target:Committed"] {
+        assert!(seen.contains_key(needed), "never saw {needed}: {seen:?}");
+    }
+    assert_eq!(seen.len(), 3, "unexpected outcome: {seen:?}");
 }
 
-/// Every step of publication generations 2..=5 (both slot parities), every
+/// Every step of publication generations 3..=6 (both slot parities; 3 is the
+/// first commit after `create`), every
 /// fault kind, every crash policy: open yields exactly the previous state or
 /// exactly the target, with no mixture, no possible-loss flag, and a working
 /// file afterwards.
@@ -332,6 +405,7 @@ fn power_cut_at_every_publication_step() {
     let b1 = first_flush(&ops);
     let b2 = b1 + 2;
     let mut seen: BTreeMap<String, u32> = BTreeMap::new();
+    let mut first_commit: BTreeMap<String, u32> = BTreeMap::new();
     let mut cases = 0u32;
     for prior in 0..4u64 {
         for (k, kind) in ops.iter().enumerate() {
@@ -349,7 +423,7 @@ fn power_cut_at_every_publication_step() {
                     let base = sim.oracle.base();
                     let writes = rows(base.len(), &mut rng);
                     let target = sim.oracle.target_after(&writes);
-                    let generation = prior + 1;
+                    let generation = prior + 2; // create leaves generation 2
                     let acked = sim.commit(&writes, Some((k as u64, fault)));
                     assert_eq!(acked, !is_failing(fault), "#{k} {fault:?}");
                     let exp = Expected {
@@ -365,10 +439,25 @@ fn power_cut_at_every_publication_step() {
                     } else if k == b2 && fault == Fault::Flush(FlushFault::IoAfterDurable) {
                         assert!(key.starts_with("target:"), "{label}: lost ack, durable");
                     }
+                    if prior == 0 {
+                        *first_commit.entry(key.clone()).or_default() += 1;
+                    }
                     *seen.entry(key).or_default() += 1;
                 }
             }
         }
+    }
+    // The first commit (generation 3) has the same three outcomes as any
+    // other: generation 2 with an ignored tail, roll-forward, or generation 3.
+    for needed in [
+        "prev:UnfinishedCandidate",
+        "target:RolledForward",
+        "target:Committed",
+    ] {
+        assert!(
+            first_commit.contains_key(needed),
+            "first commit never gave {needed}: {first_commit:?}"
+        );
     }
     for needed in [
         "prev:Committed",
@@ -411,7 +500,7 @@ const DAMAGES: [Damage; 5] = [
 #[test]
 fn damaged_root_carriers_of_a_committed_state() {
     for txs in 1..=4u64 {
-        let g = txs + 1;
+        let g = txs + 2; // create leaves generation 2
         let (sim, snaps) = history(0xA0 + txs, txs);
         let original = sim.handle.durable_bytes();
         let at = [
@@ -449,18 +538,6 @@ fn damaged_root_carriers_of_a_committed_state() {
                 (true, true, _) => (Want::NoRoot, Want::NoRoot),
             };
             for &how in &DAMAGES {
-                // Documented limit: slot 0 is legitimately blank while only
-                // generation 1 exists, so a zeroed slot of generation 2 whose
-                // root copy is gone too is indistinguishable from a crash
-                // before barrier 1 of the first commit. It opens as generation
-                // 1 with the candidate left as an ignored tail. (With the copy
-                // intact the default row applies: roll-forward.)
-                let (w, s) = if g == 2 && matches!(how, Damage::Zero) && dg && !dp && dc {
-                    let state = Want::Open(1, OpenClass::UnfinishedCandidate);
-                    (state, state)
-                } else {
-                    (w, s)
-                };
                 let mut bytes = original.clone();
                 for (flag, &pos) in [dg, dp, dc].iter().zip(&at) {
                     if *flag {
@@ -485,7 +562,7 @@ fn torn_inactive_root_needs_an_intact_previous_root() {
     let ops = tx_ops(CommitOrder::Correct, 2);
     let root_write = first_flush(&ops) + 1;
     for prior in 0..4u64 {
-        let g = prior + 1; // committed generation; candidate is g + 1
+        let g = prior + 2; // committed generation; candidate is g + 1
         for torn in [false, true] {
             let seed = 0xE000 + prior * 2 + u64::from(torn);
             let mut sim = Sim::new(seed, CommitOrder::Correct);
@@ -522,10 +599,8 @@ fn torn_inactive_root_needs_an_intact_previous_root() {
             let t = if torn { "torn" } else { "unwritten" };
 
             // Intact previous root: the candidate is adopted (torn) or ignored
-            // (unwritten), never anything else. Exception: next to the blank
-            // slot 0 of generation 1 a complete verified candidate is adopted
-            // either way (see `first_generation_blank_slot_candidate_rules`).
-            let (w, s) = if torn || g == 1 {
+            // (unwritten), never anything else, for the first commit too.
+            let (w, s) = if torn {
                 (
                     Want::Open(g + 1, OpenClass::RolledForward),
                     Want::Open(g + 1, OpenClass::RolledForward),
@@ -538,7 +613,7 @@ fn torn_inactive_root_needs_an_intact_previous_root() {
             };
             let label = format!("{t} root, previous intact, G={g}");
             let after = check_open(&label, &media, &snaps, w, s);
-            if torn || g == 1 {
+            if torn {
                 // Repaired: the media now open as a plain committed state.
                 check_open(
                     &format!("{label} (after repair)"),
@@ -578,9 +653,6 @@ fn torn_inactive_root_needs_an_intact_previous_root() {
             damage(&mut bytes, at[0], Damage::Flip(20));
             let (w, s) = if torn {
                 (Want::NoRoot, Want::NoRoot)
-            } else if g == 1 {
-                // Only the damaged slot holds a root.
-                (Want::NoRoot, Want::NoRoot)
             } else {
                 // Generation `g - 1` survives in the inactive slot; nothing
                 // explains why `g` is damaged.
@@ -618,7 +690,7 @@ fn same_generation_in_both_slots_is_a_conflict_not_a_choice() {
         }
         assert_eq!(h.next_ordinal(), 0, "{label}: refused open must not write");
     };
-    let (sim, _) = history(0xB1, 3); // generations 1..=4: slot 0 = 4, slot 1 = 3
+    let (sim, _) = history(0xB1, 2); // generations 2..=4: slot 0 = 4, slot 1 = 3
     let bytes = sim.handle.durable_bytes();
     let (s0, s1) = (
         bytes[..SLOT_SIZE].to_vec(),
@@ -760,7 +832,7 @@ fn valid_header_with_invalid_map_is_refused() {
     };
     // The previous slot is intact in every image below.
     let intact = do_writable(&with_bytes(&sim, |_| {})).expect("clean").0;
-    assert_eq!(intact, 4);
+    assert_eq!(intact, 5);
 
     // Map bytes changed without updating the root's map CRC.
     let mut bytes = sim.handle.durable_bytes();
@@ -873,7 +945,7 @@ fn checksum_valid_newest_root_with_damaged_block_does_not_fall_back() {
         let broken = with_bytes(&sim, |b| b[phys as usize + 17] ^= 0x40);
         let (g, snap, report) = do_writable(&FaultHandle::new(&broken.durable_bytes(), 13))
             .expect("unreachable damage is irrelevant");
-        assert_eq!((g, snap), (4, newest.clone()));
+        assert_eq!((g, snap), (5, newest.clone()));
         assert_eq!(report.class(), OpenClass::Committed);
     }
 }
@@ -910,8 +982,8 @@ fn no_usable_root_is_a_refusal_in_every_form() {
         "control",
         &original,
         &snaps,
-        Want::Open(3, OpenClass::Committed),
-        Want::Open(3, OpenClass::Committed),
+        Want::Open(4, OpenClass::Committed),
+        Want::Open(4, OpenClass::Committed),
     );
 }
 
@@ -925,9 +997,9 @@ fn set_slot_fields(bytes: &mut [u8], at: usize, edit: impl FnOnce(&mut [u8])) {
 
 #[test]
 fn mandatory_features_are_checked_per_access_mode() {
-    let (sim, _) = history(0xF3, 2); // generations 1..=3, newest in slot 1
-    let newest = slot_offset(3) as usize;
-    let older = slot_offset(2) as usize;
+    let (sim, _) = history(0xF3, 2); // generations 2..=4, newest in slot 0
+    let newest = slot_offset(4) as usize;
+    let older = slot_offset(3) as usize;
     let set = |bytes: &mut Vec<u8>, at: usize, mandatory: u64, optional: u64| {
         set_slot_fields(bytes, at, |s| {
             s[52..60].copy_from_slice(&mandatory.to_le_bytes());
@@ -989,7 +1061,7 @@ fn mandatory_features_are_checked_per_access_mode() {
         Err(CowError::UnsupportedMandatoryFeature(3))
     ));
     let (view, report) = salvage_with(&h, cap(1 << 3, 0)).expect("read-only");
-    assert_eq!((view.generation(), report.generation), (4, 4));
+    assert_eq!((view.generation(), report.generation), (5, 5));
 
     // The lowest offending bit is reported.
     let mut bytes = sim.handle.durable_bytes();
@@ -1027,7 +1099,7 @@ fn mandatory_features_are_checked_per_access_mode() {
 #[test]
 fn crc_valid_unusable_roots_are_refusals_not_damage() {
     let (sim, _) = history(0xF4, 3);
-    let newest = slot_offset(4) as usize;
+    let newest = slot_offset(5) as usize;
     let cases: Vec<(&str, SlotEdit, Pred)> = vec![
         (
             "version 2",
@@ -1057,31 +1129,28 @@ fn crc_valid_unusable_roots_are_refusals_not_damage() {
     }
 }
 
-/// Generation 1 keeps slot 0 blank, so a blank slot there proves nothing about
-/// a generation-2 candidate in the tail. A complete, verified candidate is
-/// adopted (never overwritten by the next commit); an unverifiable one is
-/// ignored only here, and a refused or merely opened state never writes over
-/// the evidence.
+/// The scenario of ISSUE-057 under the two-root create: the first commit
+/// (generation 3, slot 1) was acknowledged and its slot is then zeroed.
+/// Intact root copy: roll-forward, repaired on media, and the next commit
+/// keeps the acknowledged data. Copy damaged as well: writable refuses and
+/// salvage shows generation 2 flagged as a possible lost commit. In no case
+/// is a refused open allowed to write over the evidence (`check_open` compares
+/// the bytes).
 #[test]
-fn first_generation_blank_slot_candidate_rules() {
-    let (sim, snaps) = history(0x61, 1); // generations 1 and 2
+fn zeroed_slot_of_the_first_commit_is_a_loss_or_a_roll_forward() {
+    let (sim, snaps) = history(0x61, 1); // generations 1, 2 (create), 3
     let original = sim.handle.durable_bytes();
     let copy_at = original.len() - SLOT_SIZE;
-    let (file, _) = writable(&with_bytes(&sim, |_| {})).expect("clean");
-    let block0 = file.block_offset(0).expect("block") as usize;
-    drop(file);
-    let zero_slot = |b: &mut Vec<u8>| b[..SLOT_SIZE].fill(0);
+    let slot3 = slot_offset(3) as usize;
 
-    // Intact copy: roll-forward, slot repaired, and the next commit keeps the
-    // acknowledged generation-2 data.
     let mut bytes = original.clone();
-    zero_slot(&mut bytes);
+    damage(&mut bytes, slot3, Damage::Zero);
     let after = check_open(
-        "blank slot, copy intact",
+        "zeroed slot, copy intact",
         &bytes,
         &snaps,
-        Want::Open(2, OpenClass::RolledForward),
-        Want::Open(2, OpenClass::RolledForward),
+        Want::Open(3, OpenClass::RolledForward),
+        Want::Open(3, OpenClass::RolledForward),
     );
     assert_eq!(after, original);
     let h = FaultHandle::new(&bytes, 21);
@@ -1094,47 +1163,104 @@ fn first_generation_blank_slot_candidate_rules() {
     assert_eq!(
         snap.get(1),
         snaps[1].get(1),
-        "generation-2 block 1 survives"
+        "acknowledged block 1 survives"
     );
     assert_eq!(snap.len(), snaps[1].len());
 
-    // Copy gone: nothing to adopt; opens as generation 1 and writes nothing
-    // (no repair, no truncation) so the evidence is still on media.
-    let mut bytes = original.clone();
-    zero_slot(&mut bytes);
-    bytes[copy_at + 20] ^= 1;
-    let h = FaultHandle::new(&bytes, 22);
-    let (_, _, report) = do_writable(&h).expect("open");
-    assert_eq!(report.class(), OpenClass::UnfinishedCandidate);
-    assert!(report.tail_len > 0);
-    assert_eq!(h.next_ordinal(), 0);
-    assert_eq!(h.volatile_bytes(), bytes);
-
-    // Copy valid but its data damaged, slot blank: a crash before barrier 1
-    // can leave exactly this, so generation 1 opens (and nothing is written).
-    let mut bytes = original.clone();
-    zero_slot(&mut bytes);
-    bytes[block0 + 3] ^= 0x80;
-    let h = FaultHandle::new(&bytes, 23);
-    let (g, _, report) = do_writable(&h).expect("open");
-    assert_eq!((g, report.class()), (1, OpenClass::UnfinishedCandidate));
-    assert_eq!(h.next_ordinal(), 0);
-    assert_eq!(h.volatile_bytes(), bytes);
-
-    // The same damage behind a *damaged* slot is a refusal: the copy proves
-    // the candidate was complete on media, so this is corruption, not a crash
-    // state, and neither access mode falls back to generation 1.
-    let mut bytes = original.clone();
-    bytes[20] ^= 1;
-    bytes[block0 + 3] ^= 0x80;
-    let h = FaultHandle::new(&bytes, 24);
-    for result in [do_writable(&h), do_salvage(&h)] {
-        assert!(
-            matches!(result, Err(CowError::BlockCorrupt { .. })),
-            "{:?}",
-            result.map(|r| r.0)
+    for how in DAMAGES {
+        let mut bytes = original.clone();
+        damage(&mut bytes, slot3, Damage::Zero);
+        damage(&mut bytes, copy_at, how);
+        check_open(
+            &format!("zeroed slot, copy {how:?}"),
+            &bytes,
+            &snaps,
+            Want::DamagedOther(2),
+            Want::Open(2, OpenClass::PossibleLostCommit),
         );
     }
-    assert_eq!(h.next_ordinal(), 0);
-    assert_eq!(h.volatile_bytes(), bytes, "refused open wrote");
+
+    // The same zeroing of a freshly created file has nothing to lose: it is an
+    // unfinished create, and neither mode shows a state.
+    let (created, snaps0) = history(0x62, 0);
+    let mut bytes = created.handle.durable_bytes();
+    damage(&mut bytes, slot_offset(2) as usize, Damage::Zero);
+    check_open(
+        "zeroed slot of a created file",
+        &bytes,
+        &snaps0,
+        Want::Incomplete,
+        Want::NoRoot,
+    );
+}
+
+/// For a confirmed generation `k` (2 is the created file), damage or zero any
+/// one or two of the sectors that carry its root (slot 0, slot 1, the root
+/// copy when the file has one). A writable open either refuses or returns a
+/// state no older than `k`; a read-only open may show an older generation only
+/// with `possible_lost_commit` set. Nothing the open returns is ever a mixture.
+#[test]
+fn damage_to_one_or_two_root_sectors_never_yields_an_older_writable_state() {
+    let (mut refused, mut opened, mut flagged) = (0u32, 0u32, 0u32);
+    for k in 2..=5u64 {
+        let (sim, snaps) = history(0xD0 + k, k - 2);
+        let original = sim.handle.durable_bytes();
+        let mut carriers = vec![0usize, SLOT_SIZE];
+        if original.len() > HEADER_LEN as usize {
+            carriers.push(original.len() - SLOT_SIZE);
+        }
+        for mask in 1u32..(1 << carriers.len()) {
+            if mask.count_ones() > 2 {
+                continue;
+            }
+            for how in DAMAGES {
+                let mut bytes = original.clone();
+                for (i, &at) in carriers.iter().enumerate() {
+                    if mask & (1 << i) != 0 {
+                        damage(&mut bytes, at, how);
+                    }
+                }
+                let label = format!("k={k} mask={mask:#b} {how:?}");
+                let snap_ok =
+                    |g: u64, snap: &Snap| snaps.get(g.saturating_sub(2) as usize) == Some(snap);
+
+                let h = FaultHandle::new(&bytes, 31);
+                if let Ok((g, snap, r)) = do_salvage(&h) {
+                    assert!(snap_ok(g, &snap), "{label}: salvage state is a mixture");
+                    if g < k {
+                        assert!(r.possible_lost_commit, "{label}: silent older state");
+                        flagged += 1;
+                    }
+                }
+                assert_eq!(h.next_ordinal(), 0, "{label}: salvage wrote");
+                assert_eq!(h.volatile_bytes(), bytes, "{label}: salvage changed bytes");
+
+                let h = FaultHandle::new(&bytes, 32);
+                match do_writable(&h) {
+                    Ok((g, snap, r)) => {
+                        assert!(g >= k, "{label}: writable open returned generation {g}");
+                        assert!(snap_ok(g, &snap), "{label}: writable state is a mixture");
+                        assert!(!r.possible_lost_commit, "{label}");
+                        if r.class() == OpenClass::UnfinishedCandidate {
+                            assert!(
+                                matches!(r.other_slot, SlotState::Valid { .. }),
+                                "{label}: UnfinishedCandidate with {:?}",
+                                r.other_slot
+                            );
+                        }
+                        opened += 1;
+                    }
+                    Err(_) => {
+                        assert_eq!(h.next_ordinal(), 0, "{label}: refusal wrote");
+                        assert_eq!(h.volatile_bytes(), bytes, "{label}: refusal changed bytes");
+                        refused += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        refused > 0 && opened > 0 && flagged > 0,
+        "{refused}/{opened}/{flagged}"
+    );
 }

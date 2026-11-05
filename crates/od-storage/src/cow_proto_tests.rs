@@ -290,7 +290,9 @@ fn observe_open(handle: &FaultHandle) -> Opened {
             Ok(snap) => (Observed::State(snap), Some(file), Some(report)),
             Err(e) => (Observed::Refused(format!("{e:?}")), None, None),
         },
-        Err(CowError::NoValidRoot { .. }) => (Observed::NoFile, None, None),
+        Err(CowError::NoValidRoot { .. } | CowError::IncompleteCreate { .. }) => {
+            (Observed::NoFile, None, None)
+        }
         Err(e) => (Observed::Refused(format!("{e:?}")), None, None),
     }
 }
@@ -409,7 +411,7 @@ fn ack_then_crash_open_returns_acked_snapshot() {
         let storage = sim.storage();
         sim.file = None;
         let (file, report) = CowFile::open(storage).expect("writable open");
-        assert_eq!(file.generation(), 3);
+        assert_eq!(file.generation(), 4); // create = 2, two commits
         assert!(
             !report.possible_lost_commit && !report.rolled_forward,
             "{report:?}"
@@ -472,7 +474,6 @@ fn every_cut_point_leaves_old_or_new_never_mixed() {
                         .iter()
                         .map(|&i| (i, block(&mut rng)))
                         .collect();
-                    let first_commit = shape.prior == 0;
                     let acked = sim.commit(&writes, Some((k as u64, fault)));
 
                     // No ack unless the commit really went through.
@@ -492,14 +493,9 @@ fn every_cut_point_leaves_old_or_new_never_mixed() {
                         // Acked: the oracle has no transaction in flight, and
                         // it already required the exact acked snapshot.
                         &[Outcome::Before]
-                    } else if k <= b1 && !first_commit {
+                    } else if k <= b1 {
                         // Root not written yet: the transaction cannot be visible.
                         &[Outcome::Before]
-                    } else if k <= b1 {
-                        // First commit: slot 0 is blank, so a complete candidate
-                        // (copy durable or kept) is adopted by roll-forward;
-                        // anything less is ignored.
-                        &[Outcome::Before, Outcome::After]
                     } else if k == b2 && fault == Fault::Flush(FlushFault::IoAfterDurable) {
                         &[Outcome::After]
                     } else {
@@ -515,7 +511,7 @@ fn every_cut_point_leaves_old_or_new_never_mixed() {
                     if report.possible_lost_commit {
                         sim.fail(&format!("cut {label}: possible_lost_commit"));
                     }
-                    if is_failing(fault) && k <= b1 && !first_commit && report.rolled_forward {
+                    if is_failing(fault) && k <= b1 && report.rolled_forward {
                         sim.fail(&format!(
                             "cut {label}: crash before barrier 1 rolled forward"
                         ));
@@ -537,9 +533,7 @@ fn every_cut_point_leaves_old_or_new_never_mixed() {
                         if torn_deep && policy == CrashPolicy::KeepPending && !rolled {
                             sim.fail(&format!("cut {label}: kept torn root not rolled forward"));
                         }
-                    } else if report.rolled_forward && !first_commit {
-                        // (first commit: a complete candidate beside the blank
-                        // slot 0 is adopted whenever its copy is on media)
+                    } else if report.rolled_forward {
                         sim.fail(&format!("cut {label}: unexpected roll-forward"));
                     }
                     let entry = summary.entry(label).or_default();
@@ -588,7 +582,10 @@ fn create_cut_points_give_no_file_or_empty_file() {
             .map(|(_, k)| k)
             .collect::<Vec<_>>()
     };
-    assert_eq!(ops, [OpKind::SetLen, OpKind::Write, OpKind::Flush]);
+    assert_eq!(
+        ops,
+        [OpKind::SetLen, OpKind::Write, OpKind::Write, OpKind::Flush]
+    );
     for (k, kind) in ops.iter().enumerate() {
         for fault in faults_for(*kind) {
             for policy in policies() {
@@ -643,7 +640,7 @@ pub(crate) fn salvage(
 /// flagged and without writing a byte.
 #[test]
 fn corrupted_active_root_rolls_forward_or_refuses_never_silent() {
-    let (sim, snaps) = history(0xC0, 3); // generations 1..=4, active = slot 0
+    let (sim, snaps) = history(0xC0, 2); // generations 1..=4, active = slot 0
     let last = snaps.last().cloned().expect("history");
     let previous = snaps[snaps.len() - 2].clone();
     let active = slot_offset(4) as usize;
@@ -1176,9 +1173,6 @@ fn oracle_detects_a_backend_that_acks_without_durability() {
     let mut sim = Sim::new(0xBAD, CommitOrder::Correct);
     let mut rng = SplitMix64(9);
     assert!(sim.create(None));
-    // A first commit that is durable: with a blank slot 0 a lost root of
-    // generation 2 would be rolled forward from its copy and mask the lie.
-    assert!(sim.commit(&[(0, block(&mut rng))], None));
     let ops = tx_ops(CommitOrder::Correct, 1);
     let b2 = (ops.len() - 1) as u64;
     let writes = vec![(0, block(&mut rng))];

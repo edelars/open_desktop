@@ -252,11 +252,55 @@ fn valid_image_matches_independent_description() {
     );
 }
 
+/// What `create` followed by one commit of `n` blocks must leave on media,
+/// written down independently of the prototype: slot 0 holds the empty
+/// generation 2 and slot 1 the new generation 3, whose root copy ends the file.
+fn build_created_then_committed(n: usize, block: impl Fn(usize) -> [u8; 512]) -> Vec<u8> {
+    let mut img = build(n, block, true);
+    // Re-seal as generation 3 in slot 1; slot 0 becomes the empty generation 2.
+    let slot3 = {
+        let mut s = img[0..512].to_vec();
+        put_u64(&mut s, 16, 3);
+        let crc = ref_crc(&s[..508]);
+        put_u32(&mut s, 508, crc);
+        s
+    };
+    let end = img.len();
+    img[512..1024].copy_from_slice(&slot3);
+    img[end - 512..].copy_from_slice(&slot3);
+    img[0..512].copy_from_slice(&slot_bytes(&SlotSpec {
+        generation: 2,
+        block_count: 0,
+        map_offset: 1024,
+        map_crc: 0,
+        end_offset: 1024,
+    }));
+    img
+}
+
 #[test]
 fn prototype_writer_output_equals_hand_built_image() {
     let handle = FaultHandle::new(&[], 0x5909);
     let storage = CheckedStorage::new(handle.open()).expect("caps");
     let (mut file, _ack) = CowFile::create(storage).expect("create");
+    // Created file: two empty roots, generation 2 in slot 0, 1 in slot 1.
+    let mut created = vec![0u8; 1024];
+    created[0..512].copy_from_slice(&slot_bytes(&SlotSpec {
+        generation: 2,
+        block_count: 0,
+        map_offset: 1024,
+        map_crc: 0,
+        end_offset: 1024,
+    }));
+    created[512..1024].copy_from_slice(&slot_bytes(&SlotSpec {
+        generation: 1,
+        block_count: 0,
+        map_offset: 1024,
+        map_crc: 0,
+        end_offset: 1024,
+    }));
+    assert_eq!(handle.durable_bytes(), created);
+
     let blocks: Vec<[u8; 512]> = (0..3).map(pat).collect();
     let writes: Vec<(u64, &[u8])> = blocks
         .iter()
@@ -265,10 +309,12 @@ fn prototype_writer_output_equals_hand_built_image() {
         .collect();
     let _ack = file.commit(&writes).expect("commit");
     let proto_bytes = handle.durable_bytes();
-    assert_eq!(proto_bytes, baseline());
+    assert_eq!(proto_bytes, build_created_then_committed(3, pat));
 
     // The prototype's own reader agrees with the strict parser.
-    let parsed = parse0(&proto_bytes).expect("strict parse");
+    let parsed =
+        parse_committed(&proto_bytes[..], 1, &CUR, Access::ReadOnly).expect("strict parse");
+    assert_eq!(parsed.root.generation, 3);
     let (view, report) =
         CowView::salvage(CheckedStorage::new(handle.open()).expect("caps")).expect("salvage");
     assert_eq!(report.generation, parsed.root.generation);

@@ -49,13 +49,16 @@
 //!
 //! # Create
 //!
-//! `create` needs an empty backend. It sizes the file to the header, writes the
-//! generation-1 root into slot 1 (slot 0, the notional generation 0, stays
-//! blank) and issues one durable barrier; only its [`DurableAck`] is returned.
-//! Before that ack a crash leaves either no valid root ([`CowError::NoValidRoot`],
-//! with the slot states telling "never written" from "torn first root") or the
-//! complete empty state of generation 1; nothing else. After the ack the empty
-//! state of generation 1 always opens.
+//! `create` needs an empty backend. It sizes the file to the header, writes an
+//! empty generation-1 root into slot 1 and an empty generation-2 root into
+//! slot 0, and issues one durable barrier; only its [`DurableAck`] is
+//! returned. The first user commit is generation 3. Before the ack a crash
+//! leaves, per slot, blank / torn / written: both roots valid is the clean
+//! generation-2 state; exactly one valid empty root in a header-sized file is
+//! an unfinished create ([`CowError::IncompleteCreate`] for a writable open,
+//! [`CowError::NoValidRoot`] read-only); no valid root is `NoValidRoot`.
+//! Because both slots are populated from the start, a blank slot is never
+//! normal afterwards.
 //!
 //! # Recovery and root selection
 //!
@@ -70,26 +73,18 @@
 //! [`CowError::GenerationConflict`]; no tie-break is attempted.
 //!
 //! The valid root with the highest generation `N` is selected. The other slot
-//! must be blank (only for `N == 1`) or hold generation `N - 1`; anything else
-//! is [`CowError::RootInconsistent`]. If the other slot is blank for `N >= 2`
-//! or damaged, recovery looks at the last sector of the file: a root there that
-//! parses, has generation `N + 1` and `end_offset == file size` is the copy
-//! stored before barrier 1, so the candidate was complete on media and the
-//! damaged slot is its torn root write (or bit-rot of it). Recovery **rolls
-//! forward** to it; a writable open first rewrites the copy into the damaged
-//! slot and flushes. Without such a copy the damage is unexplained. The map and
-//! **every** referenced block are verified against their CRCs afterwards (the
-//! whole reachable graph of this format); a failure is a refusal, never a
-//! fallback to the other slot and never zero-fill. No valid root is a refusal.
-//!
-//! The same copy lookup runs when `N == 1`, the other slot is blank and the
-//! file has a tail: a complete verified candidate of generation 2 is adopted
-//! (roll-forward), so a lost generation-2 root cannot be overwritten by the
-//! next commit. A tail without such a copy is an unfinished candidate (crash
-//! before barrier 1) and cannot be told from a zeroed generation-2 slot whose
-//! copy is also gone; that case opens as generation 1 with
-//! [`OpenClass::UnfinishedCandidate`] (documented limit, not refused, because
-//! it is a legal crash state of the first commit).
+//! must hold generation `N - 1`; anything else valid is
+//! [`CowError::RootInconsistent`]. If the other slot is blank or damaged
+//! (except the unfinished create above), recovery looks at the last sector of
+//! the file: a root there that parses, has generation `N + 1` and
+//! `end_offset == file size` is the copy stored before barrier 1, so the
+//! candidate was complete on media and the damaged slot is its torn root write
+//! (or bit-rot of it). Recovery **rolls forward** to it; a writable open first
+//! rewrites the copy into the damaged slot and flushes. Without such a copy
+//! the damage is unexplained. The map and **every** referenced block are
+//! verified against their CRCs afterwards (the whole reachable graph of this
+//! format); a failure is a refusal, never a fallback to the other slot and
+//! never zero-fill. No valid root is a refusal.
 //!
 //! A rolled-forward candidate is verified completely like any root: if its
 //! map or blocks are damaged the open is refused, not shown as `N` with a
@@ -137,6 +132,9 @@ pub const BLOCK_SIZE: usize = 512;
 pub const SLOT_SIZE: usize = 512;
 /// Bytes before the append-only area.
 pub const HEADER_LEN: u64 = 2 * SLOT_SIZE as u64;
+/// Generation of the empty state `create` leaves behind; generation 1 is its
+/// companion in the other slot.
+pub const CREATE_GENERATION: u64 = 2;
 /// Prototype limit on logical blocks; bounds allocations driven by a root.
 pub const MAX_BLOCKS: u64 = 1 << 16;
 /// Prototype limit on the blocks one transaction may write (dirty state). A
@@ -301,6 +299,12 @@ impl OpenReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CowError {
     Storage(StorageError),
+    /// A create that was never acknowledged: exactly one slot holds an empty
+    /// root, the file is header-sized, and nothing else exists. Only a
+    /// writable open reports this; a read-only open sees `NoValidRoot`.
+    IncompleteCreate {
+        slots: [SlotState; 2],
+    },
     /// No slot holds a valid root (also: file shorter than the header).
     NoValidRoot {
         slots: [SlotState; 2],
@@ -539,13 +543,10 @@ struct Selection {
     chosen: RootRecord,
     /// State of the slot that does not hold `chosen`.
     other_slot: SlotState,
-    /// The other slot is damaged or unexpectedly blank.
+    /// The other slot is damaged or blank.
     damaged: bool,
     /// Root copy of `chosen.generation + 1` that explains the damage.
     forward: Option<RootRecord>,
-    /// `forward` was found next to a blank slot of generation 1 rather than
-    /// next to a damaged slot, so nothing proves the candidate was complete.
-    speculative: bool,
 }
 
 fn select_root<S: Source + ?Sized>(
@@ -596,19 +597,20 @@ fn select_root<S: Source + ?Sized>(
             "valid slots are not consecutive generations",
         ));
     }
-    // Blank is normal only for the first generation.
-    let damaged = match other_slot {
-        SlotState::Damaged => true,
-        SlotState::Blank => chosen.generation >= 2,
-        SlotState::Valid { .. } => false,
-    };
-    // The first generation is the one place where a blank other slot is
-    // normal, so a lost root of generation 2 looks the same as a never
-    // published one. A complete, verified candidate in the tail is adopted in
-    // both cases: adopting it is a legal outcome of an unacknowledged commit
-    // and the only safe one for an acknowledged commit whose root was lost.
-    let blank_first = chosen.generation == 1 && other_slot == SlotState::Blank;
-    let forward = if damaged || (blank_first && size > chosen.end_offset) {
+    // A lone root of an empty, header-sized file is an unfinished `create`
+    // (both roots share one barrier): nothing was ever acknowledged.
+    if !matches!(other_slot, SlotState::Valid { .. })
+        && chosen.generation <= CREATE_GENERATION
+        && chosen.block_count == 0
+        && chosen.end_offset == HEADER_LEN
+        && size == HEADER_LEN
+    {
+        return Err(CowError::IncompleteCreate { slots: states });
+    }
+    // Both slots are always populated after `create`, so a blank other slot
+    // is damage like any other (a root that rotted to zeros or never landed).
+    let damaged = !matches!(other_slot, SlotState::Valid { .. });
+    let forward = if damaged {
         find_root_copy(src, size, &chosen, other_index, caps, access)?
     } else {
         None
@@ -618,7 +620,6 @@ fn select_root<S: Source + ?Sized>(
         other_slot,
         damaged,
         forward,
-        speculative: blank_first && !damaged,
     })
 }
 
@@ -712,7 +713,13 @@ impl<B: StorageBackend> CowView<B> {
             });
         }
         let src = StorageSource(&storage);
-        let selection = select_root(&src, size, caps, access)?;
+        let selection = match select_root(&src, size, caps, access) {
+            // Read-only: an unfinished create has no state to show.
+            Err(CowError::IncompleteCreate { slots }) if access == Access::ReadOnly => {
+                return Err(CowError::NoValidRoot { slots });
+            }
+            other => other?,
+        };
         // Eager verification: the map and every referenced block must read
         // and match their CRCs. Failure refuses the open; the other slot is
         // not consulted.
@@ -729,19 +736,10 @@ impl<B: StorageBackend> CowView<B> {
             Ok(map)
         };
         // A candidate behind a damaged slot is complete on media (the copy was
-        // flushed before the root write), so damage in it is a refusal. Next
-        // to a blank first-generation slot nothing proves that: a crash
-        // before barrier 1 may keep the copy without its data. Only there an
-        // unverifiable candidate is ignored and generation 1 is opened.
+        // flushed before the root write), so damage in it is a refusal, never
+        // a fallback to the chosen root.
         let (repair, root, map) = match selection.forward {
-            Some(copy) => match load(&copy) {
-                Ok(map) => (Some(copy), copy, map),
-                Err(CowError::Storage(e)) => return Err(CowError::Storage(e)),
-                Err(_) if selection.speculative => {
-                    (None, selection.chosen, load(&selection.chosen)?)
-                }
-                Err(e) => return Err(e),
-            },
+            Some(copy) => (Some(copy), copy, load(&copy)?),
             None => (None, selection.chosen, load(&selection.chosen)?),
         };
         let report = OpenReport {
@@ -845,19 +843,23 @@ impl<B: StorageBackend> Deref for CowFile<B> {
 }
 
 impl<B: StorageBackend> CowFile<B> {
-    /// Creates an empty file (generation 1, zero blocks) over an empty
+    /// Creates an empty file (generation 2, zero blocks) over an empty
     /// backend. Until the returned ack exists the file may not open at all.
     pub fn create(mut storage: CheckedStorage<B>) -> Result<(Self, DurableAck), CowError> {
         if storage.size()? != 0 {
             return Err(CowError::BadWrite("create needs an empty backend"));
         }
         storage.set_len(HEADER_LEN)?;
-        let root = new_root(1, 0, HEADER_LEN, crc32(&[]), HEADER_LEN);
-        storage.write_all_at(slot_offset(1), &encode_root(&root))?;
+        // Two empty roots under one barrier; the first user commit is
+        // generation 3. Neither root alone is a created file.
+        for generation in [CREATE_GENERATION - 1, CREATE_GENERATION] {
+            let root = new_root(generation, 0, HEADER_LEN, crc32(&[]), HEADER_LEN);
+            storage.write_all_at(slot_offset(generation), &encode_root(&root))?;
+        }
         let ack = storage.flush_file_durable()?;
         let view = CowView {
             storage,
-            generation: 1,
+            generation: CREATE_GENERATION,
             map: Vec::new(),
             map_offset: HEADER_LEN,
             end_offset: HEADER_LEN,
