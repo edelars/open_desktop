@@ -63,7 +63,11 @@
     "worktree_nodes": 24715,
     "worktree_edges": 63726,
     "worktree_communities": 834,
-    "global_graph_updated": false
+    "global_graph_updated": true,
+    "global_nodes": 26066,
+    "global_edges": 65462,
+    "global_communities": 952,
+    "layout_check": "passed"
   },
   "issue_054": "open",
   "parent_s4_11": "open",
