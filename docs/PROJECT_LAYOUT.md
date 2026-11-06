@@ -64,7 +64,7 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 | Сборочная orchestration и генерация | `tools/build/` |
 | Запуск и обработка benchmarks | `tools/bench/` |
 | Межкомпонентные CPU/system/compat сценарии | `tests/cpu/`, `tests/system/`, `tests/compat/` |
-| Небольшие собственные тестовые данные | `tests/fixtures/x86/`, `tests/fixtures/guest/` |
+| Небольшие собственные тестовые данные | `tests/fixtures/x86/`, `tests/fixtures/guest/` (в том числе `tests/fixtures/guest/stage10/` для дисплея этапа 10) |
 | Планы реализации | `docs/plans/` |
 | Найденные недоделки и проблемы, не устранённые в ходе задачи | `docs/KNOWN_ISSUES.md` |
 | Контракты CPU/платы/требований, обзоры ABI/протоколов | `docs/specs/` |
@@ -94,6 +94,8 @@ x86_64 harness S2-39k размещены в
 raw evidence остаётся в ignored `work/stage2/s2-39k-acceptance-20261104-01/`.
 Harness не меняет native fixture admission. Linux native A/B/A/B прошёл;
 raw `execution_kind=unknown`, отдельная physical acceptance остаётся открытой.
+
+Документы этапа 10 ([план](plans/STAGE_10.md)): контракт дисплейного устройства `specs/DISPLAY_DEVICE.md`, host ABI `specs/DISPLAY_HOST_ABI_V1.md`, транспорт кадров `../protocols/control/FRAME_TRANSPORT_V1.md`, протокол display-only драйвера `../protocols/guest/DISPLAY_DRIVER_V1.md`, host C ABI `../include/open_desktop/display_abi_v1.h`, транспорт ввода `../protocols/control/INPUT_TRANSPORT_V1.md`, методика `testing/DISPLAY.md`, отчёт `reports/STAGE_10_REPORT.md`. Файлы, которых ещё нет, создаёт соответствующая задача S10-NN; пока файла нет, его описание в плане не означает реализацию.
 
 Не копировать одну реализацию в несколько этих мест. Например, disk parser — в `od-storage`, а `image-tool` лишь использует его; x86 interpreter — в `od-isa`, а `runner` управляет запуском.
 
