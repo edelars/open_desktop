@@ -1,4 +1,4 @@
-//! Opt-in one-instruction Long64 MOV bridge through the uncached RAM walker.
+//! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
 use crate::{
     GuestLinearAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus, RamAccessOperation,
@@ -6,12 +6,15 @@ use crate::{
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
+    InvlpgExit, InvlpgLong64V1, InvlpgResult, RunExit, RunInputError, RunResult,
+    step_invlpg as cpu_step_invlpg, step_paged_mov as cpu_step_paged_mov,
+};
+use od_isa::execute::{
     PagedMovCrossPageDwordReadLong64V1, PagedMovCrossPageWordFetchLong64V1,
     PagedMovCrossPageWordReadLong64V1, step_paged_mov_dword_read as cpu_step_paged_mov_dword_read,
     step_paged_mov_word_read as cpu_step_paged_mov_word_read,
     step_paged_mov_word_read_cross_page_fetch as cpu_step_paged_mov_word_read_cross_page_fetch,
 };
-use od_isa::execute::{RunExit, RunInputError, RunResult, step_paged_mov as cpu_step_paged_mov};
 use od_isa::memory::{AccessContext, GuestMemory, MemoryError, PageFaultRecord};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,6 +30,71 @@ pub struct PagedMovStepReport {
     pub page_fault: Option<PageFaultRecord>,
     /// Retains non-architectural walker/backend classifications.
     pub memory_error: Option<TrackedAccessError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedInvlpgStepReport {
+    pub cpu: InvlpgResult,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains the original tracked-walker classification, including faults.
+    pub access_error: Option<TrackedAccessError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedInvlpgStepError {
+    Configuration(crate::ProbeConfigError),
+}
+
+/// Execute exactly one `INVLPG [RBX]` step through tracked physical RAM fetches.
+/// The CPU profile owns decode and retirement semantics; this adapter only
+/// supplies the fixed paging snapshot and forwards committed walker writes.
+pub fn step_paged_invlpg(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedInvlpgStepReport, PagedInvlpgStepError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedInvlpgStepError::Configuration)?;
+    let instruction_rip = state.rip;
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: true,
+        reject_crossing_qword: false,
+        read_only_qword: false,
+    };
+    let cpu = cpu_step_invlpg(
+        InvlpgLong64V1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    );
+    // A fetch fault may follow committed page-walker A/D writes. Keep those
+    // callbacks observable. Rejected inputs are refused before the first fetch.
+    let report = PagedInvlpgStepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+    };
+    debug_assert!(matches!(report.cpu.exit, InvlpgExit::Fault(_)) || report.page_fault.is_none());
+    Ok(report)
 }
 
 /// Result of one synchronous JIT invocation against the tracked paged adapter.
@@ -371,9 +439,7 @@ impl PagedMovMemoryAdapter<'_> {
         match report.outcome {
             Ok(outcome) => Ok(outcome),
             Err(error) => {
-                if self.capture_effects {
-                    self.access_error = Some(error.clone());
-                }
+                self.access_error = Some(error.clone());
                 Err(self.map_access_error(error))
             }
         }
@@ -542,6 +608,7 @@ mod tests {
         RamLimits,
     };
     use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+    use od_isa::{CpuActivity, InvlpgExit, StiShadow, TranslationInvalidation};
 
     const CR0: u64 = 0x8001_0033;
     const CR4: u64 = 1 << 5;
@@ -611,6 +678,198 @@ mod tests {
             reject_crossing_qword: false,
             read_only_qword: false,
         }
+    }
+
+    fn invlpg_state(target: u64) -> LongModeState {
+        let mut state = LongModeState {
+            rip: DATA_LINEAR,
+            cr0: Some(CR0),
+            cr3: Some(ROOT),
+            cr4: Some(CR4),
+            activity: Some(CpuActivity::Running),
+            sti_shadow: Some(StiShadow::Clear),
+            ..LongModeState::default()
+        };
+        state.gpr[od_isa::Register::Rbx as usize] = target;
+        state
+    }
+
+    fn install_invlpg(bus: &mut MachineBus) {
+        put(bus, 0x7000, 0x0000_0000_003b_010f);
+    }
+
+    #[test]
+    fn step_paged_invlpg_retires_exact_linear_operand_and_forwards_ad_writes() {
+        let mut bus = bus(0x7007);
+        install_invlpg(&mut bus);
+        let target = 0x0000_1234_5678_9abc;
+        let mut state = invlpg_state(target);
+        let mut callbacks = Vec::new();
+
+        let report = step_paged_invlpg(
+            &mut state,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            od_isa::INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.cpu.exit,
+            InvlpgExit::TranslationInvalidation(TranslationInvalidation::Invlpg {
+                linear_address: target,
+            })
+        );
+        assert_eq!(report.cpu.instructions_executed, 1);
+        assert_eq!(report.cpu.rflags_defined, od_isa::INTEGER_FLAGS);
+        assert_eq!(state.rip, DATA_LINEAR + 3);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.access_error, None);
+        assert_eq!(
+            callbacks,
+            [range(0x1000), range(0x2000), range(0x3020), range(0x5000)]
+        );
+    }
+
+    #[test]
+    fn step_paged_invlpg_noncanonical_operand_retires_without_invalidation() {
+        let mut bus = bus(0x7007);
+        install_invlpg(&mut bus);
+        let mut state = invlpg_state(0x0000_8000_0000_0000);
+        let mut callbacks = Vec::new();
+
+        let report = step_paged_invlpg(
+            &mut state,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            od_isa::INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert_eq!(report.cpu.exit, InvlpgExit::Retired);
+        assert_eq!(report.cpu.instructions_executed, 1);
+        assert_eq!(state.rip, DATA_LINEAR + 3);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.access_error, None);
+        assert_eq!(
+            callbacks,
+            [range(0x1000), range(0x2000), range(0x3020), range(0x5000)]
+        );
+    }
+
+    #[test]
+    fn step_paged_invlpg_rejection_does_not_fetch_or_change_cpu_state() {
+        let mut bus = bus(0x7007);
+        install_invlpg(&mut bus);
+        let mut state = invlpg_state(0x1234);
+        let before = state.clone();
+        let mut callbacks = Vec::new();
+
+        let report = step_paged_invlpg(
+            &mut state,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            1 << 63,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.cpu.exit,
+            InvlpgExit::Rejected(od_isa::PagedProbeRejection::InvalidRflagsDefined {
+                value: 1 << 63,
+            })
+        );
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.access_error, None);
+        assert!(callbacks.is_empty());
+    }
+
+    #[test]
+    fn step_paged_invlpg_privilege_fault_preserves_completed_fetch_ad_callbacks() {
+        let mut bus = bus(0x7007);
+        install_invlpg(&mut bus);
+        let mut state = invlpg_state(0x1234);
+        let mut callbacks = Vec::new();
+        let user_context = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..context()
+        };
+
+        let report = step_paged_invlpg(
+            &mut state,
+            &mut bus,
+            ROOT,
+            EFER,
+            user_context,
+            od_isa::INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.cpu.exit,
+            InvlpgExit::Fault(od_isa::memory::ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(state.rip, DATA_LINEAR);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.access_error, None);
+        assert_eq!(
+            callbacks,
+            [range(0x1000), range(0x2000), range(0x3020), range(0x5000)]
+        );
+    }
+
+    #[test]
+    fn step_paged_invlpg_fetch_fault_preserves_record_and_prior_ad_callbacks() {
+        let mut bus = bus(0);
+        let mut state = invlpg_state(0x1234);
+        let before = state.clone();
+        let mut callbacks = Vec::new();
+
+        let report = step_paged_invlpg(
+            &mut state,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            od_isa::INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        let record = report
+            .page_fault
+            .as_ref()
+            .expect("tracked fetch page fault");
+        assert_eq!(record.saved_rip(), DATA_LINEAR);
+        assert_eq!(record.cr2_value(), DATA_LINEAR);
+        assert_eq!(record.fault().vector, 14);
+        assert_eq!(record.fault().error_code, Some(0x10));
+        assert!(matches!(report.cpu.exit, InvlpgExit::Fault(ref fault) if fault == record.fault()));
+        assert!(matches!(
+            report.access_error,
+            Some(TrackedAccessError::PageFault { record: ref error_record, .. })
+                if error_record == record
+        ));
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(callbacks, [range(0x1000), range(0x2000), range(0x3020)]);
     }
 
     #[test]

@@ -1,0 +1,84 @@
+{
+  "stage": 4,
+  "slice": "S4-16e",
+  "title": "Retired INVLPG resets inactive aliased-code admission after remap",
+  "date": "2026-11-06",
+  "status": "accepted_after_independent_review",
+  "scope": {
+    "vcpus": 1,
+    "paging": "fixed Long64 snapshot",
+    "code_backing_pages": 1,
+    "aliases": 2,
+    "native_blocks_active_during_invalidation": false
+  },
+  "machine_api": {
+    "step": "step_paged_invlpg",
+    "isa_profile": "od-isa::step_invlpg",
+    "memory": "tracked RAM fetch",
+    "reported_effects": [
+      "exact INVLPG linear address and retirement result",
+      "committed page-walker A/D write ranges",
+      "architectural page fault and tracked walker error"
+    ]
+  },
+  "host_api": {
+    "operation": "PagedCodeSession::execute_invlpg",
+    "reconcile_fetch_writes_before_error": true,
+    "reset_trigger": "one retired canonical TranslationInvalidation effect",
+    "reset_effect": [
+      "clear both idle alias entries",
+      "release backing page binding",
+      "release code range binding",
+      "release alias bindings"
+    ],
+    "conservative_two_alias_reset": true
+  },
+  "checks": [
+    {
+      "command": "cargo test -p od-machine --lib --offline",
+      "result": "passed",
+      "passed": 111,
+      "failed": 0
+    },
+    {
+      "command": "cargo test -p od-host --lib --offline s4_16 -- --test-threads=1",
+      "result": "passed",
+      "passed": 6,
+      "failed": 0,
+      "coverage": [
+        "S4-16a",
+        "S4-16b",
+        "S4-16c",
+        "S4-16d",
+        "S4-16e"
+      ]
+    },
+    {
+      "command": "cargo check -p od-host --all-targets --offline",
+      "result": "passed_with_existing_warnings"
+    },
+    {
+      "command": "cargo fmt --all -- --check && git diff --check",
+      "result": "passed"
+    }
+  ],
+  "review": {
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "high",
+    "implementation": "no semantic defects found; host coverage findings were added and passed tests",
+    "documentation": "final independent review passed after three rounds of wording/evidence corrections"
+  },
+  "graphify": {
+    "updated": true,
+    "nodes": 26982,
+    "edges": 67556,
+    "communities": 990
+  },
+  "limitations": [
+    "No production TLB implementation",
+    "Any canonical retired INVLPG conservatively resets both idle cache entries",
+    "No cross-page code or general writer notification",
+    "No MMIO/DMA, SMP, or active-block retirement",
+    "No performance measurement or speed claim"
+  ]
+}

@@ -157,6 +157,33 @@ bit at `0x7010` before the write walk faults. The snapshot-failure fixture
 observes the root PML4 A bit at `0x7400` before the later missing-PDE fault. See the
 [S4-16d report](../reports/STAGE_4_S4-16D_2026-11-06.md).
 
+## Bounded tracked INVLPG execution (S4-16e)
+
+`step_paged_invlpg` executes the existing exact `od-isa::step_invlpg` through
+the RAM-only tracked fetch adapter. The callback reports each committed
+page-walker A/D range in order. `Ok(PagedInvlpgStepReport)` carries the exact
+CPU exit (including architectural fault or rejection), optional page-fault
+record, and tracked-access error; fetch effects remain observable when the
+instruction later raises an architectural fault. Rejected inputs are refused
+before fetch. This adapter does not model a production TLB.
+
+`PagedCodeSession::execute_invlpg` accepts the same fixed Long64 paging
+controls as the captured code session. It reconciles fetch callbacks before
+returning. Instruction faults and ISA rejections are carried in
+`Ok(result).step.cpu.exit`; a tracked fetch backend failure is carried in
+`Ok(result).step.access_error`. The `Err` path is reserved for adapter/session
+configuration errors. After exactly one retired canonical INVLPG effect, the
+bounded host session clears both idle native alias entries and releases its
+backing/range/alias binding, permitting fresh admission after remap. Any
+canonical effect conservatively resets both entries; noncanonical retirement
+and rejected/faulting inputs do not reset the binding. Guest code must still
+execute an INVLPG for each virtual alias.
+
+The scope remains one vCPU, one code page, two inactive aliases, and a fixed
+paging snapshot. Cross-page code, arbitrary writers, production TLB behavior,
+MMIO/DMA, SMP, and active-block retirement are outside this slice. See the
+[S4-16e report](../reports/STAGE_4_S4-16E_2026-11-06.md).
+
 ## Синхронная MMIO/PIO bus
 
 `MachineBus` переиспользует одну `MachineMemoryMap` и один `PhysicalMemory`;

@@ -689,6 +689,33 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - См. [S4-16d report](../reports/STAGE_4_S4-16D_2026-11-06.md) и
   [manifest](../reports/data/stage4/s4-16d-tracked-ad-callbacks-2026-11-06.json).
 
+#### S4-16e. Retired INVLPG сбрасывает inactive aliases после remap
+
+- `od-machine::step_paged_invlpg` исполняет ровно существующий bounded
+  `od-isa::step_invlpg` профиль через tracked RAM fetch и передаёт фактические
+  A/D callbacks, `PageFaultRecord` и исходную ошибку walker.
+- `PagedCodeSession::execute_invlpg` проверяет фиксированный Long64 paging
+  snapshot. После retired canonical invalidation effect он консервативно
+  очищает обе idle cache entries и сбрасывает backing/range/alias binding.
+  Запись PTE сама cache не очищает. Noncanonical retired INVLPG без
+  translation-effect и rejected input сохраняют session.
+- Проверено: два aliases исполняют старый immediate; remap leaf PTE меняет
+  backing, но сохраняет 2 cache entries; noncanonical и rejected INVLPG их не
+  очищают; отдельные исполненные INVLPG для A и B сбрасывают session; после
+  этого новый alias с другим смещением и длиной допускается к новой backing и
+  исполняет новый immediate с точным retirement/RIP. Machine callbacks
+  покрывают успешный fetch, noncanonical retirement, rejection, CPL3 #GP после
+  fetch и fetch #PF после A/D effects.
+  Все `od-machine` unit tests и S4-16a…e host tests проходят; Graphify обновлён.
+- **Граница:** это session cache reset после CPU invalidation effect, а не
+  production TLB. Любой canonical retired INVLPG в bounded session
+  консервативно очищает обе записи; архитектурные guest invalidations для двух
+  linear aliases всё равно исполняются отдельно. Cross-page code, общие
+  writers, production TLB, MMIO/DMA, SMP и active-block retirement остаются
+  открытыми; S4-16 и Stage 4 остаются открытыми.
+- См. [S4-16e report](../reports/STAGE_4_S4-16E_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-16e-invlpg-remap-2026-11-06.json).
+
 ### S4-17. Собрать локальный memory/fault differential набор
 
 - [ ] Принято после ревью.

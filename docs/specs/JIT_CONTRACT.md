@@ -4625,3 +4625,21 @@ missing-PDE fault. They do not imply TLB
 invalidation, mapping-change handling, cross-page code, or active-block
 retirement; parent S4-16 remains open. See the
 [S4-16d report](../reports/STAGE_4_S4-16D_2026-11-06.md).
+
+### S4-16e: retired INVLPG releases bounded aliased-code admission
+
+The host session can execute one exact `INVLPG [RBX]` between native calls
+through the tracked Long64 RAM fetch adapter. It reconciles fetch-time A/D
+writes before returning. Instruction faults and ISA rejections are carried in
+`Ok(result).step.cpu.exit`; tracked fetch backend failures are carried in
+`Ok(result).step.access_error`; `Err` is reserved for configuration errors. A
+retired canonical invalidation clears both inactive alias cache entries and
+releases the fixed backing, code-range, and alias binding so remapped code can
+be admitted. The session intentionally over-invalidates its two-entry cache
+for any canonical retired INVLPG effect; the guest still executes a separate
+architectural invalidation for each linear alias.
+
+The bounded S4-16e result has no production TLB, general remap notification,
+cross-page code, arbitrary writer, MMIO/DMA, SMP, or active-block retirement
+semantics. Parent S4-16 and Stage 4 remain open; no performance claim is made.
+See the [S4-16e report](../reports/STAGE_4_S4-16E_2026-11-06.md).

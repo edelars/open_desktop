@@ -3587,6 +3587,17 @@ pub struct PagedCodeWriteResult {
     pub code_invalidated: bool,
 }
 
+/// Outcome of one interpreted `INVLPG` executed between native calls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeInvlpgResult {
+    pub step: od_machine::PagedInvlpgStepReport,
+    /// Physical RAM writes committed by the instruction fetch walk.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    /// True when a retired canonical invalidation cleared both idle caches and
+    /// released the session's pinned backing/alias admission.
+    pub session_reset: bool,
+}
+
 #[derive(Debug)]
 pub enum PagedCodeSessionError {
     Backend(PublishedArenaError),
@@ -3600,6 +3611,7 @@ pub enum PagedCodeSessionError {
     TrackedPatch(od_machine::TrackedCodePatchError),
     PagingControlsMismatch,
     StoreStep(od_machine::PagedMovStepError),
+    InvlpgStep(od_machine::PagedInvlpgStepError),
 }
 
 impl<'a> PagedCodeSession<'a> {
@@ -3905,6 +3917,59 @@ impl<'a> PagedCodeSession<'a> {
             step,
             committed_writes,
             code_invalidated,
+        })
+    }
+
+    /// Interpret exactly one bounded `INVLPG [RBX]` between native calls.
+    /// A retired canonical invalidation conservatively clears both inactive
+    /// aliases and releases the fixed backing/range binding so they can be
+    /// admitted again after a page-table remap. Noncanonical retirement,
+    /// faults, and rejected inputs do not reset the session.
+    pub fn execute_invlpg(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        rflags_defined: u64,
+    ) -> Result<PagedCodeInvlpgResult, PagedCodeSessionError> {
+        if state.cr0 != Some(self.paging.cr0())
+            || state.cr3 != Some(self.paging.cr3())
+            || state.cr4 != Some(self.paging.cr4())
+            || self.access_context.mode != od_isa::memory::InstructionMode::Long64
+        {
+            return Err(PagedCodeSessionError::PagingControlsMismatch);
+        }
+        let mut committed_writes = Vec::new();
+        let mut execution_state = state.clone();
+        let step = od_machine::step_paged_invlpg(
+            &mut execution_state,
+            self.bus,
+            self.paging.cr3(),
+            self.paging.efer(),
+            self.access_context,
+            rflags_defined,
+            |range| committed_writes.push(range),
+        );
+        self.reconcile_code_writes(&committed_writes)?;
+        let step = step.map_err(PagedCodeSessionError::InvlpgStep)?;
+
+        let session_reset = step.cpu.instructions_executed == 1
+            && matches!(
+                step.cpu.exit,
+                od_isa::execute::InvlpgExit::TranslationInvalidation(_)
+            );
+        if session_reset {
+            for cache in &mut self.caches {
+                cache.clear();
+            }
+            self.backing_page = None;
+            self.code_page_offset = None;
+            self.code_length = None;
+            self.aliases = [None, None];
+        }
+        *state = execution_state;
+        Ok(PagedCodeInvlpgResult {
+            step,
+            committed_writes,
+            session_reset,
         })
     }
 }
@@ -113788,6 +113853,258 @@ pub(crate) mod tests {
             0x2027,
             "the failed fetch's committed root A update must remain visible"
         );
+    }
+
+    #[test]
+    fn s4_16e_retired_invlpg_resets_alias_session_after_remap() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const INVLPG_RIP: u64 = 0x0000_0000_4000_2100;
+        const ALIAS_C: u64 = 0x0080_3180;
+        const CR0: u64 = 0x8001_0033;
+        const CR3: u64 = 0x1000;
+        const CR4: u64 = 1 << 5;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const OLD_CODE_PAGE: u64 = 0x7000;
+        const NEW_CODE_PAGE: u64 = 0x8000;
+        const INVLPG_CODE_PAGE: u64 = 0x9000;
+        const RAM_BYTES: u64 = 0xa000;
+
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x2008, OLD_CODE_PAGE | 0x7),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x3020, 0x4007),
+            (0x4008, OLD_CODE_PAGE | 0x7),
+            (0x4018, NEW_CODE_PAGE | 0x7),
+            (OLD_CODE_PAGE, 0x5000 | 0x7),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let old_immediate = 0x1111_2222_3333_4444u64;
+        let new_immediate = 0xa1b2_c3d4_e5f6_0718u64;
+        let make_mov = |value: u64| {
+            let mut bytes = vec![0x48, 0xb8];
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        };
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(OLD_CODE_PAGE + 0x100),
+            &make_mov(old_immediate),
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(NEW_CODE_PAGE + 0x100),
+            &make_mov(new_immediate),
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(INVLPG_CODE_PAGE + 0x100),
+            &[0x0f, 0x01, 0x3b],
+        )
+        .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(CR0, CR3, CR4, EFER).unwrap();
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let kernel_context = AccessContext {
+            mode: od_isa::memory::InstructionMode::Long64,
+            privilege: od_isa::memory::PrivilegeLevel::Ring0,
+            origin: od_isa::memory::AccessOrigin::Explicit,
+        };
+        let mut session = PagedCodeSession::new(&mut bus, paging, kernel_context).unwrap();
+
+        let mut state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        let old_a = session.execute_alias(ALIAS_A, 10, &mut state, 1).unwrap();
+        assert_eq!(old_a.retired_native, 1);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], old_immediate);
+        state.rip = ALIAS_B;
+        state.gpr[od_isa::Register::Rax as usize] = 0;
+        let old_b = session.execute_alias(ALIAS_B, 10, &mut state, 1).unwrap();
+        assert_eq!(old_b.retired_native, 1);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], old_immediate);
+        assert_eq!(session.resident_entries(), 2);
+
+        // The INVLPG fetch walks a second PDPT branch whose PD is the warmed
+        // code backing itself. Its A-bit update commits there before the next
+        // level faults, so both idle alias entries must be invalidated while
+        // the session's original admission remains bound.
+        let mut faulting_invlpg = od_isa::LongModeState {
+            rip: INVLPG_RIP,
+            cr0: Some(CR0),
+            cr3: Some(CR3),
+            cr4: Some(CR4),
+            activity: Some(od_isa::state::CpuActivity::Running),
+            sti_shadow: Some(od_isa::state::StiShadow::Clear),
+            ..Default::default()
+        };
+        let fault = session
+            .execute_invlpg(&mut faulting_invlpg, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert!(matches!(
+            fault.step.cpu.exit,
+            od_isa::execute::InvlpgExit::Fault(_)
+        ));
+        assert!(fault.step.page_fault.is_some());
+        assert!(fault.committed_writes.iter().any(|range| {
+            let start = range.start().get();
+            let end = range.end_exclusive();
+            u128::from(start) < u128::from(OLD_CODE_PAGE + 0x1000)
+                && u128::from(OLD_CODE_PAGE) < end
+        }));
+        assert!(!fault.session_reset);
+        assert_eq!(session.resident_entries(), 0);
+        assert_eq!(
+            session.backing_page,
+            Some(GuestPhysicalAddress::new(OLD_CODE_PAGE))
+        );
+        assert_eq!(session.code_page_offset, Some((ALIAS_A & 0xfff) as usize));
+        assert_eq!(session.code_length, Some(10));
+        assert_eq!(
+            session.aliases,
+            [Some(ALIAS_A & !0xfff), Some(ALIAS_B & !0xfff)]
+        );
+
+        // Complete the previously faulting fetch mapping for later retired
+        // INVLPG instructions. The missing leaf PTE was the cause of #PF.
+        session
+            .write_physical_ram(
+                GuestPhysicalAddress::new(0x5010),
+                &(INVLPG_CODE_PAGE | 0x7).to_le_bytes(),
+            )
+            .unwrap();
+        state.rip = ALIAS_A;
+        session.execute_alias(ALIAS_A, 10, &mut state, 1).unwrap();
+        state.rip = ALIAS_B;
+        session.execute_alias(ALIAS_B, 10, &mut state, 1).unwrap();
+        assert_eq!(session.resident_entries(), 2);
+
+        // A retired noncanonical INVLPG has no translation effect. A rejected
+        // instruction input likewise preserves the warmed native aliases.
+        let mut invlpg_state = od_isa::LongModeState {
+            rip: INVLPG_RIP,
+            cr0: Some(CR0),
+            cr3: Some(CR3),
+            cr4: Some(CR4),
+            activity: Some(od_isa::state::CpuActivity::Running),
+            sti_shadow: Some(od_isa::state::StiShadow::Clear),
+            ..Default::default()
+        };
+        invlpg_state.gpr[od_isa::Register::Rbx as usize] = 0x0000_8000_0000_0000;
+        let noncanonical = session
+            .execute_invlpg(&mut invlpg_state, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert_eq!(
+            noncanonical.step.cpu.exit,
+            od_isa::execute::InvlpgExit::Retired
+        );
+        assert_eq!(noncanonical.step.cpu.instructions_executed, 1);
+        assert!(!noncanonical.session_reset);
+        assert_eq!(session.resident_entries(), 2);
+        invlpg_state.rip = INVLPG_RIP;
+        let rejected = session.execute_invlpg(&mut invlpg_state, 1 << 63).unwrap();
+        assert!(matches!(
+            rejected.step.cpu.exit,
+            od_isa::execute::InvlpgExit::Rejected(_)
+        ));
+        assert!(!rejected.session_reset);
+        assert_eq!(session.resident_entries(), 2);
+
+        // Remap the shared leaf to a new code page. The PTE write itself is
+        // not an invalidation event and must leave the old native entries.
+        let old_generation = session
+            .bus
+            .code_page_generation(GuestPhysicalAddress::new(OLD_CODE_PAGE))
+            .unwrap();
+        let remap_result = session
+            .write_physical_ram(
+                GuestPhysicalAddress::new(0x4008),
+                &(NEW_CODE_PAGE | 0x7).to_le_bytes(),
+            )
+            .unwrap();
+        assert!(!remap_result.code_invalidated);
+        assert_eq!(session.resident_entries(), 2);
+        assert_eq!(
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(OLD_CODE_PAGE))
+                .unwrap(),
+            old_generation
+        );
+
+        state.rip = ALIAS_A;
+        assert!(matches!(
+            session.execute_alias(ALIAS_A, 10, &mut state, 1),
+            Err(PagedCodeSessionError::UnsupportedAlias)
+        ));
+        assert_eq!(session.resident_entries(), 2);
+
+        // Each virtual alias requires its own architectural INVLPG. The
+        // bounded host session conservatively clears both native cache entries
+        // and its pinned backing on either retired canonical invalidation.
+        for alias in [ALIAS_A, ALIAS_B] {
+            invlpg_state.rip = INVLPG_RIP;
+            invlpg_state.gpr[od_isa::Register::Rbx as usize] = alias;
+            let result = session
+                .execute_invlpg(&mut invlpg_state, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(
+                result.step.cpu.exit,
+                od_isa::execute::InvlpgExit::TranslationInvalidation(
+                    od_isa::TranslationInvalidation::Invlpg {
+                        linear_address: alias
+                    }
+                )
+            );
+            assert_eq!(result.step.cpu.instructions_executed, 1);
+            assert!(result.session_reset);
+            assert_eq!(session.resident_entries(), 0);
+        }
+
+        // A new alias with a different byte offset and code length can be
+        // admitted only after the invalidation released the old binding.
+        let mut relocated_code = make_mov(new_immediate);
+        relocated_code.push(0x90);
+        session
+            .write_physical_ram(
+                GuestPhysicalAddress::new(NEW_CODE_PAGE + 0x180),
+                &relocated_code,
+            )
+            .unwrap();
+        state.rip = ALIAS_C;
+        state.gpr[od_isa::Register::Rax as usize] = 0;
+        let new_c = session.execute_alias(ALIAS_C, 11, &mut state, 1).unwrap();
+        assert_eq!(new_c.retired_native, 1);
+        assert_eq!(state.rip, ALIAS_C + 10);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], new_immediate);
+        assert_eq!(
+            session.backing_page,
+            Some(GuestPhysicalAddress::new(NEW_CODE_PAGE))
+        );
+        assert_eq!(session.code_page_offset, Some((ALIAS_C & 0xfff) as usize));
+        assert_eq!(session.code_length, Some(11));
+        assert_eq!(session.aliases, [Some(ALIAS_C & !0xfff), None]);
     }
 
     #[test]
