@@ -724,6 +724,32 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** inject намеренное различие и убедиться, что comparator его обнаруживает; undefined поля сравнивать по явной маске. Hardware evidence S4-34 подключать отдельно, не маркировать локальные cases как native.
 - **Готово:** можно воспроизвести и уменьшить mismatch без копии CPU/MMU семантики в testkit; общий walker не считается независимым oracle.
 
+#### S4-17a. Paged qword load: uncached interpreter против published JIT
+
+- [x] Принято после независимого ревью.
+- **Case:** один exact `48 8B 03` (`MOV RAX,[RBX]`), фиксированный Long64/CPL0
+  paging snapshot, независимые RAM instances, успех и настоящий missing-leaf
+  `#PF`. Code/data находятся в разных PML4 ветвях; code-path A bits заранее
+  установлены, чтобы сравнивать только data-path A effects.
+- **Нормализованный результат:** все 16 GPR, RIP, masked RFLAGS и definedness,
+  retirement/outcome, PageFault vector/PFEC/faulting RIP/CR2 value,
+  architectural CR2 availability отдельно, физические RAM deltas, упорядоченные
+  committed-write ranges и device-event observation. Сценарий зарегистрирован
+  как `od-host` integration target `stage4_memory_fault`.
+- **Проверка:** uncached `od_machine::step_paged_mov` против опубликованного
+  `PublishedCode::execute_paged_mov_rax_rbx_v2`; literal assertions для RAX/RIP,
+  #PF PFEC `0`, CR2 value и сохранения destination; comparator получает
+  намеренно изменённый post-run A-bit delta и обязан назвать physical address
+  и differing bit. Unit tests проверяют undefined/defined flag mask,
+  отсутствующие observation и JSON strictness.
+- **Граница:** cached interpreter явно представлен как unsupported: существующая
+  translation-probe cache не исполняет CPU и не сохраняет tracked A/D semantics.
+  Reducer, прочие memory формы, MMIO/device events, stores, cross-page, fetch
+  faults и hardware evidence остаются в родительском S4-17/S4-34. Общий walker
+  не является независимым x86 oracle; S4-17 и Stage 4 остаются открытыми.
+- См. [S4-17a report](../reports/STAGE_4_S4-17A_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-17a-paged-mov-differential-2026-11-06.json).
+
 ### S4-18. GDT, IDT и TSS через настоящую память
 
 - [ ] Принято после ревью.

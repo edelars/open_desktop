@@ -497,3 +497,42 @@ multiple payloads and reject an injected remapping that still reaches HLT but
 does not satisfy the alias-result oracle. The manifest's `mappings` and `stack`
 fields must agree. This is uncached interpreter evidence; TLB/JIT, Linux and
 physical hardware claims are outside the case.
+
+## S4-17a: paged MOV differential harness
+
+Run the cross-component harness with:
+
+```text
+cargo test -p od-host --test stage4_memory_fault --offline -- --test-threads=1
+cargo test -p od-testkit --lib --offline memory_fault::tests -- --test-threads=1
+```
+
+The integration target runs on Apple Silicon macOS, the platform supported by
+`PublishedCode` executable-memory publication. On other hosts this target is
+compiled out; the testkit comparator unit tests remain portable.
+
+The deterministic Long64/CPL0 case is exact `48 8B 03` (`MOV RAX,[RBX]`),
+with code linear address `0x00401000` and operand linear address
+`0x8000000120` mapping to a separate physical RAM page. The harness creates an
+independent `MachineBus` from the same case descriptor for the uncached
+interpreter and published JIT. It checks both a successful qword load and a
+non-present leaf PTE fault. Code-side page-table A bits are initialized before
+execution so interpreter instruction fetch does not add effects absent from
+the published JIT path; data-side A updates remain observable in physical RAM
+deltas and ordered callbacks. The test verifies that each changed entry differs
+by exactly the Accessed bit, and that each backend's complete #PF exit agrees
+with its `PageFaultRecord`.
+
+`od_testkit::memory_fault::MemoryFaultObservation` records the case digest,
+all GPRs, RIP, RFLAGS plus its definedness mask, retirement, outcome, intended
+fault CR2 value, actual architectural CR2 availability, table-byte deltas,
+ordered physical write ranges, and device-event availability. This bounded
+RAM-only case declares an observed empty device-event list. The page-fault
+record supplies a CR2 value but these step APIs do not commit architectural
+CR2, so that state is recorded unavailable. A post-execution injected
+missing-A-bit result must compare unequal at its physical address and bit.
+Cached interpreter execution is explicitly unsupported: the current cached
+translation probe is not a cached instruction interpreter and does not carry
+tracked A/D effects. This compares two local paths that share the page walker;
+it is not independent hardware evidence. Reducer coverage and broader
+S4-17 cases remain open. See the [S4-17a report](../reports/STAGE_4_S4-17A_2026-11-06.md).
