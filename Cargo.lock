@@ -126,6 +126,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "od-power-loss"
+version = "0.1.0"
+dependencies = [
+ "od-host",
+ "od-storage",
+]
+
+[[package]]
 name = "od-runner"
 version = "0.1.0"
 dependencies = [
