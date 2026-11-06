@@ -30,7 +30,7 @@
 | Профиль | Состав | Требует работающей VM | Статус |
 |---|---|---|---|
 | `offline-raw-v0` | RAW image, один writer, явный durable flush, reopen | Нет | Целевой первый срез S9-03…07; реализованы S9-03…05 и часть S9-04 (writer lock, read lease)/S9-06 (file-data flush); fault backend S9-07 и namespace durability отсутствуют; профиль не принят |
-| `offline-cow-v1` | Собственный CoW, recovery, immutable snapshots, check/export/salvage/migration | Нет | S9-08…12 реализованы на прототипном формате (не принят, S9-40; ISSUE-057 закрыт, `01ef35d`); S9-14…17 реализованы (snapshots, branch, проверка цепочки, удаление и offline compaction); S9-18…22 не начаты. S9-13 (guest storage/flush) относится к VM-профилям |
+| `offline-cow-v1` | Собственный CoW, recovery, immutable snapshots, check/export/salvage/migration | Нет | S9-08…12 реализованы на прототипном формате (не принят, S9-40; ISSUE-057 закрыт, `01ef35d`); S9-14…19 реализованы (snapshots, branch, проверка цепочки, удаление и offline compaction, capacity/zero/discard, read-only inspect/check CLI); S9-20…22 не начаты. S9-13 (guest storage/flush) относится к VM-профилям |
 | `restricted-vm` | Тестовая машина без UEFI/vTPM: CPU/RAM/devices/time/I/O + диски | Да | Отдельный ограниченный gate; не закрывает Windows gate (план §2, §6) |
 | `full-windows-vm` | Всё из `restricted-vm` + UEFI variables + vTPM + identity policy | Да | Целевой; заблокирован отсутствующими компонентами, см. [VM_STATE.md](VM_STATE.md#2-инвентаризация-prerequisites-s9-01) |
 

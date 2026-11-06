@@ -325,6 +325,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-18. Capacity, explicit zero и discard
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено (read-only), коммит `1590c9e`: `zero_range` (явные нули), `discard_range` (возврат к parent), capacity/quota до backend, ENOSPC на каждом шаге commit/compaction без порчи предыдущего состояния. Пределы: discard не рекламируется гостю; нет hole punching; блоки плотные до compaction; ENOSPC и power loss только fault-инъекция; формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-18-capacity-explicit-zero-и-discard--реализовано-ревью-пройдено-read-only).
 - **Где:** storage allocation, guest storage feature contract.
 - **Сделать:** ENOSPC/quota/reserved space policy, bounded metadata growth и операции zero/discard в заявленном scope. Discard в child должен соблюдать guest contract, не неявно возвращать parent data; host hole punching использовать только как проверенную оптимизацию.
 - **Проверить:** disk full на data/map/root/reclaim, sparse extent, partial block zero, parent masking, reopen и flush. Нельзя обещать rollback уже опубликованной transaction после последующего ENOSPC.
@@ -333,6 +334,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-19. Создать inspect/check CLI
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено (read-only), коммит `1590c9e`: `inspect_storage` (только чтение), `tools/image-tool` — CLI `info`/`check` с кодами выхода 0…5. Пределы: CLI зависит от прототипа с feature `test-support`; нет repair-подкоманды; формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-19-inspectcheck-cli--реализовано-ревью-пройдено-read-only).
 - **Где:** `tools/image-tool/src/` поверх `od-storage`; layout/manifests обновлять при реальной сборке tool.
 - **Сделать:** readonly info/check с version, logical size, root/chain IDs, integrity outcomes и машинно различимыми exit statuses. Mutating recovery — отдельная явная операция; default inspect источник не меняет.
 - **Проверить:** valid/corrupt/unsupported/busy input, bounded output, отсутствие секретов и гостевых payload в diagnostics.

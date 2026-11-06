@@ -1,6 +1,6 @@
 # Этап 9. Отчёт: надёжность данных и управление состоянием
 
-Статус отчёта: **промежуточный. Этап 9 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и тестами ветки `feat/s9-stage` на коммите `82f72e8`. Gates G1–G6 не закрыты.
+Статус отчёта: **промежуточный. Этап 9 НЕ принят.** Документ фиксирует только то, что подтверждено коммитами и тестами ветки `feat/s9-stage` на коммите `1590c9e`. Gates G1–G6 не закрыты.
 
 Связанные документы: [план этапа 9](../plans/STAGE_9.md), [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md), [VM_STATE.md](../specs/VM_STATE.md), [STORAGE_RECOVERY.md](../testing/STORAGE_RECOVERY.md), [реестр проблем](../KNOWN_ISSUES.md), [SUPPORT_MATRIX.md](../specs/SUPPORT_MATRIX.md).
 
@@ -12,17 +12,15 @@
 |---|---|---|
 | Принято | 0 | — (ни одна задача не принята; счёт не менять без внешнего ревью) |
 | Документы S9-00…02: ревью с оговорками, задача не принята | 3 | S9-00, S9-01, S9-02 |
-| Реализовано, внешнее ревью пройдено (по сведениям заданий), не принято | 5 | S9-03, S9-05, S9-07, S9-09, S9-10 |
-| Реализовано, внутреннее ревью (Opus) пройдено, внешнее не проводилось | 5 | S9-11, S9-12, S9-14, S9-15, S9-16 |
-| Черновик без внешнего ревью (S9-17 на cow-open: внутреннее ревью; S9-18: внутреннее; S9-19/20: самопроверка) | 4 | S9-17, S9-18, S9-19, S9-20 |
+| Реализовано, ревью пройдено (по сведениям заданий; внешнее или внутреннее — в разделах задач), не принято | 13 | S9-03, S9-05, S9-07, S9-09, S9-10, S9-11, S9-12, S9-14, S9-15, S9-16, S9-17, S9-18, S9-19 |
 | Протокол с оговорками (размеры блока и карты — гипотезы); формат НЕ принят | 1 | S9-08 |
 | Частично | 3 | S9-04, S9-06 (код, с оговорками ниже); S9-40 (измерена только commit-latency) |
-| `not_started` | 2 | S9-21, S9-22 |
+| `not_started` | 3 | S9-20, S9-21, S9-22 |
 | `blocked` | 22 | S9-13, S9-23…S9-39, S9-41…S9-44 |
 
 Принятого этапа или принятого gate нет. «Реализовано, ревью пройдено» относится к самой задаче и не означает принятие gate G1. Формат CoW не принят как нормативный: нормативных bytes и лимитов нет, S9-40 выполнен частично. «Ревью пройдено» у S9-09…S9-12 не делает формат принятым. ISSUE-057 закрыт (`01ef35d`). Чекбоксы `[ ]` в плане не отмечены.
 
-## 2. Задачи S9-00…S9-20 и S9-40
+## 2. Задачи S9-00…S9-19 и S9-40
 
 ### S9-00. Область поддержки и failure model — принято с оговорками
 
@@ -169,7 +167,23 @@
 - Файлы: [cow_snapshot.rs](../../crates/od-storage/src/cow_snapshot.rs), [cow_snapshot_tests.rs](../../crates/od-storage/src/cow_snapshot_tests.rs), [cow_proto.rs](../../crates/od-storage/src/cow_proto.rs), [storage_policy.rs](../../crates/od-host/src/storage_policy.rs).
 - Факт: `delete_snapshot` убирает имя snapshot одним commit, блоки остаются на месте; `rootset` перечисляет каждый блок, достижимый из head, именованных snapshots, обоих восстановимых корней и их копий. `compact_to` записывает новый файл с head и всеми живыми snapshots под флагом building, переоткрывает его с носителя, сравнивает каждый блок с источником и лишь затем снимает флаг; источник не пишется; изменённая или отсутствующая цель не публикуется как завершённая. Host-хелперы берут exclusive writer lock, поэтому открытый child, держащий parent lease, делает delete и compaction занятыми (busy).
 - Проверки: `snapshot_delete_is_whole_or_absent_and_never_damages_data_under_every_fault`, `compaction_publishes_a_complete_verified_target_or_nothing_under_every_fault`, `rootset_covers_head_snapshots_both_roots_and_clone_parents`, `the_previous_recoverable_root_still_reads_a_snapshot_deleted_in_the_current_one`, `a_deleted_snapshot_stays_in_the_rootset_while_the_previous_root_names_it`, `compaction_refuses_bad_targets_without_writing_the_source`, `an_unpublished_compaction_target_does_not_open`, `compaction_reproduces_head_and_live_snapshots_in_a_new_smaller_file`, `a_child_of_the_old_file_is_not_reconnected_to_the_compacted_one`; цель проверена переоткрытием с диска. `od-storage`: 156 passed; `storage_policy`: 16 passed.
-- НЕ доказано / предел: атомарной подмены источника результатом compaction нет (нужен durable rename, [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); дети удалённого снимка становятся неоткрываемыми (`SnapshotMissing`); GC в живом файле не реализован (только offline compaction в новый файл); флаг building — ненормативное расширение формата; real power loss не проверен; формат не принят (S9-40).
+- НЕ доказано / предел: атомарной подмены источника результатом compaction нет (нужен durable rename, [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); дети удалённого снимка становятся неоткрываемыми (`SnapshotMissing`); GC в живом файле не реализован (только offline compaction в новый файл); флаг building — ненормативное расширение формата; compaction и удаление под конкурирующими читателями не проверены (S9-37); real power loss не проверен; формат не принят (S9-40). Задача реализована и прошла ревью, но не принята как gate.
+
+### S9-18. Capacity, explicit zero и discard — реализовано, ревью пройдено (read-only)
+
+- Коммит: `1590c9e`.
+- Файлы: [cow_snapshot.rs](../../crates/od-storage/src/cow_snapshot.rs), [cow_snapshot_tests.rs](../../crates/od-storage/src/cow_snapshot_tests.rs), [cow_proto.rs](../../crates/od-storage/src/cow_proto.rs), [io.rs](../../crates/od-storage/src/io.rs), [storage_policy.rs](../../crates/od-host/src/storage_policy.rs).
+- Факт: `zero_range` пишет явные нулевые блоки (маскируют parent); `discard_range` снимает присутствие полностью покрытых блоков, и child снова видит parent. Проверки capacity и quota выполняются до любого вызова backend; ENOSPC на каждом шаге commit и compaction не портит предыдущее durable состояние.
+- Проверки: `zero_masks_the_parent_and_discard_gives_it_back`, `zero_and_discard_reject_bad_ranges_before_any_backend_call`, `quota_refuses_data_before_any_backend_call_and_the_reserve_serves_metadata`, `enospc_at_every_step_leaves_the_previous_durable_state_intact`, `a_snapshot_keeps_what_it_saw_across_zero_and_discard_and_compaction`, `a_base_file_discard_reads_zeros_and_capabilities_are_honest`, `no_backend_advertises_discard`.
+- НЕ доказано / предел: discard не рекламируется гостю; нет hole punching на host; блоки остаются плотными до compaction; ENOSPC и power loss проверены только fault-инъекцией, не на реальном томе; формат не принят (S9-40). Задача реализована и прошла ревью, но не принята как gate.
+
+### S9-19. Inspect/check CLI — реализовано, ревью пройдено (read-only)
+
+- Коммит: `1590c9e`.
+- Файлы: [cow_inspect.rs](../../crates/od-storage/src/cow_inspect.rs), [cow_inspect_tests.rs](../../crates/od-storage/src/cow_inspect_tests.rs), [tools/image-tool/src/lib.rs](../../tools/image-tool/src/lib.rs), [tools/image-tool/src/main.rs](../../tools/image-tool/src/main.rs), [tools/image-tool/tests/cli.rs](../../tools/image-tool/tests/cli.rs).
+- Факт: `inspect_storage` читает через тот же strict parser и ничего не пишет; `od-image-tool` с подкомандами `info` и `check` возвращает коды выхода 0 (ok), 1 (usage), 2 (corrupt), 3 (unsupported), 4 (busy), 5 (io) и печатает ограниченный вывод `key=value` без payload.
+- Проверки: `cow_inspect_tests` (в т.ч. `damaged_roots_are_reported_and_never_repaired`, `reports_are_bounded_and_carry_no_payload`, `an_unsupported_mandatory_feature_is_unsupported_not_corrupt`, `a_corrupt_block_is_named_and_a_snapshot_only_block_needs_check_mode`); `od-storage` 175 passed, `storage_policy` 17 passed, `tools/image-tool` 7 passed (проверено запуском).
+- НЕ доказано / предел: CLI зависит от прототипа с feature `test-support`, пока формат не принят (S9-40); нет repair-подкоманды; сценарии busy/io покрыты ограниченно; формат не принят.
 
 ### Ветка `feat/s9-10-cow-open`: S9-10, S9-11, S9-12 (отдельные черновики)
 
@@ -181,46 +195,18 @@
 
 Старые черновики S9-14…S9-16 на этой ветке (`d1427c9` — `cow_chain`; `e18b102` — `cow_branch`; `1f0a889`, `432d07e` — `cow_lease`) заменены реализацией на `feat/s9-stage` (`7188582`, `33440be`, разделы выше): они остаются на `feat/s9-10-cow-open`, не объединены и в приёмку не входят. Внешнее ревью этих черновиков не проводилось.
 
-### Ветка `feat/s9-10-cow-open`: S9-17…S9-20 (черновики без внешнего ревью)
-
-Эти срезы отсутствуют на `feat/s9-stage` в том виде, в котором описаны здесь. Версия S9-17 на `feat/s9-stage` (`82f72e8`) — отдельная реализация, см. выше; её статус в этом отчёте не пересматривался.
-
-### S9-17 (cow-open). Offline GC и copy-compaction — черновик, внутреннее ревью (Opus) пройдено, два мажора исправлены, внешнее не проводилось; не принято
-
-- Коммит: `990a2b6` (ветка `feat/s9-10-cow-open`).
-- Файлы (только на cow-open): `cow_gc.rs`, `cow_gc_tests.rs`, `cow_branch.rs`, `cow_chain.rs`, `cow_lease.rs`.
-- Факт: удаление снимка offline с проверкой ссылок (дочерние образы, ветки, leases); reclaim через copy-compaction: живые данные переписываются в новый target, старый не меняется до подтверждённой публикации.
-- Проверки: `cow_gc_tests` в составе 210 тестов `od-storage` на `2b2d160` (см. §6). Не покрыто: реальный power loss; GC под конкурирующими читателями (S9-37); внешнее ревью.
-
-### S9-18 (cow-open). Ёмкость, ENOSPC, explicit zero и discard — черновик, внутреннее ревью пройдено (minor исправлены), внешнее не проводилось; не принято
-
-- Коммит: `9592886` (ветка `feat/s9-10-cow-open`).
-- Файлы (только на cow-open): `cow_capacity_tests.rs`, `cow_chain.rs`, `cow_gc.rs`, `cow_proto.rs`, `cow_proto/tx.rs`.
-- Факт: политика ёмкости и ENOSPC как явный типизированный отказ до записи; explicit zero и discard различимы от sparse-наследования родителя.
-- Проверки: `cow_capacity_tests` и дополнения `cow_gc_tests` в составе 210. Не покрыто: реальный ENOSPC на томе; quota; внешнее ревью.
-
-### S9-19 и S9-20 (cow-open). `od-image` inspect/check CLI и RAW import/export — черновик без внешнего ревью
-
-- Коммит: `2b2d160` (ветка `feat/s9-10-cow-open`).
-- Файлы (только на cow-open): `cow_raw.rs`, `cow_raw_tests.rs`, `cow_chain.rs`, `cow_chain_tests.rs`, `cow_proto.rs`, `tools/image-tool/` (`analyze.rs`, `report.rs`, `main.rs`, `tests/cli.rs`).
-- Факт: read-only inspect/check CLI; RAW import/export через `cow_raw`.
-- Проверки: самопроверка; `od-storage` 210 passed на `2b2d160` (измерено 2026-11-05 в `/private/tmp/open_desktop-s9-10`); по сведениям координатора 14 тестов `tools/image-tool` (мной не перепроверены).
-- ВНЕШНЕЕ ревью НЕ проводилось: запуск ревьюера был отклонён автоматической проверкой. Не покрыто: реальный power loss, ENOSPC, не-APFS тома, полный набор CLI-сценариев.
-- Замечание: коммит трогает `tools/` вне S9-scope; нужна проверка при ревью.
-
-
 ### S9-40. Измерение стоимости корректных операций — частично
 
 - Файл: [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md) (новый, в рабочем дереве на момент отчёта, не в коммите; код бенчмарка в репозиторий не добавлялся).
 - Факт: замер commit-latency через `HostFileStorage` и `fcntl(F_FULLFSYNC)` на одной машине (macOS 26.7.1, Apple M3 Max, внутренний SSD, APFS): 5 прогонов по 300 измеряемых commit на схему, сверка записанных данных после каждого commit. p50: A (RAW-подобная, 1 барьер) 4.05 мс; B (CoW, 1 барьер, только модель стоимости) 4.90 мс; C (CoW, 2 барьера) 8.93 мс; D (3 барьера) 13.00 мс. Цена одного барьера около 4 мс на commit; хвост p99 растёт сильнее медианы (D до 18.86 мс).
 - НЕ закрыто: замеры RAW против CoW по throughput, чтению, write amplification, recovery и памяти; независимый повтор в другие дни; другие тома и накопители. Схема B — не безопасный протокол, схема D упрощена (по документу замера). Документ не делает выводов о долговечности. Отчёт S9-40 не принят.
 
-## 3. Задачи S9-13 и S9-21…S9-44 (кроме S9-40 и S9-14…S9-20, см. §2)
+## 3. Задачи S9-13 и S9-20…S9-44 (кроме S9-40 и S9-14…S9-19, см. §2)
 
 | Задача | Статус | Причина |
 |---|---|---|
 | S9-13 | `blocked` | Нужно устройство хранения гостя из этапов 5/7 и S9-12 |
-| S9-21…S9-22 | `not_started` | Зависят от S9-20 (черновик без внешнего ревью); сами задачи не начаты: migration/versions, salvage в новый target |
+| S9-20…S9-22 | `not_started` | S9-20 (RAW import/export): не начат на `feat/s9-stage` (в работе отдельным субагентом); черновики на других ветках в счёт не принимаются. S9-21 (salvage в новый target) и S9-22 (migration/versions) зависят от S9-20 |
 | S9-23 | `blocked` | Контракт полного VM checkpoint: нужны S9-02 и S9-16 (выполнены); ISSUE-056 и компоненты этапов 4–8 |
 | S9-24 | `blocked` | Нет единого владельца CPU state ([ISSUE-056](../KNOWN_ISSUES.md#issue-056-s9-cpu-state-not-single-owner)); нужны компоненты этапа 4 |
 | S9-25 | `blocked` | Нужны реальные устройства, время и I/O state из этапов 5–8 |
@@ -238,7 +224,7 @@
 | Gate | Статус | Доказательство или недостаток |
 |---|---|---|
 | G1 — independent storage (S9-03…12) | `partial` | Есть: I/O contract, writer lock, RAW, file-data flush, fault backend с независимым oracle (S9-07), прототип CoW-протокола (S9-08), строгий parser (S9-09), open и выбор корня (S9-10), write transaction (S9-11), recovery tests (S9-12) на модели отказов. Нет: принятого нормативного формата (S9-08, S9-40 выполнен частично); namespace durability, проверки parent в цепочке и интеграции с VMHost (S9-04), реального power-loss; S9-09…12 реализованы на прототипном формате; ветка `feat/s9-10-cow-open` с отдельными черновиками не объединена. G1 остаётся `partial` |
-| G2 — snapshots/tools (S9-14…22) | `not_met` | Есть: immutable snapshots и дочерние цепочки (S9-14, `7188582`), branch и rollback как новая ветка (S9-15, `33440be`), проверка цепочки предков и leases до записи (S9-16, `33440be`), удаление snapshot и offline compaction (S9-17, `82f72e8`). Gate требует S9-14…22 целиком (S9-17 — без GC в живом файле); не начаты: capacity/zero/discard (S9-18), CLI (S9-19), import/export (S9-20), salvage (S9-21), migration (S9-22). Нет production `ParentResolver`, атомарного активного указателя (ISSUE-055) и принятого формата | Срезы S9-17…S9-20 на `feat/s9-10-cow-open` (`990a2b6`, `9592886`, `2b2d160`) — черновики без внешнего ревью; S9-19/20 только самопроверка. Ничего не принято.
+| G2 — snapshots/tools (S9-14…22) | `not_met` | Есть: immutable snapshots и дочерние цепочки (S9-14, `7188582`), branch и rollback как новая ветка (S9-15, `33440be`), проверка цепочки предков и leases до записи (S9-16, `33440be`), удаление snapshot и offline compaction (S9-17, `82f72e8`), capacity/zero/discard (S9-18, `1590c9e`), read-only inspect/check CLI (S9-19, `1590c9e`). Gate требует S9-14…22 целиком; не начаты: import/export (S9-20), salvage (S9-21), migration (S9-22). Пределы: GC в живом файле, hole punching и repair-подкоманды нет; нет production `ParentResolver`, атомарного активного указателя (ISSUE-055) и принятого формата. |
 | G3 — coherent full VM (S9-13, 23…31) | `not_met` | Не начато; блокированы ISSUE-056 и отсутствующие компоненты |
 | G4 — identity/integration (S9-32…37) | `not_met` | Не начато |
 | G5 — failure qualification (S9-38/39/41) | `partial` | Есть deterministic fault model и seeded-прогоны для RAW и CoW (S9-07/08/10/11/12), cut-point sweeps, repeated crashed recovery на модели, unit-тесты sticky reconcile и kill процесса (S9-04). Нет: полной fault/corruption matrix (S9-38), реального power-loss (S9-39), soak (S9-41) |
@@ -251,7 +237,6 @@
 - Нет принятого CoW-формата и полных замеров (S9-08, S9-40): есть протокол, parser, open, write transaction, recovery tests, snapshots и цепочки; блокирует приёмку G1/G2 и S9-13 далее.
 - Нет production `ParentResolver`: цепочку snapshots продуктом пока открыть нельзя; нет атомарного активного указателя ветки (нужен durable rename, ISSUE-055); CRC блоков предков проверяется лениво.
 - Ветки разошлись: `feat/s9-stage` и `feat/s9-10-cow-open` содержат разные коммиты S9-10…S9-12 (общий предок `17c9ce6`). Требуется синхронизация перед приёмкой G1; до неё кросс-ветка состояние не считается единым.
-- S9-17…S9-20 на `feat/s9-10-cow-open` — черновики без внешнего ревью (ревьюер для S9-19/20 отклонён автоматической проверкой). Принятых задач: 0 из 45.
 - [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable): закрыт (`01ef35d`); остаётся как справка по решению (create заполняет оба слота).
 - Нет устройства хранения гостя (S9-13), UEFI, vTPM (S9-26/27).
 - Нет разрешения на power-loss стенд (S9-39).
@@ -260,16 +245,16 @@
 
 ## 6. Тесты
 
-Команды и результаты: `feat/s9-stage` на `33440be` (2026-11-05) и `feat/s9-10-cow-open` на `432d07e` (проверено 2026-11-05 в `/private/tmp/open_desktop-s9-10`).
+Команды и результаты: `feat/s9-stage` на `1590c9e` (2026-11-05) и `feat/s9-10-cow-open` на `432d07e` (проверено 2026-11-05 в `/private/tmp/open_desktop-s9-10`).
 
 | Команда | Итог |
 |---|---|
-| `cargo test -p od-storage` | 156 passed, 0 failed на `82f72e8` (143 на `33440be`; 36 до S9-07/08; 45 на `a7874b8`; 59 на `000c1da`; 90 на `88b9f42`; 113 на `7d23bf9`) |
+| `cargo test -p od-storage` | 175 passed, 0 failed на `1590c9e` (156 на `82f72e8`; 143 на `33440be`; 36 до S9-07/08; 45 на `a7874b8`; 59 на `000c1da`; 90 на `88b9f42`; 113 на `7d23bf9`) |
 | `cargo test -p od-storage` на `feat/s9-10-cow-open` (`432d07e`) | 153 passed, 0 failed: cow_parse 17, cow_proto 1 + cow_proto_tests 17, cow_tx 13, cow_recovery 14, cow_chain 21, cow_branch 10, cow_lease 15, io 23, raw 13, testing 9 |
-| `cargo test -p od-storage` на `feat/s9-10-cow-open` (`2b2d160`) | 210 passed, 0 failed (проверено 2026-11-05) |
 | `cargo test -p od-host --lib storage_io` | 30 passed, 0 failed (19 до `31b8c2a`) |
-| `cargo test -p od-host --lib storage_policy` | 16 passed, 0 failed (9 на `bc7b675`; 15 после lease-тестов S9-14…16) |
+| `cargo test -p od-host --lib storage_policy` | 17 passed, 0 failed (16 на `82f72e8`; 9 на `bc7b675`; 15 после lease-тестов S9-14…16) |
 | `cargo test -p od-host --lib raw_file_tests` | 9 passed, 0 failed |
+| `cargo test` в `tools/image-tool` | 7 passed, 0 failed (`tests/cli.rs`) |
 | `cargo test -p od-host` | 253 passed, **21 failed** (`s3_20*` и `native_register_v1_corpus::reduce_saved_native_register_v1_case`) |
 
 21 падение в полном `cargo test -p od-host` существовало до этапа 9 (по сведениям из задания, проверено на чистом HEAD до S9); в этой сессии падения воспроизведены на текущем состоянии, повторная проверка на чистом HEAD не выполнялась. Они не относятся к коду S9-03…06 и не закрыты. Тесты S9 на этих падениях не основаны.
