@@ -758,3 +758,36 @@ fn reports_are_bounded_and_carry_no_payload() {
         .collect::<String>();
     assert!(!text.contains(&hex));
 }
+
+#[test]
+fn unordered_roots_that_agree_are_partial_and_never_complete() {
+    // Every write stores the same bytes, so the early and the late generation
+    // describe the same state. The two roots are not consecutive (they differ
+    // by three), so neither is proven newest: the salvage must not call the
+    // copy complete.
+    let h = FaultHandle::new(&[], 17);
+    let (mut f, _) = SnapFile::create_base(st(&h), 1).expect("create");
+    let block = SplitMix64(17).bytes(BS);
+    f.write_at(0, &block).expect("write");
+    let early_gen = f.generation();
+    let early = h.durable_bytes();
+    for _ in 0..3 {
+        f.write_at(0, &block).expect("write");
+    }
+    drop(f);
+    // The early root sits in the slot of its generation, which the late root
+    // has since overwritten with the one of the same parity.
+    let mut bytes = h.durable_bytes();
+    let slot = (early_gen & 1) as usize * 512;
+    bytes[slot..slot + 512].copy_from_slice(&early[slot..slot + 512]);
+    let h2 = FaultHandle::new(&bytes, 18);
+    let run = salvage(&h2, StateSelection::Head, false);
+    let r = &run.report;
+    assert_eq!(r.root_origin, "ambiguous", "{r:?}");
+    assert_eq!(r.recoverability, Recoverability::Partial, "{r:?}");
+    assert_eq!(r.reason, "unordered_roots", "{r:?}");
+    assert!(
+        !run.requested,
+        "a partial salvage without --accept-partial creates no target"
+    );
+}
