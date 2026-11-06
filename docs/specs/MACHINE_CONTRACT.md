@@ -108,6 +108,34 @@ reconciliation observes committed physical RAM writes, not device-side writes.
 See the
 [S4-16b report](../reports/STAGE_4_S4-16B_2026-11-06.md).
 
+## Physical RAM loader write observation (S4-16c)
+
+`MachineBus::patch_physical_ram_with_callback` forwards `PhysicalMemory`'s
+committed-write notification for a checked physical RAM byte-range write. The
+callback receives the exact committed `GuestPhysicalRange`; rejected ranges,
+ROM, and other non-RAM targets do not produce a commit notification. The
+existing `patch_physical_ram` convenience method delegates with a no-op
+callback, preserving its caller contract.
+
+`PagedCodeSession::write_physical_ram` is a privileged, synchronous loader path
+that can be called only through the session while native code is inactive. It
+does not expose the bus, RAM references, or an arbitrary writer closure. The
+session collects committed ranges and reconciles them before propagating either
+success or error. An overlap with the captured physical code page reads its
+current generation and invalidates both inactive alias entries. A write to a
+different page preserves those entries; a rejected write has no callback and
+preserves bytes, generation, and entries under PhysicalMemory's validate-before-
+commit contract. Guest CPL permission checks are not part of this privileged
+loader operation.
+
+The S4-16c fixture checks a byte-range callback, loader replacement of a cached
+instruction immediate and fresh execution through both aliases, conservative
+invalidation for a same-page write outside the admitted instruction range,
+generation isolation for a neighboring guest page, and failure at a RAM/ROM
+boundary and within ROM. It does not establish arbitrary writers, remap/TLB,
+active-block retirement, MMIO/DMA or SMP behavior. See the
+[S4-16c report](../reports/STAGE_4_S4-16C_2026-11-06.md).
+
 ## Синхронная MMIO/PIO bus
 
 `MachineBus` переиспользует одну `MachineMemoryMap` и один `PhysicalMemory`;

@@ -4574,3 +4574,27 @@ behavior. General writer integration, remap/TLB coupling, active-block
 mutation, MMIO behavior, DMA, SMP, and broader instruction admission remain open under
 parent S4-16. Performance is not measured here and no speed claim is made. See the
 [S4-16b report](../reports/STAGE_4_S4-16B_2026-11-06.md).
+
+### S4-16c: synchronous physical RAM loader write invalidates inactive aliases
+
+`MachineBus::patch_physical_ram_with_callback` preserves the existing checked
+`PhysicalMemory::write_bytes` behavior and reports the exact physical range only
+after commit. The existing no-callback convenience method remains available.
+`PagedCodeSession::write_physical_ram` is a narrow privileged operation for the
+one-vCPU fixture; it accepts a typed physical address and byte slice between
+native calls, and exposes neither mutable RAM nor an arbitrary writer callback.
+
+The session collects actual committed notifications and runs the same physical
+code-page generation reconciliation used by the guest MOV writer before
+returning success or an error. Any overlapping committed write invalidates both
+inactive alias cache entries, including writes outside the admitted instruction
+range. A write confined to another guest page preserves the code generation and
+entries. The test uses neighboring pages at `0x6000` and `0x7000`, exact callback
+ranges, an immediate replacement followed by execution through both aliases,
+and failed RAM/ROM boundary and ROM writes that preserve the cache.
+
+This does not connect every possible physical-memory writer and does not cover
+remap/TLB, cross-page code, MMIO/DMA, SMP or mutation of an active native block.
+The path is synchronous and only admits writes while native code is inactive;
+performance is not measured. Parent S4-16 remains open. See the
+[S4-16c report](../reports/STAGE_4_S4-16C_2026-11-06.md).

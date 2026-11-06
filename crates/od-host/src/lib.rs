@@ -3569,8 +3569,21 @@ pub struct PagedCodeStoreResult {
     pub step: od_machine::PagedMovStepReport,
     /// Physical RAM writes committed by the page walker, including A/D updates.
     pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
-    /// True when this operation changed the captured code backing generation
-    /// and synchronously invalidated both alias caches.
+    /// True when a committed write overlapped the captured code page and the
+    /// session applied generation invalidation to both alias caches. This does
+    /// not imply that either cache held a resident entry.
+    pub code_invalidated: bool,
+}
+
+/// Outcome of one privileged physical RAM write issued while native code is
+/// inactive in a `PagedCodeSession`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeWriteResult {
+    /// Physical RAM ranges committed by the checked memory writer.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    /// True when a committed range overlapped the captured code page and the
+    /// session applied generation invalidation to both alias caches. This does
+    /// not imply that either cache held a resident entry.
     pub code_invalidated: bool,
 }
 
@@ -3789,6 +3802,67 @@ impl<'a> PagedCodeSession<'a> {
         Ok(())
     }
 
+    /// Perform one checked physical RAM write while native blocks are
+    /// inactive. A committed overlap with the captured code backing is
+    /// reconciled against its current generation before the method returns.
+    /// Failed writes preserve cache entries because PhysicalMemory validates
+    /// the full write before committing any bytes.
+    pub fn write_physical_ram(
+        &mut self,
+        address: od_machine::GuestPhysicalAddress,
+        bytes: &[u8],
+    ) -> Result<PagedCodeWriteResult, PagedCodeSessionError> {
+        let mut committed_writes = Vec::new();
+        let write = self
+            .bus
+            .patch_physical_ram_with_callback(address, bytes, |range| committed_writes.push(range));
+        let code_invalidated = self.reconcile_code_writes(&committed_writes)?;
+        write.map_err(PagedCodeSessionError::Patch)?;
+        Ok(PagedCodeWriteResult {
+            committed_writes,
+            code_invalidated,
+        })
+    }
+
+    fn reconcile_code_writes(
+        &mut self,
+        committed_writes: &[od_machine::GuestPhysicalRange],
+    ) -> Result<bool, PagedCodeSessionError> {
+        let Some(code_page) = self.backing_page else {
+            return Ok(false);
+        };
+        let code_page_start = u128::from(code_page.get());
+        let code_page_end = code_page_start + 0x1000;
+        let code_page_written = committed_writes.iter().any(|range| {
+            let write_start = u128::from(range.start().get());
+            let write_end = range.end_exclusive();
+            write_start < code_page_end && code_page_start < write_end
+        });
+        if !code_page_written {
+            return Ok(false);
+        }
+
+        let current_generation = self
+            .bus
+            .code_page_generation(code_page)
+            .map_err(PagedCodeSessionError::Patch)?;
+        let backing = od_jit::translation::BackingId::new(
+            std::num::NonZeroU64::new(code_page.get() / 0x1000 + 1)
+                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+        );
+        let current_version = od_jit::translation::BackingVersion::new(
+            std::num::NonZeroU64::new(current_generation)
+                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+        );
+        for cache in &mut self.caches {
+            cache.invalidate(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing,
+                current_version,
+            });
+        }
+        Ok(true)
+    }
+
     /// Interpret exactly one admitted paged MOV load/store while native blocks
     /// are inactive. Any committed physical write (including page-table A/D
     /// writes) is observed, then the current code-page generation is reconciled
@@ -3799,7 +3873,7 @@ impl<'a> PagedCodeSession<'a> {
         state: &mut od_isa::LongModeState,
         rflags_defined: u64,
     ) -> Result<PagedCodeStoreResult, PagedCodeSessionError> {
-        let Some(code_page) = self.backing_page else {
+        let Some(_) = self.backing_page else {
             return Err(PagedCodeSessionError::UnsupportedAlias);
         };
         if state.cr0 != Some(self.paging.cr0())
@@ -3829,34 +3903,7 @@ impl<'a> PagedCodeSession<'a> {
         // Do not use `?` on the interpreter result before reconciling writes:
         // the page walker may have committed A/D or operand writes before a
         // later fault/backend/input result is produced.
-        let code_page_start = code_page.get() as u128;
-        let code_page_end = code_page_start + 0x1000;
-        let code_page_written = committed_writes.iter().any(|range| {
-            let write_start = range.start().get() as u128;
-            let write_end = range.end_exclusive();
-            write_start < code_page_end && code_page_start < write_end
-        });
-        let code_invalidated = code_page_written;
-        if code_invalidated {
-            let current_generation = self
-                .bus
-                .code_page_generation(code_page)
-                .map_err(PagedCodeSessionError::Patch)?;
-            let backing = od_jit::translation::BackingId::new(
-                std::num::NonZeroU64::new(code_page.get() / 0x1000 + 1)
-                    .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
-            );
-            let current_version = od_jit::translation::BackingVersion::new(
-                std::num::NonZeroU64::new(current_generation)
-                    .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
-            );
-            for cache in &mut self.caches {
-                cache.invalidate(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
-                    backing,
-                    current_version,
-                });
-            }
-        }
+        let code_invalidated = self.reconcile_code_writes(&committed_writes)?;
         let step = step.map_err(PagedCodeSessionError::StoreStep)?;
         // Machine input errors leave caller state untouched. The profile's
         // architectural fault result is successful input and follows its
@@ -113374,6 +113421,185 @@ pub(crate) mod tests {
             ))
         ));
         assert_eq!(invalid_input_state, invalid_input_state_before);
+    }
+
+    #[test]
+    fn s4_16c_physical_loader_write_invalidates_only_committed_code_page() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const CR3: u64 = 0x1000;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const RAM_BYTES: u64 = 0x8000;
+
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+        let rom = GuestPhysicalRange::new(GuestPhysicalAddress::new(RAM_BYTES), 0x1000).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(rom, MemoryRegionKind::Rom),
+            ],
+        )
+        .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x3020, 0x4007),
+            (0x4008, 0x7007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7100), &original)
+            .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(0x8001_0033, CR3, 1 << 5, EFER).unwrap();
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let mut session =
+            PagedCodeSession::new(&mut bus, paging, AccessContext::default()).unwrap();
+
+        let mut state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut state, 1)
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+
+        // A different guest page in the same 16 KiB host-page-sized window
+        // advances only that physical page's generation and keeps both entries.
+        let code_page = GuestPhysicalAddress::new(0x7000);
+        let code_generation = session.bus.code_page_generation(code_page).unwrap();
+        let other_page = GuestPhysicalAddress::new(0x6000);
+        let other_generation = session.bus.code_page_generation(other_page).unwrap();
+        let other = session.write_physical_ram(other_page, &[0x5a]).unwrap();
+        assert_eq!(
+            other.committed_writes,
+            [GuestPhysicalRange::new(other_page, 1).unwrap()]
+        );
+        assert!(!other.code_invalidated);
+        assert_eq!(
+            session.bus.code_page_generation(code_page).unwrap(),
+            code_generation
+        );
+        assert!(session.bus.code_page_generation(other_page).unwrap() > other_generation);
+        assert_eq!(session.resident_entries(), 2);
+
+        // A committed write elsewhere in the backing page is conservatively
+        // treated as code-affecting even though it is outside the admitted range.
+        let outside_range = session
+            .write_physical_ram(GuestPhysicalAddress::new(0x7180), &[0x90])
+            .unwrap();
+        assert!(outside_range.code_invalidated);
+        assert_eq!(outside_range.committed_writes.len(), 1);
+        assert_eq!(session.resident_entries(), 0);
+
+        // Rewarm both aliases, replace the immediate with a physical loader
+        // write, then verify callbacks and both subsequent alias executions.
+        state.rip = ALIAS_A;
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut state, 1)
+            .unwrap();
+        let immediate = 0x1020_3040_5060_7080u64;
+        let generation_before = session.bus.code_page_generation(code_page).unwrap();
+        let patched = session
+            .write_physical_ram(GuestPhysicalAddress::new(0x7102), &immediate.to_le_bytes())
+            .unwrap();
+        assert_eq!(
+            patched.committed_writes,
+            [GuestPhysicalRange::new(GuestPhysicalAddress::new(0x7102), 8).unwrap()]
+        );
+        assert!(patched.code_invalidated);
+        assert!(session.bus.code_page_generation(code_page).unwrap() > generation_before);
+        assert_eq!(session.resident_entries(), 0);
+        state.rip = ALIAS_B;
+        state.gpr[od_isa::Register::Rax as usize] = 0;
+        let result_b = session
+            .execute_alias(ALIAS_B, original.len(), &mut state, 1)
+            .unwrap();
+        assert_eq!(result_b.retired_native, 1);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], immediate);
+        state.rip = ALIAS_A;
+        state.gpr[od_isa::Register::Rax as usize] = 0;
+        let result_a = session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        assert_eq!(result_a.retired_native, 1);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], immediate);
+
+        // A range crossing the RAM/ROM boundary and a ROM write both fail
+        // before commit, emit no callback and preserve the warmed aliases.
+        let generation_before_failure = session.bus.code_page_generation(code_page).unwrap();
+        let before_boundary = session
+            .bus
+            .read_physical(GuestPhysicalAddress::new(0x7fff), AccessWidth::Byte)
+            .unwrap();
+        assert!(matches!(
+            session.write_physical_ram(GuestPhysicalAddress::new(0x7fff), &[0xaa, 0xbb]),
+            Err(PagedCodeSessionError::Patch(_))
+        ));
+        assert!(matches!(
+            session.write_physical_ram(GuestPhysicalAddress::new(0x8000), &[0xcc]),
+            Err(PagedCodeSessionError::Patch(_))
+        ));
+        let mut rejected_callbacks = Vec::new();
+        assert!(
+            session
+                .bus
+                .patch_physical_ram_with_callback(
+                    GuestPhysicalAddress::new(0x7fff),
+                    &[0xaa, 0xbb],
+                    |range| rejected_callbacks.push(range),
+                )
+                .is_err()
+        );
+        assert!(
+            session
+                .bus
+                .patch_physical_ram_with_callback(
+                    GuestPhysicalAddress::new(0x8000),
+                    &[0xcc],
+                    |range| rejected_callbacks.push(range),
+                )
+                .is_err()
+        );
+        assert!(rejected_callbacks.is_empty());
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x7fff), AccessWidth::Byte)
+                .unwrap(),
+            before_boundary
+        );
+        assert_eq!(
+            session.bus.code_page_generation(code_page).unwrap(),
+            generation_before_failure
+        );
+        assert_eq!(session.resident_entries(), 2);
     }
 
     #[test]

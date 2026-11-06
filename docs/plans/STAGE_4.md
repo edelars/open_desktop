@@ -635,6 +635,31 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - См. [S4-16b report](../reports/STAGE_4_S4-16B_2026-11-06.md) и
   [manifest](../reports/data/stage4/s4-16b-guest-store-2026-11-06.json).
 
+#### S4-16c. Физическая RAM-запись загрузчика инвалидирует неактивные aliases
+
+- Добавлен `MachineBus::patch_physical_ram_with_callback`; прежний удобный API
+  делегирует ему без изменения поведения. Callback передаётся существующему
+  `PhysicalMemory::write_bytes` и сообщает точный диапазон после commit.
+- `PagedCodeSession::write_physical_ram` принимает типизированный физический
+  адрес и байты между native вызовами. Он не выдаёт mutable bus, ссылки на RAM
+  или writer closure. После успешного либо ошибочного результата все фактически
+  committed диапазоны проверяются общей helper-функцией с S4-16b. Пересечение
+  captured code page перечитывает поколение и синхронно инвалидирует обе
+  alias cache entries. Запись в другую страницу и отказ до commit кэш сохраняют.
+- Проверено: точный callback на восьмибайтовую замену immediate; последующее
+  исполнение обоих aliases видит новые bytes; запись за пределами admitted
+  instruction range в той же code page консервативно инвалидирует обе записи;
+  запись соседней guest page по адресу `0x6000` обновляет только её поколение;
+  ROM write и диапазон, пересекающий RAM/ROM boundary, не меняют bytes,
+  generation или resident cache entries. Срезные проверки прошли, Graphify
+  обновлён, независимое ревью завершилось без замечаний.
+- Ограничения: это только один privileged physical RAM loader write между
+  native вызовами. Remap/TLB, cross-page code, MMIO/DMA, SMP и изменение
+  активного native block остаются открытыми; производительность не измерялась.
+  Родительский S4-16 и Stage 4 остаются открытыми.
+- См. [S4-16c report](../reports/STAGE_4_S4-16C_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-16c-physical-loader-2026-11-06.json).
+
 ### S4-17. Собрать локальный memory/fault differential набор
 
 - [ ] Принято после ревью.

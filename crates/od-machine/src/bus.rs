@@ -361,7 +361,18 @@ impl MachineBus {
         address: GuestPhysicalAddress,
         bytes: &[u8],
     ) -> Result<(), MemoryAccessError> {
-        self.memory.write_bytes(address, bytes, |_| {})
+        self.patch_physical_ram_with_callback(address, bytes, |_| {})
+    }
+
+    /// Write physical RAM and report the exact range after the bytes commit.
+    /// Validation and generation advancement remain owned by PhysicalMemory.
+    pub fn patch_physical_ram_with_callback(
+        &mut self,
+        address: GuestPhysicalAddress,
+        bytes: &[u8],
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<(), MemoryAccessError> {
+        self.memory.write_bytes(address, bytes, committed_write)
     }
 }
 

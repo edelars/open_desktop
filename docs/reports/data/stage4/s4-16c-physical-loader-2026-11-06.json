@@ -1,0 +1,68 @@
+{
+  "stage": 4,
+  "slice": "S4-16c",
+  "title": "Physical RAM loader writes invalidate inactive aliased code",
+  "date": "2026-11-06",
+  "status": "accepted_after_independent_review",
+  "commit_subject": "feat: invalidate aliased JIT code on physical loader writes",
+  "scope": {
+    "vcpus": 1,
+    "paging": "fixed Long64 snapshot",
+    "code_backing_pages": 1,
+    "aliases": 2,
+    "writer": "one checked physical RAM byte-range write between native calls",
+    "active_native_mutation": false
+  },
+  "behavior": {
+    "callback": "exact GuestPhysicalRange after successful physical RAM commit",
+    "reconciliation": "shared with S4-16b guest MOV writer",
+    "code_page_overlap": "read current backing generation and apply invalidation to both alias caches",
+    "other_page_write": "preserve code generation and alias cache entries",
+    "failed_write": "no commit callback, bytes/generation/cache preserved"
+  },
+  "checks": [
+    {
+      "command": "cargo test -p od-host --lib --offline s4_16c_ -- --test-threads=1",
+      "result": "passed",
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "command": "cargo test -p od-host --lib --offline s4_16 -- --test-threads=1",
+      "result": "passed",
+      "passed": 4,
+      "failed": 0,
+      "coverage": ["S4-16a", "S4-16b", "S4-16c"]
+    },
+    {
+      "command": "cargo check -p od-host --all-targets --offline",
+      "result": "passed_with_existing_warnings"
+    },
+    {
+      "command": "cargo fmt --all -- --check && git diff --check",
+      "result": "passed"
+    }
+  ],
+  "review": {
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "high",
+    "initial_findings": [
+      "Strengthened alias re-execution proof with sentinel and retired instruction count",
+      "Observed no callback directly on RAM/ROM boundary and ROM failures",
+      "Clarified code_invalidated reports applied invalidation, not removal of a resident entry"
+    ],
+    "re_review": "all findings fixed; no code defects found"
+  },
+  "graphify": {
+    "updated": true,
+    "nodes": 26932,
+    "edges": 67430,
+    "communities": 1087
+  },
+  "limitations": [
+    "Does not connect every physical RAM writer",
+    "No page-table remap or TLB invalidation",
+    "No cross-page code, MMIO/DMA, SMP, or active native block mutation",
+    "No performance measurement or speed claim"
+  ]
+}
