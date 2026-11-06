@@ -229,6 +229,19 @@ impl MachineBus {
         length: usize,
         context: AccessContext,
     ) -> Result<TrackedCodeSnapshot, TrackedCodeSnapshotError> {
+        self.tracked_code_snapshot_with_callback(paging, linear_start, length, context, |_| {})
+    }
+
+    /// Capture one executable byte range and report each committed page-walk
+    /// write in the order it occurs.
+    pub fn tracked_code_snapshot_with_callback(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        linear_start: u64,
+        length: usize,
+        context: AccessContext,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<TrackedCodeSnapshot, TrackedCodeSnapshotError> {
         if context.origin != AccessOrigin::Explicit {
             return Err(TrackedCodeSnapshotError::InvalidAccessContext);
         }
@@ -244,7 +257,7 @@ impl MachineBus {
                 context,
                 operation: RamAccessOperation::Fetch,
             },
-            |_| {},
+            committed_write,
         );
         let physical = match report.outcome {
             Ok(TrackedAccessOutcome::Fetched(_)) => report
@@ -295,6 +308,28 @@ impl MachineBus {
         value: u8,
         context: AccessContext,
     ) -> Result<GuestPhysicalAddress, TrackedCodePatchError> {
+        self.patch_tracked_code_byte_with_callback(
+            paging,
+            linear_address,
+            expected_physical_page,
+            value,
+            context,
+            |_| {},
+        )
+    }
+
+    /// Store one code byte and report committed A/D and operand writes in
+    /// operation order. Failed operations report only writes that committed
+    /// before the failure.
+    pub fn patch_tracked_code_byte_with_callback(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        linear_address: u64,
+        expected_physical_page: GuestPhysicalAddress,
+        value: u8,
+        context: AccessContext,
+        mut committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> Result<GuestPhysicalAddress, TrackedCodePatchError> {
         if context.origin != AccessOrigin::Explicit {
             return Err(TrackedCodePatchError::InvalidAccessContext);
         }
@@ -309,7 +344,7 @@ impl MachineBus {
             request(RamAccessOperation::Read {
                 width: AccessWidth::Byte,
             }),
-            |_| {},
+            &mut committed_write,
         );
         if let Err(error) = preflight.outcome {
             return Err(TrackedCodePatchError::Access(error));
@@ -342,7 +377,7 @@ impl MachineBus {
                 width: AccessWidth::Byte,
                 value: u64::from(value),
             }),
-            |_| {},
+            &mut committed_write,
         );
         match write.outcome {
             Ok(TrackedAccessOutcome::Written) => Ok(actual),
@@ -1163,6 +1198,175 @@ mod tests {
             .unwrap();
         assert_eq!(patched.bytes[2], 0xaa);
         assert!(patched.backing_generation > first.backing_generation);
+
+        // Reset walker A/D bits and require the callback API to report the
+        // read preflight's A updates, then the write walk's D update and the
+        // committed operand byte, in architectural operation order.
+        for address in [0x1000, 0x2000, 0x3000, 0x4020] {
+            let entry = bus
+                .read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap();
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                entry & !((1 << 5) | (1 << 6)),
+                |_| {},
+            )
+            .unwrap();
+        }
+        let mut committed = Vec::new();
+        bus.patch_tracked_code_byte_with_callback(
+            &paging,
+            0x4002,
+            GuestPhysicalAddress::new(0x7000),
+            0xbb,
+            AccessContext::default(),
+            |range| committed.push(range),
+        )
+        .unwrap();
+        assert_eq!(
+            committed,
+            [0x1000, 0x2000, 0x3000, 0x4020, 0x4020, 0x7002].map(|address| {
+                GuestPhysicalRange::new(
+                    GuestPhysicalAddress::new(address),
+                    if address == 0x7002 { 1 } else { 8 },
+                )
+                .unwrap()
+            })
+        );
+    }
+
+    #[test]
+    fn tracked_code_callbacks_preserve_commits_before_snapshot_and_patch_errors() {
+        let make_bus = || {
+            let ram = range(0, 0x9000);
+            let map = MachineMemoryMap::new(
+                36,
+                vec![crate::MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)],
+            )
+            .unwrap();
+            let mut bus =
+                MachineBus::new(map, RamLimits::new(0x9000), vec![], vec![], vec![]).unwrap();
+            for (address, value) in [
+                (0x7000, 0x2007), // PML4[0] resides in the code backing page.
+                (0x7400, 0x2007), // PML4[128] is used by the failing fetch.
+                (0x2000, 0x3007),
+                (0x3010, 0x4007),
+                (0x4008, 0x7007),
+            ] {
+                bus.write_physical(
+                    GuestPhysicalAddress::new(address),
+                    AccessWidth::Qword,
+                    value,
+                    |_| {},
+                )
+                .unwrap();
+            }
+            let paging = Long64ProbeConfig::new(
+                0x8001_0033,
+                0x7000,
+                1 << 5,
+                (1 << 8) | (1 << 10) | (1 << 11),
+            )
+            .unwrap();
+            (bus, paging)
+        };
+        let ring3 = AccessContext {
+            privilege: od_isa::memory::PrivilegeLevel::Ring3,
+            ..AccessContext::default()
+        };
+
+        // The fetch sets PML4 and PDPT Accessed bits, then faults on the
+        // absent PD entry. Only those two committed writes are reported.
+        let (mut snapshot_bus, paging) = make_bus();
+        let fault_linear = 0x4000_0000_0000;
+        let mut snapshot_writes = Vec::new();
+        let snapshot_error = snapshot_bus
+            .tracked_code_snapshot_with_callback(&paging, fault_linear, 1, ring3, |range| {
+                snapshot_writes.push(range)
+            })
+            .unwrap_err();
+        assert!(matches!(
+            snapshot_error,
+            TrackedCodeSnapshotError::Access(TrackedAccessError::PageFault { ref record, .. })
+                if record.cr2_value() == fault_linear
+                    && record.fault().error_code == Some(0x14)
+        ));
+        assert_eq!(
+            snapshot_writes,
+            [0x7400, 0x2000].map(|address| {
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+            })
+        );
+
+        // The patch read preflight commits A updates through the root, PDPT,
+        // PDE and read-only PTE, then the write walk faults with #PF(P=1,W=1,U=1).
+        let (mut patch_bus, paging) = make_bus();
+        patch_bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x4008),
+                AccessWidth::Qword,
+                0x7005,
+                |_| {},
+            )
+            .unwrap();
+        let mut patch_writes = Vec::new();
+        let patch_error = patch_bus
+            .patch_tracked_code_byte_with_callback(
+                &paging,
+                0x0040_1202,
+                GuestPhysicalAddress::new(0x7000),
+                0xaa,
+                ring3,
+                |range| patch_writes.push(range),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            patch_error,
+            TrackedCodePatchError::Access(TrackedAccessError::PageFault { ref record, .. })
+                if record.cr2_value() == 0x0040_1202
+                    && record.fault().error_code == Some(0x7)
+        ));
+        assert_eq!(
+            patch_writes,
+            [0x7000, 0x2000, 0x3010, 0x4008].map(|address| {
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+            })
+        );
+        assert_eq!(
+            patch_bus
+                .read_physical(GuestPhysicalAddress::new(0x7000), AccessWidth::Qword)
+                .unwrap(),
+            0x2027
+        );
+
+        // A mismatched expected frame fails after the read preflight. Its A
+        // updates remain observable and no write-walk/operand callback occurs.
+        let (mut mismatch_bus, paging) = make_bus();
+        let mut mismatch_writes = Vec::new();
+        let mismatch = mismatch_bus
+            .patch_tracked_code_byte_with_callback(
+                &paging,
+                0x0040_1202,
+                GuestPhysicalAddress::new(0x8000),
+                0xaa,
+                ring3,
+                |range| mismatch_writes.push(range),
+            )
+            .unwrap_err();
+        assert_eq!(
+            mismatch,
+            TrackedCodePatchError::PhysicalPageMismatch {
+                expected: GuestPhysicalAddress::new(0x8000),
+                actual: GuestPhysicalAddress::new(0x7202),
+            }
+        );
+        assert_eq!(
+            mismatch_writes,
+            [0x7000, 0x2000, 0x3010, 0x4008].map(|address| {
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+            })
+        );
     }
 
     #[test]

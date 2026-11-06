@@ -136,6 +136,27 @@ boundary and within ROM. It does not establish arbitrary writers, remap/TLB,
 active-block retirement, MMIO/DMA or SMP behavior. See the
 [S4-16c report](../reports/STAGE_4_S4-16C_2026-11-06.md).
 
+## Tracked code-walk committed writes (S4-16d)
+
+`tracked_code_snapshot_with_callback` reports physical page-walker writes
+committed while fetching the code snapshot. The callback fires synchronously
+and in walker order; a later translation or physical-memory failure does not
+erase earlier committed A-bit updates. `patch_tracked_code_byte_with_callback`
+reports committed writes from its read preflight, write walk, and requested
+operand byte in actual operation order. A failed patch reports only writes that
+committed before the error; it never reports an uncommitted operand byte. The
+existing callback-free methods delegate to these APIs with a no-op callback.
+
+In `PagedCodeSession`, notifications from both tracked paths are reconciled
+against the captured physical code page before returning either a report or an
+error. If a committed A/D write overlaps that backing, both idle alias caches
+are invalidated synchronously. This does not change page-table permissions,
+translation/TLB semantics, or the ordinary fault classification. The host
+patch-failure fixture observes the read preflight setting the alternate PDE A
+bit at `0x7010` before the write walk faults. The snapshot-failure fixture
+observes the root PML4 A bit at `0x7400` before the later missing-PDE fault. See the
+[S4-16d report](../reports/STAGE_4_S4-16D_2026-11-06.md).
+
 ## Синхронная MMIO/PIO bus
 
 `MachineBus` переиспользует одну `MachineMemoryMap` и один `PhysicalMemory`;

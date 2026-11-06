@@ -660,6 +660,35 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - См. [S4-16c report](../reports/STAGE_4_S4-16C_2026-11-06.md) и
   [manifest](../reports/data/stage4/s4-16c-physical-loader-2026-11-06.json).
 
+#### S4-16d. A/D callbacks snapshot и alias patch доходят до cache invalidation
+
+- `MachineBus` предоставляет callback-варианты tracked code snapshot и
+  one-byte alias patch; прежние API сохраняют поведение через no-op callback.
+  Уведомляются только реально committed физические записи page walker и
+  operand byte в порядке их commit.
+- `PagedCodeSession` собирает уведомления snapshot и patch и вызывает общую
+  `reconcile_code_writes` до возврата результата, в том числе перед
+  распространением snapshot/patch fault и admission/alias ошибок после walk.
+  Поэтому A/D-запись, физически перекрывающая code backing, инвалидирует обе
+  idle alias entries до следующего lookup; неуспешный operand patch не
+  изображается как committed write.
+- Проверено: exact callback order для четырёх Accessed обновлений read preflight,
+  Dirty обновления write walk и committed patch byte; CPL3 write-protection
+  failure: read preflight устанавливает PDE A-bit по `0x7010` в code backing,
+  затем write walk fault-ится; committed A update и исходный patch byte
+  сохраняются, а обе cache entries синхронно удаляются. Fetch fault в
+  другой PML4 ветви после PML4 A update по `0x7400` также удаляет обе entries
+  до Snapshot error. Machine API tests дополнительно проверяют callback ranges
+  и PFEC для snapshot fault (`0x14`), write fault (`0x7`) и физического mismatch.
+  S4-16a/b/c regressions и все `od-machine` unit tests проходят.
+- Независимое ревью завершено; исправлены замечания к точным assertions и
+  evidence. Ограничения прежние: один vCPU, одна физическая
+  code page, fixed paging snapshot и inactive native blocks. Это не добавляет
+  TLB/remap invalidation, cross-page code, arbitrary writers, MMIO/DMA, SMP или
+  active-block retirement. Родительский S4-16 и Stage 4 остаются открытыми.
+- См. [S4-16d report](../reports/STAGE_4_S4-16D_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-16d-tracked-ad-callbacks-2026-11-06.json).
+
 ### S4-17. Собрать локальный memory/fault differential набор
 
 - [ ] Принято после ревью.

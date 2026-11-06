@@ -3652,10 +3652,16 @@ impl<'a> PagedCodeSession<'a> {
         if state.cr3 != Some(self.paging.cr3()) {
             return Err(PagedCodeSessionError::UnsupportedAlias);
         }
-        let snapshot = self
-            .bus
-            .tracked_code_snapshot(&self.paging, linear_start, code_length, self.access_context)
-            .map_err(PagedCodeSessionError::Snapshot)?;
+        let mut committed_writes = Vec::new();
+        let snapshot = self.bus.tracked_code_snapshot_with_callback(
+            &self.paging,
+            linear_start,
+            code_length,
+            self.access_context,
+            |range| committed_writes.push(range),
+        );
+        self.reconcile_code_writes(&committed_writes)?;
+        let snapshot = snapshot.map_err(PagedCodeSessionError::Snapshot)?;
         let code_page_offset = (linear_start & 0xfff) as usize;
         if self
             .backing_page
@@ -3772,33 +3778,17 @@ impl<'a> PagedCodeSession<'a> {
         {
             return Err(PagedCodeSessionError::UnsupportedAlias);
         }
-        let backing = od_jit::translation::BackingId::new(
-            std::num::NonZeroU64::new(base.get() / 0x1000 + 1)
-                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+        let mut committed_writes = Vec::new();
+        let patch = self.bus.patch_tracked_code_byte_with_callback(
+            &self.paging,
+            linear_address,
+            base,
+            value,
+            self.access_context,
+            |range| committed_writes.push(range),
         );
-        self.bus
-            .patch_tracked_code_byte(
-                &self.paging,
-                linear_address,
-                base,
-                value,
-                self.access_context,
-            )
-            .map_err(PagedCodeSessionError::TrackedPatch)?;
-        let generation = self
-            .bus
-            .code_page_generation(base)
-            .map_err(PagedCodeSessionError::Patch)?;
-        let current_version = od_jit::translation::BackingVersion::new(
-            std::num::NonZeroU64::new(generation)
-                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
-        );
-        for cache in &mut self.caches {
-            cache.invalidate(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
-                backing,
-                current_version,
-            });
-        }
+        self.reconcile_code_writes(&committed_writes)?;
+        patch.map_err(PagedCodeSessionError::TrackedPatch)?;
         Ok(())
     }
 
@@ -113600,6 +113590,204 @@ pub(crate) mod tests {
             generation_before_failure
         );
         assert_eq!(session.resident_entries(), 2);
+    }
+
+    #[test]
+    fn s4_16d_tracked_page_walk_writes_reconcile_before_errors() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const FAULTING_ALIAS: u64 = 0x0000_4000_0100_0000;
+        const CR3: u64 = 0x7000;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const CODE_PAGE: u64 = 0x7000;
+        const RAM_BYTES: u64 = 0x9000;
+
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x7000, 0x2007), // PML4[0], physically in code backing.
+            (0x7400, 0x2007), // PML4[128], used by the failing alias fetch.
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x3020, 0x4007),
+            (CODE_PAGE + 0x10, 0x4007), // Unused alternate PD entry.
+            (CODE_PAGE + 0x18, 0x4007),
+            (0x4008, 0x7005), // Read-only code leaf; instruction fetch is allowed.
+            (0x4010, 0x8007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(CODE_PAGE + 0x100), &original)
+            .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(0x8001_0033, CR3, 1 << 5, EFER).unwrap();
+        let ring3 = AccessContext {
+            mode: od_isa::memory::InstructionMode::Long64,
+            privilege: od_isa::memory::PrivilegeLevel::Ring3,
+            origin: od_isa::memory::AccessOrigin::Explicit,
+        };
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let mut session = PagedCodeSession::new(&mut bus, paging, ring3).unwrap();
+        let mut state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut state, 1)
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+
+        // Redirect the PDPT entry through an unused page-directory table that
+        // lives in the code backing. This changes only the non-code PDPT page;
+        // the first walk through the alternate PDE commits its A bit into the
+        // backing, then the read-only leaf faults on the requested write.
+        let generation_before_remap = session
+            .bus
+            .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+            .unwrap();
+        session
+            .bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x2000),
+                AccessWidth::Qword,
+                CODE_PAGE | 0x7,
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+                .unwrap(),
+            generation_before_remap,
+            "fixture remap must not change the code backing"
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(
+                    GuestPhysicalAddress::new(CODE_PAGE + 0x10),
+                    AccessWidth::Qword,
+                )
+                .unwrap(),
+            0x4007,
+            "alternate PDE Accessed bit must start clear"
+        );
+        let generation_before_patch = session
+            .bus
+            .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+        assert!(matches!(
+            session.patch_alias_byte(ALIAS_A + 2, 0xaa),
+            Err(PagedCodeSessionError::TrackedPatch(_))
+        ));
+        assert_eq!(session.resident_entries(), 0);
+        assert!(
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+                .unwrap()
+                > generation_before_patch
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(
+                    GuestPhysicalAddress::new(CODE_PAGE + 0x102),
+                    AccessWidth::Byte,
+                )
+                .unwrap(),
+            u64::from(original[2])
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(
+                    GuestPhysicalAddress::new(CODE_PAGE + 0x10),
+                    AccessWidth::Qword,
+                )
+                .unwrap(),
+            0x4027,
+            "the alternate PDE's committed A update must remain visible"
+        );
+
+        // Rewarm both aliases, then fetch through the unused PML4 branch. Its
+        // root entry was prepared before execution and remains untouched until
+        // this fetch, which commits A into the code page before a missing PDE.
+        state.rip = ALIAS_A;
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut state, 1)
+            .unwrap();
+        state.rip = ALIAS_A;
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+        let generation_before_fetch = session
+            .bus
+            .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+            .unwrap();
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x7400), AccessWidth::Qword)
+                .unwrap(),
+            0x2007,
+            "the unused PML4 branch must still have A=0 before the fetch"
+        );
+        let mut faulting_state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: FAULTING_ALIAS,
+            ..Default::default()
+        };
+        let faulting_before = faulting_state.clone();
+        assert!(matches!(
+            session.execute_alias(FAULTING_ALIAS, original.len(), &mut faulting_state, 1,),
+            Err(PagedCodeSessionError::Snapshot(_))
+        ));
+        assert_eq!(faulting_state, faulting_before);
+        assert_eq!(session.resident_entries(), 0);
+        assert!(
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+                .unwrap()
+                > generation_before_fetch
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x7400), AccessWidth::Qword)
+                .unwrap(),
+            0x2027,
+            "the failed fetch's committed root A update must remain visible"
+        );
     }
 
     #[test]

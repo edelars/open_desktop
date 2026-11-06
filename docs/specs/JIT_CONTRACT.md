@@ -4515,8 +4515,10 @@ code backing, those effects can change code bytes and their page generation even
 when the patch is rejected. That overlap is outside this slice's fail-with-unchanged-code
 guarantee. Every later lookup captures fresh bytes and generation and
 invalidates the selected alias entry before dispatch, preventing execution of
-an obsolete cached block. An idle alias entry may remain resident until that
-alias is looked up again.
+an obsolete cached block. Before S4-16d, another idle alias entry could remain
+resident after a page-table A/D write until its next lookup. S4-16d forwards
+tracked snapshot and patch callbacks into synchronous invalidation of both idle
+aliases when the committed write overlaps their code backing.
 
 The existing synchronous NativeRegisterV1 dispatcher is fixture-profiled and
 rejects a populated CR3. This bounded host adapter runs it against a local copy
@@ -4598,3 +4600,28 @@ remap/TLB, cross-page code, MMIO/DMA, SMP or mutation of an active native block.
 The path is synchronous and only admits writes while native code is inactive;
 performance is not measured. Parent S4-16 remains open. See the
 [S4-16c report](../reports/STAGE_4_S4-16C_2026-11-06.md).
+
+### S4-16d: tracked snapshot and loader-patch A/D notifications
+
+The callback-bearing machine APIs report only physical writes that actually
+committed, in operation order. A snapshot may report page-walker Accessed
+updates before a later translation fault. A tracked alias patch may report
+Accessed/Dirty updates committed by its read preflight/write walk before an
+error; the requested code byte is reported only when that byte commits.
+
+`PagedCodeSession::execute_alias` and `patch_alias_byte` collect these ranges
+and invoke the shared code-page reconciliation before propagating a snapshot,
+mapping/admission, or patch result. An overlapping committed A/D write updates
+the backing generation view and invalidates both idle alias entries before the
+next lookup, even when the guest operation returns a fault. A failed patch does
+not imply that its operand byte committed. The callback-free machine methods
+remain wrappers around the same tracked behavior.
+
+The S4-16d tests cover ordered A/D and operand callbacks on success. In the
+CPL3 write-protection case, the read preflight sets the alternate PDE A bit at
+`0x7010` in the code page before the write walk faults. In the snapshot case,
+the walk sets the unused PML4 A bit at `0x7400` in the code page before a later
+missing-PDE fault. They do not imply TLB
+invalidation, mapping-change handling, cross-page code, or active-block
+retirement; parent S4-16 remains open. See the
+[S4-16d report](../reports/STAGE_4_S4-16D_2026-11-06.md).
