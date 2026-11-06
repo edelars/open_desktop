@@ -5,6 +5,7 @@ mod diagnostic_vcpu;
 mod event_queue;
 mod identity_memory_adapter;
 mod page_walk;
+mod paged_descriptor;
 mod paged_memory_adapter;
 mod paged_pio_step;
 mod paged_probe;
@@ -43,6 +44,7 @@ pub use page_walk::{
     probe_instruction_access, probe_long64_4k,
 };
 
+pub use paged_descriptor::{PagedLidtError, PagedLidtReport, step_paged_lidt};
 pub use paged_memory_adapter::{
     PagedMovStepError, PagedMovStepReport, step_paged_mov, step_paged_mov_dword_read,
     step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch,

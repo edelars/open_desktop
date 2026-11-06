@@ -85,3 +85,11 @@ WP=1. Ошибки сверки после retirement очищают cache и о
 Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости
 добавлять вместе с фактическим использованием.
+
+S4-18a adds `step_paged_lidt`, which executes the fixed CPU LIDT profile
+through the tracked Long64 walker. The descriptor is read once as ten bytes
+from RAM within one guest page; A-bit writes and their callbacks reflect the
+walks actually completed, while the descriptor read sets no D bit. Crossing
+sources and physical holes fail before CPU commit; the adapter does not route
+to MMIO/PIO, and the loaded IDT base is not walked. This does not add table
+gate handling or exception delivery. Review is pending; see the [machine contract](../../docs/specs/MACHINE_CONTRACT.md#paged-lidt-adapter-s4-18a).

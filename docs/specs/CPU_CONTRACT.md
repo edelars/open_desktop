@@ -20086,3 +20086,27 @@ Vol. 3A §16.1.3/Table 16-1 (legacy prerequisite gates),
 The VEX-only Type 2 table is not this legacy alignment contract. See the
 [plan](../plans/STAGE_2.md#s2-38ba--exact-legacy-long64-cvtdq2ps-xmm0-m128-rax-with-unmasked-exceptions)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ba-cvtdq2ps-m128-memory-unmasked-profile).
+
+### Paged `LIDT` entry `PagedLidtLong64V1` (S4-18a)
+
+`step_paged_lidt` is a separate exact entry with the bare `0F 01 5C 24 ib`
+encoding and existing `load_idtr` semantics. It fixes Long64,
+CR0=`0x80010033`, CR4=`0x20`, EFER=`0xd00`, physical36/four-level/4 KiB
+paging, and requires `state.idtr == Some(_)`. The source is SS:RSP plus the
+signed displacement; the machine adapter admits a complete ten-byte range
+inside one guest page, with the complete source span canonical.
+
+To keep the complete instruction fetch within the profile's bounded fetch
+page, instruction starts whose page offset is `0xff2` through `0xfff` are
+rejected before any fetch. Offset `0xff1` remains admitted and can fetch all
+five bytes from the current page.
+
+The entry reuses the existing decoder and pseudo-descriptor loader. It fetches
+the complete instruction before operand access, raises `#UD` for exact LOCK
+after full fetch, reports fetch faults before operand faults, and raises
+`#GP(0)` for CPL1–3 before descriptor access. A halted CPU returns `Halted`
+without fetching; a blocking STI shadow is rejected before fetch. Success
+changes only IDTR and RIP, retires once, and preserves other CPU state and
+RFLAGS definedness. Descriptor-source faults leave CPU state unchanged. The
+loaded IDT base is not walked. Other encodings and control states remain
+unsupported.

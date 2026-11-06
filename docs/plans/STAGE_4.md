@@ -540,6 +540,22 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** valid/invalid selector, table limit, not-present, ошибочный type, fault при чтении таблицы и нужный stack switch. Отдельно подтвердить, что давно существующий setter не подменяет guest instruction.
 - **Готово:** обязательные формы manifest исполняются; ошибки классифицируются как архитектурные `#GP/#SS/#NP/#TS/#PF` по выбранному стандарту.
 
+#### S4-18a — bounded paged LIDT
+
+- [x] Реализация и независимое ревью пройдены; срез принят.
+- **Где:** `od-isa` exact `PagedLidtLong64V1`; `od-machine` tracked RAM adapter.
+- **Сделать:** принимать только `0F 01 5C 24 ib` при фиксированных Long64
+  control state; читать SS:RSP+sign-extended disp8 как один RAM-only 10-byte
+  pseudo-descriptor внутри одной guest page. Сохранять фактические fetch/operand
+  A updates, не устанавливать D и не обходить loaded IDT base.
+- **Проверка:** nonidentity и signed disp8, atomic state commit, точный operand
+  #PF после fetch, LOCK #UD/truncated fetch ordering, CPL #GP, crossing and
+  noncanonical source, hole/backend separation, no-MMIO path, exact callbacks
+  and PTE snapshots. Исполнение gate checks, descriptor caching, delivery and
+  cross-page descriptor reads остаются за пределами этого среза.
+- **Результат:** [S4-18a report](../reports/STAGE_4_S4-18A_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-18a-paged-lidt-2026-11-06.json).
+
 ### S4-19. Доставка исключений и восстановление после fault
 
 - [ ] Принято после ревью.

@@ -2095,6 +2095,10 @@ pub struct MovCr3Long64V1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MovCr3WpLong64V1;
 
+/// Exact opt-in CPU profile for paged `LIDT [RSP+sign_extend(disp8)]`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedLidtLong64V1;
+
 /// Exact opt-in CPU profile for one bare `MOV CR0, RAX` WP toggle in Long64.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MovCr0WpLong64V1;
@@ -16141,6 +16145,193 @@ pub fn step_mov_cr3_wp(
         Cr0Profile::MovCr3WpLong64V1,
         Cr4Profile::MovCr3WpLong64V1,
     )
+}
+
+/// Execute exactly one bare `0F 01 5C 24 ib` LIDT under the fixed paged
+/// Long64 profile. LOCK is allowed through decode only to produce architectural
+/// #UD after its complete six-byte encoding has been fetched.
+pub fn step_paged_lidt(
+    _profile: PagedLidtLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state.cr3.is_none_or(|cr3| cr3 >> 36 != 0)
+        || state.idtr.is_none()
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+    if state.rip & 0xfff >= 0xff2 {
+        return result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0);
+    }
+
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let mut fetch_capture = FetchCapture::new(memory);
+    let decoded = long_decode::decode(&mut fetch_capture, state.rip, context);
+    let raw = fetch_capture.captured_bytes();
+    let regular = decoded.as_ref().is_ok_and(|instruction| {
+        instruction.length == 5
+            && matches!(
+                instruction.operation,
+                long_decode::Operation::LoadIdtr { .. }
+            )
+            && raw.len() == 5
+            && raw.starts_with(&[0x0f, 0x01, 0x5c, 0x24])
+    });
+    let locked_ud = matches!(
+        &decoded,
+        Err(long_decode::DecodeError::Invalid { length: 6, .. })
+            if raw.as_slice().starts_with(&[0xf0, 0x0f, 0x01, 0x5c, 0x24]) && raw.len() == 6
+    );
+    if !regular && !locked_ud {
+        return match decoded {
+            Err(long_decode::DecodeError::Memory(MemoryError::Architectural(fault))) => {
+                result(PagedProbeExit::Fault(fault), 0)
+            }
+            Err(long_decode::DecodeError::Memory(error)) => {
+                result(PagedProbeExit::Backend(error), 0)
+            }
+            _ => result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0),
+        };
+    }
+
+    if locked_ud {
+        return result(
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return result(
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+    drop(fetch_capture);
+    let Ok(long_decode::Instruction {
+        operation: long_decode::Operation::LoadIdtr { source },
+        ..
+    }) = decoded
+    else {
+        unreachable!("the exact LIDT byte gate matches the decoded operation")
+    };
+    let next_rip = state.rip.wrapping_add(5);
+    match load_idtr(state, memory, context, next_rip, source) {
+        Ok(()) => {
+            state.rip = next_rip;
+            result(PagedProbeExit::Retired, 1)
+        }
+        Err(MemoryError::Architectural(fault)) => result(PagedProbeExit::Fault(fault), 0),
+        Err(error) => result(PagedProbeExit::Backend(error), 0),
+    }
+}
+
+struct FetchCapture<'a, M> {
+    inner: &'a mut M,
+    bytes: Vec<(u64, u8)>,
+}
+
+impl<'a, M> FetchCapture<'a, M> {
+    fn new(inner: &'a mut M) -> Self {
+        Self {
+            inner,
+            bytes: Vec::new(),
+        }
+    }
+
+    fn captured_bytes(&self) -> Vec<u8> {
+        self.bytes.iter().map(|(_, byte)| *byte).collect()
+    }
+}
+
+impl<M: GuestMemory> GuestMemory for FetchCapture<'_, M> {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        let byte = self.inner.fetch(address, context)?;
+        self.bytes.push((address, byte));
+        Ok(byte)
+    }
+    fn read(&mut self, a: u64, c: AccessContext, d: &mut [u8]) -> Result<(), MemoryError> {
+        self.inner.read(a, c, d)
+    }
+    fn write(&mut self, a: u64, c: AccessContext, s: &[u8]) -> Result<(), MemoryError> {
+        self.inner.write(a, c, s)
+    }
+    fn atomic_exchange_integer(
+        &mut self,
+        a: u64,
+        c: AccessContext,
+        z: OperandSize,
+        r: u64,
+    ) -> Result<u64, MemoryError> {
+        self.inner.atomic_exchange_integer(a, c, z, r)
+    }
+    fn atomic_fetch_add_integer(
+        &mut self,
+        a: u64,
+        c: AccessContext,
+        z: OperandSize,
+        r: u64,
+    ) -> Result<u64, MemoryError> {
+        self.inner.atomic_fetch_add_integer(a, c, z, r)
+    }
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        a: u64,
+        c: AccessContext,
+        z: OperandSize,
+        e: u64,
+        r: u64,
+    ) -> Result<u64, MemoryError> {
+        self.inner.atomic_compare_exchange_integer(a, c, z, e, r)
+    }
+    fn mfence(&mut self, c: AccessContext) -> Result<(), MemoryError> {
+        self.inner.mfence(c)
+    }
 }
 
 fn step_mov_cr3_with_profiles(
@@ -146656,6 +146847,331 @@ mod tests {
 
     fn lidt_code() -> [u8; 5] {
         [0x0f, 0x01, 0x5c, 0x24, 0x06]
+    }
+
+    fn paged_lidt_state() -> LongModeState {
+        let mut state = lidt_state(0x1000);
+        state.cr0 = Some(Cr0Profile::BASE);
+        state.cr3 = Some(0x1000);
+        state.cr4 = Some(Cr4Profile::BASE);
+        state.activity = Some(crate::CpuActivity::Running);
+        state.sti_shadow = Some(crate::StiShadow::Clear);
+        state
+    }
+
+    #[test]
+    fn paged_lidt_decodes_each_exact_fetch_once_and_preserves_defined_flags() {
+        let mut state = paged_lidt_state();
+        let mut memory = Memory::at(&lidt_code(), state.rip);
+        memory.bytes[6..8].copy_from_slice(&0x55aau16.to_le_bytes());
+        memory.bytes[8..16].copy_from_slice(&0xffff_8000_0000_1000u64.to_le_bytes());
+        let before = state.clone();
+        let defined = crate::INTEGER_FLAGS & !crate::ZF;
+        let result = step_paged_lidt(
+            PagedLidtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            defined,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(memory.fetches, [0x1000, 0x1001, 0x1002, 0x1003, 0x1004]);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1006, 10)]);
+        let mut expected = before;
+        expected.rip += 5;
+        expected.idtr = Some(crate::state::Idtr {
+            base: 0xffff_8000_0000_1000,
+            limit: 0x55aa,
+        });
+        assert_eq!(state, expected);
+    }
+
+    #[test]
+    fn paged_lidt_preserves_lock_fetch_precedence_and_rejects_control_state_before_fetch() {
+        let mut state = paged_lidt_state();
+        let mut memory = Memory::at(&[0xf0, 0x0f, 0x01, 0x5c, 0x24, 0x06], state.rip);
+        let result = step_paged_lidt(
+            PagedLidtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(
+            memory.fetches,
+            [0x1000, 0x1001, 0x1002, 0x1003, 0x1004, 0x1005]
+        );
+        assert!(memory.accesses.is_empty());
+
+        let mut state = paged_lidt_state();
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xf0, 0x0f, 0x01, 0x5c, 0x24, 0x06], state.rip);
+        memory.fetch_error = Some((
+            state.rip + 5,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(16),
+                linear_address: Some(state.rip + 5),
+            }),
+        ));
+        let result = step_paged_lidt(
+            PagedLidtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(16),
+                linear_address: Some(before.rip + 5),
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            memory.fetches,
+            [
+                before.rip,
+                before.rip + 1,
+                before.rip + 2,
+                before.rip + 3,
+                before.rip + 4,
+                before.rip + 5
+            ]
+        );
+        assert!(memory.accesses.is_empty());
+
+        let mut state = paged_lidt_state();
+        let before = state.clone();
+        let mut memory = Memory::at(&lidt_code(), state.rip);
+        memory.fetch_error = Some((
+            state.rip + 4,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(16),
+                linear_address: Some(state.rip + 4),
+            }),
+        ));
+        let result = step_paged_lidt(
+            PagedLidtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(16),
+                linear_address: Some(before.rip + 4),
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            memory.fetches,
+            [
+                before.rip,
+                before.rip + 1,
+                before.rip + 2,
+                before.rip + 3,
+                before.rip + 4
+            ]
+        );
+        assert!(memory.accesses.is_empty());
+
+        let mut state = paged_lidt_state();
+        state.cr4 = Some(Cr4Profile::BASE | (1 << 9));
+        let before = state.clone();
+        let mut memory = Memory::at(&lidt_code(), state.rip);
+        let result = step_paged_lidt(
+            PagedLidtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert!(matches!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile)
+        ));
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn paged_lidt_rip_boundary_admits_ff1_and_rejects_ff2_before_fetch() {
+        let mut state = paged_lidt_state();
+        state.rip = 0x1ff1;
+        let mut memory = Memory::at(&lidt_code(), state.rip);
+        memory.bytes[6..8].copy_from_slice(&0x55aau16.to_le_bytes());
+        memory.bytes[8..16].copy_from_slice(&0xffff_8000_0000_1000u64.to_le_bytes());
+        let result = step_paged_lidt(
+            PagedLidtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(memory.fetches, [0x1ff1, 0x1ff2, 0x1ff3, 0x1ff4, 0x1ff5]);
+
+        let mut state = paged_lidt_state();
+        state.rip = 0x1ff2;
+        let before = state.clone();
+        let mut memory = Memory::at(&lidt_code(), state.rip);
+        let result = step_paged_lidt(
+            PagedLidtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x0f });
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn paged_lidt_halted_and_blocking_sti_shadow_stop_before_fetch() {
+        let mut state = paged_lidt_state();
+        state.activity = Some(crate::CpuActivity::Halted);
+        let before = state.clone();
+        let mut memory = Memory::at(&lidt_code(), state.rip);
+        let result = step_paged_lidt(
+            PagedLidtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Halted);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+        assert!(memory.accesses.is_empty());
+
+        let mut state = paged_lidt_state();
+        state.sti_shadow = Some(crate::StiShadow::Blocking);
+        let before = state.clone();
+        let mut memory = Memory::at(&lidt_code(), state.rip);
+        let result = step_paged_lidt(
+            PagedLidtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::StiShadowActive)
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn paged_lidt_rejects_each_profile_gate_without_memory_access() {
+        let assert_rejected =
+            |mut state: LongModeState,
+             context: AccessContext,
+             efer: u64,
+             defined: u64,
+             expected: PagedProbeExit<std::convert::Infallible>| {
+                let before = state.clone();
+                let mut memory = Memory::at(&lidt_code(), state.rip);
+                let result = step_paged_lidt(
+                    PagedLidtLong64V1,
+                    &mut state,
+                    &mut memory,
+                    context,
+                    efer,
+                    defined,
+                );
+                assert_eq!(result.exit, expected);
+                assert_eq!(state, before);
+                assert!(memory.fetches.is_empty());
+                assert!(memory.accesses.is_empty());
+            };
+        let context = lgdt_ring0();
+        let profile_rejection =
+            PagedProbeExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile);
+
+        let mut state = paged_lidt_state();
+        state.cr0 = Some(Cr0Profile::BASE ^ 1);
+        assert_rejected(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        let mut state = paged_lidt_state();
+        state.cr3 = Some(1 << 36);
+        assert_rejected(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        let mut state = paged_lidt_state();
+        state.cr4 = Some(Cr4Profile::BASE | (1 << 9));
+        assert_rejected(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        assert_rejected(
+            paged_lidt_state(),
+            context,
+            0xd01,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        let mut state = paged_lidt_state();
+        state.idtr = None;
+        assert_rejected(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection,
+        );
+
+        assert_rejected(
+            paged_lidt_state(),
+            context,
+            0xd00,
+            1 << 63,
+            PagedProbeExit::Rejected(PagedProbeRejection::InvalidRflagsDefined { value: 1 << 63 }),
+        );
     }
 
     #[test]

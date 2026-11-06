@@ -529,15 +529,22 @@ pub struct InstructionProbeReport {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RamAccessOperation {
     Fetch,
-    Read { width: AccessWidth },
-    Write { width: AccessWidth, value: u64 },
+    Read {
+        width: AccessWidth,
+    },
+    /// One bounded 10-byte LIDT/LGDT pseudo-descriptor read from RAM.
+    ReadPseudoDescriptor,
+    Write {
+        width: AccessWidth,
+        value: u64,
+    },
 }
 
 impl RamAccessOperation {
     const fn access_kind(self) -> AccessKind {
         match self {
             Self::Fetch => AccessKind::Fetch,
-            Self::Read { .. } => AccessKind::Read,
+            Self::Read { .. } | Self::ReadPseudoDescriptor => AccessKind::Read,
             Self::Write { .. } => AccessKind::Write,
         }
     }
@@ -546,6 +553,7 @@ impl RamAccessOperation {
         match self {
             Self::Fetch => 1,
             Self::Read { width } | Self::Write { width, .. } => width.bytes(),
+            Self::ReadPseudoDescriptor => 10,
         }
     }
 }
@@ -577,6 +585,7 @@ pub struct AdUpdate {
 pub enum TrackedAccessOutcome {
     Fetched(u8),
     Read(u64),
+    ReadPseudoDescriptor([u8; 10]),
     Written,
 }
 
@@ -1144,6 +1153,26 @@ fn access_long64_4k_internal_with_writer(
         return match memory.read_u8(physical) {
             Ok(value) => TrackedAccessReport {
                 outcome: Ok(TrackedAccessOutcome::Fetched(value)),
+                trace,
+                ad_updates,
+                ad_update_count,
+            },
+            Err(source) => fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            ),
+        };
+    }
+    if request.operation == RamAccessOperation::ReadPseudoDescriptor {
+        let mut bytes = [0u8; 10];
+        return match memory.read_bytes(physical, &mut bytes) {
+            Ok(()) => TrackedAccessReport {
+                outcome: Ok(TrackedAccessOutcome::ReadPseudoDescriptor(bytes)),
                 trace,
                 ad_updates,
                 ad_update_count,

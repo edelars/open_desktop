@@ -272,9 +272,23 @@ impl MachineBus {
                     RamAccessOperation::Fetch => Err(crate::page_walk::MmioDispatchError::Backend(
                         "instruction fetch from MMIO is unsupported".to_owned(),
                     )),
+                    RamAccessOperation::ReadPseudoDescriptor => {
+                        Err(crate::page_walk::MmioDispatchError::Backend(
+                            "pseudo-descriptor reads are RAM-only".to_owned(),
+                        ))
+                    }
                 }
             },
         )
+    }
+
+    pub(crate) fn access_tracked_ram(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        request: TrackedAccessRequest,
+        committed_write: impl FnMut(GuestPhysicalRange),
+    ) -> TrackedAccessReport {
+        crate::page_walk::access_long64_4k_ram(&mut self.memory, paging, request, committed_write)
     }
 
     pub(crate) fn read_tracked_bounded_ram_read(

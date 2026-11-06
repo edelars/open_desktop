@@ -1026,3 +1026,19 @@ polling UART and halting. Result acceptance checks the stored qword and RAX;
 HLT alone does not pass. The older S4-32 loaders continue to require their
 original non-alias layouts. This evidence covers uncached interpreter access,
 not TLB/JIT invalidation, cross-page access, or system acceptance.
+
+## Paged `LIDT` adapter (S4-18a)
+
+`step_paged_lidt` composes the exact `PagedLidtLong64V1` CPU entry with the
+uncached tracked four-level walker. Instruction fetches and the operand walk
+commit the actual page-table Accessed-bit writes and report each committed
+eight-byte range; the descriptor read does not set Dirty. The operand is one
+RAM-only ten-byte read contained in one 4 KiB guest page. A page-crossing
+source is rejected before an operand walk, and a noncanonical full SS-based
+range faults before operand access. Physical holes remain backend errors;
+this adapter never dispatches MMIO/PIO. CPU state changes only after the full
+descriptor read and canonical base check, and the loaded IDT base is not
+translated. Tests compare exact callback ranges, relevant page-table entries,
+fault metadata and full CPU state. This bounded slice does not implement LGDT,
+descriptor caching, IDT gate checks, exception delivery, cross-page descriptor
+reads, or production paging ownership. Independent review is pending.
