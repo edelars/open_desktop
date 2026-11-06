@@ -79,6 +79,7 @@ pub use uart16550::{Uart16550Handle, Uart16550PollingTx};
 
 #[cfg(feature = "experimental-translation-probe-cache")]
 pub use translation_probe_cache::{
+    MutableTranslationProbeSession, MutableTranslationSessionError,
     TranslationInvalidationConsumption, TranslationProbeCache, TranslationProbeCacheOutcome,
     consume_translation_invalidation,
 };

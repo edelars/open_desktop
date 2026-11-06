@@ -681,6 +681,36 @@ invalidation, tracked A/D, JIT or production TLB behavior. The existing
 S4-14a drop–mutate–recreate rule remains in force for page-table writes.
 See the [CPU contract](CPU_CONTRACT.md#standalone-invlpg-profile-invlpglong64v1-s4-14b).
 
+### Mutable diagnostic session (S4-14c)
+
+The feature-gated `MutableTranslationProbeSession` is a separate bounded
+experiment that exclusively borrows `&mut PhysicalMemory` for one vCPU and one
+fixed S4-14b Long64/canonical48/physical36/four-level/4 KiB profile. It shares
+the cache's private values-only one-entry state; the immutable
+`TranslationProbeCache` keeps its existing borrow contract. No mutable memory
+reference, cache entry reference or reusable access handle escapes the session.
+
+`write_pte` accepts only 8-byte-aligned physical addresses whose full
+`[address, address + 8)` range is inside physical36, then delegates to checked
+`PhysicalMemory::write_u64`. Successful writes commit and notify once;
+failed alignment/range/region writes leave RAM unchanged and do not notify.
+Neither successful nor failed writes implicitly invalidate the entry. The
+standalone INVLPG entry fetches instruction bytes through a pure walker over
+the current memory, bypassing the resident cache and producing no A/D writes.
+Only a retired CPL0 canonical invalidation effect is consumed synchronously;
+it clears the full entry before control returns. Faults, fetch failures and
+noncanonical no-ops preserve it. A CPU CR3 that differs from the session
+snapshot is rejected before fetch.
+
+Acceptance covers a same-session `Walk → Hit → PTE remap → INVLPG → Walk → Hit`,
+write-permission tighten/relax with exact page-fault metadata, failed-write
+callbacks, and cache preservation on non-retiring/non-invalidating instruction
+paths. Fetch-only lookup and invalidation remain diagnostic pure probes, not
+tracked memory accesses. This does not implement cached tracked A/D, guest
+stores, CR3/reset transitions, generations, huge pages, PCID/global semantics,
+DMA/SMP/JIT integration, or production TLB behavior. See the
+[S4-14c report](../reports/STAGE_4_S4-14C_2026-11-05.md).
+
 ## Bounded diagnostic vCPU session boundary
 
 S4-21a добавляет `DiagnosticVcpuSession` как синхронную caller-driven оболочку

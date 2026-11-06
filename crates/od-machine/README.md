@@ -44,9 +44,15 @@ split/transaction semantics и CPU restart/REP/RMW integration ещё не
 S4-14a закрепляет host-controlled `clear`/drop-and-recreate lifecycle. S4-14b
 добавляет отдельный CPU `INVLPG [RBX]` effect и feature-gated потребитель,
 который очищает experimental one-entry cache перед следующим lookup. Это не
-соединяет cache с tracked mutable memory: remap/изменение прав по-прежнему
-требуют завершить immutable borrow и создать новый cache; CR3/EFER invalidation,
-production TLB и CPU/JIT hooks остаются открыты.
+меняет контракт отдельного immutable cache. S4-14c добавляет рядом
+feature-gated `MutableTranslationProbeSession`, эксклюзивно заимствующую один
+`PhysicalMemory` и сохраняющую только values-only pure translation. Checked
+aligned PTE writes не очищают cache; только retired canonical INVLPG effect
+синхронно очищает его. Fetch обходится без resident entry и не пишет A/D.
+Remap и R/W permission refresh проверяются в одной сессии. Это ограниченный
+диагностический эксперимент, а не tracked-access cache или production TLB;
+CR3/reset transitions, tracked A/D, JIT hooks, huge pages, PCID/global и
+DMA/SMP остаются вне реализации.
 Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости
 добавлять вместе с фактическим использованием.

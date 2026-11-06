@@ -1838,3 +1838,25 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Суть и последствия:** Several Stage 3 reports linked to run summaries, manifests, and diagnostic attempts under `work/stage3-harness/` or `work/stage1-harness/` that were absent from this checkout. The reports could not be opened locally until those files were restored.
 - **Основание и результат:** all 21 files reported as broken by `python3 tools/check_layout.py` were found in `/Users/senya/.codex/worktrees/stage3-baseline/open_desktop` and copied to the same relative `work/` paths in the main worktree. The layout checker now passes: `Layout OK: 48 required directories, 6 crate scaffolds, 14 instruction scopes.`
 - **Граница:** `work/` remains Git-ignored, so these local evidence files are available in this main worktree but are not part of the source commit. If portable evidence is needed, curate the required records into `docs/reports/data/stage3/` under the project's evidence policy.
+
+<a id="issue-055-workspace-check-invalidmovcr0lock"></a>
+
+### ISSUE-055 — Workspace check does not handle the InvalidMovCr0Lock decode error
+
+- **Дата обнаружения:** 2026-11-05.
+- **Компонент:** `od-jit` decode-error classification in `block.rs` and `memory_dispatch.rs`.
+- **Статус:** открыта; workspace compile blocker observed while validating S4-14c, outside the files changed by this slice.
+- **Суть и последствия:** `cargo check --workspace --all-targets --offline` fails because two exhaustive matches do not cover `od_isa::long_decode::DecodeError::InvalidMovCr0Lock`. This blocks workspace-wide build validation; the affected cases are independent of the new `od-machine` mutable session.
+- **Основание:** compiler diagnostics at `crates/od-jit/src/block.rs:8537` and `crates/od-jit/src/memory_dispatch.rs:1698`. In contrast, `cargo check -p od-machine --all-targets --locked --offline` succeeds with the cache feature both disabled and enabled.
+- **Следующий шаг:** add the appropriate unsupported/error classification for `InvalidMovCr0Lock` at both consumers and a focused `od-jit` regression, then rerun the workspace all-target check. This issue is not fixed by S4-14c.
+
+<a id="issue-056-layout-check-unmapped-smoke-root"></a>
+
+### ISSUE-056 — Layout checker rejects the root smoke directory
+
+- **Дата обнаружения:** 2026-11-05.
+- **Компонент:** repository root layout and `tools/check_layout.py`.
+- **Статус:** открыта; verified repository-layout failure, not a runtime defect.
+- **Суть и последствия:** the main checkout contains a root `smoke/` directory that is not mapped by the project layout, so the layout check exits unsuccessfully. The directory was left untouched as requested; this slice does not change its ownership or contents.
+- **Основание:** running `python3 tools/check_layout.py` from `/Users/senya/projects/open_desktop` returned `ERROR: Unmapped root directory: smoke` (exit code 1).
+- **Следующий шаг:** determine the intended owner and purpose of root `smoke/`, then update the project layout or directory placement in a separately scoped change. Do not silently remove or remap it as part of S4-14c.
