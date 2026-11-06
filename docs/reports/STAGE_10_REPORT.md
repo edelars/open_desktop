@@ -14,7 +14,8 @@
 | Ревью пройдено, задача выполнена по своему критерию | 2 | S10-00, S10-01 |
 | Ревью пройдено (контракт, без кода) | 1 | S10-02 |
 | Ревью пройдено (код od-machine) | 1 | S10-03 |
-| `not_started` | 31 | остальные задачи, см. таблицу ниже |
+| Ревью пройдено (код od-host + ABI) | 1 | S10-04 |
+| `not_started` | 30 | остальные задачи, см. таблицу ниже |
 
 Чекбоксы `[ ]` в плане не отмечены: по `STAGE_10.md` §0 отмечаются только после ревью.
 
@@ -26,7 +27,7 @@
 | S10-01 | ревью пройдено | (см. коммит ниже) | субагент Opus, замечания учтены | Методика и эталоны |
 | S10-02 | ревью пройдено (контракт, без кода) | (см. коммит ниже) | ревью 1: major 1, minor 8; ревью 2: blocker и major нет, minor учтены | Контракт дисплейного устройства |
 | S10-03 | ревью пройдено (код в od-machine, тесты OK) | (см. коммит ниже) | ревью 1: blocker/major нет, minor 4 — исправлены, повторного ревью не было | Модель устройства в `od-machine` |
-| S10-04 | not_started | — | — | `od-host` и C ABI |
+| S10-04 | ревью пройдено (код od-host + ABI) | (см. коммит ниже) | ревью 1: minor 3 — исправлены; повторного ревью не было | `od-host` и C ABI; см. раздел S10-04 |
 | S10-05 | not_started | — | — | Транспорт кадров |
 | S10-06 | not_started | — | — | Публикация кадров из VMHost |
 | S10-07 | not_started | — | — | Окно и Metal view |
@@ -104,6 +105,14 @@
 - Ревью: независимый субагент (Opus, medium): blocker и major нет; minor исправлены (текст о типе ошибки fetch, проверка всех MMIO-привязок дисплея, checked-сравнение смещения, тесты приоритета ошибок размера над форматом). Повторного ревью после minor-правок не проводилось; их покрывают тесты.
 - Отклонения и открытые вопросы: `current_mode()` возвращает структуру с нулевыми полями как «режима нет» (а не `Option`); `read_frame_into` принимает `&MachineBus`, `ModeChanged` в штатном вызове недостижим и проверяется через внутренний хук; handle не привязан к шине кодом (только документом); блокер S10-08 (dword MMIO в tracked paged-пути) не тронут.
 - Не сверено с `main`: пункты §7.4 (а)–(д) контракта (page generations, `tracked_code_snapshot`, JIT-путь od-host). На этой ветке эквивалентных механизмов нет; тестов «code-API отвергает Framebuffer» нет.
+
+### S10-04. Кадр через `od-host` и C ABI — ревью пройдено
+
+- Файлы: `crates/od-host/src/display.rs` (новый: opaque handle, `od_display_session_create/destroy/mode/read_frame/step`, 12 unit-тестов); `crates/od-host/src/lib.rs` (одна строка `mod display;`); `crates/od-host/Cargo.toml` и `Cargo.lock` (path-зависимость `od-machine`); `include/open_desktop/display_abi_v1.h` (новый); `docs/specs/DISPLAY_HOST_ABI_V1.md` (новый). `host_abi.h`, `session_abi_v1.h` и их реализации не тронуты.
+- **Первое production-использование `od-machine` из `od-host`:** добавлена зависимость `od-machine = { path = "../od-machine" }`; цикла нет (`od-machine` зависит только от `od-isa`).
+- Решения: handle — никогда не переиспользуемый идентификатор из процессного реестра (не указатель), поэтому повторный destroy и подделанный handle дают `INVALID_HANDLE` детерминированно; перекрывающиеся вызовы на одном handle — `BUSY`; panic под `catch_unwind` — `INTERNAL_ERROR`, сессия помечается неисправной; все структуры несут `abi_version`, `struct_size` (в том числе выходные: заполняются вызывающим до вызова); `step` для профиля 1 — `OK` + `outcome = NOTHING_TO_EXECUTE`. Профиль 2 в документе зарезервирован за S10-08, в коде пока `UNSUPPORTED_PROFILE`. **Решение (координатор):** профиль 1 — единственный test-only профиль; при `create` он сам программирует режим 64×48 BGRX (stride 256) и рисует узор `bars` seed 0 (тот же алгоритм, что `display_pattern.py`; кадр равен фикстуре `bars_64x48_seed0.raw`, SHA-256 `a738f2f3…a3e2`) через регистры и память устройства. Test-only функций в ABI нет; тест `od-host` сравнивает кадр с файлом фикстуры.
+- Проверки (2026-11-06): `cargo test -p od-host --offline` — 12 новых тестов `display::tests` OK; `memory_corpus` (22) и `stage3_dword_store_corpus` (5) OK; в lib-наборе 299 OK и **21 FAILED** (`MappingAlreadyLive`, JIT-тесты `s3_20*` и `native_register_v1_corpus`) — те же 21 падений при `--skip display` и при `--test-threads=1`, код этих тестов не менялся; причина не исследована, не чинилась. `cargo check --workspace --all-targets --offline` — OK; `cc -fsyntax-only -x c include/open_desktop/display_abi_v1.h` (и как C++) — OK; `git diff --check` — чисто; `cargo fmt --all -- --check` падает только на `tools/power-loss/src/main.rs`.
+- Не проверено: вызов из Swift, многопоточность, профиль 2, производительность копии.
 
 ## 4. Открытые ограничения
 

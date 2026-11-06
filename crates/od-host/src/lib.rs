@@ -1,5 +1,6 @@
 //! Host operating-system primitives and the engine's host ABI boundary.
 
+mod display;
 #[cfg(all(unix, test))]
 mod raw_file_tests;
 pub mod session;

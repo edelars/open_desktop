@@ -10,6 +10,7 @@ crate-type = ["rlib", "staticlib"]
 [dependencies]
 od-isa = { path = "../od-isa" }
 od-jit = { path = "../od-jit" }
+od-machine = { path = "../od-machine" }
 od-storage = { path = "../od-storage" }
 
 [dev-dependencies]
