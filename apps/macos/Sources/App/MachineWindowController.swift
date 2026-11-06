@@ -193,7 +193,7 @@ final class MachineWindowController: NSObject, NSWindowDelegate {
     /// Redraws the window for the current machine state, reader state and capture.
     private func apply() {
         capture.enforce(canCapture: canCapture)
-        display.setOverlay(MachineWindowModel.overlay(run: runState, frame: frameState))
+        display.setOverlay(MachineWindowModel.overlay(run: runState, frame: frameState, endReason: machine.crashText))
         applyCapture()
     }
 

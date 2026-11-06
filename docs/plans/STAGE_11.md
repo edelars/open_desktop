@@ -445,6 +445,7 @@
 ### S11-11. Выход из приложения, сбой VMHost и повторный запуск
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-06):** реализован, ревью пройдено, **не принят**. Открытые решения (pid при `busy`, недостижимая ветка «Завершить процесс», SIGTERM при запросе в полёте) — в [отчёте](../reports/STAGE_11_REPORT.md).
 - **Где:** `apps/macos/Sources/App/AppLifecycle.swift` (новый: `applicationShouldTerminate`), `MachineController.swift`, `apps/macos/Tests/MachineControllerTests.swift`, `tests/system/desktop_vmhost_crash_smoke.py` (новый).
 - **Сделать:**
   1. Выход при работающих машинах: лист с перечислением имён и кнопками «Остановить» и «Отмена»; текст объясняет, что состояние гостя не сохраняется. Завершение после `stopped` всех или по таймауту с SIGTERM/SIGKILL по правилам launcher.

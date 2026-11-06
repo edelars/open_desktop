@@ -464,6 +464,10 @@ public final class ControlClientV2 {
         }
     }
 
+    /// The pid of the VMHost this client spawned; `nil` for a client over a connected socket. A number, not a handle: signals go only
+    /// through `terminate()`, which does not signal a process that has already exited (no pid reuse).
+    public var processID: pid_t? { pid }
+
     // MARK: channels
 
     /// The parent end of the frame-transport socket (descriptor 5 of the VMHost). The caller owns it from here on; a socket that is

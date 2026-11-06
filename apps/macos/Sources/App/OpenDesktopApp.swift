@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// `OpenDesktop.app` (S11-05b window, S11-06b library). The application executes no guest code and does not link the engine: it lists
@@ -7,6 +8,8 @@ struct OpenDesktopApp: App {
     @StateObject private var model: LibraryModel
     /// The machine windows (S11-10): opens one on `running` and is the target of the menus "Вид" and "Машина".
     @StateObject private var windows: MachineWindowCenter
+    /// Quit with running machines (S11-11): the question, `STOP`, the wait.
+    @NSApplicationDelegateAdaptor(AppLifecycle.self) private var lifecycle
 
     init() {
         let options: AppOptions
@@ -18,7 +21,10 @@ struct OpenDesktopApp: App {
         }
         let vmhost = VMHostLocation.locate(options: options, bundleURL: Bundle.main.bundleURL)
         let center = MachineWindowCenter()
-        let library = LibraryModel(catalog: .standard(), vmhost: vmhost, windowHost: center)
+        let library = LibraryModel(
+            catalog: .standard(), vmhost: vmhost, windowHost: center,
+            logRevealer: { NSWorkspace.shared.activateFileViewerSelecting([$0]) })
+        AppLifecycle.machines = { [weak library] in library?.machines ?? [] }
         library.load()
         if let path = options.openBundle {
             // `--open <bundle>` (smoke S11-14): list the bundle and select it.

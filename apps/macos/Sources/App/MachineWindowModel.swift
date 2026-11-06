@@ -110,12 +110,15 @@ enum MachineWindowModel {
 
     /// The text over the window, or nil when the frame itself is shown (running, reader state `showing`). Order of the rules:
     /// a machine that is not there ("Остановлено") first, then an incompatible version, then pause and shutdown, then the reader state.
-    static func overlay(run: MachineRunState, frame: FrameReaderState, detail: String? = nil) -> DisplayOverlay? {
+    /// `endReason` (S11-11) is "Процесс машины завершился: <причина>" when the process crashed (a signal, or a status that is not 0): it is
+    /// the second line of "Остановлено", in the colour of a failure.
+    static func overlay(run: MachineRunState, frame: FrameReaderState, detail: String? = nil, endReason: String? = nil) -> DisplayOverlay? {
         switch run {
         case .stopped, .failed:
             var text = run == .failed ? "Остановлено: сбой машины" : "Остановлено"
+            if let endReason { text += "\n\(endReason)" }
             if case let .incompatible(reason) = frame { text += "\nНесовместимая версия: \(detail ?? reason)" }
-            return overlay(text, run == .failed ? red : dark)
+            return overlay(text, run == .failed || endReason != nil ? red : dark)
         case .starting:
             return overlay("Запуск…", grey)
         case .shuttingDown, .paused, .running:

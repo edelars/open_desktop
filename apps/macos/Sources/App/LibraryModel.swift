@@ -109,6 +109,8 @@ final class LibraryModel: ObservableObject {
     private let hostMemoryBytes: UInt64
     /// Opens the machine windows (S11-10); nil in the tests and wherever no window is wanted.
     private weak var windowHost: MachineWindowHost?
+    /// Shows `logs/vmhost.log` of a machine (S11-11, "Показать лог"); nil in the tests.
+    private let logRevealer: ((URL) -> Void)?
 
     @Published private(set) var machines: [MachineController] = []
     @Published var selection: String?
@@ -130,13 +132,15 @@ final class LibraryModel: ObservableObject {
 
     init(
         catalog: Catalog, vmhost: VMHostLocation, launcher: @escaping MachineLauncher = defaultMachineLauncher,
-        hostMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory, windowHost: MachineWindowHost? = nil
+        hostMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory, windowHost: MachineWindowHost? = nil,
+        logRevealer: ((URL) -> Void)? = nil
     ) {
         self.catalog = catalog
         self.vmhost = vmhost
         self.launcher = launcher
         self.hostMemoryBytes = hostMemoryBytes
         self.windowHost = windowHost
+        self.logRevealer = logRevealer
     }
 
     var selected: MachineController? {
@@ -202,6 +206,7 @@ final class LibraryModel: ObservableObject {
                 let controller = MachineController(
                     entry: entry, status: status, vmhost: vmhost, launcher: launcher, hostMemoryBytes: hostMemoryBytes)
                 controller.windowHost = windowHost
+                controller.logRevealer = logRevealer
                 next.append(controller)
             }
         }

@@ -13,6 +13,7 @@ private final class FakeSession: MachineSession {
     enum Call: Equatable { case configure, start, pause, resume, stop, query, terminate }
     var calls: [Call] = []
     var configure: ControlV2Configure?
+    var processID: pid_t?
     private var pending: [Call: ControlClientV2.Completion] = [:]
 
     func requestConfigure(_ configure: ControlV2Configure, completion: @escaping ControlClientV2.Completion) {
@@ -42,6 +43,8 @@ private final class FakeLauncher {
     var sessions: [FakeSession] = []
     var handlers: [ControlClientV2.EventHandler] = []
     var failure: Error?
+    /// The pid that the next fake session reports (S11-11); `nil` is "not known".
+    var nextPID: pid_t?
 
     var launcher: MachineLauncher {
         { [self] launch, handler in
@@ -49,6 +52,7 @@ private final class FakeLauncher {
             launches.append(launch)
             handlers.append(handler)
             let session = FakeSession()
+            session.processID = nextPID
             sessions.append(session)
             return session
         }
@@ -847,6 +851,39 @@ final class MachineControllerRealVMHostXCTests: XCTestCase {
         XCTAssertTrue(condition(), "timeout waiting for: \(what)")
     }
 
+    /// S11-11 with the real VMHost: a signal from outside (the VMHost has no sanctioned way to fault itself) is `stopped` with a reason,
+    /// and the kernel has dropped the lock, so the same machine starts again without anyone cleaning anything.
+    func testSignalToTheRealVMHostIsAStoppedMachineWithAReasonAndStartsAgain() throws {
+        guard let path = vmhostPath() else { throw XCTSkip("od-vmhost is not built next to the tests (run `swift build` first)") }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("od-crash-\(UUID().uuidString)", isDirectory: true)
+        let bundleURL = root.appendingPathComponent("Crash.odvm", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try BundleConfigStore.write(BundleConfig(name: "Crash"), bundle: bundleURL, mode: .create)
+        let location = VMHostLocation(url: URL(fileURLWithPath: path), source: .argument, isExecutable: true)
+        let status = CatalogBundleStatus.config(BundleConfigCodec.read(bundle: bundleURL))
+        let machine = MachineController(entry: CatalogEntry(bundleURL: bundleURL), status: status, vmhost: location)
+
+        machine.start()
+        waitUntil("running") { machine.runState == .running && !machine.requestInFlight }
+        let pid = try XCTUnwrap(machine.processID)
+        XCTAssertEqual(kill(pid, SIGSEGV), 0)
+        waitUntil("exit") { !machine.hasSession }
+
+        XCTAssertEqual(machine.runState, .stopped)
+        XCTAssertEqual(machine.lastExit?.termination, .signaled(SIGSEGV))
+        XCTAssertEqual(machine.crashText, "Процесс машины завершился: процесс машины аварийно завершился")
+        XCTAssertEqual(machine.notice?.actions, [.restart, .showLog])
+        XCTAssertNil(BundleWriterLock.probeFailure(bundle: bundleURL), "the kernel dropped the lock with the process")
+
+        machine.start() // "Запустить снова"
+        waitUntil("running again") { machine.runState == .running && !machine.requestInFlight }
+        XCTAssertNil(machine.crashText)
+        machine.stop()
+        waitUntil("exit after stop") { !machine.hasSession }
+        XCTAssertEqual(machine.lastExit?.termination, .exited(0))
+    }
+
     func testLifecycleBusyAndExitOfATestOnlyMachine() throws {
         guard let path = vmhostPath() else { throw XCTSkip("od-vmhost is not built next to the tests (run `swift build` first)") }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("od-real-\(UUID().uuidString)", isDirectory: true)
@@ -892,5 +929,224 @@ final class MachineControllerRealVMHostXCTests: XCTestCase {
         XCTAssertEqual(seen, [.stopped, .starting, .running, .paused, .running, .stopped])
         XCTAssertNil(BundleWriterLock.probeFailure(bundle: bundleURL), "the lock is free after the exit")
         XCTAssertEqual(machine.allowedActions, [.start, .delete])
+    }
+}
+
+// MARK: S11-11. crash of the VMHost, "busy" with a live process, the quit of the application
+
+final class MachineCrashXCTests: XCTestCase {
+    private let crashed = "Процесс машины завершился: процесс машины аварийно завершился"
+
+    func testSignalWithoutStopIsStoppedWithAReasonAndOffersRestartAndLog() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        runToRunning(machine, launcher)
+        launcher.emit(exitEvent(.signaled(SIGSEGV))) // nobody sent STOP
+
+        XCTAssertEqual(machine.runState, .stopped)
+        XCTAssertFalse(machine.hasSession)
+        XCTAssertEqual(machine.lastExit?.termination, .signaled(SIGSEGV))
+        XCTAssertEqual(machine.crashText, crashed)
+        XCTAssertEqual(machine.notice?.text, "Процесс машины аварийно завершился", "the catalog's words for a signal, not an error of the guest")
+        XCTAssertEqual(machine.notice?.details?.contains("Сигнал: 11"), true, "the signal is in the details")
+        XCTAssertEqual(machine.notice?.actions, [.restart, .showLog])
+        XCTAssertEqual(machine.allowedActions, [.start, .delete])
+        XCTAssertEqual(launcher.launches.count, 1, "no automatic restart")
+    }
+
+    func testNonZeroStatusWithoutStopIsStoppedWithTheReasonOfTheCatalog() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        runToRunning(machine, launcher)
+        launcher.emit(exitEvent(.exited(6)))
+
+        XCTAssertEqual(machine.runState, .stopped)
+        XCTAssertEqual(machine.crashText, "Процесс машины завершился: сбой процесса машины")
+        XCTAssertEqual(machine.notice?.actions, [.restart, .showLog])
+        XCTAssertEqual(machine.notice?.details?.contains("Статус процесса: 6"), true)
+        XCTAssertEqual(launcher.launches.count, 1, "no automatic restart")
+    }
+
+    func testNormalEndAfterStopIsNotACrash() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        runToRunning(machine, launcher)
+        machine.stop()
+        launcher.emit(changed(.running, .stopped, request: 3))
+        launcher.session.ack(.stop, kind: .stop, state: .stopped)
+        launcher.emit(exitEvent(.exited(0)))
+
+        XCTAssertNil(machine.crashText)
+        XCTAssertNil(machine.notice)
+    }
+
+    func testAnEndThatTheUserAskedForIsNotACrash() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        machine.start() // the VMHost never says READY
+        machine.abort()
+        launcher.emit(exitEvent(.signaled(SIGTERM)))
+
+        XCTAssertNil(machine.crashText, "SIGTERM that the user asked for")
+        XCTAssertEqual(machine.notice?.actions, [], "no restart button for a process that was ended on purpose")
+    }
+
+    func testRefusedStopDoesNotMakeTheLaterCrashLookIntended() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        runToRunning(machine, launcher)
+        machine.stop()
+        let report = ControlV2ErrorReport(code: ControlV2ErrorCode.shutdownTimeout.rawValue, failedKind: ControlV2Kind.stop.rawValue, state: ControlV2State.running.rawValue)
+        launcher.session.complete(.stop, .failure(.refused(report)))
+        launcher.emit(exitEvent(.signaled(SIGSEGV)))
+
+        XCTAssertEqual(machine.crashText, crashed)
+    }
+
+    func testStartAgainAfterACrashClearsTheReason() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        runToRunning(machine, launcher)
+        launcher.emit(exitEvent(.signaled(SIGSEGV)))
+        machine.start()
+
+        XCTAssertEqual(launcher.launches.count, 2, "\"Запустить снова\" is the same start as the toolbar's")
+        XCTAssertNil(machine.crashText)
+        XCTAssertNil(machine.notice)
+        XCTAssertEqual(machine.runState, .starting)
+    }
+
+    func testWindowTextForACrash() {
+        let overlay = MachineWindowModel.overlay(run: .stopped, frame: .noSignal, endReason: crashed)
+        XCTAssertEqual(overlay?.text, "Остановлено\n\(crashed)")
+        XCTAssertEqual(MachineWindowModel.overlay(run: .stopped, frame: .noSignal)?.text, "Остановлено", "without a crash the text is as before")
+    }
+
+    // MARK: log
+
+    func testShowLogRevealsTheFileOfTheBundle() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        var revealed: [URL] = []
+        machine.logRevealer = { revealed.append($0) }
+        machine.fileExists = { _ in true }
+        machine.showLog()
+
+        XCTAssertEqual(revealed.map { $0.path }, ["/x/Тест.odvm/logs/vmhost.log"])
+        XCTAssertNil(machine.logNote)
+    }
+
+    func testShowLogWithoutAFileSaysThatNoLogIsKeptAndInventsNoPath() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        var revealed: [URL] = []
+        machine.logRevealer = { revealed.append($0) }
+        machine.fileExists = { _ in false }
+        machine.showLog()
+
+        XCTAssertTrue(revealed.isEmpty)
+        let note = machine.logNote ?? ""
+        XCTAssertTrue(note.hasPrefix("Журнал не ведётся"), note)
+        XCTAssertFalse(note.contains("/"), "no path is made up: \(note)")
+    }
+
+    // MARK: busy with a live process
+
+    func testFailedStateOffersToEndTheLiveProcessAndNamesItsPid() {
+        let launcher = FakeLauncher()
+        launcher.nextPID = 4242
+        let machine = makeController(launcher)
+        runToRunning(machine, launcher)
+        launcher.emit(changed(.running, .failed))
+
+        XCTAssertEqual(machine.notice?.actions, [.terminateProcess])
+        XCTAssertEqual(machine.notice?.details?.contains("pid 4242"), true)
+        XCTAssertTrue(machine.canTerminateProcess)
+        machine.terminateProcess()
+        XCTAssertEqual(launcher.session.calls.last, .terminate, "the client ends it: SIGTERM, then SIGKILL")
+
+        launcher.emit(exitEvent(.signaled(SIGTERM)))
+        XCTAssertFalse(machine.hasSession)
+        XCTAssertEqual(machine.notice?.actions, [], "the button goes when the process is gone")
+        XCTAssertNil(machine.crashText, "the user ended it")
+        XCTAssertEqual(machine.runState, .stopped)
+    }
+
+    func testStartWhileTheOldProcessLivesIsBusyWithItsPidAndTheOfferToEndIt() {
+        let launcher = FakeLauncher()
+        launcher.nextPID = 4242
+        let machine = makeController(launcher)
+        runToRunning(machine, launcher)
+        launcher.emit(changed(.running, .stopped, request: 3)) // it said `stopped` and does not exit
+        XCTAssertTrue(machine.hasSession)
+        machine.start()
+
+        XCTAssertEqual(launcher.launches.count, 1, "no second VMHost: it would meet the lock")
+        XCTAssertEqual(machine.notice?.text, "Машина ещё занята процессом (pid 4242)")
+        XCTAssertEqual(machine.notice?.actions, [.terminateProcess])
+        XCTAssertEqual(machine.notice?.details?.contains("busy (7)"), true)
+        machine.terminateProcess()
+        XCTAssertEqual(launcher.session.calls.last, .terminate)
+        launcher.emit(exitEvent(.exited(0)))
+        XCTAssertNil(machine.notice, "the line about the live process is out of date once it has exited")
+        XCTAssertEqual(machine.allowedActions, [.start, .delete])
+    }
+
+    func testBusyWithoutAKnownPidHasNoPidAndNoButton() {
+        let launcher = FakeLauncher() // the session does not know its pid
+        let machine = makeController(launcher)
+        runToRunning(machine, launcher)
+        launcher.emit(changed(.running, .stopped, request: 3))
+        machine.start()
+
+        XCTAssertEqual(machine.notice?.text, "Машина ещё занята другим процессом")
+        XCTAssertEqual(machine.notice?.actions, [])
+        XCTAssertEqual(machine.notice?.details?.contains("pid"), false)
+    }
+
+    func testBusyFromTheVMHostOffersNoButton() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        machine.start()
+        launcher.emit(.startRejected(.busy))
+        launcher.emit(exitEvent(.exited(3), rejection: .busy))
+        XCTAssertEqual(machine.notice?.actions, [], "the holder is another process: this application cannot end it")
+        XCTAssertFalse(machine.canTerminateProcess)
+    }
+
+    // MARK: the quit of the application
+
+    func testStopForQuitSendsOneStopAndWaitsForTheExit() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        runToRunning(machine, launcher)
+        var ended = 0
+        machine.notifyWhenProcessEnded { ended += 1 }
+
+        XCTAssertTrue(machine.stopForQuit())
+        XCTAssertEqual(launcher.session.calls.filter { $0 == .stop }.count, 1)
+        XCTAssertTrue(machine.stopForQuit(), "a STOP is on its way")
+        XCTAssertEqual(launcher.session.calls.filter { $0 == .stop }.count, 1, "not a second one")
+        XCTAssertEqual(ended, 0)
+
+        launcher.emit(changed(.running, .stopped, request: 3))
+        launcher.session.ack(.stop, kind: .stop, state: .stopped)
+        launcher.emit(exitEvent(.exited(0)))
+        XCTAssertEqual(ended, 1)
+        XCTAssertNil(machine.crashText)
+        var late = 0
+        machine.notifyWhenProcessEnded { late += 1 }
+        XCTAssertEqual(late, 1, "without a process the handler runs at once")
+    }
+
+    func testStopForQuitRefusesWhenStopIsNotPossibleAndForceTerminateEndsTheProcess() {
+        let launcher = FakeLauncher()
+        let machine = makeController(launcher)
+        machine.start() // `starting`: no STOP yet
+        XCTAssertFalse(machine.stopForQuit())
+        machine.forceTerminate()
+        XCTAssertEqual(launcher.session.calls.last, .terminate)
+        launcher.emit(exitEvent(.signaled(SIGTERM)))
+        XCTAssertNil(machine.crashText, "the application ended it at the quit")
     }
 }

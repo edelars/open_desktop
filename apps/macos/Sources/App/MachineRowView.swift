@@ -46,6 +46,14 @@ struct MachineRowView: View {
                         }
                         .font(.caption)
                     }
+                    if !notice.actions.isEmpty {
+                        HStack(spacing: 8) {
+                            ForEach(notice.actions, id: \.self) { action in noticeButton(action) }
+                        }
+                    }
+                }
+                if let logNote = machine.logNote {
+                    Text(logNote).font(.caption2).foregroundColor(.secondary).accessibilityIdentifier("machine-log-note")
                 }
                 if let query = machine.lastQueryText {
                     Text(query).font(.caption2).foregroundColor(.secondary)
@@ -54,6 +62,24 @@ struct MachineRowView: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .contain)
+    }
+
+    /// The buttons of a line (S11-11): start again, show the log, end the process. Each does one thing and only when the user presses it.
+    @ViewBuilder
+    private func noticeButton(_ action: MachineNoticeAction) -> some View {
+        switch action {
+        case .restart:
+            Button("Запустить снова") { machine.start() }
+                .disabled(!machine.allows(.start))
+                .accessibilityIdentifier("machine-restart")
+        case .showLog:
+            Button("Показать лог") { machine.showLog() }
+                .accessibilityIdentifier("machine-show-log")
+        case .terminateProcess:
+            Button("Завершить процесс") { machine.terminateProcess() }
+                .disabled(!machine.canTerminateProcess)
+                .accessibilityIdentifier("machine-terminate-process")
+        }
     }
 
     /// A bundle that cannot be read is shown by its class (incompatible, damaged, missing); otherwise by the event-driven state.

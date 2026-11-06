@@ -85,6 +85,16 @@ enum MachineActionTable {
 
 /// A line for the row and its details. The words come from `ErrorCatalog` through `ErrorPresentation` (S11-09): the headline has no code and
 /// no path, the explanation and the action are under it, the code, the request ID, the log and the time are in the details.
+/// A button that a line of the row offers (S11-11). The row and the controller know the same three; there is no automatic restart.
+enum MachineNoticeAction: Hashable {
+    /// "Запустить снова": the same start as the toolbar's, after a crash. The user presses it; nothing restarts a machine by itself.
+    case restart
+    /// "Показать лог": `logs/vmhost.log` of the bundle in Finder, or the words that no log is kept.
+    case showLog
+    /// "Завершить процесс": SIGTERM, then SIGKILL, through the client that owns the pid. Offered only when the pid is known.
+    case terminateProcess
+}
+
 struct MachineNotice: Equatable {
     var text: String
     var details: String?
@@ -93,10 +103,35 @@ struct MachineNotice: Equatable {
     var explainsExit = false
     /// The explanation and the action of the catalog entry (the second line).
     var hint: String?
+    var actions: [MachineNoticeAction] = []
 
     /// The title alone: a line about the process itself ("Процесс машины аварийно завершился").
     static func plain(_ presentation: ErrorPresentation, explainsExit: Bool = false) -> MachineNotice {
         MachineNotice(text: presentation.title, details: presentation.details, explainsExit: explainsExit, hint: presentation.message)
+    }
+
+    /// The process ended by a signal or with a status that is not 0 and nobody asked it to (S11-11). The headline is the title of the
+    /// catalog entry (S11-09); the state is `stopped`; the user may start again or read the log. The signal or the status is in the details.
+    /// The window says the same as "Процесс машины завершился: <причина>" (`windowText`).
+    static func crashed(_ presentation: ErrorPresentation) -> MachineNotice {
+        MachineNotice(
+            text: presentation.title, details: presentation.details, explainsExit: true, hint: presentation.message, actions: crashActions)
+    }
+
+    /// "Процесс машины завершился: <причина>": the reason is the title of the entry, lower case.
+    static func windowText(reason: String) -> String { "Процесс машины завершился: " + ErrorPresentation.lowercasedFirst(reason) }
+
+    static let crashActions: [MachineNoticeAction] = [.restart, .showLog]
+
+    /// "Машина ещё занята процессом (pid N)" with the offer to end that process, or, when no pid is known (the lock is held by a process of
+    /// another application or of the command line), the same fact without a pid and without the button: this application cannot end a
+    /// process that it did not start. The lock itself is never touched (VM_BUNDLE.md 2.1: the kernel drops it when the process dies).
+    static func busy(pid: pid_t?, _ presentation: ErrorPresentation) -> MachineNotice {
+        var details = presentation.details
+        if let pid { details = [details, "Процесс машины: pid \(pid)"].compactMap { $0 }.joined(separator: "\n") }
+        return MachineNotice(
+            text: pid.map { "Машина ещё занята процессом (pid \($0))" } ?? "Машина ещё занята другим процессом",
+            details: details, explainsExit: false, hint: presentation.message, actions: pid == nil ? [] : [.terminateProcess])
     }
 
     /// "Не удалось запустить: <title of the entry>."
@@ -182,9 +217,12 @@ protocol MachineSession: AnyObject {
     /// S11-10: the parent end of the frame socket (VMHost descriptor 5) and of the input socket (descriptor 4), once per session.
     func takeDisplaySocket() -> Int32?
     func takeInputSocket() -> Int32?
+    /// S11-11: the pid of the VMHost this session spawned, for "Машина ещё занята процессом (pid N)". `nil` when it is not known.
+    var processID: pid_t? { get }
 }
 
 extension MachineSession {
+    var processID: pid_t? { nil }
     /// A session that has no frame or input socket (the tests' fakes).
     func takeDisplaySocket() -> Int32? { nil }
     func takeInputSocket() -> Int32? { nil }
@@ -227,6 +265,11 @@ final class MachineController: ObservableObject, Identifiable {
     @Published private(set) var lastQueryText: String?
     /// The last end of a process of this machine (the last fact), `nil` before the first start.
     @Published private(set) var lastExit: ControlClientExit?
+    /// S11-11: "Процесс машины завершился: <причина>" while the last end of the process was a crash (a signal, or a status that is not 0,
+    /// that nobody asked for). The state is `stopped`; this is the reason. `nil` after a normal end and when a new start begins.
+    @Published private(set) var crashText: String?
+    /// S11-11: what "Показать лог" says when `logs/vmhost.log` does not exist ("журнал не ведётся"); `nil` otherwise.
+    @Published private(set) var logNote: String?
 
     private let vmhost: VMHostLocation
     private let launcher: MachineLauncher
@@ -236,6 +279,15 @@ final class MachineController: ObservableObject, Identifiable {
     weak var windowHost: MachineWindowHost?
     /// Events and completions of an earlier session (a process that is already gone) must not touch a newer one.
     private var generation = 0
+    /// The user (or the application at quit) asked this process to stop (`STOP`), or to end (`abort`, "Завершить процесс", quit): its end is
+    /// not a crash. Reset by a new start.
+    private var endRequested = false
+    /// What runs when the process has ended (the quit of the application waits for it). Called once each, on the main queue.
+    private var endHandlers: [() -> Void] = []
+    /// Shows `logs/vmhost.log` (Finder); set by the application. `nil` in the tests and wherever there is nothing to show with.
+    var logRevealer: ((URL) -> Void)?
+    /// Whether a file exists; the tests replace it.
+    var fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
 
     init(
         entry: CatalogEntry, status: CatalogBundleStatus, vmhost: VMHostLocation,
@@ -250,6 +302,9 @@ final class MachineController: ObservableObject, Identifiable {
     }
 
     var hasSession: Bool { session != nil }
+
+    /// The pid of the live VMHost of this machine, when the session knows it (the real client does). For the text "(pid N)" and the tests.
+    var processID: pid_t? { session?.processID }
 
     var config: BundleConfig? { bundleStatus.config }
 
@@ -287,9 +342,18 @@ final class MachineController: ObservableObject, Identifiable {
     // MARK: actions
 
     func start() {
+        // A process of this machine that has already said `stopped` or `failed` but has not exited: a new VMHost would meet its lock
+        // (`busy`, VM_BUNDLE.md 2.1), so none is spawned. The row names the process and offers to end it; the lock is not touched.
+        if hasSession, runState == .stopped || runState == .failed, config != nil {
+            notice = .busy(pid: session?.processID, ErrorPresentation.rejection(.busy, context: errorContext()))
+            return
+        }
         guard allows(.start), let config else { return }
         notice = nil
         lastQueryText = nil
+        crashText = nil
+        logNote = nil
+        endRequested = false
         if let refusal = config.launchRefusal(hostMemoryBytes: hostMemoryBytes) {
             // Section 7.3 and VM_BUNDLE 3.5: the controlling process applies the same order locally and does not spawn a VMHost.
             notice = .startFailed(ErrorPresentation.refusal(refusal, context: errorContext()))
@@ -328,14 +392,64 @@ final class MachineController: ObservableObject, Identifiable {
 
     func stop() {
         guard allows(.stop), let session else { return }
-        send(operation: "Остановка") { completion in session.requestStop(completion: completion) }
+        endRequested = true
+        send(operation: "Остановка", isStop: true) { completion in session.requestStop(completion: completion) }
     }
 
     /// "Прервать": the process does not answer (no READY, no `stateChanged`). SIGTERM, then SIGKILL (the client); `exited` follows and
     /// returns the row to `stopped`.
     func abort() {
         guard allows(.abort), let session else { return }
+        endRequested = true
         session.terminateSession()
+    }
+
+    // MARK: crash, busy, quit (S11-11)
+
+    /// "Завершить процесс": the process of this machine has said `stopped` or `failed` and is still alive. SIGTERM, then SIGKILL, by the
+    /// client that owns the pid (it does not signal a process that has exited); `exited` follows and the row is `stopped` without a session.
+    var canTerminateProcess: Bool { session != nil && (runState == .stopped || runState == .failed) }
+
+    func terminateProcess() {
+        guard canTerminateProcess, let session else { return }
+        endRequested = true
+        session.terminateSession()
+    }
+
+    /// "Показать лог": `logs/vmhost.log` of the bundle. A bundle without that file says "журнал не ведётся" and no path is invented.
+    var logURL: URL { entry.bundleURL.appendingPathComponent("logs").appendingPathComponent("vmhost.log") }
+
+    func showLog() {
+        let url = logURL
+        guard fileExists(url) else {
+            logNote = "Журнал не ведётся: файла журнала у этой машины нет."
+            return
+        }
+        logNote = nil
+        logRevealer?(url)
+    }
+
+    /// Quit of the application, step 1: send `STOP` to a machine that can take it. `false` when it cannot now (starting, a request is in
+    /// flight, not running): the caller ends the process instead. A `STOP` that is already on its way counts as sent.
+    @discardableResult
+    func stopForQuit() -> Bool {
+        guard session != nil else { return true }
+        if endRequested { return true } // a `STOP` is on its way, or the process is already being ended
+        guard allows(.stop) else { return false }
+        stop()
+        return true
+    }
+
+    /// Quit of the application, step 2 (after the time limit, or when `STOP` is not possible): SIGTERM, 500 ms, SIGKILL, by the client.
+    func forceTerminate() {
+        guard let session else { return }
+        endRequested = true
+        session.terminateSession()
+    }
+
+    /// Runs `handler` once, when the process of this machine has ended (at once when there is none).
+    func notifyWhenProcessEnded(_ handler: @escaping () -> Void) {
+        if session == nil { handler() } else { endHandlers.append(handler) }
     }
 
     /// One `QUERY`, only when the user asks. Without a session there is nothing to ask (the library re-reads the bundle instead).
@@ -358,7 +472,7 @@ final class MachineController: ObservableObject, Identifiable {
         }
     }
 
-    private func send(operation: String, _ body: (@escaping ControlClientV2.Completion) -> Void) {
+    private func send(operation: String, isStop: Bool = false, _ body: (@escaping ControlClientV2.Completion) -> Void) {
         let current = generation
         requestInFlight = true
         notice = nil
@@ -366,6 +480,7 @@ final class MachineController: ObservableObject, Identifiable {
             guard let self, self.generation == current else { return }
             self.requestInFlight = false
             if case .failure(.refused(let report)) = result {
+                if isStop { self.endRequested = false } // the process was not asked to end after all
                 // The state does not change by a refusal (7.2): the row stays what the last event made it.
                 self.notice = .refused(report, operation: operation, context: self.errorContext())
             }
@@ -383,15 +498,23 @@ final class MachineController: ObservableObject, Identifiable {
             beginConfigureAndStart()
         case .startRejected(let rejection):
             // The connection ends and `exited` follows; the reason is kept and shown at that point together with the exit status.
+            // `busy` here: the pid of the holder is not known to this controller (the process that refused is the new one), so the line has
+            // no pid and no button; a process of THIS machine that is still alive is met earlier, in `start()`.
             notice = .startFailed(ErrorPresentation.rejection(rejection, context: errorContext()))
         case .stateChanged(_, let to, _, _):
             runState = MachineRunState(to)
             windowHost?.machine(self, didChange: runState)
             if to == .failed {
                 // The VMHost sent no `ERROR` here: the state came from `STATE_CHANGED`, so the entry is the catalog's and the details say so.
-                notice = .plain(
+                var line = MachineNotice.plain(
                     ErrorPresentation(entry: ErrorCatalog.entry(for: ControlV2ErrorCode.hostFailure), details: "Состояние: failed (по событию STATE_CHANGED)"),
                     explainsExit: true)
+                if let pid = session?.processID {
+                    // `failed` is terminal for the process, which closes and exits by itself; if it does not, the user may end it.
+                    line.details = [line.details, "Процесс машины: pid \(pid)"].compactMap { $0 }.joined(separator: "\n")
+                    line.actions = [.terminateProcess]
+                }
+                notice = line
             }
         case .error(let report, let requestID):
             // An `ERROR` that answers a request is handled by the completion of that request; this one is not caused by a request.
@@ -409,13 +532,43 @@ final class MachineController: ObservableObject, Identifiable {
         }
     }
 
+    /// A process that ended by a signal or with a status that is not 0, with nobody having asked it to end and without a refused start.
+    private func endedAbnormally(_ exit: ControlClientExit) -> Bool {
+        guard !endRequested, exit.startRejection == nil else { return false }
+        switch exit.termination {
+        case .signaled: return true
+        case .exited(let status): return status != 0
+        case .unavailable: return false
+        }
+    }
+
     private func finish(with exit: ControlClientExit) {
+        let abnormal = endedAbnormally(exit)
+        // A line that offered to end the process is out of date now: the process is gone. The line that says why the process failed stays,
+        // without the button; the line that only said "still busy" goes.
+        if var offered = notice, offered.actions.contains(.terminateProcess) {
+            offered.actions.removeAll { $0 == .terminateProcess }
+            notice = offered.explainsExit ? offered : nil
+        }
         session = nil
         requestInFlight = false
         lastExit = exit
         runState = .stopped
+        crashText = nil
+        updateNotice(after: exit, abnormal: abnormal)
+        // The window reads `crashText` when it learns that the machine has stopped, so the reason is set first.
         windowHost?.machine(self, didChange: .stopped)
-        guard let ended = MachineNotice.exit(exit, context: errorContext()) else { return } // a normal end keeps the line that explains an earlier refusal
+        let handlers = endHandlers
+        endHandlers = []
+        handlers.forEach { $0() }
+    }
+
+    private func updateNotice(after exit: ControlClientExit, abnormal: Bool) {
+        guard var ended = MachineNotice.exit(exit, context: errorContext()) else { return } // a normal end keeps the line that explains an earlier refusal
+        if abnormal, let presentation = ErrorPresentation.exit(exit, context: errorContext()) {
+            ended = .crashed(presentation)
+            crashText = MachineNotice.windowText(reason: ended.text)
+        }
         guard let earlier = notice, exit.startRejection == nil else {
             notice = ended
             return
@@ -424,13 +577,15 @@ final class MachineController: ObservableObject, Identifiable {
             // An earlier line (a protocol violation, `failed`, a refused start) is the cause, the status is the last fact: both are kept.
             notice = MachineNotice(
                 text: earlier.text, details: [earlier.details, ended.text, ended.details].compactMap { $0 }.joined(separator: "\n"),
-                explainsExit: true, hint: earlier.hint)
+                explainsExit: true, hint: earlier.hint, actions: abnormal ? MachineNotice.crashActions : [])
+            if abnormal { crashText = MachineNotice.windowText(reason: earlier.text) }
         } else {
             // An unexpected end (the process was not asked to stop): its reason is the headline. An unrelated earlier line (a refused
             // pause) is not the cause and moves to the details.
             notice = MachineNotice(
                 text: ended.text,
-                details: [ended.details, "Ранее: \(earlier.text)", earlier.details].compactMap { $0 }.joined(separator: "\n"), hint: ended.hint)
+                details: [ended.details, "Ранее: \(earlier.text)", earlier.details].compactMap { $0 }.joined(separator: "\n"), hint: ended.hint,
+                actions: ended.actions)
         }
     }
 
