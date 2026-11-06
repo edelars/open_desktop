@@ -26,12 +26,14 @@
 //!   locked descriptor, so they never reach a different file.
 //! * The repair lock cannot tell a writer from a read lease: both appear as
 //!   one busy holder ([`PolicyError::RepairBusy`]).
-//! * There is no notion of a parent inside a snapshot chain, no chain
-//!   verification and no VMHost lifecycle integration here: that is later
-//!   S9 work (S9-14, S9-16 and the VMHost slices).
+//! * [`ParentLease`] itself has no notion of a parent inside a snapshot chain.
+//!   [`ParentLeaseStorage`] adapts it to the storage contract so the S9-14
+//!   chain code in `od-storage` can read ancestors through it; chain
+//!   verification across the whole lifecycle (S9-16) and VMHost integration
+//!   are later work.
 
 use crate::storage_io::{HostFileStorage, LeaseOpenError, ReadLease, WriterOpenError};
-use od_storage::io::{BackendError, StorageBackend};
+use od_storage::io::{BackendError, StorageBackend, StorageCapabilities};
 use std::fmt;
 use std::io;
 use std::os::unix::fs::MetadataExt;
@@ -227,6 +229,59 @@ impl ParentLease {
         self.lease
             .read_at(offset, buf)
             .map_err(ParentLeaseError::Backend)
+    }
+}
+
+/// [`StorageBackend`] over a [`ParentLease`]: read-only, and the path
+/// identity is re-checked on **every** `size` and `read_at`, so a parent that
+/// was swapped after the lease was taken delivers no bytes (the call fails;
+/// [`CheckedStorage`](od_storage::io::CheckedStorage) reports it as an I/O
+/// error). Every mutating method is `Unsupported`. A snapshot chain keeps one
+/// of these per ancestor for as long as the child is open.
+#[derive(Debug)]
+pub struct ParentLeaseStorage(ParentLease);
+
+impl ParentLeaseStorage {
+    pub fn new(lease: ParentLease) -> Self {
+        Self(lease)
+    }
+
+    pub fn file_identity(&self) -> (u64, u64) {
+        self.0.file_identity()
+    }
+}
+
+fn lease_backend_error(error: ParentLeaseError) -> BackendError {
+    match error {
+        ParentLeaseError::Io(e) => BackendError::Io {
+            kind: e.kind(),
+            os_error: e.raw_os_error(),
+        },
+        ParentLeaseError::Backend(e) => e,
+        // Busy cannot happen on an already held lease; a changed identity is
+        // reported as a failed call, never as data of the other file.
+        ParentLeaseError::Busy | ParentLeaseError::IdentityMismatch => BackendError::Io {
+            kind: io::ErrorKind::Other,
+            os_error: None,
+        },
+    }
+}
+
+impl StorageBackend for ParentLeaseStorage {
+    fn capabilities(&self) -> StorageCapabilities {
+        StorageCapabilities::read_only(crate::storage_io::HOST_MAX_LEN)
+    }
+
+    fn size(&self) -> Result<u64, BackendError> {
+        self.0.size().map_err(lease_backend_error)
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BackendError> {
+        self.0.read_at(offset, buf).map_err(lease_backend_error)
+    }
+
+    fn write_at(&mut self, _offset: u64, _buf: &[u8]) -> Result<usize, BackendError> {
+        Err(BackendError::Unsupported)
     }
 }
 
@@ -539,6 +594,132 @@ mod tests {
         assert!(matches!(
             parent.verify_identity(),
             Err(ParentLeaseError::IdentityMismatch)
+        ));
+    }
+
+    /// S9-14 over real files: a child reads its ancestors only through
+    /// `ParentLease`, a parent cannot be written while the child is open, and
+    /// a swapped parent is refused. macOS only: the CoW commit needs durable
+    /// file flushes, which the host backend declares only there.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn snapshot_chain_reads_through_parent_leases_and_refuses_a_swapped_parent() {
+        use od_storage::cow_snapshot::{
+            ParentRef, ParentResolver, ResolveError, SnapError, SnapFile,
+        };
+        use od_storage::io::CheckedStorage;
+        use std::collections::BTreeMap;
+
+        struct PathResolver {
+            entries: BTreeMap<u64, (PathBuf, Option<(u64, u64)>)>,
+        }
+
+        impl ParentResolver for PathResolver {
+            type Backend = ParentLeaseStorage;
+
+            fn open_parent(
+                &mut self,
+                parent: &ParentRef,
+            ) -> Result<CheckedStorage<ParentLeaseStorage>, ResolveError> {
+                let (path, expected) = self
+                    .entries
+                    .get(&parent.file_uid)
+                    .ok_or(ResolveError::Missing)?;
+                let lease = match expected {
+                    Some(identity) => ParentLease::open_expecting(path, *identity),
+                    None => ParentLease::open(path),
+                }
+                .map_err(|e| match e {
+                    ParentLeaseError::Busy => ResolveError::Busy,
+                    ParentLeaseError::IdentityMismatch => ResolveError::IdentityMismatch,
+                    ParentLeaseError::Io(e) if e.kind() == io::ErrorKind::NotFound => {
+                        ResolveError::Missing
+                    }
+                    ParentLeaseError::Io(e) => ResolveError::Io(e.kind()),
+                    ParentLeaseError::Backend(_) => ResolveError::Io(io::ErrorKind::Other),
+                })?;
+                CheckedStorage::new(ParentLeaseStorage::new(lease)).map_err(ResolveError::Storage)
+            }
+        }
+
+        let _serial = process_spawn_guard();
+        let dir = TempDir::new();
+        let base_path = dir.path("base.cow");
+        let child_path = dir.path("child.cow");
+        let file = |p: &Path| {
+            CheckedStorage::new(HostFileStorage::create_new_exclusive(p, 0).expect("create"))
+                .expect("checked")
+        };
+
+        // Base: two blocks of data and one snapshot.
+        let (mut base, _) = SnapFile::create_base(file(&base_path), 1).expect("base");
+        base.write_at(0, &[0xAA; 1024]).expect("base write");
+        let (id, _) = base.create_snapshot().expect("snapshot");
+        let pref = base.snapshot_ref(id).expect("ref");
+        drop(base);
+        let identity = ParentLease::open(&base_path)
+            .expect("lease")
+            .file_identity();
+        let mut resolver = PathResolver {
+            entries: BTreeMap::from([(1, (base_path.clone(), Some(identity)))]),
+        };
+
+        let (mut child, _) =
+            SnapFile::create_child(file(&child_path), &mut resolver, &pref, 2).expect("child");
+        child.write_at(100, &[1, 2, 3]).expect("child write");
+        let mut expected = vec![0xAAu8; 1024];
+        expected[100..103].copy_from_slice(&[1, 2, 3]);
+        let mut got = vec![0u8; 1024];
+        child.read_at(0, &mut got).expect("child read");
+        assert_eq!(got, expected);
+        // The open child holds the parent's read lease: no writer can start.
+        assert!(matches!(
+            HostFileStorage::open_read_write_exclusive(&base_path),
+            Err(WriterOpenError::WriterBusy)
+        ));
+        drop(child);
+
+        let reopen = |resolver: &mut PathResolver| {
+            let storage = CheckedStorage::new(
+                HostFileStorage::open_read_write_exclusive(&child_path).expect("writer"),
+            )
+            .expect("checked");
+            SnapFile::open(storage, resolver).map(|(f, _)| f)
+        };
+        let child = reopen(&mut resolver).expect("child reopens");
+        let mut got = vec![0u8; 1024];
+        child.read_at(0, &mut got).expect("read after reopen");
+        assert_eq!(got, expected);
+        drop(child);
+
+        // Replace the parent path by a byte-identical copy (new inode).
+        let copy = dir.path("copy.cow");
+        std::fs::copy(&base_path, &copy).expect("copy");
+        std::fs::rename(&copy, &base_path).expect("swap");
+        assert!(matches!(
+            reopen(&mut resolver).err(),
+            Some(SnapError::ParentIdentityMismatch)
+        ));
+        // Without a recorded host identity only the content identity (file
+        // uid, snapshot record, map CRC) decides: the identical copy passes,
+        // a different file does not.
+        resolver.entries.insert(1, (base_path.clone(), None));
+        assert!(reopen(&mut resolver).is_ok());
+        let other = dir.path("other.cow");
+        let (mut o, _) = SnapFile::create_base(file(&other), 1).expect("other");
+        o.write_at(0, &[0xBB; 1024]).expect("other write");
+        o.create_snapshot().expect("other snapshot");
+        drop(o);
+        std::fs::rename(&other, &base_path).expect("swap for another file");
+        assert!(matches!(
+            reopen(&mut resolver).err(),
+            Some(SnapError::ParentIdentityMismatch)
+        ));
+        // A removed parent is missing.
+        std::fs::remove_file(&base_path).expect("remove parent");
+        assert!(matches!(
+            reopen(&mut resolver).err(),
+            Some(SnapError::ParentMissing)
         ));
     }
 

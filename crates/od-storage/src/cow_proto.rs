@@ -788,6 +788,19 @@ impl<B: StorageBackend> CowView<B> {
         self.end_offset
     }
 
+    /// CRC-32 of the current block map as the root stores it. Together with
+    /// the generation and block count it identifies the content of this state
+    /// (it covers every physical offset and block CRC).
+    pub fn map_crc(&self) -> u32 {
+        crc32(&encode_map(&self.map))
+    }
+
+    /// Read access to the checked storage, for layers that read retained
+    /// older states (snapshots). There is no mutable counterpart.
+    pub(crate) fn storage(&self) -> &CheckedStorage<B> {
+        &self.storage
+    }
+
     /// Physical offset of a published block (for corruption tests).
     pub fn block_offset(&self, index: u64) -> Option<u64> {
         self.map.get(index as usize).map(|e| e.phys)

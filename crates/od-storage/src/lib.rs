@@ -21,6 +21,11 @@ pub mod cow_parse;
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_tx;
 
+/// Immutable snapshots, bounded parent chains and writable children over the
+/// prototype commit (S9-14). Not normative.
+#[cfg(any(test, feature = "test-support"))]
+pub mod cow_snapshot;
+
 /// In-memory backend and the shared backend contract suite. Enabled by tests
 /// and by the `test-support` feature for host crates that run the same suite.
 #[cfg(any(test, feature = "test-support"))]
@@ -34,6 +39,8 @@ mod cow_parse_tests;
 mod cow_proto_tests;
 #[cfg(test)]
 mod cow_recovery_tests;
+#[cfg(test)]
+mod cow_snapshot_tests;
 #[cfg(test)]
 mod cow_tx_tests;
 #[cfg(test)]

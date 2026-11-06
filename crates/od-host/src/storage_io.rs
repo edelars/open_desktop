@@ -104,7 +104,7 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 /// Largest size representable by the host `off_t`.
-const HOST_MAX_LEN: u64 = i64::MAX as u64;
+pub(crate) const HOST_MAX_LEN: u64 = i64::MAX as u64;
 
 // `flock(2)`: see `man 2 flock`. Operation values are from
 // `<sys/file.h>` / `<sys/fcntl.h>` (macOS SDK, Linux glibc agree).
