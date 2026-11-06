@@ -71,6 +71,13 @@ pub struct StorageCapabilities {
     /// only for an instance that actually acquired the lock; the acquisition
     /// API belongs to the host backend, not to this contract.
     pub exclusive_lock: bool,
+    /// The backend can release the physical space of a logical range (hole
+    /// punching or an equivalent). **No such operation exists in this
+    /// contract yet** and no backend implements one, so this stays `false`
+    /// everywhere (including the host file backend) and must not be
+    /// advertised; a host hole punch is only ever a later, separately proven
+    /// optimisation. It never changes what a read returns.
+    pub discard: bool,
 }
 
 impl StorageCapabilities {
@@ -83,6 +90,7 @@ impl StorageCapabilities {
             file_durability: false,
             namespace_durability: false,
             exclusive_lock: false,
+            discard: false,
         }
     }
 
@@ -95,6 +103,7 @@ impl StorageCapabilities {
             file_durability: false,
             namespace_durability: false,
             exclusive_lock: false,
+            discard: false,
         }
     }
 
@@ -107,6 +116,9 @@ impl StorageCapabilities {
 
     /// Rejects combinations that cannot be true together.
     pub fn validate(&self) -> Result<(), CapabilityInconsistency> {
+        if self.discard && !self.writable {
+            return Err(CapabilityInconsistency::DiscardWithoutWritable);
+        }
         if self.namespace_durability && !self.file_durability {
             return Err(CapabilityInconsistency::NamespaceDurabilityWithoutFileDurability);
         }
@@ -123,6 +135,7 @@ impl StorageCapabilities {
 pub enum CapabilityInconsistency {
     NamespaceDurabilityWithoutFileDurability,
     ResizeWithoutWritable,
+    DiscardWithoutWritable,
     /// The backend declared resize but reported the operation unsupported.
     ClaimedResizeUnsupported,
     /// The backend declared durability for a scope but reported it unsupported.

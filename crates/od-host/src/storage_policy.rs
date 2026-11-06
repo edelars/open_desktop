@@ -1170,6 +1170,14 @@ mod tests {
         assert_eq!(bytes(&c.mid), mid_before, "mid written while leased");
         drop(child);
 
+        // Once free, a delete of an unknown snapshot is a typed refusal that
+        // writes nothing.
+        assert!(matches!(
+            delete_snapshot_exclusive(&c.base, 99, &mut c.resolver),
+            Err(Exclusive::Snap(SnapError::SnapshotMissing { id: 99 }))
+        ));
+        assert_eq!(bytes(&c.base), base_before, "a refused delete wrote");
+
         // Closed: a second, unreferenced snapshot of base can be added and
         // deleted; the delete takes the exclusive lock itself.
         let mut b = open_child(&c.base, &mut c.resolver).expect("base writer");
@@ -1264,6 +1272,22 @@ mod tests {
         std::fs::copy(&c.base, bundle.path("base.cow")).expect("copy base");
         let f = open_child(&bundle.path("top.cow"), &mut r).expect("complete bundle");
         assert_eq!(read_all(&f), c.expected);
+    }
+
+    /// No host backend advertises discard (hole punching is not implemented).
+    #[test]
+    fn no_host_backend_advertises_discard() {
+        let _serial = process_spawn_guard();
+        let dir = TempDir::new();
+        let path = dir.file("a.raw", BYTES);
+        let writer = HostFileStorage::open_read_write_exclusive(&path).expect("writer");
+        assert!(!writer.capabilities().discard);
+        drop(writer);
+        let lease = ReadLease::open(&path).expect("lease");
+        assert!(!lease.capabilities().discard);
+        drop(lease);
+        let parent = ParentLeaseStorage::new(ParentLease::open(&path).expect("parent"));
+        assert!(!parent.capabilities().discard);
     }
 
     #[test]

@@ -26,11 +26,17 @@ pub mod cow_tx;
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_snapshot;
 
+/// Read-only inspection and check of a prototype image (S9-19). Not normative.
+#[cfg(any(test, feature = "test-support"))]
+pub mod cow_inspect;
+
 /// In-memory backend and the shared backend contract suite. Enabled by tests
 /// and by the `test-support` feature for host crates that run the same suite.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
+#[cfg(test)]
+mod cow_inspect_tests;
 #[cfg(test)]
 mod cow_open_tests;
 #[cfg(test)]

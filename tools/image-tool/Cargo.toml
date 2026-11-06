@@ -1,0 +1,22 @@
+[package]
+name = "od-image-tool"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "od_image_tool"
+path = "src/lib.rs"
+
+[[bin]]
+name = "od-image-tool"
+path = "src/main.rs"
+
+[dependencies]
+od-host = { path = "../../crates/od-host" }
+# The CoW image modules are a prototype exposed under this feature until a
+# format is accepted (S9-40); the tool is their first non-test user.
+od-storage = { path = "../../crates/od-storage", features = ["test-support"] }
+
+[lints]
+workspace = true

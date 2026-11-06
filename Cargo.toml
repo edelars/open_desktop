@@ -10,6 +10,7 @@ members = [
     "tools/runner",
     "tools/x86-runner",
     "tools/bench",
+    "tools/image-tool",
 ]
 
 [workspace.package]

@@ -788,6 +788,21 @@ impl<B: StorageBackend> CowView<B> {
         self.end_offset
     }
 
+    /// End offset a commit of `n_writes` blocks that leaves `new_block_count`
+    /// logical blocks would publish, computed exactly as the writer lays it
+    /// out (`[blocks][map][padding][root copy]`). `None` on overflow. Used for
+    /// capacity checks before any backend call.
+    pub fn projected_end(&self, n_writes: usize, new_block_count: u64) -> Option<u64> {
+        let map_offset = (n_writes as u64)
+            .checked_mul(BLOCK_SIZE as u64)
+            .and_then(|o| self.end_offset.checked_add(o))?;
+        let map_len = new_block_count.checked_mul(ENTRY_LEN as u64)?;
+        let copy_offset = map_offset
+            .checked_add(map_len)?
+            .checked_next_multiple_of(BLOCK_SIZE as u64)?;
+        copy_offset.checked_add(SLOT_SIZE as u64)
+    }
+
     /// CRC-32 of the current block map as the root stores it. Together with
     /// the generation and block count it identifies the content of this state
     /// (it covers every physical offset and block CRC).

@@ -100,6 +100,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "od-image-tool"
+version = "0.1.0"
+dependencies = [
+ "od-host",
+ "od-storage",
+]
+
+[[package]]
 name = "od-isa"
 version = "0.1.0"
 

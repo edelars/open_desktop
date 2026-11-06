@@ -165,7 +165,7 @@ pub const MAX_SNAPSHOTS: usize = 8;
 pub const MAX_CHAIN_DEPTH: u32 = 8;
 
 const HEADER_MAGIC: [u8; 8] = *b"ODSNAP\0\x01";
-const HEADER_VERSION: u32 = 1;
+pub(crate) const HEADER_VERSION: u32 = 1;
 const KIND_BASE: u32 = 0;
 const KIND_CHILD: u32 = 1;
 const KIND_BUILDING: u32 = 2;
@@ -181,7 +181,7 @@ const RECORD_LEN: usize = 48;
 const RESERVED_AT: usize = RECORDS_AT + MAX_SNAPSHOTS * RECORD_LEN;
 const CRC_AT: usize = BLOCK_SIZE - 4;
 
-type Block = [u8; BLOCK_SIZE];
+pub(crate) type Block = [u8; BLOCK_SIZE];
 
 // ------------------------------------------------------------------ types
 
@@ -210,6 +210,70 @@ pub struct SnapshotRecord {
     pub end_offset: u64,
     pub map_offset: u64,
     pub map_crc: u32,
+}
+
+/// Byte quota and reserve of one file (S9-18). A **policy** the layer applies
+/// itself; it is independent of what the host file system does. Every commit's
+/// final file end is computed exactly ([`CowView::projected_end`]) and checked
+/// **before** any backend call.
+///
+/// Ordinary data commits ([`SnapFile::write_at`], [`SnapFile::zero_range`])
+/// may not take the file beyond `max_file_bytes - reserve_bytes`. The reserve
+/// is held back for metadata-only commits ([`SnapFile::create_snapshot`],
+/// [`SnapFile::delete_snapshot`], [`SnapFile::discard_range`]), which may use
+/// it up to `max_file_bytes`, so a nearly full file can still publish or drop
+/// a snapshot name. Compaction writes a different file and is not charged
+/// here.
+///
+/// This is not a promise about the volume: a real `ENOSPC` can still arrive
+/// at any mutating step and is handled by the commit protocol (the previous
+/// durable state stays; an `Err` means old or new, never a torn state). An
+/// acknowledged commit is never undone by a later refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapacityPolicy {
+    pub max_file_bytes: u64,
+    pub reserve_bytes: u64,
+}
+
+impl Default for CapacityPolicy {
+    /// No quota.
+    fn default() -> Self {
+        Self {
+            max_file_bytes: u64::MAX,
+            reserve_bytes: 0,
+        }
+    }
+}
+
+/// What the layer offers for zero and discard (S9-18).
+///
+/// * `zero`: [`SnapFile::zero_range`] stores explicit zero blocks. They read
+///   as zeros whatever a parent holds.
+/// * `discard_inherit`: [`SnapFile::discard_range`] unmaps whole blocks. The
+///   block goes back to "not stored here": a base file reads zeros, a child
+///   reads its **parent's** bytes again. This is a layer operation, not a
+///   guest-visible zeroing.
+/// * `discard_zeroes_data`: after a discard the range reads as zeros. True
+///   only without a parent; with one the parent data shows through.
+/// * `physical_discard`: the backend can release physical space
+///   ([`StorageCapabilities::discard`]); `false` for every backend today.
+///
+/// A guest feature may advertise discard only when
+/// [`guest_discard_advertisable`](Self::guest_discard_advertisable) holds. A
+/// child must serve a guest's discard (or write-zeroes) with
+/// [`SnapFile::zero_range`] if it promises zeros.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LayerCapabilities {
+    pub zero: bool,
+    pub discard_inherit: bool,
+    pub discard_zeroes_data: bool,
+    pub physical_discard: bool,
+}
+
+impl LayerCapabilities {
+    pub fn guest_discard_advertisable(&self) -> bool {
+        self.discard_inherit && self.discard_zeroes_data
+    }
 }
 
 /// Decoded layer header (block 0).
@@ -270,6 +334,13 @@ pub enum SnapError {
     BadWrite(&'static str),
     /// The file is a compaction target that was never published.
     BuildInProgress,
+    /// The capacity policy refuses the commit; decided before any backend
+    /// call, nothing was written. `end_after` is the file end the commit would
+    /// publish, `limit` the byte limit that applies to this kind of commit.
+    QuotaExceeded {
+        end_after: u64,
+        limit: u64,
+    },
     /// Compaction read-back disagrees with the source (`None` is the head).
     CompactionMismatch {
         snapshot: Option<u64>,
@@ -526,6 +597,12 @@ pub(crate) fn decode_header(b: &Block) -> Result<Header, SnapError> {
     })
 }
 
+fn clear_bit(bitmap: &mut Block, b: u64) {
+    if let Some(byte) = usize::try_from(b / 8).ok().and_then(|i| bitmap.get_mut(i)) {
+        *byte &= !(1 << (b % 8));
+    }
+}
+
 fn bit(bitmap: &Block, b: u64) -> bool {
     usize::try_from(b / 8)
         .ok()
@@ -548,7 +625,7 @@ fn block_of(v: Vec<u8>) -> Result<Block, SnapError> {
     Block::try_from(v).map_err(|_| SnapError::BlockCorrupt)
 }
 
-fn read_desc<B: StorageBackend>(
+pub(crate) fn read_desc<B: StorageBackend>(
     storage: &CheckedStorage<B>,
     d: &BlockDescriptor,
 ) -> Result<Block, SnapError> {
@@ -565,14 +642,14 @@ fn read_desc<B: StorageBackend>(
 // ------------------------------------------------------------------ levels
 
 /// An immutable state (a retained root) reduced to what reading needs.
-struct Level {
-    header: Header,
-    presence: Block,
-    map: Vec<BlockDescriptor>,
+pub(crate) struct Level {
+    pub(crate) header: Header,
+    pub(crate) presence: Block,
+    pub(crate) map: Vec<BlockDescriptor>,
 }
 
 impl Level {
-    fn data_desc(&self, b: u64) -> Option<&BlockDescriptor> {
+    pub(crate) fn data_desc(&self, b: u64) -> Option<&BlockDescriptor> {
         if bit(&self.presence, b) {
             self.map
                 .get(usize::try_from(b.checked_add(DATA_BASE)?).ok()?)
@@ -584,7 +661,7 @@ impl Level {
 
 /// Parses the retained map of `rec` out of `storage`, then its header and
 /// bitmap. Any inconsistency is `SnapshotCorrupt`.
-fn load_level<B: StorageBackend>(
+pub(crate) fn load_level<B: StorageBackend>(
     storage: &CheckedStorage<B>,
     rec: &SnapshotRecord,
 ) -> Result<Level, SnapError> {
@@ -624,7 +701,7 @@ fn load_level<B: StorageBackend>(
 }
 
 /// Loads and verifies every retained snapshot a head header names.
-fn load_own_snapshots<B: StorageBackend>(
+pub(crate) fn load_own_snapshots<B: StorageBackend>(
     view: &CowView<B>,
     header: &Header,
 ) -> Result<BTreeMap<u64, Level>, SnapError> {
@@ -657,6 +734,18 @@ pub(crate) struct Ancestor {
     level: Level,
 }
 
+/// The references a verified chain was resolved through, nearest first: `first`
+/// and then the parent link of each ancestor's retained state.
+pub(crate) fn chain_links(first: &ParentRef, chain: &[Ancestor]) -> Vec<ParentRef> {
+    let mut links = vec![*first];
+    for a in chain {
+        if let Some(p) = a.level.header.parent {
+            links.push(p);
+        }
+    }
+    links
+}
+
 /// Block `b` as the chain shows it, starting below a level whose own blocks
 /// did not hold it. Holes at every level end in zeros.
 fn chain_read(chain: &[Ancestor], b: u64) -> Result<Block, SnapError> {
@@ -687,7 +776,7 @@ fn read_state<B: StorageBackend>(view: &CowView<B>) -> Result<(Header, Block), S
 
 /// [`read_state`]; `allow_building` admits a compaction target that has not
 /// been published (only the compaction's own verification asks for it).
-fn read_state_with<B: StorageBackend>(
+pub(crate) fn read_state_with<B: StorageBackend>(
     view: &CowView<B>,
     allow_building: bool,
 ) -> Result<(Header, Block), SnapError> {
@@ -711,7 +800,7 @@ fn read_state_with<B: StorageBackend>(
 
 /// Opens and verifies the whole chain starting at `first`. `own_uid` seeds the
 /// cycle check. Checks happen before anything is read from a candidate.
-fn resolve_chain<R: ParentResolver>(
+pub(crate) fn resolve_chain<R: ParentResolver>(
     resolver: &mut R,
     first: &ParentRef,
     own_uid: u64,
@@ -836,6 +925,7 @@ pub struct SnapFile<B: StorageBackend> {
     presence: Block,
     snapshots: BTreeMap<u64, Level>,
     chain: Rc<Vec<Ancestor>>,
+    policy: CapacityPolicy,
 }
 
 impl<B: StorageBackend> SnapFile<B> {
@@ -1011,6 +1101,7 @@ impl<B: StorageBackend> SnapFile<B> {
                 presence,
                 snapshots: BTreeMap::new(),
                 chain,
+                policy: CapacityPolicy::default(),
             },
             ack,
         ))
@@ -1052,6 +1143,7 @@ impl<B: StorageBackend> SnapFile<B> {
                 presence,
                 snapshots,
                 chain: Rc::new(chain),
+                policy: CapacityPolicy::default(),
             },
             report,
         ))
@@ -1199,6 +1291,11 @@ impl<B: StorageBackend> SnapFile<B> {
             });
         }
 
+        self.check_capacity(
+            usize::try_from(needed).map_err(|_| SnapError::OutOfRange)?,
+            have.max(last + 1 + DATA_BASE),
+            false,
+        )?;
         let mut presence = self.presence;
         let mut header = self.header.clone();
         header.disk_blocks = new_disk;
@@ -1242,6 +1339,141 @@ impl<B: StorageBackend> SnapFile<B> {
         Ok(ack)
     }
 
+    /// Test hooks: published end, logical CoW block count and the projected
+    /// end of a commit, as the capacity policy sees them.
+    #[cfg(test)]
+    pub(crate) fn end_for_tests(&self) -> u64 {
+        self.file.end_offset()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn file_block_count_for_tests(&self) -> u64 {
+        self.file.block_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn projected_end_for_tests(&self, n: usize, count: u64) -> Option<u64> {
+        self.file.projected_end(n, count)
+    }
+
+    /// Replaces the capacity policy (not persisted). `reserve_bytes` must not
+    /// exceed `max_file_bytes`.
+    pub fn set_capacity_policy(&mut self, policy: CapacityPolicy) -> Result<(), SnapError> {
+        if policy.reserve_bytes > policy.max_file_bytes {
+            return Err(SnapError::BadWrite("reserve above the file limit"));
+        }
+        self.policy = policy;
+        Ok(())
+    }
+
+    pub fn capacity_policy(&self) -> CapacityPolicy {
+        self.policy
+    }
+
+    /// Checks a commit of `n_writes` blocks that leaves `new_block_count`
+    /// logical CoW blocks against the policy. No backend call.
+    fn check_capacity(
+        &self,
+        n_writes: usize,
+        new_block_count: u64,
+        metadata_only: bool,
+    ) -> Result<(), SnapError> {
+        let end_after = self
+            .file
+            .projected_end(n_writes, new_block_count)
+            .ok_or(SnapError::Cow(CowError::LayoutOverflow))?;
+        let limit = if metadata_only {
+            self.policy.max_file_bytes
+        } else {
+            self.policy
+                .max_file_bytes
+                .saturating_sub(self.policy.reserve_bytes)
+        };
+        if end_after > limit {
+            return Err(SnapError::QuotaExceeded { end_after, limit });
+        }
+        Ok(())
+    }
+
+    /// Zero and discard support of this file (S9-18); see
+    /// [`LayerCapabilities`].
+    pub fn layer_capabilities(&self) -> LayerCapabilities {
+        LayerCapabilities {
+            zero: true,
+            discard_inherit: true,
+            discard_zeroes_data: self.chain.is_empty(),
+            physical_discard: self.file.storage().capabilities().discard,
+        }
+    }
+
+    /// Writes explicit zero blocks over `[offset, offset + len)` as one commit
+    /// (S9-18). Fully covered blocks become stored zero blocks, so in a child
+    /// they **mask** the parent; a partially covered block is a
+    /// read-modify-write that zeroes only the range and keeps every other byte
+    /// (parent bytes included). The range must lie inside the disk and span at
+    /// most the transaction limit; both are checked before any backend call.
+    /// Zero blocks are physical blocks: nothing is released (no sparse
+    /// extents, no host hole punching).
+    pub fn zero_range(&mut self, offset: u64, len: u64) -> Result<DurableAck, SnapError> {
+        if len == 0 {
+            return Err(SnapError::BadWrite("empty zero range"));
+        }
+        let end = offset.checked_add(len).ok_or(SnapError::OutOfRange)?;
+        if end > self.disk_size() {
+            return Err(SnapError::OutOfRange);
+        }
+        let limit_bytes = (MAX_TX_BLOCKS as u64) * BLOCK_SIZE as u64;
+        if len > limit_bytes {
+            return Err(SnapError::TooLarge {
+                needed: len.div_ceil(BLOCK_SIZE as u64),
+                limit: MAX_TX_BLOCKS,
+            });
+        }
+        let zeros = vec![0u8; usize::try_from(len).map_err(|_| SnapError::OutOfRange)?];
+        self.write_at(offset, &zeros)
+    }
+
+    /// Unmaps every block that `[offset, offset + len)` covers **completely**
+    /// (S9-18): its presence bit is cleared in one metadata commit, so it
+    /// reads as "not stored here" again (zeros in a base file, the parent's
+    /// bytes in a child). Partially covered edge blocks are left as they are:
+    /// discard is a hint. Earlier snapshots keep what they saw. Physical
+    /// blocks stay in the file until a compaction (no hole punching).
+    /// Returns `None` when nothing changed (no commit). The range must lie
+    /// inside the disk.
+    ///
+    /// This is **not** a zeroing operation; see [`LayerCapabilities`].
+    pub fn discard_range(
+        &mut self,
+        offset: u64,
+        len: u64,
+    ) -> Result<Option<DurableAck>, SnapError> {
+        if len == 0 {
+            return Err(SnapError::BadWrite("empty discard range"));
+        }
+        let end = offset.checked_add(len).ok_or(SnapError::OutOfRange)?;
+        if end > self.disk_size() {
+            return Err(SnapError::OutOfRange);
+        }
+        let bs = BLOCK_SIZE as u64;
+        let (first, last_excl) = (offset.div_ceil(bs), end / bs);
+        let mut presence = self.presence;
+        let mut changed = false;
+        for b in first..last_excl {
+            if bit(&presence, b) {
+                clear_bit(&mut presence, b);
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(None);
+        }
+        self.check_capacity(1, self.file.block_count(), true)?;
+        let ack = self.file.commit(&[(1, presence.as_slice())])?;
+        self.presence = presence;
+        Ok(Some(ack))
+    }
+
     /// Publishes a snapshot of the current published state and returns its id.
     /// One commit; after a crash the snapshot is whole or absent.
     pub fn create_snapshot(&mut self) -> Result<(u64, DurableAck), SnapError> {
@@ -1275,6 +1507,7 @@ impl<B: StorageBackend> SnapFile<B> {
         // no error may report an unpublished snapshot. A record that does not
         // verify is refused here and never published.
         let level = load_level(self.file.storage(), &rec)?;
+        self.check_capacity(1, self.file.block_count(), true)?;
         let mut header = self.header.clone();
         header.snapshots.push(rec);
         header.next_snapshot_id = next;
@@ -1307,6 +1540,7 @@ impl<B: StorageBackend> SnapFile<B> {
             .iter()
             .position(|r| r.id == id)
             .ok_or(SnapError::SnapshotMissing { id })?;
+        self.check_capacity(1, self.file.block_count(), true)?;
         let mut header = self.header.clone();
         header.snapshots.remove(pos);
         let ack = self
@@ -1537,6 +1771,7 @@ impl<B: StorageBackend> SnapFile<B> {
             header,
             presence,
             chain,
+            policy,
             ..
         } = self;
         if file.is_poisoned() {
@@ -1559,6 +1794,7 @@ impl<B: StorageBackend> SnapFile<B> {
             presence: media_presence,
             snapshots,
             chain,
+            policy,
         })
     }
 
@@ -1597,8 +1833,9 @@ impl<B: StorageBackend> SnapFile<B> {
 
     /// Moves the head of this (building) file to the given state with as few
     /// copied blocks as possible and in commits of at most `MAX_TX_BLOCKS - 2`
-    /// data blocks. The presence set may only grow (no state in this layer
-    /// ever clears a bit). Bitmap and header go with the last commit, so every
+    /// data blocks. The disk size may only grow; presence may shrink (a discard
+    /// clears bits; the block keeps its placeholder). Bitmap and header go
+    /// with the last commit, so every
     /// intermediate commit keeps presence within the stored blocks.
     fn apply_state(
         &mut self,
@@ -1607,9 +1844,9 @@ impl<B: StorageBackend> SnapFile<B> {
         get: &mut dyn FnMut(u64) -> Result<Block, SnapError>,
     ) -> Result<(), SnapError> {
         let not_successor = SnapError::BadWrite("state is not a successor of the head");
-        if disk_blocks < self.header.disk_blocks
-            || (0..MAX_DISK_BLOCKS).any(|b| bit(&self.presence, b) && !bit(presence, b))
-        {
+        // Presence may shrink between states (a discard clears bits): a cleared
+        // block keeps its physical placeholder, only the bitmap changes.
+        if disk_blocks < self.header.disk_blocks {
             return Err(not_successor);
         }
         let have = self.file.block_count();

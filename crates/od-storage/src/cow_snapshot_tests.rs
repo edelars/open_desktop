@@ -97,7 +97,7 @@ fn write(f: &mut File, m: &mut Model, off: usize, data: &[u8]) {
     m.apply(off, data);
 }
 
-fn image(f: &File) -> Vec<u8> {
+fn image<B: crate::io::StorageBackend>(f: &SnapFile<B>) -> Vec<u8> {
     let mut v = vec![0u8; f.disk_size() as usize];
     f.read_at(0, &mut v).expect("read disk");
     v
@@ -2100,4 +2100,607 @@ fn damage_to_a_built_target_is_found_by_the_media_reopen_and_blocks_publication(
         // The source is untouched.
         assert_content(&hist.file, &hist.snaps, &hist.head, name);
     }
+}
+
+// ======================================================= S9-18: capacity,
+// explicit zero and discard
+
+use crate::cow_proto::CowError;
+use crate::cow_snapshot::{CapacityPolicy, LayerCapabilities};
+use crate::io::{BackendError, StorageBackend, StorageCapabilities, StorageError};
+use crate::testing::fault::Fault;
+use std::cell::Cell;
+use std::io::ErrorKind;
+use std::rc::Rc;
+
+fn is_enospc(e: &SnapError) -> bool {
+    matches!(
+        e,
+        SnapError::Cow(CowError::Storage(StorageError::Io {
+            kind: ErrorKind::StorageFull,
+            ..
+        }))
+    )
+}
+
+/// Parent image with `blocks` blocks of distinct data, snapshot 1, and a
+/// child over it. Returns the child and the parent's image.
+fn masking_world(fs: &mut Fs, blocks: usize) -> (File, Vec<u8>) {
+    let mut p = base(fs, 1);
+    let mut pm = Model::default();
+    write(&mut p, &mut pm, 0, &rnd(70, blocks * BS));
+    let pref = snap(&mut p).1;
+    drop(p);
+    (child(fs, 2, &pref).expect("child"), pm.0)
+}
+
+/// Independent model of a child: bytes, with the parent's bytes for a block
+/// that was never stored or was discarded.
+struct ChildModel {
+    parent: Vec<u8>,
+    bytes: Vec<u8>,
+}
+
+impl ChildModel {
+    fn zero(&mut self, off: usize, len: usize) {
+        self.bytes[off..off + len].fill(0);
+    }
+
+    fn discard(&mut self, off: usize, len: usize) {
+        let (first, last) = (off.div_ceil(BS), (off + len) / BS);
+        for b in first..last {
+            let from = (b * BS).min(self.parent.len());
+            let to = ((b + 1) * BS).min(self.parent.len());
+            let mut block = vec![0u8; BS];
+            block[..to - from].copy_from_slice(&self.parent[from..to]);
+            self.bytes[b * BS..(b + 1) * BS].copy_from_slice(&block);
+        }
+    }
+}
+
+#[test]
+fn zero_masks_the_parent_and_discard_gives_it_back() {
+    let mut fs = Fs::default();
+    let (mut c, parent) = masking_world(&mut fs, 4);
+    let mut m = ChildModel {
+        parent: parent.clone(),
+        bytes: parent.clone(),
+    };
+    assert_eq!(image(&c), m.bytes);
+
+    // zero: explicit zero blocks, the parent no longer shows through.
+    c.zero_range(0, BS as u64).expect("zero");
+    m.zero(0, BS);
+    assert!(image(&c)[..BS].iter().all(|x| *x == 0));
+    assert_eq!(image(&c), m.bytes);
+    // discard: back to "inherit", the parent's bytes are visible again.
+    c.discard_range(0, BS as u64)
+        .expect("discard")
+        .expect("changed");
+    m.discard(0, BS);
+    assert_eq!(&image(&c)[..BS], &parent[..BS]);
+    assert_eq!(image(&c), m.bytes);
+    // write: new bytes; a later discard returns the parent's, not the write.
+    let new = rnd(71, BS);
+    c.write_at(0, &new).expect("write");
+    m.bytes[..BS].copy_from_slice(&new);
+    assert_eq!(&image(&c)[..BS], &new[..]);
+    c.discard_range(0, BS as u64).expect("discard");
+    m.discard(0, BS);
+    assert_eq!(&image(&c)[..BS], &parent[..BS]);
+
+    // Partial zero is a read-modify-write that keeps the parent's other bytes.
+    c.zero_range(BS as u64 + 10, 20).expect("partial zero");
+    m.zero(BS + 10, 20);
+    assert_eq!(image(&c), m.bytes);
+    assert_eq!(&image(&c)[BS..BS + 10], &parent[BS..BS + 10]);
+    assert!(image(&c)[BS + 10..BS + 30].iter().all(|x| *x == 0));
+    assert_eq!(&image(&c)[BS + 30..2 * BS], &parent[BS + 30..2 * BS]);
+    // A range that covers no whole block discards nothing (a hint).
+    let generation = c.generation();
+    assert!(
+        c.discard_range(BS as u64 + 1, BS as u64 - 2)
+            .expect("partial discard")
+            .is_none()
+    );
+    assert_eq!(c.generation(), generation, "a no-op discard committed");
+    // Unaligned discard: only the blocks covered completely go back.
+    c.zero_range(2 * BS as u64, 2 * BS as u64)
+        .expect("zero 2..4");
+    m.zero(2 * BS, 2 * BS);
+    c.discard_range(2 * BS as u64 + 5, 2 * BS as u64 - 5)
+        .expect("discard");
+    m.discard(2 * BS + 5, 2 * BS - 5);
+    assert_eq!(image(&c), m.bytes);
+    assert!(
+        image(&c)[2 * BS..3 * BS].iter().all(|x| *x == 0),
+        "edge block kept"
+    );
+
+    // Reopen: zero is persistent, a discarded block is inherited again.
+    drop(c);
+    let c = reopen(&fs, 2).expect("reopen");
+    assert_eq!(image(&c), m.bytes);
+}
+
+#[test]
+fn a_snapshot_keeps_what_it_saw_across_zero_and_discard_and_compaction() {
+    let mut fs = Fs::default();
+    let (mut c, parent) = masking_world(&mut fs, 4);
+    let mut m = ChildModel {
+        parent: parent.clone(),
+        bytes: parent.clone(),
+    };
+    c.zero_range(BS as u64, 2 * BS as u64).expect("zero");
+    m.zero(BS, 2 * BS);
+    let s1 = (snap(&mut c).0, m.bytes.clone());
+    c.discard_range(0, 4 * BS as u64).expect("discard all");
+    m.discard(0, 4 * BS);
+    c.write_at(3 * BS as u64, &rnd(72, 5)).expect("write");
+    m.bytes[3 * BS..3 * BS + 5].copy_from_slice(&rnd(72, 5));
+    assert_eq!(snap_image(&c, s1.0), s1.1, "snapshot changed by discard");
+    assert_eq!(image(&c), m.bytes);
+
+    // Copy-compaction keeps the same logical content (presence may shrink
+    // between states) and drops the discarded data.
+    let th = FaultHandle::new(&[], 0x1800);
+    let (t, _) = c.compact_to(st(&th), 52).expect("compact");
+    assert_eq!(snap_image(&t, s1.0), s1.1);
+    assert_eq!(image(&t), m.bytes);
+    drop(t);
+    drop(c);
+    fs.files.insert(52, th);
+    let t = reopen(&fs, 52).expect("target opens against the parent");
+    assert_eq!(snap_image(&t, s1.0), s1.1);
+    assert_eq!(image(&t), m.bytes);
+}
+
+#[test]
+fn a_base_file_discard_reads_zeros_and_capabilities_are_honest() {
+    let mut fs = Fs::default();
+    let mut f = base(&mut fs, 1);
+    let mut m = Model::default();
+    write(&mut f, &mut m, 0, &rnd(1, 3 * BS));
+    f.discard_range(BS as u64, BS as u64).expect("discard");
+    m.0[BS..2 * BS].fill(0);
+    assert_eq!(image(&f), m.0);
+    let caps = f.layer_capabilities();
+    assert_eq!(
+        caps,
+        LayerCapabilities {
+            zero: true,
+            discard_inherit: true,
+            discard_zeroes_data: true,
+            physical_discard: false,
+        }
+    );
+    assert!(caps.guest_discard_advertisable());
+    let pref = snap(&mut f).1;
+    drop(f);
+    let c = child(&mut fs, 2, &pref).expect("child");
+    let caps = c.layer_capabilities();
+    assert!(!caps.discard_zeroes_data, "child discard shows parent data");
+    assert!(
+        !caps.guest_discard_advertisable(),
+        "a child must not advertise discard"
+    );
+    assert!(caps.zero && !caps.physical_discard);
+}
+
+#[test]
+fn no_backend_advertises_discard() {
+    let mem = crate::testing::memory::MemoryStorage::new(&[]);
+    assert!(!mem.capabilities().discard);
+    let h = FaultHandle::new(&[], 1);
+    assert!(!h.open().capabilities().discard);
+    assert!(!StorageCapabilities::read_write(1 << 20).discard);
+    assert!(!StorageCapabilities::read_only(1 << 20).discard);
+    let mut inconsistent = StorageCapabilities::read_only(1 << 20);
+    inconsistent.discard = true;
+    assert_eq!(
+        inconsistent.validate(),
+        Err(crate::io::CapabilityInconsistency::DiscardWithoutWritable)
+    );
+}
+
+#[test]
+fn zero_and_discard_reject_bad_ranges_before_any_backend_call() {
+    let mut fs = Fs::default();
+    let h = fs.handle(1, 0x1801);
+    let mut f = SnapFile::create_base(st(&h), 1).expect("create").0;
+    f.write_at(0, &rnd(1, 200 * BS)).expect("write");
+    f.write_at(200 * BS as u64, &rnd(2, 100 * BS))
+        .expect("write");
+    let ord = h.next_ordinal();
+    let size = f.disk_size();
+    assert_eq!(
+        f.zero_range(0, 0).err(),
+        Some(SnapError::BadWrite("empty zero range"))
+    );
+    assert_eq!(f.zero_range(size, 1).err(), Some(SnapError::OutOfRange));
+    assert_eq!(f.zero_range(u64::MAX, 2).err(), Some(SnapError::OutOfRange));
+    assert!(matches!(
+        f.zero_range(0, 256 * BS as u64 + 1).err(),
+        Some(SnapError::TooLarge { .. })
+    ));
+    assert_eq!(
+        f.discard_range(0, 0).err(),
+        Some(SnapError::BadWrite("empty discard range"))
+    );
+    assert_eq!(
+        f.discard_range(size - 1, 2).err(),
+        Some(SnapError::OutOfRange)
+    );
+    assert_eq!(
+        f.discard_range(u64::MAX, 2).err(),
+        Some(SnapError::OutOfRange)
+    );
+    assert!(f.discard_range(1, 10).expect("hint").is_none());
+    assert_eq!(
+        h.next_ordinal(),
+        ord,
+        "a rejected range touched the backend"
+    );
+    assert!(!f.is_poisoned());
+    // A discard of the whole 300-block disk is one metadata commit (it is not
+    // bounded by the data transaction limit).
+    assert!(f.discard_range(0, size).expect("discard all").is_some());
+    assert!(image(&f).iter().all(|x| *x == 0));
+}
+
+// ----------------------------------------------------------- policy
+
+#[test]
+fn projected_end_is_exactly_what_a_commit_publishes() {
+    let mut fs = Fs::default();
+    let h = fs.handle(1, 0x1802);
+    let mut f = SnapFile::create_base(st(&h), 1).expect("create").0;
+    let mut rng = SplitMix64(7);
+    for _ in 0..30 {
+        let blocks = f.file_block_count_for_tests();
+        let off = rng.below(20 * BS as u64);
+        let len = 1 + rng.below(3 * BS as u64) as usize;
+        let before = f.end_for_tests();
+        f.write_at(off, &rng.bytes(len)).expect("write");
+        let growth = f.end_for_tests() - before;
+        // Metadata of one commit is bounded: its blocks, one map (12 bytes per
+        // block) and two sectors of padding and root copy.
+        let bound = 30 * BS as u64 + 12 * (blocks + 30) + 2 * BS as u64;
+        assert!(growth <= bound, "growth {growth} above bound {bound}");
+    }
+    let before = f.end_for_tests();
+    let expected = f.projected_end_for_tests(1, f.file_block_count_for_tests());
+    f.create_snapshot().expect("snapshot");
+    assert_eq!(f.end_for_tests(), expected.expect("projection"), "{before}");
+}
+
+#[test]
+fn quota_refuses_data_before_any_backend_call_and_the_reserve_serves_metadata() {
+    let mut fs = Fs::default();
+    let h = fs.handle(1, 0x1803);
+    let mut f = SnapFile::create_base(st(&h), 1).expect("create").0;
+    let mut m = Model::default();
+    write(&mut f, &mut m, 0, &rnd(1, 2 * BS));
+    let used = h.volatile_bytes().len() as u64;
+    assert_eq!(
+        f.set_capacity_policy(CapacityPolicy {
+            max_file_bytes: 10,
+            reserve_bytes: 11
+        })
+        .err(),
+        Some(SnapError::BadWrite("reserve above the file limit"))
+    );
+    f.set_capacity_policy(CapacityPolicy {
+        max_file_bytes: used + 3 * BS as u64,
+        reserve_bytes: 2 * BS as u64,
+    })
+    .expect("policy");
+    let ord = h.next_ordinal();
+    // Data may not enter the reserve.
+    let err = f.write_at(0, &rnd(2, BS)).expect_err("over quota");
+    assert!(matches!(err, SnapError::QuotaExceeded { .. }), "{err:?}");
+    assert!(matches!(
+        f.zero_range(0, BS as u64).err(),
+        Some(SnapError::QuotaExceeded { .. })
+    ));
+    assert_eq!(
+        h.next_ordinal(),
+        ord,
+        "a refused commit touched the backend"
+    );
+    assert!(!f.is_poisoned());
+    assert_eq!(image(&f), m.0, "refusal changed the disk");
+    // Metadata may use the reserve; it can still name a snapshot.
+    f.create_snapshot().expect("snapshot inside the reserve");
+    // Without any room even metadata is refused, still before any I/O.
+    f.set_capacity_policy(CapacityPolicy {
+        max_file_bytes: h.volatile_bytes().len() as u64,
+        reserve_bytes: 0,
+    })
+    .expect("policy");
+    let ord = h.next_ordinal();
+    assert!(matches!(
+        f.create_snapshot().err(),
+        Some(SnapError::QuotaExceeded { .. })
+    ));
+    assert!(matches!(
+        f.delete_snapshot(1).err(),
+        Some(SnapError::QuotaExceeded { .. })
+    ));
+    assert!(matches!(
+        f.discard_range(0, BS as u64).err(),
+        Some(SnapError::QuotaExceeded { .. })
+    ));
+    assert_eq!(h.next_ordinal(), ord);
+    // Lifting the quota makes the same operations work: nothing was damaged.
+    f.set_capacity_policy(CapacityPolicy::default())
+        .expect("policy");
+    f.write_at(0, &rnd(3, BS)).expect("write after lifting");
+}
+
+#[test]
+fn counted_limits_are_checked_before_any_write() {
+    let mut fs = Fs::default();
+    let h = fs.handle(1, 0x1804);
+    let mut f = SnapFile::create_base(st(&h), 1).expect("create").0;
+    f.write_at(0, &rnd(1, BS)).expect("write");
+    for _ in 0..MAX_SNAPSHOTS {
+        f.create_snapshot().expect("snapshot");
+    }
+    let ord = h.next_ordinal();
+    assert_eq!(f.create_snapshot().err(), Some(SnapError::SnapshotLimit));
+    assert_eq!(
+        f.write_at(MAX_DISK_BLOCKS * BS as u64, &[1]).err(),
+        Some(SnapError::OutOfRange)
+    );
+    assert!(matches!(
+        f.write_at((MAX_DISK_BLOCKS - 1) * BS as u64, &rnd(2, 2 * BS))
+            .err(),
+        Some(SnapError::OutOfRange)
+    ));
+    assert_eq!(
+        f.delete_snapshot(99).err(),
+        Some(SnapError::SnapshotMissing { id: 99 })
+    );
+    assert_eq!(
+        h.next_ordinal(),
+        ord,
+        "a refused operation touched the backend"
+    );
+}
+
+// ---------------------------------------------------- ENOSPC sweeps
+
+type Op = fn(&mut File) -> Result<(), SnapError>;
+
+fn enospc_ops(op: Op) -> Vec<OpKind> {
+    let h = FaultHandle::new(&[], 0x1810);
+    let mut hist = history(&h);
+    let start = h.next_ordinal();
+    op(&mut hist.file).expect("clean operation");
+    let end = h.next_ordinal();
+    h.trace()
+        .iter()
+        .filter_map(|l| parse_kind(l))
+        .filter(|(o, _)| *o >= start && *o < end)
+        .map(|(_, k)| k)
+        .collect()
+}
+
+/// ENOSPC at every resize and write of `op`: the operation fails, the durable
+/// state before it is intact whatever the crash keeps, and with space back the
+/// same operation succeeds on the recovered file.
+fn enospc_sweep(name: &str, op: Op) {
+    let ops = enospc_ops(op);
+    assert!(ops.len() >= 5, "{name}: {}", ops.len());
+    let mut cases = 0;
+    for (i, kind) in ops.iter().enumerate() {
+        let faults: Vec<Fault> = match kind {
+            OpKind::SetLen => vec![Fault::Resize(ErrorKind::StorageFull)],
+            OpKind::Write => vec![crate::testing::fault::Fault::Write(
+                crate::testing::fault::WriteFault::Fail(ErrorKind::StorageFull),
+            )],
+            OpKind::Flush => continue,
+        };
+        for fault in faults {
+            for policy in policies() {
+                cases += 1;
+                let h = FaultHandle::new(&[], 0x1810);
+                let Hist {
+                    mut file,
+                    snaps,
+                    head,
+                } = history(&h);
+                h.script(h.next_ordinal() + i as u64, fault);
+                let err = op(&mut file).expect_err("ENOSPC must fail the operation");
+                let label = format!("{name} op={i} {fault:?} {policy:?}");
+                assert!(is_enospc(&err), "{label}: {err:?}");
+                assert!(file.is_poisoned(), "{label}");
+                drop(file);
+                h.crash(policy);
+                let mut f = match SnapFile::open(st(&h), &mut NoParents) {
+                    Ok((f, _)) => f,
+                    Err(e) => panic!("{}", h.report(&format!("{label}: refused {e:?}"))),
+                };
+                assert_content(&f, &snaps, &head, &label);
+                op(&mut f).unwrap_or_else(|e| panic!("{label}: retry failed {e:?}"));
+            }
+        }
+    }
+    assert!(cases >= 10, "{name}: {cases}");
+}
+
+#[test]
+fn enospc_at_every_step_leaves_the_previous_durable_state_intact() {
+    enospc_sweep("write", |f| f.write_at(10, &rnd(5, 700)).map(|_| ()));
+    enospc_sweep("zero", |f| f.zero_range(20, 600).map(|_| ()));
+    enospc_sweep("discard", |f| {
+        f.discard_range(0, 2 * BS as u64).map(|a| {
+            assert!(a.is_some());
+        })
+    });
+    enospc_sweep("snapshot", |f| f.create_snapshot().map(|_| ()));
+    enospc_sweep("delete", |f| f.delete_snapshot(1).map(|_| ()));
+}
+
+/// A backend with a hard size limit: the volume is full beyond `cap` bytes.
+struct Capped {
+    inner: FaultBackend,
+    cap: Rc<Cell<u64>>,
+}
+
+fn full() -> BackendError {
+    BackendError::Io {
+        kind: ErrorKind::StorageFull,
+        os_error: Some(28),
+    }
+}
+
+impl StorageBackend for Capped {
+    fn capabilities(&self) -> StorageCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn size(&self) -> Result<u64, BackendError> {
+        self.inner.size()
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BackendError> {
+        self.inner.read_at(offset, buf)
+    }
+
+    fn write_at(&mut self, offset: u64, buf: &[u8]) -> Result<usize, BackendError> {
+        if offset + buf.len() as u64 > self.cap.get() {
+            return Err(full());
+        }
+        self.inner.write_at(offset, buf)
+    }
+
+    fn set_len(&mut self, len: u64) -> Result<(), BackendError> {
+        if len > self.cap.get() {
+            return Err(full());
+        }
+        self.inner.set_len(len)
+    }
+
+    fn flush_file_durable(&mut self) -> Result<(), BackendError> {
+        self.inner.flush_file_durable()
+    }
+}
+
+fn capped(h: &FaultHandle, cap: &Rc<Cell<u64>>) -> CheckedStorage<Capped> {
+    CheckedStorage::new(Capped {
+        inner: h.open(),
+        cap: Rc::clone(cap),
+    })
+    .expect("capabilities are consistent")
+}
+
+#[test]
+fn a_full_volume_fails_a_commit_cleanly_and_never_undoes_an_acknowledged_one() {
+    let build = |cap: &Rc<Cell<u64>>| {
+        let h = FaultHandle::new(&[], 0x1820);
+        let hist = history(&h);
+        let before_image = hist.head.clone();
+        drop(hist.file);
+        h.crash(CrashPolicy::DropPending);
+        let (f, _) = SnapFile::open(capped(&h, cap), &mut NoParents).expect("open");
+        (h, f, before_image)
+    };
+    let payload = rnd(9, 1500);
+    // Size of the media before and after one clean commit.
+    let cap = Rc::new(Cell::new(u64::MAX));
+    let (h, mut f, before_image) = build(&cap);
+    let before_len = h.volatile_bytes().len() as u64;
+    f.write_at(100, &payload).expect("clean");
+    let after_len = h.volatile_bytes().len() as u64;
+    assert!(after_len > before_len);
+    let mut model = Model(before_image.clone());
+    model.apply(100, &payload);
+
+    let mut limit = before_len;
+    let mut failed = 0;
+    while limit <= after_len {
+        for policy in policies() {
+            let cap = Rc::new(Cell::new(limit));
+            let (h, mut f, _) = build(&cap);
+            let result = f.write_at(100, &payload);
+            drop(f);
+            h.crash(policy);
+            cap.set(u64::MAX);
+            let (f, _) = SnapFile::open(capped(&h, &cap), &mut NoParents).expect("reopen");
+            let label = format!("limit={limit} {policy:?}");
+            if limit < after_len {
+                let e = result.expect_err("a full volume fails the commit");
+                assert!(is_enospc(&e), "{label}: {e:?}");
+                assert_eq!(image(&f), before_image, "{label}: previous state damaged");
+                failed += 1;
+            } else {
+                result.expect("fits");
+                assert_eq!(image(&f), model.0, "{label}");
+            }
+        }
+        limit += 256;
+    }
+    assert!(failed > 0);
+
+    // An acknowledged commit survives a later ENOSPC.
+    let cap = Rc::new(Cell::new(u64::MAX));
+    let (h, mut f, _) = build(&cap);
+    f.write_at(100, &payload).expect("acknowledged");
+    cap.set(h.volatile_bytes().len() as u64); // now completely full
+    let e = f.write_at(0, &rnd(10, BS)).expect_err("full");
+    assert!(is_enospc(&e));
+    drop(f);
+    h.crash(CrashPolicy::DropPending);
+    cap.set(u64::MAX);
+    let (f, _) = SnapFile::open(capped(&h, &cap), &mut NoParents).expect("reopen");
+    assert_eq!(image(&f), model.0, "an acknowledged commit was rolled back");
+}
+
+#[test]
+fn a_full_target_volume_fails_compaction_cleanly_and_leaves_the_source_alone() {
+    let src = FaultHandle::new(&[], 0x1830);
+    let Hist { file, snaps, head } = history(&src);
+    let src_before = (src.volatile_bytes(), src.durable_bytes());
+    let clean = FaultHandle::new(&[], 0x1831);
+    file.compact_to(st(&clean), 50).expect("clean");
+    let needed = clean.volatile_bytes().len() as u64;
+
+    let (mut failed, mut done) = (0, 0);
+    let mut limit = 0u64;
+    while limit <= needed + 512 {
+        for policy in policies() {
+            let th = FaultHandle::new(&[], 0x1831);
+            let cap = Rc::new(Cell::new(limit));
+            let result = file.compact_to(capped(&th, &cap), 50);
+            let label = format!("limit={limit} {policy:?}");
+            let ok = result.is_ok();
+            if let Err(e) = &result {
+                assert!(is_enospc(e), "{label}: {e:?}");
+            }
+            drop(result);
+            th.crash(policy);
+            match SnapFile::open(st(&th), &mut NoParents) {
+                Ok((t, _)) => {
+                    assert!(ok || limit >= needed - 2048, "{label}");
+                    assert_content(&t, &snaps, &head, &label);
+                    done += 1;
+                }
+                Err(e) => {
+                    assert!(!ok, "{label}: acknowledged target lost {e:?}");
+                    assert!(is_absent(&e), "{label}: {e:?}");
+                    failed += 1;
+                }
+            }
+            assert_eq!(
+                (src.volatile_bytes(), src.durable_bytes()),
+                src_before,
+                "{label}: source changed"
+            );
+        }
+        limit += 512;
+    }
+    assert!(failed > 0 && done > 0, "{failed} {done}");
+    assert_content(&file, &snaps, &head, "source");
 }
