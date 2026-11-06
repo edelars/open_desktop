@@ -1,0 +1,81 @@
+{
+  "slice": "S4-16b",
+  "date": "2026-11-06",
+  "scope": "One bounded interpreted qword MOV store reconciles committed physical writes with one inactive JIT code page shared by two aliases.",
+  "status": {
+    "implementation": "complete",
+    "independent_review": "passed",
+    "accepted": true,
+    "s4_16_complete": false,
+    "stage_4_complete": false
+  },
+  "profile": {
+    "vcpus": 1,
+    "paging": "fixed Long64 four-level 4 KiB snapshot",
+    "instruction": "48 89 0B MOV [RBX],RCX through od_machine::step_paged_mov",
+    "code": "NativeRegisterV1 register-only range contained in one guest page",
+    "aliases": 2,
+    "writer": "one synchronous interpreter step between native calls"
+  },
+  "behavior": {
+    "machine_owns_physical_ram": true,
+    "machine_depends_on_host": false,
+    "paging_controls_match_session_snapshot": true,
+    "cpl_preserved": true,
+    "cr3_isolated_in_local_interpreter_state_copy": true,
+    "cr3_restored_before_return_to_caller": true,
+    "committed_physical_write_callbacks_captured": true,
+    "callback_includes_page_table_ad_writes": true,
+    "reconciliation_runs_before_step_error_propagation": true,
+    "physical_overlap_with_code_page_invalidates_both_alias_caches": true,
+    "guest_store_mutates_cached_immediate": true,
+    "fault_after_code_backing_accessed_write_preserves_cpu_and_operand": true,
+    "unrelated_page_store_preserves_code_generation_and_alias_caches": true,
+    "cross_page_data_operand_behavior_tested": false,
+    "performance_claim": false,
+    "performance_measured": false
+  },
+  "verification": {
+    "host_s4_16b_tests": {
+      "command": "cargo test -p od-host --lib --offline s4_16b_ -- --test-threads=1",
+      "passed": 2,
+      "failed": 0,
+      "platform": "macOS ARM64"
+    },
+    "machine_full_lib": {
+      "command": "cargo test -p od-machine --lib --offline",
+      "passed": 105,
+      "failed": 0
+    },
+    "host_all_targets_check": {
+      "command": "cargo check -p od-host --all-targets --offline",
+      "exit_code": 0,
+      "warnings": [
+        "od-jit: dead_code for CodeMemory::one_instruction",
+        "od-host test: unused variable scale",
+        "od-host test: unnecessary mut callback_stop",
+        "od-host memory_corpus test: unused import MEMORY_CORPUS_SEQUENCES"
+      ]
+    },
+    "cargo_fmt_all_check": "passed",
+    "git_diff_check": "passed",
+    "graphify_update": {
+      "status": "passed",
+      "nodes": 26924,
+      "edges": 67408,
+      "communities": 1036
+    },
+    "independent_review": "passed_clean",
+    "commit": "feat: reconcile guest stores with JIT code caches"
+  },
+  "limits": [
+    "Only one synchronous qword MOV store profile is exercised",
+    "Only one physical RAM code page and two fixed aliases are covered",
+    "Only committed writes routed through this step_paged_mov call are reconciled",
+    "Cross-page data operand behavior and cross-page code are outside this slice",
+    "No generic writer notification, remap/TLB invalidation, active-block mutation, DMA or SMP",
+    "Existing step_paged_mov may dispatch MMIO, but S4-16b validates RAM only; reconciliation covers committed physical RAM callbacks and does not represent device-side writes",
+    "Performance is unmeasured and no speed claim is made",
+    "Parent S4-16 and Stage 4 remain open"
+  ]
+}

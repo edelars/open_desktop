@@ -4534,3 +4534,43 @@ SMP and active-block mutation remain outside this slice; parent S4-16 stays
 open. Per-page generation adds 8 bytes per RAM guest page and updates touched
 pages on committed writes. It is provisional: no performance measurements or
 speed claim are available. See the [S4-16a report](../reports/STAGE_4_S4-16A_2026-11-06.md).
+
+### S4-16b: one interpreted guest store invalidates inactive aliased code
+
+`PagedCodeSession::step_guest_mov` runs the existing one-instruction
+`od-machine::step_paged_mov` profile synchronously between native calls. The
+host session requires its fixed Long64 mode, CR0/CR3/CR4 snapshot and preserves
+the caller's CPL. CR3 is passed separately to the machine adapter, while the
+interpreter receives a local clone of `LongModeState` with CR3 cleared, because
+the profile takes CR3 as a separate paging argument. After a successful machine
+input result, the original CR3 is restored before the clone is copied back to the
+caller. A machine input error leaves caller CPU state unchanged; an architectural
+fault follows the interpreter profile's normal state-commit semantics. The
+interpreter profile remains limited to its exact admitted MOV encodings; this
+slice tests `48 89 0B` (`MOV [RBX],RCX`).
+
+The adapter collects physical ranges from actual committed-write callbacks,
+including page-walker Accessed/Dirty updates. It reconciles those ranges with
+the captured physical code page before propagating a machine-step error or
+returning its guest report. If any committed write overlaps the code page, it
+reads the current per-page generation and invalidates both alias cache entries
+synchronously. Thus a later page fault does not discard an earlier committed
+page-table update or leave stale code resident. A write confined to another
+RAM page leaves the code generation and both entries unchanged.
+
+The existing machine step may also dispatch an operand access to registered
+MMIO. This slice validates RAM-backed stores only; MMIO behavior is not tested.
+Cache reconciliation consumes committed physical RAM write callbacks and does
+not represent device-side writes.
+
+Acceptance covers: successful code mutation through the guest store and fresh
+execution through both aliases; a CPL3 store whose PML4 Accessed update
+overlaps the code backing and precedes an operand #PF, with zero retirement,
+unchanged CPU state, no operand write, and both caches invalidated; and a
+successful unrelated-page store that preserves the code generation and cache
+entries. The code range remains within one page under S4-16a's snapshot
+contract. This slice does not test cross-page data operands or assert their
+behavior. General writer integration, remap/TLB coupling, active-block
+mutation, MMIO behavior, DMA, SMP, and broader instruction admission remain open under
+parent S4-16. Performance is not measured here and no speed claim is made. See the
+[S4-16b report](../reports/STAGE_4_S4-16B_2026-11-06.md).

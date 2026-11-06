@@ -84,6 +84,30 @@ generation даже при неуспешном patch. Такое совпаде
 writer notification, guest-generated stores, remap/TLB, cross-page code,
 DMA, MMIO и active-code retirement остаются вне S4-16a.
 
+## Guest MOV committed-write observation (S4-16b)
+
+`od-machine::step_paged_mov` retains its exact one-step Long64 MOV profile and
+reports architectural page faults as a `RunResult`; committed physical write
+notifications are delivered synchronously for actual RAM writes, including
+page-walker A/D updates. `PagedCodeSession` supplies the fixed paging snapshot
+and the caller's explicit CPL/origin context, while keeping CR3 as the adapter's
+separate paging input. Because the CPU profile requires `state.cr3 == None`,
+the host passes it a local state clone with CR3 cleared and restores the original
+CR3 before copying a successful profile result back. Machine input errors leave
+the caller's state unchanged; architectural faults retain the profile's ordinary
+state-commit behavior. The host session must not lose committed notifications
+when the guest step reports a fault or another error.
+
+The S4-16b host fixture verifies that a Ring3 write walk can commit a PML4
+Accessed update into the physical code page and then fault on a missing operand
+mapping. The page-table write remains committed; the operand write and guest
+retirement do not occur. This contract does not add cross-page store policy or
+change the interpreter's exact admitted forms. The existing step can dispatch
+MMIO operand accesses, but S4-16b validates RAM only; callback-based code
+reconciliation observes committed physical RAM writes, not device-side writes.
+See the
+[S4-16b report](../reports/STAGE_4_S4-16B_2026-11-06.md).
+
 ## Синхронная MMIO/PIO bus
 
 `MachineBus` переиспользует одну `MachineMemoryMap` и один `PhysicalMemory`;

@@ -3563,6 +3563,17 @@ pub struct PagedCodeSession<'a> {
     backend: PublishedArenaBackend,
 }
 
+/// Outcome of one interpreted guest store issued between native code calls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeStoreResult {
+    pub step: od_machine::PagedMovStepReport,
+    /// Physical RAM writes committed by the page walker, including A/D updates.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    /// True when this operation changed the captured code backing generation
+    /// and synchronously invalidated both alias caches.
+    pub code_invalidated: bool,
+}
+
 #[derive(Debug)]
 pub enum PagedCodeSessionError {
     Backend(PublishedArenaError),
@@ -3574,6 +3585,8 @@ pub enum PagedCodeSessionError {
     Dispatch(od_jit::dispatch::DispatchError<PublishedArenaError>),
     Patch(od_machine::MemoryAccessError),
     TrackedPatch(od_machine::TrackedCodePatchError),
+    PagingControlsMismatch,
+    StoreStep(od_machine::PagedMovStepError),
 }
 
 impl<'a> PagedCodeSession<'a> {
@@ -3774,6 +3787,88 @@ impl<'a> PagedCodeSession<'a> {
             });
         }
         Ok(())
+    }
+
+    /// Interpret exactly one admitted paged MOV load/store while native blocks
+    /// are inactive. Any committed physical write (including page-table A/D
+    /// writes) is observed, then the current code-page generation is reconciled
+    /// and both alias caches are invalidated before either success or failure
+    /// is returned.
+    pub fn step_guest_mov(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        rflags_defined: u64,
+    ) -> Result<PagedCodeStoreResult, PagedCodeSessionError> {
+        let Some(code_page) = self.backing_page else {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        };
+        if state.cr0 != Some(self.paging.cr0())
+            || state.cr3 != Some(self.paging.cr3())
+            || state.cr4 != Some(self.paging.cr4())
+            || self.access_context.mode != od_isa::memory::InstructionMode::Long64
+        {
+            return Err(PagedCodeSessionError::PagingControlsMismatch);
+        }
+        let mut committed_writes = Vec::new();
+        // The machine profile receives CR3 as a separate paging input and
+        // rejects a populated state.cr3. Keep the caller's paging controls
+        // intact for session validation, then adapt only this local copy.
+        let original_cr3 = state.cr3;
+        let mut machine_state = state.clone();
+        machine_state.cr3 = None;
+        let step = od_machine::step_paged_mov(
+            &mut machine_state,
+            self.bus,
+            self.paging.cr3(),
+            self.paging.efer(),
+            self.access_context,
+            rflags_defined,
+            |range| committed_writes.push(range),
+        );
+
+        // Do not use `?` on the interpreter result before reconciling writes:
+        // the page walker may have committed A/D or operand writes before a
+        // later fault/backend/input result is produced.
+        let code_page_start = code_page.get() as u128;
+        let code_page_end = code_page_start + 0x1000;
+        let code_page_written = committed_writes.iter().any(|range| {
+            let write_start = range.start().get() as u128;
+            let write_end = range.end_exclusive();
+            write_start < code_page_end && code_page_start < write_end
+        });
+        let code_invalidated = code_page_written;
+        if code_invalidated {
+            let current_generation = self
+                .bus
+                .code_page_generation(code_page)
+                .map_err(PagedCodeSessionError::Patch)?;
+            let backing = od_jit::translation::BackingId::new(
+                std::num::NonZeroU64::new(code_page.get() / 0x1000 + 1)
+                    .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+            );
+            let current_version = od_jit::translation::BackingVersion::new(
+                std::num::NonZeroU64::new(current_generation)
+                    .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+            );
+            for cache in &mut self.caches {
+                cache.invalidate(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                    backing,
+                    current_version,
+                });
+            }
+        }
+        let step = step.map_err(PagedCodeSessionError::StoreStep)?;
+        // Machine input errors leave caller state untouched. The profile's
+        // architectural fault result is successful input and follows its
+        // normal CPU-state commit semantics; restore the caller-owned CR3
+        // before committing that resulting state back.
+        machine_state.cr3 = original_cr3;
+        *state = machine_state;
+        Ok(PagedCodeStoreResult {
+            step,
+            committed_writes,
+            code_invalidated,
+        })
     }
 }
 
@@ -113120,6 +113215,288 @@ pub(crate) mod tests {
             unsupported_entries_before
         );
         assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn s4_16b_guest_qword_store_invalidates_both_code_aliases() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const STORE_RIP: u64 = 0x0080_2100;
+        const CR0: u64 = 0x8001_0033;
+        const CR3: u64 = 0x1000;
+        const CR4: u64 = 1 << 5;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const RAM_BYTES: u64 = 0x9000;
+
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x3020, 0x4007),
+            (0x4008, 0x7007),
+            (0x4010, 0x8007),
+            (0x4018, 0x5007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7100), &original)
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x8100), &[0x48, 0x89, 0x0b])
+            .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(CR0, CR3, CR4, EFER).unwrap();
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let mut session =
+            PagedCodeSession::new(&mut bus, paging, AccessContext::default()).unwrap();
+
+        let mut alias_state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut alias_state, 1)
+            .unwrap();
+        alias_state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut alias_state, 1)
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+
+        let replacement = 0xa1b2_c3d4_e5f6_0718;
+        let mut store_state = od_isa::LongModeState {
+            rip: STORE_RIP,
+            cr0: Some(CR0),
+            cr3: Some(CR3),
+            cr4: Some(CR4),
+            ..Default::default()
+        };
+        store_state.gpr[od_isa::Register::Rbx as usize] = ALIAS_B + 2;
+        store_state.gpr[od_isa::Register::Rcx as usize] = replacement;
+        assert_eq!(
+            session
+                .bus
+                .tracked_code_snapshot(&paging, STORE_RIP, 3, AccessContext::default())
+                .unwrap()
+                .bytes,
+            [0x48, 0x89, 0x0b]
+        );
+        let result = session.step_guest_mov(&mut store_state, 0).unwrap();
+
+        assert_eq!(
+            result.step.cpu.instructions_executed, 1,
+            "guest store did not retire: {:#?}",
+            result.step
+        );
+        assert_eq!(store_state.rip, STORE_RIP + 3);
+        assert_eq!(store_state.cr3, Some(CR3));
+        assert!(
+            result
+                .committed_writes
+                .iter()
+                .any(|range| range.start().get() == 0x7102 && range.len() == 8)
+        );
+        assert!(result.code_invalidated);
+        assert_eq!(session.resident_entries(), 0);
+        let patched = session
+            .bus
+            .tracked_code_snapshot(&paging, ALIAS_A, original.len(), AccessContext::default())
+            .unwrap();
+        assert_eq!(&patched.bytes[2..10], &replacement.to_le_bytes());
+
+        alias_state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut alias_state, 1)
+            .unwrap();
+        assert_eq!(alias_state.gpr[od_isa::Register::Rax as usize], replacement);
+        alias_state.rip = ALIAS_A;
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut alias_state, 1)
+            .unwrap();
+        assert_eq!(alias_state.gpr[od_isa::Register::Rax as usize], replacement);
+
+        let code_page = GuestPhysicalAddress::new(0x7000);
+        let code_generation_before_unrelated_store =
+            session.bus.code_page_generation(code_page).unwrap();
+        assert_eq!(session.resident_entries(), 2);
+        let unrelated_value = 0x1020_3040_5060_7080;
+        let mut unrelated_store = od_isa::LongModeState {
+            rip: STORE_RIP,
+            cr0: Some(CR0),
+            cr3: Some(CR3),
+            cr4: Some(CR4),
+            ..Default::default()
+        };
+        unrelated_store.gpr[od_isa::Register::Rbx as usize] = 0x0080_3100;
+        unrelated_store.gpr[od_isa::Register::Rcx as usize] = unrelated_value;
+        let unrelated_result = session.step_guest_mov(&mut unrelated_store, 0).unwrap();
+        assert_eq!(unrelated_result.step.cpu.instructions_executed, 1);
+        assert!(!unrelated_result.code_invalidated);
+        assert_eq!(session.resident_entries(), 2);
+        assert_eq!(
+            session.bus.code_page_generation(code_page).unwrap(),
+            code_generation_before_unrelated_store
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x5100), AccessWidth::Qword)
+                .unwrap(),
+            unrelated_value
+        );
+
+        let mut invalid_input_state = unrelated_store.clone();
+        let invalid_input_state_before = invalid_input_state.clone();
+        assert!(matches!(
+            session.step_guest_mov(&mut invalid_input_state, u64::MAX),
+            Err(PagedCodeSessionError::StoreStep(
+                od_machine::PagedMovStepError::CpuInput(
+                    od_isa::execute::RunInputError::InvalidRflagsDefined { .. }
+                )
+            ))
+        ));
+        assert_eq!(invalid_input_state, invalid_input_state_before);
+    }
+
+    #[test]
+    fn s4_16b_fault_after_code_backing_ad_write_invalidates_without_operand_commit() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const STORE_RIP: u64 = 0x0080_2100;
+        const FAULTING_USER_ADDRESS: u64 = 0x4000_0000_0000;
+        const CR0: u64 = 0x8001_0033;
+        const CR3: u64 = 0x7000;
+        const CR4: u64 = 1 << 5;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const RAM_BYTES: u64 = 0x9000;
+
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x7000, 0x2007), // PML4[0] is the code backing page.
+            (0x7400, 0x2007), // PML4[128], used by the faulting data walk.
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x3020, 0x4007),
+            (0x4008, 0x7007),
+            (0x4010, 0x8007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7100), &original)
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x8100), &[0x48, 0x89, 0x0b])
+            .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(CR0, CR3, CR4, EFER).unwrap();
+        let ring3 = AccessContext {
+            mode: od_isa::memory::InstructionMode::Long64,
+            privilege: od_isa::memory::PrivilegeLevel::Ring3,
+            origin: od_isa::memory::AccessOrigin::Explicit,
+        };
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let mut session = PagedCodeSession::new(&mut bus, paging, ring3).unwrap();
+        let mut alias_state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut alias_state, 1)
+            .unwrap();
+        alias_state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut alias_state, 1)
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+
+        let code_page = GuestPhysicalAddress::new(0x7000);
+        let generation_before_fault = session.bus.code_page_generation(code_page).unwrap();
+        let mut store_state = od_isa::LongModeState {
+            rip: STORE_RIP,
+            cr0: Some(CR0),
+            cr3: Some(CR3),
+            cr4: Some(CR4),
+            ..Default::default()
+        };
+        store_state.gpr[od_isa::Register::Rbx as usize] = FAULTING_USER_ADDRESS;
+        store_state.gpr[od_isa::Register::Rcx as usize] = 0xa1b2_c3d4_e5f6_0718;
+        let state_before_fault = store_state.clone();
+        assert_eq!(
+            session
+                .bus
+                .tracked_code_snapshot(&paging, STORE_RIP, 3, ring3)
+                .unwrap()
+                .bytes,
+            [0x48, 0x89, 0x0b],
+            "STORE_RIP must translate to the intended CPL3 MOV store before stepping"
+        );
+        let result = session.step_guest_mov(&mut store_state, 0).unwrap();
+
+        assert_eq!(result.step.cpu.instructions_executed, 0);
+        assert_eq!(store_state, state_before_fault);
+        assert!(
+            matches!(
+                result.step.cpu.exit,
+                od_isa::execute::RunExit::Fault(od_isa::ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(0x6),
+                    linear_address: Some(FAULTING_USER_ADDRESS),
+                })
+            ),
+            "unexpected paged MOV result: {:#?}",
+            result.step
+        );
+        assert_eq!(
+            result.committed_writes,
+            [GuestPhysicalRange::new(GuestPhysicalAddress::new(0x7400), 8).unwrap()],
+            "only the PML4 Accessed-bit write may commit; the operand write must not"
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x7400), AccessWidth::Qword)
+                .unwrap(),
+            0x2027,
+            "the faulting data walk must leave the exact PML4 Accessed bit set"
+        );
+        assert!(result.code_invalidated);
+        assert!(session.bus.code_page_generation(code_page).unwrap() > generation_before_fault);
+        assert_eq!(session.resident_entries(), 0);
     }
 
     #[test]

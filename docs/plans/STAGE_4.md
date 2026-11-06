@@ -594,6 +594,47 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   SMP. Полный S4-16 остаётся открытым. См. [S4-16a report](../reports/STAGE_4_S4-16A_2026-11-06.md)
   и [manifest](../reports/data/stage4/s4-16a-code-alias-patch-2026-11-06.json).
 
+#### S4-16b. Один guest MOV store инвалидирует неактивный JIT code через physical aliases
+
+- Реализован bounded host adapter для одного синхронного `step_paged_mov`
+  между native-вызовами. Допустимы только существующие точные формы CPU
+  профиля; этот срез использует `48 89 0B` (`MOV [RBX],RCX`). Один vCPU,
+  неизменный Long64 paging snapshot, две alias cache entries и одна
+  physical code page из S4-16a.
+- Paging controls и CR3 сверяются с session snapshot. CR3 остаётся отдельным
+  аргументом machine adapter. `step_guest_mov` передаёт клонированный state с
+  `cr3 = None` в `od_machine::step_paged_mov`, затем восстанавливает исходный
+  CR3 перед переносом результата в caller state. При machine input error caller
+  state остаётся без изменений; при архитектурном fault используется обычная
+  commit-семантика profile. Mode/CPL сохраняются; walker получает explicit
+  access origin и проверяет фактические page permissions.
+- Host собирает только фактически committed physical write callbacks, включая
+  A/D writes page walker. После возврата machine step reconciliation сначала
+  сверяет пересечения с physical code page, читает её текущее поколение и при
+  необходимости синхронно инвалидирует обе alias entries; только потом
+  возвращает guest report или host error. Поэтому callback, записанный до
+  последующего #PF, тоже обновляет cache state.
+- Сценарии этого среза используют RAM. Существующий `step_paged_mov` также
+  умеет направлять operand access в MMIO, но MMIO поведение здесь не проверяется;
+  cache reconciliation получает только committed physical RAM write callbacks.
+- Проверено: успешный guest qword store заменяет immediate в code backing,
+  освобождает обе idle cache entries и последующее исполнение обоих aliases
+  видит новые bytes. Отдельный CPL3 faulting store коммитит PML4 Accessed
+  запись по `0x7400` в той же физической странице, что и code, затем получает
+  #PF на unmapped operand: CPU state и retirement остаются неизменны,
+  operand write отсутствует, generation меняется и обе cache entries
+  инвалидируются. Store в другую RAM page коммитится без изменения code page
+  generation и сохраняет обе cache entries.
+- Это не добавляет общего writer notification, remap/TLB coupling,
+  MMIO/DMA validation, SMP или active-block mutation. Code range остаётся внутри одной
+  страницы по ограничению S4-16a; этот срез не проверяет cross-page data
+  operand и не заявляет его поведение. Производительность adapter и write path
+  этим correctness slice не измерялась; speed claim отсутствует. Независимое
+  ревью пройдено без замечаний; bounded срез принят, родительский S4-16 и Stage 4
+  остаются открытыми.
+- См. [S4-16b report](../reports/STAGE_4_S4-16B_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-16b-guest-store-2026-11-06.json).
+
 ### S4-17. Собрать локальный memory/fault differential набор
 
 - [ ] Принято после ревью.
