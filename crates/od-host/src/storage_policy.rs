@@ -187,8 +187,10 @@ pub fn publish_no_replace(
     target: &Path,
     expected: (u64, u64),
 ) -> Result<Published, PublishError> {
+    // `symlink_metadata`: a symlink swapped in for the partial name must not
+    // be identified as the file it points to.
     let identity_of = |path: &Path| -> io::Result<(u64, u64)> {
-        let meta = std::fs::metadata(path)?;
+        let meta = std::fs::symlink_metadata(path)?;
         Ok((meta.dev(), meta.ino()))
     };
     match identity_of(partial) {

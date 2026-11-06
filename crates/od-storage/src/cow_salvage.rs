@@ -845,13 +845,16 @@ where
     rep.logical_size = Some(disk_blocks * BS);
     rep.extents = extents;
     let all_valid = rep.extents.iter().all(|e| e.class == RangeClass::Valid);
-    if all_valid && !stale_root {
+    // Complete needs a proven newest root: two unordered roots never prove one.
+    if all_valid && !stale_root && !ambiguous {
         rep.recoverability = Recoverability::Complete;
         rep.reason = "ok";
     } else {
         rep.recoverability = Recoverability::Partial;
         rep.reason = if let Some(e) = rep.extents.iter().find(|e| e.class != RangeClass::Valid) {
             e.basis
+        } else if ambiguous {
+            "unordered_roots"
         } else {
             "possible_lost_commit"
         };
@@ -903,6 +906,9 @@ fn copy_fail_reason(f: &CopyFail) -> &'static str {
             kind: ErrorKind::StorageFull,
             ..
         }))) => "no_space",
+        CopyFail::Snap(SnapError::Cow(CowError::Storage(
+            StorageError::UnsupportedDurability { .. },
+        ))) => "durability_unavailable",
         CopyFail::Snap(_) => "target_io_error",
     }
 }
