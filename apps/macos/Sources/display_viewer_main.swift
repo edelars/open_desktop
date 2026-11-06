@@ -2,10 +2,12 @@ import AppKit
 import Darwin
 import Dispatch
 import Foundation
+import ODDisplay
 #if canImport(ODShared)
 import ODShared
 #endif
 
+// S11-10: DisplayWindow, MetalPresenter and InputChannel are the target ODDisplay (shared with the application); this file stays the viewer.
 // S10-07 display viewer: entry point. Starts VMHost with the shared launch code (VMHostLaunch.swift) in the
 // TEST-ONLY mode `--display-smoke pattern` (S10-04/S10-06 profile OD_DISPLAY_PROFILE_TEST_PATTERN) and shows
 // the frames of FRAME_TRANSPORT_V1.md in a Metal window, or, with `--dump-frame PATH`, renders offscreen

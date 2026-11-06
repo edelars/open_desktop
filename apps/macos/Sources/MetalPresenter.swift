@@ -34,7 +34,7 @@ enum MetalPresenterError: Error, CustomStringConvertible {
     }
 }
 
-final class MetalPresenter {
+package final class MetalPresenter {
     private static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
@@ -60,7 +60,7 @@ final class MetalPresenter {
     }
     """
 
-    let device: MTLDevice
+    package let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
     /// Same shaders, blending on: the cursor draw (10.8 step 5).
@@ -79,10 +79,10 @@ final class MetalPresenter {
     private var cursorStaging: (texture: MTLTexture, shapeSeq: UInt64)?
     private var cursorState: AcceptedCursor?
     /// Counters for tests and reports: frame texture uploads and cursor texture uploads.
-    private(set) var frameUploadCount = 0
-    private(set) var cursorUploadCount = 0
+    package private(set) var frameUploadCount = 0
+    package private(set) var cursorUploadCount = 0
 
-    init() throws {
+    package init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw MetalPresenterError.noDevice }
         guard let queue = device.makeCommandQueue() else { throw MetalPresenterError.setup("command queue") }
         self.device = device
@@ -129,7 +129,7 @@ final class MetalPresenter {
     // MARK: Frame upload (reader thread)
 
     /// Reader thread, inside the seqlock window: copies the slot into a staging texture. The frame is not shown yet.
-    func upload(pixels: UnsafeRawPointer, frame: AcceptedFrame) {
+    package func upload(pixels: UnsafeRawPointer, frame: AcceptedFrame) {
         lock.lock()
         var texture: MTLTexture?
         spares.removeAll { $0.width != frame.width || $0.height != frame.height } // other sizes are stale
@@ -161,7 +161,7 @@ final class MetalPresenter {
     /// new staging texture. Called only for a new `shape_seq`; the texture is not drawn until `commitCursor`.
     /// Returns false when no texture was made (the reader then does not accept the shape and tries again at the next update).
     @discardableResult
-    func uploadCursor(pixels: UnsafeRawPointer, cursor: AcceptedCursor) -> Bool {
+    package func uploadCursor(pixels: UnsafeRawPointer, cursor: AcceptedCursor) -> Bool {
         guard cursor.width >= 1, cursor.height >= 1 else { return false }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: cursor.width, height: cursor.height, mipmapped: false)
@@ -180,7 +180,7 @@ final class MetalPresenter {
 
     /// The reader accepted a cursor update: its state becomes the drawn state, and the staged texture (if the shape changed)
     /// becomes the cursor texture. The frame texture is not touched.
-    func commitCursor(_ state: AcceptedCursor?) {
+    package func commitCursor(_ state: AcceptedCursor?) {
         lock.lock()
         defer { lock.unlock() }
         guard let state else {
@@ -200,7 +200,7 @@ final class MetalPresenter {
     }
 
     /// The reader discarded the cursor update (g2 != g1): the staged texture is dropped, the drawn state is unchanged.
-    func discardCursor() {
+    package func discardCursor() {
         lock.lock()
         cursorStaging = nil
         lock.unlock()
@@ -221,7 +221,7 @@ final class MetalPresenter {
     }
 
     /// Reader accepted the frame: the staging texture becomes the shown one.
-    func commit() {
+    package func commit() {
         lock.lock()
         if let staged = staging {
             if let old = shown { addSpare(old) }
@@ -232,7 +232,7 @@ final class MetalPresenter {
     }
 
     /// Reader discarded the frame: the staging texture is dropped, the shown one is unchanged.
-    func discard() {
+    package func discard() {
         lock.lock()
         if let staged = staging {
             addSpare(staged)
@@ -242,14 +242,14 @@ final class MetalPresenter {
     }
 
     /// No frame is current (no signal, mode change, disconnect): nothing is shown as a frame.
-    func clear() {
+    package func clear() {
         lock.lock()
         if let old = shown { addSpare(old) }
         shown = nil
         lock.unlock()
     }
 
-    var shownSize: (width: Int, height: Int)? {
+    package var shownSize: (width: Int, height: Int)? {
         lock.lock()
         defer { lock.unlock() }
         guard let shown else { return nil }
@@ -282,7 +282,7 @@ final class MetalPresenter {
     /// only over a drawn frame (10.8).
     @discardableResult
     private func encode(
-        into target: MTLTexture, background: MTLClearColor, mode: PresentMode, commandBuffer: MTLCommandBuffer
+        into target: MTLTexture, background: MTLClearColor, mode: PresentMode, drawFrame: Bool = true, commandBuffer: MTLCommandBuffer
     ) -> (viewport: Viewport, cursor: CursorPlacement?)? {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
@@ -291,7 +291,7 @@ final class MetalPresenter {
         pass.colorAttachments[0].storeAction = .store
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
         var drawn: (viewport: Viewport, cursor: CursorPlacement?)?
-        if let texture = retainShown() {
+        if drawFrame, let texture = retainShown() {
             let viewport = ViewportLayout.viewport(
                 mode: mode, frameWidth: texture.width, frameHeight: texture.height,
                 targetWidth: target.width, targetHeight: target.height)
@@ -340,9 +340,9 @@ final class MetalPresenter {
     /// Window path: draws the shown texture into the drawable (aspect-preserving or pixel-exact), margins are `background`.
     /// A resize only changes the drawable and the viewport; the shown texture is not touched or recreated.
     @discardableResult
-    func render(to drawable: CAMetalDrawable, background: MTLClearColor, mode: PresentMode) -> Viewport? {
+    package func render(to drawable: CAMetalDrawable, background: MTLClearColor, mode: PresentMode, drawFrame: Bool = true) -> Viewport? {
         guard let commandBuffer = queue.makeCommandBuffer() else { return nil }
-        let drawn = encode(into: drawable.texture, background: background, mode: mode, commandBuffer: commandBuffer)
+        let drawn = encode(into: drawable.texture, background: background, mode: mode, drawFrame: drawFrame, commandBuffer: commandBuffer)
         commandBuffer.present(drawable)
         commandBuffer.commit()
         return drawn?.viewport
@@ -352,7 +352,7 @@ final class MetalPresenter {
     /// the bytes back. With the frame size as target in `.fit` mode this is the 1:1 dump (nearest sampling, no filtering).
     /// Returns tightly packed rows (stride = targetWidth * 4) in B, G, R, X order and the viewport that was drawn,
     /// or nil when nothing is shown. Margins are B, G, R, X = 0.
-    func renderOffscreen(
+    package func renderOffscreen(
         targetWidth: Int, targetHeight: Int, mode: PresentMode
     ) -> (width: Int, height: Int, pixels: [UInt8], viewport: Viewport, cursor: CursorPlacement?)? {
         guard targetWidth > 0, targetHeight > 0 else { return nil }

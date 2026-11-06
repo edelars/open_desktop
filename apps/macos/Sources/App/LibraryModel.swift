@@ -107,6 +107,8 @@ final class LibraryModel: ObservableObject {
     let vmhost: VMHostLocation
     private let launcher: MachineLauncher
     private let hostMemoryBytes: UInt64
+    /// Opens the machine windows (S11-10); nil in the tests and wherever no window is wanted.
+    private weak var windowHost: MachineWindowHost?
 
     @Published private(set) var machines: [MachineController] = []
     @Published var selection: String?
@@ -128,12 +130,13 @@ final class LibraryModel: ObservableObject {
 
     init(
         catalog: Catalog, vmhost: VMHostLocation, launcher: @escaping MachineLauncher = defaultMachineLauncher,
-        hostMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory
+        hostMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory, windowHost: MachineWindowHost? = nil
     ) {
         self.catalog = catalog
         self.vmhost = vmhost
         self.launcher = launcher
         self.hostMemoryBytes = hostMemoryBytes
+        self.windowHost = windowHost
     }
 
     var selected: MachineController? {
@@ -196,8 +199,10 @@ final class LibraryModel: ObservableObject {
                 existing.updateStatus(status)
                 next.append(existing)
             } else {
-                next.append(MachineController(
-                    entry: entry, status: status, vmhost: vmhost, launcher: launcher, hostMemoryBytes: hostMemoryBytes))
+                let controller = MachineController(
+                    entry: entry, status: status, vmhost: vmhost, launcher: launcher, hostMemoryBytes: hostMemoryBytes)
+                controller.windowHost = windowHost
+                next.append(controller)
             }
         }
         for (_, orphan) in byID where orphan.hasSession { next.append(orphan) }

@@ -15,6 +15,10 @@ import ODShared
 // S10-16: with an `InputChannelUI` the window also collects mouse, wheel and keyboard events (INPUT_TRANSPORT_V1.md sections 5 and 6),
 // translates them (point -> physical pixel -> guest pixel through ViewportLayout, kVK_* -> HID usage) and hands them to the
 // channel; focus changes become FOCUS GAINED/LOST. Without a channel nothing is collected and the window behaves as before.
+// S11-10: the window is also used by the application (target ODDisplay; what the application and the viewer use is `package`).
+// Hooks that the viewer does not set and that change nothing for it: `setOverlay` (text and colour instead of the frame, for
+// paused or stopped machines), `mode` (changeable), `setInputCaptured` (input is collected only while captured; the default is
+// captured, as before), `hidesHostCursor`, `inputTextFormatter`, `onInputChange` and `keyChordHandler` (the release chord).
 
 final class DisplayView: NSView {
     private let metalLayer = CAMetalLayer()
@@ -36,6 +40,21 @@ final class DisplayView: NSView {
 
     /// S10-16: every mouse, drag and wheel event of the view content (the title bar and the window frame are not forwarded).
     var onMouseEvent: ((NSEvent) -> Void)?
+
+    /// S11-10: while true the host cursor is invisible over the view (a transparent cursor rect), nowhere else.
+    var hidesCursor = false {
+        didSet {
+            guard hidesCursor != oldValue else { return }
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    private static let blankCursor = NSCursor(image: NSImage(size: NSSize(width: 1, height: 1)), hotSpot: .zero)
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if hidesCursor { addCursorRect(bounds, cursor: DisplayView.blankCursor) }
+    }
 
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -71,12 +90,49 @@ final class DisplayView: NSView {
     }
 }
 
-final class DisplayWindow {
-    let window: NSWindow
+/// S11-10: text over the window instead of the frame (the window draws a colour and the text, never the shown texture).
+package struct DisplayOverlay: Equatable {
+    package var text: String
+    package var red: Double
+    package var green: Double
+    package var blue: Double
+
+    package init(text: String, red: Double, green: Double, blue: Double) {
+        self.text = text
+        self.red = red
+        self.green = green
+        self.blue = blue
+    }
+}
+
+/// S11-10: what the input channel is doing, without the channel type itself.
+package enum InputPhase: Equatable {
+    case connecting
+    case ready(guestDelivery: Bool)
+    case closed(String)
+    case incompatible(UInt16)
+}
+
+package final class DisplayWindow {
+    package let window: NSWindow
     private let view: DisplayView
     private let label: NSTextField
     private let presenter: MetalPresenter
-    private let mode: PresentMode
+    /// How the frame is drawn (S10-11); the application changes it from the menu "Вид".
+    package var mode: PresentMode {
+        didSet { if mode != oldValue { redraw() } }
+    }
+    private var overlay: DisplayOverlay?
+    /// Input events are collected only while captured (S11-10). The viewer never changes the default.
+    private var inputCaptured = true
+    /// Release chord of the captured mode: called for a key down (not a repeat) before the translation; true consumes the key.
+    package var keyChordHandler: ((_ keyCode: UInt16, _ flags: NSEvent.ModifierFlags) -> Bool)?
+    /// Replaces the subtitle text built from the channel state (the application writes it in Russian).
+    package var inputTextFormatter: ((InputPhase) -> String)? {
+        didSet { updateInputText() }
+    }
+    /// Called after every change of the channel state, on the main thread.
+    package var onInputChange: (() -> Void)?
     private var lastState: FrameReaderState = .connecting
     private var lastDetail: String?
     private let input: InputChannelUI?
@@ -85,7 +141,7 @@ final class DisplayWindow {
     private var keyMonitor: Any?
     private var focusObservers: [NSObjectProtocol] = []
 
-    init(
+    package init(
         presenter: MetalPresenter, title: String, contentSize: NSSize, mode: PresentMode, input: InputChannelUI? = nil
     ) {
         self.presenter = presenter
@@ -130,10 +186,36 @@ final class DisplayWindow {
     deinit { tearDownInput() }
 
     /// State of the input channel for reports (nil without `--input-channel`).
-    var inputStatusText: String? { input?.statusText }
+    package var inputStatusText: String? { input?.statusText }
+
+    /// State of the input channel; nil without a channel.
+    package var inputPhase: InputPhase? {
+        guard let input else { return nil }
+        switch input.state {
+        case .handshake: return .connecting
+        case .ready: return .ready(guestDelivery: input.guestDelivery == true)
+        case let .closed(reason): return .closed(reason)
+        case let .incompatible(version): return .incompatible(version)
+        }
+    }
+
+    package var isInputCaptured: Bool { inputCaptured }
+
+    /// Starts or stops the collection of input events. On release the guest gets FOCUS LOST (pressed keys are released, 6.4);
+    /// on capture FOCUS GAINED, when the window is key.
+    package func setInputCaptured(_ captured: Bool) {
+        guard captured != inputCaptured else { return }
+        inputCaptured = captured
+        input?.windowFocus(gained: captured && window.isKeyWindow)
+    }
+
+    package var hidesHostCursor: Bool {
+        get { view.hidesCursor }
+        set { view.hidesCursor = newValue }
+    }
 
     /// Logical size (view bounds, points) and physical size (drawable, pixels) for reports.
-    var geometryDescription: String {
+    package var geometryDescription: String {
         let scale = window.backingScaleFactor
         let drawable = view.layerForPresentation.drawableSize
         return "logical=\(Int(view.bounds.width))x\(Int(view.bounds.height)) "
@@ -145,7 +227,7 @@ final class DisplayWindow {
         refresh(state: lastState, detail: lastDetail)
     }
 
-    func show() {
+    package func show() {
         window.acceptsMouseMovedEvents = true
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(view)
@@ -153,17 +235,23 @@ final class DisplayWindow {
 
     /// Reader state together with the frame that is shown (nil when no frame is current). `shown` feeds the absolute
     /// position of mouse events (INPUT_TRANSPORT_V1.md 5.3 step 6).
-    func update(state: FrameReaderState, detail: String?, shown: ShownFrame?) {
+    package func update(state: FrameReaderState, detail: String?, shown: ShownFrame?) {
         shownInfo = shown
         refresh(state: state, detail: detail)
     }
 
     /// Redraws for the reader state. `showing` draws the shown texture; every other state draws a colour and text.
-    func refresh(state: FrameReaderState, detail: String?) {
+    package func setOverlay(_ overlay: DisplayOverlay?) {
+        guard overlay != self.overlay else { return }
+        self.overlay = overlay
+        redraw()
+    }
+
+    package func refresh(state: FrameReaderState, detail: String?) {
         lastState = state
         lastDetail = detail
         let layer = view.layerForPresentation
-        let background: MTLClearColor
+        var background: MTLClearColor
         var text: String?
         switch state {
         case .showing:
@@ -185,6 +273,13 @@ final class DisplayWindow {
             background = MTLClearColor(red: 0.45, green: 0.28, blue: 0.04, alpha: 1)
             text = "Incompatible version\n\(detail ?? reason)"
         }
+        var drawFrame = true
+        if let overlay {
+            // S11-10: the application's own words and colour; the shown texture stays in the presenter but is not drawn.
+            background = MTLClearColor(red: overlay.red, green: overlay.green, blue: overlay.blue, alpha: 1)
+            text = overlay.text
+            drawFrame = false
+        }
         label.isHidden = text == nil
         if let text { label.stringValue = text }
 
@@ -193,7 +288,7 @@ final class DisplayWindow {
             logicalWidth: Double(view.bounds.width), logicalHeight: Double(view.bounds.height), scale: Double(scale))
         layer.drawableSize = CGSize(width: size.width, height: size.height)
         guard let drawable = layer.nextDrawable() else { return }
-        presenter.render(to: drawable, background: background, mode: mode)
+        presenter.render(to: drawable, background: background, mode: mode, drawFrame: drawFrame)
     }
 }
 
@@ -214,8 +309,8 @@ extension DisplayWindow {
             (NSWindow.didMiniaturizeNotification, false), (NSWindow.willCloseNotification, false),
         ]
         for (name, value) in gained {
-            focusObservers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak input] _ in
-                input?.windowFocus(gained: value)
+            focusObservers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                self?.input?.windowFocus(gained: value && self?.inputCaptured == true)
             })
         }
         focusObservers.append(center.addObserver(
@@ -225,7 +320,7 @@ extension DisplayWindow {
     }
 
     /// Removes the monitor and the observers and closes the channel (VMHost sees EOF).
-    func tearDownInput() {
+    package func tearDownInput() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         focusObservers.forEach { NotificationCenter.default.removeObserver($0) }
@@ -235,7 +330,12 @@ extension DisplayWindow {
 
     fileprivate func updateInputText() {
         guard let input else { return }
-        window.subtitle = input.statusText
+        if let formatter = inputTextFormatter, let phase = inputPhase {
+            window.subtitle = formatter(phase)
+        } else {
+            window.subtitle = input.statusText
+        }
+        onInputChange?()
     }
 
     /// Geometry of the moment (5.3): bounds, scale and shown frame are read again for every event.
@@ -252,8 +352,9 @@ extension DisplayWindow {
 
     /// Keyboard (6.2, 6.3): the local monitor sees `keyDown`/`keyUp` before menu key equivalents. nil swallows the event.
     fileprivate func handleKey(_ event: NSEvent) -> NSEvent? {
-        guard let input, event.window === window, input.isCollecting else { return event }
+        guard let input, inputCaptured, event.window === window, input.isCollecting else { return event }
         let code = event.keyCode
+        if event.type == .keyDown, !event.isARepeat, keyChordHandler?(code, event.modifierFlags) == true { return nil }
         switch event.type {
         case .keyDown, .keyUp:
             let down = event.type == .keyDown
@@ -282,7 +383,7 @@ extension DisplayWindow {
 
     /// Mouse and wheel (5.2 to 5.5).
     fileprivate func handleMouse(_ event: NSEvent) {
-        guard let input, input.isCollecting else { return }
+        guard let input, inputCaptured, input.isCollecting else { return }
         let geometry = currentGeometry()
         let point = view.convert(event.locationInWindow, from: nil)
         let absolute = geometry.absolute(pointX: Double(point.x), pointY: Double(point.y))

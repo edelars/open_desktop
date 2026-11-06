@@ -5,6 +5,8 @@ import SwiftUI
 @main
 struct OpenDesktopApp: App {
     @StateObject private var model: LibraryModel
+    /// The machine windows (S11-10): opens one on `running` and is the target of the menus "Вид" and "Машина".
+    @StateObject private var windows: MachineWindowCenter
 
     init() {
         let options: AppOptions
@@ -15,7 +17,8 @@ struct OpenDesktopApp: App {
             exit(2)
         }
         let vmhost = VMHostLocation.locate(options: options, bundleURL: Bundle.main.bundleURL)
-        let library = LibraryModel(catalog: .standard(), vmhost: vmhost)
+        let center = MachineWindowCenter()
+        let library = LibraryModel(catalog: .standard(), vmhost: vmhost, windowHost: center)
         library.load()
         if let path = options.openBundle {
             // `--open <bundle>` (smoke S11-14): list the bundle and select it.
@@ -26,6 +29,7 @@ struct OpenDesktopApp: App {
             }
         }
         _model = StateObject(wrappedValue: library)
+        _windows = StateObject(wrappedValue: center)
     }
 
     var body: some Scene {
@@ -33,6 +37,9 @@ struct OpenDesktopApp: App {
         Window("Open Desktop", id: "library") {
             LibraryView(model: model)
         }
-        .commands { MachineCommands(model: model) }
+        .commands {
+            MachineCommands(model: model, windows: windows)
+            DisplayViewCommands(windows: windows)
+        }
     }
 }

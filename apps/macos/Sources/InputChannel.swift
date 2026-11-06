@@ -18,7 +18,7 @@ enum InputChannelError: Error, CustomStringConvertible {
     var description: String { "could not configure the input socket" }
 }
 
-final class InputChannelUI {
+package final class InputChannelUI {
     enum State: Equatable {
         /// HELLO sent, waiting for ACCEPT.
         case handshake
@@ -64,7 +64,7 @@ final class InputChannelUI {
     /// Called on every change of what the window shows about input.
     var onChange: (() -> Void)?
 
-    init(fd: Int32) throws {
+    package init(fd: Int32) throws {
         self.fd = fd
         guard InputSocket.makeNonBlocking(fd), InputSocket.setNoSigpipe(fd) else {
             Darwin.close(fd)
@@ -110,7 +110,7 @@ final class InputChannelUI {
     // MARK: Start and stop
 
     /// Sends HELLO and, with `attachTimer`, starts the 10 ms pump on the main queue.
-    func start(attachTimer: Bool = true) {
+    package func start(attachTimer: Bool = true) {
         partial = InputMessage.hello.encoded()
         handshakeDeadline = DispatchTime.now() + .milliseconds(InputChannelUI.acceptTimeoutMs)
         flush()

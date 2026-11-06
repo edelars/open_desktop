@@ -51,16 +51,26 @@ let package = Package(
         // The application (S11-05b). SwiftUI window; finds VMHost inside its bundle; no engine, no libod_host.a.
         .executableTarget(
             name: "OpenDesktop",
-            dependencies: ["ODShared"],
+            dependencies: ["ODShared", "ODDisplay"],
             path: "macos/Sources/App"
+        ),
+        // S11-10: AppKit/Metal display window, Metal presenter and the input channel, shared by the application and the smoke viewer.
+        // The files stay in `macos/Sources` next to the viewer (no move); what the other targets use is `package` access.
+        .target(
+            name: "ODDisplay",
+            dependencies: ["ODShared"],
+            path: "macos/Sources",
+            exclude: ["Shared", "App", "ODAtomics", "ODHostConstants", "launcher.swift", "display_viewer_main.swift", ".gitkeep"],
+            sources: ["DisplayWindow.swift", "MetalPresenter.swift", "InputChannel.swift"],
+            linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("Metal"), .linkedFramework("QuartzCore")]
         ),
         // Smoke programs of stage 10 (windows with Metal; spawn of VMHost). They link no Rust code.
         .executableTarget(
             name: "open-desktop-display-viewer",
-            dependencies: ["ODShared"],
+            dependencies: ["ODShared", "ODDisplay"],
             path: "macos/Sources",
-            exclude: ["Shared", "App", "ODAtomics", "ODHostConstants", "launcher.swift", ".gitkeep"],
-            sources: ["DisplayWindow.swift", "MetalPresenter.swift", "InputChannel.swift", "display_viewer_main.swift"],
+            exclude: ["Shared", "App", "ODAtomics", "ODHostConstants", "launcher.swift", "DisplayWindow.swift", "MetalPresenter.swift", "InputChannel.swift", ".gitkeep"],
+            sources: ["display_viewer_main.swift"],
             linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("Metal"), .linkedFramework("QuartzCore")]
         ),
         .executableTarget(
@@ -76,7 +86,7 @@ let package = Package(
         // Tests (XCTest). The former executables with `@main` are test cases now.
         .testTarget(
             name: "OpenDesktopMacTests",
-            dependencies: ["ODShared", "open-desktop-display-viewer", "OpenDesktop"],
+            dependencies: ["ODShared", "ODDisplay", "open-desktop-display-viewer", "OpenDesktop"],
             path: "macos/Tests"
         ),
         .testTarget(

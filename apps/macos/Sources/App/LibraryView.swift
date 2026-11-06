@@ -99,17 +99,44 @@ struct MachineActionButtons: View {
 }
 
 /// Menu "Машина" of the application.
+/// The actions act on the machine of the key machine window (S11-10), else on the machine selected in the library.
 struct MachineCommands: Commands {
     @ObservedObject var model: LibraryModel
+    @ObservedObject var windows: MachineWindowCenter
 
     var body: some Commands {
         CommandMenu("Машина") {
             Button("Создать машину…") { model.presentingCreate = true }.keyboardShortcut("n")
             Button("Открыть…") { model.presentOpenPanel() }.keyboardShortcut("o")
             Divider()
-            MachineActionButtons(machine: model.selected, model: model)
+            MachineActionButtons(machine: windows.active?.machine ?? model.selected, model: model)
+            Divider()
+            // Control + Option + Command + G: the same chord captures here and releases inside the captured window (INPUT_TRANSPORT_V1.md 11).
+            Button(windows.captureMenuTitle) { windows.toggleCapture() }
+                .keyboardShortcut("g", modifiers: [.control, .option, .command])
+                .disabled(!windows.canToggleCapture)
             Divider()
             Button("Обновить") { model.refresh() }.keyboardShortcut("r")
+        }
+    }
+}
+
+/// Menu "Вид" (S11-10): how the frame of the key machine window is drawn, and full screen.
+struct DisplayViewCommands: Commands {
+    @ObservedObject var windows: MachineWindowCenter
+
+    var body: some Commands {
+        CommandMenu("Вид") {
+            ForEach(WindowScaling.allCases, id: \.self) { option in
+                Toggle(option.menuTitle, isOn: Binding(
+                    get: { windows.scaling == option },
+                    set: { if $0 { windows.setScaling(option) } }))
+                    .disabled(windows.active == nil)
+            }
+            Divider()
+            Button("Во весь экран") { windows.toggleFullScreen() }
+                .keyboardShortcut("f", modifiers: [.control, .command])
+                .disabled(windows.active == nil)
         }
     }
 }

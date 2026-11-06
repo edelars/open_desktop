@@ -17,10 +17,11 @@ The viewer links no Rust code: it only spawns VMHost, so `libod_host.a` is neede
 | --- | --- | --- |
 | `ODAtomics` | C (header only plus one translation unit that compiles it) | `Sources/ODAtomics/include/FrameTransportAtomics.h` |
 | `ODShared` | library, depends on `ODAtomics` | `Sources/Shared/`: `ControlFrame`, `ControlV2` (S11-04: codec of control protocol v2), `ErrorCatalog` (S11-09: user-facing words for every code, exit status and issue), `InputProtocol`, `InputQueue`, `VMHostLaunch`, `FrameReader`, `HIDUsage`, `InputTranslation`, `Viewport`. Public API for the other targets; no `FrameTransport`, no `libod_host.a` |
-| `open-desktop-display-viewer` | executable | `DisplayWindow`, `MetalPresenter`, `InputChannel`, `display_viewer_main` (this directory) |
+| `ODDisplay` | library, depends on `ODShared` (S11-10) | `DisplayWindow`, `MetalPresenter`, `InputChannel` (this directory, not moved); `package` access for the application and the viewer |
+| `open-desktop-display-viewer` | executable, depends on `ODShared` and `ODDisplay` | `display_viewer_main` (this directory); keeps `--dump-frame` |
 | `ODHostConstants` | C (header plus one translation unit that compiles it) | `Sources/ODHostConstants/include/ODHostConstants.h`: includes only `include/open_desktop/host_abi.h` (`OD_HOST_ABI_VERSION_V0`, `OD_FRAGMENT_MAX_LENGTH_V0`); no session or display ABI, no VMHost helpers |
 | `open-desktop-launcher-smoke` | executable | `launcher.swift`; depends on `ODShared` and `ODHostConstants` (constants only), does not link `libod_host.a` |
-| `OpenDesktopMacTests` | tests (XCTest) | `Tests/ViewportTests.swift`, `Tests/InputTests.swift`, `Tests/ControlV2Tests.swift` (`swift test --filter ControlV2XCTests`, 11 tests); `@testable import` of `ODShared` and of the viewer module, because the tests use internal API |
+| `OpenDesktopMacTests` | tests (XCTest) | `Tests/ViewportTests.swift`, `Tests/InputTests.swift`, `Tests/ControlV2Tests.swift` (`swift test --filter ControlV2XCTests`, 11 tests); `@testable import` of `ODShared` and `ODDisplay` (since S11-10; before it, of the viewer module), because the tests use internal API |
 
 `OpenDesktop` (S11-05b, the SwiftUI application) is described in the next section; `odctl` does not exist yet and is not declared: S11-13 adds it with its sources. The VMHost targets (`od-vmhost`, `ODHostABI`, `OpenDesktopVMHostTests`) are described in [`apps/vmhost/README.md`](../vmhost/README.md).
 
@@ -139,3 +140,36 @@ apps/.build/debug/open-desktop-display-viewer --vmhost apps/.build/debug/od-vmho
 ## User-facing errors (S11-09)
 
 `Sources/Shared/ErrorCatalog.swift` (`ODShared`, shared with the future CLI) maps every `ControlV2ErrorCode`, `ControlV2AckCode`, exit disposition, `ClientIssue` and `LibraryIssue` to a title, an explanation, an action, a severity and a "Подробности" flag; `Sources/App/ErrorPresentation.swift` adds the code, the request ID, the `vmhost.log` line and the time. The catalog, the codes and the rules are in [`docs/specs/USER_FACING_ERRORS.md`](../../docs/specs/USER_FACING_ERRORS.md); `Tests/ErrorCatalogTests.swift` fails when a code has no entry (`swift test --filter ErrorCatalog`). The texts are localization keys with Russian default values in the code. **`Localizable.strings` (ru, en) is the next step**: the SwiftPM targets have no resources yet, and adding a resource without `resources: [.process(...)]` breaks the build.
+
+## Окно машины и ввод внутри приложения (S11-10)
+
+Реализовано, ревью не пройдено; окно и взаимодействие с ним глазами не проверены (см. «Не проверено»).
+
+**Что происходит.** На событии `running` (`stateChanged`, только оно меняет строку машины) приложение открывает окно машины:
+
+- `MachineController` запускает VMHost с `--display-fd 5` и `--input-fd 4`, если у него есть «хозяин окон» (`MachineWindowHost`); без хозяина запуск прежний (ни кадров, ни ввода — так в тестах библиотеки).
+- `MachineWindowCenter` (`Sources/App/MachineWindowController.swift`) забирает родительские концы сокетов (`takeDisplaySocket()` и `takeInputSocket()` отдают дескриптор один раз за запуск) и создаёт `MachineWindowController`: `DisplayWindow` + `MetalPresenter` + `InputChannelUI` из цели `ODDisplay` (тот же код, что у viewer) и читатель кадров `ODShared.FrameReader` в своём потоке (`MachineFrameSession`, правила commit/discard/clear как в `ViewerSession.step`, экран 0).
+- Порядок `running` на дескрипторе 3 и первого `ANNOUNCE` на дескрипторе 5 (CONTROL_PROTOCOL_V2.md, раздел 13, п. 11) окну не нужен: оно открывается на `running`, читатель шлёт `HELLO` тогда же (VMHost читает его после `START`), до `ANNOUNCE` окно пишет «Нет сигнала», предел ожидания 10 с.
+- Состояние окна: `MachineWindowModel.overlay(run:frame:)` (чистая функция, `Sources/App/MachineWindowModel.swift`). «Нет сигнала», «Пауза», «Остановлено» (и «Остановлено: сбой машины»), «Несовместимая версия» (с причиной), «Смена режима экрана», «Экран отключён гостем», «Останавливается…», «Запуск…» — текст на однотонном фоне; кадр в этих состояниях не рисуется (текстура остаётся в презентере, но окно её не выводит: после «Продолжить» кадр на месте). Кадр рисуется только при `running` и состоянии читателя `showing`.
+- Остановка машины: окно остаётся и говорит «Остановлено»; читатель и канал ввода закрыты. Следующий запуск открывает новое окно на том же месте, старое закрывается без вопроса.
+- Закрытие окна при `running` или `paused`: вопрос «Закрыть окно и остановить машину?». Окно нельзя открыть заново до следующего запуска (кадры передаются один раз за запуск), поэтому «Остановить и закрыть» отправляет `STOP`. Если `STOP` сейчас невозможен (в полёте другой запрос), окно не закрывается. В остальных состояниях закрытие без вопроса.
+- Несколько экранов: пока один (экран 0). Тестовый профиль с двумя экранами показывает экран 0; второй экран и его окно — остаток S10-15.
+
+**Меню.** «Вид»: «По размеру окна» (`PresentMode.fit`), «Пиксель в пиксель» (`.pixelExact`), «Во весь экран» (`toggleFullScreen`, Control-Command-F); действуют на окно машины, которое сейчас ключевое, иначе недоступны. «Машина»: «Запустить», «Приостановить», «Продолжить», «Остановить» (по `MachineActionTable`; цель — машина ключевого окна машины, иначе выбранная в библиотеке) и «Захватить ввод» / «Освободить ввод».
+
+**Захват ввода (открытые решения 2 и 3 `INPUT_TRANSPORT_V1.md`, раздел 11; решение этого среза, поведение UI, в протокол не входит).**
+
+- Два режима: «не захвачено» (по умолчанию при открытии окна) и «захвачено». Захват только явный: комбинация **Control-Option-Command-G** (физическая клавиша `G`, раскладка не важна) или пункт меню «Машина → Захватить ввод». Щелчок по окну не захватывает.
+- Освобождение: та же комбинация (в режиме «захвачено» её обрабатывает окно до перевода клавиши в HID, гостю она не уходит) или пункт меню. Кроме того захват снимается сам: пауза, остановка, потеря ключевого окна (в том числе смена приложения), сворачивание, закрытие окна, закрытие канала ввода VMHost. При снятии гость получает `FOCUS LOST` и отпускает все нажатые клавиши, включая Control, Option и Command комбинации.
+- Захват возможен только при `running`, ключевом окне и канале ввода в состоянии READY; иначе пункт меню неактивен, а комбинация ничего не меняет.
+- «Не захвачено»: окно ничего не отправляет в канал, все клавиши и Cmd-сочетания (Cmd-Q, Cmd-W, Cmd-N …) идут приложению и меню, курсор хоста виден.
+- «Захвачено»: все клавиши, включая Cmd-сочетания, идут в канал ввода (локальный монитор забирает их до меню), приложение их не видит. Курсор хоста скрыт (прозрачный курсор) над содержимым окна и только в этом режиме. Курсор не отвязывается от мыши (`CGAssociateMouseAndMouseCursorPosition` не используется) и может выйти за окно; при выходе за окно он снова виден, а абсолютная позиция берётся как раньше.
+- Индикатор: заголовок окна, «<имя> — ввод захвачен (⌃⌥⌘G — освободить)» / «<имя> — ввод не захвачен (⌃⌥⌘G — захватить)»; при состоянии машины не `running` — «<имя> — приостановлена» и т. п.
+- Подзаголовок: «ввод в гостевую систему пока не доставляется» (`GUEST_DELIVERY = 0`), через « · » строка профиля («Тестовый узор (test-only, без гостя)»).
+- **Конфликт с системными сочетаниями.** Страница Apple «Mac keyboard shortcuts» (support.apple.com/en-us/102650) перечисляет сочетания с тремя модификаторами: Control-Option-Command-8, -запятая, -точка, -кнопка питания; сочетания Control-Option-Command-G там нет. Это не проверка конфликта с пользовательскими сочетаниями (System Settings → Keyboard → Keyboard Shortcuts), с Accessibility и со сторонними программами: **они не проверены**. Сочетание не меняется пользователем; настройка комбинации — остаток.
+
+**Проверки без окна.** `Tests/MachineWindowTests.swift` (`swift test --filter MachineWindow`): текст по состояниям (в том числе «кадр только при running + showing»), заголовок и подзаголовок, модель захвата (переходы, условия, освобождение), комбинация, выбор режима масштабирования, политика закрытия, хозяин окон контроллера и тест с настоящим `od-vmhost`: кадры и канал ввода доходят до стороны окна (`MachineFrameSession`, `MetalPresenter`, `InputChannelUI`), `GUEST_DELIVERY = 0`, конец машины заканчивает читатель.
+
+**Не проверено.** Окно глазами (оверлеи, заголовок, подзаголовок, меню «Вид» и «Машина», порядок меню: `CommandMenu("Вид")` может оказаться рядом с системным меню «View»), полноэкранный режим, скрытие курсора, переключение захвата с клавиатуры, вопрос при закрытии, перенос позиции окна на новый запуск, поведение под несколькими мониторами и @2x. Скриншотов нет.
+
+**Viewer.** `open-desktop-display-viewer` остаётся (цель, `--dump-frame`, `--input-channel`, `--screens 2`): `DisplayWindow`, `MetalPresenter`, `InputChannel` вынесены в цель `ODDisplay` без переноса файлов, поведение viewer не менялось (по умолчанию ввод «захвачен», как раньше).

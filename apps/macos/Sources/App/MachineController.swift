@@ -179,6 +179,21 @@ protocol MachineSession: AnyObject {
     func requestStop(completion: @escaping ControlClientV2.Completion)
     func requestQuery(completion: @escaping ControlClientV2.Completion)
     func terminateSession()
+    /// S11-10: the parent end of the frame socket (VMHost descriptor 5) and of the input socket (descriptor 4), once per session.
+    func takeDisplaySocket() -> Int32?
+    func takeInputSocket() -> Int32?
+}
+
+extension MachineSession {
+    /// A session that has no frame or input socket (the tests' fakes).
+    func takeDisplaySocket() -> Int32? { nil }
+    func takeInputSocket() -> Int32? { nil }
+}
+
+/// S11-10: whoever opens the machine window. The controller tells it every change of the row state; the host takes the sockets with
+/// `takeDisplayChannels()` when it opens a window. A controller without a host asks for no frame and no input socket (as before S11-10).
+protocol MachineWindowHost: AnyObject {
+    func machine(_ machine: MachineController, didChange state: MachineRunState)
 }
 
 extension ControlClientV2: MachineSession {
@@ -217,6 +232,8 @@ final class MachineController: ObservableObject, Identifiable {
     private let launcher: MachineLauncher
     private let hostMemoryBytes: UInt64
     private var session: MachineSession?
+    /// Opens the window of the machine (S11-10). Weak: the application owns the host.
+    weak var windowHost: MachineWindowHost?
     /// Events and completions of an earlier session (a process that is already gone) must not touch a newer one.
     private var generation = 0
 
@@ -244,6 +261,12 @@ final class MachineController: ObservableObject, Identifiable {
     }
 
     func allows(_ action: MachineAction) -> Bool { allowedActions.contains(action) }
+
+    /// The parent ends of the frame and input sockets of the current session; each is handed out once, `nil` afterwards (or without a session).
+    func takeDisplayChannels() -> (display: Int32?, input: Int32?) {
+        guard let session else { return (nil, nil) }
+        return (session.takeDisplaySocket(), session.takeInputSocket())
+    }
 
     /// "Обновить" is not an action of the table: it reads (`QUERY` is valid in every state and may be sent while another request is in flight).
     var canRefresh: Bool { session != nil }
@@ -278,7 +301,10 @@ final class MachineController: ObservableObject, Identifiable {
         }
         generation += 1
         let current = generation
-        let launch = ControlClientLaunch(vmhostPath: vmhost.url.path, bundlePath: entry.bundleURL.path, displayChannel: false)
+        // With a window host the VMHost gets `--display-fd 5` and `--input-fd 4` (S11-10); without one, nothing of the kind.
+        let withWindow = windowHost != nil
+        let launch = ControlClientLaunch(
+            vmhostPath: vmhost.url.path, bundlePath: entry.bundleURL.path, displayChannel: withWindow, inputChannel: withWindow)
         do {
             // The row is `starting` before the process exists: a launcher may deliver an event only on the main queue, after this returns.
             runState = .starting
@@ -360,6 +386,7 @@ final class MachineController: ObservableObject, Identifiable {
             notice = .startFailed(ErrorPresentation.rejection(rejection, context: errorContext()))
         case .stateChanged(_, let to, _, _):
             runState = MachineRunState(to)
+            windowHost?.machine(self, didChange: runState)
             if to == .failed {
                 // The VMHost sent no `ERROR` here: the state came from `STATE_CHANGED`, so the entry is the catalog's and the details say so.
                 notice = .plain(
@@ -387,6 +414,7 @@ final class MachineController: ObservableObject, Identifiable {
         requestInFlight = false
         lastExit = exit
         runState = .stopped
+        windowHost?.machine(self, didChange: .stopped)
         guard let ended = MachineNotice.exit(exit, context: errorContext()) else { return } // a normal end keeps the line that explains an earlier refusal
         guard let earlier = notice, exit.startRejection == nil else {
             notice = ended

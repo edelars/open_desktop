@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import XCTest
 @testable import ODShared
-@testable import open_desktop_display_viewer
+@testable import ODDisplay
 
 // Unit tests of the input transport (S10-16, protocols/control/INPUT_TRANSPORT_V1.md section 12): messages, queue rules and the
 // invariant, the kVK_* table, point/pixel translation, focus release. No AppKit, no VMHost process. XCTest case of the
