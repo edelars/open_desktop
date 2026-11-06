@@ -68,6 +68,36 @@
 //! disk grows. It is bounded by [`MAX_TX_BLOCKS`]; a larger write is
 //! [`SnapError::TooLarge`] before any backend call.
 //!
+//! # Validation before the writable open (S9-16)
+//!
+//! [`SnapFile::open`] and [`SnapFile::create_child`] verify the **whole**
+//! chain before any byte is written: the open runs through
+//! [`CowFile::open_gated`](crate::cow_proto::CowFile), whose gate sees the
+//! recovered read-only state before the one write a writable open can make
+//! (the roll-forward repair of a damaged root slot). Per ancestor the checks
+//! are: file uid, snapshot id, generation, block count, end offset and the CRC
+//! of the retained block map (so a wrong or replaced intermediate ancestor is
+//! caught at its own level, not only the nearest parent), the ancestor's own
+//! parent link, no uid cycle, depth at most [`MAX_CHAIN_DEPTH`] and recorded
+//! depths that agree with the walk. Failures are typed
+//! ([`SnapError::ParentMissing`], [`SnapError::ParentIdentityMismatch`],
+//! [`SnapError::SnapshotMissing`], [`SnapError::ParentCycle`],
+//! [`SnapError::ChainTooDeep`], [`SnapError::ChainInconsistent`], ...). The
+//! storages the resolver returned stay inside the open file, so a leasing
+//! resolver keeps every ancestor leased (and unwritable) while the child is
+//! open; the host re-checks file identity on each read, which turns a swap
+//! after the check into a failed read (`od-host` tests).
+//!
+//! # Branch, checkout and rollback (S9-15)
+//!
+//! [`SnapFile::branch_from`] creates a new child from a chosen snapshot of an
+//! open file. Checkout is [`SnapFile::open`] of that file; rollback is a new
+//! branch from an older snapshot, never a rewrite of the current file. All of
+//! this is the logical disk only: it does not touch guest RAM, vTPM or UEFI
+//! state and is not a full-VM restore. Switching which file is the *active*
+//! disk is a namespace operation that is not implemented (no durable rename,
+//! ISSUE-055).
+//!
 //! # Limits of this slice
 //!
 //! No production [`ParentResolver`] exists: the only implementations are
@@ -81,12 +111,12 @@
 //!
 //! # Not covered
 //!
-//! Snapshot deletion and reclaim (S9-17), branch/checkout/rollback (S9-15),
-//! host lock lifecycle for the whole chain, real power-loss behaviour, and
-//! sparse physical storage.
+//! Snapshot deletion and reclaim (S9-17), atomic switch of an active disk
+//! pointer, a production resolver and the host lock lifecycle for a whole VM
+//! run, real power-loss behaviour, and sparse physical storage.
 
 use crate::cow_parse::{
-    BlockDescriptor, Features, ParseKind, RootRecord, StorageSource, parse_map,
+    BlockDescriptor, Capabilities, Features, ParseKind, RootRecord, StorageSource, parse_map,
 };
 use crate::cow_proto::{
     BLOCK_SIZE, CowError, CowFile, CowView, MAX_TX_BLOCKS, OpenReport, crc32, slot_offset,
@@ -719,6 +749,14 @@ fn read_range(
 
 // ------------------------------------------------------------------ file
 
+/// State proven by [`SnapFile::open`] before the CoW file may write.
+struct Verified {
+    header: Header,
+    presence: Block,
+    snapshots: BTreeMap<u64, Level>,
+    chain: Vec<Ancestor>,
+}
+
 /// An open writable layer file: a base disk or a child over a parent snapshot.
 /// One writer; the ancestors are read-only.
 pub struct SnapFile<B: StorageBackend> {
@@ -788,6 +826,91 @@ impl<B: StorageBackend> SnapFile<B> {
         )
     }
 
+    /// Creates a new writable child (a **branch**) that starts from snapshot
+    /// `snapshot_id` of `source` (S9-15). It is [`create_child`](Self::create_child)
+    /// over `source.snapshot_ref(snapshot_id)`: the chosen snapshot, the source
+    /// file's live state and every other branch are only read and never
+    /// written, and the new file shows exactly the logical bytes of the
+    /// snapshot until it is written.
+    ///
+    /// `resolver` must hand out read-only storage for the **source file**
+    /// (and its ancestors): the branch reads the snapshot from there for as
+    /// long as it is open. With the host's lease resolver a source that a
+    /// writer holds (an open `source` is one) is [`SnapError::ParentBusy`], so
+    /// a branch cannot be cut under a live writer. To branch from a file nobody holds, take the
+    /// reference with [`inspect_snapshot_ref`](Self::inspect_snapshot_ref)
+    /// and call [`create_child`](Self::create_child). A poisoned `source` is
+    /// refused, a missing id is [`SnapError::SnapshotMissing`], and a `new_uid`
+    /// equal to one on the chain is [`SnapError::ParentCycle`]. On any error
+    /// nothing is written to `storage`.
+    ///
+    /// This is a logical-disk operation only. It says nothing about guest RAM,
+    /// vTPM or UEFI state, and a branch is not a full-VM restore.
+    ///
+    /// # Checkout and rollback
+    ///
+    /// *Checkout* of a branch is [`SnapFile::open`] of its file. *Rollback* of
+    /// a disk to an older snapshot is a new branch from that snapshot: the
+    /// current file is never rewritten and stays available. Making the branch
+    /// the **active** one is a change of which file the VM's disk name refers
+    /// to; that needs an atomic, durable namespace operation (rename plus
+    /// directory flush), which does not exist yet (ISSUE-055), so this slice
+    /// does not switch an active pointer and does not imitate one.
+    pub fn branch_from<S: StorageBackend, R: ParentResolver>(
+        storage: CheckedStorage<B>,
+        resolver: &mut R,
+        source: &SnapFile<S>,
+        snapshot_id: u64,
+        new_uid: u64,
+    ) -> Result<(Self, DurableAck), SnapError> {
+        if source.is_poisoned() {
+            return Err(SnapError::BadWrite("branch source is poisoned"));
+        }
+        let parent = source
+            .snapshot_ref(snapshot_id)
+            .ok_or(SnapError::SnapshotMissing { id: snapshot_id })?;
+        Self::create_child(storage, resolver, &parent, new_uid)
+    }
+
+    /// Reads the [`ParentRef`] of snapshot `snapshot_id` out of a **closed**
+    /// file through read-only storage (it never writes). This is how a branch
+    /// is cut from a file no writer holds: lease the source for reading, take
+    /// the reference here, then [`create_child`](Self::create_child) with it.
+    /// The record is verified like any retained snapshot (its map CRC, header
+    /// and bitmap); a source that may have lost an acknowledged commit is
+    /// [`SnapError::ParentDamaged`]. The source's own ancestors are not
+    /// checked here: `create_child` verifies the whole chain.
+    pub fn inspect_snapshot_ref(
+        storage: CheckedStorage<B>,
+        snapshot_id: u64,
+    ) -> Result<ParentRef, SnapError> {
+        let (view, report) = CowView::salvage(storage)?;
+        if report.possible_lost_commit {
+            return Err(SnapError::ParentDamaged);
+        }
+        let (head, _) = read_state(&view)?;
+        let rec = head
+            .snapshots
+            .iter()
+            .find(|r| r.id == snapshot_id)
+            .ok_or(SnapError::SnapshotMissing { id: snapshot_id })?;
+        if rec.generation >= view.generation() || rec.end_offset > view.end_offset() {
+            return Err(SnapError::SnapshotCorrupt { id: rec.id });
+        }
+        let level = load_level(view.storage(), rec)?;
+        if level.header.file_uid != head.file_uid || level.header.parent != head.parent {
+            return Err(SnapError::SnapshotCorrupt { id: rec.id });
+        }
+        Ok(ParentRef {
+            file_uid: head.file_uid,
+            snapshot_id: rec.id,
+            generation: rec.generation,
+            block_count: rec.block_count,
+            end_offset: rec.end_offset,
+            map_crc: rec.map_crc,
+        })
+    }
+
     /// Writes an arbitrary header over an empty backend with no verification.
     /// Exists so tests can forge cycles and depth lies that the checked
     /// constructors refuse.
@@ -814,18 +937,57 @@ impl<B: StorageBackend> SnapFile<B> {
 
     /// Writable open: CoW recovery, then the header, every retained snapshot
     /// and (for a child) the verified parent chain. Any failure refuses.
+    ///
+    /// All of that verification (S9-16) runs against the recovered read-only
+    /// state **before** the only write a writable open can make (repairing a
+    /// damaged root slot), so a refused open leaves every byte of the child
+    /// and of its ancestors untouched. For a child the whole chain is walked:
+    /// per ancestor the resolver's storage must hold the recorded file uid, the
+    /// recorded snapshot id with generation, block count, end offset and block
+    /// map CRC, and its own parent link must continue the chain; uid cycles and
+    /// more than [`MAX_CHAIN_DEPTH`] ancestors are refused, and the recorded
+    /// depths must agree with the walk. The ancestors' storages stay in the
+    /// returned file, so with a leasing resolver the leases are held until it
+    /// is dropped.
     pub fn open<R: ParentResolver>(
         storage: CheckedStorage<B>,
         resolver: &mut R,
     ) -> Result<(Self, OpenReport), SnapError> {
-        let (file, report) = CowFile::open(storage)?;
-        let (header, presence) = read_state(&file)?;
+        let mut verified: Option<Verified> = None;
+        let (file, report) = CowFile::open_gated(storage, &Capabilities::CURRENT, |view| {
+            verified = Some(Self::verify_open(view, resolver)?);
+            Ok::<(), SnapError>(())
+        })?;
+        let Verified {
+            header,
+            presence,
+            snapshots,
+            chain,
+        } = verified.ok_or(SnapError::ChainInconsistent("open was not verified"))?;
+        Ok((
+            Self {
+                file,
+                header,
+                presence,
+                snapshots,
+                chain,
+            },
+            report,
+        ))
+    }
+
+    /// Everything `open` checks, from read-only state (no write).
+    fn verify_open<R: ParentResolver>(
+        view: &CowView<B>,
+        resolver: &mut R,
+    ) -> Result<Verified, SnapError> {
+        let (header, presence) = read_state(view)?;
         let mut snapshots = BTreeMap::new();
         for rec in &header.snapshots {
-            if rec.generation >= file.generation() || rec.end_offset > file.end_offset() {
+            if rec.generation >= view.generation() || rec.end_offset > view.end_offset() {
                 return Err(SnapError::SnapshotCorrupt { id: rec.id });
             }
-            let level = load_level(file.storage(), rec)?;
+            let level = load_level(view.storage(), rec)?;
             if level.header.file_uid != header.file_uid || level.header.parent != header.parent {
                 return Err(SnapError::SnapshotCorrupt { id: rec.id });
             }
@@ -843,16 +1005,12 @@ impl<B: StorageBackend> SnapFile<B> {
                 chain
             }
         };
-        Ok((
-            Self {
-                file,
-                header,
-                presence,
-                snapshots,
-                chain,
-            },
-            report,
-        ))
+        Ok(Verified {
+            header,
+            presence,
+            snapshots,
+            chain,
+        })
     }
 
     pub fn file_uid(&self) -> u64 {

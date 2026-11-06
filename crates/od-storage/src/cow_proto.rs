@@ -901,6 +901,20 @@ impl<B: StorageBackend> CowFile<B> {
         storage: CheckedStorage<B>,
         caps: &Capabilities,
     ) -> Result<(Self, OpenReport), CowError> {
+        Self::open_gated(storage, caps, |_| Ok(()))
+    }
+
+    /// [`open_with`](Self::open_with) with a `gate` that sees the recovered
+    /// read-only state **before** the one possible write of a writable open
+    /// (the roll-forward repair of a damaged root slot). A gate that returns
+    /// an error refuses the open with no byte written. Layers above the CoW
+    /// file use it to verify what the file depends on (a parent chain) before
+    /// anything is repaired.
+    pub(crate) fn open_gated<E: From<CowError>>(
+        storage: CheckedStorage<B>,
+        caps: &Capabilities,
+        gate: impl FnOnce(&CowView<B>) -> Result<(), E>,
+    ) -> Result<(Self, OpenReport), E> {
         let Recovered {
             mut view,
             report,
@@ -910,12 +924,15 @@ impl<B: StorageBackend> CowFile<B> {
             return Err(CowError::DamagedOtherSlot {
                 chosen_generation: view.generation,
                 other: report.other_slot,
-            });
+            }
+            .into());
         }
+        gate(&view)?;
         if let Some(root) = repair {
             view.storage
-                .write_all_at(slot_offset(view.generation), &encode_root(&root))?;
-            let _ack = view.storage.flush_file_durable()?;
+                .write_all_at(slot_offset(view.generation), &encode_root(&root))
+                .map_err(CowError::from)?;
+            let _ack = view.storage.flush_file_durable().map_err(CowError::from)?;
         }
         Ok((
             Self {

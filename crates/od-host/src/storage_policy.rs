@@ -28,9 +28,15 @@
 //!   one busy holder ([`PolicyError::RepairBusy`]).
 //! * [`ParentLease`] itself has no notion of a parent inside a snapshot chain.
 //!   [`ParentLeaseStorage`] adapts it to the storage contract so the S9-14
-//!   chain code in `od-storage` can read ancestors through it; chain
-//!   verification across the whole lifecycle (S9-16) and VMHost integration
-//!   are later work.
+//!   chain code in `od-storage` can read ancestors through it. The chain
+//!   itself is verified by `od-storage` before its writable open writes
+//!   (S9-16); the tests here prove, over real files, that an open child keeps
+//!   its ancestors leased and that a swap after validation yields a failed
+//!   read, not foreign bytes. There is still no production `ParentResolver`
+//!   (only the test `PathResolver`), no whole-run lock lifecycle and no VMHost
+//!   integration, so no product code opens a chain yet. A failed identity
+//!   check on a read reaches the chain code as a generic I/O error, not as
+//!   `ParentIdentityMismatch` (that variant is reported at open time).
 
 use crate::storage_io::{HostFileStorage, LeaseOpenError, ReadLease, WriterOpenError};
 use od_storage::io::{BackendError, StorageBackend, StorageCapabilities};
@@ -597,21 +603,18 @@ mod tests {
         ));
     }
 
-    /// S9-14 over real files: a child reads its ancestors only through
-    /// `ParentLease`, a parent cannot be written while the child is open, and
-    /// a swapped parent is refused. macOS only: the CoW commit needs durable
-    /// file flushes, which the host backend declares only there.
+    /// Test-only [`ParentResolver`] over real files: uid to path, optionally
+    /// with the recorded `(st_dev, st_ino)`. Every parent is taken through
+    /// [`ParentLease`] (shared lock, identity re-checked on every use).
     #[cfg(target_os = "macos")]
-    #[test]
-    fn snapshot_chain_reads_through_parent_leases_and_refuses_a_swapped_parent() {
-        use od_storage::cow_snapshot::{
-            ParentRef, ParentResolver, ResolveError, SnapError, SnapFile,
-        };
+    mod chain_support {
+        use super::super::*;
+        use od_storage::cow_snapshot::{ParentRef, ParentResolver, ResolveError};
         use od_storage::io::CheckedStorage;
         use std::collections::BTreeMap;
 
-        struct PathResolver {
-            entries: BTreeMap<u64, (PathBuf, Option<(u64, u64)>)>,
+        pub(super) struct PathResolver {
+            pub(super) entries: BTreeMap<u64, (PathBuf, Option<(u64, u64)>)>,
         }
 
         impl ParentResolver for PathResolver {
@@ -641,6 +644,20 @@ mod tests {
                 CheckedStorage::new(ParentLeaseStorage::new(lease)).map_err(ResolveError::Storage)
             }
         }
+    }
+    #[cfg(target_os = "macos")]
+    use chain_support::PathResolver;
+
+    /// S9-14 over real files: a child reads its ancestors only through
+    /// `ParentLease`, a parent cannot be written while the child is open, and
+    /// a swapped parent is refused. macOS only: the CoW commit needs durable
+    /// file flushes, which the host backend declares only there.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn snapshot_chain_reads_through_parent_leases_and_refuses_a_swapped_parent() {
+        use od_storage::cow_snapshot::{SnapError, SnapFile};
+        use od_storage::io::CheckedStorage;
+        use std::collections::BTreeMap;
 
         let _serial = process_spawn_guard();
         let dir = TempDir::new();
@@ -721,6 +738,407 @@ mod tests {
             reopen(&mut resolver).err(),
             Some(SnapError::ParentMissing)
         ));
+    }
+
+    // ---- S9-15 / S9-16 over real files (macOS: durable flush) ----
+
+    #[cfg(target_os = "macos")]
+    mod chain_files {
+        use super::*;
+        use od_storage::cow_snapshot::{ParentRef, SnapError, SnapFile};
+        use od_storage::io::CheckedStorage;
+        use std::collections::BTreeMap;
+
+        pub(super) type Host = SnapFile<HostFileStorage>;
+
+        pub(super) fn created(path: &Path) -> CheckedStorage<HostFileStorage> {
+            CheckedStorage::new(HostFileStorage::create_new_exclusive(path, 0).expect("create"))
+                .expect("checked")
+        }
+
+        pub(super) fn writer(
+            path: &Path,
+        ) -> Result<CheckedStorage<HostFileStorage>, WriterOpenError> {
+            HostFileStorage::open_read_write_exclusive(path)
+                .map(|s| CheckedStorage::new(s).expect("checked"))
+        }
+
+        pub(super) fn identity(path: &Path) -> (u64, u64) {
+            ParentLease::open(path).expect("lease").file_identity()
+        }
+
+        pub(super) fn open_child(path: &Path, r: &mut PathResolver) -> Result<Host, SnapError> {
+            let storage = writer(path).map_err(|_| SnapError::ParentBusy)?;
+            SnapFile::open(storage, r).map(|(f, _)| f)
+        }
+
+        pub(super) fn read_all(f: &Host) -> Vec<u8> {
+            let mut v = vec![0u8; f.disk_size() as usize];
+            f.read_at(0, &mut v).expect("read");
+            v
+        }
+
+        /// base(uid 1, 0xAA x 1024, snapshot 1) <- mid(uid 2, bytes 100..103,
+        /// snapshot 1) <- top(uid 3). All files closed. Returns paths, the
+        /// resolver (host identities recorded) and the refs.
+        pub(super) struct Chain {
+            pub base: PathBuf,
+            pub mid: PathBuf,
+            pub top: PathBuf,
+            pub resolver: PathResolver,
+            pub mid_ref: ParentRef,
+            pub expected: Vec<u8>,
+        }
+
+        pub(super) fn chain(dir: &TempDir) -> Chain {
+            let (base, mid, top) = (
+                dir.path("base.cow"),
+                dir.path("mid.cow"),
+                dir.path("top.cow"),
+            );
+            let (mut b, _) = SnapFile::create_base(created(&base), 1).expect("base");
+            b.write_at(0, &[0xAA; 1024]).expect("base write");
+            let (id, _) = b.create_snapshot().expect("base snapshot");
+            let base_ref = b.snapshot_ref(id).expect("base ref");
+            drop(b);
+            let mut resolver = PathResolver {
+                entries: BTreeMap::from([(1, (base.clone(), Some(identity(&base))))]),
+            };
+            let (mut m, _) =
+                SnapFile::create_child(created(&mid), &mut resolver, &base_ref, 2).expect("mid");
+            m.write_at(100, &[1, 2, 3]).expect("mid write");
+            let (id, _) = m.create_snapshot().expect("mid snapshot");
+            let mid_ref = m.snapshot_ref(id).expect("mid ref");
+            drop(m);
+            resolver
+                .entries
+                .insert(2, (mid.clone(), Some(identity(&mid))));
+            let (t, _) =
+                SnapFile::create_child(created(&top), &mut resolver, &mid_ref, 3).expect("top");
+            drop(t);
+            let mut expected = vec![0xAAu8; 1024];
+            expected[100..103].copy_from_slice(&[1, 2, 3]);
+            Chain {
+                base,
+                mid,
+                top,
+                resolver,
+                mid_ref,
+                expected,
+            }
+        }
+
+        /// A standalone file of `uid` with `fill` data and one snapshot.
+        pub(super) fn foreign(path: &Path, uid: u64, fill: u8) {
+            let (mut f, _) = SnapFile::create_base(created(path), uid).expect("foreign");
+            f.write_at(0, &[fill; 1024]).expect("foreign write");
+            f.create_snapshot().expect("foreign snapshot");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn chain_is_validated_at_every_level_before_the_writable_open_writes() {
+        use chain_files::*;
+        use od_storage::cow_snapshot::SnapError;
+        let _serial = process_spawn_guard();
+        let dir = TempDir::new();
+        let mut c = chain(&dir);
+        let top_bytes = std::fs::read(&c.top).expect("top bytes");
+        assert_eq!(
+            read_all(&open_child(&c.top, &mut c.resolver).expect("opens")),
+            c.expected
+        );
+
+        // Wrong parent ID, hash and generation, one level up (the nearest
+        // parent): other uid, same uid with other content.
+        let keep_mid = dir.path("mid.keep");
+        std::fs::rename(&c.mid, &keep_mid).expect("move mid");
+        foreign(&c.mid, 99, 0xCC);
+        c.resolver.entries.insert(2, (c.mid.clone(), None));
+        assert!(matches!(
+            open_child(&c.top, &mut c.resolver),
+            Err(SnapError::ParentIdentityMismatch)
+        ));
+        std::fs::remove_file(&c.mid).expect("rm foreign");
+        foreign(&c.mid, 2, 0xCC);
+        assert!(matches!(
+            open_child(&c.top, &mut c.resolver),
+            Err(SnapError::ParentIdentityMismatch)
+        ));
+        std::fs::remove_file(&c.mid).expect("rm foreign");
+        std::fs::rename(&keep_mid, &c.mid).expect("restore mid");
+        c.resolver
+            .entries
+            .insert(2, (c.mid.clone(), Some(identity(&c.mid))));
+        assert!(open_child(&c.top, &mut c.resolver).is_ok());
+
+        // The same one level further up: the nearest parent is intact but the
+        // base is another file (uid 1, other content) or has another uid.
+        let keep_base = dir.path("base.keep");
+        std::fs::rename(&c.base, &keep_base).expect("move base");
+        c.resolver.entries.insert(1, (c.base.clone(), None));
+        for (uid, fill) in [(1, 0xDD), (55, 0xAA)] {
+            foreign(&c.base, uid, fill);
+            assert!(
+                matches!(
+                    open_child(&c.top, &mut c.resolver),
+                    Err(SnapError::ParentIdentityMismatch)
+                ),
+                "base uid {uid}"
+            );
+            std::fs::remove_file(&c.base).expect("rm foreign");
+        }
+        // Base gone: missing, not a read of anything.
+        assert!(matches!(
+            open_child(&c.top, &mut c.resolver),
+            Err(SnapError::ParentMissing)
+        ));
+        // No refusal wrote to the child or left a lock behind.
+        assert_eq!(std::fs::read(&c.top).expect("top after"), top_bytes);
+        drop(writer(&c.top).expect("top is not locked"));
+        std::fs::rename(&keep_base, &c.base).expect("restore base");
+        c.resolver
+            .entries
+            .insert(1, (c.base.clone(), Some(identity(&c.base))));
+        assert!(open_child(&c.top, &mut c.resolver).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn symlink_alias_and_swap_between_validation_and_first_read_are_refused() {
+        use chain_files::*;
+        use od_storage::cow_snapshot::SnapError;
+        let _serial = process_spawn_guard();
+        let dir = TempDir::new();
+        let mut c = chain(&dir);
+
+        // A symlink to the real parent is the same inode: accepted, and the
+        // writer lock still conflicts through the alias.
+        let alias = dir.path("alias.cow");
+        std::os::unix::fs::symlink(&c.base, &alias).expect("symlink");
+        c.resolver
+            .entries
+            .insert(1, (alias.clone(), Some(identity(&c.base))));
+        let open = open_child(&c.top, &mut c.resolver).expect("alias to the same inode");
+        assert!(matches!(
+            HostFileStorage::open_read_write_exclusive(&c.base),
+            Err(WriterOpenError::WriterBusy)
+        ));
+
+        // TOCTOU: the chain is validated and leased; now the alias is pointed
+        // at a byte-identical copy (other inode). The first read through the
+        // chain delivers no bytes of it.
+        let copy = dir.path("copy.cow");
+        std::fs::copy(&c.base, &copy).expect("copy");
+        let alias_tmp = dir.path("alias.tmp");
+        std::os::unix::fs::symlink(&copy, &alias_tmp).expect("symlink");
+        std::fs::rename(&alias_tmp, &alias).expect("retarget alias");
+        let mut buf = vec![0u8; 16];
+        // Block 1 (offset 512) is a hole of top and mid: it resolves in the
+        // base.
+        let read = open.read_at(512, &mut buf);
+        assert!(matches!(read, Err(SnapError::Cow(_))), "{read:?}");
+        assert_eq!(buf, vec![0u8; 16], "no byte of the swapped file delivered");
+        drop(open);
+
+        // A symlink to a different inode than the recorded one is refused at
+        // open already, before anything is read.
+        assert!(matches!(
+            open_child(&c.top, &mut c.resolver),
+            Err(SnapError::ParentIdentityMismatch)
+        ));
+
+        // A plain replacement of the real path after validation behaves the
+        // same (rename over the parent).
+        c.resolver
+            .entries
+            .insert(1, (c.base.clone(), Some(identity(&c.base))));
+        let open = open_child(&c.top, &mut c.resolver).expect("real path");
+        std::fs::rename(&copy, &c.base).expect("replace parent");
+        let mut buf = vec![0u8; 16];
+        assert!(open.read_at(512, &mut buf).is_err());
+        assert_eq!(buf, vec![0u8; 16]);
+        drop(open);
+        assert!(matches!(
+            open_child(&c.top, &mut c.resolver),
+            Err(SnapError::ParentIdentityMismatch)
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_children_hold_parent_leases_and_a_live_writer_refuses_a_child() {
+        use chain_files::*;
+        use od_storage::cow_snapshot::SnapError;
+        let _serial = process_spawn_guard();
+        let dir = TempDir::new();
+        let mut c = chain(&dir);
+        // Second child of the same parent snapshot.
+        let top2 = dir.path("top2.cow");
+        let (t2, _) = od_storage::cow_snapshot::SnapFile::create_child(
+            created(&top2),
+            &mut c.resolver,
+            &c.mid_ref,
+            4,
+        )
+        .expect("second child");
+        drop(t2);
+
+        // Two children open at once: shared leases coexist; no writer may
+        // start on mid or base while any of them is open.
+        let a = open_child(&c.top, &mut c.resolver).expect("first child");
+        let b = open_child(&top2, &mut c.resolver).expect("second child");
+        for p in [&c.mid, &c.base] {
+            assert!(matches!(
+                HostFileStorage::open_read_write_exclusive(p),
+                Err(WriterOpenError::WriterBusy)
+            ));
+        }
+        drop(a);
+        assert!(matches!(
+            HostFileStorage::open_read_write_exclusive(&c.mid),
+            Err(WriterOpenError::WriterBusy)
+        ));
+        drop(b);
+        drop(HostFileStorage::open_read_write_exclusive(&c.mid).expect("free after both close"));
+
+        // Live-writer refusal: a writer holds the parent, a child cannot open.
+        let top_bytes = std::fs::read(&c.top).expect("top bytes");
+        let live = HostFileStorage::open_read_write_exclusive(&c.mid).expect("writer");
+        assert!(matches!(
+            open_child(&c.top, &mut c.resolver),
+            Err(SnapError::ParentBusy)
+        ));
+        assert!(matches!(
+            od_storage::cow_snapshot::SnapFile::create_child(
+                created(&dir.path("late.cow")),
+                &mut c.resolver,
+                &c.mid_ref,
+                5
+            )
+            .err(),
+            Some(SnapError::ParentBusy)
+        ));
+        assert_eq!(std::fs::read(&c.top).expect("top after"), top_bytes);
+        drop(live);
+        assert!(open_child(&c.top, &mut c.resolver).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn branch_from_a_closed_file_over_leases_and_live_source_is_busy() {
+        use chain_files::*;
+        use od_storage::cow_snapshot::{SnapError, SnapFile};
+        use od_storage::io::CheckedStorage;
+        let _serial = process_spawn_guard();
+        let dir = TempDir::new();
+        let mut c = chain(&dir);
+        let before: Vec<Vec<u8>> = [&c.base, &c.mid, &c.top]
+            .iter()
+            .map(|p| std::fs::read(p).expect("bytes"))
+            .collect();
+
+        // Source open for writing: a branch from it is a live-writer refusal.
+        let mut source = open_child(&c.top, &mut c.resolver).expect("source");
+        source.write_at(0, &[9, 9]).expect("source write");
+        let (sid, _) = source.create_snapshot().expect("source snapshot");
+        c.resolver
+            .entries
+            .insert(3, (c.top.clone(), Some(identity_of_open(&c.top))));
+        let refused = SnapFile::branch_from(
+            created(&dir.path("b0.cow")),
+            &mut c.resolver,
+            &source,
+            sid,
+            7,
+        );
+        assert!(matches!(refused.err(), Some(SnapError::ParentBusy)));
+        assert_eq!(
+            std::fs::metadata(dir.path("b0.cow")).expect("b0").len(),
+            0,
+            "a refused branch wrote nothing"
+        );
+        let mut after_write = vec![0u8; 1024];
+        source.read_at(0, &mut after_write).expect("read source");
+        let rolled_back_to = after_write.clone();
+        drop(source);
+
+        // Closed source: reference read through a read lease, then a branch.
+        let lease = ParentLeaseStorage::new(ParentLease::open(&c.top).expect("read lease"));
+        let sref =
+            SnapFile::inspect_snapshot_ref(CheckedStorage::new(lease).expect("checked"), sid)
+                .expect("snapshot ref");
+        let (mut branch, _) =
+            SnapFile::create_child(created(&dir.path("b1.cow")), &mut c.resolver, &sref, 7)
+                .expect("branch");
+        assert_eq!(read_all(&branch), rolled_back_to);
+        branch.write_at(500, &[5; 4]).expect("branch write");
+        // While the branch is open its source cannot be written.
+        assert!(matches!(
+            HostFileStorage::open_read_write_exclusive(&c.top),
+            Err(WriterOpenError::WriterBusy)
+        ));
+        drop(branch);
+        // The base and mid files are byte-for-byte what they were; the source
+        // changed only by its own write and snapshot, never by the branch.
+        assert_eq!(std::fs::read(&c.base).expect("base"), before[0]);
+        assert_eq!(std::fs::read(&c.mid).expect("mid"), before[1]);
+    }
+
+    /// `(dev, ino)` of a file that may be locked by a writer (no lease).
+    #[cfg(target_os = "macos")]
+    fn identity_of_open(path: &Path) -> (u64, u64) {
+        let m = std::fs::metadata(path).expect("metadata");
+        (m.dev(), m.ino())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn incomplete_copy_bundle_is_refused_without_reading() {
+        use chain_files::*;
+        use od_storage::cow_snapshot::SnapError;
+        use std::collections::BTreeMap;
+        let _serial = process_spawn_guard();
+        let dir = TempDir::new();
+        let c = chain(&dir);
+        // Bundle copy: top and mid copied, base not. No recorded identity (a
+        // copy has other inodes), so only the files' own content decides.
+        let bundle = TempDir::new();
+        std::fs::copy(&c.top, bundle.path("top.cow")).expect("copy top");
+        std::fs::copy(&c.mid, bundle.path("mid.cow")).expect("copy mid");
+        let mut r = PathResolver {
+            entries: BTreeMap::from([
+                (1, (bundle.path("base.cow"), None)),
+                (2, (bundle.path("mid.cow"), None)),
+            ]),
+        };
+        let before = std::fs::read(bundle.path("top.cow")).expect("bytes");
+        assert!(matches!(
+            open_child(&bundle.path("top.cow"), &mut r),
+            Err(SnapError::ParentMissing)
+        ));
+        // A truncated copy of the base (copy interrupted) is not a parent.
+        let full = std::fs::read(&c.base).expect("base bytes");
+        for keep in [0usize, 100, full.len() / 2, full.len() - 1] {
+            std::fs::write(bundle.path("base.cow"), &full[..keep]).expect("partial");
+            let err = open_child(&bundle.path("top.cow"), &mut r).err();
+            assert!(
+                matches!(
+                    err,
+                    Some(SnapError::ParentCorrupt(_) | SnapError::ParentDamaged)
+                ),
+                "keep={keep}: {err:?}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(bundle.path("top.cow")).expect("after"),
+            before
+        );
+        // The complete bundle opens.
+        std::fs::copy(&c.base, bundle.path("base.cow")).expect("copy base");
+        let f = open_child(&bundle.path("top.cow"), &mut r).expect("complete bundle");
+        assert_eq!(read_all(&f), c.expected);
     }
 
     #[test]

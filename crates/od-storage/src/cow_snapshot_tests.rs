@@ -963,3 +963,554 @@ fn a_child_file_cannot_open_without_its_parent_resolver() {
         Some(SnapError::ParentMissing)
     );
 }
+
+// ------------------------------------------------ S9-15: branches
+//
+// Everything here is the logical disk layer. Guest RAM, vTPM and UEFI state
+// are not modelled and cannot be touched by it: a branch is never a full-VM
+// restore.
+
+/// base(1) with three blocks and a snapshot; child(2) over it with snapshots 1
+/// and 2 and one more (unpublished) write.
+struct Branches {
+    fs: Fs,
+    source: File,
+    /// `(snapshot id, logical bytes)` of the source's snapshots.
+    images: Vec<(u64, Vec<u8>)>,
+    /// Logical bytes of the source's current (unsnapshotted) state.
+    head: Vec<u8>,
+}
+
+fn branch_world() -> Branches {
+    let mut fs = Fs::default();
+    let mut b = base(&mut fs, 1);
+    let mut m = Model::default();
+    write(&mut b, &mut m, 0, &rnd(1, 3 * BS));
+    let (_, pref) = snap(&mut b);
+    drop(b);
+    let mut c = child(&mut fs, 2, &pref).expect("source child");
+    write(&mut c, &mut m, 600, &rnd(2, 30));
+    let mut images = vec![(snap(&mut c).0, m.0.clone())];
+    write(&mut c, &mut m, BS + 5, &rnd(3, 2 * BS));
+    images.push((snap(&mut c).0, m.0.clone()));
+    write(&mut c, &mut m, 0, &rnd(4, 10));
+    assert_ne!(images[1].1, m.0);
+    Branches {
+        fs,
+        source: c,
+        images,
+        head: m.0,
+    }
+}
+
+/// Branches from `id` of `source` into a fresh file registered as `uid`.
+fn branch(fs: &mut Fs, source: &File, id: u64, uid: u64) -> Result<File, SnapError> {
+    let h = FaultHandle::new(&[], 0x7000 + uid);
+    let made = SnapFile::branch_from(st(&h), &mut FsResolver(fs), source, id, uid);
+    if made.is_ok() {
+        fs.files.insert(uid, h);
+    }
+    made.map(|(f, _)| f)
+}
+
+fn media(fs: &Fs, uid: u64) -> (Vec<u8>, Vec<u8>) {
+    let h = fs.files.get(&uid).expect("known file");
+    (h.volatile_bytes(), h.durable_bytes())
+}
+
+#[test]
+fn a_branch_reproduces_the_snapshot_and_leaves_source_and_siblings_unchanged() {
+    let Branches {
+        mut fs,
+        source,
+        images,
+        head,
+    } = branch_world();
+    let before: Vec<_> = [1, 2].iter().map(|u| media(&fs, *u)).collect();
+
+    let (id1, img1) = &images[0];
+    let (id2, img2) = &images[1];
+    let mut b3 = branch(&mut fs, &source, *id1, 3).expect("branch from snapshot 1");
+    let b4 = branch(&mut fs, &source, *id2, 4).expect("branch from snapshot 2");
+    // (a) the logical bytes of the chosen snapshot, not of the live state.
+    assert_eq!(&image(&b3), img1);
+    assert_eq!(&image(&b4), img2);
+    assert_ne!(image(&b3), head);
+    assert_eq!(b3.parent_ref(), source.snapshot_ref(*id1));
+    assert_eq!(b3.depth(), 2);
+    assert!(
+        b3.snapshot_ids().is_empty(),
+        "a branch starts with no snapshot"
+    );
+
+    // (b) creating branches wrote nothing to the source chain.
+    for (i, uid) in [1u64, 2].iter().enumerate() {
+        assert_eq!(media(&fs, *uid), before[i], "file {uid} changed");
+    }
+    assert_eq!(image(&source), head);
+    assert_eq!(&snap_image(&source, *id1), img1);
+
+    // Writes into one branch change neither the source nor the other branch.
+    let mut m3 = Model(img1.clone());
+    write(&mut b3, &mut m3, 40, &rnd(9, 3 * BS));
+    assert_eq!(image(&b3), m3.0);
+    assert_eq!(&image(&b4), img2);
+    assert_eq!(image(&source), head);
+    for (i, uid) in [1u64, 2].iter().enumerate() {
+        assert_eq!(media(&fs, *uid), before[i], "file {uid} changed by a write");
+    }
+    let b4_media = media(&fs, 4);
+    write(&mut b3, &mut m3, 0, &rnd(10, 5));
+    assert_eq!(media(&fs, 4), b4_media, "a sibling's bytes changed");
+
+    // After a crash and recovery every file reads as before.
+    drop((b3, b4, source));
+    assert_eq!(image(&reopen(&fs, 3).expect("b3")), m3.0);
+    assert_eq!(&image(&reopen(&fs, 4).expect("b4")), img2);
+    let s = reopen(&fs, 2).expect("source");
+    assert_eq!(image(&s), head);
+    assert_eq!(s.snapshot_ids(), vec![*id1, *id2]);
+}
+
+#[test]
+fn rollback_is_a_new_branch_and_the_current_file_stays() {
+    let Branches {
+        mut fs,
+        source,
+        images,
+        head,
+    } = branch_world();
+    let (id1, img1) = images[0].clone();
+    let before = media(&fs, 2);
+    let back = branch(&mut fs, &source, id1, 3).expect("rollback branch");
+    assert_eq!(image(&back), img1);
+    assert_ne!(image(&back), head, "rolled back to older bytes");
+    assert_eq!(back.parent_ref().map(|p| p.snapshot_id), Some(id1));
+    assert_eq!(back.parent_ref().map(|p| p.file_uid), Some(2));
+    // The file that was rolled back from is still there, whole and writable.
+    assert_eq!(media(&fs, 2), before);
+    drop((back, source));
+    let mut cur = reopen(&fs, 2).expect("current file");
+    assert_eq!(image(&cur), head);
+    let mut m = Model(head);
+    write(&mut cur, &mut m, 3, &[1, 2, 3]);
+    assert_eq!(image(&cur), m.0);
+    // A branch of a branch: a rollback of the rollback.
+    let mut back = reopen(&fs, 3).expect("branch reopens");
+    let (rid, rref) = snap(&mut back);
+    let again = branch(&mut fs, &back, rid, 4).expect("branch of a branch");
+    assert_eq!(again.depth(), 3);
+    assert_eq!(again.parent_ref(), Some(rref));
+    assert_eq!(image(&again), img1);
+}
+
+#[test]
+fn branch_refusals_write_nothing() {
+    let Branches {
+        mut fs,
+        mut source,
+        images,
+        ..
+    } = branch_world();
+    let id1 = images[0].0;
+    let fresh = |uid: u64| FaultHandle::new(&[], 0x7500 + uid);
+
+    // Unknown snapshot.
+    let h = fresh(3);
+    let r = SnapFile::branch_from(st(&h), &mut FsResolver(&fs), &source, 99, 3);
+    assert_eq!(r.err(), Some(SnapError::SnapshotMissing { id: 99 }));
+    assert_eq!(h.next_ordinal(), 0);
+    // The new file would repeat an identity of the chain.
+    for uid in [1, 2] {
+        let h = fresh(uid);
+        let r = SnapFile::branch_from(st(&h), &mut FsResolver(&fs), &source, id1, uid);
+        assert_eq!(r.err(), Some(SnapError::ParentCycle), "uid {uid}");
+        assert_eq!(h.next_ordinal(), 0);
+    }
+    // Uid zero is never an identity.
+    let h = fresh(0);
+    let r = SnapFile::branch_from(st(&h), &mut FsResolver(&fs), &source, id1, 0);
+    assert!(matches!(r.err(), Some(SnapError::BadWrite(_))));
+    assert_eq!(h.next_ordinal(), 0);
+    // The source's parent has gone: the whole chain must verify.
+    let gone = fs.files.remove(&1);
+    let h = fresh(3);
+    let r = SnapFile::branch_from(st(&h), &mut FsResolver(&fs), &source, id1, 3);
+    assert_eq!(r.err(), Some(SnapError::ParentMissing));
+    assert_eq!(h.next_ordinal(), 0);
+    fs.files.extend(gone.map(|g| (1, g)));
+    // A poisoned source (failed commit, unknown durable state) is refused.
+    let handle = fs.files.get(&2).expect("source media").clone();
+    handle.script_next(crate::testing::fault::Fault::Resize(
+        std::io::ErrorKind::Other,
+    ));
+    assert!(source.write_at(0, &[1]).is_err());
+    assert!(source.is_poisoned());
+    let h = fresh(3);
+    let r = SnapFile::branch_from(st(&h), &mut FsResolver(&fs), &source, id1, 3);
+    assert!(matches!(r.err(), Some(SnapError::BadWrite(_))));
+    assert_eq!(h.next_ordinal(), 0);
+}
+
+/// Resolver standing for "a live writer holds this file".
+struct BusyResolver;
+
+impl ParentResolver for BusyResolver {
+    type Backend = FaultBackend;
+
+    fn open_parent(&mut self, _: &ParentRef) -> Result<CheckedStorage<FaultBackend>, ResolveError> {
+        Err(ResolveError::Busy)
+    }
+}
+
+#[test]
+fn live_writer_refusal_for_branch_and_child_open() {
+    let Branches {
+        fs, source, images, ..
+    } = branch_world();
+    let id1 = images[0].0;
+
+    // Branch from a source a writer holds: refused, nothing written.
+    let h = FaultHandle::new(&[], 0x7600);
+    let r = SnapFile::branch_from(st(&h), &mut BusyResolver, &source, id1, 3);
+    assert_eq!(r.err(), Some(SnapError::ParentBusy));
+    assert_eq!(h.next_ordinal(), 0);
+
+    // Writable open of a child whose parent a writer holds: refused before
+    // any write, the child's media is as it was.
+    drop(source);
+    let ch = fs.files.get(&2).expect("child").clone();
+    ch.crash(CrashPolicy::DropPending);
+    let bytes = (ch.volatile_bytes(), ch.durable_bytes());
+    let ops = ch.next_ordinal();
+    assert_eq!(
+        SnapFile::open(st(&ch), &mut BusyResolver).err(),
+        Some(SnapError::ParentBusy)
+    );
+    assert_eq!(bytes, (ch.volatile_bytes(), ch.durable_bytes()));
+    assert_eq!(ch.next_ordinal(), ops, "a mutating call was made");
+}
+
+#[test]
+fn branch_creation_is_whole_or_absent_under_every_fault() {
+    let ops: Vec<OpKind> = {
+        let w = branch_world();
+        let h = FaultHandle::new(&[], 0x7100);
+        SnapFile::branch_from(st(&h), &mut FsResolver(&w.fs), &w.source, w.images[0].0, 3)
+            .expect("clean branch");
+        h.trace()
+            .iter()
+            .filter_map(|l| parse_kind(l))
+            .map(|(_, k)| k)
+            .collect()
+    };
+    assert!(ops.len() >= 6, "creation makes the commit's calls");
+    let mut scenarios: Vec<(usize, Option<crate::testing::fault::Fault>)> = vec![(ops.len(), None)];
+    for (i, kind) in ops.iter().enumerate() {
+        for fault in faults_for(*kind) {
+            scenarios.push((i, Some(fault)));
+        }
+    }
+    let (mut present, mut absent, mut cases) = (0u64, 0u64, 0u64);
+    for (i, fault) in scenarios {
+        for policy in policies() {
+            cases += 1;
+            let w = branch_world();
+            let id = w.images[0].0;
+            let want = w.images[0].1.clone();
+            let src_before = [media(&w.fs, 1), media(&w.fs, 2)];
+            let h = FaultHandle::new(&[], 0x7100);
+            if let Some(f) = fault {
+                h.script(h.next_ordinal() + i as u64, f);
+            }
+            let made = SnapFile::branch_from(st(&h), &mut FsResolver(&w.fs), &w.source, id, 3);
+            let label = format!("op={i} fault={fault:?} policy={policy:?}");
+            if fault.is_some_and(is_failing) {
+                assert!(made.is_err(), "{label}: failing fault was acknowledged");
+            }
+            let acked = made.is_ok();
+            drop(made);
+            h.crash(policy);
+            match SnapFile::open(st(&h), &mut FsResolver(&w.fs)) {
+                Ok((f, _)) => {
+                    // The whole branch: the snapshot's bytes under the right
+                    // identity, nothing of its own yet.
+                    present += 1;
+                    assert_eq!(image(&f), want, "{label}: partial branch");
+                    assert_eq!(f.file_uid(), 3, "{label}");
+                    assert_eq!(f.parent_ref(), w.source.snapshot_ref(id), "{label}");
+                    assert!(f.snapshot_ids().is_empty(), "{label}");
+                }
+                Err(e) => {
+                    // Absent: the file is not a valid layer file at all.
+                    absent += 1;
+                    assert!(!acked, "{label}: acknowledged branch lost: {e:?}");
+                    assert!(
+                        matches!(
+                            e,
+                            SnapError::NotSnapFile(_)
+                                | SnapError::Cow(crate::cow_proto::CowError::NoValidRoot { .. })
+                                | SnapError::Cow(
+                                    crate::cow_proto::CowError::IncompleteCreate { .. }
+                                )
+                        ),
+                        "{label}: {e:?}"
+                    );
+                }
+            }
+            // The source child is not damaged whatever happened to the branch.
+            assert_eq!(src_before[0], media(&w.fs, 1), "{label}: base changed");
+            assert_eq!(src_before[1], media(&w.fs, 2), "{label}: source changed");
+            assert_eq!(image(&w.source), w.head, "{label}");
+            for (sid, img) in &w.images {
+                assert_eq!(&snap_image(&w.source, *sid), img, "{label}");
+            }
+        }
+    }
+    assert!(present > 0 && absent > 0, "{present} {absent}");
+    assert!(cases > 500, "{cases}");
+}
+
+#[test]
+fn a_branch_can_be_cut_from_a_closed_file_through_its_snapshot_reference() {
+    let Branches {
+        mut fs,
+        source,
+        images,
+        ..
+    } = branch_world();
+    let (id2, img2) = images[1].clone();
+    let want = source.snapshot_ref(id2).expect("open ref");
+    drop(source);
+    let h = fs.files.get(&2).expect("source").clone();
+    h.crash(CrashPolicy::DropPending);
+    let before = media(&fs, 2);
+    let got = SnapFile::inspect_snapshot_ref(st(&h), id2).expect("closed ref");
+    assert_eq!(got, want);
+    assert_eq!(media(&fs, 2), before, "inspection must not write");
+    assert_eq!(
+        SnapFile::inspect_snapshot_ref(st(&h), 99).err(),
+        Some(SnapError::SnapshotMissing { id: 99 })
+    );
+    let b = child(&mut fs, 3, &got).expect("branch from the closed file");
+    assert_eq!(image(&b), img2);
+}
+
+// ------------------------------ S9-16: chain validation before writing
+
+/// Header of a forged layer over `parent` (checked constructors refuse these).
+fn forged_layer(fs: &mut Fs, uid: u64, parent: ParentRef, depth: u32) -> (File, ParentRef) {
+    let h = FaultHandle::new(&[], 0x8000 + uid);
+    fs.files.insert(uid, h.clone());
+    let header = Header {
+        file_uid: uid,
+        disk_blocks: 2,
+        next_snapshot_id: 1,
+        depth,
+        parent: Some(parent),
+        snapshots: Vec::new(),
+    };
+    let mut f = SnapFile::init(st(&h), header, Vec::new()).expect("forge").0;
+    let mut m = Model(vec![0; 2 * BS]);
+    write(&mut f, &mut m, 7, &[0xEE; 5]);
+    let r = snap(&mut f).1;
+    (f, r)
+}
+
+#[test]
+fn a_wrong_map_crc_of_an_intermediate_ancestor_refuses_before_any_write() {
+    let mut fs = Fs::default();
+    let pref = parent_with_snapshot(&mut fs);
+
+    // Control: an intermediate layer 2 with an honest link to the base works.
+    let (honest, r_ok) = forged_layer(&mut fs, 2, pref, 1);
+    drop(honest);
+    assert!(child(&mut fs, 3, &r_ok).is_ok());
+
+    // The same layer whose link to the base carries a wrong map CRC. Its own
+    // snapshot reference is perfectly valid, so only a check of the
+    // grandparent's identity can refuse the chain.
+    let bad_link = ParentRef {
+        map_crc: pref.map_crc ^ 1,
+        ..pref
+    };
+    let (liar, r_bad) = forged_layer(&mut fs, 4, bad_link, 1);
+    drop(liar);
+    let h = FaultHandle::new(&[], 0x8100);
+    let made = SnapFile::create_child(st(&h), &mut FsResolver(&fs), &r_bad, 5);
+    assert_eq!(made.err(), Some(SnapError::ParentIdentityMismatch));
+    assert!(
+        h.volatile_bytes().is_empty() && h.next_ordinal() == 0,
+        "wrote before refusing"
+    );
+
+    // The same on open: a child file recorded over the lying layer.
+    let h = FaultHandle::new(&[], 0x8101);
+    let top = Header {
+        file_uid: 5,
+        disk_blocks: 2,
+        next_snapshot_id: 1,
+        depth: 2,
+        parent: Some(r_bad),
+        snapshots: Vec::new(),
+    };
+    SnapFile::init(st(&h), top, Vec::new()).expect("forge top");
+    h.crash(CrashPolicy::DropPending);
+    let bytes = h.durable_bytes();
+    assert_eq!(
+        SnapFile::open(st(&h), &mut FsResolver(&fs)).err(),
+        Some(SnapError::ParentIdentityMismatch)
+    );
+    assert_eq!(h.durable_bytes(), bytes);
+
+    // Damage deeper than the nearest parent: the base's retained map.
+    let mut c3 = reopen(&fs, 3).expect("honest chain opens");
+    let (_, r3) = snap(&mut c3);
+    drop(c3);
+    let c6 = child(&mut fs, 6, &r3).expect("depth 3");
+    assert_eq!(c6.depth(), 3);
+    drop(c6);
+    let map_offset = {
+        let b = reopen(&fs, 1).expect("base");
+        b.snapshot_record(1).expect("record").map_offset as usize
+    };
+    let base_h = fs.files.get(&1).expect("base").clone();
+    base_h.crash(CrashPolicy::DropPending);
+    let mut tampered = base_h.durable_bytes();
+    tampered[map_offset + 3] ^= 0x40;
+    fs.files.insert(1, FaultHandle::new(&tampered, 1));
+    let six = fs.files.get(&6).expect("child 6").clone();
+    six.crash(CrashPolicy::DropPending);
+    let bytes = six.durable_bytes();
+    assert_eq!(
+        reopen(&fs, 6).err(),
+        Some(SnapError::SnapshotCorrupt { id: 1 })
+    );
+    assert_eq!(six.durable_bytes(), bytes);
+}
+
+#[test]
+fn a_refused_open_does_not_repair_the_childs_damaged_root_slot() {
+    use crate::cow_proto::{SLOT_SIZE, slot_offset};
+    let mut fs = Fs::default();
+    let pref = parent_with_snapshot(&mut fs);
+    let c = child(&mut fs, 2, &pref).expect("child");
+    drop(c);
+    // The child's last acknowledged commit (generation 3) loses its root slot;
+    // the trailing root copy is intact, so a writable open would roll forward.
+    let h = fs.files.get(&2).expect("child").clone();
+    h.crash(CrashPolicy::DropPending);
+    let mut damaged = h.durable_bytes();
+    let at = slot_offset(3) as usize;
+    damaged[at..at + SLOT_SIZE].fill(0);
+
+    let open = |fs: &Fs| {
+        let dh = FaultHandle::new(&damaged, 0x77);
+        let r = SnapFile::open(st(&dh), &mut FsResolver(fs));
+        (r, dh)
+    };
+    // Control: with a sound chain the open repairs the slot (one write).
+    let (ok, dh) = open(&fs);
+    let (_, report) = ok.expect("opens");
+    assert!(report.rolled_forward);
+    assert_ne!(dh.durable_bytes(), damaged, "repair wrote the slot");
+
+    // Broken chain (parent gone, or a different file): refused with the
+    // evidence untouched.
+    let mut gone = Fs::default();
+    gone.files.extend(
+        fs.files
+            .iter()
+            .filter(|(u, _)| **u != 1)
+            .map(|(u, h)| (*u, h.clone())),
+    );
+    let (r, dh) = open(&gone);
+    assert_eq!(r.err(), Some(SnapError::ParentMissing));
+    assert_eq!(dh.durable_bytes(), damaged);
+    assert_eq!(dh.volatile_bytes(), damaged);
+    let mut other = base(&mut gone, 1);
+    let mut om = Model::default();
+    write(&mut other, &mut om, 0, &rnd(999, 2 * BS));
+    snap(&mut other);
+    let (r, dh) = open(&gone);
+    assert_eq!(r.err(), Some(SnapError::ParentIdentityMismatch));
+    assert_eq!(dh.durable_bytes(), damaged);
+}
+
+#[test]
+fn every_wrong_field_of_a_parent_reference_refuses_create_and_open() {
+    let mut fs = Fs::default();
+    let pref = parent_with_snapshot(&mut fs);
+    let cases: Vec<(&str, ParentRef, SnapError)> = vec![
+        (
+            "generation",
+            ParentRef {
+                generation: pref.generation + 2,
+                ..pref
+            },
+            SnapError::ParentIdentityMismatch,
+        ),
+        (
+            "block count",
+            ParentRef {
+                block_count: pref.block_count + 1,
+                ..pref
+            },
+            SnapError::ParentIdentityMismatch,
+        ),
+        (
+            "end offset",
+            ParentRef {
+                end_offset: pref.end_offset + 512,
+                ..pref
+            },
+            SnapError::ParentIdentityMismatch,
+        ),
+        (
+            "map crc",
+            ParentRef {
+                map_crc: pref.map_crc ^ 0x8000_0000,
+                ..pref
+            },
+            SnapError::ParentIdentityMismatch,
+        ),
+        (
+            "snapshot id",
+            ParentRef {
+                snapshot_id: 9,
+                ..pref
+            },
+            SnapError::SnapshotMissing { id: 9 },
+        ),
+        (
+            "file uid",
+            ParentRef {
+                file_uid: 42,
+                ..pref
+            },
+            SnapError::ParentMissing,
+        ),
+    ];
+    for (name, bad, want) in cases {
+        let h = FaultHandle::new(&[], 0x8200);
+        let made = SnapFile::create_child(st(&h), &mut FsResolver(&fs), &bad, 2);
+        assert_eq!(made.err().as_ref(), Some(&want), "create: {name}");
+        assert_eq!(h.next_ordinal(), 0, "create wrote: {name}");
+
+        let h = FaultHandle::new(&[], 0x8201);
+        let header = Header {
+            file_uid: 2,
+            disk_blocks: 2,
+            next_snapshot_id: 1,
+            depth: 1,
+            parent: Some(bad),
+            snapshots: Vec::new(),
+        };
+        SnapFile::init(st(&h), header, Vec::new()).expect("forge");
+        h.crash(CrashPolicy::DropPending);
+        let bytes = h.durable_bytes();
+        let opened = SnapFile::open(st(&h), &mut FsResolver(&fs));
+        assert_eq!(opened.err().as_ref(), Some(&want), "open: {name}");
+        assert_eq!(h.durable_bytes(), bytes, "open wrote: {name}");
+    }
+}
