@@ -1,14 +1,14 @@
 //! One bounded Long64 CPL0 paged #PF delivery through a same-CPL IST=0 gate.
 
 use crate::{
-    AdUpdate, GuestLinearAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus,
-    ProbeConfigError, RamAccessOperation, TrackedAccessError, TrackedAccessOutcome,
-    TrackedAccessRequest,
+    AdUpdate, GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig,
+    MachineBus, PageFaultReason, ProbeConfigError, ProbeError, ProbeOutcome, RamAccessOperation,
+    TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest,
 };
 use od_isa::{
     LongModeState, OperandSize, PageFaultDeliveryResult, PagedCpl0Cr0WpMovV1, PagedProbeResult,
     deliver_page_fault,
-    memory::{AccessContext, GuestMemory, MemoryError, PageFaultRecord},
+    memory::{AccessContext, AccessKind, GuestMemory, MemoryError, PageFaultRecord},
     step_paged_cr0_wp_mov as cpu_step_paged_cr0_wp_mov,
 };
 use std::convert::Infallible;
@@ -71,6 +71,7 @@ pub fn step_paged_cr0_wp_mov(
         access_error: None,
         ad_updates: Vec::new(),
         committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
     };
     let cpu = cpu_step_paged_cr0_wp_mov(
         PagedCpl0Cr0WpMovV1,
@@ -112,6 +113,7 @@ pub fn deliver_paged_page_fault(
         access_error: None,
         ad_updates: Vec::new(),
         committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
     };
     let delivery = deliver_page_fault(state, &mut memory, original_fault, context);
     Ok(PagedExceptionDeliveryReport {
@@ -172,6 +174,7 @@ struct PagedExceptionMemory<'a> {
     access_error: Option<TrackedAccessError>,
     ad_updates: Vec<AdUpdate>,
     committed_writes: Vec<GuestPhysicalRange>,
+    descriptor_accessed_target: Option<GuestPhysicalAddress>,
 }
 
 impl PagedExceptionMemory<'_> {
@@ -238,6 +241,19 @@ impl PagedExceptionMemory<'_> {
             )),
         }
     }
+
+    fn descriptor_mapping_matches_preflight(&self, address: u64, context: AccessContext) -> bool {
+        let Some(expected) = self.descriptor_accessed_target else {
+            return false;
+        };
+        let report = self.bus.probe_tracked_ram_access(
+            &self.paging,
+            GuestLinearAddress::new(address),
+            AccessKind::Read,
+            context,
+        );
+        matches!(report.outcome, Ok(ProbeOutcome::Translated(t)) if t.physical == expected)
+    }
 }
 
 use crate::AccessWidth;
@@ -289,28 +305,175 @@ impl GuestMemory for PagedExceptionMemory<'_> {
         context: AccessContext,
         source: &[u8],
     ) -> Result<(), MemoryError> {
-        if source.len() != 8
-            || (context.origin == od_isa::memory::AccessOrigin::ImplicitStack && address & 7 != 0)
-            || address & 0xfff > 0xff8
+        let implicit_stack_qword = context.origin == od_isa::memory::AccessOrigin::ImplicitStack
+            && source.len() == 8
+            && address & 7 == 0;
+        let explicit_qword =
+            context.origin == od_isa::memory::AccessOrigin::Explicit && source.len() == 8;
+        let descriptor_table_byte =
+            context.origin == od_isa::memory::AccessOrigin::DescriptorTable && source.len() == 1;
+        if (!implicit_stack_qword && !explicit_qword && !descriptor_table_byte)
+            || address & 0xfff > 0x1000 - source.len() as u64
         {
             return Err(MemoryError::Backend(
-                "paged exception profile supports page-contained qword writes only".into(),
+                "paged exception profile supports explicit/implicit-stack qword and descriptor-table byte writes only".into(),
             ));
         }
-        let value = u64::from_le_bytes(source.try_into().unwrap());
-        match self.access(
-            address,
-            context,
-            RamAccessOperation::Write {
-                width: AccessWidth::Qword,
-                value,
-            },
-        )? {
+        let (width, value) = if implicit_stack_qword || explicit_qword {
+            (
+                AccessWidth::Qword,
+                u64::from_le_bytes(source.try_into().unwrap()),
+            )
+        } else {
+            (AccessWidth::Byte, u64::from(source[0]))
+        };
+        if descriptor_table_byte && !self.descriptor_mapping_matches_preflight(address, context) {
+            return Err(MemoryError::Backend(
+                "target descriptor A-bit write no longer maps to the validated physical byte"
+                    .into(),
+            ));
+        }
+        match self.access(address, context, RamAccessOperation::Write { width, value })? {
             TrackedAccessOutcome::Written => Ok(()),
             _ => Err(MemoryError::Backend(
                 "tracked write returned a non-write outcome".into(),
             )),
         }
+    }
+
+    fn preflight_descriptor_accessed_write(
+        &mut self,
+        descriptor_access_address: u64,
+        descriptor_context: AccessContext,
+        stack_writes: &[(u64, usize)],
+    ) -> Result<(), MemoryError> {
+        let descriptor = self.bus.probe_tracked_ram_access(
+            &self.paging,
+            GuestLinearAddress::new(descriptor_access_address),
+            AccessKind::Read,
+            descriptor_context,
+        );
+        let Ok(ProbeOutcome::Translated(translation)) = descriptor.outcome else {
+            return Err(MemoryError::Backend(
+                "target descriptor read mapping could not be captured for preflight".into(),
+            ));
+        };
+
+        let mut protected = Vec::with_capacity(5);
+        if let Ok(byte) = GuestPhysicalRange::new(translation.physical, 1)
+            && self.bus.tracked_physical_range_is_ram(byte)
+        {
+            protected.push(byte);
+        }
+        for entry in descriptor.trace.entries().iter().flatten() {
+            if let Ok(range) = GuestPhysicalRange::new(entry.entry_address, 8)
+                && self.bus.tracked_physical_range_is_ram(range)
+            {
+                protected.push(range);
+            }
+        }
+
+        let mut reports = Vec::with_capacity(stack_writes.len());
+        for &(linear, width) in stack_writes {
+            let report = self.bus.probe_tracked_ram_access(
+                &self.paging,
+                GuestLinearAddress::new(linear),
+                AccessKind::Write,
+                AccessContext {
+                    origin: od_isa::memory::AccessOrigin::ImplicitStack,
+                    ..descriptor_context
+                },
+            );
+            let succeeded = matches!(
+                report.outcome,
+                Ok(ProbeOutcome::Translated(translation))
+                    if GuestPhysicalRange::new(translation.physical, width as u64)
+                        .is_ok_and(|range| self.bus.tracked_physical_range_is_ram(range))
+            );
+            reports.push(report);
+            // A later frame slot cannot affect delivery after the first failed
+            // stack access. Probing it could mask that earlier architectural
+            // fault with an alias refusal from an unreachable slot.
+            if !succeeded {
+                break;
+            }
+        }
+
+        // A committed frame write can change a page-table entry used by a
+        // later slot even when it does not directly overlap the GDT. Protect
+        // every page-table dependency in the reachable prefix so the mappings
+        // consumed after each frame write stay stable.
+        let mut frame_protected = protected.clone();
+        for report in &reports {
+            for entry in report.trace.entries().iter().flatten() {
+                if let Ok(range) = GuestPhysicalRange::new(entry.entry_address, 8)
+                    && self.bus.tracked_physical_range_is_ram(range)
+                    && !frame_protected.contains(&range)
+                {
+                    frame_protected.push(range);
+                }
+            }
+        }
+
+        for (report, &(_, width)) in reports.iter().zip(stack_writes) {
+            let translated = match &report.outcome {
+                Ok(ProbeOutcome::Translated(translation)) => Some(*translation),
+                _ => None,
+            };
+            if let Some(translation) = translated
+                && let Ok(operand) = GuestPhysicalRange::new(translation.physical, width as u64)
+                && self.bus.tracked_physical_range_is_ram(operand)
+                && overlaps_any(operand, &frame_protected)
+            {
+                return Err(descriptor_alias_error());
+            }
+            let trace_len = report.trace.len();
+            let skip_last_accessed = match &report.outcome {
+                Ok(ProbeOutcome::PageFault(fault)) => matches!(
+                    fault.reason,
+                    PageFaultReason::NotPresent { .. } | PageFaultReason::ReservedBits { .. }
+                ),
+                Err(ProbeError::UnsupportedPageSize { .. }) => true,
+                _ => false,
+            };
+            for (index, entry) in report
+                .trace
+                .entries()
+                .iter()
+                .flatten()
+                .take(trace_len)
+                .enumerate()
+            {
+                let is_last = index + 1 == trace_len;
+                let accessed_will_be_attempted =
+                    entry.entry_value & (1 << 5) == 0 && !(is_last && skip_last_accessed);
+                if accessed_will_be_attempted
+                    && let Ok(range) = GuestPhysicalRange::new(entry.entry_address, 8)
+                    && self.bus.tracked_physical_range_is_ram(range)
+                    && overlaps_any(range, &protected)
+                {
+                    return Err(descriptor_alias_error());
+                }
+            }
+
+            if let Some(translation) = translated
+                && let Ok(operand) = GuestPhysicalRange::new(translation.physical, width as u64)
+                && self.bus.tracked_physical_range_is_ram(operand)
+                && let Some(leaf) = report.trace.entries().iter().flatten().last()
+                && leaf.entry_value & (1 << 6) == 0
+                && let Ok(dirty_entry) = GuestPhysicalRange::new(leaf.entry_address, 8)
+                && self.bus.tracked_physical_range_is_ram(dirty_entry)
+                && overlaps_any(dirty_entry, &protected)
+            {
+                return Err(descriptor_alias_error());
+            }
+
+            // A failed slot still commits any earlier Accessed writes from its
+            // partial walk, but never its operand or a Dirty update.
+        }
+
+        self.descriptor_accessed_target = Some(translation.physical);
+        Ok(())
     }
 
     fn atomic_exchange_integer(
@@ -355,6 +518,20 @@ impl GuestMemory for PagedExceptionMemory<'_> {
             "fence is unsupported during exception delivery".into(),
         ))
     }
+}
+
+fn overlaps_any(candidate: GuestPhysicalRange, protected: &[GuestPhysicalRange]) -> bool {
+    protected.iter().any(|range| {
+        u128::from(candidate.start().get()) < range.end_exclusive()
+            && u128::from(range.start().get()) < candidate.end_exclusive()
+    })
+}
+
+fn descriptor_alias_error() -> MemoryError {
+    MemoryError::Backend(
+        "target descriptor Accessed-bit write aliases a planned frame or page-table A/D write"
+            .into(),
+    )
 }
 
 fn access_width(bytes: usize) -> Result<AccessWidth, MemoryError> {

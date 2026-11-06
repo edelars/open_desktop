@@ -536,3 +536,32 @@ translation probe is not a cached instruction interpreter and does not carry
 tracked A/D effects. This compares two local paths that share the page walker;
 it is not independent hardware evidence. Reducer coverage and broader
 S4-17 cases remain open. See the [S4-17a report](../reports/STAGE_4_S4-17A_2026-11-06.md).
+
+## S4-18c: target descriptor Accessed update
+
+Reproduce the bounded delivery checks with:
+
+```text
+cargo test -p od-isa --lib interrupt::tests:: --offline -- --test-threads=1
+cargo test -p od-machine --lib paged_exception_delivery::tests --offline -- --test-threads=1
+cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1
+```
+
+The system target covers guest `LIDT → LGDT → MOV [RBX],RCX → #PF` delivery
+through the guest-loaded tables with target descriptor A=0, exact six-qword
+frame, tracked GDT PTE Accessed/Dirty transitions, a one-byte descriptor update
+and handler load. Negative controls cover an A=1 descriptor on a read-only GDT,
+an invalid A=0 target, and a read-only A=0 update fault with its secondary PFEC,
+CR2, retained frame and no CPU entry commit. A distinct-linear-address
+GDT/stack physical alias is rejected before frame stores. Additional cases
+make the saved RIP overwrite the GDT leaf PTE with a read-only mapping and a
+redirect to another RAM page; preflight preserves the PTE and redirected
+target, with no frame write committed. Another case makes an earlier frame
+slot rewrite a stack PTE used by a later slot, which is rejected before any
+frame write. Missing-page and physical-hole cases confirm the first stack
+failure keeps its original fault/backend classification even when an
+unreachable later slot aliases the descriptor. The emulator's chosen store order is not claimed as
+universal hardware fault ordering; a secondary #PF would require #DF, which
+remains unsupported here. This does not demonstrate recovery, restartability,
+physical-hardware equivalence, or the rest of Stage 4. Results are recorded in
+the [S4-18c report](../reports/STAGE_4_S4-18C_2026-11-06.md).

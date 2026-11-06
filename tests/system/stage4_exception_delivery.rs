@@ -51,10 +51,26 @@ fn make_bus(
     lower_stack_page_present: bool,
     handler_present: bool,
 ) -> MachineBus {
-    let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x1_0000).unwrap();
+    make_bus_with_ram_len(
+        idt_present,
+        gdt_present,
+        lower_stack_page_present,
+        handler_present,
+        0x1_0000,
+    )
+}
+
+fn make_bus_with_ram_len(
+    idt_present: bool,
+    gdt_present: bool,
+    lower_stack_page_present: bool,
+    handler_present: bool,
+    ram_len: u64,
+) -> MachineBus {
+    let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), ram_len).unwrap();
     let map =
         MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)]).unwrap();
-    let mut bus = MachineBus::new(map, RamLimits::new(0x1_0000), vec![], vec![], vec![]).unwrap();
+    let mut bus = MachineBus::new(map, RamLimits::new(ram_len), vec![], vec![], vec![]).unwrap();
 
     // One shared PML4/PDPT; private 4 KiB page tables for code, descriptors,
     // stack and data. A bits on the code-fetch path are pre-set.
@@ -111,8 +127,8 @@ fn make_bus(
         0,
     ];
     put_bytes(&mut bus, gate, &gate_bytes);
-    // Accessed=1 is an explicit bounded profile requirement: delivery does
-    // not synthesize a descriptor write; walker A/D effects remain tracked.
+    // The default case starts with A=1 and therefore needs no descriptor write.
+    // Separate cases exercise the bounded emulator profile's A=0 update.
     put_bytes(&mut bus, 0xb008, &[0xff, 0xff, 0, 0, 0, 0x9b, 0xaf, 0]);
     bus
 }
@@ -177,9 +193,9 @@ fn start_faulting_store(
     };
     assert_eq!(record.fault().vector, 14);
     assert_eq!(record.fault().error_code, Some(3));
-    assert_eq!(record.saved_rip(), FAULT_RIP);
+    assert_eq!(record.saved_rip(), state.rip);
     assert_eq!(record.cr2_value(), DATA_LINEAR);
-    assert_eq!(state.rip, FAULT_RIP);
+    assert_eq!(state.rip, record.saved_rip());
     assert_eq!(
         step.ad_updates,
         [
@@ -327,6 +343,531 @@ fn wp_write_fault_delivers_with_if_clear_and_executes_first_handler_mov() {
         .map(|update| update.address.get())
         .collect();
     assert_eq!(dirty_updates, [0x5810, 0x5808]);
+}
+
+#[test]
+fn unaccessed_target_descriptor_is_updated_after_frame_before_handler_entry() {
+    let mut bus = make_bus(true, true, true, true);
+    put_bytes(&mut bus, 0xb00d, &[0x9a]);
+    let mut state = initial_state(0x2);
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let mut committed_writes = Vec::new();
+    let report = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &fault,
+        |range| committed_writes.push(range),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        report.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::Delivered {
+            target_rip: HANDLER_RIP,
+            new_rsp: 0x0070_1ff0,
+        }
+    ));
+    assert_eq!(
+        report
+            .handler_step
+            .unwrap()
+            .unwrap()
+            .cpu
+            .instructions_executed,
+        1
+    );
+    assert_eq!(state.rip, HANDLER_RIP + 3);
+    assert_eq!(state.cs_selector, Some(0x8));
+    assert_eq!(state.cs_cache.unwrap().access, 0x9b);
+    assert_eq!(state.gpr[Register::Rsp as usize], 0x0070_1ff0);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0xb008), AccessWidth::Qword)
+            .unwrap(),
+        u64::from_le_bytes([0xff, 0xff, 0, 0, 0, 0x9b, 0xaf, 0])
+    );
+    assert_eq!(
+        committed_writes
+            .iter()
+            .map(|range| (range.start().get(), range.len()))
+            .collect::<Vec<_>>(),
+        [
+            (0x5810, 8),
+            (0xd018, 8),
+            (0xd010, 8),
+            (0xd008, 8),
+            (0xd000, 8),
+            (0x5808, 8),
+            (0xcff8, 8),
+            (0xcff0, 8),
+            (0x5008, 8),
+            (0xb00d, 1),
+        ]
+    );
+}
+
+#[test]
+fn read_only_unaccessed_descriptor_update_faults_after_frame_without_entry_commit() {
+    let mut bus = make_bus(true, true, true, true);
+    put_qword(&mut bus, 0x5008, 0xb000 | 0x25); // Present, A=1, read-only GDT mapping.
+    put_bytes(&mut bus, 0xb00d, &[0x9a]);
+    let mut state = initial_state(0x202);
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let before_delivery = state.clone();
+    let mut committed_writes = Vec::new();
+    let report = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &fault,
+        |range| committed_writes.push(range),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        &report.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::DeliveryAborted {
+            phase: od_isa::PageFaultDeliveryPhase::TargetCodeDescriptorAccessedWrite,
+            cause: od_isa::memory::MemoryError::Architectural(fault),
+        } if fault.vector == 14
+            && fault.error_code == Some(3)
+            && fault.linear_address == Some(GDT_BASE + 13)
+    ));
+    assert!(report.handler_step.is_none());
+    let secondary = report.delivery.secondary_page_fault.unwrap();
+    assert_eq!(secondary.fault().vector, 14);
+    assert_eq!(secondary.fault().error_code, Some(3));
+    assert_eq!(secondary.cr2_value(), GDT_BASE + 13);
+    assert_eq!(state.cr2, Some(GDT_BASE + 13));
+    assert_eq!(state.rip, before_delivery.rip);
+    assert_eq!(state.gpr[Register::Rsp as usize], ORIGINAL_RSP);
+    assert_eq!(state.cs_selector, before_delivery.cs_selector);
+    assert_eq!(state.cs_cache, before_delivery.cs_cache);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0xb008), AccessWidth::Qword)
+            .unwrap(),
+        u64::from_le_bytes([0xff, 0xff, 0, 0, 0, 0x9a, 0xaf, 0])
+    );
+    assert_eq!(
+        committed_writes
+            .iter()
+            .map(|range| (range.start().get(), range.len()))
+            .collect::<Vec<_>>(),
+        [
+            (0x5810, 8),
+            (0xd018, 8),
+            (0xd010, 8),
+            (0xd008, 8),
+            (0xd000, 8),
+            (0x5808, 8),
+            (0xcff8, 8),
+            (0xcff0, 8),
+        ]
+    );
+    for (physical, expected) in [
+        (0xd018, 0x10),
+        (0xd010, ORIGINAL_RSP),
+        (0xd008, 0x1_0202),
+        (0xd000, 0x8),
+        (0xcff8, FAULT_RIP),
+        (0xcff0, 3),
+    ] {
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(physical), AccessWidth::Qword)
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn already_accessed_descriptor_does_not_write_read_only_gdt() {
+    let mut bus = make_bus(true, true, true, true);
+    put_qword(&mut bus, 0x5008, 0xb000 | 0x25); // Present, A=1, read-only GDT mapping.
+    let mut state = initial_state(0x202);
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let mut committed_writes = Vec::new();
+    let report = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &fault,
+        |range| committed_writes.push(range),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        report.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::Delivered { .. }
+    ));
+    assert_eq!(
+        report
+            .handler_step
+            .unwrap()
+            .unwrap()
+            .cpu
+            .instructions_executed,
+        1
+    );
+    assert_eq!(state.cs_cache.unwrap().access, 0x9b);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x5008), AccessWidth::Qword)
+            .unwrap(),
+        0xb000 | 0x25
+    );
+    assert_eq!(
+        committed_writes
+            .iter()
+            .map(|range| range.start().get())
+            .collect::<Vec<_>>(),
+        [
+            0x5810, 0xd018, 0xd010, 0xd008, 0xd000, 0x5808, 0xcff8, 0xcff0
+        ]
+    );
+}
+
+#[test]
+fn invalid_unaccessed_target_is_rejected_before_frame_or_descriptor_write() {
+    let mut bus = make_bus(true, true, true, true);
+    put_bytes(&mut bus, 0xb00d, &[0x92]); // Present data segment, A=0, not a code target.
+    let mut state = initial_state(0x202);
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let before_delivery = state.clone();
+    let mut committed_writes = Vec::new();
+    let report = od_machine::deliver_paged_page_fault(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        &fault,
+        |range| committed_writes.push(range),
+    )
+    .unwrap();
+
+    assert_eq!(
+        report.delivery,
+        od_isa::PageFaultDeliveryResult::OutsideProfile(
+            od_isa::PageFaultDeliveryOutsideProfile::InvalidTargetCodeDescriptor
+        )
+    );
+    assert_eq!(state.rip, before_delivery.rip);
+    assert_eq!(state.gpr[Register::Rsp as usize], ORIGINAL_RSP);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0xb00d), AccessWidth::Byte)
+            .unwrap(),
+        0x92
+    );
+    assert!(
+        !committed_writes
+            .iter()
+            .any(|range| (0xc000..0xe000).contains(&range.start().get()))
+    );
+}
+
+#[test]
+fn target_descriptor_physical_alias_with_frame_is_rejected_without_corruption() {
+    let mut bus = make_bus(true, true, true, true);
+    put_qword(&mut bus, 0x5008, 0xd000 | 0x27); // GDT maps onto the writable stack frame page.
+    put_bytes(&mut bus, 0xd008, &[0xff, 0xff, 0, 0, 0, 0x9a, 0xaf, 0]);
+    let mut state = initial_state(0x202);
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let before_delivery = state.clone();
+    let mut committed_writes = Vec::new();
+    let report = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &fault,
+        |range| committed_writes.push(range),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        &report.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::DeliveryAborted {
+            phase: od_isa::PageFaultDeliveryPhase::TargetCodeDescriptorAccessedPreflight,
+            cause: od_isa::memory::MemoryError::Backend(message),
+        } if message.contains("aliases a planned frame")
+    ));
+    assert!(report.handler_step.is_none());
+    assert_eq!(state.rip, before_delivery.rip);
+    assert_eq!(state.gpr[Register::Rsp as usize], ORIGINAL_RSP);
+    assert_eq!(state.cs_selector, before_delivery.cs_selector);
+    assert_eq!(state.cs_cache, before_delivery.cs_cache);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0xd008), AccessWidth::Qword)
+            .unwrap(),
+        u64::from_le_bytes([0xff, 0xff, 0, 0, 0, 0x9a, 0xaf, 0])
+    );
+    assert!(committed_writes.is_empty());
+}
+
+#[test]
+fn target_descriptor_preflight_rejects_frame_overwriting_its_gdt_pte() {
+    for code_offset in [1_u64, 0x63] {
+        let mut bus = make_bus_with_ram_len(true, true, true, true, 0x0040_2000);
+        put_qword(&mut bus, 0x4000, 0x8000 | 0x27); // faulting code page
+        put_qword(&mut bus, 0x4008, 0xb000 | 0x27); // GDT page
+        put_qword(&mut bus, 0x5810, 0x4000 | 0x27); // stack maps onto the PT page
+        put_bytes(&mut bus, 0x8000 + code_offset, &STORE);
+        put_bytes(&mut bus, 0x0040_000d, &[0x5a]);
+
+        let fault_rip = 0x0040_0000 + code_offset;
+        let mut state = initial_state(0x202);
+        state.rip = fault_rip;
+        state.gdtr = Some(Gdtr {
+            base: 0x0040_1000,
+            limit: 0x17,
+        });
+        state.gpr[Register::Rsp as usize] = 0x0070_2037;
+        put_bytes(&mut bus, 0xb00d, &[0x9a]); // valid target code descriptor, A=0
+
+        let fault = start_faulting_store(&mut bus, &mut state)
+            .page_fault
+            .unwrap();
+        let before_delivery = state.clone();
+        let mut committed_writes = Vec::new();
+        let report = deliver_and_step_paged_pf_handler(
+            &mut state,
+            &mut bus,
+            CR3,
+            EFER,
+            context(),
+            od_isa::INTEGER_FLAGS,
+            &fault,
+            |range| committed_writes.push(range),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            &report.delivery.delivery,
+            od_isa::PageFaultDeliveryResult::DeliveryAborted {
+                phase: od_isa::PageFaultDeliveryPhase::TargetCodeDescriptorAccessedPreflight,
+                cause: od_isa::memory::MemoryError::Backend(message),
+            } if message.contains("aliases a planned frame")
+        ));
+        assert!(report.handler_step.is_none());
+        assert_eq!(state.rip, before_delivery.rip);
+        assert_eq!(
+            state.gpr[Register::Rsp as usize],
+            before_delivery.gpr[Register::Rsp as usize]
+        );
+        assert_eq!(state.cs_cache, before_delivery.cs_cache);
+        assert!(committed_writes.is_empty());
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x4008), AccessWidth::Qword)
+                .unwrap(),
+            0xb000 | 0x27
+        );
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x0040_000d), AccessWidth::Byte)
+                .unwrap(),
+            0x5a
+        );
+    }
+}
+
+#[test]
+fn frame_store_cannot_remap_a_later_slot_onto_the_target_descriptor() {
+    let mut bus = make_bus_with_ram_len(true, true, true, true, 0x0070_3000);
+    put_qword(&mut bus, 0x5008, 0x0070_2000 | 0x27); // GDT maps to the future frame target
+    put_qword(&mut bus, 0x5810, 0x5000 | 0x27); // stack maps onto its own PT
+    put_bytes(&mut bus, 0x0070_2803, &[0xff, 0xff, 0, 0, 0, 0x9a, 0xaf, 0]);
+
+    let mut state = initial_state(0x202);
+    state.gdtr = Some(Gdtr {
+        base: 0x0060_17fb,
+        limit: 0x17,
+    });
+    state.gpr[Register::Rsp as usize] = 0x0070_2827;
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let mut committed_writes = Vec::new();
+    let report = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &fault,
+        |range| committed_writes.push(range),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        &report.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::DeliveryAborted {
+            phase: od_isa::PageFaultDeliveryPhase::TargetCodeDescriptorAccessedPreflight,
+            cause: od_isa::memory::MemoryError::Backend(message),
+        } if message.contains("aliases a planned frame")
+    ));
+    assert!(report.handler_step.is_none());
+    assert!(committed_writes.is_empty());
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x5810), AccessWidth::Qword)
+            .unwrap(),
+        0x5000 | 0x27
+    );
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x0070_2803), AccessWidth::Qword)
+            .unwrap(),
+        u64::from_le_bytes([0xff, 0xff, 0, 0, 0, 0x9a, 0xaf, 0])
+    );
+}
+
+#[test]
+fn first_read_only_stack_slot_overlapping_descriptor_reports_page_fault() {
+    let mut bus = make_bus(true, true, true, true);
+    put_qword(&mut bus, 0x5810, 0xd000 | 0x21);
+    put_bytes(&mut bus, 0xd003, &[0xff, 0xff, 0, 0, 0, 0x9a, 0xaf, 0]);
+
+    let mut state = initial_state(0x202);
+    state.gdtr = Some(Gdtr {
+        base: 0x0070_1ffb,
+        limit: 0x17,
+    });
+    state.gpr[Register::Rsp as usize] = 0x0070_2017;
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let report = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &fault,
+        |_| {},
+    )
+    .unwrap();
+
+    assert!(matches!(
+        &report.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::DeliveryAborted {
+            phase: od_isa::PageFaultDeliveryPhase::StackWrite {
+                slot: od_isa::PageFaultFrameSlot::OldSs,
+            },
+            cause: od_isa::memory::MemoryError::Architectural(fault),
+        } if fault.vector == 14 && fault.error_code == Some(3)
+            && fault.linear_address == Some(0x0070_2008)
+    ));
+    assert_eq!(state.cr2, Some(0x0070_2008));
+    assert!(report.delivery.committed_writes.is_empty());
+    assert!(report.handler_step.is_none());
+}
+
+#[test]
+fn first_stack_fault_is_not_masked_by_an_unreachable_descriptor_alias() {
+    let mut bus = make_bus_with_ram_len(true, true, true, true, 0x1_0000);
+    put_qword(&mut bus, 0x5008, 0xc000 | 0x27); // descriptor and lower stack share a page
+    put_qword(&mut bus, 0x5808, 0xc000 | 0x27); // lower stack page
+    put_qword(&mut bus, 0x5810, 0xd000 | 0x26); // upper stack page absent
+    put_bytes(&mut bus, 0xcff3, &[0xff, 0xff, 0, 0, 0, 0x9a, 0xaf, 0]);
+
+    let mut state = initial_state(0x202);
+    state.gdtr = Some(Gdtr {
+        base: 0x0070_1feb, // Accessed byte coincides with a later frame slot
+        limit: 0x17,
+    });
+    state.gpr[Register::Rsp as usize] = 0x0070_2017;
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let report = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &fault,
+        |_| {},
+    )
+    .unwrap();
+
+    assert!(matches!(
+        &report.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::DeliveryAborted {
+            phase: od_isa::PageFaultDeliveryPhase::StackWrite {
+                slot: od_isa::PageFaultFrameSlot::OldSs,
+            },
+            cause: od_isa::memory::MemoryError::Architectural(fault),
+        } if fault.vector == 14 && fault.linear_address == Some(0x0070_2008)
+    ));
+    assert_eq!(state.cr2, Some(0x0070_2008));
+    assert!(report.delivery.committed_writes.is_empty());
+}
+
+#[test]
+fn first_stack_physical_hole_error_is_not_masked_by_a_later_alias() {
+    let mut bus = make_bus_with_ram_len(true, true, true, true, 0x1_0000);
+    put_qword(&mut bus, 0x5008, 0xc000 | 0x27); // descriptor maps to lower stack page
+    put_qword(&mut bus, 0x5808, 0xc000 | 0x27);
+    put_qword(&mut bus, 0x5810, 0x1_0000 | 0x27); // first frame slot translates to a RAM hole
+    put_bytes(&mut bus, 0xcff3, &[0xff, 0xff, 0, 0, 0, 0x9a, 0xaf, 0]);
+
+    let mut state = initial_state(0x202);
+    state.gdtr = Some(Gdtr {
+        base: 0x0060_1feb,
+        limit: 0x17,
+    });
+    state.gpr[Register::Rsp as usize] = 0x0070_2017;
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let report = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &fault,
+        |_| {},
+    )
+    .unwrap();
+
+    assert!(matches!(
+        &report.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::DeliveryAborted {
+            phase: od_isa::PageFaultDeliveryPhase::StackWrite {
+                slot: od_isa::PageFaultFrameSlot::OldSs,
+            },
+            cause: od_isa::memory::MemoryError::Backend(_),
+        }
+    ));
+    assert!(matches!(
+        report.delivery.access_error,
+        Some(od_machine::TrackedAccessError::OperandPhysical { address, .. })
+            if address.get() == 0x1_0008
+    ));
+    assert!(report.delivery.committed_writes.is_empty());
 }
 
 #[test]
@@ -521,6 +1062,7 @@ fn guest_lidt_and_lgdt_feed_the_following_page_fault_delivery() {
 
     let mut bus = make_bus(true, true, true, true);
     put_qword(&mut bus, 0x5008, 0xb000 | 0x07); // GDT mapping starts Accessed=0.
+    put_bytes(&mut bus, 0xb00d, &[0x9a]); // Guest-loaded target descriptor starts A=0.
     let mut instructions = vec![
         0x0f, 0x01, 0x5c, 0x24, 0x99, // LIDT [RSP-103] -> 0x701fc0
         0x0f, 0x01, 0x55, 0xf6, // LGDT [RBP-10] -> 0x701fd0
@@ -632,7 +1174,26 @@ fn guest_lidt_and_lgdt_feed_the_following_page_fault_delivery() {
     assert_eq!(
         bus.read_physical(GuestPhysicalAddress::new(0x5008), AccessWidth::Qword)
             .unwrap(),
-        0xb000 | 0x27
+        0xb000 | 0x67
+    );
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0xb00d), AccessWidth::Byte)
+            .unwrap(),
+        0x9b
+    );
+    assert_eq!(
+        handler
+            .delivery
+            .ad_updates
+            .iter()
+            .map(|update| (update.address.get(), update.bit))
+            .collect::<Vec<_>>(),
+        [
+            (0x5008, od_machine::AdBit::Accessed),
+            (0x5810, od_machine::AdBit::Dirty),
+            (0x5808, od_machine::AdBit::Dirty),
+            (0x5008, od_machine::AdBit::Dirty),
+        ]
     );
     let expected_frame = [
         (0x0070_2018, 0x10),
@@ -652,6 +1213,8 @@ fn guest_lidt_and_lgdt_feed_the_following_page_fault_delivery() {
         (0x5808, 8),
         (0xcff8, 8),
         (0xcff0, 8),
+        (0x5008, 8),
+        (0xb00d, 1),
     ];
     assert_eq!(
         committed_writes

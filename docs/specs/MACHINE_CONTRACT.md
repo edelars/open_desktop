@@ -1202,6 +1202,40 @@ TSS/IST, descriptor Accessed writes, `#DF`, shutdown, or fault recovery. The
 bounded slice passed independent review and is accepted; its result is recorded
 in the S4-18b report.
 
+## Paged #PF target descriptor Accessed update (S4-18c)
+
+`deliver_page_fault` accepts the already-validated GDT target code descriptor
+with A=0 in the existing Long64/CPL0/same-CPL/IST=0 profile. The selected
+emulator sequence is six tracked frame qword stores, one tracked write of the
+descriptor access byte with only A set, then commit of the target CS cache,
+RSP, RIP and live flags. This order is an explicit partial-effects contract of
+the bounded profile; Intel SDM Vol. 1 §6.14.1 and Vol. 3A §3.4.5 describe the
+frame/CS operations and the Accessed-bit effect, but do not guarantee this
+fault-visible ordering for competing faults. [Vol. 1](https://cdrdv2-public.intel.com/874241/253665-090-sdm-vol-1.pdf),
+[Vol. 3](https://cdrdv2-public.intel.com/782157/325384-sdm-vol-3abcd.pdf).
+
+An A=1 target makes no descriptor write, so a read-only GDT remains usable. The
+adapter routes the one-byte A update and all stack writes through tracked
+RAM-only translation. Before any frame store, a preflight checks every planned
+qword mapping and possible page-walker A/D write against the target descriptor
+byte and the GDT page-table entries. It rejects physical aliases before frame
+effects and preserves the descriptor's preflighted physical mapping for the
+later A update. It also checks frame operands against page-table entries used
+by reachable stack slots, preventing a frame store from remapping a later
+slot; possible stack-walk A/D writes are checked against the descriptor and GDT
+protection ranges. Preflight stops at the first stack access that would
+fail; the tracked path then reports that original page-fault or physical
+backend classification without considering unreachable later slots. No MMIO
+dispatch is added.
+
+A secondary #PF during original #PF delivery would require #DF. This profile
+returns a terminal undelivered diagnostic result because #DF/shutdown
+classification is not implemented. Any retained old CPU state is not
+restartable. TSS/IST, privilege transitions, general segment loads, #DF,
+shutdown and handler recovery remain outside the slice. See the
+[S4-18c report](../reports/STAGE_4_S4-18C_2026-11-06.md) and
+[verification record](../testing/MACHINE.md#s4-18c-target-descriptor-accessed-update).
+
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 
 `with_paged_mov_memory` gives one synchronous callback a temporary, read-only

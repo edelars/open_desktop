@@ -800,6 +800,45 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   wraparound; результаты зафиксированы в [S4-18b report](../reports/STAGE_4_S4-18B_2026-11-06.md)
   и [manifest](../reports/data/stage4/s4-18b-paged-lgdt-2026-11-06.json).
 
+#### S4-18c — bounded target CS descriptor Accessed-bit update during paged #PF delivery
+
+- [x] Реализация и независимое ревью пройдены; срез принят.
+- **Порядок:** Intel SDM Vol. 1 §6.14.1 перечисляет same-CPL frame/error-code
+  stores до загрузки нового CS:EIP; Vol. 3A §3.4.5 задаёт установку descriptor
+  Accessed bit при загрузке selector. Эти разделы сами по себе не гарантируют
+  fault-visible ordering implicit A-bit write относительно frame stores при
+  competing faults. Этот bounded emulator slice явно выбирает порядок
+  frame stores → A-bit write → commit handler CS/RIP/RSP/flags для пути
+  без alias. До frame stores чистый preflight сверяет qword operands с target
+  descriptor byte, GDT trace и page-table entries достижимых stack slots;
+  возможные page-walker A/D writes сверяются с descriptor и GDT trace. Это сохраняет отображения
+  будущих frame slots; alias отклоняется без frame write. Preflight прекращает
+  проверку на первой неуспешной stack access, чтобы tracked path сохранил её
+  исходную PF/backend классификацию и недостижимый slot не влиял на результат.
+  На последующем отказе записи сохраняются завершённые RAM/page-walk effects и CR2 вторичного `#PF`, но CPU
+  entry не коммитится. Delivery исходного `#PF` с этой ошибкой требует `#DF`;
+  поскольку `#DF` ещё не реализован, report будет terminal undelivered, а
+  сохранённое CPU state нельзя считать возобновляемым или аппаратно
+  restartable.
+- **Сделать:** разрешить A=0 у уже валидного GDT target code descriptor в
+  существующем Long64/CPL0/same-CPL/IST=0 профиле. Через paged tracked RAM
+  записывать только access byte, устанавливая бит A и сохраняя остальные
+  descriptor bits; CS cache публиковать с обновлёнными attributes только после
+  успешной записи. A=1 не должен порождать descriptor write.
+- **Проверка:** guest LIDT → LGDT → WP #PF → доставка → первая handler load с
+  исходным A=0; точный frame и callback order, единственная descriptor-bit
+  перемена и cache commit. Дополнительно проверить A=1 на read-only GDT и
+  WP secondary #PF при A=0: точные phase/address/PFEC, сохранённый frame и
+  отсутствие CPU entry commit. Невалидный descriptor не записывать; direct
+  physical alias и frame rewrite GDT leaf PTE (включая redirect) отклонять до
+  frame stores. Сохранить RAM-only/backend distinction.
+- **Граница:** только один byte write из descriptor-table context; stack writes
+  остаются page-contained qword. Не добавлять TSS/IST, privilege change,
+  descriptor generalization, `#DF`/shutdown, PTE repair, INVLPG, IRETQ или retry.
+  S4-18 и S4-19 остаются открытыми.
+- **Нормативная основа:** Intel SDM version 090, [Vol. 1 §6.14.1](https://cdrdv2-public.intel.com/874241/253665-090-sdm-vol-1.pdf)
+  и [Vol. 3A §3.4.5](https://cdrdv2-public.intel.com/782157/325384-sdm-vol-3abcd.pdf).
+
 ### S4-19. Доставка исключений и восстановление после fault
 
 - [ ] Принято после ревью.

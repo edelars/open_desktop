@@ -208,6 +208,21 @@ pub trait GuestMemory {
         source: &[u8],
     ) -> Result<(), MemoryError>;
 
+    /// Checks whether a delayed descriptor Accessed-bit write can safely
+    /// follow the supplied frame writes. Implementations must account for
+    /// aliases and translation metadata, preserving earlier access failures.
+    /// Backends without such a check refuse this delivery by default.
+    fn preflight_descriptor_accessed_write(
+        &mut self,
+        _descriptor_access_address: u64,
+        _descriptor_context: AccessContext,
+        _stack_writes: &[(u64, usize)],
+    ) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend(
+            "descriptor Accessed-bit write preflight is unsupported".into(),
+        ))
+    }
+
     /// Atomically exchanges one integer operand with guest memory.
     ///
     /// Implementations must perform this as one backend operation, return the

@@ -38,7 +38,9 @@ pub enum PageFaultFrameSlot {
 pub enum PageFaultDeliveryPhase {
     IdtGateRead,
     TargetCodeDescriptorRead,
+    TargetCodeDescriptorAccessedPreflight,
     StackWrite { slot: PageFaultFrameSlot },
+    TargetCodeDescriptorAccessedWrite,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,6 +65,7 @@ pub enum PageFaultDeliveryOutsideProfile {
     MissingGdtr,
     MissingTargetDescriptor,
     TargetDescriptorNotAccessed,
+    TargetDescriptorAccessedWriteOverlapsFrame,
     NonCanonicalGdtSpan,
     InvalidTargetCodeDescriptor,
     NonCanonicalTargetRip,
@@ -73,6 +76,10 @@ pub enum PageFaultDeliveryOutsideProfile {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PageFaultDeliveryResult {
     OutsideProfile(PageFaultDeliveryOutsideProfile),
+    /// A terminal diagnostic result. If an original #PF encounters a
+    /// secondary #PF, architectural delivery requires #DF, which this bounded
+    /// API does not model. Any retained frame writes or uncommitted CPU entry
+    /// state must not be resumed or retried as though delivery could continue.
     DeliveryAborted {
         phase: PageFaultDeliveryPhase,
         cause: MemoryError,
@@ -86,8 +93,11 @@ pub enum PageFaultDeliveryResult {
 /// Deliver a synchronous Long64 CPL0 page fault through one same-CPL interrupt
 /// gate (vector 14, IST 0). The page-fault CR2 value is committed before table
 /// or stack accesses; CPU entry state is committed only after all six qword
-/// frame stores succeed. A failed delivery is terminal because prior stores
-/// may already have committed.
+/// frame stores and any target-code descriptor Accessed-bit write succeed. The
+/// frame-stores-then-descriptor-write order is an explicit bounded emulator
+/// profile decision, not a claim about hardware fault-visible ordering. A
+/// failed delivery is terminal because prior stores may already have committed;
+/// notably, a secondary #PF would require #DF, which this API does not model.
 pub fn deliver_page_fault(
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -236,10 +246,7 @@ pub fn deliver_page_fault(
     if !canonical(target_rip) {
         return pf_outside(PageFaultDeliveryOutsideProfile::NonCanonicalTargetRip);
     }
-    if access & 1 == 0 {
-        return pf_outside(PageFaultDeliveryOutsideProfile::TargetDescriptorNotAccessed);
-    }
-    if !valid_ring0_long_code(target_selector, access, flags)
+    if !valid_ring0_long_code(target_selector, access | 1, flags)
         || descriptor_base != 0
         || descriptor_limit != u32::MAX
     {
@@ -294,17 +301,50 @@ pub fn deliver_page_fault(
         origin: AccessOrigin::ImplicitStack,
         ..context
     };
+    if access & 1 == 0 {
+        let stack_writes = slots.map(|(address, _, _)| (address, 8));
+        if let Err(cause) = memory.preflight_descriptor_accessed_write(
+            descriptor_address + 5,
+            context.descriptor_table(),
+            &stack_writes,
+        ) {
+            return pf_delivery_aborted(
+                state,
+                PageFaultDeliveryPhase::TargetCodeDescriptorAccessedPreflight,
+                cause,
+            );
+        }
+    }
     for (address, value, slot) in slots {
         if let Err(cause) = memory.write(address, stack_context, &value.to_le_bytes()) {
             return pf_delivery_aborted(state, PageFaultDeliveryPhase::StackWrite { slot }, cause);
         }
     }
 
+    // This bounded profile completes the frame first, then performs the target
+    // descriptor A-bit write, before committing CPU entry state. This sequence
+    // defines emulator-visible partial effects; it does not assert hardware
+    // fault-visible ordering.
+    let cached_access = access | 1;
+    if access & 1 == 0
+        && let Err(cause) = memory.write(
+            descriptor_address + 5,
+            context.descriptor_table(),
+            &[cached_access],
+        )
+    {
+        return pf_delivery_aborted(
+            state,
+            PageFaultDeliveryPhase::TargetCodeDescriptorAccessedWrite,
+            cause,
+        );
+    }
+
     state.cs_selector = Some(target_selector & !3);
     state.cs_cache = Some(CodeSegmentDescriptorCache {
         base: 0,
         limit: u32::MAX,
-        access,
+        access: cached_access,
         flags,
     });
     state.gpr[crate::Register::Rsp as usize] = new_rsp;
@@ -666,6 +706,22 @@ mod tests {
     }
 
     impl GuestMemory for Ram {
+        fn preflight_descriptor_accessed_write(
+            &mut self,
+            descriptor: u64,
+            _: AccessContext,
+            stack_writes: &[(u64, usize)],
+        ) -> Result<(), MemoryError> {
+            // This fixture is flat RAM, without translation metadata or aliases.
+            if stack_writes.iter().any(|&(address, width)| {
+                u128::from(descriptor) >= u128::from(address)
+                    && u128::from(descriptor) < u128::from(address) + width as u128
+            }) {
+                return Err(MemoryError::Backend("descriptor aliases frame".into()));
+            }
+            Ok(())
+        }
+
         fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
             self.fetches += 1;
             let range = self.range(address, 1)?;
@@ -1304,6 +1360,7 @@ mod tests {
                 .iter()
                 .all(|(_, _, access)| access.origin == AccessOrigin::ImplicitStack)
         );
+        assert_eq!(ram.writes.len(), 6); // A=1 requires no descriptor write.
     }
 
     #[test]
@@ -1420,35 +1477,95 @@ mod tests {
     }
 
     #[test]
-    fn target_ti_and_unaccessed_descriptor_are_explicitly_outside_profile() {
+    fn target_ti_selector_is_explicitly_outside_profile() {
         let context = AccessContext {
             privilege: PrivilegeLevel::Ring0,
             ..AccessContext::default()
         };
-        for (selector, clear_accessed, expected) in [
-            (
-                0x0c,
-                false,
-                PageFaultDeliveryOutsideProfile::InvalidTargetSelector,
-            ),
-            (
-                0x8,
-                true,
-                PageFaultDeliveryOutsideProfile::TargetDescriptorNotAccessed,
-            ),
-        ] {
+        for selector in [0x0c] {
             let mut state = page_fault_state(0x8000);
             let record = page_fault_record(&state, context);
             let mut ram = Ram::new();
             configure_page_fault_gate(&mut ram, 0x3000, selector);
-            if clear_accessed {
-                ram.bytes[0x100d] &= !1;
-            }
             assert_eq!(
                 deliver_page_fault_for_test(&mut state, &mut ram, &record, context),
-                PageFaultDeliveryResult::OutsideProfile(expected)
+                PageFaultDeliveryResult::OutsideProfile(
+                    PageFaultDeliveryOutsideProfile::InvalidTargetSelector
+                )
             );
             assert!(ram.writes.is_empty());
+        }
+    }
+
+    #[test]
+    fn unaccessed_target_descriptor_is_written_after_frame_and_cached_as_accessed() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let mut state = page_fault_state(0x8000);
+        let record = page_fault_record(&state, context);
+        let mut ram = Ram::new();
+        configure_page_fault_gate(&mut ram, 0x3000, 0x8);
+        ram.bytes[0x100d] = 0x9a;
+
+        assert_eq!(
+            deliver_page_fault_for_test(&mut state, &mut ram, &record, context),
+            PageFaultDeliveryResult::Delivered {
+                target_rip: 0x3000,
+                new_rsp: 0x7fd0,
+            }
+        );
+        assert_eq!(ram.writes.len(), 7);
+        assert_eq!(
+            ram.writes[..6]
+                .iter()
+                .map(|(address, _, _)| *address)
+                .collect::<Vec<_>>(),
+            [0x7ff8, 0x7ff0, 0x7fe8, 0x7fe0, 0x7fd8, 0x7fd0]
+        );
+        assert_eq!(ram.writes[6].0, 0x100d);
+        assert_eq!(ram.writes[6].1, 1);
+        assert_eq!(ram.writes[6].2.origin, AccessOrigin::DescriptorTable);
+        assert_eq!(ram.bytes[0x100d], 0x9b);
+        assert_eq!(
+            state.cs_cache.unwrap().access,
+            0x9b,
+            "CS cache must reflect the descriptor after its A-bit update"
+        );
+        assert_eq!(state.rip, 0x3000);
+    }
+
+    #[test]
+    fn failed_target_descriptor_accessed_write_keeps_frame_but_does_not_commit_entry() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let mut state = page_fault_state(0x8000);
+        let mut expected_state = state.clone();
+        expected_state.cr2 = Some(0x4000);
+        let record = page_fault_record(&state, context);
+        let mut ram = Ram::new();
+        configure_page_fault_gate(&mut ram, 0x3000, 0x8);
+        ram.bytes[0x100d] = 0x9a;
+        ram.fail_write = Some(6);
+
+        assert!(matches!(
+            deliver_page_fault_for_test(&mut state, &mut ram, &record, context),
+            PageFaultDeliveryResult::DeliveryAborted {
+                phase: PageFaultDeliveryPhase::TargetCodeDescriptorAccessedWrite,
+                cause: MemoryError::Backend(_),
+            }
+        ));
+        assert_eq!(state, expected_state);
+        assert_eq!(ram.writes.len(), 7);
+        assert_eq!(ram.bytes[0x100d], 0x9a);
+        for (address, _, _) in &ram.writes[..6] {
+            assert_ne!(
+                &ram.bytes[*address as usize..*address as usize + 8],
+                &[0; 8]
+            );
         }
     }
 
