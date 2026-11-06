@@ -1,6 +1,6 @@
 # macOS display viewer (S10-07, S10-11)
 
-`Sources/display_viewer_main.swift` is a local smoke viewer, not the SwiftUI application of stage 11. It starts VMHost with the shared launch code (`Sources/VMHostLaunch.swift`, also used by `Sources/launcher.swift`) in the **test-only** mode `--display-smoke pattern`, receives frames over frame transport v1 ([`protocols/control/FRAME_TRANSPORT_V1.md`](../../protocols/control/FRAME_TRANSPORT_V1.md)) and shows them through Metal.
+`Sources/display_viewer_main.swift` is a local smoke viewer, not the SwiftUI application of stage 11. It starts VMHost with the shared launch code (`Sources/VMHostLaunch.swift`, also used by `Sources/launcher.swift`) in the **test-only** mode `--display-smoke pattern`, receives frames over frame transport v2 ([`protocols/control/FRAME_TRANSPORT_V1.md`](../../protocols/control/FRAME_TRANSPORT_V1.md); v1 plus the cursor, S10-14) and shows them through Metal.
 
 - `FrameReader.swift` — reader of the shared memory: `recvmsg` with `SCM_RIGHTS`, version and size checks, `fstat` before `mmap`, seqlock slot read with the generation re-check, reader states of section 7.2.
 - `Viewport.swift` (S10-11) — pure integer geometry shared by the window, the offscreen dump and the unit test: `drawableSize` (physical = round(logical × backingScaleFactor)), `viewport` (`fit`: aspect-preserving letterbox/pillarbox, centred, rounded half up; `pixelExact`: 1 guest pixel = 1 drawable pixel, centred, cropped around the frame centre if the drawable is smaller: the viewport is clipped to the drawable and the texture coordinates are narrowed, so Metal never gets a viewport outside the render pass; with an odd positive difference the extra pixel goes to the right/bottom margin, with an odd negative one it is cropped on the left/top) and `guestPixel` (drawable pixel → guest pixel, the transform the mouse input of S10-16 uses; nil outside the frame rectangle).
@@ -64,3 +64,23 @@ python3 tests/system/input_channel_smoke.py [target/od-vmhost-smoke]
 # Window with the input channel (closes by itself after 2.5 s; prints "input channel: ..." on exit):
 target/open-desktop-display-viewer --vmhost target/od-vmhost-smoke --input-channel --close-after-ms 2500
 ```
+
+## S10-14 cursor overlay (written, awaiting review; live cursor not checked)
+
+Spec: [`protocols/control/FRAME_TRANSPORT_V1.md`](../../protocols/control/FRAME_TRANSPORT_V1.md) sections 10.6 and 10.8, device: [`docs/specs/DISPLAY_DEVICE.md`](../../docs/specs/DISPLAY_DEVICE.md) 15.5.
+
+- `FrameReader.swift` — v2 header and cursor area checks (`INCOMPATIBLE` for a wrong value), `CURSOR` messages, the cursor read of 10.6 (claim, `g1`, every field once, validation, image copy only for a new `shape_seq`, `g2`), accepted state `FrameReader.cursor`. The state is kept in every reader state and dies with the connection; the presenter draws it only over a shown frame.
+- `Viewport.swift` — `CursorOverlay.placement`: image rectangle `pos − hot` cut by the frame, mapped to the drawable with the affine function of the frame, intersected with the visible part of the drawable (a `pixelExact` drawable smaller than the frame never gets a cursor viewport outside the render target), texture coordinates narrowed like `visibleUV`.
+- `MetalPresenter.swift` — cursor texture (`bgra8Unorm`, premultiplied bytes unchanged) created only when `shape_seq` changes; second draw in the same render pass after the frame, own pipeline with blending `one`/`oneMinusSourceAlpha`, `writeMask` without alpha (the X byte of the frame is not changed), nearest sampling, scissor = visible part. Counters `frameUploadCount` and `cursorUploadCount` are for tests. `DisplayWindow.swift` is unchanged: a cursor update makes `pump` report a change, and the existing redraw path draws it.
+
+Builds are the ones above (viewer and VMHost); both now speak transport v2. Tests:
+
+```sh
+# Geometry, including cursor placement (pixel-exact drawable smaller than the frame, cursor at cropped edges):
+xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library apps/macos/Sources/Viewport.swift apps/macos/Tests/ViewportTests.swift -o target/viewport-tests && target/viewport-tests
+# Offscreen overlay against a reference that the script builds itself (tolerance 0 for A in {0, 255}):
+python3 tests/system/cursor_overlay_smoke.py [target/open-desktop-display-viewer [target/od-vmhost-smoke]]
+# Writer and reader of the cursor area together: see apps/vmhost/README.md
+```
+
+`--dump-cursor-test X,Y,HX,HY,E` (viewer, offscreen only, test-only, needs `--dump-frame`) injects a synthetic accepted cursor into the presenter after the frame is shown: a fixed 4x4 `BGRA8888_PREMUL` image (formula in the header of `cursor_overlay_smoke.py`), hotspot `HX,HY` (0…3), position `X,Y`, enabled `E` (0 or 1). It goes through the real `uploadCursor`/`commitCursor` and the real draw, but not through the transport or the device. The dump line gains `cursor=none` or `cursor=rect=x0,y0,x1,y1 uv=u0,v0,du,dv` (drawable pixels). Without the flag the viewer draws only what arrives in `CURSOR` messages, and the test pattern profile sends none: **a cursor from a guest on a window or in a dump has not been shown.** The window with a cursor was not looked at. The host cursor over the window (`NSCursor`) is a separate limit of S10-16.

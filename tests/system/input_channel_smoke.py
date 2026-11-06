@@ -107,7 +107,7 @@ class Host:
     # frame socket -----------------------------------------------------------------------------------------------
     def frame_handshake(self) -> tuple[int, int, int]:
         """ODFT HELLO, then read ANNOUNCE (closing its descriptor) and MODE; returns (mode_change_count, width, height)."""
-        self.frame.sendall(b"ODFT" + struct.pack("<HHII", 1, 1, 0, 0))
+        self.frame.sendall(b"ODFT" + struct.pack("<HHII", 2, 1, 0, 0))
         buffer = b""
         deadline = time.monotonic() + TIMEOUT
         while self.mode is None:
@@ -504,7 +504,7 @@ def scenario_without_input_fd(binary: Path) -> None:
     os.close(src)
     frame_child.close()
     try:
-        frame_parent.sendall(b"ODFT" + struct.pack("<HHII", 1, 1, 0, 0))
+        frame_parent.sendall(b"ODFT" + struct.pack("<HHII", 2, 1, 0, 0))
         frame_parent.settimeout(TIMEOUT)
         data, _, _, _ = frame_parent.recvmsg(4096, socket.CMSG_SPACE(16))
         check(data[:4] == b"ODFT", "ANNOUNCE expected")

@@ -18,6 +18,14 @@ static inline uint32_t vmhost_display_abi_version_v1(void) {
     return OD_DISPLAY_ABI_VERSION_V1;
 }
 
+static inline uint32_t vmhost_display_abi_version_v2(void) {
+    return OD_DISPLAY_ABI_VERSION_V2;
+}
+
+static inline uint32_t vmhost_display_cursor_flag_enabled(void) {
+    return OD_DISPLAY_CURSOR_FLAG_ENABLED;
+}
+
 static inline uint32_t vmhost_display_mode_flag_active(void) {
     return OD_DISPLAY_MODE_FLAG_ACTIVE;
 }

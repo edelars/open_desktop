@@ -1,12 +1,15 @@
 import Darwin
 import Foundation
 
-// Reader (UI) side of frame transport v1: protocols/control/FRAME_TRANSPORT_V1.md.
+// Reader (UI) side of frame transport v2: protocols/control/FRAME_TRANSPORT_V1.md (section 10 is the cursor, S10-14).
 //
 // Receives ANNOUNCE with SCM_RIGHTS (recvmsg only), checks fstat before mmap, maps the header page
 // read-write and the slot data read-only, and reads slots with the seqlock protocol of section 5.2:
 // every descriptor field is read exactly once into a local copy, all checks and the copy length use
 // only those locals, and the frame is accepted only when the generation is unchanged after the copy.
+//
+// S10-14: the CURSOR notification is read the same way from the separate cursor area (section 10.6): own descriptor
+// seqlock word `cursor_seq`, `cursor_claim`, image slots of 16 KiB; the image is copied only when `shape_seq` changes.
 //
 // Atomics go through the shared C shim apps/vmhost/Sources/FrameTransportAtomics.h (section 5.3),
 // imported with -import-objc-header; the header is not copied.
@@ -50,6 +53,25 @@ struct AcceptedFrame: Equatable {
     let stride: Int
 }
 
+/// The cursor state of the last descriptor that passed the seqlock check and the validation (section 10.6).
+/// Without a shape (`shapeSeq == 0`) the size, hotspot and `enabled` are zero/false.
+struct AcceptedCursor: Equatable {
+    let cursorSeq: UInt64
+    let enabled: Bool
+    let shapeSeq: UInt64
+    let width: Int
+    let height: Int
+    let hotX: Int
+    let hotY: Int
+    let posX: Int
+    let posY: Int
+}
+
+/// Called between `g1` and `g2` (section 10.6, step 5) with a pointer to `width * height * 4` bytes of the cursor slot,
+/// only when the shape differs from the accepted one. The copy goes to a staging texture that is not used until accepted.
+/// Returns false when the copy could not be made (for example no texture could be allocated): the update is then not accepted.
+typealias CursorCopy = (_ pixels: UnsafeRawPointer, _ cursor: AcceptedCursor) -> Bool
+
 /// Called between `g1` and `g2` (section 5.2, step 5) with a pointer to `stride * height` bytes of the slot.
 /// The copy must go to private storage that is not shown until the reader accepts the frame.
 typealias FrameCopy = (_ pixels: UnsafeRawPointer, _ frame: AcceptedFrame) -> Void
@@ -74,20 +96,33 @@ private struct ModeMessage {
 final class FrameReader {
     // Constants of FRAME_TRANSPORT_V1.md sections 3 and 3.5.
     private static let granule = 16384
-    private static let minTotal = 16384 + 2 * 16384
-    private static let maxTotal = 16384 + 4 * 37_748_736
+    /// Version 2 (section 10.3): frame slots start at 65536, after the cursor image slots.
+    private static let slotsOffset = 65536
+    private static let messageVersion: UInt16 = 2
+    private static let minTotal = 65536 + 2 * 16384
+    private static let maxTotal = 65536 + 4 * 37_748_736
     private static let slotSizeMax = 37_748_736
     private static let pixelFormatBGRX8888: UInt32 = 1
     private static let readerClaimOffset = 64
+    private static let cursorClaimOffset = 68
     private static let descriptorsOffset = 128
     private static let descriptorSize = 64
+    // Cursor area (10.3.2, 10.3.3).
+    private static let cursorHeaderOffset = 384
+    private static let cursorDescriptorsOffset = 448
+    private static let cursorSlotsOffset = 16384
+    private static let cursorSlotSize = 16384
+    private static let cursorSlotCount = 3
+    private static let cursorMaxSide = 64
+    private static let cursorFormatBGRA8888Premul: UInt32 = 2
 
     private static let kindVersion: UInt16 = 0
     private static let kindHello: UInt16 = 1
     private static let kindAnnounce: UInt16 = 2
     private static let kindMode: UInt16 = 3
     private static let kindFrame: UInt16 = 4
-    private static let payloadLength: [UInt16: Int] = [2: 16, 3: 32, 4: 24]
+    private static let kindCursor: UInt16 = 5
+    private static let payloadLength: [UInt16: Int] = [2: 16, 3: 32, 4: 24, 5: 16]
 
     private var fd: Int32
     private(set) var state: FrameReaderState = .connecting
@@ -100,6 +135,11 @@ final class FrameReader {
     /// The last accepted MODE, for the UI.
     private(set) var modeWidth = 0
     private(set) var modeHeight = 0
+    /// The accepted cursor state (section 10.6); nil until the first accepted CURSOR and after the connection ends.
+    /// It is kept in every reader state; the UI draws it only while `showing`.
+    private(set) var cursor: AcceptedCursor?
+    /// Incremented on every accepted cursor update.
+    private(set) var cursorAcceptedCount = 0
 
     // Inbound byte stream and descriptor handling (section 4.3).
     private var inbound = [UInt8]()
@@ -121,6 +161,8 @@ final class FrameReader {
     private var lastMode: ModeMessage?
     private var lastFrameNotificationGeneration: UInt64 = 0
     private var sawFrameNotification = false
+    private var lastCursorNotificationSeq: UInt64 = 0
+    private var sawCursorNotification = false
 
     /// `fd` is the UI end of the socketpair; the reader owns it and closes it in `teardown()`.
     init(fd: Int32) {
@@ -140,7 +182,7 @@ final class FrameReader {
         announceDeadline = FrameReader.nowMs() + announceTimeoutMs
         var hello = [UInt8]()
         hello.append(contentsOf: Array("ODFT".utf8))
-        FrameReader.appendLE(&hello, UInt16(1))
+        FrameReader.appendLE(&hello, FrameReader.messageVersion)
         FrameReader.appendLE(&hello, FrameReader.kindHello)
         FrameReader.appendLE(&hello, UInt32(0))
         FrameReader.appendLE(&hello, UInt32(0))
@@ -173,10 +215,11 @@ final class FrameReader {
     /// Waits up to `timeoutMs` for the socket, processes every complete message and reads the slot of the last
     /// pending FRAME. Returns true when the state or the shown frame changed. Single-threaded: call from one thread.
     @discardableResult
-    func pump(timeoutMs: Int32, copy: FrameCopy) -> Bool {
+    func pump(timeoutMs: Int32, copy: FrameCopy, cursorCopy: CursorCopy = { _, _ in true }) -> Bool {
         if state.isTerminal || fd < 0 { return false }
         let before = state
         let beforeFrame = lastFrame
+        let beforeCursor = cursor
         if state == .connecting {
             let now = FrameReader.nowMs()
             if now >= announceDeadline {
@@ -197,8 +240,11 @@ final class FrameReader {
         do {
             try receiveAvailable()
             let pending = try processMessages()
-            if let pending {
-                try readSlot(pending, copy: copy)
+            if let frame = pending.frame {
+                try readSlot(frame, copy: copy)
+            }
+            if let notification = pending.cursor {
+                try readCursor(notification, copy: cursorCopy)
             }
         } catch let failure as ProtocolFailure {
             fail(.disconnected("protocol error: \(failure.reason)"))
@@ -209,7 +255,7 @@ final class FrameReader {
         } catch {
             fail(.disconnected("\(error)"))
         }
-        return state != before || lastFrame != beforeFrame
+        return state != before || lastFrame != beforeFrame || cursor != beforeCursor
     }
 
     // MARK: Receive (section 4.3)
@@ -309,9 +355,15 @@ final class FrameReader {
 
     // MARK: Messages (sections 4.1, 4.2, 7.1, 7.3)
 
-    /// Processes complete messages; returns the last FRAME notification that still needs a slot read.
-    private func processMessages() throws -> (generation: UInt64, modeChangeCount: UInt64, slot: Int)? {
-        var pendingFrame: (generation: UInt64, modeChangeCount: UInt64, slot: Int)?
+    private struct PendingNotifications {
+        var frame: (generation: UInt64, modeChangeCount: UInt64, slot: Int)?
+        var cursor: (seq: UInt64, slot: Int)?
+    }
+
+    /// Processes complete messages; returns the last FRAME and the last CURSOR notification that still need a slot read.
+    /// A MODE drops an unread FRAME of the old mode; it does not drop an unread CURSOR (section 10.6).
+    private func processMessages() throws -> PendingNotifications {
+        var pending = PendingNotifications()
         while true {
             // Bytes 0-5 first: magic ODFT and version (section 4.1 invariant, 7.1 step 2).
             if inbound.count >= 6 {
@@ -320,25 +372,25 @@ final class FrameReader {
                     throw ProtocolFailure("bad message magic")
                 }
                 let version = UInt16(inbound[4]) | UInt16(inbound[5]) << 8
-                if version != 1 {
+                if version != FrameReader.messageVersion {
                     closePendingDescriptor()
-                    throw IncompatibleFailure("incompatible version: VMHost speaks frame transport v\(version), this viewer v1")
+                    throw IncompatibleFailure("incompatible version: VMHost speaks frame transport v\(version), this viewer v\(FrameReader.messageVersion)")
                 }
             }
-            guard inbound.count >= 16 else { return pendingFrame }
+            guard inbound.count >= 16 else { return pending }
             let kind = UInt16(inbound[6]) | UInt16(inbound[7]) << 8
             let reserved = FrameReader.readLE(UInt32.self, inbound, 8)
             let length = Int(FrameReader.readLE(UInt32.self, inbound, 12))
             guard let expectedLength = FrameReader.payloadLength[kind] else {
                 closePendingDescriptor()
-                if kind == FrameReader.kindVersion { throw ProtocolFailure("VERSION with version 1") }
+                if kind == FrameReader.kindVersion { throw ProtocolFailure("VERSION with version \(FrameReader.messageVersion)") }
                 throw ProtocolFailure("unknown or misdirected message kind \(kind)")
             }
             guard reserved == 0, length == expectedLength else {
                 closePendingDescriptor()
                 throw ProtocolFailure("message kind \(kind) has a bad header (reserved \(reserved), length \(length))")
             }
-            guard inbound.count >= 16 + length else { return pendingFrame }
+            guard inbound.count >= 16 + length else { return pending }
             let payload = Array(inbound[16..<(16 + length)])
             inbound.removeFirst(16 + length)
 
@@ -356,9 +408,11 @@ final class FrameReader {
                 throw ProtocolFailure("second ANNOUNCE")
             case FrameReader.kindMode:
                 try handleMode(payload)
-                pendingFrame = nil // a MODE removes an unread FRAME of the old mode
+                pending.frame = nil // a MODE removes an unread FRAME of the old mode
             case FrameReader.kindFrame:
-                pendingFrame = try handleFrame(payload)
+                pending.frame = try handleFrame(payload)
+            case FrameReader.kindCursor:
+                pending.cursor = try handleCursor(payload)
             default:
                 throw ProtocolFailure("unexpected kind \(kind)")
             }
@@ -403,7 +457,7 @@ final class FrameReader {
         // Step 4: header page read-write, data read-only.
         let header = mmap(nil, FrameReader.granule, PROT_READ | PROT_WRITE, MAP_SHARED, descriptor, 0)
         guard let header, header != MAP_FAILED else { throw ProtocolFailure("mmap of the header page failed (errno \(errno))") }
-        let dataLength = total - FrameReader.granule
+        let dataLength = total - FrameReader.granule // includes the cursor image slots (section 10.3)
         let data = mmap(nil, dataLength, PROT_READ, MAP_SHARED, descriptor, off_t(FrameReader.granule))
         guard let data, data != MAP_FAILED else {
             _ = munmap(header, FrameReader.granule)
@@ -456,15 +510,28 @@ final class FrameReader {
         let maxH = headerU32(40)
         let flags = headerU32(44)
         let headerTotal = headerU64(48)
-        let reserved = headerU64(56)
+        let cursorOffset = headerU32(56)
+        let reserved = headerU32(60)
+        // Cursor area header (10.3.2), every field once.
+        let cursorHeader = (0..<8).map { headerU32(FrameReader.cursorHeaderOffset + 4 * $0) }
+        var cursorReserved: UInt64 = 0
+        for index in 0..<4 { cursorReserved |= headerU64(FrameReader.cursorHeaderOffset + 32 + 8 * index) }
 
         guard magic == 0x5346_444F else { // "ODFS" little-endian
             throw IncompatibleFailure("memory header magic is not ODFS")
         }
-        guard version == 1 else { throw IncompatibleFailure("memory header version \(version)") }
+        guard version == FrameReader.messageVersion else { throw IncompatibleFailure("memory header version \(version)") }
         guard headerSize == 64, readerBlockOffset == 64, descriptorsOffset == 128, descriptorSize == 64,
-              slotsOffset == UInt32(FrameReader.granule) else {
-            throw IncompatibleFailure("memory header layout differs from v1")
+              slotsOffset == UInt32(FrameReader.slotsOffset), cursorOffset == UInt32(FrameReader.cursorHeaderOffset) else {
+            throw IncompatibleFailure("memory header layout differs from v2")
+        }
+        let expectedCursorHeader: [UInt32] = [
+            UInt32(FrameReader.cursorSlotCount), UInt32(FrameReader.descriptorSize), UInt32(FrameReader.cursorDescriptorsOffset),
+            UInt32(FrameReader.cursorSlotsOffset), UInt32(FrameReader.cursorSlotSize), UInt32(FrameReader.cursorMaxSide),
+            UInt32(FrameReader.cursorMaxSide), FrameReader.cursorFormatBGRA8888Premul,
+        ]
+        guard cursorHeader == expectedCursorHeader else {
+            throw IncompatibleFailure("cursor area header differs from v2")
         }
         guard pixelFormat == FrameReader.pixelFormatBGRX8888 else {
             throw IncompatibleFailure("memory header pixel_format \(pixelFormat) is not BGRX8888")
@@ -481,12 +548,12 @@ final class FrameReader {
         guard slotSize % FrameReader.granule == 0, slotSize >= maxFrame, slotSize <= FrameReader.slotSizeMax else {
             throw ProtocolFailure("memory header slot_size \(slotSizeValue) out of range")
         }
-        let expectedTotal = UInt64(FrameReader.granule) + UInt64(slots) * UInt64(slotSize)
+        let expectedTotal = UInt64(FrameReader.slotsOffset) + UInt64(slots) * UInt64(slotSize)
         guard headerTotal == expectedTotal else { throw ProtocolFailure("memory header total_size does not match its layout") }
         guard headerTotal == totalSize, Int(slots) == announcedSlots else {
             throw ProtocolFailure("memory header disagrees with ANNOUNCE")
         }
-        guard reserved == 0 else { throw ProtocolFailure("memory header reserved is not zero") }
+        guard reserved == 0, cursorReserved == 0 else { throw ProtocolFailure("memory header reserved is not zero") }
 
         slotCount = Int(slots)
         self.slotSize = slotSize
@@ -552,6 +619,105 @@ final class FrameReader {
         return (generation, modeChangeCount, slot)
     }
 
+    private func handleCursor(_ payload: [UInt8]) throws -> (seq: UInt64, slot: Int) {
+        let seq = FrameReader.readLE(UInt64.self, payload, 0)
+        let slot = Int(FrameReader.readLE(UInt32.self, payload, 8))
+        let reserved = FrameReader.readLE(UInt32.self, payload, 12)
+        guard reserved == 0 else { throw ProtocolFailure("CURSOR reserved is not zero") }
+        guard seq > 0 else { throw ProtocolFailure("CURSOR cursor_seq is 0") }
+        if sawCursorNotification {
+            guard seq > lastCursorNotificationSeq else {
+                throw ProtocolFailure("CURSOR cursor_seq \(seq) does not grow")
+            }
+        }
+        guard slot < FrameReader.cursorSlotCount else { throw ProtocolFailure("CURSOR slot_index \(slot) out of range") }
+        sawCursorNotification = true
+        lastCursorNotificationSeq = seq
+        return (seq, slot)
+    }
+
+    // MARK: Cursor read (section 10.6)
+
+    private func readCursor(_ notification: (seq: UInt64, slot: Int), copy: CursorCopy) throws {
+        guard let header = headerMap, let data = dataMap else { return }
+        let slot = notification.slot
+        let n = notification.seq
+        let descriptor = header + FrameReader.cursorDescriptorsOffset + FrameReader.descriptorSize * slot
+        let claim = (header + FrameReader.cursorClaimOffset).assumingMemoryBound(to: UInt32.self)
+        let seqPointer = descriptor.assumingMemoryBound(to: UInt64.self)
+
+        // 1. claim the cursor slot (a hint, not a lock).
+        odft_store_relaxed_u32(claim, UInt32(slot + 1))
+        defer { odft_store_relaxed_u32(claim, 0) } // 7. release the claim
+
+        // 2. g1 with acquire.
+        let g1 = odft_load_acquire_u64(seqPointer)
+        if g1 != n {
+            if g1 != 0 && g1 < n {
+                throw ProtocolFailure("cursor slot cursor_seq \(g1) is older than the announced \(n)")
+            }
+            return // rewritten or being written: discard
+        }
+
+        // 3. every descriptor field exactly once into locals.
+        func u32(_ offset: Int) -> UInt32 { odft_load_relaxed_u32((descriptor + offset).assumingMemoryBound(to: UInt32.self)) }
+        func u64(_ offset: Int) -> UInt64 { odft_load_relaxed_u64((descriptor + offset).assumingMemoryBound(to: UInt64.self)) }
+        let shapeSeq = u64(8)
+        let flags = u32(16)
+        let widthValue = u32(20)
+        let heightValue = u32(24)
+        let formatValue = u32(28)
+        let hotXValue = u32(32)
+        let hotYValue = u32(36)
+        let posXValue = u32(40)
+        let posYValue = u32(44)
+        let reservedA = u64(48)
+        let reservedB = u64(56)
+
+        // 4. check the locals (width and height before any multiplication; the position against the frame limits
+        // of the memory header, not against the 64 pixel image limit).
+        let width = Int(widthValue)
+        let height = Int(heightValue)
+        var valid = (flags == 0 || flags == 1) && reservedA == 0 && reservedB == 0
+            && Int(posXValue) < maxWidth && Int(posYValue) < maxHeight
+        if shapeSeq == 0 {
+            valid = valid && flags == 0 && widthValue == 0 && heightValue == 0 && formatValue == 0
+                && hotXValue == 0 && hotYValue == 0
+        } else {
+            valid = valid && width >= 1 && width <= FrameReader.cursorMaxSide
+                && height >= 1 && height <= FrameReader.cursorMaxSide
+                && formatValue == FrameReader.cursorFormatBGRA8888Premul
+                && Int(hotXValue) < width && Int(hotYValue) < height
+        }
+
+        var accepted: AcceptedCursor?
+        if valid {
+            let candidate = AcceptedCursor(
+                cursorSeq: g1, enabled: flags == 1, shapeSeq: shapeSeq, width: width, height: height,
+                hotX: Int(hotXValue), hotY: Int(hotYValue), posX: Int(posXValue), posY: Int(posYValue))
+            // 5. the image is copied only when the shape differs from the accepted one; not shown before step 6.
+            if shapeSeq != 0 && shapeSeq != cursor?.shapeSeq {
+                let slotBase = UnsafeRawPointer(data + (FrameReader.cursorSlotsOffset - FrameReader.granule)
+                    + slot * FrameReader.cursorSlotSize)
+                if copy(slotBase, candidate) {
+                    accepted = candidate
+                } // else: no image copy, the shape is not taken as accepted; the next CURSOR repeats the copy
+            } else {
+                accepted = candidate
+            }
+        }
+        // 6. fence(acquire), then g2 with a relaxed load.
+        odft_fence_acquire()
+        let g2 = odft_load_relaxed_u64(seqPointer)
+        if g2 != g1 { return } // torn or overwritten: discard, the accepted state stays
+        guard let candidate = accepted else {
+            if valid { return } // the copy failed: not a protocol error, the accepted state stays
+            throw ProtocolFailure("cursor descriptor violates the protocol while cursor_seq is stable")
+        }
+        cursor = candidate
+        cursorAcceptedCount += 1
+    }
+
     // MARK: Slot read (section 5.2)
 
     private func readSlot(_ notification: (generation: UInt64, modeChangeCount: UInt64, slot: Int), copy: FrameCopy) throws {
@@ -603,7 +769,7 @@ final class FrameReader {
             let frame = AcceptedFrame(
                 generation: g1, modeChangeCount: mcc, width: width, height: height, stride: stride)
             // 5. the copy uses only the local values; the frame is not shown yet.
-            let slotBase = UnsafeRawPointer(data + slot * slotSize)
+            let slotBase = UnsafeRawPointer(data + (FrameReader.slotsOffset - FrameReader.granule) + slot * slotSize)
             copy(slotBase, frame)
             accepted = frame
         }
@@ -624,6 +790,7 @@ final class FrameReader {
 
     private func fail(_ newState: FrameReaderState) {
         state = newState
+        cursor = nil // the accepted cursor state dies with the connection (10.6)
         closePendingDescriptor()
         teardown()
     }

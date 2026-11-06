@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""S10-06 smoke: frame transport v1 reader against the test-only VMHost.
+"""S10-06/S10-14 smoke: frame transport v2 reader against the test-only VMHost.
 
 Starts `od-vmhost-smoke --socket-fd 3 --display-smoke pattern` over a socketpair,
 acts as the UI reader of protocols/control/FRAME_TRANSPORT_V1.md (HELLO, ANNOUNCE
 with SCM_RIGHTS, fstat before mmap, MODE, FRAME, seqlock read), saves the slot as a
 raw file and compares it with the bars 64x48 seed 0 reference at tolerance 0.
-Also checks the VERSION reply to a HELLO with a foreign version.
+Also checks the VERSION reply to a HELLO with a foreign version (v1 and v3), the v2 memory header
+(cursor offset, cursor area header, zeroed cursor descriptors and slots) and that the test pattern
+profile, which never writes a cursor register, sends no CURSOR message and publishes no cursor.
 
 Usage: python3 tests/system/display_transport_smoke.py [VMHOST_BINARY]
 """
@@ -30,9 +32,11 @@ REFERENCE = ROOT / "tests" / "fixtures" / "guest" / "stage10" / "bars_64x48_seed
 COMPARE = ROOT / "tests" / "system" / "display_compare.py"
 
 GRANULE = 16384
-MIN_TOTAL = 16384 + 2 * 16384
-MAX_TOTAL = 16384 + 4 * 37_748_736
-KIND_VERSION, KIND_HELLO, KIND_ANNOUNCE, KIND_MODE, KIND_FRAME = range(5)
+VERSION = 2
+SLOTS_OFFSET = 65536
+MIN_TOTAL = SLOTS_OFFSET + 2 * 16384
+MAX_TOTAL = SLOTS_OFFSET + 4 * 37_748_736
+KIND_VERSION, KIND_HELLO, KIND_ANNOUNCE, KIND_MODE, KIND_FRAME, KIND_CURSOR = range(6)
 TIMEOUT = 10.0
 
 
@@ -45,7 +49,7 @@ def check(condition: bool, message: str) -> None:
         raise Failure(message)
 
 
-def header(kind: int, payload_length: int = 0, version: int = 1) -> bytes:
+def header(kind: int, payload_length: int = 0, version: int = VERSION) -> bytes:
     return b"ODFT" + struct.pack("<HHII", version, kind, 0, payload_length)
 
 
@@ -142,11 +146,12 @@ class Reader:
         head = self.take(16)
         check(head[:4] == b"ODFT", "bad message magic")
         version, kind, reserved, length = struct.unpack("<HHII", head[4:])
-        check(version == 1 and reserved == 0, "bad message header")
+        check(version == VERSION and reserved == 0, "bad message header")
         return kind, self.take(length)
 
 
 def read_slot_seqlock(header_map: mmap.mmap, data_map: mmap.mmap, slot: int, slot_size: int, generation: int):
+    # data_map starts at file offset GRANULE; frame slots start at SLOTS_OFFSET (after the cursor image slots).
     """Section 5.2 with plain reads: claim, g1, fields once, copy, g2, release claim."""
     descriptor = 128 + 64 * slot
     header_map[64:68] = struct.pack("<I", slot + 1)
@@ -157,7 +162,7 @@ def read_slot_seqlock(header_map: mmap.mmap, data_map: mmap.mmap, slot: int, slo
         reserved = header_map[descriptor + 36 : descriptor + 64]
         check(state == 1 and reserved == bytes(28), "descriptor state/reserved")
         check(stride == width * 4 and stride * height <= slot_size, "descriptor geometry")
-        start = slot * slot_size
+        start = SLOTS_OFFSET - GRANULE + slot * slot_size
         pixels = bytes(data_map[start : start + stride * height])
         (g2,) = struct.unpack_from("<Q", header_map, descriptor)
         check(g2 == g1, "generation changed during the read (torn frame)")
@@ -173,7 +178,7 @@ def scenario_frame(binary: Path, workdir: Path) -> None:
         reader = Reader(host.sock)
 
         head = reader.take(16)
-        check(head[:4] == b"ODFT" and struct.unpack("<HHII", head[4:]) == (1, KIND_ANNOUNCE, 0, 16), "ANNOUNCE header")
+        check(head[:4] == b"ODFT" and struct.unpack("<HHII", head[4:]) == (VERSION, KIND_ANNOUNCE, 0, 16), "ANNOUNCE header")
         check(len(reader.fds) == 1, "ANNOUNCE did not carry exactly one descriptor")
         fd = reader.fds[0]
         total_size, slot_count, announce_reserved = struct.unpack("<QII", reader.take(16))
@@ -185,15 +190,22 @@ def scenario_frame(binary: Path, workdir: Path) -> None:
         header_map = mmap.mmap(fd, GRANULE, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=0)
         data_map = mmap.mmap(fd, total_size - GRANULE, mmap.MAP_SHARED, mmap.PROT_READ, offset=GRANULE)
         os.close(fd)
-        fields = struct.unpack_from("<4sHHIIIIIIIIIIQQ", header_map, 0)
+        fields = struct.unpack_from("<4sHHIIIIIIIIIIQII", header_map, 0)
         (magic, version, header_size, reader_off, desc_off, desc_size, h_slots, slots_off, slot_size,
-         pixel_format, max_w, max_h, flags, h_total) = fields[:14]
-        check(magic == b"ODFS" and version == 1 and header_size == 64, "memory header identity")
-        check((reader_off, desc_off, desc_size, slots_off) == (64, 128, 64, GRANULE), "memory header offsets")
+         pixel_format, max_w, max_h, flags, h_total, cursor_off, h_reserved) = fields
+        check(magic == b"ODFS" and version == VERSION and header_size == 64, "memory header identity")
+        check((reader_off, desc_off, desc_size, slots_off) == (64, 128, 64, SLOTS_OFFSET), "memory header offsets")
         check(h_slots == slot_count and h_total == total_size and pixel_format == 1 and flags == 0, "memory header values")
         check(slot_size % GRANULE == 0 and max_w * 4 * max_h <= slot_size, "slot_size")
         check(total_size == slots_off + slot_count * slot_size, "total_size formula")
-        check(struct.unpack_from("<Q", header_map, 56)[0] == 0, "header reserved")
+        check((cursor_off, h_reserved) == (384, 0), "cursor_offset / header reserved")
+        # Cursor area header (10.3.2): slot count, descriptor size and offset, slots offset and size, max size, format, reserved.
+        check(struct.unpack_from("<8I", header_map, 384) == (3, 64, 448, GRANULE, 16384, 64, 64, 2), "cursor area header")
+        check(header_map[384 + 32 : 384 + 64] == bytes(32), "cursor area header reserved")
+        # The test pattern profile never writes a cursor register: three zero descriptors, zero image slots, cursor_claim 0.
+        check(header_map[448 : 448 + 3 * 64] == bytes(3 * 64), "cursor descriptors must be zero")
+        check(header_map[68:72] == bytes(4), "cursor_claim must start at 0")
+        check(bytes(data_map[0 : 3 * 16384]) == bytes(3 * 16384), "cursor image slots must be zero")
 
         kind, payload = reader.message()
         check(kind == KIND_MODE and len(payload) == 32, "second message must be MODE")
@@ -205,6 +217,7 @@ def scenario_frame(binary: Path, workdir: Path) -> None:
         # reader sets reader_claim, so generation 0 is observed before the gate is opened. If the writer
         # published anyway (no gate), the check fails; if it never publishes, the FRAME wait times out.
         check(select.select([host.sock], [], [], 0)[0] == [], "FRAME arrived before the publication gate was opened")
+        check(header_map[448 : 448 + 3 * 64] == bytes(3 * 64), "a cursor descriptor was published without a cursor")
         for slot in range(slot_count):
             (gen,) = struct.unpack_from("<Q", header_map, 128 + 64 * slot)
             check(gen == 0, f"slot {slot} generation {gen} before any FRAME")
@@ -239,7 +252,8 @@ def scenario_frame(binary: Path, workdir: Path) -> None:
         # The generation stays published and no further notification arrives (nothing changed on the device).
         time.sleep(0.2)
         ready, _, _ = select.select([host.sock], [], [], 0)
-        check(not ready, "unexpected extra message after FRAME")
+        check(not ready, "unexpected extra message after FRAME (a CURSOR is not expected: the profile never writes a cursor)")
+        check(header_map[448 : 448 + 3 * 64] == bytes(3 * 64), "a cursor descriptor was published without a cursor")
         (again,) = struct.unpack_from("<Q", header_map, 128 + 64 * slot)
         check(again == generation, "published generation changed without a new frame")
         print(f"frame ok: slots={slot_count} slot_size={slot_size} slot={slot} generation={generation} mode_change_count={mode_count}")
@@ -253,10 +267,10 @@ def scenario_frame(binary: Path, workdir: Path) -> None:
         host.kill()
 
 
-def scenario_foreign_version(binary: Path) -> None:
+def scenario_foreign_version(binary: Path, peer_version: int) -> None:
     host = Host(binary, [])
     try:
-        host.sock.sendall(header(KIND_HELLO, version=2))
+        host.sock.sendall(header(KIND_HELLO, version=peer_version))
         reader = Reader(host.sock)
         head = reader.take(16)
         check(head == header(KIND_VERSION), f"VERSION reply expected, got {head.hex()}")
@@ -264,7 +278,7 @@ def scenario_foreign_version(binary: Path) -> None:
         check(host.sock.recv(1) == b"", "connection must close after VERSION")
         status = host.wait()
         check(os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, f"VMHost exit status {status:#x}")
-        print("foreign version ok: VERSION reply, then EOF")
+        print(f"foreign version {peer_version} ok: VERSION reply (version {VERSION}), then EOF")
     finally:
         host.kill()
 
@@ -286,7 +300,7 @@ def scenario_bytes_after_hello(binary: Path) -> None:
     try:
         host.sock.sendall(header(KIND_HELLO))
         reader = Reader(host.sock)
-        check(reader.take(16)[4:8] == struct.pack("<HH", 1, KIND_ANNOUNCE), "ANNOUNCE expected")
+        check(reader.take(16)[4:8] == struct.pack("<HH", VERSION, KIND_ANNOUNCE), "ANNOUNCE expected")
         host.sock.sendall(b"x")
         status = host.wait()
         check(os.WIFEXITED(status) and os.WEXITSTATUS(status) != 0, f"bytes after HELLO must exit non-zero, status {status:#x}")
@@ -305,7 +319,8 @@ def main(argv: list[str]) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="display_transport_smoke_") as tmp:
             scenario_frame(binary, Path(tmp))
-        scenario_foreign_version(binary)
+        scenario_foreign_version(binary, 1)  # a v1 UI against this v2 VMHost: INCOMPATIBLE on its side by 8.1
+        scenario_foreign_version(binary, 3)
         scenario_protocol_error(binary, "foreign magic", b"ODCP" + bytes(12))
         scenario_protocol_error(binary, "malformed HELLO", header(KIND_FRAME))
         scenario_bytes_after_hello(binary)

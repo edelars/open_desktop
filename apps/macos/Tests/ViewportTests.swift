@@ -1,6 +1,6 @@
 import Foundation
 
-// Unit test of Sources/Viewport.swift (S10-11). Plain executable, exit status 0 on success:
+// Unit test of Sources/Viewport.swift (S10-11, cursor placement S10-14). Plain executable, exit status 0 on success:
 //   xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library \
 //     apps/macos/Sources/Viewport.swift apps/macos/Tests/ViewportTests.swift -o target/viewport-tests && target/viewport-tests
 
@@ -20,6 +20,8 @@ struct ViewportTests {
         pixelExactCases()
         drawableSizeCases()
         inverseMapping()
+        cursorOverlay()
+        cursorOverlayRequiredCases()
         if failures != 0 {
             print("viewport tests: \(failures) failure(s)")
             exit(1)
@@ -186,5 +188,125 @@ struct ViewportTests {
         }
         check(ViewportLayout.guestPixel(pixelX: 17.5, pixelY: 30, viewport: vp, frameWidth: fw, frameHeight: fh) == nil, "margin is outside")
         check(ViewportLayout.guestPixel(pixelX: 5, pixelY: 5, viewport: Viewport(x: 0, y: 0, width: 0, height: 0), frameWidth: fw, frameHeight: fh) == nil, "empty viewport")
+    }
+
+    // MARK: S10-14 cursor placement (FRAME_TRANSPORT_V1.md 10.8, check 8)
+
+    /// For frames, targets, both modes, cursor sizes, hotspots and positions: the pixel centres of the drawable inside the
+    /// cursor rectangle map (through `guestPixel`) to guest pixels inside the clipped image rectangle, and the narrowed texture
+    /// coordinates give the image texel `guest - (pos - hot)` there; the other way round, a guest pixel inside the clipped
+    /// rectangle that shows in the visible part lies in the rectangle. The rectangle never leaves the visible part. The
+    /// texel-boundary band (centres within 1e-6 of an edge) is skipped, as the spec allows.
+    static func cursorOverlay() {
+        let frames = [(64, 48), (40, 30), (7, 5)]
+        let targets = [(64, 48), (40, 30), (100, 100), (10, 8), (128, 96), (33, 17), (200, 50), (3, 3)]
+        let sizes = [(4, 4), (16, 16), (64, 64), (1, 1), (3, 7)]
+        for (fw, fh) in frames {
+            for mode in [PresentMode.fit, .pixelExact] {
+                for (tw, th) in targets {
+                    let full = ViewportLayout.viewport(mode: mode, frameWidth: fw, frameHeight: fh, targetWidth: tw, targetHeight: th)
+                    let visible = full.clipped(targetWidth: tw, targetHeight: th)
+                    let positions = [(0, 0), (fw - 1, fh - 1), (fw / 2, fh / 2), (1, 1), (max(0, fw - 2), 2), (fw + 5, 0), (0, fh + 9)]
+                    for (cw, ch) in sizes {
+                        for (hx, hy) in [(0, 0), (cw - 1, ch - 1), (cw / 2, ch / 2)] {
+                            for (px, py) in positions {
+                                checkPlacement(
+                                    fw: fw, fh: fh, mode: mode, tw: tw, th: th, full: full, visible: visible,
+                                    posX: px, posY: py, hotX: hx, hotY: hy, cw: cw, ch: ch)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func checkPlacement(
+        fw: Int, fh: Int, mode: PresentMode, tw: Int, th: Int, full: Viewport, visible: Viewport,
+        posX: Int, posY: Int, hotX: Int, hotY: Int, cw: Int, ch: Int
+    ) {
+        let label = "\(mode) frame \(fw)x\(fh) target \(tw)x\(th) cursor \(cw)x\(ch) hot \(hotX),\(hotY) pos \(posX),\(posY)"
+        let gx0 = posX - hotX
+        let gy0 = posY - hotY
+        let cx0 = max(gx0, 0)
+        let cy0 = max(gy0, 0)
+        let cx1 = min(gx0 + cw, fw)
+        let cy1 = min(gy0 + ch, fh)
+        let placement = CursorOverlay.placement(
+            frameWidth: fw, frameHeight: fh, posX: posX, posY: posY, hotX: hotX, hotY: hotY, width: cw, height: ch,
+            full: full, visible: visible)
+        if cx1 <= cx0 || cy1 <= cy0 || visible.isEmpty {
+            check(placement == nil, "outside the frame must not draw: \(label)")
+            return
+        }
+        if let p = placement {
+            // 10.8 step 4: the viewport of the cursor is inside the render target (the visible part).
+            check(p.x0 >= Double(visible.x) && p.y0 >= Double(visible.y)
+                && p.x1 <= Double(visible.x + visible.width) && p.y1 <= Double(visible.y + visible.height)
+                && p.x1 > p.x0 && p.y1 > p.y0, "rect leaves the visible part: \(p) \(label)")
+            check(p.x0 >= 0 && p.y0 >= 0 && p.x1 <= Double(tw) && p.y1 <= Double(th), "rect leaves the render target: \(label)")
+            let eps = 1e-9
+            check(p.u0 >= -eps && p.v0 >= -eps && p.u0 + p.du <= 1 + eps && p.v0 + p.dv <= 1 + eps && p.du > 0 && p.dv > 0,
+                  "texture coordinates leave 0...1: \(p) \(label)")
+        }
+        // Pixel centres over the part of the drawable the image can touch (bounding box of the unclipped-by-target rectangle).
+        let boxX0 = max(visible.x, Int((Double(full.x) + Double(cx0) * Double(full.width) / Double(fw)).rounded(.down)) - 1)
+        let boxX1 = min(visible.x + visible.width, Int((Double(full.x) + Double(cx1) * Double(full.width) / Double(fw)).rounded(.up)) + 1)
+        let boxY0 = max(visible.y, Int((Double(full.y) + Double(cy0) * Double(full.height) / Double(fh)).rounded(.down)) - 1)
+        let boxY1 = min(visible.y + visible.height, Int((Double(full.y) + Double(cy1) * Double(full.height) / Double(fh)).rounded(.up)) + 1)
+        if boxX1 <= boxX0 || boxY1 <= boxY0 {
+            check(placement == nil, "no drawable pixel can show the image, yet a rectangle was returned: \(label)")
+            return
+        }
+        for y in boxY0..<boxY1 {
+            for x in boxX0..<boxX1 {
+                let centreX = Double(x) + 0.5
+                let centreY = Double(y) + 0.5
+                guard let guest = ViewportLayout.guestPixel(
+                    pixelX: centreX, pixelY: centreY, viewport: full, frameWidth: fw, frameHeight: fh) else { continue }
+                let insideImage = guest.x >= cx0 && guest.x < cx1 && guest.y >= cy0 && guest.y < cy1
+                // Skip centres on a guest texel boundary (the GPU may pick the neighbour there, DISPLAY.md 3).
+                let fx = (centreX - Double(full.x)) * Double(fw) / Double(full.width)
+                let fy = (centreY - Double(full.y)) * Double(fh) / Double(full.height)
+                if abs(fx - fx.rounded()) < 1e-6 || abs(fy - fy.rounded()) < 1e-6 { continue }
+                let inRect = placement.map { centreX >= $0.x0 && centreX < $0.x1 && centreY >= $0.y0 && centreY < $0.y1 } ?? false
+                check(inRect == insideImage, "pixel \(x),\(y): in rectangle \(inRect), guest pixel \(guest) inside image \(insideImage): \(label)")
+                if inRect, let p = placement {
+                    let u = p.u0 + (centreX - p.x0) / (p.x1 - p.x0) * p.du
+                    let v = p.v0 + (centreY - p.y0) / (p.y1 - p.y0) * p.dv
+                    let texelX = Int((u * Double(cw)).rounded(.down))
+                    let texelY = Int((v * Double(ch)).rounded(.down))
+                    check(texelX == guest.x - gx0 && texelY == guest.y - gy0,
+                          "pixel \(x),\(y): texel \(texelX),\(texelY), expected \(guest.x - gx0),\(guest.y - gy0): \(label)")
+                }
+            }
+        }
+    }
+
+    /// The case the spec requires by name: pixel-exact, drawable smaller than the frame, cursor at the cropped edges.
+    static func cursorOverlayRequiredCases() {
+        let full = ViewportLayout.viewport(mode: .pixelExact, frameWidth: 64, frameHeight: 48, targetWidth: 40, targetHeight: 30)
+        let visible = full.clipped(targetWidth: 40, targetHeight: 30)
+        check(full == Viewport(x: -12, y: -9, width: 64, height: 48), "pixel-exact 64x48 in 40x30: \(full)")
+        check(visible == Viewport(x: 0, y: 0, width: 40, height: 30), "visible part: \(visible)")
+        // Top-left: image 4x4 at guest (10, 8): columns 10, 11 are cropped away (visible guest x starts at 12), rows 8 as well.
+        let topLeft = CursorOverlay.placement(
+            frameWidth: 64, frameHeight: 48, posX: 10, posY: 8, hotX: 0, hotY: 0, width: 4, height: 4, full: full, visible: visible)
+        check(topLeft == CursorPlacement(x0: 0, y0: 0, x1: 2, y1: 3, u0: 0.5, v0: 0.25, du: 0.5, dv: 0.75),
+              "top-left cropped: \(String(describing: topLeft))")
+        // Bottom-right: image at guest (50, 37): the visible guest x ends at 52, y at 39.
+        let bottomRight = CursorOverlay.placement(
+            frameWidth: 64, frameHeight: 48, posX: 50, posY: 37, hotX: 0, hotY: 0, width: 4, height: 4, full: full, visible: visible)
+        check(bottomRight == CursorPlacement(x0: 38, y0: 28, x1: 40, y1: 30, u0: 0, v0: 0, du: 0.5, dv: 0.5),
+              "bottom-right cropped: \(String(describing: bottomRight))")
+        // Entirely in the cropped part: inside the frame, outside the drawable.
+        let hidden = CursorOverlay.placement(
+            frameWidth: 64, frameHeight: 48, posX: 2, posY: 2, hotX: 0, hotY: 0, width: 4, height: 4, full: full, visible: visible)
+        check(hidden == nil, "cursor in the cropped part is not drawn: \(String(describing: hidden))")
+        // Negative image corner (pos < hot) at the frame corner, 1:1.
+        let fullOne = ViewportLayout.viewport(mode: .fit, frameWidth: 64, frameHeight: 48, targetWidth: 64, targetHeight: 48)
+        let corner = CursorOverlay.placement(
+            frameWidth: 64, frameHeight: 48, posX: 0, posY: 0, hotX: 2, hotY: 2, width: 4, height: 4, full: fullOne, visible: fullOne)
+        check(corner == CursorPlacement(x0: 0, y0: 0, x1: 2, y1: 2, u0: 0.5, v0: 0.5, du: 0.5, dv: 0.5), "negative corner: \(String(describing: corner))")
     }
 }

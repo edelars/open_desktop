@@ -12,10 +12,10 @@
 //! answered with `BUSY`.
 
 use od_machine::{
-    AccessWidth, DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES,
-    DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DisplayDevice, DisplayHandle,
-    DisplayReadError, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
-    MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
+    AccessWidth, CursorReadError, DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE,
+    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DisplayDevice,
+    DisplayHandle, DisplayReadError, GuestPhysicalAddress, GuestPhysicalRange, MachineBus,
+    MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
 };
 use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
@@ -25,6 +25,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 const ABI_VERSION: u32 = 0x0001_0000;
+/// Identifier of the cursor extension (S10-14): the structs and functions added
+/// after v1. Existing v1 symbols keep `ABI_VERSION`.
+const ABI_VERSION_V2: u32 = 0x0002_0000;
 
 const STATUS_OK: u32 = 0;
 const STATUS_INVALID_ARGUMENT: u32 = 1;
@@ -38,6 +41,11 @@ const STATUS_BUFFER_LENGTH: u32 = 8;
 const STATUS_MODE_CHANGED: u32 = 9;
 const STATUS_MEMORY_ERROR: u32 = 10;
 const STATUS_INTERNAL_ERROR: u32 = 11;
+const STATUS_NO_CURSOR_SHAPE: u32 = 12;
+const STATUS_CURSOR_BUFFER_LENGTH: u32 = 13;
+
+const CURSOR_FLAG_ENABLED: u32 = 1;
+const CURSOR_FLAG_HAS_SHAPE: u32 = 2;
 
 const PROFILE_TEST_PATTERN: u32 = 1;
 
@@ -119,6 +127,28 @@ pub struct OdDisplayStepReport {
     pub instructions_executed: u64,
 }
 
+/// Cursor state (ABI v2, DISPLAY_DEVICE.md 15.10): one read of the device's
+/// cursor view. Without a published shape, `shape_seq`, `width`, `height`,
+/// `format`, `hot_x` and `hot_y` are zero and `HAS_SHAPE` is clear.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OdDisplayCursorState {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub cursor_seq: u64,
+    pub shape_seq: u64,
+    pub flags: u32,
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub hot_x: u32,
+    pub hot_y: u32,
+    pub pos_x: u32,
+    pub pos_y: u32,
+    pub reserved0: u32,
+    pub reserved1: u32,
+}
+
 const _: () = {
     use std::mem::offset_of;
     // Size, alignment and field offsets are checked against the numbers in
@@ -164,6 +194,23 @@ const _: () = {
     assert!(offset_of!(OdDisplayStepReport, outcome) == 8);
     assert!(offset_of!(OdDisplayStepReport, reserved) == 12);
     assert!(offset_of!(OdDisplayStepReport, instructions_executed) == 16);
+
+    assert!(size_of::<OdDisplayCursorState>() == 64);
+    assert!(align_of::<OdDisplayCursorState>() == 8);
+    assert!(offset_of!(OdDisplayCursorState, abi_version) == 0);
+    assert!(offset_of!(OdDisplayCursorState, struct_size) == 4);
+    assert!(offset_of!(OdDisplayCursorState, cursor_seq) == 8);
+    assert!(offset_of!(OdDisplayCursorState, shape_seq) == 16);
+    assert!(offset_of!(OdDisplayCursorState, flags) == 24);
+    assert!(offset_of!(OdDisplayCursorState, width) == 28);
+    assert!(offset_of!(OdDisplayCursorState, height) == 32);
+    assert!(offset_of!(OdDisplayCursorState, format) == 36);
+    assert!(offset_of!(OdDisplayCursorState, hot_x) == 40);
+    assert!(offset_of!(OdDisplayCursorState, hot_y) == 44);
+    assert!(offset_of!(OdDisplayCursorState, pos_x) == 48);
+    assert!(offset_of!(OdDisplayCursorState, pos_y) == 52);
+    assert!(offset_of!(OdDisplayCursorState, reserved0) == 56);
+    assert!(offset_of!(OdDisplayCursorState, reserved1) == 60);
 };
 
 /// Machine behind one handle: a display device on a `MachineBus`.
@@ -612,6 +659,129 @@ pub unsafe extern "C" fn od_display_session_step(
                     STATUS_OK
                 }
                 _ => STATUS_INTERNAL_ERROR,
+            }
+        })
+    })
+}
+
+fn cursor_state_struct(state: &od_machine::CursorState) -> OdDisplayCursorState {
+    let mut flags = 0;
+    if state.enabled {
+        flags |= CURSOR_FLAG_ENABLED;
+    }
+    let mut out = OdDisplayCursorState {
+        abi_version: ABI_VERSION_V2,
+        struct_size: size_of::<OdDisplayCursorState>() as u32,
+        cursor_seq: state.cursor_seq,
+        shape_seq: 0,
+        flags,
+        width: 0,
+        height: 0,
+        format: 0,
+        hot_x: 0,
+        hot_y: 0,
+        pos_x: state.x,
+        pos_y: state.y,
+        reserved0: 0,
+        reserved1: 0,
+    };
+    if let Some(shape) = state.shape {
+        out.flags |= CURSOR_FLAG_HAS_SHAPE;
+        out.shape_seq = shape.shape_seq;
+        out.width = shape.width;
+        out.height = shape.height;
+        out.format = shape.format;
+        out.hot_x = shape.hot_x;
+        out.hot_y = shape.hot_y;
+    }
+    out
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn od_display_session_cursor_state(
+    handle: *mut OdDisplaySession,
+    out_state: *mut OdDisplayCursorState,
+) -> u32 {
+    guarded(|| {
+        if !valid_ptr(out_state) {
+            return STATUS_INVALID_ARGUMENT;
+        }
+        // SAFETY: pointer shape checked; header fields are read before any write.
+        let (abi_version, struct_size) =
+            unsafe { ((*out_state).abi_version, (*out_state).struct_size) };
+        if abi_version != ABI_VERSION_V2
+            || struct_size as usize != size_of::<OdDisplayCursorState>()
+        {
+            return STATUS_ABI_MISMATCH;
+        }
+        with_session(handle, |session| {
+            let out = cursor_state_struct(&session.display.cursor_state());
+            // SAFETY: pointer shape checked above; success writes the whole struct.
+            unsafe { out_state.write(out) };
+            STATUS_OK
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn od_display_session_read_cursor_image(
+    handle: *mut OdDisplaySession,
+    buffer: *mut u8,
+    buffer_len: usize,
+    out_state: *mut OdDisplayCursorState,
+) -> u32 {
+    guarded(|| {
+        if buffer.is_null() || !valid_ptr(out_state) {
+            return STATUS_INVALID_ARGUMENT;
+        }
+        if overlaps(
+            buffer,
+            buffer_len,
+            out_state.cast(),
+            size_of::<OdDisplayCursorState>(),
+        ) {
+            return STATUS_INVALID_ARGUMENT;
+        }
+        // SAFETY: pointer shape checked; header fields are read before any write.
+        let (abi_version, struct_size) =
+            unsafe { ((*out_state).abi_version, (*out_state).struct_size) };
+        if abi_version != ABI_VERSION_V2
+            || struct_size as usize != size_of::<OdDisplayCursorState>()
+        {
+            return STATUS_ABI_MISMATCH;
+        }
+        with_session(handle, |session| {
+            let state = session.display.cursor_state();
+            let Some(shape) = state.shape else {
+                return STATUS_NO_CURSOR_SHAPE;
+            };
+            // The caller's buffer is not turned into a slice, and not touched,
+            // unless its length equals the image size exactly.
+            let expected = u64::from(shape.width) * u64::from(shape.height) * 4;
+            if u64::try_from(buffer_len) != Ok(expected) {
+                return STATUS_CURSOR_BUFFER_LENGTH;
+            }
+            // SAFETY: non-null, `buffer_len` equals the image size and the
+            // caller guarantees `buffer_len` writable bytes exclusive to this
+            // call (checked non-overlapping with `out_state`).
+            let output = unsafe { std::slice::from_raw_parts_mut(buffer, buffer_len) };
+            match session.display.read_cursor_image_into(output) {
+                Ok(copied) => {
+                    let mut out = cursor_state_struct(&state);
+                    // The copy reports the shape it copied; no quantum ran
+                    // between the two reads, so both describe one state.
+                    out.shape_seq = copied.shape_seq;
+                    out.width = copied.width;
+                    out.height = copied.height;
+                    out.format = copied.format;
+                    out.hot_x = copied.hot_x;
+                    out.hot_y = copied.hot_y;
+                    // SAFETY: pointer shape checked above.
+                    unsafe { out_state.write(out) };
+                    STATUS_OK
+                }
+                Err(CursorReadError::NoShape) => STATUS_NO_CURSOR_SHAPE,
+                Err(CursorReadError::BufferLength { .. }) => STATUS_CURSOR_BUFFER_LENGTH,
             }
         })
     })
@@ -1094,5 +1264,392 @@ mod tests {
             STATUS_INTERNAL_ERROR
         );
         assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+    }
+
+    const CURSOR_WIDTH_REGISTER: u64 = DISPLAY_REGISTERS_BASE + 0x210;
+    const CURSOR_HEIGHT_REGISTER: u64 = DISPLAY_REGISTERS_BASE + 0x214;
+    const CURSOR_FORMAT_REGISTER: u64 = DISPLAY_REGISTERS_BASE + 0x218;
+    const CURSOR_HOTSPOT_REGISTER: u64 = DISPLAY_REGISTERS_BASE + 0x21C;
+    const CURSOR_IMAGE_INDEX_REGISTER: u64 = DISPLAY_REGISTERS_BASE + 0x220;
+    const CURSOR_IMAGE_DATA_REGISTER: u64 = DISPLAY_REGISTERS_BASE + 0x224;
+    const CURSOR_IMAGE_COMMIT_REGISTER: u64 = DISPLAY_REGISTERS_BASE + 0x228;
+    const CURSOR_POSITION_REGISTER: u64 = DISPLAY_REGISTERS_BASE + 0x230;
+    const CURSOR_ENABLE_REGISTER: u64 = DISPLAY_REGISTERS_BASE + 0x234;
+
+    fn cursor_out() -> OdDisplayCursorState {
+        OdDisplayCursorState {
+            abi_version: ABI_VERSION_V2,
+            struct_size: size_of::<OdDisplayCursorState>() as u32,
+            cursor_seq: u64::MAX,
+            shape_seq: u64::MAX,
+            flags: 0xAAAA_AAAA,
+            width: 0xAAAA_AAAA,
+            height: 0xAAAA_AAAA,
+            format: 0xAAAA_AAAA,
+            hot_x: 0xAAAA_AAAA,
+            hot_y: 0xAAAA_AAAA,
+            pos_x: 0xAAAA_AAAA,
+            pos_y: 0xAAAA_AAAA,
+            reserved0: 0xAAAA_AAAA,
+            reserved1: 0xAAAA_AAAA,
+        }
+    }
+
+    fn cursor_pixel(x: u32, y: u32) -> [u8; 4] {
+        // Premultiplied BGRA with a mix of alpha 0, 255 and a middle value.
+        let a = [0u8, 255, 128][((x + y) % 3) as usize];
+        [(x * 16) as u8 & a, (y * 16) as u8 & a, 0x40 & a, a]
+    }
+
+    fn expected_cursor(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                bytes.extend_from_slice(&cursor_pixel(x, y));
+            }
+        }
+        bytes
+    }
+
+    /// What a guest driver does: shape through the registers, then position
+    /// and visibility. No frame register is touched.
+    fn guest_sets_cursor(bus: &mut MachineBus, width: u32, height: u32, hot: (u32, u32)) {
+        put(
+            bus,
+            CURSOR_WIDTH_REGISTER,
+            AccessWidth::Dword,
+            u64::from(width),
+        );
+        put(
+            bus,
+            CURSOR_HEIGHT_REGISTER,
+            AccessWidth::Dword,
+            u64::from(height),
+        );
+        put(bus, CURSOR_FORMAT_REGISTER, AccessWidth::Dword, 2);
+        put(
+            bus,
+            CURSOR_HOTSPOT_REGISTER,
+            AccessWidth::Dword,
+            u64::from(hot.0 | (hot.1 << 16)),
+        );
+        put(bus, CURSOR_IMAGE_INDEX_REGISTER, AccessWidth::Dword, 0);
+        for y in 0..height {
+            for x in 0..width {
+                let word = u32::from_le_bytes(cursor_pixel(x, y));
+                put(
+                    bus,
+                    CURSOR_IMAGE_DATA_REGISTER,
+                    AccessWidth::Dword,
+                    u64::from(word),
+                );
+            }
+        }
+        put(bus, CURSOR_IMAGE_COMMIT_REGISTER, AccessWidth::Dword, 1);
+    }
+
+    fn cursor_state_of(handle: *mut OdDisplaySession) -> OdDisplayCursorState {
+        let mut state = cursor_out();
+        assert_eq!(
+            unsafe { od_display_session_cursor_state(handle, &mut state) },
+            STATUS_OK
+        );
+        state
+    }
+
+    fn read_cursor(
+        handle: *mut OdDisplaySession,
+        buffer: &mut [u8],
+        state: &mut OdDisplayCursorState,
+    ) -> u32 {
+        unsafe {
+            od_display_session_read_cursor_image(handle, buffer.as_mut_ptr(), buffer.len(), state)
+        }
+    }
+
+    #[test]
+    fn cursor_state_is_empty_after_create_and_reads_back_a_guest_shape() {
+        let handle = create();
+        let state = cursor_state_of(handle);
+        assert_eq!(state.cursor_seq, 0);
+        assert_eq!((state.flags, state.shape_seq), (0, 0));
+        assert_eq!(
+            (
+                state.width,
+                state.height,
+                state.format,
+                state.hot_x,
+                state.hot_y
+            ),
+            (0, 0, 0, 0, 0)
+        );
+        assert_eq!((state.pos_x, state.pos_y), (0, 0));
+        assert_eq!((state.reserved0, state.reserved1), (0, 0));
+        let mut buffer = vec![0xEE; 4];
+        let mut state = cursor_out();
+        assert_eq!(
+            read_cursor(handle, &mut buffer, &mut state),
+            STATUS_NO_CURSOR_SHAPE
+        );
+        assert_eq!(buffer, [0xEE; 4]);
+        assert_eq!(state.cursor_seq, u64::MAX);
+
+        with_machine_for_test(handle, |bus, _| {
+            guest_sets_cursor(bus, 16, 16, (1, 2));
+            put(
+                bus,
+                CURSOR_POSITION_REGISTER,
+                AccessWidth::Dword,
+                20 | (12 << 16),
+            );
+            put(bus, CURSOR_ENABLE_REGISTER, AccessWidth::Dword, 1);
+        });
+        let state = cursor_state_of(handle);
+        assert_eq!(state.cursor_seq, 3);
+        assert_eq!(state.flags, CURSOR_FLAG_ENABLED | CURSOR_FLAG_HAS_SHAPE);
+        assert_eq!(state.shape_seq, 1);
+        assert_eq!((state.width, state.height, state.format), (16, 16, 2));
+        assert_eq!((state.hot_x, state.hot_y), (1, 2));
+        assert_eq!((state.pos_x, state.pos_y), (20, 12));
+        assert_eq!(state.abi_version, ABI_VERSION_V2);
+        assert_eq!(
+            state.struct_size as usize,
+            size_of::<OdDisplayCursorState>()
+        );
+
+        let mut buffer = vec![0xEE; 16 * 16 * 4];
+        let mut copied = cursor_out();
+        assert_eq!(read_cursor(handle, &mut buffer, &mut copied), STATUS_OK);
+        assert_eq!(buffer, expected_cursor(16, 16));
+        assert_eq!(copied.shape_seq, state.shape_seq);
+        assert_eq!(copied.cursor_seq, state.cursor_seq);
+        assert_eq!(copied.flags, CURSOR_FLAG_ENABLED | CURSOR_FLAG_HAS_SHAPE);
+        assert_eq!((copied.width, copied.height, copied.format), (16, 16, 2));
+        // Read-only (ABI section 9): the state read after the image copy is the same, nothing counted.
+        let again = cursor_state_of(handle);
+        assert_eq!(
+            (
+                again.cursor_seq,
+                again.shape_seq,
+                again.flags,
+                again.pos_x,
+                again.pos_y
+            ),
+            (state.cursor_seq, state.shape_seq, state.flags, 20, 12)
+        );
+        assert_eq!(cursor_state_of(handle).cursor_seq, state.cursor_seq);
+        assert_eq!((copied.pos_x, copied.pos_y), (20, 12));
+        assert_eq!((copied.hot_x, copied.hot_y), (1, 2));
+        assert_eq!((copied.reserved0, copied.reserved1), (0, 0));
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn largest_cursor_image_fits_one_16_kib_slot() {
+        let handle = create();
+        with_machine_for_test(handle, |bus, _| guest_sets_cursor(bus, 64, 64, (63, 63)));
+        let state = cursor_state_of(handle);
+        assert_eq!((state.width, state.height), (64, 64));
+        let mut buffer = vec![0u8; 16384];
+        let mut copied = cursor_out();
+        assert_eq!(read_cursor(handle, &mut buffer, &mut copied), STATUS_OK);
+        assert_eq!(buffer, expected_cursor(64, 64));
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn cursor_move_changes_cursor_seq_only_and_not_the_frame() {
+        let handle = create();
+        with_machine_for_test(handle, |bus, _| {
+            guest_sets_cursor(bus, 4, 4, (0, 0));
+            put(bus, CURSOR_POSITION_REGISTER, AccessWidth::Dword, 5);
+        });
+        let before = cursor_state_of(handle);
+        let mut mode_before = mode_out();
+        assert_eq!(
+            unsafe { od_display_session_mode(handle, &mut mode_before) },
+            STATUS_OK
+        );
+        with_machine_for_test(handle, |bus, _| {
+            put(
+                bus,
+                CURSOR_POSITION_REGISTER,
+                AccessWidth::Dword,
+                6 | (7 << 16),
+            );
+        });
+        let after = cursor_state_of(handle);
+        assert!(after.cursor_seq > before.cursor_seq);
+        assert_eq!(after.shape_seq, before.shape_seq);
+        assert_eq!((after.pos_x, after.pos_y), (6, 7));
+        let mut mode_after = mode_out();
+        assert_eq!(
+            unsafe { od_display_session_mode(handle, &mut mode_after) },
+            STATUS_OK
+        );
+        assert_eq!(mode_after.generation, mode_before.generation);
+        assert_eq!(mode_after.mode_change_count, mode_before.mode_change_count);
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn wrong_cursor_buffer_length_is_rejected_without_touching_buffer_or_state() {
+        let handle = create();
+        with_machine_for_test(handle, |bus, _| guest_sets_cursor(bus, 4, 2, (0, 0)));
+        let size = 4 * 2 * 4;
+        for wrong in [1, size - 1, size + 1, size * 2] {
+            let mut buffer = vec![0xEE; wrong];
+            let mut state = cursor_out();
+            assert_eq!(
+                read_cursor(handle, &mut buffer, &mut state),
+                STATUS_CURSOR_BUFFER_LENGTH,
+                "length {wrong}"
+            );
+            assert!(buffer.iter().all(|byte| *byte == 0xEE));
+            assert_eq!(state.cursor_seq, u64::MAX);
+        }
+        let mut buffer = vec![0xEE; size];
+        let mut state = cursor_out();
+        assert_eq!(read_cursor(handle, &mut buffer, &mut state), STATUS_OK);
+        assert_eq!(buffer, expected_cursor(4, 2));
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn device_reset_removes_the_cursor_shape() {
+        let handle = create();
+        with_machine_for_test(handle, |bus, _| {
+            guest_sets_cursor(bus, 4, 4, (1, 1));
+            put(
+                bus,
+                CURSOR_POSITION_REGISTER,
+                AccessWidth::Dword,
+                3 | (3 << 16),
+            );
+            put(bus, CURSOR_ENABLE_REGISTER, AccessWidth::Dword, 1);
+        });
+        let before = cursor_state_of(handle);
+        assert_eq!(before.flags, CURSOR_FLAG_ENABLED | CURSOR_FLAG_HAS_SHAPE);
+        with_machine_for_test(handle, |_, display| display.reset());
+        let after = cursor_state_of(handle);
+        assert_eq!(after.flags, 0);
+        assert_eq!(after.shape_seq, 0);
+        assert_eq!(after.cursor_seq, before.cursor_seq + 1);
+        assert_eq!((after.pos_x, after.pos_y), (0, 0));
+        let mut buffer = vec![0xEE; 64];
+        let mut state = cursor_out();
+        assert_eq!(
+            read_cursor(handle, &mut buffer, &mut state),
+            STATUS_NO_CURSOR_SHAPE
+        );
+        assert!(buffer.iter().all(|byte| *byte == 0xEE));
+        assert_eq!(state.cursor_seq, u64::MAX);
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn cursor_calls_validate_arguments_header_and_handle() {
+        let handle = create();
+        let mut state = cursor_out();
+        let mut buffer = vec![0xEE; 64];
+        assert_eq!(
+            unsafe { od_display_session_cursor_state(handle, null_mut()) },
+            STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { od_display_session_cursor_state(null_mut(), &mut state) },
+            STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { od_display_session_cursor_state(id_to_handle(0x7777), &mut state) },
+            STATUS_INVALID_HANDLE
+        );
+        for (version, size) in [
+            (ABI_VERSION, size_of::<OdDisplayCursorState>() as u32),
+            (ABI_VERSION_V2, 48),
+            (0, 0),
+        ] {
+            let mut bad = cursor_out();
+            bad.abi_version = version;
+            bad.struct_size = size;
+            assert_eq!(
+                unsafe { od_display_session_cursor_state(handle, &mut bad) },
+                STATUS_ABI_MISMATCH
+            );
+            assert_eq!(bad.cursor_seq, u64::MAX);
+            assert_eq!(
+                read_cursor(handle, &mut buffer, &mut bad),
+                STATUS_ABI_MISMATCH
+            );
+        }
+        assert_eq!(
+            unsafe { od_display_session_read_cursor_image(handle, null_mut(), 0, &mut state) },
+            STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe {
+                od_display_session_read_cursor_image(
+                    handle,
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                    null_mut(),
+                )
+            },
+            STATUS_INVALID_ARGUMENT
+        );
+        // Misaligned output struct: INVALID_ARGUMENT before anything is touched.
+        let mut raw = vec![0u64; 16];
+        let misaligned =
+            unsafe { raw.as_mut_ptr().cast::<u8>().add(1) }.cast::<OdDisplayCursorState>();
+        assert_eq!(
+            unsafe { od_display_session_cursor_state(handle, misaligned) },
+            STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe {
+                od_display_session_read_cursor_image(
+                    handle,
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                    misaligned,
+                )
+            },
+            STATUS_INVALID_ARGUMENT
+        );
+        assert!(buffer.iter().all(|byte| *byte == 0xEE));
+        // Buffer overlapping the output struct.
+        let mut overlap = vec![0u8; 128];
+        let state_ptr = overlap.as_mut_ptr().cast::<OdDisplayCursorState>();
+        assert_eq!(overlap.as_ptr().align_offset(8), 0);
+        unsafe { state_ptr.write(cursor_out()) };
+        assert_eq!(
+            unsafe {
+                od_display_session_read_cursor_image(
+                    handle,
+                    overlap.as_mut_ptr(),
+                    overlap.len(),
+                    state_ptr,
+                )
+            },
+            STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            read_cursor(id_to_handle(0x7777), &mut buffer, &mut state),
+            STATUS_INVALID_HANDLE
+        );
+        let entry = lookup(handle).unwrap();
+        let guard = entry.enter().unwrap();
+        assert_eq!(
+            unsafe { od_display_session_cursor_state(handle, &mut state) },
+            STATUS_BUSY
+        );
+        assert_eq!(read_cursor(handle, &mut buffer, &mut state), STATUS_BUSY);
+        drop(guard);
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+        assert_eq!(
+            unsafe { od_display_session_cursor_state(handle, &mut state) },
+            STATUS_INVALID_HANDLE
+        );
+        assert_eq!(state.cursor_seq, u64::MAX);
     }
 }

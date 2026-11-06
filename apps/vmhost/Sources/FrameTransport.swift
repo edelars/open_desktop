@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-// Writer side of frame transport v1 (protocols/control/FRAME_TRANSPORT_V1.md).
+// Writer side of frame transport v2 (protocols/control/FRAME_TRANSPORT_V1.md; section 10 is the cursor, S10-14).
 //
 // TEST-ONLY entry point: `--display-smoke pattern` runs a VMHost without a guest.
 // It creates a display session with OD_DISPLAY_PROFILE_TEST_PATTERN, publishes
@@ -10,6 +10,8 @@ import Foundation
 //
 // Atomics go through the C shim FrameTransportAtomics.h (section 5.3). The frame
 // is copied once: od_display_session_read_frame writes straight into the slot.
+// S10-14: the same memory carries the cursor area (three 16 KiB image slots, own seqlock word `cursor_seq`)
+// and the CURSOR notification (section 10). A cursor change never touches frame slots or sends FRAME.
 
 enum FrameTransportError: Error, CustomStringConvertible {
     case usage
@@ -106,14 +108,25 @@ private func readLE<T: FixedWidthInteger>(_ bytes: [UInt8], _ offset: Int, as _:
     return value
 }
 
-/// Shared memory layout constants (section 3).
-private enum Layout {
+/// Shared memory layout constants (sections 3 and 10.3, version 2).
+enum Layout {
     static let granule = 16_384
     static let headerSize = 64
     static let readerBlockOffset = 64
+    /// `cursor_claim` in the reader block (10.3.3).
+    static let cursorClaimOffset = 68
     static let descriptorsOffset = 128
     static let descriptorSize = 64
-    static let slotsOffset = 16_384
+    /// Frame slots start after the cursor image slots (10.3.1).
+    static let slotsOffset = 65_536
+    static let cursorOffset = 384
+    static let cursorDescriptorsOffset = 448
+    static let cursorSlotsOffset = 16_384
+    static let cursorSlotSize = 16_384
+    static let cursorSlotCount = 3
+    static let cursorMaxWidth: UInt32 = 64
+    static let cursorMaxHeight: UInt32 = 64
+    static let cursorFormatBGRA8888Premul: UInt32 = 2
     static let magic: [UInt8] = Array("ODFS".utf8)
     static let pixelFormatBGRX8888: UInt32 = 1
 }
@@ -121,13 +134,14 @@ private enum Layout {
 /// Message constants (section 4).
 private enum Message {
     static let magic: [UInt8] = Array("ODFT".utf8)
-    static let version: UInt16 = 1
+    static let version: UInt16 = 2
     static let headerLength = 16
     static let kindVersion: UInt16 = 0
     static let kindHello: UInt16 = 1
     static let kindAnnounce: UInt16 = 2
     static let kindMode: UInt16 = 3
     static let kindFrame: UInt16 = 4
+    static let kindCursor: UInt16 = 5
 
     static func header(kind: UInt16, payloadLength: UInt32, version: UInt16 = Message.version) -> [UInt8] {
         var bytes = magic
@@ -159,6 +173,14 @@ private enum Message {
         bytes.appendLE(UInt32(0))
         return bytes
     }
+
+    static func cursor(seq: UInt64, slot: UInt32) -> [UInt8] {
+        var bytes = header(kind: kindCursor, payloadLength: 16)
+        bytes.appendLE(seq)
+        bytes.appendLE(slot)
+        bytes.appendLE(UInt32(0))
+        return bytes
+    }
 }
 
 private func wait(fd: Int32, events: Int16, timeoutMs: Int32) throws -> Int16 {
@@ -181,15 +203,22 @@ private func pollAll(_ descriptors: inout [pollfd], timeoutMs: Int32) throws {
     }
 }
 
-/// Section 6.4: at most one partial message, one pending MODE, one pending FRAME.
-private struct NotificationQueue {
+/// Sections 6.4 and 10.5: at most one partial message, one pending MODE, one pending FRAME and one pending CURSOR
+/// (48 + 48 + 40 + 32 = 168 bytes).
+struct NotificationQueue {
     private var partial: [UInt8] = []
     private var pendingMode: [UInt8]?
     private var pendingFrame: [UInt8]?
+    private var pendingCursor: [UInt8]?
 
-    var isEmpty: Bool { partial.isEmpty && pendingMode == nil && pendingFrame == nil }
+    var isEmpty: Bool { partial.isEmpty && pendingMode == nil && pendingFrame == nil && pendingCursor == nil }
 
-    /// A new MODE replaces an unsent MODE and drops the unsent FRAME.
+    /// Bytes held by the queue; never above 168 (10.5).
+    var bufferedBytes: Int {
+        partial.count + (pendingMode?.count ?? 0) + (pendingFrame?.count ?? 0) + (pendingCursor?.count ?? 0)
+    }
+
+    /// A new MODE replaces an unsent MODE and drops the unsent FRAME. An unsent CURSOR stays (10.5).
     mutating func queueMode(_ message: [UInt8]) {
         pendingMode = message
         pendingFrame = nil
@@ -198,7 +227,10 @@ private struct NotificationQueue {
     /// A new FRAME replaces an unsent FRAME.
     mutating func queueFrame(_ message: [UInt8]) { pendingFrame = message }
 
-    /// Sends as much as the non-blocking socket accepts: partial message, then MODE, then FRAME.
+    /// A new CURSOR replaces an unsent CURSOR; MODE and FRAME do not remove it and it does not remove them.
+    mutating func queueCursor(_ message: [UInt8]) { pendingCursor = message }
+
+    /// Sends as much as the non-blocking socket accepts: partial message, then MODE, FRAME, CURSOR.
     mutating func flush(fd: Int32) throws {
         while true {
             if partial.isEmpty {
@@ -208,6 +240,9 @@ private struct NotificationQueue {
                 } else if let frame = pendingFrame {
                     partial = frame
                     pendingFrame = nil
+                } else if let cursor = pendingCursor {
+                    partial = cursor
+                    pendingCursor = nil
                 } else {
                     return
                 }
@@ -226,10 +261,25 @@ private struct NotificationQueue {
     }
 }
 
+/// One read of the device cursor (DISPLAY_DEVICE.md 15.10), as the writer needs it. `shapeSeq == 0` means no shape.
+struct CursorSnapshot: Equatable {
+    var cursorSeq: UInt64
+    var enabled: Bool
+    var shapeSeq: UInt64
+    var width: UInt32
+    var height: UInt32
+    var format: UInt32
+    var hotX: UInt32
+    var hotY: UInt32
+    var posX: UInt32
+    var posY: UInt32
+}
+
 /// Writer: owns the shared memory object and the publication state (all private).
 final class FrameTransportWriter {
     private let slotCount = 3
-    private let base: UnsafeMutableRawPointer
+    /// Internal (not private) only so that apps/vmhost/Tests/CursorTransportTests.swift can play the reader and the attacker.
+    let base: UnsafeMutableRawPointer
     private let totalSize: Int
     private let slotSize: Int
     private let maxWidth: UInt32
@@ -241,6 +291,13 @@ final class FrameTransportWriter {
     private var lastPublished: UInt64 = 0
     private var queuedModeCount: UInt64 = 0
     private var queue = NotificationQueue()
+    // Cursor publication state (section 10.5), private like the frame state.
+    private var lastCursorSeq: UInt64 = 0
+    private var cursorFront: Int?
+    /// Published `cursor_seq` per cursor slot (0 = invalid); the oldest free slot is written next.
+    private var cursorSlotSeq = [UInt64](repeating: 0, count: Layout.cursorSlotCount)
+    /// `shape_seq` of the image bytes in each slot (0 = nothing valid), so an unchanged shape is not copied again.
+    private var cursorSlotShape = [UInt64](repeating: 0, count: Layout.cursorSlotCount)
 
     /// Steps 1-7 of section 2.2 for a fixed maximum mode (test-only writer).
     init(maxWidth: UInt32, maxHeight: UInt32) throws {
@@ -302,7 +359,7 @@ final class FrameTransportWriter {
         base.storeBytes(of: Layout.magic[1], toByteOffset: 1, as: UInt8.self)
         base.storeBytes(of: Layout.magic[2], toByteOffset: 2, as: UInt8.self)
         base.storeBytes(of: Layout.magic[3], toByteOffset: 3, as: UInt8.self)
-        base.storeBytes(of: UInt16(1).littleEndian, toByteOffset: 4, as: UInt16.self)
+        base.storeBytes(of: Message.version.littleEndian, toByteOffset: 4, as: UInt16.self)
         base.storeBytes(of: UInt16(Layout.headerSize).littleEndian, toByteOffset: 6, as: UInt16.self)
         base.storeBytes(of: UInt32(Layout.readerBlockOffset).littleEndian, toByteOffset: 8, as: UInt32.self)
         base.storeBytes(of: UInt32(Layout.descriptorsOffset).littleEndian, toByteOffset: 12, as: UInt32.self)
@@ -315,7 +372,17 @@ final class FrameTransportWriter {
         base.storeBytes(of: maxHeight.littleEndian, toByteOffset: 40, as: UInt32.self)
         base.storeBytes(of: UInt32(0), toByteOffset: 44, as: UInt32.self)
         base.storeBytes(of: UInt64(total).littleEndian, toByteOffset: 48, as: UInt64.self)
-        base.storeBytes(of: UInt64(0), toByteOffset: 56, as: UInt64.self)
+        base.storeBytes(of: UInt32(Layout.cursorOffset).littleEndian, toByteOffset: 56, as: UInt32.self)
+        base.storeBytes(of: UInt32(0), toByteOffset: 60, as: UInt32.self)
+        // Cursor area header (10.3.2): constants the reader checks.
+        let cursorHeader: [UInt32] = [
+            UInt32(Layout.cursorSlotCount), UInt32(Layout.descriptorSize), UInt32(Layout.cursorDescriptorsOffset),
+            UInt32(Layout.cursorSlotsOffset), UInt32(Layout.cursorSlotSize), Layout.cursorMaxWidth,
+            Layout.cursorMaxHeight, Layout.cursorFormatBGRA8888Premul,
+        ]
+        for (index, value) in cursorHeader.enumerated() {
+            base.storeBytes(of: value.littleEndian, toByteOffset: Layout.cursorOffset + 4 * index, as: UInt32.self)
+        }
         odft_fence_release()
     }
 
@@ -343,6 +410,12 @@ final class FrameTransportWriter {
 
     private func slotPixels(_ slot: Int) -> UnsafeMutablePointer<UInt8> {
         base.advanced(by: Layout.slotsOffset + slot * slotSize).assumingMemoryBound(to: UInt8.self)
+    }
+
+    private func cursorDescriptorOffset(_ slot: Int) -> Int { Layout.cursorDescriptorsOffset + Layout.descriptorSize * slot }
+
+    private func cursorImage(_ slot: Int) -> UnsafeMutablePointer<UInt8> {
+        base.advanced(by: Layout.cursorSlotsOffset + slot * Layout.cursorSlotSize).assumingMemoryBound(to: UInt8.self)
     }
 
     // MARK: ANNOUNCE (section 4.3)
@@ -509,6 +582,88 @@ final class FrameTransportWriter {
         queue.queueFrame(Message.frame(generation: generation, modeChangeCount: modeCount, slot: UInt32(slot)))
         return true
     }
+
+    // MARK: cursor publication (section 10.5)
+
+    /// Section 10.5 slot choice: not `cursor_front`, not the slot the reader claims (`cursor_claim`, untrusted:
+    /// 0 or above 3 means nothing is held); the oldest of the rest. At most two slots are excluded, so one remains.
+    private func chooseCursorSlot() -> Int {
+        let claim = Int(odft_load_relaxed_u32(word32(Layout.cursorClaimOffset)))
+        var best: Int?
+        for j in 0..<Layout.cursorSlotCount {
+            if j == cursorFront { continue }
+            if claim >= 1, claim <= Layout.cursorSlotCount, j == claim - 1 { continue }
+            if let b = best, cursorSlotSeq[b] <= cursorSlotSeq[j] { continue }
+            best = j
+        }
+        return best! // three slots, at most two excluded
+    }
+
+    /// Publishes `state` when its `cursorSeq` is newer than the last published one. `readImage` copies the published
+    /// image of the device straight into `destination` (`length` bytes) and returns the snapshot it copied, or nil
+    /// if the copy was refused; it is called only when the slot does not already hold this shape.
+    /// Never touches frame slots, frame descriptors, FRAME or MODE. Returns true when a CURSOR was queued.
+    func publishCursor(
+        _ state: CursorSnapshot,
+        readImage: (_ destination: UnsafeMutablePointer<UInt8>, _ length: Int) throws -> CursorSnapshot?
+    ) throws -> Bool {
+        guard state.cursorSeq > lastCursorSeq else { return false }
+        // The device never reports an invalid state; a violation is a host refusal, not something to publish.
+        let hasShape = state.shapeSeq != 0
+        if hasShape {
+            guard (1...Layout.cursorMaxWidth).contains(state.width), (1...Layout.cursorMaxHeight).contains(state.height),
+                  state.format == Layout.cursorFormatBGRA8888Premul, state.hotX < state.width, state.hotY < state.height else {
+                throw FrameTransportError.hostRefusal("cursor shape \(state.width)x\(state.height) is outside the announced layout")
+            }
+        } else {
+            guard !state.enabled, state.width == 0, state.height == 0, state.format == 0, state.hotX == 0, state.hotY == 0 else {
+                throw FrameTransportError.hostRefusal("cursor without a shape reports shape fields")
+            }
+        }
+        guard state.posX < maxWidth, state.posY < maxHeight else {
+            throw FrameTransportError.hostRefusal("cursor position \(state.posX),\(state.posY) is outside the announced frame limits")
+        }
+        let slot = chooseCursorSlot()
+        let descriptor = cursorDescriptorOffset(slot)
+        // 10.5 steps 2-3: invalidate, make the mark visible before any write into the slot.
+        odft_store_relaxed_u64(word64(descriptor), 0)
+        odft_fence_release()
+        cursorSlotSeq[slot] = 0
+        // Step 4: the image is copied only when the slot holds other bytes (the shape did not change otherwise).
+        if hasShape, cursorSlotShape[slot] != state.shapeSeq {
+            cursorSlotShape[slot] = 0
+            let length = Int(state.width) * Int(state.height) * 4
+            guard let copied = try readImage(cursorImage(slot), length), copied.shapeSeq == state.shapeSeq,
+                  copied.width == state.width, copied.height == state.height else {
+                return false // slot stays invalid; retried on the next check
+            }
+            cursorSlotShape[slot] = state.shapeSeq
+        }
+        // Step 5: relaxed field stores, one per field.
+        odft_store_relaxed_u64(word64(descriptor + 8), state.shapeSeq)
+        odft_store_relaxed_u32(word32(descriptor + 16), state.enabled ? 1 : 0)
+        odft_store_relaxed_u32(word32(descriptor + 20), state.width)
+        odft_store_relaxed_u32(word32(descriptor + 24), state.height)
+        odft_store_relaxed_u32(word32(descriptor + 28), state.format)
+        odft_store_relaxed_u32(word32(descriptor + 32), state.hotX)
+        odft_store_relaxed_u32(word32(descriptor + 36), state.hotY)
+        odft_store_relaxed_u32(word32(descriptor + 40), state.posX)
+        odft_store_relaxed_u32(word32(descriptor + 44), state.posY)
+        odft_store_relaxed_u64(word64(descriptor + 48), 0)
+        odft_store_relaxed_u64(word64(descriptor + 56), 0)
+        // Step 6: the release store of cursor_seq publishes the slot.
+        odft_store_release_u64(word64(descriptor), state.cursorSeq)
+        // Step 7.
+        cursorSlotSeq[slot] = state.cursorSeq
+        queue.queueCursor(Message.cursor(seq: state.cursorSeq, slot: UInt32(slot)))
+        cursorFront = slot
+        lastCursorSeq = state.cursorSeq
+        return true
+    }
+
+    var lastPublishedCursorSeq: UInt64 { lastCursorSeq }
+    /// Bytes waiting in the notification queue (never above 168).
+    var queuedBytes: Int { queue.bufferedBytes }
 }
 
 // MARK: test-only display smoke (VMHost without a guest)
@@ -523,6 +678,46 @@ enum DisplaySmoke {
             throw FrameTransportError.displayABI("od_display_session_mode", status)
         }
         return mode
+    }
+
+    /// One read of the device cursor through the display ABI (S10-14, DISPLAY_DEVICE.md 15.10, 15.11).
+    /// nil on `BUSY`: the check is skipped and repeated at the next one.
+    static func cursorSnapshot(_ session: OpaquePointer) throws -> CursorSnapshot? {
+        var state = od_display_cursor_state()
+        state.abi_version = vmhost_display_abi_version_v2()
+        state.struct_size = UInt32(OD_DISPLAY_CURSOR_STATE_SIZE_V2)
+        let status = od_display_session_cursor_state(session, &state)
+        if status == OD_DISPLAY_STATUS_BUSY.rawValue { return nil }
+        guard status == OD_DISPLAY_STATUS_OK.rawValue else {
+            throw FrameTransportError.displayABI("od_display_session_cursor_state", status)
+        }
+        return snapshot(of: state)
+    }
+
+    static func snapshot(of state: od_display_cursor_state) -> CursorSnapshot {
+        CursorSnapshot(
+            cursorSeq: state.cursor_seq, enabled: state.flags & vmhost_display_cursor_flag_enabled() != 0,
+            shapeSeq: state.shape_seq, width: state.width, height: state.height, format: state.format,
+            hotX: state.hot_x, hotY: state.hot_y, posX: state.pos_x, posY: state.pos_y)
+    }
+
+    /// Copies the published cursor image straight into the transport slot; nil when the device refuses (no shape, length).
+    static func readCursorImage(
+        _ session: OpaquePointer, into destination: UnsafeMutablePointer<UInt8>, length: Int
+    ) throws -> CursorSnapshot? {
+        var state = od_display_cursor_state()
+        state.abi_version = vmhost_display_abi_version_v2()
+        state.struct_size = UInt32(OD_DISPLAY_CURSOR_STATE_SIZE_V2)
+        let status = od_display_session_read_cursor_image(session, destination, length, &state)
+        switch status {
+        case OD_DISPLAY_STATUS_OK.rawValue:
+            return snapshot(of: state)
+        case OD_DISPLAY_STATUS_NO_CURSOR_SHAPE.rawValue, OD_DISPLAY_STATUS_CURSOR_BUFFER_LENGTH.rawValue,
+             OD_DISPLAY_STATUS_BUSY.rawValue:
+            return nil // the slot stays invalid and the publication is retried at the next check (10.5 step 4)
+        default:
+            throw FrameTransportError.displayABI("od_display_session_read_cursor_image", status)
+        }
     }
 
     /// Reads exactly 16 bytes of HELLO from a blocking socket. nil means EOF before a full header.
@@ -620,6 +815,14 @@ enum DisplaySmoke {
                 if try writer.publishFrame(session: session, mode: mode) {
                     fputs("od-vmhost-smoke: display-smoke published generation \(writer.lastPublishedGeneration)\n", stderr)
                 }
+            }
+            // S10-14 (10.5): the cursor is checked at the same rate. It is published on its own and never
+            // causes a frame slot write, a FRAME or a MODE.
+            if let cursor = try cursorSnapshot(session),
+               try writer.publishCursor(cursor, readImage: { destination, length in
+                try readCursorImage(session, into: destination, length: length)
+            }) {
+                fputs("od-vmhost-smoke: display-smoke published cursor_seq \(writer.lastPublishedCursorSeq)\n", stderr)
             }
             try writer.flush(fd: fd)
 

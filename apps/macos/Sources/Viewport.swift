@@ -104,3 +104,69 @@ enum ViewportLayout {
         (numerator * 2 + denominator) / (denominator * 2)
     }
 }
+
+// S10-14: placement of the cursor image over the frame (FRAME_TRANSPORT_V1.md 10.8). Pure geometry like ViewportLayout:
+// the window, the offscreen dump and the unit test use the same function.
+
+/// Where the cursor is drawn: `rect` in drawable pixels (real-valued edges, always inside the visible part of the drawable)
+/// and the part of the cursor texture it shows, as texture coordinates: u = u0 + p.x * du, v = v0 + p.y * dv for p in 0...1
+/// across `rect`.
+struct CursorPlacement: Equatable {
+    var x0: Double
+    var y0: Double
+    var x1: Double
+    var y1: Double
+    var u0: Double
+    var v0: Double
+    var du: Double
+    var dv: Double
+}
+
+enum CursorOverlay {
+    /// Placement of a `width` x `height` cursor image whose hotspot `(hotX, hotY)` is at frame pixel `(posX, posY)`, over a
+    /// `frameWidth` x `frameHeight` frame drawn into `full` (the unclipped viewport, possibly with a negative origin) and
+    /// `visible` (`full` clipped to the render target). Returns nil when nothing is drawn: the image lies outside the frame
+    /// (step 2) or outside the visible part of the drawable (step 4).
+    ///
+    /// 1. image rectangle in frame pixels `[gx0, gx1) x [gy0, gy1)` (signed, may stick out of the frame);
+    /// 2. clipped to the frame `[cx0, cx1) x [cy0, cy1)`;
+    /// 3. drawable pixels with the affine map of the frame, `X(g) = full.x + g * full.width / frameWidth`, and the texture
+    ///    coordinates of the clipped part;
+    /// 4. intersected with `visible`; the texture coordinates are narrowed like `ViewportLayout.visibleUV` does for the frame.
+    static func placement(
+        frameWidth: Int, frameHeight: Int, posX: Int, posY: Int, hotX: Int, hotY: Int, width: Int, height: Int,
+        full: Viewport, visible: Viewport
+    ) -> CursorPlacement? {
+        guard frameWidth > 0, frameHeight > 0, width > 0, height > 0, !full.isEmpty, !visible.isEmpty else { return nil }
+        let gx0 = posX - hotX
+        let gy0 = posY - hotY
+        let gx1 = gx0 + width
+        let gy1 = gy0 + height
+        let cx0 = max(gx0, 0)
+        let cy0 = max(gy0, 0)
+        let cx1 = min(gx1, frameWidth)
+        let cy1 = min(gy1, frameHeight)
+        guard cx1 > cx0, cy1 > cy0 else { return nil }
+
+        func mapX(_ g: Int) -> Double { Double(full.x) + Double(g) * Double(full.width) / Double(frameWidth) }
+        func mapY(_ g: Int) -> Double { Double(full.y) + Double(g) * Double(full.height) / Double(frameHeight) }
+        let rx0 = mapX(cx0)
+        let rx1 = mapX(cx1)
+        let ry0 = mapY(cy0)
+        let ry1 = mapY(cy1)
+        let u0 = Double(cx0 - gx0) / Double(width)
+        let du = Double(cx1 - cx0) / Double(width)
+        let v0 = Double(cy0 - gy0) / Double(height)
+        let dv = Double(cy1 - cy0) / Double(height)
+
+        let x0 = max(rx0, Double(visible.x))
+        let y0 = max(ry0, Double(visible.y))
+        let x1 = min(rx1, Double(visible.x + visible.width))
+        let y1 = min(ry1, Double(visible.y + visible.height))
+        guard x1 > x0, y1 > y0 else { return nil }
+        return CursorPlacement(
+            x0: x0, y0: y0, x1: x1, y1: y1,
+            u0: u0 + (x0 - rx0) / (rx1 - rx0) * du, v0: v0 + (y0 - ry0) / (ry1 - ry0) * dv,
+            du: du * (x1 - x0) / (rx1 - rx0), dv: dv * (y1 - y0) / (ry1 - ry0))
+    }
+}

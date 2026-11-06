@@ -11,6 +11,11 @@ import QuartzCore
 // reused as staging. Pipeline: fullscreen triangle drawn into a viewport (S10-11: aspect-preserving letterbox or
 // pixel-exact, geometry in Viewport.swift), nearest-neighbour sampling, no blending.
 //
+// S10-14 cursor: the cursor image (BGRA8888_PREMUL, bytes copied unchanged into a `bgra8Unorm` texture) is uploaded only when its
+// `shape_seq` changes and is drawn as a second draw in the same render pass, after the frame
+// (FRAME_TRANSPORT_V1.md 10.8): viewport and texture coordinates from `CursorOverlay.placement`, blending
+// `one` / `oneMinusSourceAlpha` on the colour channels, `writeMask` without alpha (the X byte of the frame is not changed).
+//
 // Byte order: the slot holds B, G, R, X per pixel; MTLPixelFormat.bgra8Unorm stores the same order, so the
 // bytes go in unchanged and the X byte lands in the alpha channel without being interpreted.
 
@@ -55,6 +60,8 @@ final class MetalPresenter {
     let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
+    /// Same shaders, blending on: the cursor draw (10.8 step 5).
+    private let cursorPipeline: MTLRenderPipelineState
 
     private let lock = NSLock()
     private var shown: MTLTexture?
@@ -63,6 +70,14 @@ final class MetalPresenter {
     private static let maxSpares = 3
     private var staging: MTLTexture?
     private var inFlight: [ObjectIdentifier: Int] = [:]
+    /// S10-14: the committed cursor texture (with the `shape_seq` of its bytes), the one being filled, and the accepted state.
+    /// Cursor textures are small and allocated per shape change; an in-flight command buffer keeps its texture alive itself.
+    private var cursorTexture: (texture: MTLTexture, shapeSeq: UInt64)?
+    private var cursorStaging: (texture: MTLTexture, shapeSeq: UInt64)?
+    private var cursorState: AcceptedCursor?
+    /// Counters for tests and reports: frame texture uploads and cursor texture uploads.
+    private(set) var frameUploadCount = 0
+    private(set) var cursorUploadCount = 0
 
     init() throws {
         guard let device = MTLCreateSystemDefaultDevice() else { throw MetalPresenterError.noDevice }
@@ -87,6 +102,24 @@ final class MetalPresenter {
             pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
         } catch {
             throw MetalPresenterError.setup("pipeline: \(error)")
+        }
+        let cursorDescriptor = MTLRenderPipelineDescriptor()
+        cursorDescriptor.vertexFunction = vertex
+        cursorDescriptor.fragmentFunction = fragment
+        guard let attachment = cursorDescriptor.colorAttachments[0] else { throw MetalPresenterError.setup("cursor attachment") }
+        attachment.pixelFormat = .bgra8Unorm
+        attachment.isBlendingEnabled = true
+        attachment.rgbBlendOperation = .add
+        attachment.sourceRGBBlendFactor = .one
+        attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+        attachment.alphaBlendOperation = .add
+        attachment.sourceAlphaBlendFactor = .zero
+        attachment.destinationAlphaBlendFactor = .one
+        attachment.writeMask = [.red, .green, .blue] // the alpha channel of the target holds the frame's X byte: untouched
+        do {
+            cursorPipeline = try device.makeRenderPipelineState(descriptor: cursorDescriptor)
+        } catch {
+            throw MetalPresenterError.setup("cursor pipeline: \(error)")
         }
     }
 
@@ -115,7 +148,67 @@ final class MetalPresenter {
         lock.lock()
         if let previous = staging { addSpare(previous) }
         staging = texture
+        frameUploadCount += 1
         lock.unlock()
+    }
+
+    // MARK: Cursor (reader thread uploads, main thread draws)
+
+    /// Reader thread, inside the cursor seqlock window (10.6 step 5): copies `width * height * 4` bytes of the cursor slot into a
+    /// new staging texture. Called only for a new `shape_seq`; the texture is not drawn until `commitCursor`.
+    /// Returns false when no texture was made (the reader then does not accept the shape and tries again at the next update).
+    @discardableResult
+    func uploadCursor(pixels: UnsafeRawPointer, cursor: AcceptedCursor) -> Bool {
+        guard cursor.width >= 1, cursor.height >= 1 else { return false }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: cursor.width, height: cursor.height, mipmapped: false)
+        descriptor.usage = .shaderRead
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return false }
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, cursor.width, cursor.height),
+            mipmapLevel: 0, withBytes: pixels, bytesPerRow: cursor.width * 4)
+        lock.lock()
+        cursorStaging = (texture, cursor.shapeSeq)
+        cursorUploadCount += 1
+        lock.unlock()
+        return true
+    }
+
+    /// The reader accepted a cursor update: its state becomes the drawn state, and the staged texture (if the shape changed)
+    /// becomes the cursor texture. The frame texture is not touched.
+    func commitCursor(_ state: AcceptedCursor?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let state else {
+            cursorState = nil
+            cursorTexture = nil
+            cursorStaging = nil
+            return
+        }
+        if state.shapeSeq == 0 {
+            cursorTexture = nil
+        } else if let staged = cursorStaging, staged.shapeSeq == state.shapeSeq {
+            cursorTexture = staged
+        }
+        cursorStaging = nil
+        // A state whose shape has no texture is never drawn (10.8: shape_seq != 0 and an image).
+        cursorState = state.shapeSeq != 0 && cursorTexture?.shapeSeq != state.shapeSeq ? nil : state
+    }
+
+    /// The reader discarded the cursor update (g2 != g1): the staged texture is dropped, the drawn state is unchanged.
+    func discardCursor() {
+        lock.lock()
+        cursorStaging = nil
+        lock.unlock()
+    }
+
+    private func cursorSnapshot() -> (texture: MTLTexture, state: AcceptedCursor)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let state = cursorState, state.enabled, state.shapeSeq != 0, let held = cursorTexture,
+              held.shapeSeq == state.shapeSeq else { return nil }
+        return (held.texture, state)
     }
 
     /// Caller holds `lock`.
@@ -181,18 +274,20 @@ final class MetalPresenter {
     /// Draws the shown texture into `viewport` of the target (nothing when no frame is shown or the viewport is empty).
     /// The target is cleared to `background` first, so the margins around the viewport are plain background.
     /// A viewport that sticks out of the target (pixel-exact mode, small target) is clipped and the frame cropped (see below).
-    /// Returns the full (unclipped, possibly negative-origin) viewport of the frame, or nil when no frame was drawn.
+    /// Returns the full (unclipped, possibly negative-origin) viewport of the frame and where the cursor was drawn (nil when
+    /// it was not), or nil when no frame was drawn. The cursor is the second draw of the same pass, after the frame, and
+    /// only over a drawn frame (10.8).
     @discardableResult
     private func encode(
         into target: MTLTexture, background: MTLClearColor, mode: PresentMode, commandBuffer: MTLCommandBuffer
-    ) -> Viewport? {
+    ) -> (viewport: Viewport, cursor: CursorPlacement?)? {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].clearColor = background
         pass.colorAttachments[0].storeAction = .store
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
-        var drawn: Viewport?
+        var drawn: (viewport: Viewport, cursor: CursorPlacement?)?
         if let texture = retainShown() {
             let viewport = ViewportLayout.viewport(
                 mode: mode, frameWidth: texture.width, frameHeight: texture.height,
@@ -213,7 +308,26 @@ final class MetalPresenter {
                 encoder.setFragmentTexture(texture, index: 0)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 commandBuffer.addCompletedHandler { [weak self] _ in self?.releaseShown(texture) }
-                drawn = viewport
+                var placed: CursorPlacement?
+                if let cursor = cursorSnapshot(),
+                   let placement = CursorOverlay.placement(
+                       frameWidth: texture.width, frameHeight: texture.height, posX: cursor.state.posX,
+                       posY: cursor.state.posY, hotX: cursor.state.hotX, hotY: cursor.state.hotY,
+                       width: cursor.state.width, height: cursor.state.height, full: viewport, visible: visible) {
+                    // The viewport of the cursor is inside `visible`, so inside the render target; the scissor rect is a safety net.
+                    var cursorUV = SIMD4<Float>(
+                        Float(placement.u0), Float(placement.v0), Float(placement.du), Float(placement.dv))
+                    encoder.setScissorRect(MTLScissorRect(x: visible.x, y: visible.y, width: visible.width, height: visible.height))
+                    encoder.setViewport(MTLViewport(
+                        originX: placement.x0, originY: placement.y0, width: placement.x1 - placement.x0,
+                        height: placement.y1 - placement.y0, znear: 0, zfar: 1))
+                    encoder.setVertexBytes(&cursorUV, length: MemoryLayout<SIMD4<Float>>.size, index: 0)
+                    encoder.setRenderPipelineState(cursorPipeline)
+                    encoder.setFragmentTexture(cursor.texture, index: 0)
+                    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                    placed = placement
+                }
+                drawn = (viewport, placed)
             }
         }
         encoder.endEncoding()
@@ -225,10 +339,10 @@ final class MetalPresenter {
     @discardableResult
     func render(to drawable: CAMetalDrawable, background: MTLClearColor, mode: PresentMode) -> Viewport? {
         guard let commandBuffer = queue.makeCommandBuffer() else { return nil }
-        let viewport = encode(into: drawable.texture, background: background, mode: mode, commandBuffer: commandBuffer)
+        let drawn = encode(into: drawable.texture, background: background, mode: mode, commandBuffer: commandBuffer)
         commandBuffer.present(drawable)
         commandBuffer.commit()
-        return viewport
+        return drawn?.viewport
     }
 
     /// Offscreen path: renders the shown texture into a `targetWidth` x `targetHeight` texture (physical pixels) and reads
@@ -237,7 +351,7 @@ final class MetalPresenter {
     /// or nil when nothing is shown. Margins are B, G, R, X = 0.
     func renderOffscreen(
         targetWidth: Int, targetHeight: Int, mode: PresentMode
-    ) -> (width: Int, height: Int, pixels: [UInt8], viewport: Viewport)? {
+    ) -> (width: Int, height: Int, pixels: [UInt8], viewport: Viewport, cursor: CursorPlacement?)? {
         guard targetWidth > 0, targetHeight > 0 else { return nil }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: targetWidth, height: targetHeight, mipmapped: false)
@@ -257,6 +371,6 @@ final class MetalPresenter {
                 raw.baseAddress!, bytesPerRow: targetWidth * 4,
                 from: MTLRegionMake2D(0, 0, targetWidth, targetHeight), mipmapLevel: 0)
         }
-        return (targetWidth, targetHeight, pixels, viewport)
+        return (targetWidth, targetHeight, pixels, viewport.viewport, viewport.cursor)
     }
 }

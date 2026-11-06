@@ -8,7 +8,7 @@ import Foundation
 // the frames of FRAME_TRANSPORT_V1.md in a Metal window, or, with `--dump-frame PATH`, renders offscreen
 // without any window and writes the raw frame (B, G, R, X rows, stride = width * 4).
 //
-// usage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]
+// usage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]
 // The profile flag is for smoke use only; `pattern` is the only value until S10-09 adds `probe`.
 //
 // S10-11 presentation: by default the frame is scaled with its aspect ratio kept (letterbox/pillarbox, plain background
@@ -16,6 +16,12 @@ import Foundation
 // dump, `--dump-size WxH` is the LOGICAL window size in points (default: the frame size) and `--backing-scale S` the
 // backing scale factor (default 1), so the dumped drawable is round(W*S) x round(H*S) physical pixels, as for a window.
 // Without both options the dump has the frame size and is the 1:1 reference dump.
+//
+// S10-14 cursor: the reader accepts CURSOR notifications and the presenter draws the cursor over the frame (FRAME_TRANSPORT_V1.md 10.8).
+// The profile of this smoke never writes the cursor registers, so no cursor arrives from VMHost. `--dump-cursor-test X,Y,HX,HY,E`
+// (test-only, offscreen only) therefore injects a synthetic accepted cursor state into the presenter after the frame is shown:
+// a fixed 4x4 BGRA8888_PREMUL image (formula in tests/system/cursor_overlay_smoke.py), hotspot (HX, HY), position (X, Y), enabled E.
+// It exercises the real upload and draw path; the transport and the device are not involved. It is not used in the normal path.
 //
 // S10-16 `--input-channel` (window mode only): a second socketpair (descriptor 4 in VMHost, `--input-fd 4`) carries the input
 // channel of protocols/control/INPUT_TRANSPORT_V1.md. The window then collects mouse, wheel and keyboard events and
@@ -32,7 +38,7 @@ private enum ViewerError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case let .usage(text):
-            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]"
+            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S] [--dump-cursor-test X,Y,HX,HY,E[,T]]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]"
         case let .metal(text): return "Metal: \(text)"
         case let .state(text): return "viewer state: \(text)"
         case let .vmhost(text): return "VMHost: \(text)"
@@ -51,6 +57,8 @@ private struct ViewerConfig {
     var inputChannel = false
     var dumpLogicalSize: (width: Int, height: Int)?
     var backingScale = 1.0
+    /// Test-only synthetic cursor (see the header comment): position, hotspot, enabled.
+    var cursorTest: (x: Int, y: Int, hotX: Int, hotY: Int, enabled: Bool, translucent: Bool)?
 
     var mode: PresentMode { pixelExact ? .pixelExact : .fit }
 
@@ -78,6 +86,7 @@ private struct ViewerConfig {
         }
         let known: Set<String> = [
             "vmhost", "profile", "dump-frame", "timeout-ms", "close-after-ms", "dump-size", "backing-scale",
+            "dump-cursor-test",
         ]
         if let unknown = values.keys.first(where: { !known.contains($0) }) {
             throw ViewerError.usage("unknown option --\(unknown)")
@@ -108,6 +117,17 @@ private struct ViewerConfig {
                 throw ViewerError.usage("bad --dump-size \(text) (WxH, 1...16384)")
             }
             config.dumpLogicalSize = (width, height)
+        }
+        if let text = values["dump-cursor-test"] {
+            guard config.dumpPath != nil else { throw ViewerError.usage("--dump-cursor-test needs --dump-frame") }
+            let parts = text.split(separator: ",", omittingEmptySubsequences: false).map { Int($0) }
+            guard parts.count == 5 || parts.count == 6, let x = parts[0], let y = parts[1], let hotX = parts[2],
+                  let hotY = parts[3], let enabled = parts[4], (0...4095).contains(x), (0...2303).contains(y),
+                  (0..<4).contains(hotX), (0..<4).contains(hotY), enabled == 0 || enabled == 1,
+                  parts.count == 5 || parts[5] == 0 || parts[5] == 1 else {
+                throw ViewerError.usage("bad --dump-cursor-test \(text) (X,Y,HX,HY,E[,T] with HX, HY in 0...3, E and T 0 or 1)")
+            }
+            config.cursorTest = (x, y, hotX, hotY, enabled == 1, parts.count == 6 && parts[5] == 1)
         }
         if let text = values["backing-scale"] {
             guard let value = Double(text), value >= 1, value <= 4 else {
@@ -179,17 +199,34 @@ private final class ViewerSession {
     @discardableResult
     func step(timeoutMs: Int32) -> Bool {
         let acceptedBefore = reader.acceptedCount
+        let cursorAcceptedBefore = reader.cursorAcceptedCount
         var uploaded = false
-        let changed = reader.pump(timeoutMs: timeoutMs) { [presenter] pixels, frame in
-            uploaded = true
-            presenter.upload(pixels: pixels, frame: frame)
-        }
+        var cursorUploaded = false
+        let changed = reader.pump(
+            timeoutMs: timeoutMs,
+            copy: { [presenter] pixels, frame in
+                uploaded = true
+                presenter.upload(pixels: pixels, frame: frame)
+            },
+            cursorCopy: { [presenter] pixels, cursor in
+                cursorUploaded = true
+                return presenter.uploadCursor(pixels: pixels, cursor: cursor)
+            })
         if reader.acceptedCount != acceptedBefore {
             presenter.commit()
         } else if uploaded {
             presenter.discard()
         }
+        // The cursor is independent of the frame: an accepted update commits the cursor state (and a new texture if the
+        // shape changed); a discarded one drops only the staged texture. The reader state does not clear the cursor state
+        // (10.6): the presenter draws it only over a shown frame.
+        if reader.cursorAcceptedCount != cursorAcceptedBefore {
+            presenter.commitCursor(reader.cursor)
+        } else if cursorUploaded {
+            presenter.discardCursor()
+        }
         if reader.state != .showing { presenter.clear() }
+        if reader.state.isTerminal { presenter.commitCursor(nil) }
         return changed
     }
 
@@ -259,6 +296,43 @@ private func describe(_ state: FrameReaderState) -> String {
 
 // MARK: Offscreen
 
+/// Test-only image of `--dump-cursor-test`: 4x4 `BGRA8888_PREMUL`, pixel (i, j) = column i, row j. If (i + j) % 4 == 0 it is
+/// transparent (0, 0, 0, 0); otherwise B = 40 + 50 i, G = 40 + 50 j, R = 255 - 40 (i + j), A = 255. Only A in {0, 255}.
+/// With `translucent` (T = 1) the image has 0 < A < 255 everywhere: A = 64 * (1 + (i + j) % 3), B = A (i + 1) / 4,
+/// G = A (j + 1) / 4, R = A ((i + j) % 4 + 1) / 4 (integer division; every colour channel <= A, premultiplied).
+private func testCursorImage(translucent: Bool = false) -> [UInt8] {
+    var bytes = [UInt8]()
+    for j in 0..<4 {
+        for i in 0..<4 {
+            if translucent {
+                let a = 64 * (1 + (i + j) % 3)
+                bytes += [UInt8(a * (i + 1) / 4), UInt8(a * (j + 1) / 4), UInt8(a * ((i + j) % 4 + 1) / 4), UInt8(a)]
+            } else if (i + j) % 4 == 0 {
+                bytes += [0, 0, 0, 0]
+            } else {
+                bytes += [UInt8(40 + 50 * i), UInt8(40 + 50 * j), UInt8(255 - 40 * (i + j)), 255]
+            }
+        }
+    }
+    return bytes
+}
+
+/// Injects the synthetic accepted cursor through the presenter's real upload/commit path (no transport, no device).
+private func injectTestCursor(
+    _ test: (x: Int, y: Int, hotX: Int, hotY: Int, enabled: Bool, translucent: Bool), into presenter: MetalPresenter
+) {
+    let cursor = AcceptedCursor(
+        cursorSeq: 1, enabled: test.enabled, shapeSeq: 1, width: 4, height: 4, hotX: test.hotX, hotY: test.hotY,
+        posX: test.x, posY: test.y)
+    _ = testCursorImage(translucent: test.translucent).withUnsafeBytes { presenter.uploadCursor(pixels: $0.baseAddress!, cursor: cursor) }
+    presenter.commitCursor(cursor)
+}
+
+private func describe(_ placement: CursorPlacement?) -> String {
+    guard let p = placement else { return "none" }
+    return "rect=\(p.x0),\(p.y0),\(p.x1),\(p.y1) uv=\(p.u0),\(p.v0),\(p.du),\(p.dv)"
+}
+
 private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
     let presenter = try MetalPresenter()
     let session = try ViewerSession(config: config, presenter: presenter)
@@ -268,7 +342,7 @@ private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
         session.step(timeoutMs: 50)
     }
     let finalState = session.reader.state
-    var rendered: (width: Int, height: Int, pixels: [UInt8], viewport: Viewport)?
+    var rendered: (width: Int, height: Int, pixels: [UInt8], viewport: Viewport, cursor: CursorPlacement?)?
     var logical = (width: 0, height: 0)
     if finalState == .showing, let frame = presenter.shownSize {
         logical = config.dumpLogicalSize ?? (frame.width, frame.height)
@@ -279,6 +353,7 @@ private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
             _ = session.shutdown()
             throw ViewerError.usage("drawable \(physical.width)x\(physical.height) exceeds 16384")
         }
+        if let test = config.cursorTest { injectTestCursor(test, into: presenter) }
         rendered = presenter.renderOffscreen(targetWidth: physical.width, targetHeight: physical.height, mode: config.mode)
     }
     let frameSize = presenter.shownSize
@@ -297,7 +372,8 @@ private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
         + "bytes=\(rendered.pixels.count) generation=\(generation) mode=\(config.pixelExact ? "pixel-exact" : "fit") "
         + "logical=\(logical.width)x\(logical.height) physical=\(rendered.width)x\(rendered.height) "
         + "scale=\(config.backingScale) viewport=\(rendered.viewport) "
-        + "visible=\(rendered.viewport.clipped(targetWidth: rendered.width, targetHeight: rendered.height)) path=\(dumpPath)")
+        + "visible=\(rendered.viewport.clipped(targetWidth: rendered.width, targetHeight: rendered.height)) "
+        + "cursor=\(describe(rendered.cursor)) path=\(dumpPath)")
 }
 
 // MARK: Window
