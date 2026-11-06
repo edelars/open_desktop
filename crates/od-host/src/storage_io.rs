@@ -244,10 +244,12 @@ impl HostFileStorage {
                 "length exceeds host file size limit",
             )));
         }
+        use std::os::unix::fs::OpenOptionsExt as _;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(path)?;
         let storage = Self {
             file,

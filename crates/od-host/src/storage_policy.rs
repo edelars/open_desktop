@@ -145,6 +145,10 @@ pub enum PublishError {
     /// The partial name no longer names the file the caller wrote (it was
     /// replaced), so nothing is published under the target name.
     PartialChanged,
+    /// The target name was created by this call but does not name the written
+    /// file (or could not be checked). The name is left in place and its bytes
+    /// are not trusted; removing it could delete a path another party now owns.
+    TargetUnverified(Option<io::Error>),
     Io(io::Error),
 }
 
@@ -153,6 +157,9 @@ impl fmt::Display for PublishError {
         match self {
             Self::TargetExists => f.write_str("publish refused: the target name exists"),
             Self::PartialChanged => f.write_str("publish refused: the partial name was replaced"),
+            Self::TargetUnverified(_) => f.write_str(
+                "publish stopped: the target name does not name the written file and was left in place",
+            ),
             Self::Io(error) => write!(f, "publish failed: {error}"),
         }
     }
@@ -171,24 +178,52 @@ pub struct Published {
 
 /// Gives the finished file `partial` the name `target` **without ever
 /// replacing** an existing name: a hard link, which the file system refuses
-/// atomically when `target` exists. `expected` is the `(st_dev, st_ino)` of
-/// the file the caller wrote; a partial name that no longer names it is
-/// refused before linking and re-checked after.
+/// atomically when `target` exists.
 ///
-/// This is an atomic *no-replace* publication of a name, not the durable
-/// atomic rename that ISSUE-055 asks for: there is no directory flush, so a
-/// power loss may lose the new name (the finished data stays reachable under
-/// `partial`), and a file system without hard links yields an error here and
-/// publishes nothing. Nothing is ever truncated, and a name is removed only
-/// when it was created by this call or is the partial name of the very file
-/// just published.
+/// `writer` is the exclusive writer lock on the finished file. The caller keeps
+/// it held until this call returns, so no other writer can change the file
+/// between verification and publication. Its identity is the `(st_dev,
+/// st_ino)` of the locked descriptor; a partial name that no longer names that
+/// file is refused before linking.
+///
+/// A name created by this call is **never removed**. After the link, a target
+/// that does not name the written file is reported as
+/// [`PublishError::TargetUnverified`] and left in place, because removing it
+/// could delete a path that another party now owns. Removing the partial name
+/// after success is still a path operation; see STAGE_9_REPORT §8.
+///
+/// This is an atomic *no-replace* publication of a name, not the durable atomic
+/// rename that ISSUE-055 asks for: there is no directory flush, so a power loss
+/// may lose the new name (the finished data stays reachable under `partial`).
+/// A file system without hard links yields an error here and publishes nothing.
 pub fn publish_no_replace(
     partial: &Path,
     target: &Path,
-    expected: (u64, u64),
+    writer: &HostFileStorage,
 ) -> Result<Published, PublishError> {
-    // `symlink_metadata`: a symlink swapped in for the partial name must not
-    // be identified as the file it points to.
+    publish_checking(partial, target, writer, &mut |_| {})
+}
+
+/// Points inside [`publish_checking`] where tests can act.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublishStage {
+    BeforeLink,
+    AfterLink,
+}
+
+fn publish_checking(
+    partial: &Path,
+    target: &Path,
+    writer: &HostFileStorage,
+    hook: &mut dyn FnMut(PublishStage),
+) -> Result<Published, PublishError> {
+    let Some(expected) = writer.file_identity() else {
+        return Err(PublishError::Io(io::Error::other(
+            "writer holds no lock on a file identity",
+        )));
+    };
+    // `symlink_metadata`: a symlink swapped in must not pass as the file it
+    // points to.
     let identity_of = |path: &Path| -> io::Result<(u64, u64)> {
         let meta = std::fs::symlink_metadata(path)?;
         Ok((meta.dev(), meta.ino()))
@@ -201,6 +236,7 @@ pub fn publish_no_replace(
         }
         Err(error) => return Err(PublishError::Io(error)),
     }
+    hook(PublishStage::BeforeLink);
     std::fs::hard_link(partial, target).map_err(|error| {
         if error.kind() == io::ErrorKind::AlreadyExists {
             PublishError::TargetExists
@@ -208,17 +244,13 @@ pub fn publish_no_replace(
             PublishError::Io(error)
         }
     })?;
-    // The link was made by this call; if it does not name the written file
-    // (the partial name was swapped in between) take our own name back.
+    hook(PublishStage::AfterLink);
+    // The link was made by this call. If it does not name the written file, the
+    // name stays: it may now belong to someone else.
     match identity_of(target) {
         Ok(id) if id == expected => {}
-        other => {
-            let _ = std::fs::remove_file(target);
-            return Err(match other {
-                Err(error) if error.kind() != io::ErrorKind::NotFound => PublishError::Io(error),
-                _ => PublishError::PartialChanged,
-            });
-        }
+        Ok(_) => return Err(PublishError::TargetUnverified(None)),
+        Err(error) => return Err(PublishError::TargetUnverified(Some(error))),
     }
     let partial_removed = matches!(identity_of(partial), Ok(id) if id == expected)
         && std::fs::remove_file(partial).is_ok();
@@ -425,24 +457,28 @@ mod tests {
     /// catches a call that waits.
     const NO_WAIT: Duration = Duration::from_secs(2);
 
+    /// The writer that publication must hold: opened on the finished file.
+    fn writer_for(path: &Path) -> HostFileStorage {
+        HostFileStorage::open_read_write_exclusive(path).expect("writer on the finished file")
+    }
+
     #[test]
     fn publish_no_replace_links_the_finished_file_and_never_replaces() {
         let dir = TempDir::new();
         let partial = dir.file("out.raw.partial", BYTES);
         let target = dir.path("out.raw");
-        let meta = std::fs::metadata(&partial).expect("meta");
-        let id = (meta.dev(), meta.ino());
-        let done = publish_no_replace(&partial, &target, id).expect("publish");
+        let writer = writer_for(&partial);
+        let done = publish_no_replace(&partial, &target, &writer).expect("publish");
         assert!(done.partial_removed);
         assert_eq!(std::fs::read(&target).expect("read"), BYTES);
         assert!(!partial.exists());
+        drop(writer);
 
         // An existing target is refused and keeps its bytes; the partial file
         // is left where it was.
         let partial = dir.file("again.partial", b"new bytes");
-        let meta = std::fs::metadata(&partial).expect("meta");
-        let id = (meta.dev(), meta.ino());
-        let result = publish_no_replace(&partial, &target, id);
+        let writer = writer_for(&partial);
+        let result = publish_no_replace(&partial, &target, &writer);
         assert!(
             matches!(result, Err(PublishError::TargetExists)),
             "{result:?}"
@@ -454,12 +490,13 @@ mod tests {
     #[test]
     fn publish_no_replace_refuses_a_partial_name_that_is_not_the_written_file() {
         let dir = TempDir::new();
-        let partial = dir.file("x.partial", b"swapped in");
+        let partial = dir.file("x.partial", BYTES);
+        let writer = writer_for(&partial);
+        // Another file takes the partial name while the writer holds the old one.
+        let other = dir.file("other", b"swapped in");
+        std::fs::rename(&other, &partial).expect("swap");
         let target = dir.path("x.raw");
-        // Identity of some other file than the one at the partial name.
-        let other = dir.file("other", b"the file that was written");
-        let meta = std::fs::metadata(&other).expect("meta");
-        let result = publish_no_replace(&partial, &target, (meta.dev(), meta.ino()));
+        let result = publish_no_replace(&partial, &target, &writer);
         assert!(
             matches!(result, Err(PublishError::PartialChanged)),
             "{result:?}"
@@ -467,12 +504,88 @@ mod tests {
         assert!(!target.exists(), "nothing may be published");
         assert_eq!(std::fs::read(&partial).expect("read"), b"swapped in");
         // A missing partial name is the same refusal.
-        let result = publish_no_replace(&dir.path("gone"), &target, (meta.dev(), meta.ino()));
+        std::fs::remove_file(&partial).expect("remove");
+        let result = publish_no_replace(&partial, &target, &writer);
         assert!(
             matches!(result, Err(PublishError::PartialChanged)),
             "{result:?}"
         );
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn a_target_swapped_after_the_link_is_reported_and_never_removed() {
+        let dir = TempDir::new();
+        let partial = dir.file("y.partial", BYTES);
+        let target = dir.path("y.raw");
+        let writer = writer_for(&partial);
+        let foreign = dir.file("foreign", b"not ours");
+        let result = publish_checking(&partial, &target, &writer, &mut |stage| {
+            if stage == PublishStage::AfterLink {
+                std::fs::rename(&foreign, &target).expect("swap the target name");
+            }
+        });
+        assert!(
+            matches!(result, Err(PublishError::TargetUnverified(None))),
+            "{result:?}"
+        );
+        assert_eq!(
+            std::fs::read(&target).expect("read"),
+            b"not ours",
+            "the foreign file must stay in place"
+        );
+        assert!(partial.exists(), "the partial name stays");
+    }
+
+    #[test]
+    fn a_target_removed_after_the_link_is_reported_and_nothing_else_is_removed() {
+        let dir = TempDir::new();
+        let partial = dir.file("w.partial", BYTES);
+        let target = dir.path("w.raw");
+        let writer = writer_for(&partial);
+        let result = publish_checking(&partial, &target, &writer, &mut |stage| {
+            if stage == PublishStage::AfterLink {
+                std::fs::remove_file(&target).expect("remove the target name");
+            }
+        });
+        assert!(
+            matches!(
+                &result,
+                Err(PublishError::TargetUnverified(Some(e))) if e.kind() == io::ErrorKind::NotFound
+            ),
+            "{result:?}"
+        );
+        assert!(partial.exists(), "the partial name stays");
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn the_finished_file_stays_locked_until_publication_returns() {
+        let dir = TempDir::new();
+        let partial = dir.file("z.partial", BYTES);
+        let target = dir.path("z.raw");
+        let writer = writer_for(&partial);
+        let busy = std::cell::Cell::new(None);
+        publish_checking(&partial, &target, &writer, &mut |stage| {
+            if stage == PublishStage::AfterLink {
+                busy.set(Some(matches!(
+                    HostFileStorage::open_read_write_exclusive(&partial),
+                    Err(crate::storage_io::WriterOpenError::WriterBusy)
+                )));
+            }
+        })
+        .expect("publish");
+        assert_eq!(busy.get(), Some(true), "the writer lock must still be held");
+    }
+
+    #[test]
+    fn a_created_partial_file_is_private_to_its_owner() {
+        let dir = TempDir::new();
+        let partial = dir.path("m.partial");
+        let writer = HostFileStorage::create_new_exclusive(&partial, 0).expect("create");
+        let mode = std::fs::metadata(&partial).expect("meta").mode();
+        assert_eq!(mode & 0o077, 0, "mode {mode:o}");
+        drop(writer);
     }
 
     #[test]

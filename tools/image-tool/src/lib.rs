@@ -38,8 +38,11 @@
 //!   The data goes to `<out.raw>.partial` (created exclusively), is made
 //!   durable, read back and compared byte for byte with a second read of the
 //!   source, and only then gets the name `<out.raw>` by an atomic no-replace
-//!   hard link. On any failure `<out.raw>` is **not created**; the file that
-//!   is left is `<out.raw>.partial`, named as incomplete (it is never deleted:
+//!   hard link. On any failure before the link `<out.raw>` is **not created**; the
+//!   file that is left is `<out.raw>.partial`. If the link was made but the name
+//!   no longer names the written file, the run exits 5 with `target_unverified`
+//!   and `target_left=true`: `<out.raw>` is left in place, is not removed, and
+//!   its bytes must not be trusted, named as incomplete (it is never deleted:
 //!   without namespace guarantees the tool does not remove paths it cannot
 //!   prove it still owns). An existing `<out.raw>` or `.partial` is refused
 //!   (exit 5, `target_exists` / `partial_exists`) before anything is written.
@@ -351,6 +354,41 @@ impl StorageBackend for LeaseRef<'_> {
     }
 }
 
+/// A writable backend over the exclusive writer lock that [`export_file`]
+/// keeps until publication. Export writes through this handle, and the lock
+/// stays with the shared writer, so `.partial` is never unlocked in between.
+struct SharedWriter(std::rc::Rc<std::cell::RefCell<HostFileStorage>>);
+
+impl StorageBackend for SharedWriter {
+    fn capabilities(&self) -> StorageCapabilities {
+        self.0.borrow().capabilities()
+    }
+
+    fn size(&self) -> Result<u64, BackendError> {
+        self.0.borrow().size()
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BackendError> {
+        self.0.borrow().read_at(offset, buf)
+    }
+
+    fn write_at(&mut self, offset: u64, buf: &[u8]) -> Result<usize, BackendError> {
+        self.0.borrow_mut().write_at(offset, buf)
+    }
+
+    fn set_len(&mut self, len: u64) -> Result<(), BackendError> {
+        self.0.borrow_mut().set_len(len)
+    }
+
+    fn flush_file_durable(&mut self) -> Result<(), BackendError> {
+        self.0.borrow_mut().flush_file_durable()
+    }
+
+    fn flush_namespace_durable(&mut self) -> Result<(), BackendError> {
+        self.0.borrow_mut().flush_namespace_durable()
+    }
+}
+
 /// `key=value` output of a command that is not an inspection.
 struct Lines(String);
 
@@ -488,7 +526,8 @@ pub fn export_file(
     // `identity` record what the closure did so the failure paths can say
     // whether a partial file exists.
     let created = std::cell::Cell::new(false);
-    let identity = std::cell::Cell::new(None);
+    let held: std::cell::RefCell<Option<std::rc::Rc<std::cell::RefCell<HostFileStorage>>>> =
+        std::cell::RefCell::new(None);
     let step = export_with_lease(src, |lease| {
         let Ok(source) = CheckedStorage::new(LeaseRef(lease)) else {
             return ExportStep::Failed(Outcome::Io, "io_error", None);
@@ -505,8 +544,10 @@ pub fn export_file(
                         WriterOpenError::IdentityMismatch => io::Error::from(io::ErrorKind::Other),
                     })?;
                 created.set(true);
-                identity.set(file.file_identity());
-                CheckedStorage::new(file).map_err(|_| io::Error::other("capabilities"))
+                let shared = std::rc::Rc::new(std::cell::RefCell::new(file));
+                *held.borrow_mut() = Some(std::rc::Rc::clone(&shared));
+                CheckedStorage::new(SharedWriter(shared))
+                    .map_err(|_| io::Error::other("capabilities"))
             },
             &ExportOptions::default(),
             &|| false,
@@ -535,22 +576,28 @@ pub fn export_file(
         }
         ExportStep::Done(report) => report,
     };
-    let Some(identity) = identity.get() else {
+    // The writer lock on `.partial` is held from its creation until publication
+    // has returned.
+    let Some(shared) = held.borrow_mut().take() else {
         let mut l = failure("export", Outcome::Io, "io_error", None);
         l.put("published", false).put("partial_left", created.get());
         return run_of(l, Outcome::Io);
     };
     // Verified and durable: only now does the target name appear.
-    let published = match publish_no_replace(&partial, out, identity) {
+    let published = match publish_no_replace(&partial, out, &shared.borrow()) {
         Ok(p) => p,
         Err(e) => {
             let reason = match &e {
                 PublishError::TargetExists => "target_exists",
                 PublishError::PartialChanged => "partial_changed",
+                PublishError::TargetUnverified(_) => "target_unverified",
                 PublishError::Io(_) => "publish_failed",
             };
+            let target_left = matches!(e, PublishError::TargetUnverified(_));
             let mut l = failure("export", Outcome::Io, reason, None);
-            l.put("published", false).put("partial_left", true);
+            l.put("published", false)
+                .put("partial_left", true)
+                .put("target_left", target_left);
             return run_of(l, Outcome::Io);
         }
     };
