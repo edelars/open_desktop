@@ -61,6 +61,10 @@ process smoke timed out once in three runs and passed twice on retry; its cause
 is unlocalized and it is not a clean gate. See the
 [S3-38a report](../../docs/reports/STAGE_3_S3-38a_2026-10-29.md).
 
+## VMHost inside `OpenDesktop.app` (S11-05b)
+
+`python3 tools/build/build_app_bundle.py` (see [`apps/macos/README.md`](../macos/README.md)) copies the SwiftPM binary `od-vmhost` to `OpenDesktop.app/Contents/Helpers/od-vmhost` (source for the path choice: not found, see that README) and signs it ad-hoc with `--options runtime` and `apps/vmhost/Configuration/vmhost.entitlements` (`com.apple.security.cs.allow-jit`); the application has no JIT entitlement. `vmhost-smoke.entitlements` stays for the smoke scripts of the previous sections (identical content, separate file). The application finds the helper at that path; `--vmhost PATH` of the application overrides it.
+
 ## S10-06 frame publication (test-only display smoke)
 
 `Sources/FrameTransport.swift` is the writer of [frame transport v2](../../protocols/control/FRAME_TRANSPORT_V1.md) (v1 plus the cursor, S10-14, section below): POSIX shm created by VMHost (random name, `shm_unlink` at once, one `ftruncate`), slots and seqlock publication, `ANNOUNCE` with `SCM_RIGHTS`, `MODE`/`FRAME` notification queue, `VERSION` reply to a foreign `HELLO`. Atomics go through the C shim `apps/macos/Sources/ODAtomics/include/FrameTransportAtomics.h` (target `ODAtomics`, shared with the UI reader; included by `Sources/ODHostABI/include/VMHostABI.h`, together with `include/open_desktop/display_abi_v1.h`); the ARM64 code generation of the shim was checked by disassembly (`ldapr`, `stlr`, `str`, `ldr`, `dmb ish`, `dmb ishld`). The frame is copied once: `od_display_session_read_frame` writes straight into the slot.

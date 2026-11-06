@@ -22,7 +22,7 @@ The viewer links no Rust code: it only spawns VMHost, so `libod_host.a` is neede
 | `open-desktop-launcher-smoke` | executable | `launcher.swift`; depends on `ODShared` and `ODHostConstants` (constants only), does not link `libod_host.a` |
 | `OpenDesktopMacTests` | tests (XCTest) | `Tests/ViewportTests.swift`, `Tests/InputTests.swift`, `Tests/ControlV2Tests.swift` (`swift test --filter ControlV2XCTests`, 11 tests); `@testable import` of `ODShared` and of the viewer module, because the tests use internal API |
 
-`OpenDesktop` (the SwiftUI application) and `odctl` do not exist yet and are not declared: S11-05b and S11-13 add them with their sources. The VMHost targets (`od-vmhost`, `ODHostABI`, `OpenDesktopVMHostTests`) are described in [`apps/vmhost/README.md`](../vmhost/README.md).
+`OpenDesktop` (S11-05b, the SwiftUI application) is described in the next section; `odctl` does not exist yet and is not declared: S11-13 adds it with its sources. The VMHost targets (`od-vmhost`, `ODHostABI`, `OpenDesktopVMHostTests`) are described in [`apps/vmhost/README.md`](../vmhost/README.md).
 
 From the repository root (the Rust staticlib first, because `od-vmhost` links `target/<profile>/libod_host.a`; `swift build` is debug, `-c release` needs `cargo build --release -p od-host --offline`):
 
@@ -66,6 +66,31 @@ Options: `--vmhost PATH` (required), `--profile pattern` (smoke only; the only v
 Without `--dump-size` and `--backing-scale` the dump has the frame size and is the 1:1 reference dump (tolerance 0). Every dump prints the guest frame size (`width`, `height`), `logical`, `physical`, `scale`, `mode`, `viewport=x,y,w,h` (full frame rectangle in drawable pixels, origin top-left, may start below 0 when pixel-exact crops) and `visible=x,y,w,h` (the part handed to Metal); the window mode prints `window geometry: logical=… physical=… scale=…` on exit. Logical (points) and physical (pixels) sizes differ on Retina and both belong in every measurement report. S10-16 uses `ViewportLayout.guestPixel` for the absolute mouse position (see the input section below).
 
 The launcher smoke (`launcher.swift`) now also needs `Sources/Shared/VMHostLaunch.swift` in its compile command; the command in [`apps/vmhost/README.md`](../vmhost/README.md) shows it.
+
+## OpenDesktop.app (S11-05b, written, awaiting review)
+
+One command builds the application with VMHost inside (from the repository root, macOS only):
+
+```sh
+python3 tools/build/build_app_bundle.py            # release; prints app_bundle_path=<path> as the last stdout line
+python3 tools/build/build_app_bundle.py --configuration debug --output /private/tmp/od-app
+```
+
+What it does: `cargo build --release -p od-host --offline` (the staticlib that only `od-vmhost` links), `swift build -c release --product OpenDesktop` and `--product od-vmhost` from `apps/`, then the layout below, `plutil -lint`, ad-hoc `codesign --options runtime` of the helper (entitlements `apps/vmhost/Configuration/vmhost.entitlements`: `com.apple.security.cs.allow-jit` only) and then of the application (`apps/macos/Configuration/OpenDesktop.entitlements`: empty, no App Sandbox, no JIT; ADR-0006 (b)), and `codesign --verify --strict` of both. The default output is `target/app-bundle/OpenDesktop.app` (`--output DIR` changes the directory).
+
+```text
+OpenDesktop.app/Contents/Info.plist            (apps/macos/Resources/Info.plist)
+OpenDesktop.app/Contents/MacOS/OpenDesktop     (SwiftPM product OpenDesktop, apps/macos/Sources/App/)
+OpenDesktop.app/Contents/Helpers/od-vmhost     (SwiftPM product od-vmhost)
+```
+
+- **Helper path `Contents/Helpers/od-vmhost`: source not found.** Context7 has no Apple documentation of the bundle structure (queries for SwiftPM and for bundle layout returned only SwiftPM manifest docs and Bazel `rules_apple`, whose `additional_contents` says only that files go to a chosen subdirectory of `Contents`). The choice is a convention, not a verified Apple rule. A reviewer recalls that Apple TN2206 mentions `Contents/Helpers` for helper programs; this was not checked through Context7 and is not relied on. What was checked on this machine instead: `codesign --verify --strict` and `--strict --deep` pass for the helper and for the application, the helper keeps its own entitlements (`codesign -d --entitlements -`), and the helper runs from that path (`open-desktop-launcher-smoke --vmhost .../Contents/Helpers/od-vmhost` returns a result). The alternative is `Contents/MacOS`. Note that `_CodeSignature/CodeResources` of the application records `Helpers/od-vmhost` with a `cdhash` and a `requirement`, that is, the helper is signed as nested code: the application must be signed after the helper, which the script does.
+- **The application finds VMHost inside its bundle** (`Bundle.main.bundleURL + Contents/Helpers/od-vmhost`, `Sources/App/AppOptions.swift`); `--vmhost PATH` (or `--vmhost=PATH`) overrides it for smoke. Unknown arguments of the system are ignored; `--vmhost` without a value exits with code 2. The application does not link `libod_host.a`, does not execute guest code and does not spawn VMHost yet (S11-06 and later).
+- **Content of the window:** title "Open Desktop", the text "Библиотека машин — S11-06" and one line with the VMHost path and whether it is found. This is an intermediate fact: the window opens, the library does not exist.
+- **Deployment target:** `apps/Package.swift` declares `platforms: [.macOS(.v14)]` and `Info.plist` has `LSMinimumSystemVersion` 14.0: the oldest macOS verified by the project (M1 Pro, macOS 14.6.1, `docs/testing/STAND.md`) and the value of `tests/system/vmhost_app_bundle_smoke.sh`. Before S11-05b SwiftPM built for 12.0 (checked with `vtool` on an empty package). The bundle was built and run on macOS 26.7 only; **running on macOS 14 was not re-checked for this bundle**.
+- `CFBundleIdentifier` is `dev.opendesk.OpenDesktop` (the smoke bundle uses `dev.opendesk.stage0.smoke`); it is a working value, to be fixed with the Developer ID work of stage 12.
+- Not checked: the window and its text by eye (only that a window of the process exists and is on screen), behaviour with Developer ID signing or notarization (stage 12), Gatekeeper, access to user files from the bundle (ADR-0006 (b): without App Sandbox, file access is not verified), launch through Finder or `open`, macOS 14.
+- Tests: `Tests/AppOptionsTests.swift` (`swift test --filter AppOptionsXCTests`, 5 tests): argument parsing and the helper location (no window, no process).
 
 ## S10-16 input from the window (host part written, awaiting review; NOT delivered to the guest)
 

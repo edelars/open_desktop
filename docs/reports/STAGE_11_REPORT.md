@@ -154,7 +154,15 @@ S11-00 в таблице остаётся `not_started`: принятие — т
 
 ### S11-05b. Сборка `OpenDesktop.app`, entitlements и `Info.plist`
 
-_Не начата. Раздел заполняется вместе с задачей._
+**Текущий статус (2026-11-06):** реализован в рабочем дереве, ревью пройдено (Opus, замечания исправлены), **не принят** (архитектурного принятия нет).
+
+- Файлы: `tools/build/build_app_bundle.py` (сборка `OpenDesktop` и `od-vmhost`, раскладка bundle, `plutil -lint`, ad-hoc подпись с `--options runtime`: сначала helper, затем приложение; проверка `codesign --verify --strict`); `apps/macos/Resources/Info.plist`; `apps/macos/Configuration/OpenDesktop.entitlements` (пустой: без sandbox и без JIT); `apps/vmhost/Configuration/vmhost.entitlements` (только `allow-jit`); `apps/macos/Sources/App/OpenDesktopApp.swift` и `AppOptions.swift` (окно с промежуточным текстом «Библиотека машин — S11-06», разбор `--vmhost`); `apps/macos/Tests/AppOptionsTests.swift` (6 тестов); цель `OpenDesktop` в `apps/Package.swift`.
+- Путь helper `Contents/Helpers/od-vmhost` — соглашение; источник по структуре bundle не найден через Context7 (возможная ссылка — Apple TN2206, по памяти, не проверено).
+- Решение, требующее подтверждения владельца: `platforms: [.macOS(.v14)]` и `LSMinimumSystemVersion` 14.0. Прежний минимум SwiftPM — 12.0 (проверено `vtool` на пустом пакете) — поднят для всей оболочки SwiftPM (viewer, launcher, VMHost). Прежние команды `swiftc` (под 26.0) совместимость не сужают.
+- Расхождения с планом: `platforms` и unit-тесты добавлены сверх плана; `CFBundleIdentifier` `dev.opendesk.OpenDesktop` — рабочее значение до этапа 12; приложение находит helper через `Bundle.main.bundleURL`, а не `url(forAuxiliaryExecutable:)`.
+- Проверки: `python3 tools/build/build_app_bundle.py` — exit 0 (`target/app-bundle/OpenDesktop.app`); `codesign --verify --strict --verbose=2` для приложения (`--deep`) и helper — exit 0 (ad-hoc, `adhoc,runtime`); у приложения пустые entitlements, у helper `allow-jit`; `swift build` — exit 0; `swift test` — 42 теста, 0 падений; launcher-smoke с helper из bundle — exit 0; приложение из bundle живёт ≥ 3 с, окно присутствует в `CGWindowList`; `python3 -m py_compile tools/build/build_app_bundle.py` — ok.
+- Не проверено: окно глазами; запуск через Finder и `open`; macOS 14 (собирали и запускали на 26.7); Developer ID и нотарификация — этап 12; доступ к пользовательским файлам без sandbox (ADR-0006 (б), включая TCC).
+- Пустое окно — промежуточный факт, не результат.
 
 ### S11-05c. Перевод smoke и README на новую сборку
 

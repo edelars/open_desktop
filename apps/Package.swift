@@ -12,7 +12,11 @@ let hostLibrary = { (profile: String) in repositoryRoot + "/target/" + profile +
 
 let package = Package(
     name: "OpenDesktop",
+    // S11-05b: 14.0 is the oldest macOS the project verified (docs/testing/STAND.md, M1 Pro, macOS 14.6.1) and the
+    // `LSMinimumSystemVersion` of `macos/Resources/Info.plist`. Without this line SwiftPM builds for 12.0 (checked on an empty package with `vtool`).
+    platforms: [.macOS(.v14)],
     products: [
+        .executable(name: "OpenDesktop", targets: ["OpenDesktop"]),
         .executable(name: "od-vmhost", targets: ["od-vmhost"]),
         .executable(name: "open-desktop-display-viewer", targets: ["open-desktop-display-viewer"]),
         .executable(name: "open-desktop-launcher-smoke", targets: ["open-desktop-launcher-smoke"]),
@@ -44,12 +48,18 @@ let package = Package(
                 .linkedFramework("CoreFoundation"), .linkedFramework("CoreServices"), .linkedFramework("Foundation"),
             ]
         ),
+        // The application (S11-05b). SwiftUI window; finds VMHost inside its bundle; no engine, no libod_host.a.
+        .executableTarget(
+            name: "OpenDesktop",
+            dependencies: ["ODShared"],
+            path: "macos/Sources/App"
+        ),
         // Smoke programs of stage 10 (windows with Metal; spawn of VMHost). They link no Rust code.
         .executableTarget(
             name: "open-desktop-display-viewer",
             dependencies: ["ODShared"],
             path: "macos/Sources",
-            exclude: ["Shared", "ODAtomics", "ODHostConstants", "launcher.swift", ".gitkeep"],
+            exclude: ["Shared", "App", "ODAtomics", "ODHostConstants", "launcher.swift", ".gitkeep"],
             sources: ["DisplayWindow.swift", "MetalPresenter.swift", "InputChannel.swift", "display_viewer_main.swift"],
             linkerSettings: [.linkedFramework("AppKit"), .linkedFramework("Metal"), .linkedFramework("QuartzCore")]
         ),
@@ -58,7 +68,7 @@ let package = Package(
             dependencies: ["ODShared", "ODHostConstants"],
             path: "macos/Sources",
             exclude: [
-                "Shared", "ODAtomics", "ODHostConstants", "DisplayWindow.swift", "MetalPresenter.swift", "InputChannel.swift",
+                "Shared", "App", "ODAtomics", "ODHostConstants", "DisplayWindow.swift", "MetalPresenter.swift", "InputChannel.swift",
                 "display_viewer_main.swift", ".gitkeep",
             ],
             sources: ["launcher.swift"]
@@ -66,7 +76,7 @@ let package = Package(
         // Tests (XCTest). The former executables with `@main` are test cases now.
         .testTarget(
             name: "OpenDesktopMacTests",
-            dependencies: ["ODShared", "open-desktop-display-viewer"],
+            dependencies: ["ODShared", "open-desktop-display-viewer", "OpenDesktop"],
             path: "macos/Tests"
         ),
         .testTarget(
