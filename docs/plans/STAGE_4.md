@@ -183,6 +183,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Открыто:** подписанные `.dsc`, `orig.tar.gz`, `diff.gz`, `Sources.xz`, `InRelease` и `apt-provenance.json`; authenticated source/config-to-binary mapping. S4-00 и S4-01 остаются открытыми.
 - **Проверки:** `shasum -a 256`, `file`, read-only Python 3 ELF64 section parser, `objdump -h`, `ar`, `zstd`, `tar`; ограничения инструментария и отсутствующие inputs описаны в отчёте.
 
+#### S4-00b. Проверить boot entry и paging transitions выбранного Linux
+
+- [x] Ограниченный evidence capture выполнен и принят после независимого ревью `gpt-6.1-sol/high`; приёмка родительских S4-00 и S4-01 не подтверждена.
+- **Evidence:** [отчёт S4-00b](../reports/STAGE_4_S4-00B_2026-11-06.md) и [manifest](../reports/data/stage4/s4-00b-kernel-entry-2026-11-06.json).
+- **Подтверждено:** заголовок точного `vmlinuz` — protocol 2.15, relocatable, direct 64-bit entry на `+0x200` от загруженного protected-mode payload (`setup_sects=39`, file offset `0x5200`); decompression выполняет kernel startup после входа. Официальный boot protocol требует Long64, paging, identity maps для `init_size`/zero page/command line, selectors `CS=0x10`, `DS=ES=SS=0x18` с соответствующими плоскими GDT descriptors и выключенные interrupts. В recovered source snapshot присутствуют 32-bit `startup_32` и условный LA57 selection/trampoline; четырёхуровневому профилю нужно согласованно исключить LA57 или реализовать переход. `no5lvl` отдельно не гарантирует отсутствия trampoline, если стартовый CR4.LA57 установлен.
+- **Открыто:** выбрать/зафиксировать loader handoff и CPU feature profile; initramfs/boot data; аутентифицированное source-to-binary provenance; фактическая загрузка Linux. S4-00 и S4-01 остаются открытыми.
+- **Проверки:** локальный read-only разбор boot header и измерение длины `vmlinuz`; SHA-256 `.deb` совпал с опубликованным checksum Ubuntu; source snapshot прочитан по ранее зафиксированным hashes. Код не менялся; тесты репозитория не запускались.
+
 ### S4-01. Снять baseline и разбить зависимости CPU/JIT
 
 - [ ] Принято после ревью.
