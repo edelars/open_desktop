@@ -1,0 +1,92 @@
+{
+  "slice": "S4-18b",
+  "date": "2026-11-06",
+  "scope": "Exact paged LGDT CPU entry, tracked RAM-only descriptor read, and guest-loaded GDT page-fault delivery path.",
+  "status": {
+    "implementation": "complete",
+    "independent_review": "passed",
+    "accepted": true,
+    "stage_4_complete": false
+  },
+  "profile": {
+    "cpu": "PagedLgdtLong64V1",
+    "cpu_entry": "step_paged_lgdt",
+    "machine_entry": "step_paged_lgdt",
+    "instruction": "bare 0F 01 55 ib (LGDT [SS:RBP+sign_extend(disp8)])",
+    "cr0": "0x80010033",
+    "cr4": "0x20",
+    "cr3_max_physical_address_width": 36,
+    "efer": "0xd00",
+    "paging": "Long64, canonical48, four-level, 4 KiB",
+    "descriptor_read": "single 10-byte RAM operation contained within one guest page"
+  },
+  "behavior": {
+    "reuses_existing_decoder_and_load_gdtr": true,
+    "exact_instruction_allowlist": true,
+    "success_changes_only_gdtr_and_rip": true,
+    "full_source_span_canonicality_checked_before_operand_walk": true,
+    "loaded_base_canonicality_checked_before_commit": true,
+    "crossing_rejected_before_operand_walk": true,
+    "instruction_fetch_stays_within_guest_page_including_rip_wraparound": true,
+    "actual_fetch_and_operand_accessed_updates_notified": true,
+    "descriptor_read_sets_no_dirty_bit": true,
+    "lock_ud_after_full_fetch": true,
+    "cpl_1_to_3_gp_before_operand_access": true,
+    "fetch_fault_precedes_operand_fault": true,
+    "physical_hole_is_backend_error": true,
+    "mmio_pio_descriptor_path_added": false,
+    "loaded_gdt_walked_by_lgdt": false,
+    "segment_caches_modified": false,
+    "performance_claim": false
+  },
+  "verification": {
+    "commands": {
+      "od_isa_focused": "cargo test -p od-isa --lib paged_lgdt --offline -- --test-threads=1",
+      "od_machine_focused": "cargo test -p od-machine --lib paged_descriptor::tests --offline -- --test-threads=1",
+      "host_integration_focused": "cargo test -p od-host --test stage4_exception_delivery guest_lidt_and_lgdt_feed_the_following_page_fault_delivery --offline -- --test-threads=1 --nocapture",
+      "workspace_check": "cargo check --workspace --all-targets --offline",
+      "cargo_fmt_all_check": "cargo fmt --all -- --check",
+      "graphify": "graphify update ."
+    },
+    "od_isa_focused": {"passed": 6, "failed": 0},
+    "od_machine_focused": {"passed": 14, "failed": 0},
+    "host_integration_focused": {"passed": 7, "failed": 0},
+    "workspace_check": {
+      "exit_code": 0,
+      "warnings": [
+        "od-jit: dead_code for CodeMemory::one_instruction",
+        "od-host memory_corpus test: unused import MEMORY_CORPUS_SEQUENCES",
+        "od-host tests: unused variable scale and unnecessary mut on callback_stop"
+      ]
+    },
+    "cargo_fmt_all_check": "passed",
+    "git_diff_check": "passed",
+    "json_validation": "passed",
+    "local_markdown_links": "passed for four changed Markdown documents",
+    "graphify_query_used_before_source_inspection": true,
+    "graphify_update": {
+      "status": "updated_ast_and_clustered",
+      "method": "targeted AST extraction for changed Rust and documentation paths, then graphify cluster-only .",
+      "nodes": 27384,
+      "edges": 68188,
+      "communities": 986,
+      "full_update": "graphify update . was interrupted during repository-wide detect scan; targeted AST refresh and cluster-only succeeded",
+      "verification_query": "graphify query confirmed new step_paged_lgdt and paged_lgdt_bounds_decode_fetches_to_the_current_guest_page nodes"
+    }
+  },
+  "coverage": [
+    "Exact opcode/profile admission and signed disp8 source calculation",
+    "Exact four-byte LGDT at page offset 0xffc; unsupported/LOCK decode cannot fetch across the guest-page boundary, including wrapped RIP at 0xffffffffffffffff",
+    "LOCK and CPL fault ordering, fetch/operand faults, and no partial GDTR/RIP update",
+    "Noncanonical loaded base, source crossing, and canonical source checks",
+    "Guest LIDT then LGDT followed by protected store, #PF delivery, and handler load without host register patching",
+    "Exact CR2 and saved fault RIP, all six frame values, ordered tracked A/stack writes, and handler sentinel"
+  ],
+  "limits": [
+    "No TSS/IST, selector cache loading, descriptor Accessed writes, #DF, shutdown, PTE repair, IRETQ or retry/recovery",
+    "No production paging ownership, MMIO/PIO descriptor path, or performance claim",
+    "Stage 4/S4-18/S4-19 remain open"
+  ],
+    "independent_review": {"status": "passed", "findings_resolved": 5, "remaining_findings": 0},
+  "commit": "this manifest is committed with the slice; see Git history for the commit hash"
+}

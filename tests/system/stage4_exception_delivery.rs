@@ -4,7 +4,7 @@ use od_isa::{CpuActivity, LongModeState, Register, StiShadow};
 use od_machine::{
     AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
     MemoryRegionKind, MemoryRegionSpec, RamLimits, deliver_and_step_paged_pf_handler,
-    step_paged_cr0_wp_mov,
+    step_paged_cr0_wp_mov, step_paged_lgdt, step_paged_lidt,
 };
 
 const CR0: u64 = 0x8001_0033;
@@ -511,4 +511,171 @@ fn handler_cr0_write_is_rejected_by_mov_only_machine_profile() {
         od_isa::PagedProbeExit::Unsupported { opcode: 0x22 }
     );
     assert_eq!(state.cr0, old_cr0);
+}
+
+#[test]
+fn guest_lidt_and_lgdt_feed_the_following_page_fault_delivery() {
+    const INITIAL_IDT_BASE: u64 = 0x0062_0000;
+    const INITIAL_GDT_BASE: u64 = 0x0063_0000;
+    const GDTR_SOURCE: u64 = 0x0070_1fd0;
+
+    let mut bus = make_bus(true, true, true, true);
+    put_qword(&mut bus, 0x5008, 0xb000 | 0x07); // GDT mapping starts Accessed=0.
+    let mut instructions = vec![
+        0x0f, 0x01, 0x5c, 0x24, 0x99, // LIDT [RSP-103] -> 0x701fc0
+        0x0f, 0x01, 0x55, 0xf6, // LGDT [RBP-10] -> 0x701fd0
+    ];
+    instructions.extend_from_slice(&STORE);
+    put_bytes(&mut bus, 0x8000, &instructions);
+    let mut idtr_bytes = Vec::from(0x0fffu16.to_le_bytes());
+    idtr_bytes.extend_from_slice(&IDT_BASE.to_le_bytes());
+    put_bytes(&mut bus, 0xcfc0, &idtr_bytes);
+    let mut gdtr_bytes = Vec::from(0x17u16.to_le_bytes());
+    gdtr_bytes.extend_from_slice(&GDT_BASE.to_le_bytes());
+    put_bytes(&mut bus, 0xcfd0, &gdtr_bytes);
+
+    let mut state = initial_state(0x202);
+    let old_cs_cache = state.cs_cache;
+    let old_ss_cache = state.ss_cache;
+    state.idtr = Some(Idtr {
+        base: INITIAL_IDT_BASE,
+        limit: 0x0fff,
+    });
+    state.gdtr = Some(Gdtr {
+        base: INITIAL_GDT_BASE,
+        limit: 0x17,
+    });
+    state.gpr[Register::Rbp as usize] = GDTR_SOURCE + 10;
+
+    let lidt = step_paged_lidt(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(lidt.cpu.instructions_executed, 1);
+    assert_eq!(state.rip, FAULT_RIP + 5);
+    assert_eq!(
+        state.idtr,
+        Some(Idtr {
+            base: IDT_BASE,
+            limit: 0x0fff
+        })
+    );
+    assert_eq!(state.gdtr.unwrap().base, INITIAL_GDT_BASE);
+
+    let lgdt = step_paged_lgdt(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(lgdt.cpu.instructions_executed, 1);
+    assert_eq!(state.rip, FAULT_RIP + 9);
+    assert_eq!(
+        state.gdtr,
+        Some(Gdtr {
+            base: GDT_BASE,
+            limit: 0x17
+        })
+    );
+    assert_eq!(state.cs_cache, old_cs_cache);
+    assert_eq!(state.ss_cache, old_ss_cache);
+
+    let fault_step = step_paged_cr0_wp_mov(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(fault_step.cpu.instructions_executed, 0);
+    let original_fault = fault_step.page_fault.unwrap();
+    assert_eq!(original_fault.fault().error_code, Some(3));
+    assert_eq!(original_fault.saved_rip(), FAULT_RIP + 9);
+    assert_eq!(original_fault.cr2_value(), DATA_LINEAR);
+
+    let mut committed_writes = Vec::new();
+    let handler = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &original_fault,
+        |range| committed_writes.push(range),
+    )
+    .unwrap();
+    assert!(matches!(
+        handler.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::Delivered { .. }
+    ));
+    assert_eq!(handler.delivery.original_fault.saved_rip(), FAULT_RIP + 9);
+    assert_eq!(state.cr2, Some(DATA_LINEAR));
+    assert_eq!(state.rip, HANDLER_RIP + 3);
+    assert_eq!(state.gpr[Register::Rax as usize], SENTINEL);
+    assert_eq!(state.gpr[Register::Rsp as usize], 0x0070_1ff0);
+    assert!(handler.delivery.secondary_page_fault.is_none());
+    assert_eq!(state.cs_cache.unwrap().flags, 0xa);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x5008), AccessWidth::Qword)
+            .unwrap(),
+        0xb000 | 0x27
+    );
+    let expected_frame = [
+        (0x0070_2018, 0x10),
+        (0x0070_2010, ORIGINAL_RSP),
+        (0x0070_2008, 0x1_0202),
+        (0x0070_2000, 0x8),
+        (0x0070_1ff8, FAULT_RIP + 9),
+        (0x0070_1ff0, 3),
+    ];
+    let expected_writes = [
+        (0x5008, 8),
+        (0x5810, 8),
+        (0xd018, 8),
+        (0xd010, 8),
+        (0xd008, 8),
+        (0xd000, 8),
+        (0x5808, 8),
+        (0xcff8, 8),
+        (0xcff0, 8),
+    ];
+    assert_eq!(
+        committed_writes
+            .iter()
+            .map(|range| (range.start().get(), range.len()))
+            .collect::<Vec<_>>(),
+        expected_writes
+    );
+    for (index, (linear, expected)) in expected_frame.into_iter().enumerate() {
+        let physical = if linear >= 0x0070_2000 {
+            0xd000 + (linear & 0xfff)
+        } else {
+            0xc000 + (linear & 0xfff)
+        };
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(physical), AccessWidth::Qword)
+                .unwrap(),
+            expected,
+            "frame slot {index}"
+        );
+    }
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0xcff8), AccessWidth::Qword)
+            .unwrap(),
+        FAULT_RIP + 9
+    );
 }

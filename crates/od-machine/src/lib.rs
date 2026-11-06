@@ -46,7 +46,10 @@ pub use page_walk::{
     probe_instruction_access, probe_long64_4k,
 };
 
-pub use paged_descriptor::{PagedLidtError, PagedLidtReport, step_paged_lidt};
+pub use paged_descriptor::{
+    PagedLgdtError, PagedLgdtReport, PagedLidtError, PagedLidtReport, step_paged_lgdt,
+    step_paged_lidt,
+};
 pub use paged_exception_delivery::{
     PagedCr0WpMovStepReport, PagedExceptionDeliveryError, PagedExceptionDeliveryReport,
     PagedExceptionHandlerEntryReport, deliver_and_step_paged_pf_handler, deliver_paged_page_fault,

@@ -92,4 +92,14 @@ from RAM within one guest page; A-bit writes and their callbacks reflect the
 walks actually completed, while the descriptor read sets no D bit. Crossing
 sources and physical holes fail before CPU commit; the adapter does not route
 to MMIO/PIO, and the loaded IDT base is not walked. This does not add table
-gate handling or exception delivery. Review is pending; see the [machine contract](../../docs/specs/MACHINE_CONTRACT.md#paged-lidt-adapter-s4-18a).
+gate handling or exception delivery. The bounded slice passed independent review;
+see the [machine contract](../../docs/specs/MACHINE_CONTRACT.md#paged-lidt-adapter-s4-18a).
+
+S4-18b adds `step_paged_lgdt`, which reads the exact ten-byte LGDT
+pseudo-descriptor through the same tracked, RAM-only Long64 walker. It commits
+GDTR and RIP only after a complete read and canonical-base check, reports the
+actual fetch and operand A-bit writes, and leaves segment caches unchanged.
+An end-to-end system case uses guest-loaded IDT and GDT state for page-fault
+delivery and handler entry. This bounded profile does not provide TSS/IST,
+descriptor Accessed writes, `#DF`, shutdown, or retry/recovery; see the
+[machine contract](../../docs/specs/MACHINE_CONTRACT.md#paged-lgdt-adapter-s4-18b).

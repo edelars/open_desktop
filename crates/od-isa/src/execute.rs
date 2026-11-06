@@ -2103,6 +2103,10 @@ pub struct MovCr3WpLong64V1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedLidtLong64V1;
 
+/// Exact opt-in CPU profile for paged `LGDT [RBP+sign_extend(disp8)]`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedLgdtLong64V1;
+
 /// Exact opt-in CPU profile for one bare `MOV CR0, RAX` WP toggle in Long64.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MovCr0WpLong64V1;
@@ -16275,9 +16279,153 @@ pub fn step_paged_lidt(
     }
 }
 
+/// Execute exactly one bare `0F 01 55 ib` LGDT under the fixed paged
+/// Long64 profile. Its ten-byte SS-based source must remain in one guest page.
+pub fn step_paged_lgdt(
+    _profile: PagedLgdtLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state.cr3.is_none_or(|cr3| cr3 >> 36 != 0)
+        || state.gdtr.is_none()
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+    if state.rip & 0xfff >= 0xffd {
+        return result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0);
+    }
+
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let mut fetch_capture = FetchCapture::bounded_to_page(memory, state.rip);
+    let decoded = long_decode::decode(&mut fetch_capture, state.rip, context);
+    let raw = fetch_capture.captured_bytes();
+    if fetch_capture.page_boundary_reached {
+        return result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0);
+    }
+    let regular = decoded.as_ref().is_ok_and(|instruction| {
+        instruction.length == 4
+            && matches!(
+                instruction.operation,
+                long_decode::Operation::LoadGdtr { .. }
+            )
+            && raw.len() == 4
+            && raw.starts_with(&[0x0f, 0x01, 0x55])
+    });
+    let locked_ud = matches!(
+        &decoded,
+        Err(long_decode::DecodeError::Invalid { length: 5, .. })
+            if raw.as_slice().starts_with(&[0xf0, 0x0f, 0x01, 0x55]) && raw.len() == 5
+    );
+    if !regular && !locked_ud {
+        return match decoded {
+            Err(long_decode::DecodeError::Memory(MemoryError::Architectural(fault))) => {
+                result(PagedProbeExit::Fault(fault), 0)
+            }
+            Err(long_decode::DecodeError::Memory(error)) => {
+                result(PagedProbeExit::Backend(error), 0)
+            }
+            _ => result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0),
+        };
+    }
+
+    if locked_ud {
+        return result(
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return result(
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+
+    drop(fetch_capture);
+    let Ok(long_decode::Instruction {
+        operation: long_decode::Operation::LoadGdtr { source },
+        ..
+    }) = decoded
+    else {
+        unreachable!("the exact LGDT byte gate matches the decoded operation")
+    };
+    let next_rip = state.rip.wrapping_add(4);
+    let source_address = source.effective_address(state, next_rip);
+    let source_last = source_address.checked_add(9);
+    if !canonical(source_address) || source_last.is_none_or(|last| !canonical(last)) {
+        return result(
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+    if source_address & 0xfff > 0xff6 {
+        return result(PagedProbeExit::Unsupported { opcode: 0x01 }, 0);
+    }
+    match load_gdtr(state, memory, context, next_rip, source) {
+        Ok(()) => {
+            state.rip = next_rip;
+            result(PagedProbeExit::Retired, 1)
+        }
+        Err(MemoryError::Architectural(fault)) => result(PagedProbeExit::Fault(fault), 0),
+        Err(error) => result(PagedProbeExit::Backend(error), 0),
+    }
+}
+
 struct FetchCapture<'a, M> {
     inner: &'a mut M,
     bytes: Vec<(u64, u8)>,
+    fetch_page: Option<u64>,
+    page_boundary_reached: bool,
 }
 
 impl<'a, M> FetchCapture<'a, M> {
@@ -16285,6 +16433,17 @@ impl<'a, M> FetchCapture<'a, M> {
         Self {
             inner,
             bytes: Vec::new(),
+            fetch_page: None,
+            page_boundary_reached: false,
+        }
+    }
+
+    fn bounded_to_page(inner: &'a mut M, rip: u64) -> Self {
+        Self {
+            inner,
+            bytes: Vec::new(),
+            fetch_page: Some(rip >> 12),
+            page_boundary_reached: false,
         }
     }
 
@@ -16295,6 +16454,12 @@ impl<'a, M> FetchCapture<'a, M> {
 
 impl<M: GuestMemory> GuestMemory for FetchCapture<'_, M> {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        if self.fetch_page.is_some_and(|page| address >> 12 != page) {
+            self.page_boundary_reached = true;
+            return Err(MemoryError::Backend(
+                "bounded instruction fetch crossed its guest page".into(),
+            ));
+        }
         let byte = self.inner.fetch(address, context)?;
         self.bytes.push((address, byte));
         Ok(byte)
@@ -146686,6 +146851,17 @@ mod tests {
         }
     }
 
+    fn paged_lgdt_state(rbp: u64) -> LongModeState {
+        let mut state = lgdt_state(rbp);
+        state.rip = 0x400;
+        state.cr0 = Some(Cr0Profile::BASE);
+        state.cr3 = Some(0x1000);
+        state.cr4 = Some(Cr4Profile::BASE);
+        state.activity = Some(crate::CpuActivity::Running);
+        state.sti_shadow = Some(crate::StiShadow::Clear);
+        state
+    }
+
     #[test]
     fn lgdt_loads_ten_byte_descriptor_from_signed_rbp_disp8_and_preserves_other_state() {
         let loaded = crate::state::Gdtr {
@@ -146871,6 +147047,405 @@ mod tests {
             assert_eq!(state, before);
             assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
         }
+    }
+
+    #[test]
+    fn paged_lgdt_reads_exact_signed_rbp_source_and_commits_only_gdtr_rip() {
+        let loaded = crate::state::Gdtr {
+            base: 0xffff_8000_1234_5678,
+            limit: 0x9abc,
+        };
+        let mut state = paged_lgdt_state(0x1ffe);
+        let mut expected = state.clone();
+        expected.gdtr = Some(loaded);
+        expected.rip += 4;
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], state.rip);
+        memory.data_base = 0x1ff0;
+        memory.bytes[6..8].copy_from_slice(&loaded.limit.to_le_bytes());
+        memory.bytes[8..16].copy_from_slice(&loaded.base.to_le_bytes());
+        let defined = crate::INTEGER_FLAGS & !crate::ZF;
+
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            defined,
+        );
+
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, defined);
+        assert_eq!(state, expected);
+        assert_eq!(memory.fetches, [0x400, 0x401, 0x402, 0x403]);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1ff6, 10)]);
+        assert_eq!(memory.contexts[0].1.origin, AccessOrigin::Explicit);
+    }
+
+    #[test]
+    fn paged_lgdt_rejects_profile_gates_before_fetch() {
+        let profile_rejection =
+            PagedProbeExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile);
+        let check = |mut state: LongModeState,
+                     context: AccessContext,
+                     efer: u64,
+                     defined: u64,
+                     expected: PagedProbeExit<std::convert::Infallible>| {
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0], state.rip);
+            let result = step_paged_lgdt(
+                PagedLgdtLong64V1,
+                &mut state,
+                &mut memory,
+                context,
+                efer,
+                defined,
+            );
+            assert_eq!(result.exit, expected);
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.accesses.is_empty());
+        };
+
+        let context = lgdt_ring0();
+        let mut state = paged_lgdt_state(0x1008);
+        state.cr0 = Some(Cr0Profile::BASE ^ 1);
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.cr3 = Some(1 << 36);
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.cr4 = Some(Cr4Profile::BASE | (1 << 9));
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        check(
+            paged_lgdt_state(0x1008),
+            context,
+            0xd01,
+            crate::INTEGER_FLAGS,
+            profile_rejection.clone(),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.gdtr = None;
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            profile_rejection,
+        );
+        check(
+            paged_lgdt_state(0x1008),
+            context,
+            0xd00,
+            1 << 63,
+            PagedProbeExit::Rejected(PagedProbeRejection::InvalidRflagsDefined { value: 1 << 63 }),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.activity = None;
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            PagedProbeExit::Rejected(PagedProbeRejection::ActivityMissing),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.activity = Some(crate::CpuActivity::Halted);
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            PagedProbeExit::Halted,
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.sti_shadow = None;
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            PagedProbeExit::Rejected(PagedProbeRejection::StiShadowMissing),
+        );
+        let mut state = paged_lgdt_state(0x1008);
+        state.sti_shadow = Some(crate::StiShadow::Blocking);
+        check(
+            state,
+            context,
+            0xd00,
+            crate::INTEGER_FLAGS,
+            PagedProbeExit::Rejected(PagedProbeRejection::StiShadowActive),
+        );
+    }
+
+    #[test]
+    fn paged_lgdt_bounds_decode_fetches_to_the_current_guest_page() {
+        let mut state = paged_lgdt_state(0x1010);
+        state.rip = 0xffc;
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], state.rip);
+        memory.bytes[8..10].copy_from_slice(&0x17u16.to_le_bytes());
+        memory.bytes[10..18].copy_from_slice(&0x0000_7fff_0000_1234u64.to_le_bytes());
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(state.rip, 0x1000);
+        assert_eq!(memory.fetches, [0xffc, 0xffd, 0xffe, 0xfff]);
+
+        for code in [&[0x48, 0xb8, 0, 0][..], &[0xf0, 0x0f, 0x01, 0x55][..]] {
+            let mut state = paged_lgdt_state(0x1010);
+            state.rip = 0xffc;
+            let before = state.clone();
+            let mut memory = Memory::at(code, state.rip);
+            let result = step_paged_lgdt(
+                PagedLgdtLong64V1,
+                &mut state,
+                &mut memory,
+                lgdt_ring0(),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x0f });
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches, [0xffc, 0xffd, 0xffe, 0xfff]);
+            assert!(memory.accesses.is_empty());
+        }
+
+        for code in [&[0x48, 0xb8, 0, 0][..], &[0xf0, 0x0f, 0x01, 0x55][..]] {
+            let mut state = paged_lgdt_state(0x1010);
+            state.rip = 0xffff_ffff_ffff_fffc;
+            let before = state.clone();
+            let mut memory = Memory::at(code, state.rip);
+            let result = step_paged_lgdt(
+                PagedLgdtLong64V1,
+                &mut state,
+                &mut memory,
+                lgdt_ring0(),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x0f });
+            assert_eq!(state, before);
+            assert_eq!(
+                memory.fetches,
+                [
+                    0xffff_ffff_ffff_fffc,
+                    0xffff_ffff_ffff_fffd,
+                    0xffff_ffff_ffff_fffe,
+                    0xffff_ffff_ffff_ffff,
+                ]
+            );
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_lgdt_preserves_fetch_and_operand_faults_without_commit() {
+        let mut state = paged_lgdt_state(0x1010);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0], state.rip);
+        let fetch_fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(16),
+            linear_address: Some(state.rip + 3),
+        };
+        memory.fetch_error = Some((
+            state.rip + 3,
+            MemoryError::Architectural(fetch_fault.clone()),
+        ));
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Fault(fetch_fault));
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        for error in [
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(1),
+                linear_address: Some(0x1008),
+            }),
+            MemoryError::Backend("injected paged LGDT read failure".into()),
+        ] {
+            let mut state = paged_lgdt_state(0x1010);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], state.rip);
+            memory.error = Some(error.clone());
+            memory.error_kind = Some(AccessKind::Read);
+            let result = step_paged_lgdt(
+                PagedLgdtLong64V1,
+                &mut state,
+                &mut memory,
+                lgdt_ring0(),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            match error {
+                MemoryError::Architectural(fault) => {
+                    assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+                }
+                MemoryError::Backend(message) => {
+                    assert_eq!(
+                        result.exit,
+                        PagedProbeExit::Backend(MemoryError::Backend(message))
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
+        }
+    }
+
+    #[test]
+    fn paged_lgdt_rejects_cross_page_source_before_read_and_preserves_ss_faults() {
+        let mut state = paged_lgdt_state(0x1ff8);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0], state.rip);
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x01 });
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x400, 0x401, 0x402, 0x403]);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = paged_lgdt_state(0x0000_8000_0000_0000);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0], state.rip);
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn paged_lgdt_orders_lock_and_cpl_faults_after_fetch_and_rejects_noncanonical_base() {
+        let mut state = paged_lgdt_state(0x1010);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0xf0, 0x0f, 0x01, 0x55, 0xf8], state.rip);
+        let locked = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            locked.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x400, 0x401, 0x402, 0x403, 0x404]);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = paged_lgdt_state(0x1010);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], state.rip);
+        let ring3 = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..lgdt_ring0()
+        };
+        let denied = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            ring3,
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            denied.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x400, 0x401, 0x402, 0x403]);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = paged_lgdt_state(0x1010);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x55, 0xf8], state.rip);
+        memory.data_base = 0x1008;
+        memory.bytes[..2].copy_from_slice(&0x17u16.to_le_bytes());
+        memory.bytes[2..10].copy_from_slice(&0x0000_8000_0000_0000u64.to_le_bytes());
+        let result = step_paged_lgdt(
+            PagedLgdtLong64V1,
+            &mut state,
+            &mut memory,
+            lgdt_ring0(),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 10)]);
     }
 
     #[test]

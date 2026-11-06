@@ -774,6 +774,32 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Результат:** [S4-18a report](../reports/STAGE_4_S4-18A_2026-11-06.md) и
   [manifest](../reports/data/stage4/s4-18a-paged-lidt-2026-11-06.json).
 
+#### S4-18b — bounded paged LGDT and guest-loaded GDT delivery
+
+- [x] Реализация и независимое ревью пройдены; срез принят.
+- **Case:** CPU исполняет exact `0F 01 5C 24 ib` LIDT, затем exact
+  `0F 01 55 ib` LGDT через paged RAM, после чего настоящий WP fault доставляется
+  через guest-loaded IDT/GDT и исполняется первая handler `MOV RAX,[RBX]`.
+  Между этими инструкциями host не подменяет IDTR/GDTR.
+- **Профиль:** Long64/CPL0, один CPU, private 4 KiB paging, fixed CR0/CR4/EFER
+  и CPU-owned CR3. LGDT читает один canonical ten-byte pseudo-descriptor внутри
+  одной guest page; использует существующие decoder и `load_gdtr` семантику,
+  не читает новый GDT и не обновляет segment caches.
+- **Проверка:** точный GDTR/IDTR/RIP commit, сохранение всех segment caches,
+  faulting store с PFEC `3`, отсутствие store/retirement, CR2, полный exception
+  frame, GDT-based delivery и сохранение sentinel. Негативные случаи включают
+  privilege/fetch/operand faults, неверный base, cross-page source, unsupported
+  form/control state, ограничение instruction fetch на границе гостевой
+  страницы (включая RIP wraparound), и RAM-only отказ без MMIO dispatch.
+- **Граница:** этот срез делает LIDT/LGDT гостевыми инструкциями для одного
+  проверяемого delivery path. Он не реализует TSS/IST, selector cache loading,
+  descriptor Accessed writes, `#DF`, shutdown или fault recovery.
+- **Архитектурный анализ:** bounded implementation order and component split
+  reviewed by `gpt-6-astra/high`.
+- **Независимое ревью:** все замечания закрыты, включая границу fetch и RIP
+  wraparound; результаты зафиксированы в [S4-18b report](../reports/STAGE_4_S4-18B_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-18b-paged-lgdt-2026-11-06.json).
+
 ### S4-19. Доставка исключений и восстановление после fault
 
 - [ ] Принято после ревью.

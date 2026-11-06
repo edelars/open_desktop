@@ -1176,9 +1176,31 @@ range faults before operand access. Physical holes remain backend errors;
 this adapter never dispatches MMIO/PIO. CPU state changes only after the full
 descriptor read and canonical base check, and the loaded IDT base is not
 translated. Tests compare exact callback ranges, relevant page-table entries,
-fault metadata and full CPU state. This bounded slice does not implement LGDT,
-descriptor caching, IDT gate checks, exception delivery, cross-page descriptor
-reads, or production paging ownership. Independent review is pending.
+fault metadata and full CPU state. S4-18a did not implement descriptor caching,
+IDT gate checks, exception delivery, cross-page descriptor reads, or production
+paging ownership. The bounded slice was independently
+reviewed and accepted; its result is recorded in the S4-18a report.
+
+## Paged `LGDT` adapter (S4-18b)
+
+`step_paged_lgdt` composes the exact `PagedLgdtLong64V1` CPU entry with the
+same uncached tracked four-level RAM walker. It accepts only bare
+`0F 01 55 ib` in its fixed Long64/CPL0 profile, reads one ten-byte
+pseudo-descriptor from a canonical source contained in one 4 KiB guest page,
+and commits only GDTR and RIP after the complete read and loaded-base check.
+Instruction decoding cannot fetch outside the guest code page; the four-byte
+form at offset `0xffc` remains admissible, and a wrapped fetch at the top of
+the address space is rejected before it can address page zero.
+Actual fetch and operand Accessed-bit writes are reported in order; the
+descriptor read sets no Dirty bit. Crossing sources are rejected before the
+operand walk, physical holes stay backend errors, and descriptor access never
+routes through MMIO/PIO. LGDT does not read the loaded GDT or modify segment
+caches. A guest-loaded IDT and GDT are then exercised in the same CPU sequence
+by the S4-18b end-to-end delivery case; no host register patch occurs between
+LIDT/LGDT, the faulting store, and handler entry. This does not implement
+TSS/IST, descriptor Accessed writes, `#DF`, shutdown, or fault recovery. The
+bounded slice passed independent review and is accepted; its result is recorded
+in the S4-18b report.
 
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 
