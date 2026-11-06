@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "stage": "4",
+  "slice": "S4-19e2",
+  "date": "2026-11-06",
+  "status": "verification_passed_review_passed",
+  "scenario": "guest retries the original WP page-faulting MOV after paged IRETQ and commits one qword store",
+  "boundaries": [
+    "same-CPL Long64/CPL0, WP=1, private synchronous RAM",
+    "bounded exact qword MOV store/load profile; no general debug/FP breakpoint model",
+    "tracked execution has no translation cache; stale-TLB eviction and INVLPG necessity are not established"
+  ],
+  "verification": {
+    "isa_mov_profile_tests": "30 passed",
+    "iretq_tests": "17 passed",
+    "stage4_exception_delivery": "22 passed",
+    "workspace_check": "passed_with_existing_warnings",
+    "independent_review": "passed_no_P0_to_P3_findings"
+  },
+  "architecture_source": "Intel SDM Vol. 3B revision 090US section 20.3.1.1"
+}

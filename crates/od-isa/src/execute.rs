@@ -17586,6 +17586,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     size: OperandSize::Qword,
                 }) =>
         {
+            if allow_cr0_wp {
+                state.rflags &= !(1 << 16);
+            }
             let address = match source.access_address_48(state, next_rip) {
                 Ok(address) => address,
                 Err(MemoryError::Architectural(fault)) => {
@@ -17630,13 +17633,19 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             let start = if allow_cr0_wp {
                 match destination.linear_address_48(state, next_rip) {
                     Ok(start) => start,
-                    Err(fault) => return result(PagedProbeExit::Fault(fault), 0),
+                    Err(fault) => {
+                        state.rflags &= !(1 << 16);
+                        return result(PagedProbeExit::Fault(fault), 0);
+                    }
                 }
             } else {
                 0
             };
             if allow_cr0_wp && start & 0xfff > 0xff8 {
                 return unsupported();
+            }
+            if allow_cr0_wp {
+                state.rflags &= !(1 << 16);
             }
             let address = match destination.access_address_48(state, next_rip) {
                 Ok(address) => address,
@@ -150410,6 +150419,172 @@ mod paged_cr0_wp_probe_tests {
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_rf_clear_timing() {
+        let flags_defined = crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS;
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(0x1000),
+        };
+        for (code, load) in [
+            (&[0x48, 0x89, 0x0b][..], false),
+            (&[0x48, 0x8b, 0x03][..], true),
+        ] {
+            for error in [
+                None,
+                Some(MemoryError::Architectural(fault.clone())),
+                Some(MemoryError::Backend("data".into())),
+            ] {
+                let mut state = make_state(Cr0Profile::BASE);
+                state.rflags |= 1 << 16;
+                state.gpr[Register::Rbx as usize] = 0x1000;
+                state.gpr[Register::Rcx as usize] = 0x1234_5678;
+                state.gpr[Register::Rax as usize] = 0x9876;
+                let before = state.clone();
+                let mut memory = Memory::new(code);
+                let bytes = memory.bytes.clone();
+                memory.error = error.clone();
+                let result = step_paged_cr0_wp_mov(
+                    PagedCpl0Cr0WpMovV1,
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        privilege: PrivilegeLevel::Ring0,
+                        ..AccessContext::default()
+                    },
+                    0xd00,
+                    flags_defined,
+                );
+                assert_eq!(result.rflags_defined, flags_defined);
+                assert_eq!(state.rflags, before.rflags & !(1 << 16));
+                match error {
+                    None => {
+                        assert_eq!(result.exit, PagedProbeExit::Retired);
+                        assert_eq!(result.instructions_executed, 1);
+                        assert_eq!(state.rip, before.rip + 3);
+                        if load {
+                            assert_eq!(
+                                state.gpr[Register::Rax as usize],
+                                u64::from_le_bytes(bytes[..8].try_into().unwrap())
+                            );
+                        } else {
+                            assert_eq!(
+                                &memory.bytes[..8],
+                                &before.gpr[Register::Rcx as usize].to_le_bytes()
+                            );
+                        }
+                    }
+                    Some(error) => {
+                        let expected = match error {
+                            MemoryError::Architectural(fault) => PagedProbeExit::Fault(fault),
+                            other => PagedProbeExit::Backend(other),
+                        };
+                        assert_eq!(result.exit, expected);
+                        assert_eq!(result.instructions_executed, 0);
+                        let mut expected_state = before;
+                        expected_state.rflags &= !(1 << 16);
+                        assert_eq!(state, expected_state);
+                        assert_eq!(memory.bytes, bytes);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_pre_start_exits_preserve_rf() {
+        for (code, address, fetch_fault) in [
+            (&[0x48, 0x89, 0x03][..], 0x1000, false),
+            (&[0x48, 0x89, 0x0b][..], 0x1ff9, false),
+            (&[0x48, 0x89, 0x0b][..], 0x1000, true),
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rflags |= 1 << 16;
+            state.gpr[Register::Rbx as usize] = address;
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            if fetch_fault {
+                memory.fetch_error = Some((1, MemoryError::Backend("fetch".into())));
+            }
+            let result = step_paged_cr0_wp_mov(
+                PagedCpl0Cr0WpMovV1,
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_ne!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_noncanonical_operand_clears_rf() {
+        for code in [&[0x48, 0x8b, 0x03][..], &[0x48, 0x89, 0x0b][..]] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rflags |= 1 << 16;
+            state.gpr[Register::Rbx as usize] = 0x0000_8000_0000_0000;
+            let mut before = state.clone();
+            before.rflags &= !(1 << 16);
+            let mut memory = Memory::new(code);
+            let result = step_paged_cr0_wp_mov(
+                PagedCpl0Cr0WpMovV1,
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_profile_rejection_preserves_rf() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.rflags |= 1 << 16;
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x0b]);
+        let result = step_paged_cr0_wp_mov(
+            PagedCpl0Cr0WpMovV1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring3,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::WrongPrivilege)
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]

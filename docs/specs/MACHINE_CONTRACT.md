@@ -1317,6 +1317,26 @@ forms or demonstrate stale-TLB invalidation because tracked execution is
 uncached. See the [S4-19e1 report](../reports/STAGE_4_S4-19E1_2026-11-06.md)
 and [verification record](../testing/MACHINE.md#s4-19e1-guest-error-code-discard-and-paged-iretq).
 
+## Faulting MOV retry and RF clear (S4-19e2)
+
+After successful guest paged IRETQ restores RF=1 and the original faulting RIP,
+the bounded MOV-only CR0.WP profile starts the admitted exact qword
+`MOV [RBX],RCX` or `MOV RAX,[RBX]` with RF set. After fetch/decode/profile
+admission, it clears live RF before the architectural operand address check
+and before tracked memory access. The clear remains if an operand #GP/#PF or
+backend error occurs; fetch/profile exits and the bounded cross-page store
+rejection leave RF as received. The defined-flags mask is unchanged.
+
+The end-to-end case retries the original faulting store exactly once, observes
+the tracked leaf PTE transition `0xe023 → 0xe063` (Dirty set; Accessed and
+supervisor-only U/S=0 retained), then the qword data write, in that callback
+order. The next guest MOV load reads the new value and the adjacent qword
+canary remains unchanged. The page walk is tracked but uncached; this does not
+establish stale-TLB eviction or INVLPG necessity. Intel SDM Vol. 3B
+§20.3.1.1 revision 090US defines RF clearing at instruction start after the
+specified preliminary checks. See the [S4-19e2 report](../reports/STAGE_4_S4-19E2_2026-11-06.md)
+and [verification record](../testing/MACHINE.md#s4-19e2-faulting-mov-retry-and-data-commit).
+
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 
 `with_paged_mov_memory` gives one synchronous callback a temporary, read-only

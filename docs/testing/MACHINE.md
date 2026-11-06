@@ -631,3 +631,20 @@ saved SS selector/bounds and does not commit partial CPU state. This stops at
 the original MOV before retry. The tracked path has no translation cache.
 Results are recorded in the
 [S4-19e1 report](../reports/STAGE_4_S4-19E1_2026-11-06.md).
+
+<a id="s4-19e2-faulting-mov-retry-and-data-commit"></a>
+
+## S4-19e2: faulting MOV retry and data commit
+
+After the guest return in S4-19e1, the exact original `MOV [RBX],RCX` is
+executed again from its faulting RIP. The test checks one retirement, one
+qword data write, the preceding tracked D-bit update (`0xe023 → 0xe063`), RF=0
+after the retried instruction, and a following guest `MOV RAX,[RBX]` readback.
+The adjacent qword canary is unchanged before and after the readback. No host
+instruction patches RIP, RSP or PTE after the guest fault begins.
+
+RF-clear tests cover successful MOV, operand #GP, data #PF/backend error and
+pre-start exits. `rflags_defined` remains unchanged. This is the bounded
+Long64 CPL0/WP=1 private-RAM profile; the tracked path has no translation
+cache, so stale-TLB behavior is not claimed. See the
+[S4-19e2 report](../reports/STAGE_4_S4-19E2_2026-11-06.md).

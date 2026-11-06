@@ -843,7 +843,8 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 ### S4-19. Доставка исключений и восстановление после fault
 
-- [ ] Принято после ревью.
+- [x] Принято после независимого review и проверок ограниченного same-CPL
+  Long64 recovery path; cached-TLB behavior остаётся вне этого результата.
 - **Где:** delivery CPU state machine в `od-isa`, orchestration `od-machine`.
 - **Сделать:** единый путь delivery с правильным frame/error code, retry RIP и return. Явно обработать fault при descriptor/stack access, правила `#DF` и machine outcome при невозможности его delivery.
 - **Проверка:** guest handler `#PF` исправляет PTE, выполняет нужную invalidation и повторяет faulting instruction ровно с допустимыми effects; сломанный handler/stack приводит к ожидаемому secondary fault/shutdown.
@@ -966,7 +967,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-19e2. Faulting MOV retry and data commit
 
-- [ ] Следующий ограниченный срез; реализация не начата.
+- [x] Принято после независимого review и проверок.
 - **Case:** после успешного S4-19e1 IRETQ гостевой CPU повторно исполняет
   исходный exact `MOV [RBX],RCX` с сохранённого RIP. Исправленный supervisor
   PTE допускает одну запись; следующая guest load читает новое значение.
@@ -976,7 +977,8 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Граница:** только same-CPL Long64 WP=1, частный RAM и заданный faulting
   store. Общая обработка debug breakpoints, FP exceptions, иных RF-переходов и
   cached TLB остаётся вне этого среза.
-- **Результат:** ожидает реализации, независимого ревью и воспроизводимой проверки.
+- **Результат:** см. [S4-19e2 report](../reports/STAGE_4_S4-19E2_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-19e2-guest-fault-retry-2026-11-06.json).
 
 ### S4-20. CPL3 и системные вызовы/возвраты
 

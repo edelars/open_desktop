@@ -257,6 +257,188 @@ fn guest_discards_page_fault_error_code_and_returns_with_paged_iretq() {
     );
 }
 
+#[test]
+fn guest_retries_faulting_store_after_paged_iretq() {
+    const CANARY: u64 = 0x6a35_91c7_d248_b0ef;
+    let mut bus = make_bus(true, true, true, true);
+    put_qword(&mut bus, DATA_PHYSICAL + 8, CANARY);
+    put_qword(&mut bus, 0x4018, 0x6027);
+    put_bytes(
+        &mut bus,
+        0x8000,
+        &[STORE.as_slice(), LOAD.as_slice()].concat(),
+    );
+    put_bytes(
+        &mut bus,
+        0x9000,
+        &[
+            0x48, 0x89, 0x37, // MOV [RDI], RSI
+            0x0f, 0x01, 0x3b, // INVLPG [RBX]
+            0x48, 0x8d, 0x64, 0x24, 0x08, // LEA RSP, [RSP + 8]
+            0x48, 0xcf, // IRETQ
+        ],
+    );
+    put_bytes(&mut bus, 0xb010, &[0xff, 0xff, 0, 0, 0, 0x93, 0xcf, 0]);
+    let mut state = initial_state(0x202);
+    state.gpr[Register::Rdi as usize] = 0x0040_3000;
+    state.gpr[Register::Rsi as usize] = 0xe023;
+    let value = state.gpr[Register::Rcx as usize];
+
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let delivery =
+        deliver_paged_page_fault(&mut state, &mut bus, CR3, EFER, context(), &fault, |_| {})
+            .unwrap();
+    assert_eq!(
+        delivery.outcome,
+        PagedExceptionDeliveryOutcome::PageFaultDelivered
+    );
+    let repair = step_paged_cr0_wp_page_table_repair_mov(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(repair.cpu.instructions_executed, 1);
+    assert!(repair.page_fault.is_none() && repair.access_error.is_none());
+    let invlpg = step_paged_invlpg(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(invlpg.cpu.instructions_executed, 1);
+    assert_eq!(
+        invlpg.cpu.exit,
+        od_isa::InvlpgExit::TranslationInvalidation(od_isa::TranslationInvalidation::Invlpg {
+            linear_address: DATA_LINEAR
+        })
+    );
+    let discard = step_paged_exception_stack_discard(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(discard.cpu.instructions_executed, 1);
+    let returned = step_paged_iretq(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(returned.cpu, od_isa::iretq::IretqResult::Retired);
+    assert!(returned.page_fault.is_none() && returned.access_error.is_none());
+    assert_eq!(state.rip, FAULT_RIP);
+    assert_eq!(state.rflags, 0x1_0202);
+    assert_eq!(state.gpr[Register::Rsp as usize], ORIGINAL_RSP);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+            .unwrap(),
+        SENTINEL
+    );
+
+    let mut retry_writes = Vec::new();
+    let retry = step_paged_cr0_wp_mov(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |range| retry_writes.push(range),
+    )
+    .unwrap();
+    assert_eq!(retry.cpu.instructions_executed, 1);
+    assert!(retry.page_fault.is_none() && retry.access_error.is_none());
+    assert_eq!(state.rip, FAULT_RIP + 3);
+    let retry_rflags = state.rflags;
+    assert_eq!(retry.ad_updates.len(), 1);
+    assert_eq!(retry.ad_updates[0].address.get(), 0x6000);
+    assert_eq!(retry.ad_updates[0].bit, od_machine::AdBit::Dirty);
+    assert_eq!(retry.ad_updates[0].before, 0xe023);
+    assert_eq!(retry.ad_updates[0].after, 0xe063);
+    assert_eq!(retry.committed_writes, retry_writes);
+    assert_eq!(
+        retry_writes
+            .iter()
+            .map(|r| (r.start().get(), r.len()))
+            .collect::<Vec<_>>(),
+        [(0x6000, 8), (DATA_PHYSICAL, 8)]
+    );
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x6000), AccessWidth::Qword)
+            .unwrap(),
+        0xe063
+    );
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+            .unwrap(),
+        value
+    );
+
+    assert_eq!(
+        bus.read_physical(
+            GuestPhysicalAddress::new(DATA_PHYSICAL + 8),
+            AccessWidth::Qword,
+        )
+        .unwrap(),
+        CANARY
+    );
+
+    let mut load_writes = Vec::new();
+    let load = step_paged_cr0_wp_mov(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |range| load_writes.push(range),
+    )
+    .unwrap();
+    assert_eq!(load.cpu.instructions_executed, 1);
+    assert!(load.page_fault.is_none() && load.access_error.is_none());
+    assert!(load_writes.is_empty());
+    assert_eq!(state.rip, FAULT_RIP + 6);
+    assert_eq!(state.gpr[Register::Rax as usize], value);
+    assert_eq!(
+        bus.read_physical(
+            GuestPhysicalAddress::new(DATA_PHYSICAL + 8),
+            AccessWidth::Qword,
+        )
+        .unwrap(),
+        CANARY
+    );
+    assert_eq!(state.gpr[Register::Rsp as usize], ORIGINAL_RSP);
+    assert_eq!(state.cr2, Some(DATA_LINEAR));
+    assert_eq!(state.cr0, Some(CR0));
+    assert_eq!(state.cr3, Some(CR3));
+    assert_eq!(state.cr4, Some(CR4));
+    assert_eq!(
+        retry_rflags & (1 << 16),
+        0,
+        "RF must clear on the retried MOV"
+    );
+}
+
 fn context() -> AccessContext {
     AccessContext {
         mode: InstructionMode::Long64,
