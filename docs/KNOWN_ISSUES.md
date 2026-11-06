@@ -1917,6 +1917,17 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Основание и результат:** the previously recorded exhaustive-match gap was resolved in both JIT consumers. `block::tests::lock_mov_cr0_is_an_exact_unsupported_boundary_and_preserves_progress` verifies exact RIP, typed `InvalidMovCr0Lock`, length 4, and preserved decoded prefix; `memory_dispatch::tests::lock_mov_cr0_stops_strict_dispatch_without_retirement_or_tail_execution` verifies strict `Unsupported`, zero retirement at entry, and stopping after the preceding supported memory artifact without executing the suffix. The LOCK MOV CR3 regression also passes. Fresh `cargo check --workspace --all-targets --offline` completed with exit code 0. Details and commands: [S4-01b report](reports/STAGE_4_S4-01B_2026-11-06.md) and [manifest](reports/data/stage4/s4-01b-invalid-mov-cr0-lock-2026-11-06.json).
 - **Граница:** this closes only the missing `InvalidMovCr0Lock` classification in `od-jit`. JIT/native admission was not widened; the parent S4-01 baseline and Stage 4 remain open.
 
+<a id="issue-062-cargo-fmt-check-fails-in-unrelated-files"></a>
+
+### ISSUE-062 — `cargo fmt --all -- --check` fails in files outside stage 11
+
+- **Дата обнаружения:** 2026-11-06, при проверке S11-07.
+- **Компонент:** `crates/od-host/src/display.rs` (строки 13, 812, 1995), `crates/od-machine/src/lib.rs` (строка 33), `tools/power-loss/src/main.rs` (строки 170, 301).
+- **Статус:** открыта; проверка форматирования, не runtime-дефект.
+- **Суть и последствия:** на HEAD `cargo fmt --all -- --check` возвращает exit 1 из-за неотформатированных файлов, которые не относятся к задаче S11-07. Новый код этапа 11 проверяется `rustfmt --check` по своим файлам и проходит.
+- **Основание:** вывод `cargo fmt --all -- --check` на worktree `feat/s9-stage` после S11-07 (exit 1; перечисленные строки).
+- **Следующий шаг:** отдельным change-only-формат коммитом привести перечисленные файлы к `rustfmt`, не смешивая с функциональными правками; после этого вернуть полный `cargo fmt --all -- --check` в обязательные проверки.
+
 <a id="issue-056-layout-check-unmapped-smoke-root"></a>
 
 ### ISSUE-056 — Layout checker rejects the root smoke directory

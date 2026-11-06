@@ -96,10 +96,14 @@
 //! (`pread`/`pwrite`) and `flock(2)`.
 
 use od_storage::io::{BackendError, DurabilityScope, StorageBackend, StorageCapabilities};
+#[cfg(target_os = "macos")]
+use std::ffi::{CStr, CString};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
+#[cfg(target_os = "macos")]
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
@@ -139,6 +143,118 @@ unsafe extern "C" {
     // SAFETY contract: `fd` is an open descriptor owned by the caller;
     // `F_FULLFSYNC` reads no caller memory.
     fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+}
+
+// `openat(2)` / `unlinkat(2)` flags and errno values. They are the macOS SDK
+// values (`<sys/fcntl.h>`, `<sys/errno.h>`, verified against the SDK headers
+// with a C probe on macOS 26.7.1); the Linux values differ per architecture,
+// so the directory-relative constructors exist on macOS only.
+#[cfg(target_os = "macos")]
+const O_RDONLY: i32 = 0x0000;
+#[cfg(target_os = "macos")]
+const O_RDWR: i32 = 0x0002;
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: i32 = 0x0004;
+#[cfg(target_os = "macos")]
+const O_NOFOLLOW: i32 = 0x0100;
+#[cfg(target_os = "macos")]
+const O_CREAT: i32 = 0x0200;
+#[cfg(target_os = "macos")]
+const O_EXCL: i32 = 0x0800;
+#[cfg(target_os = "macos")]
+const O_CLOEXEC: i32 = 0x0100_0000;
+/// `ELOOP`: `O_NOFOLLOW` met a symlink at the final component.
+#[cfg(target_os = "macos")]
+const ELOOP: i32 = 62;
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    // `openat` is variadic in C (`int openat(int, const char *, int, ...)`);
+    // like `fcntl` above it must be declared variadic. The optional mode is
+    // passed as `c_uint`. SAFETY contract: `fd` is an open directory
+    // descriptor and `path` a NUL-terminated string that outlives the call.
+    fn openat(fd: i32, path: *const std::ffi::c_char, oflag: i32, ...) -> i32;
+    // SAFETY contract: as for `openat`; `flag` is 0 (remove a non-directory).
+    fn unlinkat(fd: i32, path: *const std::ffi::c_char, flag: i32) -> i32;
+}
+
+/// A single-component directory entry name as a C string. `InvalidInput` for
+/// an empty name, `.`, `..`, or a name containing `/` or NUL, so a name can
+/// never address anything but one entry directly inside the directory.
+#[cfg(target_os = "macos")]
+pub(crate) fn entry_name(name: &str) -> io::Result<CString> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "name is not a single directory entry",
+        ));
+    }
+    CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "name contains a NUL byte"))
+}
+
+/// `openat` retrying on `EINTR`; the result is owned by the returned `File`.
+#[cfg(target_os = "macos")]
+fn openat_file(dir: BorrowedFd<'_>, name: &CStr, flags: i32, mode: u32) -> io::Result<File> {
+    loop {
+        // SAFETY: `dir` is a live descriptor for the call and `name` is a
+        // NUL-terminated string; on success the new descriptor is owned by
+        // nothing else and is moved into the `File`.
+        let fd = unsafe { openat(dir.as_raw_fd(), name.as_ptr(), flags, mode) };
+        if fd >= 0 {
+            // SAFETY: `fd` was just returned by `openat` and is not shared.
+            return Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+/// Maps `ELOOP` (symlink met by `O_NOFOLLOW`) to the not-a-regular-file error.
+#[cfg(target_os = "macos")]
+fn symlink_to_not_regular(error: io::Error) -> io::Error {
+    if error.raw_os_error() == Some(ELOOP) {
+        not_regular_file()
+    } else {
+        error
+    }
+}
+
+/// Identity of the regular file `name` names inside `dir`, without following
+/// a symlink. `Ok(None)`: no such entry or the entry is a symlink. A non-file
+/// object is an error.
+#[cfg(target_os = "macos")]
+fn entry_identity_at(dir: BorrowedFd<'_>, name: &CStr) -> io::Result<Option<FileIdentity>> {
+    match openat_file(dir, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0) {
+        Ok(file) => Ok(Some(FileIdentity::of(&file.metadata()?))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.raw_os_error() == Some(ELOOP) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Removes the entry `name` of `dir` only if it still names the regular file
+/// with identity `(st_dev, st_ino)`. `Ok(true)` means it was unlinked. The
+/// check and the `unlinkat` are separate calls (see
+/// [`HostFileStorage::create_new_exclusive_at`]).
+#[cfg(target_os = "macos")]
+pub(crate) fn unlink_at_if_identity(
+    dir: BorrowedFd<'_>,
+    name: &CStr,
+    identity: (u64, u64),
+) -> io::Result<bool> {
+    match entry_identity_at(dir, name)? {
+        Some(current) if (current.dev, current.ino) == identity => {}
+        _ => return Ok(false),
+    }
+    // SAFETY: `dir` is live and `name` NUL-terminated for the call.
+    if unsafe { unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+        Ok(true)
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// Takes a non-blocking `flock` and retries on `EINTR`. `Ok(false)` means the
@@ -182,8 +298,38 @@ impl FileIdentity {
 /// step and no persistent representation.
 #[derive(Debug)]
 struct WriterLock {
-    path: PathBuf,
+    anchor: Anchor,
     identity: FileIdentity,
+}
+
+/// How a writer re-finds the object it locked.
+#[derive(Debug)]
+enum Anchor {
+    /// A host path; resolved with `stat` (symlinks are followed, as for every
+    /// path-based constructor of this module).
+    Path(PathBuf),
+    /// A name inside an open directory (`openat` family). The directory
+    /// descriptor is a private duplicate, so the caller may close its own. The
+    /// name is resolved without following symlinks.
+    #[cfg(target_os = "macos")]
+    At { dir: OwnedFd, name: CString },
+}
+
+impl Anchor {
+    /// Identity of the object the anchor names now. `Ok(None)` means it names
+    /// no regular object: the entry is missing, or (for [`Anchor::At`]) it is
+    /// a symlink. Both are a lost identity for a writer.
+    fn resolve(&self) -> io::Result<Option<FileIdentity>> {
+        match self {
+            Self::Path(path) => match std::fs::metadata(path) {
+                Ok(current) => Ok(Some(FileIdentity::of(&current))),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            },
+            #[cfg(target_os = "macos")]
+            Self::At { dir, name } => entry_identity_at(dir.as_fd(), name),
+        }
+    }
 }
 
 /// Failure to acquire an exclusive writer.
@@ -251,14 +397,129 @@ impl HostFileStorage {
             .create_new(true)
             .mode(0o600)
             .open(path)?;
+        Self::lock_and_size(file, Anchor::Path(path.to_path_buf()), len, File::set_len)
+    }
+
+    /// Takes the exclusive writer lock on a file this call just created and
+    /// sizes it. Shared by every create-new constructor so that the lock,
+    /// identity and sizing sequence exists once.
+    fn lock_and_size(
+        file: File,
+        anchor: Anchor,
+        len: u64,
+        size: impl FnOnce(&File, u64) -> io::Result<()>,
+    ) -> Result<Self, WriterOpenError> {
         let storage = Self {
             file,
             writable: true,
             lock: None,
         }
-        .acquire_writer_lock(path)?;
-        storage.file.set_len(len)?;
+        .acquire_writer_lock(anchor)?;
+        size(&storage.file, len)?;
         Ok(storage)
+    }
+
+    /// [`HostFileStorage::create_new_exclusive`] for a name inside an open
+    /// directory: `openat(dir, name, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW |
+    /// O_CLOEXEC, 0600)`, then the same lock and sizing sequence. No absolute
+    /// path is involved, so `name` can never leave `dir`; it must be a single
+    /// path component (no `/`, not empty, not `.` or `..`), otherwise
+    /// `InvalidInput` and nothing is created. An existing entry of any kind,
+    /// a symlink (dangling or not) included, is `AlreadyExists` and is not
+    /// touched. `dir` is not retained: the writer keeps its own duplicate.
+    ///
+    /// Unlike the path constructor, a failure after the entry was created
+    /// removes it again (`unlinkat`), but only if `name` still resolves to the
+    /// object this call created (same `st_dev`/`st_ino`, no symlink): an entry
+    /// replaced meanwhile is never deleted. The check and the `unlinkat` are
+    /// two calls, so a replacement in that window is not detected. The one
+    /// exceptions are [`WriterOpenError::WriterBusy`]: another open file
+    /// description took the lock on the new file first, so the entry is left
+    /// in place for that party; and a failing `fstat` of the new descriptor:
+    /// the identity of the created object is then unknown, so nothing is
+    /// removed and the error is returned (residual risk: an empty file may
+    /// stay). The directory is duplicated before the entry is created, so
+    /// `EMFILE` there leaves nothing behind. Creation is completion only, not durable
+    /// (ISSUE-055): neither the file nor the directory entry is flushed.
+    #[cfg(target_os = "macos")]
+    pub fn create_new_exclusive_at(
+        dir: BorrowedFd<'_>,
+        name: &str,
+        len: u64,
+    ) -> Result<Self, WriterOpenError> {
+        Self::create_new_exclusive_at_with(dir, name, len, File::set_len)
+    }
+
+    /// Body of [`HostFileStorage::create_new_exclusive_at`] with the sizing
+    /// step injectable, so failures after creation are testable.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn create_new_exclusive_at_with(
+        dir: BorrowedFd<'_>,
+        name: &str,
+        len: u64,
+        size: impl FnOnce(&File, u64) -> io::Result<()>,
+    ) -> Result<Self, WriterOpenError> {
+        if len > HOST_MAX_LEN {
+            return Err(WriterOpenError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "length exceeds host file size limit",
+            )));
+        }
+        let name = entry_name(name)?;
+        // Everything that can fail without side effects happens before the
+        // entry exists: the directory duplicate (`EMFILE`) is taken first.
+        let dir_dup = dir.try_clone_to_owned()?;
+        let file = openat_file(
+            dir,
+            &name,
+            O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            0o600,
+        )?;
+        // If `fstat` of the new descriptor fails, the identity of the created
+        // object is unknown, so no check can tell it from a replacement and
+        // the entry is deliberately NOT removed (a possibly foreign object is
+        // never deleted). This is the only failure after creation that leaves
+        // the entry behind besides `WriterBusy`.
+        let created = FileIdentity::of(&file.metadata()?);
+        let anchor = Anchor::At {
+            dir: dir_dup,
+            name: name.clone(),
+        };
+        let result = Self::lock_and_size(file, anchor, len, size);
+        if let Err(error) = &result
+            && !matches!(error, WriterOpenError::WriterBusy)
+        {
+            // The failed writer (and its lock) was dropped inside
+            // `lock_and_size`; only now is the entry removed.
+            let _ = unlink_at_if_identity(dir, &name, (created.dev, created.ino));
+        }
+        result
+    }
+
+    /// Opens an existing regular file inside an open directory for reading
+    /// only, without following a symlink at `name` (`openat` with
+    /// `O_NOFOLLOW`). Takes no lock and is not a lease, like
+    /// [`HostFileStorage::open_read_only`]. A symlink, directory, FIFO or
+    /// device is `InvalidInput`; a missing entry is `NotFound`. A FIFO is not
+    /// opened blocking (`O_NONBLOCK`) and is refused after `fstat`.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn open_read_only_at(dir: BorrowedFd<'_>, name: &str) -> io::Result<Self> {
+        let name = entry_name(name)?;
+        let file = openat_file(
+            dir,
+            &name,
+            O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK,
+            0,
+        )
+        .map_err(symlink_to_not_regular)?;
+        if !file.metadata()?.is_file() {
+            return Err(not_regular_file());
+        }
+        Ok(Self {
+            file,
+            writable: false,
+            lock: None,
+        })
     }
 
     /// `(st_dev, st_ino)` of the file this instance holds the exclusive writer
@@ -288,30 +549,23 @@ impl HostFileStorage {
         open_path: &Path,
         check_path: &Path,
     ) -> Result<Self, WriterOpenError> {
-        Self::open(open_path, true)?.acquire_writer_lock(check_path)
+        Self::open(open_path, true)?.acquire_writer_lock(Anchor::Path(check_path.to_path_buf()))
     }
 
     /// Takes `LOCK_EX | LOCK_NB` on the already opened file and records its
     /// identity. The result is the only way a writable instance is returned.
-    fn acquire_writer_lock(mut self, path: &Path) -> Result<Self, WriterOpenError> {
+    fn acquire_writer_lock(mut self, anchor: Anchor) -> Result<Self, WriterOpenError> {
         if !flock_nonblocking(&self.file, LOCK_EX)? {
             return Err(WriterOpenError::WriterBusy);
         }
-        // Identity of the locked object, then check the path still names it.
+        // Identity of the locked object, then check the anchor still names it.
         // If it was swapped after `open`, we locked an orphan: refuse.
         let identity = FileIdentity::of(&self.file.metadata()?);
-        match std::fs::metadata(path) {
-            Ok(current) if FileIdentity::of(&current) == identity => {}
-            Ok(_) => return Err(WriterOpenError::IdentityMismatch),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Err(WriterOpenError::IdentityMismatch);
-            }
-            Err(error) => return Err(WriterOpenError::Io(error)),
+        match anchor.resolve()? {
+            Some(current) if current == identity => {}
+            Some(_) | None => return Err(WriterOpenError::IdentityMismatch),
         }
-        self.lock = Some(WriterLock {
-            path: path.to_path_buf(),
-            identity,
-        });
+        self.lock = Some(WriterLock { anchor, identity });
         Ok(self)
     }
 
@@ -337,12 +591,9 @@ impl HostFileStorage {
         let Some(lock) = &self.lock else {
             return Ok(());
         };
-        match std::fs::metadata(&lock.path) {
-            Ok(current) if FileIdentity::of(&current) == lock.identity => Ok(()),
+        match lock.anchor.resolve() {
+            Ok(Some(current)) if current == lock.identity => Ok(()),
             Ok(_) => Err(BackendError::WriterIdentityLost),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                Err(BackendError::WriterIdentityLost)
-            }
             Err(error) => Err(backend_error(error)),
         }
     }
@@ -1346,5 +1597,181 @@ mod tests {
         let mut child = spawn_child(&path, "lease_probe");
         assert_eq!(child_result(&mut child), "LEASED");
         child.wait().unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    mod at {
+        use super::*;
+        use std::os::fd::AsFd;
+        use std::os::unix::fs::symlink;
+
+        fn open_dir(dir: &TempDir) -> File {
+            File::open(&dir.0).expect("open directory")
+        }
+
+        #[test]
+        fn create_at_makes_locked_zeroed_file_and_refuses_every_existing_entry() {
+            let _serial = serial();
+            let dir = TempDir::new();
+            let handle = open_dir(&dir);
+            let writer =
+                HostFileStorage::create_new_exclusive_at(handle.as_fd(), "a.raw", 4096).unwrap();
+            assert!(writer.capabilities().exclusive_lock);
+            assert_eq!(std::fs::read(dir.path("a.raw")).unwrap(), vec![0u8; 4096]);
+            // The lock is held on the created file and a second create is refused.
+            assert!(matches!(
+                HostFileStorage::open_read_write_exclusive(&dir.path("a.raw")),
+                Err(WriterOpenError::WriterBusy)
+            ));
+            assert!(matches!(
+                HostFileStorage::create_new_exclusive_at(handle.as_fd(), "a.raw", 1),
+                Err(WriterOpenError::Io(e)) if e.kind() == io::ErrorKind::AlreadyExists
+            ));
+            symlink("/nonexistent/target", dir.path("dangling")).unwrap();
+            assert!(matches!(
+                HostFileStorage::create_new_exclusive_at(handle.as_fd(), "dangling", 1),
+                Err(WriterOpenError::Io(e)) if e.kind() == io::ErrorKind::AlreadyExists
+            ));
+            assert!(!Path::new("/nonexistent/target").exists());
+            drop(writer);
+            assert_eq!(std::fs::read(dir.path("a.raw")).unwrap().len(), 4096);
+        }
+
+        #[test]
+        fn create_at_rejects_names_that_are_not_one_entry_and_oversized_length() {
+            let _serial = serial();
+            let dir = TempDir::new();
+            let handle = open_dir(&dir);
+            for name in ["", ".", "..", "a/b", "../x", "/abs", "a\0b"] {
+                assert!(
+                    matches!(
+                        HostFileStorage::create_new_exclusive_at(handle.as_fd(), name, 1),
+                        Err(WriterOpenError::Io(e)) if e.kind() == io::ErrorKind::InvalidInput
+                    ),
+                    "name {name:?}"
+                );
+            }
+            assert!(matches!(
+                HostFileStorage::create_new_exclusive_at(handle.as_fd(), "big", u64::MAX),
+                Err(WriterOpenError::Io(e)) if e.kind() == io::ErrorKind::InvalidInput
+            ));
+            assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
+        }
+
+        #[test]
+        fn create_at_removes_its_own_entry_when_sizing_fails() {
+            let _serial = serial();
+            let dir = TempDir::new();
+            let handle = open_dir(&dir);
+            let result = HostFileStorage::create_new_exclusive_at_with(
+                handle.as_fd(),
+                "half.raw",
+                4096,
+                |_, _| Err(io::Error::from_raw_os_error(28)),
+            );
+            assert!(matches!(
+                result,
+                Err(WriterOpenError::Io(e)) if e.raw_os_error() == Some(28)
+            ));
+            assert!(!dir.path("half.raw").exists(), "own partial file removed");
+        }
+
+        #[test]
+        fn create_at_never_removes_an_entry_that_was_replaced_meanwhile() {
+            let _serial = serial();
+            let dir = TempDir::new();
+            let handle = open_dir(&dir);
+            let swap = dir.path("swap.raw");
+            let result = HostFileStorage::create_new_exclusive_at_with(
+                handle.as_fd(),
+                "swap.raw",
+                4096,
+                |_, _| {
+                    // Another party replaces the name after we created it.
+                    std::fs::remove_file(&swap).unwrap();
+                    std::fs::write(&swap, b"foreign").unwrap();
+                    Err(io::Error::from_raw_os_error(28))
+                },
+            );
+            assert!(matches!(result, Err(WriterOpenError::Io(_))));
+            assert_eq!(std::fs::read(&swap).unwrap(), b"foreign");
+            // A symlink put in place of the entry is not followed or removed.
+            let victim = dir.path("victim");
+            std::fs::write(&victim, b"keep").unwrap();
+            let link = dir.path("link.raw");
+            let result = HostFileStorage::create_new_exclusive_at_with(
+                handle.as_fd(),
+                "link.raw",
+                4096,
+                |_, _| {
+                    std::fs::remove_file(&link).unwrap();
+                    symlink(&victim, &link).unwrap();
+                    Err(io::Error::from_raw_os_error(28))
+                },
+            );
+            assert!(matches!(result, Err(WriterOpenError::Io(_))));
+            assert!(
+                std::fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        }
+
+        #[test]
+        fn writer_created_at_refuses_writes_after_its_name_is_replaced() {
+            let _serial = serial();
+            let dir = TempDir::new();
+            let handle = open_dir(&dir);
+            let mut writer =
+                HostFileStorage::create_new_exclusive_at(handle.as_fd(), "w.raw", 4096).unwrap();
+            writer
+                .write_at(0, b"ok")
+                .expect("write while the name is ours");
+            std::fs::remove_file(dir.path("w.raw")).unwrap();
+            assert!(matches!(
+                writer.write_at(0, b"no"),
+                Err(BackendError::WriterIdentityLost)
+            ));
+            // A symlink at the old name does not restore the identity.
+            std::fs::write(dir.path("other"), b"x").unwrap();
+            symlink(dir.path("other"), dir.path("w.raw")).unwrap();
+            assert!(matches!(
+                writer.write_at(0, b"no"),
+                Err(BackendError::WriterIdentityLost)
+            ));
+        }
+
+        #[test]
+        fn open_read_only_at_refuses_symlinks_directories_and_fifos() {
+            let _serial = serial();
+            let dir = TempDir::new();
+            let handle = open_dir(&dir);
+            std::fs::write(dir.path("f.raw"), b"data").unwrap();
+            let mut ro = HostFileStorage::open_read_only_at(handle.as_fd(), "f.raw").unwrap();
+            let mut buf = [0u8; 4];
+            ro.read_at(0, &mut buf).unwrap();
+            assert_eq!(&buf, b"data");
+            assert!(!ro.capabilities().writable);
+            symlink(dir.path("f.raw"), dir.path("l.raw")).unwrap();
+            std::fs::create_dir(dir.path("d")).unwrap();
+            let status = std::process::Command::new("mkfifo")
+                .arg(dir.path("p"))
+                .status()
+                .expect("run mkfifo");
+            assert!(status.success());
+            for name in ["l.raw", "d", "p"] {
+                let error = HostFileStorage::open_read_only_at(handle.as_fd(), name).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{name}");
+            }
+            assert_eq!(
+                HostFileStorage::open_read_only_at(handle.as_fd(), "missing")
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::NotFound
+            );
+            let _ = &mut ro;
+        }
     }
 }

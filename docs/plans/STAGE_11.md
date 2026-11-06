@@ -385,6 +385,7 @@
 ### S11-07. C ABI создания и проверки RAW-образа
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-06):** реализован (`storage_abi_v1.rs`, `storage_abi_v1.h`, `STORAGE_HOST_ABI_V1.md`, `storage_abi_smoke.c`), ревью пройдено, **не принят**. Детали и ограничения — в [отчёте](../reports/STAGE_11_REPORT.md).
 - **Где:** `include/open_desktop/storage_abi_v1.h` (новый), `docs/specs/STORAGE_HOST_ABI_V1.md` (новый, по образцу [HOST_SESSION_ABI_V1.md](../specs/HOST_SESSION_ABI_V1.md)), `crates/od-host/src/storage_abi_v1.rs` (новый), `crates/od-host/src/lib.rs`, `tests/system/storage_abi_smoke.c` (новый, по образцу `host_abi_smoke.c`).
 - **Сделать:**
   1. Функции: `od_storage_abi_version`, `od_storage_create_raw_v1(dir_fd, name, name_len, capacity_bytes, flags, out_error)` (создание относительно открытого дескриптора каталога `disks/`, чтобы не передавать абсолютные пути), `od_storage_inspect_v1(dir_fd, name, name_len, out_info)`; статусы — закрытый список; владение буферами и строками — явно; имена — байты UTF-8 без NUL и без `/`, с лимитом длины.

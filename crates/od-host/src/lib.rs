@@ -5,6 +5,8 @@ mod display;
 mod raw_file_tests;
 pub mod session;
 mod session_abi_v1;
+#[cfg(target_os = "macos")]
+mod storage_abi_v1;
 #[cfg(unix)]
 pub mod storage_io;
 #[cfg(unix)]

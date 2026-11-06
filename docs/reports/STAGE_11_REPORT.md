@@ -158,7 +158,16 @@ _Не начата. Раздел заполняется вместе с зада
 
 ### S11-07. C ABI создания и проверки RAW-образа
 
-_Не начата. Раздел заполняется вместе с задачей._
+**Текущий статус (2026-11-06):** реализован в рабочем дереве, ревью пройдено, **не принят** (архитектурного принятия нет).
+
+- Файлы: `crates/od-host/src/storage_abi_v1.rs` (новый, C ABI и 18 тестов), `crates/od-host/src/lib.rs` (модуль только под macOS), `crates/od-host/src/storage_io.rs` (директорно-относительная форма создания `create_new_exclusive_at`; общая часть блокировки и размера вынесена в `lock_and_size`; поведение пути `Anchor::Path` не менялось), `include/open_desktop/storage_abi_v1.h`, `docs/specs/STORAGE_HOST_ABI_V1.md` (новый; создан вопреки запрету `docs/specs/*`, потому что файл назван в «Где» задачи), `tests/system/storage_abi_smoke.c`.
+- ABI: `od_storage_abi_version`, `od_storage_create_raw_v1(dir_fd, name, name_len, capacity_bytes, flags, out_error)`, `od_storage_inspect_v1(dir_fd, name, name_len, out_info)`; статусы 0–11 закрытым списком; структуры по 32 байта с `struct_size`.
+- Имя по VM_BUNDLE §3.3 (1–249 байт, UTF-8, без `.`/`..`/`/`/управляющих). Ёмкость кратна 512 (512 — гипотеза, кандидат LBA). Создание через `openat(O_CREAT|O_EXCL|O_NOFOLLOW)`; симлинк и любая существующая запись — `ALREADY_EXISTS`; откат только своего файла по совпадению identity; выход за каталог невозможен. Inspect не читает байты образа и не берёт lock.
+- Durability создания не заявляется (ISSUE-055); статуса `unsupported_durability` в этом ABI нет по решению VM_BUNDLE §3.4.
+- Проверки: `cargo test -p od-host --offline --lib -- storage_ raw_file` — 87 passed, 0 failed; `cargo clippy -p od-host --all-targets` по новым файлам — чисто; `rustfmt --check` по своим файлам — чисто; C smoke собран `clang -std=c11 -Wall -Wextra -Werror` и завершился с exit 0; `python3 tools/check_layout.py` — 45 ошибок (без изменений).
+- Известные падения, не связанные с S11-07: полный `cargo test -p od-host --offline` падает (ISSUE-061: `MappingAlreadyLive`, `refusing to overwrite` в `work/`; на HEAD так же). `cargo fmt --all -- --check` падает в чужих файлах — ISSUE-062. Ошибки из-за отсутствующих `work/` в `check_layout` — прежние.
+- Не проверено: реальная потеря питания и durability (ISSUE-055); сетевые и не-APFS тома; `fstatvfs` даёт 32-битный `f_bavail` (место насыщается около 16 ТиБ); открытие символьного устройства `O_RDONLY|O_NONBLOCK` до отказа по `fstat` (низкий риск); Linux-сборка модуля не проверялась (модуль только для macOS); вызов из VMHost и Swift — S11-04, S11-08.
+- Открытые вопросы: маппинг статусов `od_storage_*` на коды control v2 — S11-03/S11-09; `INSUFFICIENT_SPACE` для smoke S11-08 — только заведомо большая ёмкость, инъекции через ABI нет (нужен test-only механизм в VMHost).
 
 ### S11-08. Мастер создания VM и команда `PREPARE_DISK`
 
