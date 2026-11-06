@@ -15,9 +15,9 @@ use od_isa::TranslationInvalidation;
 use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 use od_isa::{
     InvlpgExit, InvlpgLong64V1, InvlpgResult, InvlpgWpLong64V1, LongModeState, MovCr0WpLong64V1,
-    MovCr3Exit, MovCr3InputError, MovCr3Long64V1, MovCr3Result, OperandSize, PagedProbeExit,
-    PagedProbeResult, TranslationContextChange, step_invlpg, step_invlpg_wp, step_mov_cr0_wp,
-    step_mov_cr3,
+    MovCr3Exit, MovCr3InputError, MovCr3Long64V1, MovCr3Result, MovCr3WpLong64V1, OperandSize,
+    PagedProbeExit, PagedProbeResult, TranslationContextChange, step_invlpg, step_invlpg_wp,
+    step_mov_cr0_wp, step_mov_cr3, step_mov_cr3_wp,
 };
 
 const PHYSICAL_ADDRESS_LIMIT: u128 = 1u128 << 36;
@@ -190,7 +190,13 @@ pub enum MutableTranslationSessionError {
     MovCr3Input(MovCr3InputError),
     Cr3RetiredSessionStateMismatch {
         effect: TranslationContextChange,
+        cpu_cr0: Option<u64>,
         cpu_cr3: Option<u64>,
+        cpu_cr4: Option<u64>,
+        instructions_executed: u64,
+    },
+    Cr3RetiredWithoutEffect {
+        exit: MovCr3Exit,
         instructions_executed: u64,
     },
     Cr3RetiredInvalidSnapshot {
@@ -419,6 +425,49 @@ impl<'a> MutableTranslationProbeSession<'a> {
         Ok(result)
     }
 
+    /// Execute the exact MOV CR3 profile under either bounded CR0.WP setting.
+    /// Fetch bypasses the resident translation entry; a validated retired
+    /// effect replaces the snapshot and clears the cache before returning.
+    pub fn execute_mov_cr3_wp(
+        &mut self,
+        cpu: &mut LongModeState,
+        context: AccessContext,
+        initial_rflags_defined: u64,
+    ) -> Result<MovCr3Result, MutableTranslationSessionError> {
+        self.ensure_usable()?;
+        if cpu.cr0 != Some(self.paging.cr0())
+            || cpu.cr4 != Some(self.paging.cr4())
+            || !matches!(self.paging.cr0(), 0x8001_0033 | 0x8000_0033)
+        {
+            return Err(MutableTranslationSessionError::UnsupportedPagingProfile);
+        }
+        if cpu.cr3 != Some(self.paging.cr3()) {
+            return Err(MutableTranslationSessionError::Cr3Mismatch {
+                expected: self.paging.cr3(),
+                actual: cpu.cr3,
+            });
+        }
+
+        let result = {
+            let mut fetch = SessionFetchMemory {
+                memory: self.memory,
+                paging: self.paging,
+            };
+            step_mov_cr3_wp(
+                MovCr3WpLong64V1,
+                cpu,
+                &mut fetch,
+                context,
+                self.paging.efer(),
+                initial_rflags_defined,
+            )
+            .map_err(MutableTranslationSessionError::MovCr3Input)?
+        };
+
+        self.consume_mov_cr3_wp_result(&result, cpu)?;
+        Ok(result)
+    }
+
     /// Execute one standalone MOV CR0, RAX WP toggle and consume its effect
     /// before another translation lookup. The diagnostic cache is cleared for
     /// every accepted write, including a same-value write.
@@ -550,7 +599,9 @@ impl<'a> MutableTranslationProbeSession<'a> {
                 return Err(
                     MutableTranslationSessionError::Cr3RetiredSessionStateMismatch {
                         effect,
+                        cpu_cr0: self.paging.cr0().into(),
                         cpu_cr3,
+                        cpu_cr4: self.paging.cr4().into(),
                         instructions_executed,
                     },
                 );
@@ -568,7 +619,9 @@ impl<'a> MutableTranslationProbeSession<'a> {
             return Err(
                 MutableTranslationSessionError::Cr3RetiredSessionStateMismatch {
                     effect,
+                    cpu_cr0: self.paging.cr0().into(),
                     cpu_cr3,
+                    cpu_cr4: self.paging.cr4().into(),
                     instructions_executed,
                 },
             );
@@ -588,6 +641,53 @@ impl<'a> MutableTranslationProbeSession<'a> {
         self.paging = replacement;
         self.state.clear();
         Ok(())
+    }
+
+    fn consume_retired_cr3_wp_effect(
+        &mut self,
+        effect: TranslationContextChange,
+        cpu_cr0: Option<u64>,
+        cpu_cr3: Option<u64>,
+        cpu_cr4: Option<u64>,
+        instructions_executed: u64,
+    ) -> Result<(), MutableTranslationSessionError> {
+        if cpu_cr0 != Some(self.paging.cr0()) || cpu_cr4 != Some(self.paging.cr4()) {
+            self.poison();
+            return Err(
+                MutableTranslationSessionError::Cr3RetiredSessionStateMismatch {
+                    effect,
+                    cpu_cr0,
+                    cpu_cr3,
+                    cpu_cr4,
+                    instructions_executed,
+                },
+            );
+        }
+        self.consume_retired_cr3_effect(effect, cpu_cr3, instructions_executed)
+    }
+
+    fn consume_mov_cr3_wp_result(
+        &mut self,
+        result: &MovCr3Result,
+        cpu: &LongModeState,
+    ) -> Result<(), MutableTranslationSessionError> {
+        match &result.exit {
+            MovCr3Exit::TranslationContextChange(effect) => self.consume_retired_cr3_wp_effect(
+                *effect,
+                cpu.cr0,
+                cpu.cr3,
+                cpu.cr4,
+                result.instructions_executed,
+            ),
+            _ if result.instructions_executed == 0 => Ok(()),
+            _ => {
+                self.poison();
+                Err(MutableTranslationSessionError::Cr3RetiredWithoutEffect {
+                    exit: result.exit.clone(),
+                    instructions_executed: result.instructions_executed,
+                })
+            }
+        }
     }
 
     fn ensure_usable(&self) -> Result<(), MutableTranslationSessionError> {
@@ -711,9 +811,9 @@ mod tests {
         PrivilegeLevel,
     };
     use od_isa::{
-        CpuActivity, InvlpgExit, InvlpgLong64V1, LongModeState, MovCr3Exit, OperandSize,
-        PagedProbeExit, PagedProbeResult, Register, StiShadow, TranslationContextChange,
-        TranslationInvalidation, step_invlpg,
+        CpuActivity, InvlpgExit, InvlpgLong64V1, LongModeState, MovCr3Exit, MovCr3Result,
+        OperandSize, PagedProbeExit, PagedProbeResult, Register, StiShadow,
+        TranslationContextChange, TranslationInvalidation, step_invlpg,
     };
 
     const ROOT: u64 = 0x1000;
@@ -1376,83 +1476,8 @@ mod tests {
     }
 
     #[test]
-    fn same_cr3_write_invalidates_after_pte_remap() {
-        let mut memory = memory(PHYSICAL_PAGE | 7);
-        memory
-            .write_bytes(
-                GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
-                &[0x0f, 0x22, 0xd8],
-                |_| {},
-            )
-            .unwrap();
-        memory
-            .write_bytes(
-                GuestPhysicalAddress::new(0xa020),
-                &[0x0f, 0x22, 0xd8],
-                |_| {},
-            )
-            .unwrap();
-        let paging = config(0x8001_0033, ROOT, 0x20, 0xd00);
-        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x51);
-        let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
-
-        let (_, initial) = translated(
-            session
-                .probe(linear, AccessKind::Read, explicit_ring3())
-                .unwrap(),
-        );
-        assert_eq!(initial.physical.get(), PHYSICAL_PAGE + 0x51);
-        assert!(matches!(
-            session
-                .probe(linear, AccessKind::Read, explicit_ring3())
-                .unwrap(),
-            TranslationProbeCacheOutcome::Hit(_)
-        ));
-        session
-            .write_pte(GuestPhysicalAddress::new(PT), 0xa000 | 5, |_| {})
-            .unwrap();
-        assert!(matches!(
-            session.probe(linear, AccessKind::Read, explicit_ring3()).unwrap(),
-            TranslationProbeCacheOutcome::Hit(ref value) if value.physical.get() == PHYSICAL_PAGE + 0x51
-        ));
-
-        let mut cpu = mov_cr3_cpu(LINEAR_PAGE + 0x20, ROOT);
-        let result = session
-            .execute_mov_cr3(&mut cpu, mov_cr3_context(), od_isa::INTEGER_FLAGS)
-            .unwrap();
-        assert_eq!(result.instructions_executed, 1);
-        assert_eq!(cpu.cr3, Some(ROOT));
-        assert!(session.is_cache_empty());
-
-        let (hit, after) = translated(
-            session
-                .probe(linear, AccessKind::Read, explicit_ring3())
-                .unwrap(),
-        );
-        assert!(
-            !hit,
-            "writing the same CR3 value must still clear the cache"
-        );
-        assert_eq!(after.physical.get(), 0xa051);
-        let TranslationProbeCacheOutcome::Walk(report) = session
-            .probe(linear, AccessKind::Write, mov_cr3_context())
-            .unwrap()
-        else {
-            panic!("newly denied write must walk the updated PTE");
-        };
-        let Ok(crate::ProbeOutcome::PageFault(fault)) = report.outcome else {
-            panic!(
-                "expected updated write protection, got {:?}",
-                report.outcome
-            );
-        };
-        assert_eq!(fault.linear, linear);
-        assert_eq!(fault.error_code, 3);
-    }
-
-    #[test]
-    fn mov_cr3_to_unusable_root_preserves_cpu_commit_and_returns_precise_probe_fault() {
-        for (leaf, expected_error) in [(0, 0x10), (0xa000 | 7 | (1 << 63), 0x11)] {
+    fn wp_mov_cr3_switches_roots_for_both_wp_states_and_keeps_legacy_gate_closed() {
+        for cr0 in [0x8001_0033, 0x8000_0033] {
             let mut memory = memory(PHYSICAL_PAGE | 7);
             memory
                 .write_bytes(
@@ -1461,36 +1486,396 @@ mod tests {
                     |_| {},
                 )
                 .unwrap();
-            install_root_b(&mut memory, leaf);
-            let paging = config(0x8001_0033, ROOT, 0x20, 0xd00);
-            let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x40);
+            install_root_b(&mut memory, 0xc000 | 7);
+            let paging = config(cr0, ROOT, 0x20, 0xd00);
+            let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x51);
             let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
-            let _ = session
-                .probe(linear, AccessKind::Read, explicit_ring3())
-                .unwrap();
+            let (_, before) = translated(
+                session
+                    .probe(linear, AccessKind::Read, explicit_ring3())
+                    .unwrap(),
+            );
+            assert_eq!(before.physical.get(), PHYSICAL_PAGE + 0x51);
+            assert!(matches!(
+                session
+                    .probe(linear, AccessKind::Read, explicit_ring3())
+                    .unwrap(),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+            let entries_before = [ROOT, PDPT, PD + 16, PT].map(|address| {
+                session
+                    .memory
+                    .read_u64(GuestPhysicalAddress::new(address))
+                    .unwrap()
+            });
 
             let mut cpu = mov_cr3_cpu(LINEAR_PAGE + 0x20, ROOT_B);
+            cpu.cr0 = Some(cr0);
             let result = session
-                .execute_mov_cr3(&mut cpu, mov_cr3_context(), od_isa::INTEGER_FLAGS)
+                .execute_mov_cr3_wp(&mut cpu, mov_cr3_context(), od_isa::INTEGER_FLAGS)
                 .unwrap();
             assert_eq!(result.instructions_executed, 1);
             assert_eq!(cpu.cr3, Some(ROOT_B));
             assert!(session.is_cache_empty());
+            let entries_after = [ROOT, PDPT, PD + 16, PT].map(|address| {
+                session
+                    .memory
+                    .read_u64(GuestPhysicalAddress::new(address))
+                    .unwrap()
+            });
+            assert_eq!(entries_after, entries_before);
+            let (hit, after) = translated(
+                session
+                    .probe(linear, AccessKind::Read, explicit_ring3())
+                    .unwrap(),
+            );
+            assert!(!hit);
+            assert_eq!(after.physical.get(), 0xc051);
+            assert!(matches!(
+                session
+                    .probe(linear, AccessKind::Read, explicit_ring3())
+                    .unwrap(),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
 
-            let TranslationProbeCacheOutcome::Walk(report) = session
-                .probe(linear, AccessKind::Fetch, mov_cr3_context())
-                .unwrap()
-            else {
-                panic!("faulting root-B fetch must walk after CR3 consumption");
-            };
-            let Ok(crate::ProbeOutcome::PageFault(fault)) = report.outcome else {
-                panic!(
-                    "expected precise root-B page fault, got {:?}",
-                    report.outcome
+            if cr0 == 0x8000_0033 {
+                let mut legacy = mov_cr3_cpu(LINEAR_PAGE + 0x20, ROOT_B);
+                legacy.cr0 = Some(cr0);
+                assert_eq!(
+                    session.execute_mov_cr3(&mut legacy, mov_cr3_context(), od_isa::INTEGER_FLAGS),
+                    Err(MutableTranslationSessionError::UnsupportedPagingProfile)
                 );
-            };
-            assert_eq!(fault.linear, linear);
-            assert_eq!(fault.error_code, expected_error);
+                assert_eq!(legacy.cr3, Some(ROOT));
+            }
+        }
+    }
+
+    #[test]
+    fn wp_mov_cr3_fetch_fault_bypasses_matching_resident_fetch_key() {
+        for cr0 in [0x8001_0033, 0x8000_0033] {
+            let mut memory = memory(PHYSICAL_PAGE | 7);
+            memory
+                .write_bytes(
+                    GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
+                    &[0x0f, 0x22, 0xd8],
+                    |_| {},
+                )
+                .unwrap();
+            let paging = config(cr0, ROOT, 0x20, 0xd00);
+            let rip = GuestLinearAddress::new(LINEAR_PAGE + 0x20);
+            let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+            let (_, warmed) = translated(
+                session
+                    .probe(rip, AccessKind::Fetch, mov_cr3_context())
+                    .unwrap(),
+            );
+            assert_eq!(warmed.physical.get(), PHYSICAL_PAGE + 0x20);
+            assert!(matches!(
+                session
+                    .probe(rip, AccessKind::Fetch, mov_cr3_context())
+                    .unwrap(),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+            session
+                .write_pte(GuestPhysicalAddress::new(PT), 0, |_| {})
+                .unwrap();
+            let entries_before = [ROOT, PDPT, PD + 16, PT].map(|address| {
+                session
+                    .memory
+                    .read_u64(GuestPhysicalAddress::new(address))
+                    .unwrap()
+            });
+            let mut cpu = mov_cr3_cpu(rip.get(), ROOT_B);
+            cpu.cr0 = Some(cr0);
+            let before_cpu = cpu.clone();
+            let result = session
+                .execute_mov_cr3_wp(&mut cpu, mov_cr3_context(), od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(
+                result.exit,
+                MovCr3Exit::Fault(od_isa::ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(0x10),
+                    linear_address: Some(rip.get()),
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(cpu, before_cpu);
+            let entries_after = [ROOT, PDPT, PD + 16, PT].map(|address| {
+                session
+                    .memory
+                    .read_u64(GuestPhysicalAddress::new(address))
+                    .unwrap()
+            });
+            assert_eq!(entries_after, entries_before);
+            assert!(matches!(
+                session
+                    .probe(rip, AccessKind::Fetch, mov_cr3_context())
+                    .unwrap(),
+                TranslationProbeCacheOutcome::Hit(ref value)
+                    if value.physical.get() == PHYSICAL_PAGE + 0x20
+            ));
+        }
+    }
+
+    #[test]
+    fn wp_mov_cr3_prestate_mismatch_preserves_cache_and_poststate_mismatch_poisons() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
+                &[0x0f, 0x22, 0xd8],
+                |_| {},
+            )
+            .unwrap();
+        let paging = config(0x8000_0033, ROOT, 0x20, 0xd00);
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x51);
+        let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+        let _ = session
+            .probe(linear, AccessKind::Read, explicit_ring3())
+            .unwrap();
+
+        for bad_state in [
+            {
+                let mut cpu = mov_cr3_cpu(LINEAR_PAGE + 0x20, ROOT_B);
+                cpu.cr0 = Some(0x8001_0033);
+                cpu
+            },
+            {
+                let mut cpu = mov_cr3_cpu(LINEAR_PAGE + 0x20, ROOT_B);
+                cpu.cr0 = Some(0x8000_0033);
+                cpu.cr4 = Some(0x40);
+                cpu
+            },
+        ] {
+            let mut cpu = bad_state;
+            let before = cpu.clone();
+            assert_eq!(
+                session.execute_mov_cr3_wp(&mut cpu, mov_cr3_context(), od_isa::INTEGER_FLAGS),
+                Err(MutableTranslationSessionError::UnsupportedPagingProfile)
+            );
+            assert_eq!(cpu, before);
+            assert!(!session.is_cache_empty());
+        }
+
+        let effect = TranslationContextChange::Cr3Write {
+            old_cr3: ROOT,
+            new_cr3: ROOT_B,
+        };
+        let error = session
+            .consume_retired_cr3_wp_effect(effect, Some(0x8000_0033), Some(ROOT_B), Some(0x40), 1)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            MutableTranslationSessionError::Cr3RetiredSessionStateMismatch { .. }
+        ));
+        assert!(session.is_cache_empty());
+        assert_eq!(
+            session.probe(linear, AccessKind::Read, explicit_ring3()),
+            Err(MutableTranslationSessionError::SessionPoisoned)
+        );
+    }
+
+    #[test]
+    fn mov_cr3_wp_zero_retirement_preserves_cache_but_contradictory_retirement_poisons() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let paging = config(0x8000_0033, ROOT, 0x20, 0xd00);
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x51);
+        let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+        let _ = session
+            .probe(linear, AccessKind::Read, explicit_ring3())
+            .unwrap();
+        assert!(matches!(
+            session
+                .probe(linear, AccessKind::Read, explicit_ring3())
+                .unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+        let mut cpu = mov_cr3_cpu(LINEAR_PAGE + 0x20, ROOT_B);
+        cpu.cr0 = Some(0x8000_0033);
+
+        let nonretiring_fault = MovCr3Result {
+            exit: MovCr3Exit::Fault(od_isa::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(LINEAR_PAGE + 0x20),
+            }),
+            instructions_executed: 0,
+            rflags_defined: od_isa::INTEGER_FLAGS,
+        };
+        session
+            .consume_mov_cr3_wp_result(&nonretiring_fault, &cpu)
+            .unwrap();
+        assert!(!session.is_cache_empty());
+        assert!(matches!(
+            session
+                .probe(linear, AccessKind::Read, explicit_ring3())
+                .unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+
+        let contradictory_retirement = MovCr3Result {
+            exit: nonretiring_fault.exit.clone(),
+            instructions_executed: 1,
+            rflags_defined: od_isa::INTEGER_FLAGS,
+        };
+        assert!(matches!(
+            session.consume_mov_cr3_wp_result(&contradictory_retirement, &cpu),
+            Err(MutableTranslationSessionError::Cr3RetiredWithoutEffect {
+                instructions_executed: 1,
+                ..
+            })
+        ));
+        assert!(session.is_cache_empty());
+        assert_eq!(
+            session.probe(linear, AccessKind::Read, explicit_ring3()),
+            Err(MutableTranslationSessionError::SessionPoisoned)
+        );
+    }
+
+    #[test]
+    fn same_cr3_write_invalidates_after_pte_remap() {
+        for cr0 in [0x8001_0033, 0x8000_0033] {
+            let mut memory = memory(PHYSICAL_PAGE | 7);
+            memory
+                .write_bytes(
+                    GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
+                    &[0x0f, 0x22, 0xd8],
+                    |_| {},
+                )
+                .unwrap();
+            memory
+                .write_bytes(
+                    GuestPhysicalAddress::new(0xa020),
+                    &[0x0f, 0x22, 0xd8],
+                    |_| {},
+                )
+                .unwrap();
+            let paging = config(cr0, ROOT, 0x20, 0xd00);
+            let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x51);
+            let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+
+            let (_, initial) = translated(
+                session
+                    .probe(linear, AccessKind::Read, explicit_ring3())
+                    .unwrap(),
+            );
+            assert_eq!(initial.physical.get(), PHYSICAL_PAGE + 0x51);
+            assert!(matches!(
+                session
+                    .probe(linear, AccessKind::Read, explicit_ring3())
+                    .unwrap(),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+            session
+                .write_pte(GuestPhysicalAddress::new(PT), 0xa000 | 5, |_| {})
+                .unwrap();
+            assert!(matches!(
+                session.probe(linear, AccessKind::Read, explicit_ring3()).unwrap(),
+                TranslationProbeCacheOutcome::Hit(ref value) if value.physical.get() == PHYSICAL_PAGE + 0x51
+            ));
+
+            let mut cpu = mov_cr3_cpu(LINEAR_PAGE + 0x20, ROOT);
+            cpu.cr0 = Some(cr0);
+            let result = session
+                .execute_mov_cr3_wp(&mut cpu, mov_cr3_context(), od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(cpu.cr3, Some(ROOT));
+            assert!(session.is_cache_empty());
+
+            let (hit, after) = translated(
+                session
+                    .probe(linear, AccessKind::Read, explicit_ring3())
+                    .unwrap(),
+            );
+            assert!(
+                !hit,
+                "writing the same CR3 value must still clear the cache"
+            );
+            assert_eq!(after.physical.get(), 0xa051);
+            if cr0 == 0x8000_0033 {
+                let TranslationProbeCacheOutcome::Walk(report) = session
+                    .probe(linear, AccessKind::Write, mov_cr3_context())
+                    .unwrap()
+                else {
+                    panic!("WP=0 supervisor write must walk the remapped leaf");
+                };
+                assert!(matches!(
+                    report.outcome,
+                    Ok(crate::ProbeOutcome::Translated(ref translation))
+                        if translation.physical.get() == 0xa051
+                ));
+
+                let ring3 = session
+                    .probe(linear, AccessKind::Write, explicit_ring3())
+                    .unwrap();
+                let TranslationProbeCacheOutcome::Walk(report) = ring3 else {
+                    panic!("Ring3 permission check must walk after the WP=0 probe");
+                };
+                assert!(matches!(
+                    report.outcome,
+                    Ok(crate::ProbeOutcome::PageFault(ref fault)) if fault.error_code == 0x07
+                ));
+            } else {
+                let TranslationProbeCacheOutcome::Walk(report) = session
+                    .probe(linear, AccessKind::Write, mov_cr3_context())
+                    .unwrap()
+                else {
+                    panic!("WP=1 supervisor write must walk the remapped leaf");
+                };
+                assert!(matches!(
+                    report.outcome,
+                    Ok(crate::ProbeOutcome::PageFault(ref fault)) if fault.error_code == 0x03
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn mov_cr3_to_unusable_root_preserves_cpu_commit_and_returns_precise_probe_fault() {
+        for cr0 in [0x8001_0033, 0x8000_0033] {
+            for (leaf, expected_error) in [(0, 0x10), (0xa000 | 7 | (1 << 63), 0x11)] {
+                let mut memory = memory(PHYSICAL_PAGE | 7);
+                memory
+                    .write_bytes(
+                        GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
+                        &[0x0f, 0x22, 0xd8],
+                        |_| {},
+                    )
+                    .unwrap();
+                install_root_b(&mut memory, leaf);
+                let paging = config(cr0, ROOT, 0x20, 0xd00);
+                let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x40);
+                let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+                let _ = session
+                    .probe(linear, AccessKind::Read, explicit_ring3())
+                    .unwrap();
+
+                let mut cpu = mov_cr3_cpu(LINEAR_PAGE + 0x20, ROOT_B);
+                cpu.cr0 = Some(cr0);
+                let result = session
+                    .execute_mov_cr3_wp(&mut cpu, mov_cr3_context(), od_isa::INTEGER_FLAGS)
+                    .unwrap();
+                assert_eq!(result.instructions_executed, 1);
+                assert_eq!(cpu.cr3, Some(ROOT_B));
+                assert!(session.is_cache_empty());
+
+                let TranslationProbeCacheOutcome::Walk(report) = session
+                    .probe(linear, AccessKind::Fetch, mov_cr3_context())
+                    .unwrap()
+                else {
+                    panic!("faulting root-B fetch must walk after CR3 consumption");
+                };
+                let Ok(crate::ProbeOutcome::PageFault(fault)) = report.outcome else {
+                    panic!(
+                        "expected precise root-B page fault, got {:?}",
+                        report.outcome
+                    );
+                };
+                assert_eq!(fault.linear, linear);
+                assert_eq!(fault.error_code, expected_error);
+            }
         }
     }
 

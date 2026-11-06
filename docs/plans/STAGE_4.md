@@ -486,6 +486,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   coverage and feature-on/off checks passed; final independent review found no
   remaining findings. See the [S4-14f report](../reports/STAGE_4_S4-14F_2026-11-06.md).
   Full S4-14 remains open.
+- [x] S4-14g implements separate `MovCr3WpLong64V1` / `step_mov_cr3_wp` and
+  `MutableTranslationProbeSession::execute_mov_cr3_wp` entries for CR0.WP=0/1.
+  The legacy MOV CR3 entry remains WP=1-only. The new session entry validates
+  pre-fetch control state, consumes only a valid retired `Cr3Write`, installs
+  the replacement snapshot and clears its one-entry cache synchronously;
+  post-retirement mismatches poison the session. Focused tests, feature-off/on
+  checks, formatting and JSON/diff checks passed. Final independent review
+  found no remaining findings. See [S4-14g report](../reports/STAGE_4_S4-14G_2026-11-06.md) and
+  [manifest](../reports/data/stage4/s4-14g-mov-cr3-wp-2026-11-06.json).
 - **Где:** `od-machine`, system instruction effects `od-isa`.
 - **Сделать:** CR3/context transitions, INVLPG, paging/permission-control changes, reset; global/PCID/INVPCID — только при объявленной поддержке. Развести software-cache generations и архитектурную семантику guest page tables.
 - **Проверка:** remap A→B, tighten/relax rights с обязательной invalidation, stale entry после context switch, huge-page coverage, код/данные, разные guest pages внутри host page. Поведение без invalidation проверять в пределах разрешённого стандартом, не требовать несуществующей гарантии.

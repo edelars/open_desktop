@@ -1747,13 +1747,17 @@ pub enum Cr0Profile {
     PagedMovCrossPageWordReadLong64V1,
     PagedMovCrossPageWordFetchLong64V1,
     MovCr3Long64V1,
+    MovCr3WpLong64V1,
 }
 
 impl Cr0Profile {
     pub const BASE: u64 = 0x0000_0000_8001_0033;
 
     pub const fn accepts(self, value: u64) -> bool {
-        value & !0xcu64 == Self::BASE
+        match self {
+            Self::MovCr3WpLong64V1 => value == Self::BASE || value == (Self::BASE & !(1 << 16)),
+            _ => value & !0xcu64 == Self::BASE,
+        }
     }
 }
 
@@ -1770,6 +1774,7 @@ pub enum Cr4Profile {
     PagedMovCrossPageWordReadLong64V1,
     PagedMovCrossPageWordFetchLong64V1,
     MovCr3Long64V1,
+    MovCr3WpLong64V1,
 }
 
 impl Cr4Profile {
@@ -1777,6 +1782,51 @@ impl Cr4Profile {
 
     pub const fn accepts(self, value: u64) -> bool {
         value & !((1 << 9) | (1 << 10)) == Self::BASE
+    }
+}
+
+const fn cr3_profiles_match(cr0: Option<Cr0Profile>, cr4: Option<Cr4Profile>) -> bool {
+    matches!(
+        (cr0, cr4),
+        (
+            Some(Cr0Profile::MovCr3Long64V1),
+            Some(Cr4Profile::MovCr3Long64V1)
+        ) | (
+            Some(Cr0Profile::MovCr3WpLong64V1),
+            Some(Cr4Profile::MovCr3WpLong64V1)
+        )
+    )
+}
+
+const fn is_mov_cr3_cr0(profile: Cr0Profile) -> bool {
+    matches!(
+        profile,
+        Cr0Profile::MovCr3Long64V1 | Cr0Profile::MovCr3WpLong64V1
+    )
+}
+
+const fn is_mov_cr3_cr4(profile: Cr4Profile) -> bool {
+    matches!(
+        profile,
+        Cr4Profile::MovCr3Long64V1 | Cr4Profile::MovCr3WpLong64V1
+    )
+}
+
+fn mov_cr3_state_matches(
+    cr0_profile: Option<Cr0Profile>,
+    cr4_profile: Option<Cr4Profile>,
+    cr0: Option<u64>,
+    cr4: Option<u64>,
+) -> bool {
+    match (cr0_profile, cr4_profile) {
+        (Some(Cr0Profile::MovCr3Long64V1), Some(Cr4Profile::MovCr3Long64V1)) => {
+            cr0 == Some(Cr0Profile::BASE) && cr4 == Some(Cr4Profile::BASE)
+        }
+        (Some(Cr0Profile::MovCr3WpLong64V1), Some(Cr4Profile::MovCr3WpLong64V1)) => {
+            cr0.is_some_and(|value| Cr0Profile::MovCr3WpLong64V1.accepts(value))
+                && cr4 == Some(Cr4Profile::BASE)
+        }
+        _ => false,
     }
 }
 
@@ -2040,6 +2090,10 @@ pub struct PagedMovCrossPageWordReadLong64V1;
 /// Exact opt-in CPU profile for one bare `MOV CR3, RAX` in Long64.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MovCr3Long64V1;
+
+/// Exact opt-in CPU profile for one bare `MOV CR3, RAX` under CR0.WP=0 or 1.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MovCr3WpLong64V1;
 
 /// Exact opt-in CPU profile for one bare `MOV CR0, RAX` WP toggle in Long64.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -15727,7 +15781,7 @@ fn run_with_cr4_profile_and_rflags_defined(
     mov_cr3_profile: Option<MovCr3Long64V1>,
     mut stop_requested: impl FnMut() -> bool,
 ) -> RunResult {
-    if (profile == Cr4Profile::MovCr3Long64V1) != mov_cr3_profile.is_some() {
+    if is_mov_cr3_cr4(profile) != mov_cr3_profile.is_some() {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0x0f },
             instructions_executed: 0,
@@ -15893,6 +15947,7 @@ fn run_with_cr4_profile_and_rflags_defined(
                     Cr0Profile::PagedMovCrossPageWordFetchLong64V1
                 }
                 Cr4Profile::MovCr3Long64V1 => Cr0Profile::MovCr3Long64V1,
+                Cr4Profile::MovCr3WpLong64V1 => Cr0Profile::MovCr3WpLong64V1,
                 _ => Cr0Profile::FpInitLong64V1,
             }),
             mov_cr3: mov_cr3_profile,
@@ -16057,6 +16112,46 @@ pub fn step_mov_cr3(
     efer: u64,
     initial_rflags_defined: u64,
 ) -> Result<MovCr3Result, MovCr3InputError> {
+    step_mov_cr3_with_profiles(
+        state,
+        memory,
+        context,
+        efer,
+        initial_rflags_defined,
+        Cr0Profile::MovCr3Long64V1,
+        Cr4Profile::MovCr3Long64V1,
+    )
+}
+
+/// Execute one exact bare MOV CR3,RAX with either bounded CR0.WP state.
+pub fn step_mov_cr3_wp(
+    _profile: MovCr3WpLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> Result<MovCr3Result, MovCr3InputError> {
+    step_mov_cr3_with_profiles(
+        state,
+        memory,
+        context,
+        efer,
+        initial_rflags_defined,
+        Cr0Profile::MovCr3WpLong64V1,
+        Cr4Profile::MovCr3WpLong64V1,
+    )
+}
+
+fn step_mov_cr3_with_profiles(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+    cr0_profile: Cr0Profile,
+    cr4_profile: Cr4Profile,
+) -> Result<MovCr3Result, MovCr3InputError> {
     if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
         return Err(MovCr3InputError::InvalidRflagsDefined {
             value: initial_rflags_defined,
@@ -16065,7 +16160,12 @@ pub fn step_mov_cr3(
     if context.mode != InstructionMode::Long64 {
         return Err(MovCr3InputError::WrongInstructionMode);
     }
-    if efer != 0xd00 || state.cr0 != Some(Cr0Profile::BASE) || state.cr4 != Some(Cr4Profile::BASE) {
+    let cr0_valid = match cr0_profile {
+        Cr0Profile::MovCr3Long64V1 => state.cr0 == Some(Cr0Profile::BASE),
+        Cr0Profile::MovCr3WpLong64V1 => state.cr0.is_some_and(|value| cr0_profile.accepts(value)),
+        _ => false,
+    };
+    if efer != 0xd00 || !cr0_valid || state.cr4 != Some(Cr4Profile::BASE) {
         return Err(MovCr3InputError::InvalidProfileState);
     }
     let old_cr3 = state.cr3.ok_or(MovCr3InputError::MissingCr3)?;
@@ -16094,7 +16194,7 @@ pub fn step_mov_cr3(
             context,
         },
         initial_rflags_defined,
-        Cr4Profile::MovCr3Long64V1,
+        cr4_profile,
         Some(MovCr3Long64V1),
         || false,
     );
@@ -17463,12 +17563,9 @@ fn run_configured(
         || (state.cr4.is_some() && profiles.cr4.is_none())
         || (state.cr3.is_some() && profiles.mov_cr3.is_none())
         || (state.cr3.is_none() && profiles.mov_cr3.is_some())
-        || ((profiles.cr0 == Some(Cr0Profile::MovCr3Long64V1)
-            || profiles.cr4 == Some(Cr4Profile::MovCr3Long64V1))
+        || ((profiles.cr0.is_some_and(is_mov_cr3_cr0) || profiles.cr4.is_some_and(is_mov_cr3_cr4))
             != profiles.mov_cr3.is_some())
-        || (profiles.mov_cr3.is_some()
-            && (profiles.cr0 != Some(Cr0Profile::MovCr3Long64V1)
-                || profiles.cr4 != Some(Cr4Profile::MovCr3Long64V1)))
+        || (profiles.mov_cr3.is_some() && !cr3_profiles_match(profiles.cr0, profiles.cr4))
     {
         return RunResult {
             exit: RunExit::Unsupported { opcode: 0x0f },
@@ -17487,6 +17584,7 @@ fn run_configured(
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
                     | Cr0Profile::MovCr3Long64V1
+                    | Cr0Profile::MovCr3WpLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -17498,6 +17596,7 @@ fn run_configured(
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
                     | Cr0Profile::MovCr3Long64V1
+                    | Cr0Profile::MovCr3WpLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -17522,6 +17621,9 @@ fn run_configured(
                             && Cr0Profile::PagedMovCrossPageWordReadLong64V1.accepts(value)
                         || profile == Cr4Profile::PagedMovCrossPageWordFetchLong64V1
                             && Cr0Profile::PagedMovCrossPageWordFetchLong64V1.accepts(value)
+                } else if is_mov_cr3_cr4(profile) {
+                    cr3_profiles_match(profiles.cr0, Some(profile))
+                        && profiles.cr0.is_some_and(|cr0| cr0.accepts(value))
                 } else {
                     Cr0Profile::FpInitLong64V1.accepts(value)
                 }
@@ -17534,6 +17636,7 @@ fn run_configured(
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
                     | Cr4Profile::MovCr3Long64V1
+                    | Cr4Profile::MovCr3WpLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -17545,6 +17648,7 @@ fn run_configured(
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
                     | Cr4Profile::MovCr3Long64V1
+                    | Cr4Profile::MovCr3WpLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -17556,10 +17660,7 @@ fn run_configured(
     }
     if profiles.mov_cr3.is_some()
         && (config.context.mode != InstructionMode::Long64
-            || profiles.cr0 != Some(Cr0Profile::MovCr3Long64V1)
-            || profiles.cr4 != Some(Cr4Profile::MovCr3Long64V1)
-            || !state.cr0.is_some_and(|value| value == Cr0Profile::BASE)
-            || !state.cr4.is_some_and(|value| value == Cr4Profile::BASE)
+            || !mov_cr3_state_matches(profiles.cr0, profiles.cr4, state.cr0, state.cr4)
             || !state
                 .cr3
                 .is_some_and(|value| value & !((1u64 << 36) - 1) == 0))
@@ -23774,12 +23875,9 @@ fn step_configured(
     if (state.cr0.is_some() && cr0_profile.is_none())
         || (state.cr4.is_some() && cr4_profile.is_none())
         || (state.cr3.is_some() != mov_cr3_profile.is_some())
-        || ((cr0_profile == Some(Cr0Profile::MovCr3Long64V1)
-            || cr4_profile == Some(Cr4Profile::MovCr3Long64V1))
+        || ((cr0_profile.is_some_and(is_mov_cr3_cr0) || cr4_profile.is_some_and(is_mov_cr3_cr4))
             != mov_cr3_profile.is_some())
-        || (mov_cr3_profile.is_some()
-            && (cr0_profile != Some(Cr0Profile::MovCr3Long64V1)
-                || cr4_profile != Some(Cr4Profile::MovCr3Long64V1)))
+        || (mov_cr3_profile.is_some() && !cr3_profiles_match(cr0_profile, cr4_profile))
     {
         return Ok(StepOutcome::Unsupported { opcode: 0x0f });
     }
@@ -23794,6 +23892,7 @@ fn step_configured(
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
                     | Cr0Profile::MovCr3Long64V1
+                    | Cr0Profile::MovCr3WpLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -23805,6 +23904,7 @@ fn step_configured(
                     | Cr0Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr0Profile::PagedMovCrossPageWordFetchLong64V1
                     | Cr0Profile::MovCr3Long64V1
+                    | Cr0Profile::MovCr3WpLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -23825,6 +23925,9 @@ fn step_configured(
                             && Cr0Profile::PagedMovCrossPageWordReadLong64V1.accepts(value)
                         || profile == Cr4Profile::PagedMovCrossPageWordFetchLong64V1
                             && Cr0Profile::PagedMovCrossPageWordFetchLong64V1.accepts(value)
+                } else if is_mov_cr3_cr4(profile) {
+                    cr3_profiles_match(cr0_profile, Some(profile))
+                        && cr0_profile.is_some_and(|cr0| cr0.accepts(value))
                 } else {
                     Cr0Profile::FpInitLong64V1.accepts(value)
                 }
@@ -23837,6 +23940,7 @@ fn step_configured(
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
                     | Cr4Profile::MovCr3Long64V1
+                    | Cr4Profile::MovCr3WpLong64V1
             ) && state.x87.as_ref().is_none_or(|x87| {
                 x87.instruction_selector.is_some() || x87.data_selector.is_some()
             }))
@@ -23848,6 +23952,7 @@ fn step_configured(
                     | Cr4Profile::PagedMovCrossPageWordReadLong64V1
                     | Cr4Profile::PagedMovCrossPageWordFetchLong64V1
                     | Cr4Profile::MovCr3Long64V1
+                    | Cr4Profile::MovCr3WpLong64V1
             ) && (state.activity != Some(crate::CpuActivity::Running)
                 || state.sti_shadow != Some(crate::StiShadow::Clear))))
     {
@@ -23860,10 +23965,7 @@ fn step_configured(
     }
     if mov_cr3_profile.is_some()
         && (context.mode != InstructionMode::Long64
-            || cr0_profile != Some(Cr0Profile::MovCr3Long64V1)
-            || cr4_profile != Some(Cr4Profile::MovCr3Long64V1)
-            || state.cr0 != Some(Cr0Profile::BASE)
-            || state.cr4 != Some(Cr4Profile::BASE)
+            || !mov_cr3_state_matches(cr0_profile, cr4_profile, state.cr0, state.cr4)
             || !state
                 .cr3
                 .is_some_and(|value| value & !((1u64 << 36) - 1) == 0))
@@ -24006,8 +24108,7 @@ fn step_configured(
         let efer_only_profiles = cr0_profile == Some(Cr0Profile::EferReadOnlyLong64V1)
             || cr4_profile == Some(Cr4Profile::EferReadOnlyLong64V1);
         let allowed = if mov_cr3_profile.is_some() {
-            cr0_profile == Some(Cr0Profile::MovCr3Long64V1)
-                && cr4_profile == Some(Cr4Profile::MovCr3Long64V1)
+            cr3_profiles_match(cr0_profile, cr4_profile)
                 && instruction.operation == Operation::WriteCr3
                 && instruction.opcode.map == OpcodeMap::Escape0f
                 && instruction.opcode.byte == 0x22
@@ -51691,7 +51792,10 @@ mod tests {
             step_tracked(
                 &mut state,
                 &mut memory,
-                AccessContext::default(),
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
                 &mut defined
             ),
             Ok(StepOutcome::Advanced)
@@ -51757,7 +51861,10 @@ mod tests {
             step_tracked(
                 &mut state,
                 &mut memory,
-                AccessContext::default(),
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
                 &mut defined
             ),
             Ok(StepOutcome::Branched)
@@ -147428,6 +147535,71 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn wp_profile_admits_only_the_two_wp_values_and_legacy_stays_wp1_only() {
+        for cr0 in [Cr0Profile::BASE, Cr0Profile::BASE & !(1 << 16)] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.cr0 = Some(cr0);
+            let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+            let result = step_mov_cr3_wp(
+                MovCr3WpLong64V1,
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            )
+            .unwrap();
+            assert_eq!(result.instructions_executed, 1, "CR0={cr0:#x}: {result:?}");
+            assert_eq!(state.cr3, Some(0x2000));
+
+            let mut legacy_state = make_state(0x1000, 0x2000);
+            legacy_state.cr0 = Some(cr0);
+            let mut legacy_memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+            let legacy = step_mov_cr3(
+                MovCr3Long64V1,
+                &mut legacy_state,
+                &mut legacy_memory,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring0,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            if cr0 == Cr0Profile::BASE {
+                assert!(legacy.is_ok());
+            } else {
+                assert_eq!(legacy, Err(MovCr3InputError::InvalidProfileState));
+                assert!(legacy_memory.fetches.is_empty());
+            }
+        }
+
+        for cr0 in [
+            Cr0Profile::BASE & !(1 << 16) | (1 << 8),
+            Cr0Profile::BASE & !(1 << 16) | (1 << 3),
+        ] {
+            let mut state = make_state(0x1000, 0x2000);
+            state.cr0 = Some(cr0);
+            let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+            assert_eq!(
+                step_mov_cr3_wp(
+                    MovCr3WpLong64V1,
+                    &mut state,
+                    &mut memory,
+                    AccessContext::default(),
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                ),
+                Err(MovCr3InputError::InvalidProfileState)
+            );
+            assert!(memory.fetches.is_empty());
+        }
+    }
+
+    #[test]
     fn mov_cr3_commits_one_instruction_and_emits_even_for_identical_value() {
         let defined = crate::INTEGER_FLAGS;
         for new_cr3 in [
@@ -147502,6 +147674,36 @@ mod mov_cr3_profile_tests {
             assert_eq!(result.rflags_defined, defined);
             assert_eq!(memory.fetches, [0, 1, 2]);
             assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn wp_profile_rejects_every_reserved_cr3_source_bit_atomically() {
+        for bit in 36..64 {
+            let mut state = make_state(0x1000, 0x2000 | (1u64 << bit));
+            state.cr0 = Some(Cr0Profile::BASE & !(1 << 16));
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+            let result = step_mov_cr3_wp(
+                MovCr3WpLong64V1,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            )
+            .unwrap();
+            assert!(matches!(
+                result.exit,
+                MovCr3Exit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    ..
+                })
+            ));
+            assert_eq!(result.instructions_executed, 0, "bit {bit}");
+            assert_eq!(state, before, "bit {bit}");
+            assert_eq!(memory.fetches, [0, 1, 2]);
         }
     }
 

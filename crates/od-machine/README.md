@@ -75,6 +75,13 @@ WP=0 и WP=1, сохраняя прежние `execute_invlpg` и MOV CR3 admiss
 обходит кеш; canonical INVLPG синхронно очищает entry, а noncanonical NOP,
 fault и отказ сохраняют его. Остальные reset/EFER transitions, tracked A/D,
 JIT hooks, huge pages, PCID/global и DMA/SMP остаются вне реализации.
+S4-14g добавляет отдельный `execute_mov_cr3_wp` для обоих WP значений. Он
+сверяет CPU CR0/CR3/CR4 со snapshot, обходит кеш при fetch, проверяет retired
+`Cr3Write` и синхронно устанавливает новый snapshot/очищает cache, включая
+same-value запись. Старый `execute_mov_cr3` по-прежнему доступен только при
+WP=1. Ошибки сверки после retirement очищают cache и отравляют session;
+не-retiring результаты сохраняют snapshot и cache. Это диагностический
+срез без production TLB и performance claim.
 Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости
 добавлять вместе с фактическим использованием.

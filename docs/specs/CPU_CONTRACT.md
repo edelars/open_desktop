@@ -172,6 +172,16 @@ page while unsupported prefixes are classified. Cross-page instruction fetch
 is outside the profile.
 The LOCK #UD case is recognized only for the exact prefix sequence `F0`.
 
+The separate opt-in `MovCr3WpLong64V1` / `step_mov_cr3_wp` keeps the exact
+`0F 22 D8` form and commit/effect semantics, but admits exactly CR0
+`0x80010033` (WP=1) or `0x80000033` (WP=0). CR4=`0x20`, EFER=`0xd00`,
+Long64, one vCPU, canonical48/physical36, four-level 4 KiB paging, running
+state and clear interrupt shadow remain fixed. The original
+`MovCr3Long64V1` / `step_mov_cr3` continues to admit only CR0=`0x80010033`.
+Both profiles retain the same fetch start boundary, exact encoding, LOCK/CPL
+fault ordering, reserved CR3 source bits [63:36], commit, flags and typed
+`Cr3Write` effect. No other execution profile gains MOV CR3 admission.
+
 This CPU slice does not update machine translation state, walk the replacement
 root, invalidate a TLB, deliver exceptions, update CR2, enable PCID/global
 pages, write EFER, or establish startup state. S4-12c owns active machine

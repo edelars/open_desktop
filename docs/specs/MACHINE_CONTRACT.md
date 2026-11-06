@@ -840,6 +840,27 @@ tracked A/D cache, reset, generations, PCID/global semantics, JIT integration
 or production TLB behavior is added. See the
 [S4-14f report](../reports/STAGE_4_S4-14F_2026-11-06.md).
 
+### MOV CR3 while CR0.WP is mutable in the diagnostic session (S4-14g)
+
+`execute_mov_cr3_wp` is a separate opt-in session entry for CR0=`0x80010033`
+or `0x80000033`; it validates CPU CR0/CR3/CR4 against the current snapshot
+before fetch. The exact bare MOV CR3 fetch uses the pure walker and bypasses
+the resident cache. Only one retired `Cr3Write` whose old root matches the
+snapshot and whose new root matches committed CPU state is consumed. A valid
+replacement snapshot is installed and the capacity-one cache is cleared
+synchronously, including same-value writes. CR0/CR4 must remain unchanged
+across retirement. Malformed effects, retirement-count mismatches, invalid
+replacement snapshots or unexpected CR0/CR4 changes clear the cache and poison
+the session; non-retiring outcomes and fetch faults preserve cache and
+snapshot. The original `execute_mov_cr3` remains WP=1-only.
+
+The replacement root is not walked during effect consumption; an unusable root
+commits and faults on the next probe. Fetch has no target/data access or A/D
+writes. This remains a one-vCPU diagnostic experiment and does not add
+production TLB behavior, tracked A/D caching, reset, PCID/global semantics,
+JIT integration or a performance claim. Full S4-14 remains open. See the
+[S4-14g report](../reports/STAGE_4_S4-14G_2026-11-06.md).
+
 S4-14e also does not add tracked A/D caching, reset, generations, PCID/global
 semantics, JIT integration or production TLB behavior. See the
 [S4-14e report](../reports/STAGE_4_S4-14E_2026-11-06.md).

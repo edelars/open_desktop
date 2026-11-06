@@ -873,3 +873,9 @@ S4-14f adds the opt-in `InvlpgWpLong64V1` / `step_invlpg_wp` entry. It shares
 the exact bare `0F 01 3B` decoder, privilege/fetch ordering and invalidation
 effect with `step_invlpg`, while accepting CR0.WP=0 or 1. The original
 `InvlpgLong64V1` keeps its WP=1 requirement.
+
+S4-14g adds a separate `MovCr3WpLong64V1` / `step_mov_cr3_wp` entry for the
+exact bare `0F 22 D8` form under CR0.WP=0 or 1. It reuses the same fetch,
+privilege, reserved-bit, commit and `Cr3Write` behavior. The existing
+`MovCr3Long64V1` / `step_mov_cr3` remains WP=1-only; other profiles are
+unchanged.
