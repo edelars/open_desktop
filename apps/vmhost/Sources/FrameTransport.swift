@@ -1,5 +1,14 @@
 import Darwin
 import Foundation
+#if canImport(ODShared)
+import ODShared
+#endif
+#if canImport(ODAtomics)
+import ODAtomics
+#endif
+#if canImport(ODHostABI)
+import ODHostABI
+#endif
 
 // Writer side of frame transport v2 (protocols/control/FRAME_TRANSPORT_V1.md; section 10 is the cursor, S10-14).
 //

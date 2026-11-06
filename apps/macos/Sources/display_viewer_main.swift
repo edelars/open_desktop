@@ -2,6 +2,9 @@ import AppKit
 import Darwin
 import Dispatch
 import Foundation
+#if canImport(ODShared)
+import ODShared
+#endif
 
 // S10-07 display viewer: entry point. Starts VMHost with the shared launch code (VMHostLaunch.swift) in the
 // TEST-ONLY mode `--display-smoke pattern` (S10-04/S10-06 profile OD_DISPLAY_PROFILE_TEST_PATTERN) and shows

@@ -1,6 +1,12 @@
 import Darwin
 import Dispatch
 import Foundation
+#if canImport(ODShared)
+import ODShared
+#endif
+#if canImport(ODHostConstants)
+import ODHostConstants
+#endif
 
 private enum Issue027Trace {
     private static let enabled = ProcessInfo.processInfo.environment["OD_ISSUE027_TRACE"] == "1"

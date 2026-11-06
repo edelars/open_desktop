@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-enum ControlKind: UInt16 {
+public enum ControlKind: UInt16 {
     case hello = 1
     case ready = 2
     case run = 3
@@ -12,30 +12,30 @@ enum ControlKind: UInt16 {
     case error = 255
 }
 
-struct ControlFrame {
-    static let magic = Array("ODCP".utf8)
-    static let versionV0: UInt16 = 0
-    static let versionV1: UInt16 = 1
-    static let headerLength = 16
+public struct ControlFrame {
+    public static let magic = Array("ODCP".utf8)
+    public static let versionV0: UInt16 = 0
+    public static let versionV1: UInt16 = 1
+    public static let headerLength = 16
     static let maxPayloadLength = 8192
 
-    let kind: ControlKind
-    let requestID: UInt32
-    let payload: Data
-    let protocolVersion: UInt16
+    public let kind: ControlKind
+    public let requestID: UInt32
+    public let payload: Data
+    public let protocolVersion: UInt16
 
-    init(kind: ControlKind, requestID: UInt32, payload: Data, protocolVersion: UInt16 = versionV0) {
+    public init(kind: ControlKind, requestID: UInt32, payload: Data, protocolVersion: UInt16 = versionV0) {
         self.kind = kind
         self.requestID = requestID
         self.payload = payload
         self.protocolVersion = protocolVersion
     }
 
-    func write(to fd: Int32) throws {
+    public func write(to fd: Int32) throws {
         try writeAll(fd: fd, data: encoded())
     }
 
-    func encoded() throws -> Data {
+    public func encoded() throws -> Data {
         guard payload.count <= Self.maxPayloadLength else { throw ControlFrameError.tooLarge }
         var bytes = Data(Self.magic)
         bytes.appendLE(protocolVersion)
@@ -46,11 +46,11 @@ struct ControlFrame {
         return bytes
     }
 
-    static func read(from fd: Int32) throws -> ControlFrame {
+    public static func read(from fd: Int32) throws -> ControlFrame {
         try read(from: fd, expectedVersion: versionV0)
     }
 
-    static func readInitial(from fd: Int32) throws -> ControlFrame {
+    public static func readInitial(from fd: Int32) throws -> ControlFrame {
         let header = try readExact(fd: fd, length: headerLength)
         let bytes = [UInt8](header)
         guard Array(bytes[0..<4]) == magic else { throw ControlFrameError.badMagic }
@@ -120,17 +120,17 @@ struct ControlFrame {
     }
 }
 
-struct ControlFrameDecoder {
+public struct ControlFrameDecoder {
     private let expectedVersion: UInt16
     private var buffered = Data()
 
-    init(expectedVersion: UInt16 = ControlFrame.versionV0) {
+    public init(expectedVersion: UInt16 = ControlFrame.versionV0) {
         self.expectedVersion = expectedVersion
     }
 
-    var isEmpty: Bool { buffered.isEmpty }
+    public var isEmpty: Bool { buffered.isEmpty }
 
-    mutating func append(_ bytes: Data) throws -> [ControlFrame] {
+    public mutating func append(_ bytes: Data) throws -> [ControlFrame] {
         var frames: [ControlFrame] = []
         var inputOffset = 0
         while inputOffset < bytes.count {
@@ -213,14 +213,14 @@ func writeAll(fd: Int32, data: Data) throws {
 }
 
 extension Data {
-    mutating func appendLE<T: FixedWidthInteger>(_ value: T) {
+    public mutating func appendLE<T: FixedWidthInteger>(_ value: T) {
         var little = value.littleEndian
         Swift.withUnsafeBytes(of: &little) { append(contentsOf: $0) }
     }
 }
 
 extension Array where Element == UInt8 {
-    func readLE<T: FixedWidthInteger>(_ type: T.Type, at offset: Int) -> T {
+    public func readLE<T: FixedWidthInteger>(_ type: T.Type, at offset: Int) -> T {
         var value: T = 0
         for index in 0..<MemoryLayout<T>.size {
             value |= T(self[offset + index]) << (index * 8)

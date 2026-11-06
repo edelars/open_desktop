@@ -126,7 +126,16 @@ _Не начата. Раздел заполняется вместе с зада
 
 ### S11-05a. Swift Package: цели, перевод тестов, паритет бинарников
 
-_Не начата. Раздел заполняется вместе с задачей._
+**Текущий статус (2026-11-06):** реализован в рабочем дереве, ревью пройдено, **не принят** (архитектурного принятия нет).
+
+- Файлы: `apps/Package.swift` (новый, без внешних зависимостей); C-цели `ODAtomics` (`apps/macos/Sources/ODAtomics/`), `ODHostABI` (`apps/vmhost/Sources/ODHostABI/`), `ODHostConstants` (`apps/macos/Sources/ODHostConstants/`, отступление от плана — см. ниже); `ODShared` (`apps/macos/Sources/Shared/`, переносы через `git mv`, публичный API помечен `public`); `od-vmhost` (единственная цель, линкующая `libod_host.a`); `open-desktop-display-viewer`; `open-desktop-launcher-smoke`; тесты `OpenDesktopMacTests` и `OpenDesktopVMHostTests` на XCTest. `main.swift` переименован в `VMHostMain.swift`.
+- Не объявлены: `OpenDesktop` и `odctl` (исходников нет; пустые цели запрещены).
+- Тесты: `@main`-исполняемые файлы переведены в XCTest, проверки сохранены, 33 теста (25 Mac + 8 VMHost). Выбор XCTest: toolchain Swift 6.4 с XCTest.
+- Отступления от плана (с причиной): (1) старые команды `xcrun swiftc` для трёх тестовых файлов заменены на `swift test --filter …` — файлы теперь `import XCTest` и через `swiftc` не собираются; (2) launcher-smoke зависит от отдельной C-цели `ODHostConstants` (только `host_abi.h`), а не от `ODHostABI`, чтобы не тянуть объявления движка; `libod_host.a` по-прежнему линкует только `od-vmhost`.
+- Проверки (выполнены при закрытии ревью): `swift build` и `swift build -c release` — exit 0; `swift test` — exit 0, 33 теста без падений, `InputXCTests` печатает 2925454 проверок (как прежний бинарник); `swift test -c release` — exit 0; `tests/system/display_viewer_dump_smoke.py` — ok; в ходе работы исполнителя дополнительно зелёные: `display_viewer_scaled`, `display_transport`, `input_channel`, `cursor_overlay`, `vmhost_control_v1_same_code` (с бинарниками SwiftPM); `python3 tools/check_layout.py` — 45 ошибок (как до задачи, все про ссылки на `work/`).
+- Известные падения, не связанные с пакетом: `vmhost_control_race_smoke.py` падает одинаково на старой и новой сборке (замер исполнителя; причина не исследована, в `KNOWN_ISSUES.md` не записано). `tests/cpu/test_stage3_harness.py` — 7 падений (`152 != 151` и подобные на `SELF_TEST_NAMES`); по проверке ревьюера они существовали до S11-05a (правки в `tests/cpu` затрагивают только пути). Записать в `KNOWN_ISSUES.md` отдельно — следующая задача.
+- Не проверено: окна глазами; deployment target (SwiftPM берёт 12.0, прежние сборки шли с 26.0 — решение в S11-05b); подпись `od-vmhost` вручную (`codesign`/entitlements — S11-05b); другие машины.
+- Затронутые файлы вне пакета: пути в `tests/cpu/*.py` и `protocols/control/INPUT_TRANSPORT_V1.md` (только пути), ссылки на `main.swift` в `docs/plans/STAGE_10.md`, `docs/plans/STAGE_11.md`, `docs/specs/VM_STATE.md`, `docs/KNOWN_ISSUES.md`; `docs/PROJECT_LAYOUT.md`, `docs/policies/DEPENDENCIES.md`, `apps/AGENTS.md`, `docs/decisions/ADR-0006-desktop-app-shell.md` (синхронизация с пакетом).
 
 ### S11-05b. Сборка `OpenDesktop.app`, entitlements и `Info.plist`
 

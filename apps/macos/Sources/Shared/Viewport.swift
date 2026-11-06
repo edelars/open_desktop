@@ -9,16 +9,16 @@ import Foundation
 
 /// Rectangle of the guest frame inside the drawable. `x` and `y` may be negative in pixel-exact mode when the
 /// drawable is smaller than the frame (the frame is then cropped, never scaled).
-struct Viewport: Equatable, CustomStringConvertible {
-    var x: Int
-    var y: Int
-    var width: Int
-    var height: Int
+public struct Viewport: Equatable, CustomStringConvertible {
+    public var x: Int
+    public var y: Int
+    public var width: Int
+    public var height: Int
 
-    var isEmpty: Bool { width <= 0 || height <= 0 }
+    public var isEmpty: Bool { width <= 0 || height <= 0 }
 
     /// Intersection with the drawable rectangle (0, 0, targetWidth, targetHeight); empty (all zero) when they do not overlap.
-    func clipped(targetWidth: Int, targetHeight: Int) -> Viewport {
+    public func clipped(targetWidth: Int, targetHeight: Int) -> Viewport {
         let left = max(x, 0)
         let top = max(y, 0)
         let right = min(x + width, targetWidth)
@@ -27,23 +27,23 @@ struct Viewport: Equatable, CustomStringConvertible {
         return Viewport(x: left, y: top, width: right - left, height: bottom - top)
     }
 
-    var description: String { "\(x),\(y),\(width),\(height)" }
+    public var description: String { "\(x),\(y),\(width),\(height)" }
 }
 
-enum PresentMode: Equatable {
+public enum PresentMode: Equatable {
     /// Largest integer-sized rectangle with the frame's aspect ratio that fits the drawable, centred; the rest is background.
     case fit
     /// One guest pixel is one drawable pixel, centred; the rest is background (or the frame is cropped).
     case pixelExact
 }
 
-enum ViewportLayout {
+public enum ViewportLayout {
     /// Physical drawable size of a view with the given logical size (points) and backing scale factor.
-    static func drawableSize(logicalWidth: Double, logicalHeight: Double, scale: Double) -> (width: Int, height: Int) {
+    public static func drawableSize(logicalWidth: Double, logicalHeight: Double, scale: Double) -> (width: Int, height: Int) {
         (max(1, Int((logicalWidth * scale).rounded())), max(1, Int((logicalHeight * scale).rounded())))
     }
 
-    static func viewport(
+    public static func viewport(
         mode: PresentMode, frameWidth: Int, frameHeight: Int, targetWidth: Int, targetHeight: Int
     ) -> Viewport {
         guard frameWidth > 0, frameHeight > 0, targetWidth > 0, targetHeight > 0 else {
@@ -73,7 +73,7 @@ enum ViewportLayout {
     /// u = u0 + p.x * du, v = v0 + p.y * dv for p in 0...1 across `visible`. `full` is the unclipped viewport.
     /// For a viewport inside the drawable this is (0, 0, 1, 1); a pixel-exact frame cropped by a small drawable shows only
     /// the centre part, so the centre of the frame (not its corner) stays on screen.
-    static func visibleUV(full: Viewport, visible: Viewport) -> (u0: Double, v0: Double, du: Double, dv: Double) {
+    public static func visibleUV(full: Viewport, visible: Viewport) -> (u0: Double, v0: Double, du: Double, dv: Double) {
         (
             Double(visible.x - full.x) / Double(full.width), Double(visible.y - full.y) / Double(full.height),
             Double(visible.width) / Double(full.width), Double(visible.height) / Double(full.height)
@@ -111,18 +111,18 @@ enum ViewportLayout {
 /// Where the cursor is drawn: `rect` in drawable pixels (real-valued edges, always inside the visible part of the drawable)
 /// and the part of the cursor texture it shows, as texture coordinates: u = u0 + p.x * du, v = v0 + p.y * dv for p in 0...1
 /// across `rect`.
-struct CursorPlacement: Equatable {
-    var x0: Double
-    var y0: Double
-    var x1: Double
-    var y1: Double
-    var u0: Double
-    var v0: Double
-    var du: Double
-    var dv: Double
+public struct CursorPlacement: Equatable {
+    public var x0: Double
+    public var y0: Double
+    public var x1: Double
+    public var y1: Double
+    public var u0: Double
+    public var v0: Double
+    public var du: Double
+    public var dv: Double
 }
 
-enum CursorOverlay {
+public enum CursorOverlay {
     /// Placement of a `width` x `height` cursor image whose hotspot `(hotX, hotY)` is at frame pixel `(posX, posY)`, over a
     /// `frameWidth` x `frameHeight` frame drawn into `full` (the unclipped viewport, possibly with a negative origin) and
     /// `visible` (`full` clipped to the render target). Returns nil when nothing is drawn: the image lies outside the frame
@@ -133,7 +133,7 @@ enum CursorOverlay {
     /// 3. drawable pixels with the affine map of the frame, `X(g) = full.x + g * full.width / frameWidth`, and the texture
     ///    coordinates of the clipped part;
     /// 4. intersected with `visible`; the texture coordinates are narrowed like `ViewportLayout.visibleUV` does for the frame.
-    static func placement(
+    public static func placement(
         frameWidth: Int, frameHeight: Int, posX: Int, posY: Int, hotX: Int, hotY: Int, width: Int, height: Int,
         full: Viewport, visible: Viewport
     ) -> CursorPlacement? {

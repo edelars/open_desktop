@@ -1,6 +1,9 @@
 import Foundation
 import Metal
 import QuartzCore
+#if canImport(ODShared)
+import ODShared
+#endif
 
 // Metal presentation for the S10-07 display viewer.
 //

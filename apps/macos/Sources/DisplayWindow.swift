@@ -1,6 +1,9 @@
 import AppKit
 import Metal
 import QuartzCore
+#if canImport(ODShared)
+import ODShared
+#endif
 
 // AppKit window of the S10-07 display viewer: an NSView backed by a CAMetalLayer. Every ready frame is
 // shown through MetalPresenter; "no signal", "mode change", "disconnected" and "incompatible" are shown

@@ -8,27 +8,27 @@ import Foundation
 //
 // There is NO delivery to the guest: the board has no input device yet (section 11); `GUEST_DELIVERY` stays 0.
 
-enum InputProtocol {
-    static let magic: [UInt8] = [0x4f, 0x44, 0x49, 0x54] // "ODIT"
-    static let version: UInt16 = 1
-    static let headerLength = 16
+public enum InputProtocol {
+    public static let magic: [UInt8] = [0x4f, 0x44, 0x49, 0x54] // "ODIT"
+    public static let version: UInt16 = 1
+    public static let headerLength = 16
     /// Section 7.1: capacity of both queues and the size of one record (the largest message, MOTION).
     static let queueCapacity = 256
     static let recordSize = 64
     /// Largest message each side buffers (section 4.1): VMHost reads MOTION (64), the UI reads STATUS (48).
-    static let maxMessageToHost = 64
-    static let maxMessageToUI = 48
+    public static let maxMessageToHost = 64
+    public static let maxMessageToUI = 48
     /// Device limits (FRAME_TRANSPORT_V1.md 3.1), section 4.2.
-    static let maxWidth: UInt32 = 4096
-    static let maxHeight: UInt32 = 2304
-    static let acceptGuestDeliveryFlag: UInt32 = 1
+    public static let maxWidth: UInt32 = 4096
+    public static let maxHeight: UInt32 = 2304
+    public static let acceptGuestDeliveryFlag: UInt32 = 1
 }
 
-enum InputKind: UInt16, CaseIterable {
+public enum InputKind: UInt16, CaseIterable {
     case version = 0, hello = 1, accept = 2, focus = 3, usage = 4, motion = 5, status = 6
 
     /// Fixed payload length of the kind (table 4.2).
-    var payloadLength: Int {
+    public var payloadLength: Int {
         switch self {
         case .version, .hello: return 0
         case .accept, .focus, .usage: return 8
@@ -49,7 +49,7 @@ enum InputKind: UInt16, CaseIterable {
 }
 
 /// Which side reads: decides which kinds are legal (a kind of the other direction is a protocol error).
-enum InputDirection {
+public enum InputDirection {
     /// The reader is VMHost: HELLO, FOCUS, USAGE, MOTION.
     case uiToHost
     /// The reader is the UI: ACCEPT, STATUS (VERSION is legal on the wire but never with version 1).
@@ -58,13 +58,13 @@ enum InputDirection {
     var maxMessage: Int { self == .uiToHost ? InputProtocol.maxMessageToHost : InputProtocol.maxMessageToUI }
 }
 
-enum InputProtocolError: Error, Equatable, CustomStringConvertible {
+public enum InputProtocolError: Error, Equatable, CustomStringConvertible {
     case badMagic
     /// Header `ODIT` with `version != 1` (section 9.1): the UI shows INCOMPATIBLE, VMHost answers VERSION.
     case incompatibleVersion(UInt16)
     case malformed(String)
 
-    var description: String {
+    public var description: String {
         switch self {
         case .badMagic: return "foreign magic"
         case let .incompatibleVersion(version): return "incompatible input protocol version \(version)"
@@ -75,15 +75,15 @@ enum InputProtocolError: Error, Equatable, CustomStringConvertible {
 
 // MARK: Usage rules (section 6.1)
 
-enum InputUsagePage {
-    static let keyboard: UInt16 = 0x07
-    static let button: UInt16 = 0x09
+public enum InputUsagePage {
+    public static let keyboard: UInt16 = 0x07
+    public static let button: UInt16 = 0x09
 }
 
-struct InputUsage: Equatable, Hashable {
-    var page: UInt16
-    var id: UInt16
-    var down: Bool
+public struct InputUsage: Equatable, Hashable {
+    public var page: UInt16
+    public var id: UInt16
+    public var down: Bool
 
     /// Section 6.1 (HUT 1.7): keyboard 0x04...0xA4, 0xB0...0xDD, 0xE0...0xE7; buttons 0x01...0x05.
     static func isValid(page: UInt16, id: UInt16) -> Bool {
@@ -98,27 +98,29 @@ struct InputUsage: Equatable, Hashable {
     }
 
     /// Dense index for bitmaps: keyboard usages 0...255, buttons 256...260 (section 7.2: 256 + 5), nil for invalid usages.
-    static func slot(page: UInt16, id: UInt16) -> Int? {
+    public static func slot(page: UInt16, id: UInt16) -> Int? {
         guard isValid(page: page, id: id) else { return nil }
         return page == InputUsagePage.keyboard ? Int(id) : 256 + Int(id) - 1
     }
 
-    static let slotCount = 261
+    public static let slotCount = 261
 }
 
 // MARK: Messages
 
-struct InputMotion: Equatable {
-    var modeChangeCount: UInt64 = 0
-    var dx: Int32 = 0
-    var dy: Int32 = 0
-    var wheel: Int32 = 0
-    var pan: Int32 = 0
-    var absX: UInt32 = 0
-    var absY: UInt32 = 0
-    var absWidth: UInt32 = 0
-    var absHeight: UInt32 = 0
-    var absValid = false
+public struct InputMotion: Equatable {
+    public var modeChangeCount: UInt64 = 0
+    public var dx: Int32 = 0
+    public var dy: Int32 = 0
+    public var wheel: Int32 = 0
+    public var pan: Int32 = 0
+    public var absX: UInt32 = 0
+    public var absY: UInt32 = 0
+    public var absWidth: UInt32 = 0
+    public var absHeight: UInt32 = 0
+    public var absValid = false
+
+    public init() {}
 
     var hasRelativePart: Bool { dx != 0 || dy != 0 || wheel != 0 || pan != 0 }
 
@@ -169,14 +171,20 @@ struct InputMotion: Equatable {
 }
 
 /// Display mode of VMHost as input checks see it (section 8.2 item 4).
-struct InputDisplayMode: Equatable {
-    var modeChangeCount: UInt64
-    var width: UInt32
-    var height: UInt32
+public struct InputDisplayMode: Equatable {
+    public var modeChangeCount: UInt64
+    public var width: UInt32
+    public var height: UInt32
+
+    public init(modeChangeCount: UInt64, width: UInt32, height: UInt32) {
+        self.modeChangeCount = modeChangeCount
+        self.width = width
+        self.height = height
+    }
 }
 
 extension InputMotion {
-    enum Reconciled: Equatable {
+    public enum Reconciled: Equatable {
         case keep(InputMotion)
         /// The absolute part was stale and nothing else is left: the record is dropped.
         case dropEmpty
@@ -184,7 +192,7 @@ extension InputMotion {
 
     /// Section 8.2 item 4, used on receipt and at the queue exit. A stale mode count resets the absolute part (not an error);
     /// the same count with another size is a protocol error. Without a display the absolute part is always reset.
-    func reconciled(with mode: InputDisplayMode?) throws -> Reconciled {
+    public func reconciled(with mode: InputDisplayMode?) throws -> Reconciled {
         guard absValid else { return .keep(self) }
         var value = self
         if let mode, mode.modeChangeCount == modeChangeCount {
@@ -199,14 +207,21 @@ extension InputMotion {
     }
 }
 
-struct InputStatus: Equatable {
-    var rejectedDowns: UInt64 = 0
-    var mergedMotions: UInt64 = 0
-    var droppedUnfocused: UInt64 = 0
-    var queueDepth: UInt32 = 0
+public struct InputStatus: Equatable {
+    public var rejectedDowns: UInt64 = 0
+    public var mergedMotions: UInt64 = 0
+    public var droppedUnfocused: UInt64 = 0
+    public var queueDepth: UInt32 = 0
+
+    public init(rejectedDowns: UInt64 = 0, mergedMotions: UInt64 = 0, droppedUnfocused: UInt64 = 0, queueDepth: UInt32 = 0) {
+        self.rejectedDowns = rejectedDowns
+        self.mergedMotions = mergedMotions
+        self.droppedUnfocused = droppedUnfocused
+        self.queueDepth = queueDepth
+    }
 }
 
-enum InputMessage: Equatable {
+public enum InputMessage: Equatable {
     /// Encoded by VMHost only (answer to a HELLO of another version); never decoded (VERSION with version 1 is an error).
     case version
     case hello
@@ -216,7 +231,7 @@ enum InputMessage: Equatable {
     case motion(InputMotion)
     case status(InputStatus)
 
-    var kind: InputKind {
+    public var kind: InputKind {
         switch self {
         case .version: return .version
         case .hello: return .hello
@@ -228,7 +243,7 @@ enum InputMessage: Equatable {
         }
     }
 
-    func encoded() -> [UInt8] {
+    public func encoded() -> [UInt8] {
         var out = InputProtocol.magic
         out.inAppendLE(InputProtocol.version)
         out.inAppendLE(kind.rawValue)
@@ -272,14 +287,14 @@ enum InputMessage: Equatable {
 
 /// Stream decoder: the header is checked as soon as its 16 bytes are there, before any payload (section 4.1);
 /// at most one incomplete message is buffered.
-struct InputDecoder {
-    let direction: InputDirection
+public struct InputDecoder {
+    public let direction: InputDirection
     private var buffer: [UInt8] = []
     /// When set, the first message must be of this kind; a header of another kind is an error as soon as its 16 bytes are
     /// there (VMHost sets `.hello`: section 8.2 item 1 decides by the header, without waiting for a payload).
-    var requiredFirstKind: InputKind?
+    public var requiredFirstKind: InputKind?
 
-    init(direction: InputDirection, requiredFirstKind: InputKind? = nil) {
+    public init(direction: InputDirection, requiredFirstKind: InputKind? = nil) {
         self.direction = direction
         self.requiredFirstKind = requiredFirstKind
     }
@@ -311,7 +326,7 @@ struct InputDecoder {
     }
 
     /// Feeds bytes; returns the complete messages. Throws on the first violation; the decoder is then unusable.
-    mutating func append(_ bytes: [UInt8]) throws -> [InputMessage] {
+    public mutating func append(_ bytes: [UInt8]) throws -> [InputMessage] {
         buffer.append(contentsOf: bytes)
         var messages: [InputMessage] = []
         while buffer.count >= InputProtocol.headerLength {
@@ -401,8 +416,8 @@ extension Array where Element == UInt8 {
 
 /// Non-blocking socket access shared by both ends: `recvmsg` with an ancillary buffer (any descriptor or `cmsghdr` is a
 /// protocol error and a received descriptor is closed at once), `send` that never raises SIGPIPE.
-enum InputSocket {
-    enum ReadResult: Equatable {
+public enum InputSocket {
+    public enum ReadResult: Equatable {
         case data(Int)
         case wouldBlock
         case eof
@@ -411,23 +426,23 @@ enum InputSocket {
         case ancillary
     }
 
-    enum WriteResult: Equatable {
+    public enum WriteResult: Equatable {
         case written(Int)
         case wouldBlock
         case error(Int32)
     }
 
-    static func makeNonBlocking(_ fd: Int32) -> Bool {
+    public static func makeNonBlocking(_ fd: Int32) -> Bool {
         let flags = fcntl(fd, F_GETFL)
         return flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0
     }
 
-    static func setNoSigpipe(_ fd: Int32) -> Bool {
+    public static func setNoSigpipe(_ fd: Int32) -> Bool {
         var one: Int32 = 1
         return setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size)) == 0
     }
 
-    static func receive(fd: Int32, into buffer: inout [UInt8], maxBytes: Int) -> ReadResult {
+    public static func receive(fd: Int32, into buffer: inout [UInt8], maxBytes: Int) -> ReadResult {
         var control = [UInt8](repeating: 0, count: 64)
         var received = 0
         var controlLength = 0
@@ -483,7 +498,7 @@ enum InputSocket {
         }
     }
 
-    static func send(fd: Int32, _ bytes: [UInt8]) -> WriteResult {
+    public static func send(fd: Int32, _ bytes: [UInt8]) -> WriteResult {
         while true {
             let n = bytes.withUnsafeBytes { Darwin.send(fd, $0.baseAddress, $0.count, 0) }
             if n >= 0 { return .written(n) }

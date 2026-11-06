@@ -13,11 +13,11 @@ import Foundation
 // Left/right modifiers: the code of `flagsChanged` says which key changed; the device-dependent bit of `modifierFlags`
 // (IOKit NX_DEVICE*KEYMASK) says whether it went down or up (section 6.3).
 
-enum HIDUsage {
-    static let capsLockKeyCode: UInt16 = 0x39
+public enum HIDUsage {
+    public static let capsLockKeyCode: UInt16 = 0x39
 
     /// `kVK_*` -> usage ID (page 0x07).
-    static let keyboard: [UInt16: UInt16] = [
+    public static let keyboard: [UInt16: UInt16] = [
         // ANSI letters (kVK_ANSI_A ... kVK_ANSI_Z), HUT 0x04...0x1D
         0x00: 0x04, 0x0B: 0x05, 0x08: 0x06, 0x02: 0x07, 0x0E: 0x08, 0x03: 0x09, 0x05: 0x0A, 0x04: 0x0B, 0x22: 0x0C,
         0x26: 0x0D, 0x28: 0x0E, 0x25: 0x0F, 0x2E: 0x10, 0x2D: 0x11, 0x1F: 0x12, 0x23: 0x13, 0x0C: 0x14, 0x0F: 0x15,
@@ -60,12 +60,12 @@ enum HIDUsage {
         0x4A: "kVK_Mute: Consumer page media key, out of v1 (section 13)",
     ]
 
-    static func usage(forKeyCode code: UInt16) -> UInt16? { keyboard[code] }
+    public static func usage(forKeyCode code: UInt16) -> UInt16? { keyboard[code] }
 
     /// Device-dependent bit of `NSEvent.modifierFlags.rawValue` for a modifier key code (IOKit NX_DEVICE*KEYMASK):
     /// left Control 0x1, left Shift 0x2, right Shift 0x4, left Command 0x8, right Command 0x10, left Option 0x20,
     /// right Option 0x40, right Control 0x2000. nil for every other code.
-    static func deviceModifierMask(forKeyCode code: UInt16) -> UInt? {
+    public static func deviceModifierMask(forKeyCode code: UInt16) -> UInt? {
         switch code {
         case 0x3B: return 0x0001
         case 0x38: return 0x0002
@@ -80,7 +80,7 @@ enum HIDUsage {
     }
 
     /// `NSEvent.buttonNumber` -> Button Page usage (section 5.2); nil for n >= 5 (not transmitted, counted by the caller).
-    static func buttonUsage(forButtonNumber number: Int) -> UInt16? {
+    public static func buttonUsage(forButtonNumber number: Int) -> UInt16? {
         (0...4).contains(number) ? UInt16(number + 1) : nil
     }
 }

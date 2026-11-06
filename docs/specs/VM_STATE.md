@@ -49,7 +49,7 @@
 | Executable mappings | `od-host` | Не сохраняется | Host handles никогда не persistent |
 | Host session ABI v1 | [HOST_SESSION_ABI_V1.md](HOST_SESSION_ABI_V1.md) | — | Сессия S0-09; нет pause/suspend/checkpoint/restore |
 | Control protocol v1 | [CONTROL_PROTOCOL_V1.md](../../protocols/control/CONTROL_PROTOCOL_V1.md) | — | Только HELLO, READY, RUN, RUN_ACK, STOP, STOP_ACK, RESULT, ERROR; без reconnect и retry. Новые команды — только в S9-33 |
-| VMHost | [`apps/vmhost/Sources/main.swift`](../../apps/vmhost/Sources/main.swift) | — | Нет VM bundle, persistent identity и межпроцессного identity lease |
+| VMHost | [`apps/vmhost/Sources/VMHostMain.swift`](../../apps/vmhost/Sources/VMHostMain.swift) | — | Нет VM bundle, persistent identity и межпроцессного identity lease |
 | Testkit `*Snapshot`, `save()` | `od-testkit` ([`result.rs`](../../crates/od-testkit/src/result.rs), [`v2.rs`](../../crates/od-testkit/src/v2.rs)), serde JSON | — | Fixture-структуры CPU oracle cases. `od-testkit` — только dev-dependency `od-host` (и зависимость `tools/bench`); production crates от него не зависят; **не** сериализация машины |
 
 ### 2.4. Firmware, vTPM, guest

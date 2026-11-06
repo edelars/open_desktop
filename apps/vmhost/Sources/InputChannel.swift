@@ -1,5 +1,8 @@
 import Darwin
 import Foundation
+#if canImport(ODShared)
+import ODShared
+#endif
 
 // VMHost end of the input channel (protocols/control/INPUT_TRANSPORT_V1.md, task S10-16).
 //

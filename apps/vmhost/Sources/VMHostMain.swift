@@ -1,6 +1,15 @@
 import Darwin
 import Dispatch
 import Foundation
+#if canImport(ODShared)
+import ODShared
+#endif
+#if canImport(ODAtomics)
+import ODAtomics
+#endif
+#if canImport(ODHostABI)
+import ODHostABI
+#endif
 
 @main
 struct VmHostSmoke {

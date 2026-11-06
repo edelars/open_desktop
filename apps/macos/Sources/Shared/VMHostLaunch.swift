@@ -20,7 +20,7 @@ enum VMHostLaunchError: Error, CustomStringConvertible {
     }
 }
 
-enum VMHostLaunch {
+public enum VMHostLaunch {
     /// The VMHost end is always descriptor 3 in the child.
     static let childSocketFD: Int32 = 3
     /// S10-16 (INPUT_TRANSPORT_V1.md 2.2): the VMHost end of the separate input socketpair is descriptor 4 (`--input-fd 4`).
@@ -40,7 +40,7 @@ enum VMHostLaunch {
 
     /// Creates the socketpair and configures both ends. `child` is left inheritable across exec.
     /// On failure nothing is left open.
-    static func makeSocketPair() throws -> (parent: Int32, child: Int32) {
+    public static func makeSocketPair() throws -> (parent: Int32, child: Int32) {
         var sockets: [Int32] = [0, 0]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
             throw VMHostLaunchError.socketPair
@@ -59,7 +59,7 @@ enum VMHostLaunch {
 
     /// `posix_spawn` of `path --socket-fd 3 <extraArguments>` with `childFD` on descriptor 3. With `input` (S10-16) the VMHost end of a
     /// second socketpair is also put on descriptor 4 and `--input-fd 4` is appended; without it the spawn is exactly as before.
-    static func spawnHelper(
+    public static func spawnHelper(
         path: String,
         extraArguments: [String] = [],
         parentFD: Int32,
@@ -122,7 +122,7 @@ enum VMHostLaunch {
     }
 
     /// Waits for the child; returns its exit status, or 128 + signal when it was killed by a signal.
-    static func waitForChild(_ pid: pid_t) throws -> Int32 {
+    public static func waitForChild(_ pid: pid_t) throws -> Int32 {
         var status: Int32 = 0
         while true {
             let waited = waitpid(pid, &status, 0)
@@ -134,7 +134,7 @@ enum VMHostLaunch {
         return (status >> 8) & 0xFF
     }
 
-    static func terminateChild(_ pid: pid_t) {
+    public static func terminateChild(_ pid: pid_t) {
         _ = kill(pid, SIGTERM)
         for _ in 0..<50 {
             var childStatus: Int32 = 0

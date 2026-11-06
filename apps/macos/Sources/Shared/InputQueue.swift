@@ -8,12 +8,12 @@ import Foundation
 // and 1 otherwise (also for an empty queue), `suppressed` = usages whose DOWN was refused or dropped.
 // Invariant in FOCUSED: free >= 2h + m + 1. The rules of 7.3 and 7.4 keep it; `invariantHolds` lets tests check it.
 
-enum InputRecord: Equatable {
+public enum InputRecord: Equatable {
     case focus(gained: Bool)
     case usage(InputUsage)
     case motion(InputMotion)
 
-    var message: InputMessage {
+    public var message: InputMessage {
         switch self {
         case let .focus(gained): return .focus(gained: gained)
         case let .usage(usage): return .usage(usage)
@@ -22,10 +22,10 @@ enum InputRecord: Equatable {
     }
 }
 
-struct InputQueue {
+public struct InputQueue {
     static let capacity = InputProtocol.queueCapacity
 
-    enum State: Equatable {
+    public enum State: Equatable {
         case unfocused
         case focused
         case gainedPending
@@ -33,7 +33,7 @@ struct InputQueue {
 
     /// What happened to one input. `violation` is a protocol error on the VMHost side and a programming error on the UI
     /// side (the UI filters such events before it calls the queue).
-    enum Outcome: Equatable {
+    public enum Outcome: Equatable {
         case queued
         case merged
         /// `DOWN` refused (7.3): counted, the usage is in `suppressed`.
@@ -51,33 +51,33 @@ struct InputQueue {
 
     private var ring: [InputRecord?]
     private var head = 0
-    private(set) var count = 0
-    private(set) var state = State.unfocused
+    public private(set) var count = 0
+    public private(set) var state = State.unfocused
     private var pressed = [Bool](repeating: false, count: InputUsage.slotCount)
     private var suppressed = [Bool](repeating: false, count: InputUsage.slotCount)
     /// h of section 7.2.
     private(set) var pressedCount = 0
-    private(set) var rejectedDowns: UInt64 = 0
-    private(set) var mergedMotions: UInt64 = 0
-    private(set) var droppedUnfocused: UInt64 = 0
+    public private(set) var rejectedDowns: UInt64 = 0
+    public private(set) var mergedMotions: UInt64 = 0
+    public private(set) var droppedUnfocused: UInt64 = 0
     /// MOTION records dropped at the queue exit because their only content was a stale absolute position (8.2 item 4).
     private(set) var staleMotionsDropped: UInt64 = 0
 
-    init() {
+    public init() {
         ring = [InputRecord?](repeating: nil, count: InputQueue.capacity)
     }
 
-    var free: Int { InputQueue.capacity - count }
-    var isEmpty: Bool { count == 0 }
+    public var free: Int { InputQueue.capacity - count }
+    public var isEmpty: Bool { count == 0 }
     /// Allocated storage in records; constant for the life of the queue.
     var storageRecordCount: Int { ring.count }
     var suppressedCount: Int { suppressed.reduce(0) { $0 + ($1 ? 1 : 0) } }
 
-    func isPressed(page: UInt16, id: UInt16) -> Bool {
+    public func isPressed(page: UInt16, id: UInt16) -> Bool {
         InputUsage.slot(page: page, id: id).map { pressed[$0] } ?? false
     }
 
-    func isSuppressed(page: UInt16, id: UInt16) -> Bool {
+    public func isSuppressed(page: UInt16, id: UInt16) -> Bool {
         InputUsage.slot(page: page, id: id).map { suppressed[$0] } ?? false
     }
 
@@ -99,7 +99,7 @@ struct InputQueue {
     var peekHead: InputRecord? { count == 0 ? nil : ring[head] }
 
     /// All queued records, head first (tests and tracing).
-    var records: [InputRecord] {
+    public var records: [InputRecord] {
         (0..<count).compactMap { ring[(head + $0) % InputQueue.capacity] }
     }
 
@@ -119,7 +119,7 @@ struct InputQueue {
 
     // MARK: Rules 7.3
 
-    mutating func focus(gained: Bool) -> Outcome {
+    public mutating func focus(gained: Bool) -> Outcome {
         if gained {
             guard state == .unfocused else { return .violation("repeated FOCUS GAINED") }
             if free >= 3 {
@@ -145,7 +145,7 @@ struct InputQueue {
         }
     }
 
-    mutating func usage(page: UInt16, id: UInt16, down: Bool) -> Outcome {
+    public mutating func usage(page: UInt16, id: UInt16, down: Bool) -> Outcome {
         guard let slot = InputUsage.slot(page: page, id: id) else { return .violation("usage \(page):\(id) is not allowed") }
         switch state {
         case .unfocused:
@@ -188,7 +188,7 @@ struct InputQueue {
     }
 
     /// `motion` must already satisfy `InputMotion.validate()` (the decoder and the UI producer guarantee that).
-    mutating func motion(_ motion: InputMotion) -> Outcome {
+    public mutating func motion(_ motion: InputMotion) -> Outcome {
         switch state {
         case .unfocused:
             return .violation("MOTION while unfocused")
@@ -210,7 +210,7 @@ struct InputQueue {
     // MARK: Removal from the head (send or consume)
 
     /// Takes the head record. In GAINED_PENDING the check of 7.4 follows: with `free >= 3` the postponed GAINED is queued.
-    mutating func pop() -> InputRecord? {
+    public mutating func pop() -> InputRecord? {
         guard count > 0, let record = ring[head] else { return nil }
         ring[head] = nil
         head = (head + 1) % InputQueue.capacity
@@ -224,7 +224,7 @@ struct InputQueue {
 
     /// Exit of the VMHost queue (8.2 item 4, 10 item 1): the record is checked against the *current* display mode before it is
     /// handed on. A stale absolute part is cleared; a MOTION with nothing left is dropped and the next record is taken.
-    mutating func popForConsumer(currentMode: InputDisplayMode?) -> InputRecord? {
+    public mutating func popForConsumer(currentMode: InputDisplayMode?) -> InputRecord? {
         while let record = pop() {
             guard case let .motion(motion) = record else { return record }
             guard motion.absValid else { return record }

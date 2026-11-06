@@ -1,5 +1,8 @@
 import Darwin
 import Foundation
+#if canImport(ODAtomics)
+import ODAtomics
+#endif
 
 // Reader (UI) side of frame transport v3: protocols/control/FRAME_TRANSPORT_V1.md (section 11: one shared memory
 // object per screen, one ANNOUNCE per object in screen order, `screen` in MODE, FRAME and CURSOR).
@@ -11,11 +14,11 @@ import Foundation
 // Every descriptor field is read exactly once into a local copy, all checks and the copy length use only those locals,
 // and a frame or cursor is accepted only when its sequence word is unchanged after the copy.
 //
-// Atomics go through the shared C shim apps/vmhost/Sources/FrameTransportAtomics.h (section 5.3),
-// imported with -import-objc-header; the header is not copied.
+// Atomics go through the shared C shim apps/macos/Sources/ODAtomics/include/FrameTransportAtomics.h (section 5.3): module
+// `ODAtomics` in the Swift package, `-import-objc-header` in the direct `xcrun swiftc` builds; the header is not copied.
 
 /// Reader states of section 7.2 for one screen, plus the state of the connection before any ANNOUNCE.
-enum FrameReaderState: Equatable {
+public enum FrameReaderState: Equatable {
     case connecting
     case noSignal
     case modeChanging
@@ -27,14 +30,14 @@ enum FrameReaderState: Equatable {
     /// `magic = ODFT` with a foreign version, or an incompatible memory header.
     case incompatible(String)
 
-    var isTerminal: Bool {
+    public var isTerminal: Bool {
         switch self {
         case .disconnected, .incompatible: return true
         default: return false
         }
     }
 
-    var name: String {
+    public var name: String {
         switch self {
         case .connecting: return "CONNECTING"
         case .noSignal: return "NO_SIGNAL"
@@ -48,36 +51,48 @@ enum FrameReaderState: Equatable {
 }
 
 /// A frame that passed the seqlock check; `pixels` of the copy callback are valid only inside the callback.
-struct AcceptedFrame: Equatable {
-    let generation: UInt64
-    let modeChangeCount: UInt64
-    let width: Int
-    let height: Int
-    let stride: Int
+public struct AcceptedFrame: Equatable {
+    public let generation: UInt64
+    public let modeChangeCount: UInt64
+    public let width: Int
+    public let height: Int
+    public let stride: Int
 }
 
 /// The cursor state of the last descriptor that passed the seqlock check and the validation (section 10.6).
 /// Without a shape (`shapeSeq == 0`) the size, hotspot and `enabled` are zero/false.
-struct AcceptedCursor: Equatable {
-    let cursorSeq: UInt64
-    let enabled: Bool
-    let shapeSeq: UInt64
-    let width: Int
-    let height: Int
-    let hotX: Int
-    let hotY: Int
-    let posX: Int
-    let posY: Int
+public struct AcceptedCursor: Equatable {
+    public let cursorSeq: UInt64
+    public let enabled: Bool
+    public let shapeSeq: UInt64
+    public let width: Int
+    public let height: Int
+    public let hotX: Int
+    public let hotY: Int
+    public let posX: Int
+    public let posY: Int
+
+    public init(cursorSeq: UInt64, enabled: Bool, shapeSeq: UInt64, width: Int, height: Int, hotX: Int, hotY: Int, posX: Int, posY: Int) {
+        self.cursorSeq = cursorSeq
+        self.enabled = enabled
+        self.shapeSeq = shapeSeq
+        self.width = width
+        self.height = height
+        self.hotX = hotX
+        self.hotY = hotY
+        self.posX = posX
+        self.posY = posY
+    }
 }
 
 /// Called between `g1` and `g2` (section 10.6, step 5) with a pointer to `width * height * 4` bytes of the cursor slot,
 /// only when the shape differs from the accepted one. The copy goes to a staging texture that is not used until accepted.
 /// Returns false when the copy could not be made (for example no texture could be allocated): the update is then not accepted.
-typealias CursorCopy = (_ pixels: UnsafeRawPointer, _ cursor: AcceptedCursor) -> Bool
+public typealias CursorCopy = (_ pixels: UnsafeRawPointer, _ cursor: AcceptedCursor) -> Bool
 
 /// Called between `g1` and `g2` (section 5.2, step 5) with the screen index, a pointer to `stride * height` bytes of the
 /// slot and the frame. The copy must go to private storage that is not shown until the reader accepts the frame.
-typealias FrameCopy = (_ screen: Int, _ pixels: UnsafeRawPointer, _ frame: AcceptedFrame) -> Void
+public typealias FrameCopy = (_ screen: Int, _ pixels: UnsafeRawPointer, _ frame: AcceptedFrame) -> Void
 
 private struct ProtocolFailure: Error {
     let reason: String
@@ -123,7 +138,7 @@ private enum Wire {
 }
 
 /// State of one screen (section 11.6): its object, its mappings, its seqlock reads and its reader state.
-final class ScreenReader {
+public final class ScreenReader {
     // Constants of FRAME_TRANSPORT_V1.md sections 3 and 3.5.
     private static let granule = 16384
     /// Version 3 (section 11): frame slots start at 65536, after the cursor image slots.
@@ -146,23 +161,23 @@ final class ScreenReader {
     private static let cursorMaxSide = 64
     private static let cursorFormatBGRA8888Premul: UInt32 = 2
 
-    let screen: Int
-    private(set) var state: FrameReaderState = .connecting
+    public let screen: Int
+    public private(set) var state: FrameReaderState = .connecting
     /// `shown_once` of section 7.2: true after the first entry into `showing`, never reset.
     private(set) var shownOnce = false
     /// The last accepted frame; nil until the first `showing`.
-    private(set) var lastFrame: AcceptedFrame?
+    public private(set) var lastFrame: AcceptedFrame?
     /// Incremented on every accepted frame; the UI compares it to know that a new frame is ready.
-    private(set) var acceptedCount = 0
+    public private(set) var acceptedCount = 0
     /// The last accepted MODE, for the UI.
     private(set) var modeWidth = 0
     private(set) var modeHeight = 0
     /// The accepted cursor state (section 10.6); screen 0 only. nil until the first accepted CURSOR and after the end.
-    private(set) var cursor: AcceptedCursor?
+    public private(set) var cursor: AcceptedCursor?
     /// Incremented on every accepted cursor update.
-    private(set) var cursorAcceptedCount = 0
+    public private(set) var cursorAcceptedCount = 0
 
-    private(set) var announced = false
+    public private(set) var announced = false
 
     // Mappings, valid after a successful ANNOUNCE of this screen.
     private var headerMap: UnsafeMutableRawPointer?
@@ -577,7 +592,7 @@ final class ScreenReader {
 
 /// The connection (section 7.1 and 11.4.1): owns the socket, reads the ANNOUNCE of every screen with its descriptor,
 /// and routes every message to the screen it names.
-final class FrameReader {
+public final class FrameReader {
     private static let messageVersion = ScreenReader.messageVersion
     private static let kindVersion: UInt16 = 0
     private static let kindHello: UInt16 = 1
@@ -592,7 +607,7 @@ final class FrameReader {
     /// Connection state: `connecting` until every screen is announced; terminal states apply to every screen.
     private var connectionState: FrameReaderState = .connecting
     /// One reader per screen; created by the first ANNOUNCE (section 11.4.1), empty before it.
-    private(set) var screens: [ScreenReader] = []
+    public private(set) var screens: [ScreenReader] = []
 
     private var inbound = [UInt8]()
     private var announcedCount = 0
@@ -600,33 +615,33 @@ final class FrameReader {
     private var pendingDescriptor: Int32?
 
     /// `fd` is the UI end of the socketpair; the connection owns it and closes it in `teardown()`.
-    init(fd: Int32) {
+    public init(fd: Int32) {
         self.fd = fd
     }
 
     deinit { teardown() }
 
     /// Screen 0 (the reader the single-screen UI and the offscreen dump use).
-    var primary: ScreenReader? { screens.first }
+    public var primary: ScreenReader? { screens.first }
 
     /// Connection state while connecting or terminal; otherwise the state of screen 0 (single-screen callers).
-    var state: FrameReaderState {
+    public var state: FrameReaderState {
         if connectionState == .connecting || connectionState.isTerminal { return connectionState }
         return primary?.state ?? connectionState
     }
 
-    var isTerminal: Bool { connectionState.isTerminal }
+    public var isTerminal: Bool { connectionState.isTerminal }
 
     /// Screen 0 accessors kept for the single-screen callers.
-    var lastFrame: AcceptedFrame? { primary?.lastFrame }
-    var acceptedCount: Int { primary?.acceptedCount ?? 0 }
-    var cursor: AcceptedCursor? { primary?.cursor }
-    var cursorAcceptedCount: Int { primary?.cursorAcceptedCount ?? 0 }
+    public var lastFrame: AcceptedFrame? { primary?.lastFrame }
+    public var acceptedCount: Int { primary?.acceptedCount ?? 0 }
+    public var cursor: AcceptedCursor? { primary?.cursor }
+    public var cursorAcceptedCount: Int { primary?.cursorAcceptedCount ?? 0 }
 
     // MARK: Connection
 
     /// Section 7.1 step 1: send HELLO. `announceTimeoutMs` bounds the wait for the first ANNOUNCE.
-    func start(announceTimeoutMs: UInt64 = 10_000) {
+    public func start(announceTimeoutMs: UInt64 = 10_000) {
         guard 16384 % getpagesize() == 0 else {
             fail(.disconnected("host page size \(getpagesize()) does not divide 16384"))
             return
@@ -651,7 +666,7 @@ final class FrameReader {
     }
 
     /// Releases every mapping and the socket. The connection is terminal afterwards.
-    func teardown() {
+    public func teardown() {
         for screen in screens { screen.unmapAll() }
         closePendingDescriptor()
         if fd >= 0 {
@@ -688,7 +703,7 @@ final class FrameReader {
     /// Waits up to `timeoutMs` for the socket, processes every complete message and reads the slots and cursor
     /// named by the last pending notifications. Returns true when a state or a shown frame changed.
     @discardableResult
-    func pump(timeoutMs: Int32, copy: FrameCopy, cursorCopy: CursorCopy = { _, _ in true }) -> Bool {
+    public func pump(timeoutMs: Int32, copy: FrameCopy, cursorCopy: CursorCopy = { _, _ in true }) -> Bool {
         if state.isTerminal || fd < 0 { return false }
         let before = state
         let beforeFrames = screens.map(\.lastFrame)

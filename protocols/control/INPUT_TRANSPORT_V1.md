@@ -29,7 +29,7 @@
 
 ### 2.2. Запуск и владение
 
-1. UI создаёт второй `socketpair(AF_UNIX, SOCK_STREAM, 0)` тем же способом, что [VMHostLaunch.swift](../../apps/macos/Sources/VMHostLaunch.swift): `SO_NOSIGPIPE` на обоих концах, `posix_spawn` с `adddup2` конца VMHost на дескриптор **4**, закрытие остальных концов в потомке, закрытие копии конца VMHost в UI после spawn. VMHost получает аргумент `--input-fd 4`. Номер дескриптора задаётся аргументом; формат протокола от номера не зависит.
+1. UI создаёт второй `socketpair(AF_UNIX, SOCK_STREAM, 0)` тем же способом, что [VMHostLaunch.swift](../../apps/macos/Sources/Shared/VMHostLaunch.swift): `SO_NOSIGPIPE` на обоих концах, `posix_spawn` с `adddup2` конца VMHost на дескриптор **4**, закрытие остальных концов в потомке, закрытие копии конца VMHost в UI после spawn. VMHost получает аргумент `--input-fd 4`. Номер дескриптора задаётся аргументом; формат протокола от номера не зависит.
 2. Без `--input-fd` у VMHost нет канала ввода. UI, который не создал канал, события ввода не собирает.
 3. VMHost ставит на свой конец `FD_CLOEXEC`, чтобы другие его потомки не унаследовали канал. Обе стороны переводят свой конец в неблокирующий режим.
 4. Владение и остановка процесса — как у frame transport ([FRAME_TRANSPORT_V1.md](FRAME_TRANSPORT_V1.md) §2, п. 4). Перезапуск VMHost (S10-24) создаёт новый процесс и новые `socketpair` для обоих каналов. Состояние канала ввода (очереди, нажатые клавиши, фокус) начинается заново.
@@ -150,7 +150,7 @@ UI ДОЛЖЕН показать `GUEST_DELIVERY = 0` явно, например
 
 ### 5.3. Перевод координат (матрица S10-11)
 
-Перевод использует ту же геометрию, по которой рисует presenter, — [`Viewport.swift`](../../apps/macos/Sources/Viewport.swift), без копии формул.
+Перевод использует ту же геометрию, по которой рисует presenter, — [`Viewport.swift`](../../apps/macos/Sources/Shared/Viewport.swift), без копии формул.
 
 1. Точка события в окне — `p = view.convert(event.locationInWindow, from: nil)`, в логических точках. У `DisplayView` начало координат внизу слева (вид не flipped).
 2. Размер drawable `(Dw, Dh)` = `ViewportLayout.drawableSize(bounds, backingScaleFactor)` — то же значение, что `DisplayWindow.refresh` ставит в `layer.drawableSize`. Bounds — `(Bw, Bh)`.

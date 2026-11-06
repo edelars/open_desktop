@@ -41,7 +41,10 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 |---|---|
 | SwiftUI/AppKit, окна и библиотека VM | `apps/macos/Sources/` |
 | Ресурсы и настройки подписи приложения | `apps/macos/Resources/`, `apps/macos/Configuration/` |
-| Общая Swift-библиотека приложения и CLI (цель `ODShared`, без `libod_host.a`; решение [ADR-0006](decisions/ADR-0006-desktop-app-shell.md)) | `apps/macos/Sources/Shared/` (создаётся в S11-05a) |
+| Общая Swift-библиотека приложения и CLI (цель `ODShared`, без `libod_host.a`; решение [ADR-0006](decisions/ADR-0006-desktop-app-shell.md)) | `apps/macos/Sources/Shared/` |
+| Манифест Swift Package приложения, VMHost и CLI | `apps/Package.swift` |
+| C-цель атомных функций транспорта кадров (`ODAtomics`) | `apps/macos/Sources/ODAtomics/` |
+| C-цель объявлений C ABI движка для VMHost (`ODHostABI`) | `apps/vmhost/Sources/ODHostABI/` |
 | CLI управления машинами (`odctl`) | `apps/cli/Sources/` (создаётся в S11-13) |
 | Жизненный цикл VMHost, IPC transport, мост к Rust | `apps/vmhost/Sources/` |
 | Настройки helper/подписи | `apps/vmhost/Configuration/` |
@@ -155,7 +158,10 @@ apps/macos/Sources
 apps/macos/Resources
 apps/macos/Configuration
 apps/macos/Tests
+apps/macos/Sources/Shared
+apps/macos/Sources/ODAtomics/include
 apps/vmhost/Sources
+apps/vmhost/Sources/ODHostABI/include
 apps/vmhost/Configuration
 apps/vmhost/Tests
 crates/od-isa/src

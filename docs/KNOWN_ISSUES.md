@@ -456,7 +456,7 @@
 ### ISSUE-006 — Неполный control frame блокирует готовый RESULT
 
 - **Дата обнаружения:** 2026-10-22.
-- **Компонент:** `apps/vmhost/Sources/main.swift`, `ControlFrame.read`.
+- **Компонент:** `apps/vmhost/Sources/VMHostMain.swift`, `ControlFrame.read`.
 - **Статус:** решена 22 октября 2026 года.
 - **Суть и последствия:** POLLIN означает наличие хотя бы части кадра; блокирующий read всего кадра переставал обслуживать completion pipe. VMHost теперь неблокирующе накапливает данные и декодирует только полные кадры, продолжая опрашивать completion.
 - **Воспроизведение:** после RUN_ACK передать один байт `O` следующего header и держать socket открытым. Для конечного budget=2000000 RESULT не пришёл за 2 s, тогда как контроль без частичного кадра завершился за 0.021 s со стартом процесса. Полные входы — в [ревью S0](reports/STAGE_0_REVIEW_2026-10-22.md).
@@ -486,7 +486,7 @@
 - **Компонент:** `apps/vmhost` control loop и VMHost completion signaling.
 - **Статус:** решена 22 октября 2026 года для короткого VMHost RUN→RESULT path; длительная нагрузка и отдельный STOP latency требуют дальнейшей проверки.
 - **Проблема и последствия:** первоначальный loop ожидал worker completion через `poll()` control socket с timeout 50 ms. Один короткий `MOV RAX,1` integration run дал медианный RUN→RESULT 51.33 ms [51.16–51.61] на 20 fresh VMHost processes.
-- **Основание:** [S0-13 CPU baseline report](reports/STAGE_0_CPU_BASELINE_2026-10-22.md), раздел VMHost integration pilot; raw samples до/после в локальном `work/stage-0/2026-10-22-e04-vmhost-abi-ipc-resource/`. Все 40 процессов вернули ожидаемые `RAX=1`, `RIP=10`, exit reason 0 и instruction count 1. Источник timeout и реализация completion signal: `apps/vmhost/Sources/main.swift`, `serviceStopRequests()` и `FragmentWorker`.
+- **Основание:** [S0-13 CPU baseline report](reports/STAGE_0_CPU_BASELINE_2026-10-22.md), раздел VMHost integration pilot; raw samples до/после в локальном `work/stage-0/2026-10-22-e04-vmhost-abi-ipc-resource/`. Все 40 процессов вернули ожидаемые `RAX=1`, `RIP=10`, exit reason 0 и instruction count 1. Источник timeout и реализация completion signal: `apps/vmhost/Sources/VMHostMain.swift`, `serviceStopRequests()` и `FragmentWorker`.
 - **Результат:** VMHost теперь одновременно ждёт control socket и completion pipe без периодического timeout. В повторе из 20 запусков медиана RUN→RESULT составила 138.1 μs [114.5–479.7], примерно в 372 раза меньше исходного пилота. Повторные launcher и isolation smoke прошли. Изменение и ограничения измерения описаны в [S0-13 baseline report](reports/STAGE_0_CPU_BASELINE_2026-10-22.md).
 - **Ограничения и следующий шаг:** сравнение было одним коротким сеансом при неконтролируемых условиях и не является изолированной мерой IPC или результатом длительной нагрузки. После исправления отдельный busy-helper pilot измерил STOP_ACK и STOP→RESULT; значения и ограничения описаны в S0-13 report. Для финального решения повторить с контролируемым фоном и длительной нагрузкой.
 

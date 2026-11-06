@@ -1,6 +1,9 @@
 import Darwin
 import Dispatch
 import Foundation
+#if canImport(ODShared)
+import ODShared
+#endif
 
 // UI end of the input channel (INPUT_TRANSPORT_V1.md, task S10-16): HELLO/ACCEPT handshake, the bounded UI queue of
 // section 7, non-blocking writes from its head into the socket, reception of STATUS. No AppKit: DisplayWindow.swift feeds it

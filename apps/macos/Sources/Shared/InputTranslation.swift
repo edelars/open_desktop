@@ -5,35 +5,41 @@ import Foundation
 // and of the wheel. Pure functions and values; no AppKit, so the unit test covers them without a window.
 
 /// The frame the presenter shows right now, as far as input is concerned (5.3 step 6).
-struct ShownFrame: Equatable {
-    var width: Int
-    var height: Int
+public struct ShownFrame: Equatable {
+    public var width: Int
+    public var height: Int
     /// `mode_change_count` of the shown frame.
-    var modeChangeCount: UInt64
+    public var modeChangeCount: UInt64
+
+    public init(width: Int, height: Int, modeChangeCount: UInt64) {
+        self.width = width
+        self.height = height
+        self.modeChangeCount = modeChangeCount
+    }
 }
 
 /// Absolute position of one event (the `abs_*` fields of MOTION).
-struct InputAbsolute: Equatable {
-    var x: UInt32
-    var y: UInt32
-    var width: UInt32
-    var height: UInt32
-    var modeChangeCount: UInt64
+public struct InputAbsolute: Equatable {
+    public var x: UInt32
+    public var y: UInt32
+    public var width: UInt32
+    public var height: UInt32
+    public var modeChangeCount: UInt64
 }
 
 /// Geometry of one event: current bounds, scale and shown frame (nothing is cached between events, section 5.3).
-struct InputGeometry {
-    let boundsWidth: Double
-    let boundsHeight: Double
+public struct InputGeometry {
+    public let boundsWidth: Double
+    public let boundsHeight: Double
     let drawableWidth: Int
     let drawableHeight: Int
-    let mode: PresentMode
+    public let mode: PresentMode
     /// nil when no frame can be the target of an absolute position (not SHOWING, a stale frame, another size).
-    let shown: ShownFrame?
+    public let shown: ShownFrame?
     /// Full viewport (may start below 0 in pixel-exact mode); nil without a shown frame.
-    let viewport: Viewport?
+    public let viewport: Viewport?
 
-    init(boundsWidth: Double, boundsHeight: Double, scale: Double, mode: PresentMode, shown: ShownFrame?) {
+    public init(boundsWidth: Double, boundsHeight: Double, scale: Double, mode: PresentMode, shown: ShownFrame?) {
         self.boundsWidth = boundsWidth
         self.boundsHeight = boundsHeight
         // Step 2: the same value DisplayWindow.refresh puts into layer.drawableSize.
@@ -78,7 +84,7 @@ struct InputGeometry {
     }
 
     /// Steps 3 to 6. nil when the absolute position cannot be computed (`ABS_VALID = 0`).
-    func absolute(pointX: Double, pointY: Double) -> InputAbsolute? {
+    public func absolute(pointX: Double, pointY: Double) -> InputAbsolute? {
         guard boundsWidth > 0, boundsHeight > 0, let shown, let viewport else { return nil }
         // A point outside the window bounds (a drag that left the view) never gives an absolute position, also in pixel-exact
         // mode where the cropped viewport could otherwise contain it.
@@ -118,7 +124,7 @@ struct FractionalAccumulator {
 }
 
 /// Remainders of the pointer axes and of the wheel; reset on `FOCUS LOST` and when `k` changes (5.4).
-struct InputPointerState {
+public struct InputPointerState {
     /// Section 5.5, open item 4 of section 11: 1/120 wheel units for one point of a precise (trackpad) scroll. NOT measured:
     /// 7.5 = 120 / 16, i.e. about one notch per 16 points, a typical line height. A measurement belongs to a run with a real
     /// guest (there is no delivery yet).
@@ -130,8 +136,10 @@ struct InputPointerState {
     private var pan = FractionalAccumulator()
     private var lastK: (x: Double, y: Double)?
 
+    public init() {}
+
     /// Section 5.4: `dxPoints/dyPoints` are `NSEvent.deltaX/deltaY`.
-    mutating func relative(dxPoints: Double, dyPoints: Double, geometry: InputGeometry) -> (dx: Int32, dy: Int32) {
+    public mutating func relative(dxPoints: Double, dyPoints: Double, geometry: InputGeometry) -> (dx: Int32, dy: Int32) {
         let k = (geometry.kx, geometry.ky)
         if let lastK, lastK.x != k.0 || lastK.y != k.1 {
             x.reset()
@@ -147,7 +155,7 @@ struct InputPointerState {
     /// Wheel: positive = away from the user (HUT 1.7 Wheel). AppKit's positive `scrollingDeltaY` moves the content down, which
     /// is a forward turn of the wheel. Pan: positive = right; AppKit's positive `scrollingDeltaX` moves the content right,
     /// i.e. a tilt to the left, so the sign is turned. Both signs are assumptions checked only by reading, not by a device.
-    mutating func scroll(
+    public mutating func scroll(
         deltaX: Double, deltaY: Double, precise: Bool, invertedFromDevice: Bool
     ) -> (wheel: Int32, pan: Int32) {
         let unit = precise ? InputPointerState.wheelUnitsPerPoint : 120
@@ -160,7 +168,7 @@ struct InputPointerState {
         return (wheel.add(wheelUnits), pan.add(panUnits))
     }
 
-    mutating func reset() {
+    public mutating func reset() {
         x.reset()
         y.reset()
         wheel.reset()

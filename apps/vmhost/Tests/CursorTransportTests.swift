@@ -1,17 +1,18 @@
 import Darwin
 import Foundation
+import ODAtomics
+import ODHostABI
+import XCTest
+import ODShared
+@testable import od_vmhost
 
 // S10-14 unit test of the cursor path of frame transport v2 (FRAME_TRANSPORT_V1.md section 10): the real writer
-// (apps/vmhost/Sources/FrameTransport.swift) against the real reader (apps/macos/Sources/FrameReader.swift) in one process,
-// over a socketpair and one shared-memory object. Plain executable, exit status 0 on success:
+// (apps/vmhost/Sources/FrameTransport.swift, target `od-vmhost`) against the real reader (apps/macos/Sources/Shared/FrameReader.swift,
+// target `ODShared`) in one process, over a socketpair and one shared-memory object. XCTest case of the OpenDesktopVMHostTests
+// target (S11-05a); it used to be an executable with `@main`, the checks are unchanged. From apps/ (the Rust staticlib first,
+// `cargo build -p od-host --offline` from the repository root):
 //
-//   cargo build -p od-host --offline
-//   xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -import-objc-header apps/vmhost/Sources/VMHostABI.h \
-//     apps/vmhost/Sources/ControlFrame.swift apps/macos/Sources/InputProtocol.swift apps/macos/Sources/InputQueue.swift \
-//     apps/vmhost/Sources/InputChannel.swift apps/vmhost/Sources/FrameTransport.swift apps/macos/Sources/FrameReader.swift \
-//     apps/vmhost/Tests/CursorTransportTests.swift target/debug/libod_host.a -ldl -lpthread -lm -framework Security \
-//     -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation \
-//     -o target/cursor-transport-tests && target/cursor-transport-tests
+//   swift test --filter CursorTransportXCTests
 //
 // The cursor of the device cannot be driven from here without a test-only ABI call (DISPLAY_HOST_ABI_V1.md rule 0), so the writer is
 // fed `CursorSnapshot` values directly; the ABI itself is covered by the od-host unit tests. The reader's `cursorCopy` callback
@@ -113,24 +114,7 @@ private final class Rig {
     func slot(of seq: UInt64) -> Int? { (0..<3).first { descriptorSeq($0) == seq } }
 }
 
-@main
 struct CursorTransportTests {
-    static func main() throws {
-        try layoutConstants()
-        try roundTripAndShapeCopies()
-        try slotSelection()
-        try tornUpdateIsDiscarded()
-        try failedCopyIsNotAccepted()
-        try protocolViolations()
-        try headerMutations()
-        try notificationQueue()
-        if failures != 0 {
-            print("cursor transport tests: \(failures) failure(s)")
-            exit(1)
-        }
-        print("cursor transport tests ok")
-    }
-
     // MARK: 10.3 layout (written by the real writer, checked against numbers of the spec, not against code constants)
 
     static func layoutConstants() throws {
@@ -536,5 +520,56 @@ struct CursorTransportTests {
         check(bounded.bufferedBytes <= 168, "bound 168 bytes: \(bounded.bufferedBytes)")
         Darwin.close(sockets.host)
         Darwin.close(sockets.ui)
+    }
+}
+
+/// XCTest wrapper (S11-05a): each former step of `main()` is a test case; the checks above are unchanged and still count failures.
+final class CursorTransportXCTests: XCTestCase {
+    override func setUp() {
+        failures = 0
+    }
+
+    private func finish(_ name: String) {
+        XCTAssertEqual(failures, 0, "cursor transport \(name): \(failures) check(s) failed (see FAIL lines above)")
+    }
+
+    func testLayoutConstants() throws {
+        try CursorTransportTests.layoutConstants()
+        finish("layoutConstants")
+    }
+
+    func testRoundTripAndShapeCopies() throws {
+        try CursorTransportTests.roundTripAndShapeCopies()
+        finish("roundTripAndShapeCopies")
+    }
+
+    func testSlotSelection() throws {
+        try CursorTransportTests.slotSelection()
+        finish("slotSelection")
+    }
+
+    func testTornUpdateIsDiscarded() throws {
+        try CursorTransportTests.tornUpdateIsDiscarded()
+        finish("tornUpdateIsDiscarded")
+    }
+
+    func testFailedCopyIsNotAccepted() throws {
+        try CursorTransportTests.failedCopyIsNotAccepted()
+        finish("failedCopyIsNotAccepted")
+    }
+
+    func testProtocolViolations() throws {
+        try CursorTransportTests.protocolViolations()
+        finish("protocolViolations")
+    }
+
+    func testHeaderMutations() throws {
+        try CursorTransportTests.headerMutations()
+        finish("headerMutations")
+    }
+
+    func testNotificationQueue() throws {
+        try CursorTransportTests.notificationQueue()
+        finish("notificationQueue")
     }
 }

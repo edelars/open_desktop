@@ -1,7 +1,10 @@
-#include "../../../include/open_desktop/host_abi.h"
-#include "../../../include/open_desktop/session_abi_v1.h"
-#include "../../../include/open_desktop/display_abi_v1.h"
-#include "FrameTransportAtomics.h"
+/* Header of the target ODHostABI (apps/Package.swift) and bridging header of the direct `xcrun swiftc` builds. The includes are
+ * relative to this file so that both work without -I flags: the engine ABI is in include/open_desktop/ (repository root), the
+ * atomic shim is the one header of the target ODAtomics (not copied). */
+#include "../../../../../include/open_desktop/host_abi.h"
+#include "../../../../../include/open_desktop/session_abi_v1.h"
+#include "../../../../../include/open_desktop/display_abi_v1.h"
+#include "../../../../macos/Sources/ODAtomics/include/FrameTransportAtomics.h"
 #include <fcntl.h>
 #include <sys/mman.h>
 

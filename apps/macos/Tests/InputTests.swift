@@ -1,12 +1,13 @@
 import Darwin
 import Foundation
+import XCTest
+@testable import ODShared
+@testable import open_desktop_display_viewer
 
 // Unit tests of the input transport (S10-16, protocols/control/INPUT_TRANSPORT_V1.md section 12): messages, queue rules and the
-// invariant, the kVK_* table, point/pixel translation, focus release. No AppKit, no VMHost process. Exit status 0 on success:
-//   xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library \
-//     apps/macos/Sources/Viewport.swift apps/macos/Sources/InputProtocol.swift apps/macos/Sources/InputQueue.swift \
-//     apps/macos/Sources/HIDUsage.swift apps/macos/Sources/InputTranslation.swift apps/macos/Sources/InputChannel.swift \
-//     apps/macos/Tests/InputTests.swift -o target/input-tests && target/input-tests
+// invariant, the kVK_* table, point/pixel translation, focus release. No AppKit, no VMHost process. XCTest case of the
+// OpenDesktopMacTests target (S11-05a); run with `swift test --filter InputXCTests` from apps/. It used to be an executable with
+// `@main`; the checks are unchanged. The UI end of the channel (`InputChannel`) is in the viewer target, imported with @testable.
 
 private var failures = 0
 private var checks = 0
@@ -31,35 +32,7 @@ private struct Generator {
     mutating func below(_ bound: Int) -> Int { Int(next() % UInt64(bound)) }
 }
 
-@main
 struct InputTests {
-    static func main() {
-        messageLayout()
-        headerChecks()
-        payloadChecks()
-        decoderStreaming()
-        queueRules()
-        queuePendingRules()
-        queueInvariantRandom()
-        queueNoConsumerGrowth()
-        queueExitRecheck()
-        motionReconcile()
-        hidTableCoverage()
-        hidTableSemantics()
-        coordinateExamples()
-        coordinateCornersAndPixels()
-        coordinateAppKitPoint()
-        accumulators()
-        focusResetsRemainders()
-        channelHandshakeAndFocusRelease()
-        channelFailures()
-        if failures != 0 {
-            print("input tests: \(failures) failure(s) in \(checks) checks")
-            exit(1)
-        }
-        print("input tests ok (\(checks) checks)")
-    }
-
     // MARK: Protocol
 
     static func hex(_ bytes: [UInt8]) -> String { bytes.map { String(format: "%02x", $0) }.joined(separator: " ") }
@@ -1053,4 +1026,114 @@ struct InputTests {
 /// Text of a record for failure messages (the VMHost trace uses its own copy of this format).
 enum InputHostChannelDescribe {
     static func text(_ record: InputRecord) -> String { "\(record)" }
+}
+
+/// XCTest wrapper (S11-05a): each former step of `main()` is a test case; the checks above are unchanged and still count failures.
+final class InputXCTests: XCTestCase {
+    override func setUp() {
+        failures = 0
+    }
+
+    override class func tearDown() {
+        print("input tests: \(checks) checks in all test cases")
+    }
+
+    private func finish(_ name: String) {
+        XCTAssertEqual(failures, 0, "input \(name): \(failures) check(s) failed (see FAIL lines above)")
+    }
+
+    func testMessageLayout() {
+        InputTests.messageLayout()
+        finish("messageLayout")
+    }
+
+    func testHeaderChecks() {
+        InputTests.headerChecks()
+        finish("headerChecks")
+    }
+
+    func testPayloadChecks() {
+        InputTests.payloadChecks()
+        finish("payloadChecks")
+    }
+
+    func testDecoderStreaming() {
+        InputTests.decoderStreaming()
+        finish("decoderStreaming")
+    }
+
+    func testQueueRules() {
+        InputTests.queueRules()
+        finish("queueRules")
+    }
+
+    func testQueuePendingRules() {
+        InputTests.queuePendingRules()
+        finish("queuePendingRules")
+    }
+
+    func testQueueInvariantRandom() {
+        InputTests.queueInvariantRandom()
+        finish("queueInvariantRandom")
+    }
+
+    func testQueueNoConsumerGrowth() {
+        InputTests.queueNoConsumerGrowth()
+        finish("queueNoConsumerGrowth")
+    }
+
+    func testQueueExitRecheck() {
+        InputTests.queueExitRecheck()
+        finish("queueExitRecheck")
+    }
+
+    func testMotionReconcile() {
+        InputTests.motionReconcile()
+        finish("motionReconcile")
+    }
+
+    func testHidTableCoverage() {
+        InputTests.hidTableCoverage()
+        finish("hidTableCoverage")
+    }
+
+    func testHidTableSemantics() {
+        InputTests.hidTableSemantics()
+        finish("hidTableSemantics")
+    }
+
+    func testCoordinateExamples() {
+        InputTests.coordinateExamples()
+        finish("coordinateExamples")
+    }
+
+    func testCoordinateCornersAndPixels() {
+        InputTests.coordinateCornersAndPixels()
+        finish("coordinateCornersAndPixels")
+    }
+
+    func testCoordinateAppKitPoint() {
+        InputTests.coordinateAppKitPoint()
+        finish("coordinateAppKitPoint")
+    }
+
+    func testAccumulators() {
+        InputTests.accumulators()
+        finish("accumulators")
+    }
+
+    func testFocusResetsRemainders() {
+        InputTests.focusResetsRemainders()
+        finish("focusResetsRemainders")
+    }
+
+    func testChannelHandshakeAndFocusRelease() {
+        InputTests.channelHandshakeAndFocusRelease()
+        finish("channelHandshakeAndFocusRelease")
+    }
+
+    func testChannelFailures() {
+        InputTests.channelFailures()
+        finish("channelFailures")
+    }
 }

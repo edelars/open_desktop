@@ -1,8 +1,9 @@
 import Foundation
+import XCTest
+@testable import ODShared
 
-// Unit test of Sources/Viewport.swift (S10-11, cursor placement S10-14). Plain executable, exit status 0 on success:
-//   xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library \
-//     apps/macos/Sources/Viewport.swift apps/macos/Tests/ViewportTests.swift -o target/viewport-tests && target/viewport-tests
+// Unit test of Shared/Viewport.swift (S10-11, cursor placement S10-14). XCTest case of the OpenDesktopMacTests target (S11-05a);
+// run with `swift test --filter ViewportXCTests` from apps/. It used to be an executable with `@main`; the checks are unchanged.
 
 private var failures = 0
 
@@ -13,22 +14,7 @@ private func check(_ condition: Bool, _ message: @autoclosure () -> String) {
     }
 }
 
-@main
 struct ViewportTests {
-    static func main() {
-        fitCases()
-        pixelExactCases()
-        drawableSizeCases()
-        inverseMapping()
-        cursorOverlay()
-        cursorOverlayRequiredCases()
-        if failures != 0 {
-            print("viewport tests: \(failures) failure(s)")
-            exit(1)
-        }
-        print("viewport tests ok")
-    }
-
     static func fitCases() {
         let cases: [(fw: Int, fh: Int, tw: Int, th: Int, expected: Viewport)] = [
             (64, 48, 64, 48, Viewport(x: 0, y: 0, width: 64, height: 48)), // 1:1
@@ -308,5 +294,46 @@ struct ViewportTests {
         let corner = CursorOverlay.placement(
             frameWidth: 64, frameHeight: 48, posX: 0, posY: 0, hotX: 2, hotY: 2, width: 4, height: 4, full: fullOne, visible: fullOne)
         check(corner == CursorPlacement(x0: 0, y0: 0, x1: 2, y1: 2, u0: 0.5, v0: 0.5, du: 0.5, dv: 0.5), "negative corner: \(String(describing: corner))")
+    }
+}
+
+/// XCTest wrapper (S11-05a): each former step of `main()` is a test case; the checks above are unchanged and still count failures.
+final class ViewportXCTests: XCTestCase {
+    override func setUp() {
+        failures = 0
+    }
+
+    private func finish(_ name: String) {
+        XCTAssertEqual(failures, 0, "viewport \(name): \(failures) check(s) failed (see FAIL lines above)")
+    }
+
+    func testFitCases() {
+        ViewportTests.fitCases()
+        finish("fitCases")
+    }
+
+    func testPixelExactCases() {
+        ViewportTests.pixelExactCases()
+        finish("pixelExactCases")
+    }
+
+    func testDrawableSizeCases() {
+        ViewportTests.drawableSizeCases()
+        finish("drawableSizeCases")
+    }
+
+    func testInverseMapping() {
+        ViewportTests.inverseMapping()
+        finish("inverseMapping")
+    }
+
+    func testCursorOverlay() {
+        ViewportTests.cursorOverlay()
+        finish("cursorOverlay")
+    }
+
+    func testCursorOverlayRequiredCases() {
+        ViewportTests.cursorOverlayRequiredCases()
+        finish("cursorOverlayRequiredCases")
     }
 }
