@@ -12,3 +12,9 @@ requires event-driven completion. The separate
 per-invocation admission/completion boundary. [Control v0](CONTROL_PROTOCOL_V0.md) remains
 the existing single-request path. This document records a protocol design,
 not implemented transport or runtime acceptance evidence.
+
+Display frames do not travel over control v1. The separate stage 10 channel
+between VMHost and the UI (shared-memory slots, descriptor passing and frame
+notifications) is defined only in
+[protocols/control/FRAME_TRANSPORT_V1.md](../../protocols/control/FRAME_TRANSPORT_V1.md);
+it adds no kinds or profiles to control v1.
