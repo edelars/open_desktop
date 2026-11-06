@@ -343,7 +343,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-20. RAW import/export с проверкой результата
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** реализовано, коммит `fd5ebcf`; ревью частично (ручная проверка `publish_no_replace` и правил salvage; независимое ревью заблокировано классификатором), не принято. Предел: нет durable rename ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), import только библиотечный; формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-20-raw-exportimport-с-проверкой-результата--реализовано-ревью-частично-ручное-не-принято).
+- **Текущий статус (2026-11-06):** реализовано, коммит `fd5ebcf`; ревью субагентом (только чтение, 2026-11-06): блокеров и мажоров нет, minor открыты (отчёт §8). Не принято. Предел: нет durable rename ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)), import только библиотечный; формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-20-raw-exportimport-с-проверкой-результата--реализовано-ревью-частично-ручное-не-принято).
 - **Где:** `od-storage`, `tools/image-tool`, test fixtures.
 - **Сделать:** import в новый собственный image; export выбранного immutable root/chain в простой RAW точного logical size. Зафиксировать source generation/lease на весь export, не читать меняющийся active disk; publish target только после завершения проверки/durability.
 - **Проверить:** block-by-block независимое сравнение/hash, holes/zeros/последний неполный block, cancellation, ENOSPC, existing target и crash. Не публиковать частичный файл как completed export.
@@ -515,7 +515,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-41. Repeated recovery и длительные циклы
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** реализовано, коммит `e57646c`; независимое ревью не проводилось, не принято. 1500 циклов по 3 seeds и 12000 циклов по 8 seeds без расхождений (по сведениям заданий). Предел: только `FaultBackend`, не реальный диск и не power loss — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-41-repeated-recovery-и-soak--реализовано-независимое-ревью-не-проводилось-не-принято).
+- **Текущий статус (2026-11-06):** реализовано, коммит `e57646c`; ревью субагентом (только чтение, 2026-11-06): блокеров и мажоров нет, minor открыты (отчёт §8). Не принято. 1500 циклов по 3 seeds и 12000 циклов по 8 seeds без расхождений (по сведениям заданий). Предел: только `FaultBackend`, не реальный диск и не power loss — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-41-repeated-recovery-и-soak--реализовано-независимое-ревью-не-проводилось-не-принято).
 - **Где:** system/soak harness и report/data.
 - **Сделать:** повторять write/flush/snapshot/branch/delete/export/suspend/restore/clone с периодическими failures, chain growth и memory/disk limits. После каждого recovery заново проверить latest durable state и оставшиеся snapshots.
 - **Проверить:** утечки пространства/handles, generation overflow policy, stale events после restore, repeated migration, восстановление после сбоя самого recovery. Длительность и число циклов задать до прогона.
@@ -532,7 +532,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-43. Независимое итоговое ревью
 
 - [ ] Все обязательные замечания закрыты.
-- **Текущий статус (2026-11-05):** независимое итоговое ревью недоступно: запуск ревьюера заблокирован классификатором.
+- **Текущий статус (2026-11-06):** ревью субагентом (Opus, только чтение) проведено: блокеров и мажоров нет, minor открыты (отчёт §8). Требуемое итоговое ревью (`gpt-6.1-sol`/архитектурный) не проведено; задача не принята, пока не закрыты зависимости S9-38/39/42.
 - **Кто:** `gpt-6.1-sol` / `high`; архитектурные разногласия — `gpt-6-astra` / `high`.
 - **Проверить:** формат/limits, persisted ordering, ack uncertainty, root selection и salvage, ownership/leases/reclaim, whole-VM epoch/barrier, restore activation, UEFI/vTPM trust/clone, API outcomes и честность evidence. Ревьюер анализирует diff и contracts, а не только зелёный summary тестов.
 - **Готово:** подтверждённые проблемы исправлены с повторной проверкой. Если independent review недоступен, записать это прямо; не ставить ему passed.

@@ -1,6 +1,6 @@
 # Контракт persistent форматов хранения
 
-Статус: **S9-00 принято с оговорками по архитектурному ревью; формат CoW не принят**. Документ фиксирует scope, границы, модель отказов, лимиты и правила подтверждения. Нормативных байтов здесь пока нет. Реализованы (коммиты `a59338a`, `ba77773`, `4fcd5c4`, `69e0b02`): контракт [`io.rs`](../../crates/od-storage/src/io.rs) (`StorageBackend`, `CheckedStorage`), [`raw.rs`](../../crates/od-storage/src/raw.rs) (`RawImage`), host backend с `flock` и flush данных файла в [`storage_io.rs`](../../crates/od-host/src/storage_io.rs). Есть прототип CoW (S9-08…12; коммиты `000c1da`, `17c9ce6`, `61a99e0`, `7d23bf9`, `01ef35d`): [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs) с тестами на fault backend ([`testing/fault.rs`](../../crates/od-storage/src/testing/fault.rs), `a7874b8`); он не нормативен и не принят: размер блока, раскладка корня и карта — гипотезы до полных замеров S9-40 (замер commit-latency выполнен частично: [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md)); [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт (`01ef35d`). Snapshot metadata и full-VM container — в S9-14 и S9-23 (не начаты). Namespace durability не реализована, power-loss не проверен.
+Статус: **S9-00 принято с оговорками по архитектурному ревью; формат CoW v1 принят владельцем проекта как нормативный 2026-11-06 (решение пользователя; см. §9)**. Документ фиксирует scope, границы, модель отказов, лимиты и правила подтверждения. Нормативные bytes CoW v1 — в §9 (root slot, карта, лимиты, протокол коммита, create). Слой snapshot-метаданных (ODSNAP) нормативно не описан и не входит в принятие; RAW — без header по §1. Реализованы (коммиты `a59338a`, `ba77773`, `4fcd5c4`, `69e0b02`): контракт [`io.rs`](../../crates/od-storage/src/io.rs) (`StorageBackend`, `CheckedStorage`), [`raw.rs`](../../crates/od-storage/src/raw.rs) (`RawImage`), host backend с `flock` и flush данных файла в [`storage_io.rs`](../../crates/od-host/src/storage_io.rs). Есть прототип CoW (S9-08…12; коммиты `000c1da`, `17c9ce6`, `61a99e0`, `7d23bf9`, `01ef35d`): [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs) с тестами на fault backend ([`testing/fault.rs`](../../crates/od-storage/src/testing/fault.rs), `a7874b8`); он не нормативен и не принят: размер блока, раскладка корня и карта — гипотезы до полных замеров S9-40 (замер commit-latency выполнен частично: [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md)); [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт (`01ef35d`). Snapshot metadata и full-VM container — в S9-14 и S9-23 (не начаты). Namespace durability не реализована, power-loss не проверен.
 
 Связанные документы: [план этапа 9](../plans/STAGE_9.md), [этап 9 roadmap](../ROADMAP.md#этап-9-надёжность-данных-и-управление-состоянием), [архитектура §7](../ARCHITECTURE.md#7-диски-конфигурация-и-снимки), [виртуальная плата](VIRTUAL_BOARD.md), [матрица поддержки](SUPPORT_MATRIX.md), [состояние VM и операции](VM_STATE.md), [методика recovery](../testing/STORAGE_RECOVERY.md).
 
@@ -11,7 +11,7 @@
 | Artifact | Владелец кода | Статус формата |
 |---|---|---|
 | RAW disk image | `crates/od-storage/src/` | Без header: ровно `logical_size` bytes guest LBA space. Семантика в §4–§7; реализован `RawImage` ([`raw.rs`](../../crates/od-storage/src/raw.rs), `4fcd5c4`), ревью S9-05 пройдено, power-loss не проверен |
-| Собственный CoW disk image | `crates/od-storage/src/` | **Прототип, не нормативен, не принят (S9-08…12, S9-40)**: [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs); требования и статус — §9; нормативные bytes не определены |
+| Собственный CoW disk image | `crates/od-storage/src/` | **CoW v1 — нормативен (принято владельцем 2026-11-06)**: layout и правила — §9; реализация [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs); S9-40 (throughput, чтение, WA, recovery, память) остаётся незавершённым и не отменяется этим решением |
 | Snapshot metadata и цепочки | `crates/od-storage/src/` | Прототип (S9-14…16, `7188582`, `33440be`): [`cow_snapshot.rs`](../../crates/od-storage/src/cow_snapshot.rs), `MAX_CHAIN_DEPTH = 8`; не нормативен, формат не принят (S9-40); production `ParentResolver` нет |
 | Full-VM checkpoint container и manifest | container — `od-storage`, состав участников — `od-machine` | **TBD S9-23**; список участников — в [VM_STATE.md](VM_STATE.md) |
 | UEFI variable store artifact | семантика — `firmware/uefi/src/`, persistence — `od-storage` | **TBD S9-26**; firmware отсутствует |
@@ -132,11 +132,72 @@ Guest page size (4 KiB) не равен host page size (16 KiB на основн
 - Interrupted unpublished candidate и corruption опубликованного durable state различаются. Нельзя молча откатиться на старую валидную копию, потеряв подтверждённые данные. При невозможности доказать нормальный исход — diagnostic/read-only open или отказ; salvage — отдельная операция в новый target (S9-21).
 - Самый большой generation с валидным header ещё не гарантирует пригодный root.
 
-## 9. Требования к CoW формату (bytes — TBD; прототип S9-08…12 не нормативен)
+## 9. CoW v1 (нормативно с 2026-11-06)
 
-Статус: прототип протокола — два root slot с чётностью generation и копия корня N+1 до barrier 1 ([`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), строгий parser [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), транзакции [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs)); **не нормативен и не принят**. Правило create: пишет два пустых корня (поколения 1 и 2) под одним barrier; пустой слот после ack create — повреждение; незавершённый create (`IncompleteCreate`) отклоняется для writable open; [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт (`01ef35d`). Размер блока, раскладка корня, плоская карта и лимиты — гипотезы до полных замеров S9-40 ([S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md) покрывает только цену барьеров).
+Статус: **принят владельцем проекта как нормативный формат v1** (решение пользователя, 2026-11-06). Принятие фиксирует bytes и правила ниже; оно **не** закрывает S9-40: замеры throughput, чтения, write amplification, recovery и памяти против RAW остаются открытыми и могут привести к изменению параметров производительности только через новую версию формата. Реализация: [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs) (запись), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs) (строгий read-only разбор), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs) (транзакции). Ограничения принятия: блок 512 Б, плоская карта и CRC-32 не измерены по производительности; это известные пределы v1, не гарантии.
 
-S9-08 должен определить нормативно: superblock/root descriptors, block map, generation/transaction IDs, checksums, bounded snapshot metadata, root selection, required fences, обработку unreachable garbage, несовместимые features. Кандидат плана: один файл и один writer, фиксированные virtual capacity и block size, append-only immutable extents, полная bounded map поколения, два root slots. Journal, B-tree и refcounts не добавлять без доказанной необходимости.
+### 9.1 Раскладка файла
+
+```text
+[0 .. 512)      root slot 0   (поколения 0, 2, 4, ...; поколение g лежит в слоте g & 1)
+[512 .. 1024)   root slot 1   (поколения 1, 3, 5, ...)
+[1024 .. E)     append-only область; E — end_offset корня с наибольшим поколением
+```
+
+Все целые числа little endian. Данные блоков пишутся только в область за `E` текущего корня; опубликованные байты не перезаписываются.
+
+### 9.2 Root slot (512 Б)
+
+| Смещение | Размер | Поле |
+|---|---|---|
+| 0 | 8 | magic `ODCOWP\0\x01` |
+| 8 | 4 | version = 1 |
+| 12 | 4 | block size = 512 (identity) |
+| 16 | 8 | generation |
+| 24 | 8 | block_count (логических блоков) |
+| 32 | 8 | map_offset |
+| 40 | 4 | CRC-32 карты |
+| 44 | 8 | end_offset |
+| 52 | 8 | mandatory feature bits (v1: 0) |
+| 60 | 8 | optional feature bits (v1: 0) |
+| 68 | 440 | reserved, должны быть нулями |
+| 508 | 4 | CRC-32 байтов 0..508 |
+
+CRC-32 — IEEE, полином `0xEDB88320` (reflected). Карта — плоский массив записей по 12 Б `{physical_offset: u64, block_crc: u32}`, по одной на логический блок, записывается целиком при каждом коммите.
+
+### 9.3 Лимиты v1
+
+- `MAX_BLOCKS = 1 << 16`; `MAX_FILE_BYTES = 1 << 32`; `MAX_TX_BLOCKS = 256` на один коммит.
+- Значения из файла проверяются **до** выделения памяти и обхода карты.
+- Неизвестные mandatory-биты — отказ открытия (`unsupported_feature`). В v1 оба слова битов нулевые; правило для optional-битов не определено и будет задано вместе с первой версией, которая их использует.
+
+### 9.4 Протокол коммита
+
+1. Новый блок(и), карта и копия корня поколения N+1 (последний сектор файла) дописываются за `E`.
+2. Барьер 1 (`F_FULLFSYNC` на macOS).
+3. Корень N+1 записывается в неактивный слот.
+4. Барьер 2. Только после него выдаётся `DurableAck`; состояние в памяти продвигается после ack.
+
+Ошибка любого шага делает сессию sticky/poisoned: требуется переоткрытие. Отмена возможна только до барьера 1.
+
+### 9.5 Create
+
+`create` пишет пустой корень поколения 1 в слот 1 и пустой корень поколения 2 в слот 0 под одним барьером. Первый пользовательский коммит — поколение 3. После подтверждённого create пустой слот — повреждение, а не норма. Файл, в котором ровно один валидный пустой корень при размере заголовка, — незавершённый create (`IncompleteCreate`): writable open отклоняет, read-only сообщает `NoValidRoot`. [ISSUE-057](../KNOWN_ISSUES.md#issue-057-s9-cow-zeroed-gen2-slot-indistinguishable) закрыт (`01ef35d`).
+
+### 9.6 Выбор корня и восстановление
+
+Оба слота читаются строгим разбором; каждый классифицируется как пустой, валидный или повреждённый. Выбирается валидный корень с наибольшим поколением, согласованный с размером файла и CRC карты. Roll-forward и salvage работают на тех же правилах; salvage пишет только в новый target и перечисляет потерянные диапазоны, а не заполняет их нулями.
+
+### 9.7 Совместимость и миграция (S9-22)
+
+| Версия | Чтение | Запись | Миграция |
+|---|---|---|---|
+| v1 | да | да | — (текущая) |
+| v2 и новее | нет (неизвестная версия → отказ) | нет | не определена: вторая версия не существует |
+
+Неизвестные версии, неизвестные mandatory-биты и неверная геометрия — типизированный отказ, не частичное чтение. Downgrade не поддерживается. Миграция будет проектироваться только при появлении второй версии; она обязана сначала писать в новый target и проверять logical data, snapshots/parent links и identities. Frozen fixture [`v1_created_committed.img`](../../crates/od-storage/tests/fixtures/cow/v1_created_committed.img) (2560 Б) служит регрессией чтения v1.
+
+Раздел определяет root descriptors, карту, поколения, CRC-32, два root slot, обязательные барьеры и правила create/recovery. Journal, B-tree и refcounts в v1 не добавлены.
 
 Инварианты, которые формат обязан обеспечить:
 
@@ -162,5 +223,5 @@ Storage API возвращает типизированные результат
 | Namespace durability на APFS; подтверждение `F_FULLFSYNC` испытаниями и источником | S9-06 (приёмка) и `durable_ack` для создания/публикации | Источник + испытания уровней 1–3; иначе гарантия остаётся открытой |
 | VMHost lifecycle, production `ParentResolver`, non-advisory lock на сетевых ФС | S9-04 (приёмка) | Реализовать; `flock`, alias identity и read lease уже покрыты multiprocess tests (`ba77773`, `31b8c2a`) |
 | LBA size guest device | S9-13 | Решить по требованиям выбранного NVMe профиля |
-| CoW block size, map layout, checksum алгоритм | Принятие формата S9-08 | Прототип есть (CRC-32, плоская карта, 512-байтовый slot — гипотезы); commit-latency измерена (4.05 / 4.90 / 8.93 / 13.00 мс p50 для 1/1/2/3 барьеров, ≈4 мс на барьер, [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md)); не измерены throughput, чтение, write amplification, recovery и память против RAW |
+| CoW block size, map layout, checksum алгоритм | Решено: формат v1 принят как нормативный владельцем 2026-11-06 (§9). Остаётся открытым только влияние на производительность | Замеры throughput/WA/recovery против RAW (S9-40); commit-latency измерена (4.05 / 4.90 / 8.93 / 13.00 мс p50 для 1/1/2/3 барьеров, ≈4 мс на барьер, [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md)); не измерены throughput, чтение, write amplification, recovery и память против RAW |
 | Модель накопителя/контроллера внутреннего SSD | S9-39 claim | Зафиксировать при подготовке стенда |

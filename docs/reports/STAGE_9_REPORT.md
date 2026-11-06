@@ -15,10 +15,10 @@
 | Реализовано, ревью пройдено (по сведениям заданий; внешнее или внутреннее — в разделах задач), не принято | 13 | S9-03, S9-05, S9-07, S9-09, S9-10, S9-11, S9-12, S9-14, S9-15, S9-16, S9-17, S9-18, S9-19 |
 | Протокол с оговорками (размеры блока и карты — гипотезы); формат НЕ принят | 1 | S9-08 |
 | Частично | 4 | S9-04, S9-06 (код, с оговорками ниже); S9-22 (только замороженная фикстура и регрессионные тесты чтения); S9-40 (измерена только commit-latency) |
-| Реализовано без независимого ревью (S9-20, S9-21 — ручная проверка ключевых функций; S9-41 — ревью не проводилось), не принято | 3 | S9-20, S9-21, S9-41 |
+| Реализовано; независимое ревью субагентом 2026-11-06 (только чтение): блокеров и мажоров нет, minor открыты (§8), не принято | 3 | S9-20, S9-21, S9-41 |
 | `not_started` | 0 | — |
 | Набор/запись приёмки подготовлены, задача не принята | 2 | S9-42 (скрипт и [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md); mandatory gates blocked/not_run), S9-44 (запись отказа в приёмке, §7) |
-| `blocked` | 19 | S9-13, S9-23…S9-39, S9-43 (независимое ревью недоступно: классификатор заблокировал запуск ревьюера) |
+| `blocked` | 19 | S9-13, S9-23…S9-39, S9-43 (ревью субагентом проведено 2026-11-06, но это не требуемый ревьюер `gpt-6.1-sol`/архитектурный; задача не принята) |
 
 Принятого этапа или принятого gate нет. «Реализовано, ревью пройдено» относится к самой задаче и не означает принятие gate G1. Формат CoW не принят как нормативный: нормативных bytes и лимитов нет, S9-40 выполнен частично. «Ревью пройдено» у S9-09…S9-12 не делает формат принятым. ISSUE-057 закрыт (`01ef35d`). Чекбоксы `[ ]` в плане не отмечены.
 
@@ -63,7 +63,7 @@
 - Проверки: `second_exclusive_open_is_busy_until_first_is_dropped`, `symlink_and_hard_link_aliases_hit_the_same_lock`, `writer_in_another_process_blocks_us_and_crash_releases_it` (в т.ч. SIGKILL, перезапуск тестового бинарника), `writer_in_this_process_blocks_another_process`, `replaced_path_refuses_writes_instead_of_touching_either_file`, `unlinked_path_refuses_writes`, `read_only_open_neither_blocks_nor_is_blocked_by_writer`.
 - Сделано (`31b8c2a`): `ReadLease` — shared `flock(LOCK_SH|LOCK_NB)` на read-only дескрипторе с проверкой, что заблокированный inode остаётся тем, что по пути; конфликтует с exclusive writer в обе стороны, мутаций не предоставляет, несколько lease сосуществуют; writer и lease используют один nonblocking helper `flock` с повтором при EINTR. Проверки: `lease_blocks_writer_in_this_process_until_dropped`, `lease_is_busy_while_writer_holds_the_lock_and_works_after`, `several_leases_coexist_and_writer_waits_for_the_last`, `lease_refuses_every_mutation`, `lease_refuses_path_that_names_another_or_no_inode`, `lease_in_another_process_blocks_writer_allows_readers_and_sigkill_releases_it`, `writer_in_this_process_makes_lease_busy_in_another_process`. `HostFileStorage::open_read_only` без lease сохранён и документирован как не-lease (не блокирует и не блокируется).
 - Сделано (`bc7b675`, [storage_policy.rs](../../crates/od-host/src/storage_policy.rs)): `export_with_lease` держит read lease на весь проход, `repair_with_writer` — exclusive writer lock; оба сразу отказывают типизированным `Busy` и не вызывают closure при занятом lock. `ParentLease` проверяет identity inode при открытии и перед каждым size/read: подменённый parent даёт `IdentityMismatch`, а не чтение. Проверки (9 тестов `storage_policy`): `export_during_active_writer_is_busy_without_waiting_or_calling_f`, `repair_during_active_lease_or_writer_is_busy_without_calling_f`, `export_lease_is_held_for_the_whole_closure_and_repair_writer_blocks_export`, `repair_is_busy_while_another_process_leases_and_works_after_sigkill`, `hard_link_and_symlink_aliases_share_the_lease_conflict`, `swap_between_check_and_use_is_identity_mismatch_and_never_writes_foreign_file`, `parent_lease_verifies_identity_on_every_use`, `export_does_not_change_file_bytes`.
-- НЕ сделано: проверка parent в цепочке (S9-14/16); интеграция с lifecycle VMHost; non-advisory lock на сетевых файловых системах. Сами export и repair (S9-20/21) не реализованы — есть только политика доступа. Read lease на конкретную generation CoW и привязка к immutable root (S9-16/S9-37) не реализованы.
+- НЕ сделано: проверка parent в цепочке (S9-14/16); интеграция с lifecycle VMHost; non-advisory lock на сетевых файловых системах. Export/import (S9-20) и salvage (S9-21) реализованы в `fd5ebcf`; repair-подкоманды нет, есть только политика доступа. Read lease на конкретную generation CoW и привязка к immutable root (S9-16/S9-37) не реализованы.
 - НЕ доказано: lock advisory (known limit из коммита `4fcd5c4`): процесс, не вызывающий `flock`, может изменить файл; поведение на сетевых и non-APFS volumes. Критерий «Готово» плана («две VMHost не могут писать один backing») для реальных VMHost не проверен.
 
 ### S9-05. RAW backend — реализовано, ревью пройдено
@@ -187,25 +187,25 @@
 - Проверки: `cow_inspect_tests` (в т.ч. `damaged_roots_are_reported_and_never_repaired`, `reports_are_bounded_and_carry_no_payload`, `an_unsupported_mandatory_feature_is_unsupported_not_corrupt`, `a_corrupt_block_is_named_and_a_snapshot_only_block_needs_check_mode`); `od-storage` 175 passed, `storage_policy` 17 passed, `tools/image-tool` 7 passed (проверено запуском).
 - НЕ доказано / предел: CLI зависит от прототипа с feature `test-support`, пока формат не принят (S9-40); нет repair-подкоманды; сценарии busy/io покрыты ограниченно; формат не принят.
 
-### S9-20. RAW export/import с проверкой результата — реализовано, ревью частично (ручное), не принято
+### S9-20. RAW export/import с проверкой результата — реализовано, ревью субагентом (без блокеров и мажоров), не принято
 
 - Коммит: `fd5ebcf`.
 - Файлы: [cow_export.rs](../../crates/od-storage/src/cow_export.rs), [cow_export_tests.rs](../../crates/od-storage/src/cow_export_tests.rs), [storage_policy.rs](../../crates/od-host/src/storage_policy.rs), [tools/image-tool/src/lib.rs](../../tools/image-tool/src/lib.rs), [tools/image-tool/tests/cli.rs](../../tools/image-tool/tests/cli.rs).
 - Факт: `export_raw` читает один проверенный корень под read lease, пишет в новую цель точного logical size, делает flush и сравнивает каждый байт со вторым чтением источника до признания цели завершённой. `import_raw` строит building-образ и публикует его после переоткрытия. CLI пишет `<out>.partial` и публикует через no-replace hard link; существующие цель или partial-файл отклоняются, partial-файл не удаляется.
 - Проверки: `export_matches_the_independent_model_for_head_and_every_snapshot`, `import_then_export_round_trips_and_an_independent_reader_agrees`, `a_fault_at_every_mutating_step_of_the_target_never_reports_a_completed_export`, `an_existing_target_is_refused_and_its_bytes_do_not_change`, `a_source_changed_after_the_reader_fixed_its_root_is_noticed`, `cancellation_at_every_poll_stops_with_cancelled_and_never_succeeds`, `a_corrupt_source_block_fails_the_export_without_a_report`, `a_child_is_flattened_through_its_verified_chain_and_needs_the_parent`; `od-storage` 201 passed, `storage_policy` 20 passed, `tools/image-tool` 16 passed (проверено запуском).
-- Ревью: независимый ревьюер заблокирован классификатором; вручную проверены `publish_no_replace` (не заменяет существующую цель) и правила validity salvage. Остаточный minor: публикация удаляет собственную ссылку при провале проверки identity, что может гоняться с одновременной подменой имени цели. Дефектов в проверенных функциях не найдено, но это не независимое ревью.
+- Ревью: независимое ревью субагентом 2026-11-06 (только чтение, §8): блокеров и мажоров нет; minor открыты. Ранее вручную проверены `publish_no_replace` (не заменяет существующую цель) и правила validity salvage. Остаточный minor: публикация удаляет собственную ссылку при провале проверки identity, что может гоняться с одновременной подменой имени цели. Дефектов в проверенных функциях не найдено, но это не независимое ревью.
 - НЕ доказано / предел: нет durable rename ([ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); import только библиотечный (в CLI нет); power loss не проверен; формат не принят (S9-40).
 
-### S9-21. Salvage / recovery-to-copy — реализовано, ревью частично (ручное), не принято
+### S9-21. Salvage / recovery-to-copy — реализовано, ревью субагентом (без блокеров и мажоров), не принято
 
 - Коммит: `fd5ebcf`.
 - Файлы: [cow_salvage.rs](../../crates/od-storage/src/cow_salvage.rs), [cow_salvage_tests.rs](../../crates/od-storage/src/cow_salvage_tests.rs), [tools/image-tool/src/lib.rs](../../tools/image-tool/src/lib.rs).
 - Факт: `salvage_to_copy` классифицирует диапазоны как valid, lost, unknown или conflicting с указанием основания. Как valid копируются только блоки, на которые ссылается проверенная карта с совпавшим checksum, а также holes и проверенные цепочки parent; устаревшие блоки без provenance как текущие не копируются; неисправимый вход не создаёт цель. CLI завершает с кодом 2 для partial и unrecoverable и копирует partial-результат только с `--accept-partial`.
 - Проверки: `an_intact_image_is_complete_and_its_copy_equals_the_model`, `a_damaged_head_block_is_lost_and_the_stale_older_version_is_not_used`, `a_damaged_map_is_unrecoverable_with_a_listing_and_no_copy`, `unordered_roots_that_disagree_are_conflicting_and_neither_version_is_copied`, `a_possible_lost_commit_is_an_older_root_and_says_so`, `a_child_without_its_parent_has_unknown_holes_not_zeros`, `a_target_problem_never_leaves_a_published_copy`, `reports_are_bounded_and_carry_no_payload`.
-- Ревью: см. S9-20 (ручная проверка validity-правил, независимое ревью заблокировано).
+- Ревью: субагентом 2026-11-06 (§8): блокеров и мажоров нет; minor в `cow_salvage.rs` открыты (§8, п. 1 и 5).
 - НЕ доказано / предел: Partial копируется только с `--accept-partial`; восстановления конфликтующих roots нет (они перечисляются как conflicting, ни одна версия не копируется); нет durable rename (ISSUE-055); формат не принят (S9-40).
 
-### S9-41. Repeated recovery и soak — реализовано, независимое ревью не проводилось, не принято
+### S9-41. Repeated recovery и soak — реализовано, ревью субагентом (без блокеров и мажоров), не принято
 
 - Коммит: `e57646c`.
 - Файлы: [cow_soak_tests.rs](../../crates/od-storage/src/cow_soak_tests.rs), [cow_proto_tests.rs](../../crates/od-storage/src/cow_proto_tests.rs).
@@ -233,9 +233,9 @@
 
 ### S9-40. Измерение стоимости корректных операций — частично
 
-- Файл: [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md) (новый, в рабочем дереве на момент отчёта, не в коммите; код бенчмарка в репозиторий не добавлялся).
+- Файл: [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md) (в коммите `e2e6892`; код бенчмарка в репозиторий не добавлялся).
 - Факт: замер commit-latency через `HostFileStorage` и `fcntl(F_FULLFSYNC)` на одной машине (macOS 26.7.1, Apple M3 Max, внутренний SSD, APFS): 5 прогонов по 300 измеряемых commit на схему, сверка записанных данных после каждого commit. p50: A (RAW-подобная, 1 барьер) 4.05 мс; B (CoW, 1 барьер, только модель стоимости) 4.90 мс; C (CoW, 2 барьера) 8.93 мс; D (3 барьера) 13.00 мс. Цена одного барьера около 4 мс на commit; хвост p99 растёт сильнее медианы (D до 18.86 мс).
-- НЕ закрыто: замеры RAW против CoW по throughput, чтению, write amplification, recovery и памяти; независимый повтор в другие дни; другие тома и накопители. Схема B — не безопасный протокол, схема D упрощена (по документу замера). Документ не делает выводов о долговечности. Отчёт S9-40 не принят.
+- Throughput, чтение, write amplification и память RAW против CoW измерены (`232049b`, [S9_40_THROUGHPUT.md](../testing/S9_40_THROUGHPUT.md)). НЕ закрыто: recovery-замеры; независимый повтор в другие дни; другие тома и накопители. Схема B — не безопасный протокол, схема D упрощена (по документу замера). Документ не делает выводов о долговечности. Отчёт S9-40 не принят.
 
 ## 3. Задачи S9-13, S9-23…S9-39 и S9-42…S9-44 (кроме S9-14…S9-22, S9-40, S9-41, см. §2)
 
@@ -252,7 +252,7 @@
 | S9-39 | `blocked` | Требуется отдельное разрешение на стенд power-loss и описанная схема; без него gate остаётся `not_run` |
 | S9-42 | подготовлено, не принято | Скрипт `tools/stage9/run_checks.sh` и [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md); локальные case выполнены, hardware/Windows/review case остаются `blocked`/`not_run`; зависит от S9-39, S9-41 (без ревью) |
 | S9-44 | подготовлено, этап НЕ принят | Раздел 7 фиксирует отказ в приёмке; зависит от S9-43 (`blocked`) и принятого формата |
-| S9-43 | `blocked` | Независимое итоговое ревью недоступно: запуск ревьюера заблокирован классификатором |
+| S9-43 | `blocked` | Ревью субагентом (Opus, только чтение) 2026-11-06 проведено: блокеров и мажоров нет, minor открыты (§8). Требуемое итоговое ревью (`gpt-6.1-sol`/архитектурный) не проведено; зависимости S9-38, S9-39, S9-42 не закрыты |
 
 Для S9-07…S9-12 в таблице строк нет: они описаны в §2. Дополнительно: namespace-часть S9-06 заблокирована ISSUE-055 и влияет на S9-10, S9-11, S9-29 (публикация root/manifest).
 
@@ -264,7 +264,7 @@
 | G2 — snapshots/tools (S9-14…22) | `not_met` | Есть: immutable snapshots и дочерние цепочки (S9-14, `7188582`), branch и rollback как новая ветка (S9-15, `33440be`), проверка цепочки предков и leases до записи (S9-16, `33440be`), удаление snapshot и offline compaction (S9-17, `82f72e8`), capacity/zero/discard (S9-18, `1590c9e`), read-only inspect/check CLI (S9-19, `1590c9e`), RAW export/import и salvage в новый target (S9-20, S9-21, `fd5ebcf`; независимое ревью не проведено). Gate требует S9-14…22 целиком; S9-22 только частично (замороженная фикстура и тесты чтения, `b5f75d3`); таблицы совместимости и migration нет. Пределы: GC в живом файле, hole punching, repair-подкоманды и CLI-import нет; нет production `ParentResolver`, durable rename и атомарного активного указателя (ISSUE-055) и принятого формата |
 | G3 — coherent full VM (S9-13, 23…31) | `not_met` | Не начато; блокированы ISSUE-056 и отсутствующие компоненты |
 | G4 — identity/integration (S9-32…37) | `not_met` | Не начато |
-| G5 — failure qualification (S9-38/39/41) | `partial` | Есть deterministic fault model и seeded-прогоны для RAW и CoW (S9-07/08/10/11/12), cut-point sweeps, repeated crashed recovery на модели, soak на модели (S9-41, `e57646c`: 500 циклов на seed, 3 seeds по умолчанию; по сведениям заданий 12000 циклов по 8 seeds без расхождений; независимое ревью не проводилось), unit-тесты sticky reconcile и kill процесса (S9-04). Нет: полной fault/corruption matrix (S9-38), реального power-loss (S9-39); soak не заменяет испытаний реального носителя |
+| G5 — failure qualification (S9-38/39/41) | `partial` | Есть deterministic fault model и seeded-прогоны для RAW и CoW (S9-07/08/10/11/12), cut-point sweeps, repeated crashed recovery на модели, soak на модели (S9-41, `e57646c`: 500 циклов на seed, 3 seeds по умолчанию; по сведениям заданий 12000 циклов по 8 seeds без расхождений; ревью субагентом без блокеров и мажоров, §8), unit-тесты sticky reconcile и kill процесса (S9-04). Нет: полной fault/corruption matrix (S9-38), реального power-loss (S9-39); soak не заменяет испытаний реального носителя |
 | G6 — reproducibility (S9-40…44) | `not_met` | Замеров, матрицы и независимого итогового ревью нет |
 
 ## 5. Открытые блокеры и записи
@@ -325,3 +325,20 @@
 ### Следующие шаги до приёмки
 
 Разрешение на стенд power-loss (S9-39) и актуализация ISSUE-055; завершение S9-40 и принятие формата; S9-22; синхронизация веток; компоненты этапов 4–8 для G3/G4; независимое ревью S9-43 после снятия блокировки. Только после этого пересматривать §4 и этот раздел.
+
+## 8. Ревью 2026-11-06 (субагент, только чтение)
+
+Объект: HEAD `232049b`, S9-20/21 (`fd5ebcf`), S9-41 (`e57646c`), сквозная проверка S9-43. Ревьюер — субагент на Opus, не требуемый внешний ревьюер; его вывод записан как внутренний независимый проход. Запуски: `cargo test -p od-storage` 205 passed, 1 ignored; `cargo test -p od-image-tool` 16 passed; `od-host` storage_policy 20, storage_io 30, raw_file_tests 9 passed. Полный `od-host` даёт 21 падение в JIT-тестах (`s3_20*`, `native_register_v1_corpus`), они задокументированы в [STAGE_9_REPRO.md](../testing/STAGE_9_REPRO.md) и к хранилищу не относятся.
+
+Блокеров и мажоров нет. Открытые minor (ни одна не исправлена в этом срезе):
+
+1. `cow_salvage.rs:847-849` (ветка ambiguous, :723-735): два неупорядоченных валидных корня без подтверждённого порядка и совпадающими байтами выбранного состояния дают `recoverability=Complete`, `possible_lost_commit=false`, код выхода 0. По документации модуля (:44-46) Complete требует доказанного newest root. Snapshots в этом режиме не сравниваются (:780). Нужна правка: не Complete без доказательства либо явный отдельный класс.
+2. `storage_policy.rs:211-214`: после провала identity-проверки `publish_no_replace` удаляет `target`; при подмене имени между `hard_link` и `remove_file` удалится чужой файл. Нарушает правило «never removes an existing path». Записано в `fd5ebcf` как остаточный minor.
+3. Гипотеза, не воспроизведена: `storage_policy.rs:190-193` берёт identity через `std::fs::metadata`, который следует symlink; нужен `symlink_metadata`.
+4. Гипотеза, не воспроизведена: `tools/image-tool/src/lib.rs:526-544` закрывает `.partial` и снимает flock до `publish_no_replace`; публикация не перепроверяет байты, только (dev, ino).
+5. Гипотеза, Linux не запускался: `cow_salvage.rs:899-908` сводит всё, кроме ENOSPC, к `target_io_error`; при отсутствии file durability `UnsupportedDurability` даёт оставленный building-файл, тогда как export отказывает заранее (`durability_unavailable`).
+6. `cow_soak_tests.rs:308-311, 756-771`: `next_snapshot_id` файла не сравнивается с оракулом; заголовок модуля (:14-15) обещает больше, чем проверяется.
+7. Устаревшие утверждения в отчёте исправлены в этом срезе: export/repair S9-20/21 реализованы (`fd5ebcf`), S9_40 в коммите `e2e6892`, throughput измерен (`232049b`).
+8. ODSNAP (snapshot-слой: header, kind, бит building, `MAX_SNAPSHOTS = 8`, `MAX_DISK_BLOCKS = 4096`) не описан в [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md) §9 и не входит в принятие формата; на него опираются S9-20/21.
+
+Не проверено: поведение на Linux; реальный power loss и durability имени в каталоге (ISSUE-055); длинные soak через `OD_SOAK_*`; гипотезы 3–4 не воспроизводились (запрещено писать в файлы).
