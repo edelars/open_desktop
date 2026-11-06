@@ -370,7 +370,7 @@ pub(crate) fn policies() -> Vec<CrashPolicy> {
     v
 }
 
-fn random_policy(rng: &mut SplitMix64) -> CrashPolicy {
+pub(crate) fn random_policy(rng: &mut SplitMix64) -> CrashPolicy {
     match rng.below(4) {
         0 => CrashPolicy::DropPending,
         1 => CrashPolicy::KeepPending,

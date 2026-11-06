@@ -60,6 +60,8 @@ mod cow_salvage_tests;
 #[cfg(test)]
 mod cow_snapshot_tests;
 #[cfg(test)]
+mod cow_soak_tests;
+#[cfg(test)]
 mod cow_tx_tests;
 #[cfg(test)]
 mod io_tests;
