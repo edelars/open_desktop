@@ -11,7 +11,33 @@ use crate::page_walk::{
     Translation4K, probe_long64_4k,
 };
 use crate::{GuestPhysicalAddress, PhysicalMemory};
+use od_isa::TranslationInvalidation;
 use od_isa::memory::{AccessContext, AccessKind};
+
+/// Confirms that an experimental guest invalidation effect was consumed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TranslationInvalidationConsumption {
+    pub consumed: bool,
+    pub removed_cached_entry: bool,
+}
+
+/// Consume a CPU effect before the caller performs another cache lookup.
+/// The capacity-one experiment conservatively clears its full resident entry.
+pub fn consume_translation_invalidation(
+    cache: &mut TranslationProbeCache<'_>,
+    effect: TranslationInvalidation,
+) -> TranslationInvalidationConsumption {
+    match effect {
+        TranslationInvalidation::Invlpg { .. } => {
+            let removed_cached_entry = !cache.is_empty();
+            cache.clear();
+            TranslationInvalidationConsumption {
+                consumed: true,
+                removed_cached_entry,
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CacheTag {
@@ -118,13 +144,20 @@ impl<'a> TranslationProbeCache<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TranslationProbeCache, TranslationProbeCacheOutcome};
+    use super::{
+        TranslationProbeCache, TranslationProbeCacheOutcome, consume_translation_invalidation,
+    };
     use crate::{
         GuestLinearAddress, GuestPhysicalAddress, GuestPhysicalRange, MachineMemoryMap,
         MemoryRegionKind, MemoryRegionSpec, PhysicalMemory, RamLimits,
     };
     use od_isa::memory::{
-        AccessContext, AccessKind, AccessOrigin, InstructionMode, PrivilegeLevel,
+        AccessContext, AccessKind, AccessOrigin, GuestMemory, InstructionMode, MemoryError,
+        PrivilegeLevel,
+    };
+    use od_isa::{
+        CpuActivity, InvlpgExit, InvlpgLong64V1, LongModeState, OperandSize, Register, StiShadow,
+        TranslationInvalidation, step_invlpg,
     };
 
     const ROOT: u64 = 0x1000;
@@ -171,6 +204,357 @@ mod tests {
                 other => panic!("expected translation, got {other:?}"),
             },
         }
+    }
+
+    struct FetchOnlySnapshot<'a> {
+        memory: &'a PhysicalMemory,
+        paging: super::Long64ProbeConfig,
+        fetches: Vec<u64>,
+        fail_fetch_at: Option<u64>,
+    }
+
+    impl GuestMemory for FetchOnlySnapshot<'_> {
+        fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+            self.fetches.push(address);
+            if self.fail_fetch_at == Some(address) {
+                return Err(MemoryError::Backend(
+                    "injected instruction fetch failure".into(),
+                ));
+            }
+            match crate::probe_long64_4k(
+                self.memory,
+                &self.paging,
+                GuestLinearAddress::new(address),
+                AccessKind::Fetch,
+                context,
+            )
+            .outcome
+            {
+                Ok(crate::ProbeOutcome::Translated(translation)) => self
+                    .memory
+                    .read_u8(translation.physical)
+                    .map_err(|error| MemoryError::Backend(format!("fetch snapshot read: {error}"))),
+                other => Err(MemoryError::Backend(format!(
+                    "fetch translation: {other:?}"
+                ))),
+            }
+        }
+
+        fn read(&mut self, _: u64, _: AccessContext, _: &mut [u8]) -> Result<(), MemoryError> {
+            panic!("INVLPG must not read target or data memory")
+        }
+
+        fn write(&mut self, _: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+            panic!("INVLPG must not write memory")
+        }
+
+        fn atomic_exchange_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            panic!("INVLPG must not access data memory")
+        }
+
+        fn atomic_fetch_add_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            panic!("INVLPG must not access data memory")
+        }
+
+        fn atomic_compare_exchange_integer(
+            &mut self,
+            _: u64,
+            _: AccessContext,
+            _: OperandSize,
+            _: u64,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            panic!("INVLPG must not access data memory")
+        }
+
+        fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+            panic!("INVLPG must not fence data memory")
+        }
+    }
+
+    #[test]
+    fn invlpg_consumption_forces_walk_after_hit_without_mutating_snapshot() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let code = [0x0f, 0x01, 0x3b];
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
+                &code,
+                |_| {},
+            )
+            .unwrap();
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x24),
+                &code,
+                |_| {},
+            )
+            .unwrap();
+        let paging = config(0x8001_0033, ROOT, 0x20, 0xd00);
+        let ring0 = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x20);
+        let table_snapshot = [ROOT, PDPT, PD + 16, PT]
+            .map(|address| memory.read_u64(GuestPhysicalAddress::new(address)).unwrap());
+        let mut cache = TranslationProbeCache::new(&memory);
+        let first_walk = cache.probe(&paging, linear, AccessKind::Read, ring0);
+        let first = match first_walk {
+            TranslationProbeCacheOutcome::Walk(report) => match report.outcome.unwrap() {
+                crate::ProbeOutcome::Translated(translation) => translation,
+                other => panic!("expected successful first walk, got {other:?}"),
+            },
+            TranslationProbeCacheOutcome::Hit(_) => panic!("first lookup must walk"),
+        };
+        assert!(
+            matches!(
+                cache.probe(&paging, linear, AccessKind::Read, ring0),
+                TranslationProbeCacheOutcome::Hit(_)
+            ),
+            "second lookup must hit the resident entry"
+        );
+
+        let mut cpu = LongModeState::default();
+        cpu.rip = linear.get();
+        // A different page proves the experiment clears the whole resident
+        // entry rather than matching the requested page.
+        cpu.gpr[Register::Rbx as usize] = 0x1234_5678;
+        cpu.cr0 = Some(0x8001_0033);
+        cpu.cr3 = Some(ROOT);
+        cpu.cr4 = Some(0x20);
+        cpu.activity = Some(CpuActivity::Running);
+        cpu.sti_shadow = Some(StiShadow::Clear);
+        let mut fetch_only = FetchOnlySnapshot {
+            memory: &memory,
+            paging,
+            fetches: Vec::new(),
+            fail_fetch_at: None,
+        };
+        let cpu_result = step_invlpg(
+            InvlpgLong64V1,
+            &mut cpu,
+            &mut fetch_only,
+            ring0,
+            0xd00,
+            od_isa::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            fetch_only.fetches,
+            [linear.get(), linear.get() + 1, linear.get() + 2]
+        );
+        let InvlpgExit::TranslationInvalidation(effect @ TranslationInvalidation::Invlpg { .. }) =
+            cpu_result.exit
+        else {
+            panic!(
+                "expected CPU invalidation effect, got {:?}",
+                cpu_result.exit
+            )
+        };
+        let consumed = consume_translation_invalidation(&mut cache, effect);
+        assert_eq!(
+            consumed,
+            super::TranslationInvalidationConsumption {
+                consumed: true,
+                removed_cached_entry: true
+            }
+        );
+
+        let after_walk = cache.probe(&paging, linear, AccessKind::Read, ring0);
+        let after = match after_walk {
+            TranslationProbeCacheOutcome::Walk(report) => match report.outcome.unwrap() {
+                crate::ProbeOutcome::Translated(translation) => translation,
+                other => panic!("expected successful post-invalidation walk, got {other:?}"),
+            },
+            TranslationProbeCacheOutcome::Hit(_) => panic!("invalidation must force a walk"),
+        };
+        assert!(
+            matches!(
+                cache.probe(&paging, linear, AccessKind::Read, ring0),
+                TranslationProbeCacheOutcome::Hit(_)
+            ),
+            "lookup after the forced walk must hit"
+        );
+        assert_eq!(first, after);
+        assert_eq!(
+            [ROOT, PDPT, PD + 16, PT]
+                .map(|address| memory.read_u64(GuestPhysicalAddress::new(address)).unwrap()),
+            table_snapshot,
+        );
+
+        // Repeat with an RBX target that is mapped in this snapshot. INVLPG
+        // still performs no target translation or data callback.
+        cpu.rip = linear.get() + 4;
+        cpu.gpr[Register::Rbx as usize] = LINEAR_PAGE + 0x345;
+        fetch_only.fetches.clear();
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Read, ring0),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+        let mapped_result = step_invlpg(
+            InvlpgLong64V1,
+            &mut cpu,
+            &mut fetch_only,
+            ring0,
+            0xd00,
+            od_isa::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            fetch_only.fetches,
+            [linear.get() + 4, linear.get() + 5, linear.get() + 6]
+        );
+        assert_eq!(
+            mapped_result.exit,
+            InvlpgExit::TranslationInvalidation(TranslationInvalidation::Invlpg {
+                linear_address: LINEAR_PAGE + 0x345,
+            })
+        );
+        assert!(
+            consume_translation_invalidation(
+                &mut cache,
+                match mapped_result.exit {
+                    InvlpgExit::TranslationInvalidation(effect) => effect,
+                    other => panic!("expected mapped-target effect, got {other:?}"),
+                },
+            )
+            .consumed
+        );
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Read, ring0),
+            TranslationProbeCacheOutcome::Walk(_)
+        ));
+        assert!(matches!(
+            cache.probe(&paging, linear, AccessKind::Read, ring0),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+        cache.clear();
+        let empty_consumption = consume_translation_invalidation(
+            &mut cache,
+            TranslationInvalidation::Invlpg {
+                linear_address: 0xdead_0000,
+            },
+        );
+        assert_eq!(
+            empty_consumption,
+            super::TranslationInvalidationConsumption {
+                consumed: true,
+                removed_cached_entry: false
+            }
+        );
+        assert!(cache.is_empty());
+        assert_eq!(
+            consume_translation_invalidation(
+                &mut cache,
+                TranslationInvalidation::Invlpg {
+                    linear_address: 0xdead_1000,
+                },
+            ),
+            super::TranslationInvalidationConsumption {
+                consumed: true,
+                removed_cached_entry: false,
+            }
+        );
+    }
+
+    #[test]
+    fn nonretiring_or_noninvalidating_invlpg_paths_preserve_warmed_cache() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        for (offset, bytes) in [
+            (0x20, &[0x0f, 0x01, 0x3b][..]),
+            (0x30, &[0x0f, 0x01, 0x3b][..]),
+            (0x40, &[0xf0, 0x0f, 0x01, 0x3b][..]),
+            (0x50, &[0x0f, 0x01, 0x3b][..]),
+        ] {
+            memory
+                .write_bytes(
+                    GuestPhysicalAddress::new(PHYSICAL_PAGE + offset),
+                    bytes,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        let paging = config(0x8001_0033, ROOT, 0x20, 0xd00);
+        let ring0 = AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        };
+        let ring1 = AccessContext {
+            privilege: PrivilegeLevel::Ring1,
+            ..ring0
+        };
+        let cache_key = GuestLinearAddress::new(LINEAR_PAGE + 0x10);
+        let mut cache = TranslationProbeCache::new(&memory);
+        assert!(matches!(
+            cache.probe(&paging, cache_key, AccessKind::Read, ring0),
+            TranslationProbeCacheOutcome::Walk(_)
+        ));
+        assert!(matches!(
+            cache.probe(&paging, cache_key, AccessKind::Read, ring0),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+
+        let mut run_case = |rip: u64, rbx: u64, context: AccessContext, fail_fetch_at| {
+            assert!(matches!(
+                cache.probe(&paging, cache_key, AccessKind::Read, ring0),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+            let mut cpu = LongModeState::default();
+            cpu.rip = rip;
+            cpu.gpr[Register::Rbx as usize] = rbx;
+            cpu.cr0 = Some(0x8001_0033);
+            cpu.cr3 = Some(ROOT);
+            cpu.cr4 = Some(0x20);
+            cpu.activity = Some(CpuActivity::Running);
+            cpu.sti_shadow = Some(StiShadow::Clear);
+            let mut fetch_only = FetchOnlySnapshot {
+                memory: &memory,
+                paging,
+                fetches: Vec::new(),
+                fail_fetch_at,
+            };
+            let result = step_invlpg(
+                InvlpgLong64V1,
+                &mut cpu,
+                &mut fetch_only,
+                context,
+                0xd00,
+                od_isa::INTEGER_FLAGS,
+            );
+            assert!(matches!(
+                cache.probe(&paging, cache_key, AccessKind::Read, ring0),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+            result
+        };
+
+        let nop = run_case(LINEAR_PAGE + 0x20, 0x0000_8000_0000_0000, ring0, None);
+        assert_eq!(nop.exit, InvlpgExit::Retired);
+        let privilege_fault = run_case(LINEAR_PAGE + 0x30, 0x2000, ring1, None);
+        assert!(matches!(
+            privilege_fault.exit,
+            InvlpgExit::Fault(od_isa::memory::ArchitecturalFault { vector: 13, .. })
+        ));
+        let lock_fault = run_case(LINEAR_PAGE + 0x40, 0x2000, ring0, None);
+        assert!(matches!(
+            lock_fault.exit,
+            InvlpgExit::Fault(od_isa::memory::ArchitecturalFault { vector: 6, .. })
+        ));
+        let fetch_fault = run_case(LINEAR_PAGE + 0x50, 0x2000, ring0, Some(LINEAR_PAGE + 0x51));
+        assert!(matches!(fetch_fault.exit, InvlpgExit::Backend(_)));
     }
 
     #[test]

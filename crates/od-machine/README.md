@@ -41,10 +41,12 @@ split/transaction semantics и CPU restart/REP/RMW integration ещё не
 но guest CR3/EFER transitions и startup evidence ещё не реализованы.
 Экспериментальный one-entry pure-translation cache и release benchmark не
 являются production TLB и не покрывают tracked A/D, invalidation или Linux.
-S4-14a отдельно закрепляет только host-controlled `clear`/drop-and-recreate
-lifecycle: remap и изменение прав видны после завершения immutable borrow и
-создания нового cache; guest INVLPG/CR3/EFER transitions и CPU/JIT hooks остаются
-открыты.
+S4-14a закрепляет host-controlled `clear`/drop-and-recreate lifecycle. S4-14b
+добавляет отдельный CPU `INVLPG [RBX]` effect и feature-gated потребитель,
+который очищает experimental one-entry cache перед следующим lookup. Это не
+соединяет cache с tracked mutable memory: remap/изменение прав по-прежнему
+требуют завершить immutable borrow и создать новый cache; CR3/EFER invalidation,
+production TLB и CPU/JIT hooks остаются открыты.
 Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости
 добавлять вместе с фактическим использованием.

@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "slice": "S4-14b",
+  "title": "Standalone INVLPG effect and experimental cache consumer",
+  "date": "2026-11-06",
+  "status": "complete",
+  "profile": {
+    "name": "InvlpgLong64V1",
+    "entry_point": "step_invlpg",
+    "feature_independent_cpu": true,
+    "instructions": ["0F 01 3B (INVLPG [RBX])", "F0 0F 01 3B (LOCK fault only)"],
+    "mode": "Long64",
+    "address_profile": "canonical48/physical36/four-level paging",
+    "cr0": "0x80010033",
+    "cr4": "0x20",
+    "efer": "0xd00",
+    "cr3": "valid CPU-owned value",
+    "vcpus": 1,
+    "activity": "Running",
+    "interrupt_shadow": "clear",
+    "pre_fetch_instruction_start_offsets_rejected": "0xff2..=0xfff"
+  },
+  "semantics": {
+    "bare_cpl0_canonical_retires_and_emits_original_linear_address": true,
+    "bare_cpl0_noncanonical_retires_without_effect": true,
+    "bare_cpl1_to_3_gp_after_fetch": true,
+    "exact_lock_ud_after_full_fetch": true,
+    "target_is_never_dereferenced": true,
+    "preserves_gpr_cr_rflags_and_definedness": true
+  },
+  "effect": {
+    "type": "TranslationInvalidation::Invlpg { linear_address }",
+    "distinct_from_translation_context_change": true,
+    "cache_consumer_feature": "experimental-translation-probe-cache",
+    "consumer_policy": "clear full one-entry cache before next lookup",
+    "empty_consumption_reports_success": true,
+    "walk_or_ram_ad_side_effect": false
+  },
+  "verified_scenarios": {
+    "walk_hit_invlpg_consume_walk_hit": true,
+    "full_clear_removes_unrelated_resident_entry": true,
+    "no_op_and_faults_preserve_warm_cache": true,
+    "fetch_bypasses_resident_probe_cache": true,
+    "same_immutable_memory_snapshot": true,
+    "feature_enabled_and_disabled_builds": true
+  },
+  "architecture_review": {
+    "model": "gpt-6-astra",
+    "reasoning": "high",
+    "verdict": "approved"
+  },
+  "implementation_review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approved"
+  },
+  "graphify": {
+    "query_before_source_reads": true,
+    "update_after_code_integration": true,
+    "global_nodes": 26542,
+    "global_edges": 66136,
+    "global_communities": 970
+  },
+  "report": "docs/reports/STAGE_4_S4-14B_2026-11-06.md",
+  "checks": {
+    "od_isa_focused_invlpg_tests": "3 passed",
+    "od_machine_focused_cache_tests": "13 passed",
+    "od_machine_full_without_cache_feature": "82 unit + 98 integration passed",
+    "od_machine_full_with_cache_feature": "94 unit + 98 integration passed",
+    "affected_crates_all_targets_feature_on_and_off": "passed",
+    "cargo_fmt": "passed",
+    "diff_check": "passed",
+    "layout_check": "failed: unmapped empty root directory smoke/; preserved"
+  }
+}

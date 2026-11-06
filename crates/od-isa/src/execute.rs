@@ -1943,6 +1943,33 @@ pub enum TranslationContextChange {
     Cr0Write { old_cr0: u64, new_cr0: u64 },
 }
 
+/// A successful guest page invalidation request emitted by the bounded CPU profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TranslationInvalidation {
+    Invlpg { linear_address: u64 },
+}
+
+/// Explicit opt-in marker for the bounded standalone INVLPG instruction.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct InvlpgLong64V1;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InvlpgExit {
+    TranslationInvalidation(TranslationInvalidation),
+    Retired,
+    Fault(ArchitecturalFault),
+    Unsupported { opcode: u8 },
+    Backend(MemoryError),
+    Rejected(PagedProbeRejection),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InvlpgResult {
+    pub exit: InvlpgExit,
+    pub instructions_executed: u64,
+    pub rflags_defined: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MovCr3Exit {
     TranslationContextChange(TranslationContextChange),
@@ -16232,6 +16259,133 @@ pub fn step_paged_probe<P: crate::PortIo>(
         context,
         initial_rflags_defined,
     )
+}
+
+/// Execute the standalone, exact `INVLPG [RBX]` diagnostic profile.
+/// Intel SDM Vol. 2A (INVLPG) defines the address as an operand address; the
+/// bounded profile intentionally performs no target memory access or walk.
+pub fn step_invlpg(
+    _profile: InvlpgLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> InvlpgResult {
+    let result = |exit, instructions_executed| InvlpgResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(InvlpgExit::Rejected(reason), 0);
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if state.cr0.is_none() || state.cr4.is_none() || state.cr3.is_none() {
+        return reject(PagedProbeRejection::ControlRegistersMissing);
+    }
+    if state.cr0 != Some(0x8001_0033)
+        || state.cr4 != Some(0x20)
+        || efer != 0xd00
+        || state.cr3.is_some_and(|cr3| cr3 & !((1u64 << 36) - 1) != 0)
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+    if state.rip & 0xfff >= 0xff2 {
+        return result(InvlpgExit::Unsupported { opcode: 0x0f }, 0);
+    }
+
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    let mut fetch = |address| memory.fetch(address, context);
+    let first = match fetch(state.rip) {
+        Ok(byte) => byte,
+        Err(MemoryError::Architectural(fault)) => return result(InvlpgExit::Fault(fault), 0),
+        Err(error) => return result(InvlpgExit::Backend(error), 0),
+    };
+    if first != 0xf0 && first != 0x0f {
+        return result(InvlpgExit::Unsupported { opcode: first }, 0);
+    }
+    let lock = first == 0xf0;
+    let second = match fetch(state.rip.wrapping_add(1)) {
+        Ok(byte) => byte,
+        Err(MemoryError::Architectural(fault)) => return result(InvlpgExit::Fault(fault), 0),
+        Err(error) => return result(InvlpgExit::Backend(error), 0),
+    };
+    let expected_second = if lock { 0x0f } else { 0x01 };
+    if second != expected_second {
+        return result(InvlpgExit::Unsupported { opcode: 0x0f }, 0);
+    }
+    let third = match fetch(state.rip.wrapping_add(2)) {
+        Ok(byte) => byte,
+        Err(MemoryError::Architectural(fault)) => return result(InvlpgExit::Fault(fault), 0),
+        Err(error) => return result(InvlpgExit::Backend(error), 0),
+    };
+    if lock && third != 0x01 {
+        return result(InvlpgExit::Unsupported { opcode: 0x0f }, 0);
+    }
+    if !lock && third != 0x3b {
+        return result(InvlpgExit::Unsupported { opcode: 0x0f }, 0);
+    }
+    if lock {
+        let fourth = match fetch(state.rip.wrapping_add(3)) {
+            Ok(byte) => byte,
+            Err(MemoryError::Architectural(fault)) => return result(InvlpgExit::Fault(fault), 0),
+            Err(error) => return result(InvlpgExit::Backend(error), 0),
+        };
+        if fourth != 0x3b {
+            return result(InvlpgExit::Unsupported { opcode: 0x0f }, 0);
+        }
+        return result(
+            InvlpgExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return result(
+            InvlpgExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            }),
+            0,
+        );
+    }
+
+    let linear_address = state.gpr[Register::Rbx as usize];
+    state.rip = state.rip.wrapping_add(3);
+    let canonical = (linear_address >> 47 == 0) || (linear_address >> 47 == 0x1ffff);
+    if canonical {
+        result(
+            InvlpgExit::TranslationInvalidation(TranslationInvalidation::Invlpg { linear_address }),
+            1,
+        )
+    } else {
+        result(InvlpgExit::Retired, 1)
+    }
 }
 
 /// Execute one instruction from the bounded paged probe allowlist with
@@ -146834,6 +146988,255 @@ mod tests {
             assert_eq!(state, before);
             assert!(memory.fetches.is_empty());
             assert!(memory.accesses.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
+mod invlpg_tests {
+    use super::tests::Memory;
+    use super::*;
+
+    fn admitted_state(address: u64) -> LongModeState {
+        let mut state = LongModeState::default();
+        state.rip = 0x1000;
+        state.gpr[Register::Rbx as usize] = address;
+        state.cr0 = Some(0x8001_0033);
+        state.cr3 = Some(0x2000);
+        state.cr4 = Some(0x20);
+        state.activity = Some(crate::CpuActivity::Running);
+        state.sti_shadow = Some(crate::StiShadow::Clear);
+        state.rflags = 0x8d7;
+        state
+    }
+
+    fn context(privilege: PrivilegeLevel) -> AccessContext {
+        AccessContext {
+            privilege,
+            ..AccessContext::default()
+        }
+    }
+
+    #[test]
+    fn exact_invlpg_emits_original_canonical_address_without_data_access() {
+        let mut state = admitted_state(0xffff_8000_1234_5678);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x3b], state.rip);
+        let result = step_invlpg(
+            InvlpgLong64V1,
+            &mut state,
+            &mut memory,
+            context(PrivilegeLevel::Ring0),
+            0xd00,
+            crate::CF | crate::ZF,
+        );
+        assert_eq!(
+            result.exit,
+            InvlpgExit::TranslationInvalidation(TranslationInvalidation::Invlpg {
+                linear_address: before.gpr[Register::Rbx as usize]
+            })
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, crate::CF | crate::ZF);
+        assert_eq!(state.rip, before.rip + 3);
+        assert_eq!(state.gpr, before.gpr);
+        assert_eq!(state.rflags, before.rflags);
+        assert_eq!(memory.fetches, [before.rip, before.rip + 1, before.rip + 2]);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn privilege_fault_precedes_noncanonical_nop_and_lock_ud_has_full_fetch() {
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = admitted_state(0x0000_8000_0000_0000);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x01, 0x3b], state.rip);
+            let result = step_invlpg(
+                InvlpgLong64V1,
+                &mut state,
+                &mut memory,
+                context(privilege),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                InvlpgExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut state = admitted_state(0x2000);
+        let before = state.clone();
+        let mut lock = Memory::at(&[0xf0, 0x0f, 0x01, 0x3b], state.rip);
+        let result = step_invlpg(
+            InvlpgLong64V1,
+            &mut state,
+            &mut lock,
+            context(PrivilegeLevel::Ring0),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            InvlpgExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None
+            })
+        );
+        assert_eq!(
+            lock.fetches,
+            [before.rip, before.rip + 1, before.rip + 2, before.rip + 3]
+        );
+        assert_eq!(state, before);
+
+        let mut noncanonical = admitted_state(0x0000_8000_0000_0000);
+        let before_noncanonical = noncanonical.clone();
+        let mut nop_memory = Memory::at(&[0x0f, 0x01, 0x3b], noncanonical.rip);
+        let nop = step_invlpg(
+            InvlpgLong64V1,
+            &mut noncanonical,
+            &mut nop_memory,
+            context(PrivilegeLevel::Ring0),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(nop.exit, InvlpgExit::Retired);
+        assert_eq!(nop.instructions_executed, 1);
+        assert_eq!(noncanonical.rip, before_noncanonical.rip + 3);
+        assert_eq!(noncanonical.gpr, before_noncanonical.gpr);
+        assert_eq!(noncanonical.rflags, before_noncanonical.rflags);
+        assert!(nop_memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn fetch_failures_do_not_retire_and_other_forms_are_unsupported() {
+        for offset in 0..3 {
+            let mut state = admitted_state(0x2000);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x01, 0x3b], state.rip);
+            memory.fetch_error =
+                Some((state.rip + offset, MemoryError::Backend("injected".into())));
+            let result = step_invlpg(
+                InvlpgLong64V1,
+                &mut state,
+                &mut memory,
+                context(PrivilegeLevel::Ring0),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert!(matches!(result.exit, InvlpgExit::Backend(_)));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
+        for offset in 0..4 {
+            let mut state = admitted_state(0x2000);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0xf0, 0x0f, 0x01, 0x3b], state.rip);
+            memory.fetch_error =
+                Some((state.rip + offset, MemoryError::Backend("injected".into())));
+            let result = step_invlpg(
+                InvlpgLong64V1,
+                &mut state,
+                &mut memory,
+                context(PrivilegeLevel::Ring0),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert!(matches!(result.exit, InvlpgExit::Backend(_)));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+        }
+        let mut state = admitted_state(0x2000);
+        let mut memory = Memory::at(&[0x0f, 0x01, 0xfb], state.rip);
+        let result = step_invlpg(
+            InvlpgLong64V1,
+            &mut state,
+            &mut memory,
+            context(PrivilegeLevel::Ring0),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, InvlpgExit::Unsupported { opcode: 0x0f });
+        assert_eq!(result.instructions_executed, 0);
+
+        let mut early_mismatch = Memory::at(&[0x0f, 0x0b, 0x3b], state.rip);
+        early_mismatch.fetch_error =
+            Some((state.rip + 2, MemoryError::Backend("must not fetch".into())));
+        let result = step_invlpg(
+            InvlpgLong64V1,
+            &mut state,
+            &mut early_mismatch,
+            context(PrivilegeLevel::Ring0),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, InvlpgExit::Unsupported { opcode: 0x0f });
+        assert_eq!(early_mismatch.fetches, [state.rip, state.rip + 1]);
+
+        let mut rejected = admitted_state(0x2000);
+        let before_rejected = rejected.clone();
+        let mut rejected_memory = Memory::at(&[0x0f, 0x01, 0x3b], rejected.rip);
+        let result = step_invlpg(
+            InvlpgLong64V1,
+            &mut rejected,
+            &mut rejected_memory,
+            context(PrivilegeLevel::Ring0),
+            0xd01,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            InvlpgExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile)
+        );
+        assert_eq!(rejected, before_rejected);
+        assert!(rejected_memory.fetches.is_empty());
+
+        for address in [0, 0x0000_7fff_ffff_ffff, 0xffff_8000_0000_0000, u64::MAX] {
+            let mut boundary_state = admitted_state(address);
+            let mut boundary_memory = Memory::at(&[0x0f, 0x01, 0x3b], boundary_state.rip);
+            let result = step_invlpg(
+                InvlpgLong64V1,
+                &mut boundary_state,
+                &mut boundary_memory,
+                context(PrivilegeLevel::Ring0),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                InvlpgExit::TranslationInvalidation(TranslationInvalidation::Invlpg {
+                    linear_address: address
+                })
+            );
+            assert_eq!(result.instructions_executed, 1);
+            assert!(boundary_memory.accesses.is_empty());
+        }
+
+        for offset in 0xff2..=0xfff {
+            let mut state = admitted_state(0x2000);
+            state.rip = 0x1000 + offset;
+            let mut memory = Memory::at(&[0x0f, 0x01, 0x3b], state.rip);
+            let result = step_invlpg(
+                InvlpgLong64V1,
+                &mut state,
+                &mut memory,
+                context(PrivilegeLevel::Ring0),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(result.exit, InvlpgExit::Unsupported { opcode: 0x0f });
+            assert!(memory.fetches.is_empty());
         }
     }
 }

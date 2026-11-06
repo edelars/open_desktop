@@ -318,6 +318,15 @@ permission fault и сохранение CPU state/нулевого retirement �
   не пишет RAM/A-D, failed replacement не resident, а remap и изменения RW/NX
   наблюдаются только после завершения старого immutable-borrow scope и создания
   нового cache. Guest invalidation и CPU hooks не добавлены.
+- S4-14b добавляет standalone feature-independent `INVLPG [RBX]` CPU profile с
+  typed effect; feature-gated consumer очищает one-entry experimental cache до
+  следующего lookup. Проверен `Walk → Hit → INVLPG → consume → Walk → Hit`,
+  включая full-clear при другой resident page и сохранение cache при fault/no-op.
+  S4-14a immutable-memory boundary сохраняется: tracked A/D, remap,
+  huge pages, global/PCID, CR3 invalidation, JIT и production TLB не заявлены.
+  См. [report](STAGE_4_S4-14B_2026-11-06.md),
+  [CPU contract](../specs/CPU_CONTRACT.md#standalone-invlpg-profile-invlpglong64v1-s4-14b)
+  и [machine contract](../specs/MACHINE_CONTRACT.md#bounded-invlpg-effect-consumption-s4-14b).
 - S4-21a добавляет синхронную bounded diagnostic vCPU session над одним
   `LongModeState` и `MachineBus`: runnable/paused/stopped/terminal states,
   finite instruction budget, сохранение `rflags_defined`, STOP callback и

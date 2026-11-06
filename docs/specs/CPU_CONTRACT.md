@@ -238,6 +238,33 @@ Revision 093, Vol. 2B `MOV—Move to/from Control Registers`, and Vol. 3A §§2.
 5.1.3 and 5.6.1 (CR0 fields and supervisor write protection). See the
 [official Intel SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 
+### Standalone INVLPG profile `InvlpgLong64V1` (S4-14b)
+
+`step_invlpg` is an opt-in, feature-independent, one-instruction Long64 entry.
+It requires canonical48/physical36 four-level paging, one vCPU, CR0=`0x80010033`,
+CR4=`0x20`, EFER=`0xd00`, a valid CPU-owned CR3, Running activity and a clear
+interrupt shadow. Invalid profile state is rejected before fetch. CPL1–3 are
+admitted to the instruction path so the architectural privilege fault can be
+reported. Instruction starts at offsets `0xff2–0xfff` are rejected before
+fetch. The only successful encoding is bare `0F 01 3B` (`INVLPG [RBX]`); exact
+`F0 0F 01 3B` is fetched in full and raises #UD. Other instructions, prefixes,
+and addressing forms are Unsupported in this profile.
+
+After a complete bare fetch, CPL1–3 raises #GP(0) without retiring or emitting
+an effect. At CPL0, canonical RBX retires once with RIP+3 and emits
+`TranslationInvalidation::Invlpg { linear_address: RBX }`; a noncanonical RBX
+is a successful NOP, advancing RIP by 3 without an effect. Privilege is checked
+before this noncanonical-address behavior. Both successful forms preserve
+GPRs, control registers, concrete RFLAGS and its definedness. RBX is an address
+value and is never dereferenced: it causes no target translation, data access,
+page fault or A/D update. Instruction fetch retains its own memory semantics.
+
+Normative source: Intel SDM Revision 093, Vol. 2A, Chapter 3,
+`INVLPG—Invalidate TLB Entries` (Description, Flags Affected and 64-Bit Mode
+Exceptions). In 64-bit mode a noncanonical operand is a no-op; the instruction
+is privileged and LOCK is #UD. See the
+[official Intel Vol. 2A](https://cdrdv2-public.intel.com/812383/253666-sdm-vol-2a.pdf).
+
 ### Cross-page fetch for `PagedMovCrossPageDwordReadLong64V1` (S4-11d)
 
 Only for the exact `8B 03` form in this opt-in profile, one vCPU, synthetic

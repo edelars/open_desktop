@@ -659,6 +659,28 @@ NX fetch rights и committed-write callback ranges. Это host-controlled
 disposal/reconstruction boundary, а не guest invalidation protocol. Результаты
 S4-13a не выбирают production capacity, replacement или TLB integration.
 
+### Bounded INVLPG effect consumption (S4-14b)
+
+The standalone CPU `step_invlpg` entry emits a typed
+`TranslationInvalidation::Invlpg { linear_address }` only when the bare exact
+instruction retires at CPL0 with a canonical operand. The experimental
+`TranslationProbeCache` consumer is feature-gated and clears its one resident
+translation before any subsequent lookup/continuation. Full clear applies even
+when the cached tag names another linear page; empty and repeated consumption
+are successful. The consumer reports the effect as consumed without walking
+page tables or modifying RAM/A/D.
+
+The CPU instruction fetch uses a diagnostic adapter over the same immutable
+physical-memory snapshot and bypasses the resident probe-cache entry. The
+composition demonstrates `Walk → Hit → INVLPG effect → consume → Walk → Hit`.
+That fetch path uses pure translation and supplies no tracked A/D evidence.
+Faulting LOCK/CPL/fetch cases and successful noncanonical no-op emit no effect
+and leave the cache unchanged. This is not a cache-to-mutable-memory owner and
+does not establish remap/permission-refresh, huge-page, global/PCID, CR3
+invalidation, tracked A/D, JIT or production TLB behavior. The existing
+S4-14a drop–mutate–recreate rule remains in force for page-table writes.
+See the [CPU contract](CPU_CONTRACT.md#standalone-invlpg-profile-invlpglong64v1-s4-14b).
+
 ## Bounded diagnostic vCPU session boundary
 
 S4-21a добавляет `DiagnosticVcpuSession` как синхронную caller-driven оболочку

@@ -414,6 +414,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   не меняет A/D; после remap или изменения прав создаётся новый cache.
 - Этот срез не добавляет guest invalidation, generation counter, INVLPG,
   CR3/EFER transitions или CPU hook. Полный S4-14 остаётся открытым.
+- [x] S4-14b implements feature-independent `step_invlpg` for exact bare
+  `INVLPG [RBX]`; the typed effect is consumed by a feature-gated cache adapter
+  that clears the full one-entry experimental cache before reuse. LOCK, CPL,
+  fetch and canonical/no-op ordering are covered. The composition verifies
+  `Walk → Hit → effect → consume → Walk → Hit` while preserving S4-14a's
+  immutable-memory boundary. See the [report](../reports/STAGE_4_S4-14B_2026-11-06.md).
+  Full S4-14 remains open.
 - **Где:** `od-machine`, system instruction effects `od-isa`.
 - **Сделать:** CR3/context transitions, INVLPG, paging/permission-control changes, reset; global/PCID/INVPCID — только при объявленной поддержке. Развести software-cache generations и архитектурную семантику guest page tables.
 - **Проверка:** remap A→B, tighten/relax rights с обязательной invalidation, stale entry после context switch, huge-page coverage, код/данные, разные guest pages внутри host page. Поведение без invalidation проверять в пределах разрешённого стандартом, не требовать несуществующей гарантии.
