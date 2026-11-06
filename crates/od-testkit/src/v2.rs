@@ -1229,6 +1229,12 @@ impl TryFrom<&LongModeState> for IntegerState {
     type Error = FormatError;
 
     fn try_from(state: &LongModeState) -> Result<Self, Self::Error> {
+        if state.activity == Some(od_isa::CpuActivity::Shutdown) {
+            return Err(FormatError::InvalidField {
+                field: "state.activity",
+                reason: "shutdown activity is not represented by this snapshot schema".into(),
+            });
+        }
         if state.cr2.is_some() {
             return Err(FormatError::InvalidField {
                 field: "state.cr2",
@@ -1316,6 +1322,7 @@ impl TryFrom<&LongModeState> for IntegerState {
             activity: state.activity.map(|activity| match activity {
                 od_isa::CpuActivity::Running => CpuActivitySnapshot::Running,
                 od_isa::CpuActivity::Halted => CpuActivitySnapshot::Halted,
+                od_isa::CpuActivity::Shutdown => unreachable!("shutdown is rejected above"),
             }),
         })
     }
@@ -1959,6 +1966,12 @@ impl IntegerState {
     }
 
     pub fn from_cpu_for(state: &LongModeState, profile: Profile) -> Result<Self, FormatError> {
+        if state.activity == Some(od_isa::CpuActivity::Shutdown) {
+            return Err(invalid(
+                "state.activity",
+                "shutdown activity is not representable in the V2 snapshot format",
+            ));
+        }
         match (profile, state.kernel_gs_base) {
             (Profile::LongSwapgsV1 | Profile::LongKernelGsBaseV1, Some(base)) => {
                 let upper = base >> 47;

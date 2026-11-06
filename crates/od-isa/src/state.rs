@@ -259,7 +259,7 @@ pub struct LongModeState {
     /// Maskable-interrupt inhibition state carried only by explicit profiles.
     /// `None` means the selected legacy contract does not model this state.
     pub sti_shadow: Option<StiShadow>,
-    /// CPU activity carried only by profiles that model HLT.
+    /// CPU activity carried by profiles that model execution activity.
     pub activity: Option<CpuActivity>,
 }
 
@@ -267,6 +267,7 @@ pub struct LongModeState {
 pub enum CpuActivity {
     Running,
     Halted,
+    Shutdown,
 }
 
 /// One-instruction interrupt inhibition after STI; `Clear` records a modeled

@@ -63,6 +63,7 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
     let observed_data_qword = (retired > 0).then_some(state.gpr[od_isa::Register::Rax as usize]);
     let exit = match &report.exit {
         PagedProbeExit::Halted => "halted",
+        PagedProbeExit::Shutdown => "shutdown",
         PagedProbeExit::BudgetExhausted => "budget_exhausted",
         PagedProbeExit::Stopped => "stopped",
         PagedProbeExit::Rejected(_) => "rejected",
@@ -160,6 +161,9 @@ fn error_details(
 ) -> Value {
     match exit {
         PagedProbeExit::Halted => Value::Null,
+        PagedProbeExit::Shutdown => {
+            json!({"kind": "shutdown", "detail": "the CPU entered terminal shutdown"})
+        }
         PagedProbeExit::PortIo(error) => json!({"kind": "pio", "detail": format!("{error:?}")}),
         PagedProbeExit::BudgetExhausted => {
             json!({"kind": "budget_exhausted", "detail": "instruction budget was exhausted before HLT"})

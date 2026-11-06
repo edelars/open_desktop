@@ -67,6 +67,7 @@ pub enum PagedProbeExit {
     BudgetExhausted,
     Stopped,
     Halted,
+    Shutdown,
     Rejected(PagedProbeRejection),
     IntegrationError(PagedProbeIntegrationError),
     Unsupported { opcode: u8 },
@@ -450,6 +451,16 @@ fn run_paged_probe_inner(
             CpuProbeExit::Halted => {
                 return report(
                     PagedProbeExit::Halted,
+                    instructions_executed,
+                    current_rflags_defined,
+                    page_fault,
+                    memory_error,
+                    &translation_context_changes,
+                );
+            }
+            CpuProbeExit::Shutdown => {
+                return report(
+                    PagedProbeExit::Shutdown,
                     instructions_executed,
                     current_rflags_defined,
                     page_fault,

@@ -39,7 +39,7 @@ pub use hlt::HaltProfile;
 pub use interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,
     PageFaultDeliveryOutsideProfile, PageFaultDeliveryPhase, PageFaultDeliveryResult,
-    PageFaultFrameSlot, deliver_maskable_interrupt, deliver_page_fault,
+    PageFaultFrameSlot, deliver_double_fault, deliver_maskable_interrupt, deliver_page_fault,
 };
 pub use iretq::{
     IretqProfile, IretqReadPhase, IretqResult, IretqRunExit, IretqRunResult,
@@ -50,8 +50,8 @@ pub use lretq::{
     run_with_lretq_profile, step_with_lretq_profile,
 };
 pub use memory::{
-    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, GuestMemory, InstructionMode,
-    MemoryError, PageFaultRecord, PrivilegeLevel, page_fault_error_code,
+    AccessContext, AccessKind, AccessOrigin, ArchitecturalFault, DoubleFaultRecord, GuestMemory,
+    InstructionMode, MemoryError, PageFaultRecord, PrivilegeLevel, page_fault_error_code,
 };
 pub use port_io::PortIo;
 pub use state::{

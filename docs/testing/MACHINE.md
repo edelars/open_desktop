@@ -565,3 +565,31 @@ universal hardware fault ordering; a secondary #PF would require #DF, which
 remains unsupported here. This does not demonstrate recovery, restartability,
 physical-hardware equivalence, or the rest of Stage 4. Results are recorded in
 the [S4-18c report](../reports/STAGE_4_S4-18C_2026-11-06.md).
+
+<a id="s4-19c-secondary-pf-double-fault-delivery-and-shutdown"></a>
+
+## S4-19c: secondary #PF, double-fault delivery, and shutdown
+
+Run the bounded delivery checks with:
+
+```text
+cargo test -p od-isa --lib interrupt::tests:: --offline -- --test-threads=1
+cargo test -p od-machine --lib paged_exception_delivery::tests --offline -- --test-threads=1
+cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1
+```
+
+The positive system case makes the target #PF code descriptor's Accessed-bit
+write fault on a read-only GDT. It checks the original and secondary page-fault
+records, exactly one vector-8 delivery, zero #DF error code, no forced RF in the
+#DF frame, preserved CR2, all six frame slots, and execution of the first
+handler MOV. The shutdown case faults while writing the #DF frame to an absent
+stack page; it checks the newest CR2, retained frame-prefix writes, shutdown
+activity, no handler step, and a subsequent paged step with zero fetches,
+accesses, A/D updates, or writes. Existing IDT/GDT/stack failure cases also
+check their final attempt outcomes. The focused ISA group covers #DF frame
+construction and failure ordering.
+
+This is local emulator evidence for #PF → #DF and #DF-delivery #PF → shutdown
+inside the bounded profile. It does not establish other exception-pair
+precedence, hardware ordering, handler repair, INVLPG, IRETQ, or retry. Results
+are recorded in the [S4-19c report](../reports/STAGE_4_S4-19C_2026-11-06.md).

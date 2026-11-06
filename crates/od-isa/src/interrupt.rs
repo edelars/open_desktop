@@ -104,6 +104,42 @@ pub fn deliver_page_fault(
     record: &crate::memory::PageFaultRecord,
     context: AccessContext,
 ) -> PageFaultDeliveryResult {
+    deliver_exception(state, memory, record, context, ExceptionKind::PageFault)
+}
+
+/// Deliver vector 8 after a secondary #PF interrupted delivery of the original
+/// #PF. The original fault RIP is saved solely as a deterministic diagnostic;
+/// #DF is an abort and this address must not be used to restart execution.
+/// CR2 is not changed by #DF itself. A further page fault during delivery does
+/// update CR2 and is returned as an aborted delivery to the caller.
+pub fn deliver_double_fault(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    record: &crate::memory::DoubleFaultRecord,
+    context: AccessContext,
+) -> PageFaultDeliveryResult {
+    deliver_exception(
+        state,
+        memory,
+        record.original(),
+        context,
+        ExceptionKind::DoubleFault,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum ExceptionKind {
+    PageFault,
+    DoubleFault,
+}
+
+fn deliver_exception(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    record: &crate::memory::PageFaultRecord,
+    context: AccessContext,
+    kind: ExceptionKind,
+) -> PageFaultDeliveryResult {
     if record.fault().vector != 14 {
         return pf_outside(PageFaultDeliveryOutsideProfile::NotPageFault);
     }
@@ -165,9 +201,14 @@ pub fn deliver_page_fault(
     if state.gdtr.is_none() {
         return pf_outside(PageFaultDeliveryOutsideProfile::MissingGdtr);
     }
-    state.cr2 = Some(record.cr2_value());
+    if matches!(kind, ExceptionKind::PageFault) {
+        state.cr2 = Some(record.cr2_value());
+    }
 
-    let idt_offset = 14_u64 * 16;
+    let idt_offset = match kind {
+        ExceptionKind::PageFault => 14_u64 * 16,
+        ExceptionKind::DoubleFault => 8_u64 * 16,
+    };
     if idt_offset + 15 > u64::from(idtr.limit) {
         return pf_outside(PageFaultDeliveryOutsideProfile::MissingIdtEntry);
     }
@@ -258,7 +299,10 @@ pub fn deliver_page_fault(
     let Some(new_rsp) = aligned_rsp.checked_sub(48) else {
         return pf_outside(PageFaultDeliveryOutsideProfile::StackAddressOverflow);
     };
-    let mut saved_rflags = state.rflags | (1 << 16); // RF is set in a fault-class frame.
+    let mut saved_rflags = state.rflags;
+    if matches!(kind, ExceptionKind::PageFault) {
+        saved_rflags |= 1 << 16; // RF is set in a fault-class frame.
+    }
     if saved_rflags & (1 << 1) == 0 {
         saved_rflags |= 1 << 1;
     }
@@ -286,7 +330,10 @@ pub fn deliver_page_fault(
         ),
         (
             aligned_rsp - 48,
-            u64::from(record.fault().error_code.unwrap()),
+            match kind {
+                ExceptionKind::PageFault => u64::from(record.fault().error_code.unwrap()),
+                ExceptionKind::DoubleFault => 0,
+            },
             PageFaultFrameSlot::ErrorCode,
         ),
     ];
@@ -1361,6 +1408,113 @@ mod tests {
                 .all(|(_, _, access)| access.origin == AccessOrigin::ImplicitStack)
         );
         assert_eq!(ram.writes.len(), 6); // A=1 requires no descriptor write.
+    }
+
+    fn double_fault_record(
+        state: &LongModeState,
+        context: AccessContext,
+    ) -> crate::memory::DoubleFaultRecord {
+        let original = page_fault_record(state, context);
+        let secondary = crate::memory::PageFaultRecord::new(
+            state.rip,
+            AccessKind::Read,
+            context.descriptor_table(),
+            0,
+            0x5678,
+        );
+        crate::memory::DoubleFaultRecord::new(original, secondary)
+    }
+
+    fn configure_double_fault_gate(ram: &mut Ram, target: u64) {
+        configure_page_fault_gate(ram, target, 0x8);
+        let pf = 0x2000 + 14 * 16;
+        let df = 0x2000 + 8 * 16;
+        ram.bytes.copy_within(pf..pf + 16, df);
+        ram.bytes[pf..pf + 16].fill(0); // #PF gate is deliberately invalid.
+    }
+
+    #[test]
+    fn double_fault_selects_vector_eight_and_commits_abort_frame() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let mut state = page_fault_state(0x8007);
+        state.cr2 = Some(0x5678);
+        let before = state.clone();
+        let record = double_fault_record(&state, context);
+        assert_eq!(record.original().cr2_value(), 0x4000);
+        assert_eq!(record.secondary().cr2_value(), 0x5678);
+        let mut ram = Ram::new();
+        configure_double_fault_gate(&mut ram, 0x3000);
+        assert_eq!(
+            deliver_double_fault(&mut state, &mut ram, &record, context),
+            PageFaultDeliveryResult::Delivered {
+                target_rip: 0x3000,
+                new_rsp: 0x7fd0
+            }
+        );
+        assert_eq!(ram.reads[0].0, 0x2080);
+        assert_eq!(state.cr2, before.cr2);
+        assert_eq!(state.rip, 0x3000);
+        assert_eq!(state.gpr[crate::Register::Rsp as usize], 0x7fd0);
+        assert_eq!(state.cs_selector, Some(8));
+        let values = [0x10, 0x8007, before.rflags, 8, before.rip, 0];
+        for ((address, _, _), expected) in ram.writes.iter().zip(values) {
+            assert_eq!(
+                u64::from_le_bytes(
+                    ram.bytes[*address as usize..*address as usize + 8]
+                        .try_into()
+                        .unwrap()
+                ),
+                expected
+            );
+        }
+        assert_eq!(ram.writes.len(), 6);
+    }
+
+    #[test]
+    fn double_fault_failures_keep_entry_state_and_classify_cause() {
+        let context = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let mut state = page_fault_state(0x8000);
+        state.cr2 = Some(0x5678);
+        let before = state.clone();
+        let record = double_fault_record(&state, context);
+        let mut ram = Ram::new();
+        configure_double_fault_gate(&mut ram, 0x3000);
+        ram.fail_write = Some(2);
+        assert!(matches!(
+            deliver_double_fault(&mut state, &mut ram, &record, context),
+            PageFaultDeliveryResult::DeliveryAborted {
+                phase: PageFaultDeliveryPhase::StackWrite {
+                    slot: PageFaultFrameSlot::OldRflags
+                },
+                cause: MemoryError::Backend(_)
+            }
+        ));
+        assert_eq!(state, before);
+        assert_eq!(ram.writes.len(), 3);
+        let mut ram = Ram::new();
+        assert_eq!(
+            deliver_double_fault(&mut state, &mut ram, &record, context),
+            PageFaultDeliveryResult::OutsideProfile(PageFaultDeliveryOutsideProfile::InvalidGate)
+        );
+        assert_eq!(state, before);
+        let mut ram = Ram::new();
+        ram.fail_read = Some(0);
+        assert!(matches!(
+            deliver_double_fault(&mut state, &mut ram, &record, context),
+            PageFaultDeliveryResult::DeliveryAborted {
+                phase: PageFaultDeliveryPhase::IdtGateRead,
+                cause: MemoryError::Architectural(_)
+            }
+        ));
+        assert_eq!(state.cr2, Some(0x2080));
+        assert_eq!(state.rip, before.rip);
+        assert_eq!(state.gpr, before.gpr);
     }
 
     #[test]

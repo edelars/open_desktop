@@ -18,10 +18,10 @@
 
 - **Дата обнаружения:** 2026-11-06.
 - **Компонент:** `od-isa` page-fault delivery and `od-machine` paged exception adapter.
-- **Статус:** открыта; bounded S4-18c returns a terminal undelivered result because `#DF` and shutdown classification are not implemented. Retained CPU state is diagnostic and must not be resumed.
-- **Суть и последствия:** если descriptor или stack access вызывает вторичный `#PF` при доставке исходного `#PF`, требуется обработка double fault. Текущий профиль сохраняет уже совершённые frame/page-walk effects, записывает CR2 вторичного fault и не коммитит entry CPU state, но не доставляет `#DF` и не определяет shutdown outcome. Это ограничивает exception recovery и restartability.
-- **Основание:** S4-18c проверяет read-only GDT с A=0: попытка установить descriptor Accessed bit вызывает вторичный `#PF`, frame остаётся, entry state не коммитится, а API возвращает terminal diagnostic result. См. [S4-18c report](reports/STAGE_4_S4-18C_2026-11-06.md) и [machine contract](specs/MACHINE_CONTRACT.md#paged-pf-target-descriptor-accessed-update-s4-18c).
-- **Следующий шаг:** в S4-19 реализовать и проверить классификацию `#DF` при fault во время exception delivery и определённый shutdown outcome, не трактуя сохранённое частичное состояние как возобновляемое. План: [S4-19](plans/STAGE_4.md#s4-19-доставка-исключений-и-восстановление-после-fault).
+- **Статус:** решена в пределах S4-19c для фактического page fault во время bounded #PF/#DF delivery. Другие exception pairs и недоступность #DF handler из-за backend/profile failure остаются вне этого результата.
+- **Суть и последствия:** ранее nested `#PF` оставлял только terminal diagnostic. Теперь page fault при доставке #PF вызывает ровно одну попытку #DF; page fault при доставке #DF приводит к `CpuActivity::Shutdown`. Частичные frame/page-walk эффекты остаются диагностическими и shutdown state не возобновляется.
+- **Основание и проверка:** S4-19c проверяет read-only GDT с A=0 и успешный #DF handler, а также page fault в #DF stack delivery, latest CR2, retained writes и отсутствие дальнейшего fetch/effects. См. [S4-19c report](reports/STAGE_4_S4-19C_2026-11-06.md), [machine contract](specs/MACHINE_CONTRACT.md#secondary-pf-df-delivery-and-shutdown-s4-19c) и [verification record](testing/MACHINE.md#s4-19c-secondary-pf-double-fault-delivery-and-shutdown).
+- **Остаток этапа:** полный S4-19 ещё требует guest PTE repair, соответствующей invalidation, IRETQ и точного retry. План: [S4-19](plans/STAGE_4.md#s4-19-доставка-исключений-и-восстановление-после-fault).
 
 <a id="issue-054-s4-11-cross-page-cpu-integration"></a>
 

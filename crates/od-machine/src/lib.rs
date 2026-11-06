@@ -51,9 +51,9 @@ pub use paged_descriptor::{
     step_paged_lidt,
 };
 pub use paged_exception_delivery::{
-    PagedCr0WpMovStepReport, PagedExceptionDeliveryError, PagedExceptionDeliveryReport,
-    PagedExceptionHandlerEntryReport, deliver_and_step_paged_pf_handler, deliver_paged_page_fault,
-    step_paged_cr0_wp_mov,
+    PagedCr0WpMovStepReport, PagedExceptionDeliveryError, PagedExceptionDeliveryOutcome,
+    PagedExceptionDeliveryReport, PagedExceptionHandlerEntryReport,
+    deliver_and_step_paged_pf_handler, deliver_paged_page_fault, step_paged_cr0_wp_mov,
 };
 pub use paged_memory_adapter::{
     PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope, PagedMovStepError,

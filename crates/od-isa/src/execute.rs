@@ -2026,6 +2026,7 @@ pub struct InvlpgResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MovCr3Exit {
+    Shutdown,
     TranslationContextChange(TranslationContextChange),
     Fault(ArchitecturalFault),
     Unsupported { opcode: u8 },
@@ -2161,6 +2162,7 @@ pub enum PagedProbeRejection {
 pub enum PagedProbeExit<E> {
     Retired,
     Halted,
+    Shutdown,
     TranslationContextChange(TranslationContextChange),
     Unsupported { opcode: u8 },
     Fault(ArchitecturalFault),
@@ -16512,6 +16514,13 @@ fn step_mov_cr3_with_profiles(
     cr0_profile: Cr0Profile,
     cr4_profile: Cr4Profile,
 ) -> Result<MovCr3Result, MovCr3InputError> {
+    if state.activity == Some(crate::CpuActivity::Shutdown) {
+        return Ok(MovCr3Result {
+            exit: MovCr3Exit::Shutdown,
+            instructions_executed: 0,
+            rflags_defined: initial_rflags_defined,
+        });
+    }
     if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
         return Err(MovCr3InputError::InvalidRflagsDefined {
             value: initial_rflags_defined,
@@ -17065,6 +17074,9 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     };
     let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
 
+    if state.activity == Some(crate::CpuActivity::Shutdown) {
+        return result(PagedProbeExit::Shutdown, 0);
+    }
     if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
         return reject(PagedProbeRejection::InvalidRflagsDefined {
             value: initial_rflags_defined,
@@ -148774,6 +148786,48 @@ mod mov_cr3_profile_tests {
     }
 
     #[test]
+    fn shutdown_blocks_mov_cr3_and_cr0_wp_mov_cr3_before_fetch() {
+        let mut state = make_state(0x1000, 0x3000);
+        state.activity = Some(crate::CpuActivity::Shutdown);
+        let before = state.clone();
+        for use_wp_profile in [false, true] {
+            let mut memory = Memory::new(&[0x0f, 0x22, 0xd8]);
+            let result = if use_wp_profile {
+                step_mov_cr3_wp(
+                    MovCr3WpLong64V1,
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        mode: InstructionMode::Long64,
+                        privilege: PrivilegeLevel::Ring0,
+                        origin: AccessOrigin::Explicit,
+                    },
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                )
+                .unwrap()
+            } else {
+                run(
+                    &mut state,
+                    &mut memory,
+                    AccessContext {
+                        mode: InstructionMode::Long64,
+                        privilege: PrivilegeLevel::Ring0,
+                        origin: AccessOrigin::Explicit,
+                    },
+                    0xd00,
+                    crate::INTEGER_FLAGS,
+                )
+            };
+            assert_eq!(result.exit, MovCr3Exit::Shutdown);
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.fetches.is_empty());
+            assert!(memory.accesses.is_empty());
+            assert_eq!(state, before);
+        }
+    }
+
+    #[test]
     fn wp_profile_admits_only_the_two_wp_values_and_legacy_stays_wp1_only() {
         for cr0 in [Cr0Profile::BASE, Cr0Profile::BASE & !(1 << 16)] {
             let mut state = make_state(0x1000, 0x2000);
@@ -149739,6 +149793,31 @@ mod paged_cr0_wp_probe_tests {
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_shutdown_has_no_memory_effects() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.activity = Some(crate::CpuActivity::Shutdown);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x0b]);
+        let result = step_paged_cr0_wp_mov(
+            PagedCpl0Cr0WpMovV1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Shutdown);
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]

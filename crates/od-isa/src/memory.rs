@@ -149,6 +149,32 @@ impl PageFaultRecord {
     }
 }
 
+/// A double fault caused by a page fault while delivering an earlier #PF.
+/// The original RIP is retained for diagnostics only; #DF is an abort and the
+/// saved RIP is not a restartable instruction address.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DoubleFaultRecord {
+    original: PageFaultRecord,
+    secondary: PageFaultRecord,
+}
+
+impl DoubleFaultRecord {
+    pub const fn new(original: PageFaultRecord, secondary: PageFaultRecord) -> Self {
+        Self {
+            original,
+            secondary,
+        }
+    }
+
+    pub const fn original(&self) -> &PageFaultRecord {
+        &self.original
+    }
+
+    pub const fn secondary(&self) -> &PageFaultRecord {
+        &self.secondary
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MemoryError {
     Architectural(ArchitecturalFault),

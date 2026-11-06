@@ -6,9 +6,12 @@ use crate::{
     TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest,
 };
 use od_isa::{
-    LongModeState, OperandSize, PageFaultDeliveryResult, PagedCpl0Cr0WpMovV1, PagedProbeResult,
-    deliver_page_fault,
-    memory::{AccessContext, AccessKind, GuestMemory, MemoryError, PageFaultRecord},
+    CpuActivity, LongModeState, OperandSize, PageFaultDeliveryResult, PagedCpl0Cr0WpMovV1,
+    PagedProbeResult, deliver_page_fault,
+    interrupt::deliver_double_fault,
+    memory::{
+        AccessContext, AccessKind, DoubleFaultRecord, GuestMemory, MemoryError, PageFaultRecord,
+    },
     step_paged_cr0_wp_mov as cpu_step_paged_cr0_wp_mov,
 };
 use std::convert::Infallible;
@@ -18,17 +21,30 @@ pub enum PagedExceptionDeliveryError {
     Configuration(ProbeConfigError),
 }
 
-/// One delivery attempt, including the original fault and effects that remain
-/// committed if a later table or stack access fails. A delivery abort is a
-/// terminal undelivered result; this API does not classify #DF or shutdown.
+/// Bounded #PF delivery with at most one #DF attempt. Effects from failed
+/// attempts remain committed and are reported in execution order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PagedExceptionDeliveryReport {
     pub original_fault: PageFaultRecord,
+    /// Result of the initial vector-14 delivery attempt.
     pub delivery: PageFaultDeliveryResult,
+    pub outcome: PagedExceptionDeliveryOutcome,
     pub secondary_page_fault: Option<PageFaultRecord>,
+    pub double_fault: Option<DoubleFaultRecord>,
+    pub double_fault_delivery: Option<PageFaultDeliveryResult>,
+    pub double_fault_secondary_page_fault: Option<PageFaultRecord>,
     pub access_error: Option<TrackedAccessError>,
+    pub double_fault_access_error: Option<TrackedAccessError>,
     pub ad_updates: Vec<AdUpdate>,
     pub committed_writes: Vec<GuestPhysicalRange>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PagedExceptionDeliveryOutcome {
+    PageFaultDelivered,
+    DoubleFaultDelivered,
+    Shutdown,
+    Undelivered,
 }
 
 /// Result of a delivery followed by the handler's first profiled MOV. A
@@ -116,11 +132,50 @@ pub fn deliver_paged_page_fault(
         descriptor_accessed_target: None,
     };
     let delivery = deliver_page_fault(state, &mut memory, original_fault, context);
+    let secondary_page_fault = memory.secondary_page_fault.take();
+    let access_error = memory.access_error.take();
+    let mut double_fault = None;
+    let mut double_fault_delivery = None;
+    let mut double_fault_secondary_page_fault = None;
+    let mut double_fault_access_error = None;
+    let mut outcome = if matches!(delivery, PageFaultDeliveryResult::Delivered { .. }) {
+        PagedExceptionDeliveryOutcome::PageFaultDelivered
+    } else {
+        PagedExceptionDeliveryOutcome::Undelivered
+    };
+
+    if is_architectural_page_fault_abort(&delivery) {
+        if let Some(secondary) = secondary_page_fault.as_ref() {
+            let record = DoubleFaultRecord::new(original_fault.clone(), secondary.clone());
+            memory.secondary_page_fault = None;
+            memory.access_error = None;
+            let result = deliver_double_fault(state, &mut memory, &record, context);
+            let shutdown_fault =
+                is_architectural_page_fault_abort(&result) && memory.secondary_page_fault.is_some();
+            double_fault_secondary_page_fault = memory.secondary_page_fault.take();
+            double_fault_access_error = memory.access_error.take();
+            outcome = if matches!(result, PageFaultDeliveryResult::Delivered { .. }) {
+                PagedExceptionDeliveryOutcome::DoubleFaultDelivered
+            } else if shutdown_fault {
+                state.activity = Some(CpuActivity::Shutdown);
+                PagedExceptionDeliveryOutcome::Shutdown
+            } else {
+                PagedExceptionDeliveryOutcome::Undelivered
+            };
+            double_fault = Some(record);
+            double_fault_delivery = Some(result);
+        }
+    }
     Ok(PagedExceptionDeliveryReport {
         original_fault: original_fault.clone(),
         delivery,
-        secondary_page_fault: memory.secondary_page_fault,
-        access_error: memory.access_error,
+        outcome,
+        secondary_page_fault,
+        double_fault,
+        double_fault_delivery,
+        double_fault_secondary_page_fault,
+        access_error,
+        double_fault_access_error,
         ad_updates: memory.ad_updates,
         committed_writes: memory.committed_writes,
     })
@@ -145,7 +200,11 @@ pub fn deliver_and_step_paged_pf_handler(
         original_fault,
         &mut committed_write,
     )?;
-    let handler_step = if matches!(delivery.delivery, PageFaultDeliveryResult::Delivered { .. }) {
+    let handler_step = if matches!(
+        delivery.outcome,
+        PagedExceptionDeliveryOutcome::PageFaultDelivered
+            | PagedExceptionDeliveryOutcome::DoubleFaultDelivered
+    ) {
         let step = step_paged_cr0_wp_mov(
             state,
             bus,
@@ -163,6 +222,16 @@ pub fn deliver_and_step_paged_pf_handler(
         delivery,
         handler_step,
     })
+}
+
+fn is_architectural_page_fault_abort(result: &PageFaultDeliveryResult) -> bool {
+    matches!(
+        result,
+        PageFaultDeliveryResult::DeliveryAborted {
+            cause: MemoryError::Architectural(fault),
+            ..
+        } if fault.vector == 14
+    )
 }
 
 struct PagedExceptionMemory<'a> {

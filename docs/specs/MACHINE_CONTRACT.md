@@ -1228,13 +1228,41 @@ fail; the tracked path then reports that original page-fault or physical
 backend classification without considering unreachable later slots. No MMIO
 dispatch is added.
 
-A secondary #PF during original #PF delivery would require #DF. This profile
-returns a terminal undelivered diagnostic result because #DF/shutdown
-classification is not implemented. Any retained old CPU state is not
-restartable. TSS/IST, privilege transitions, general segment loads, #DF,
-shutdown and handler recovery remain outside the slice. See the
-[S4-18c report](../reports/STAGE_4_S4-18C_2026-11-06.md) and
+A secondary #PF during original #PF delivery requires #DF; S4-18c returned a
+terminal undelivered diagnostic result before the bounded #DF path was added.
+See the [S4-18c report](../reports/STAGE_4_S4-18C_2026-11-06.md) and
 [verification record](../testing/MACHINE.md#s4-18c-target-descriptor-accessed-update).
+
+<a id="secondary-pf-df-delivery-and-shutdown-s4-19c"></a>
+
+## Secondary #PF, #DF delivery, and shutdown (S4-19c)
+
+Within the existing Long64/CPL0/same-CPL/IST=0 exception profile, an actual
+architectural #PF while delivering the original vector-14 frame constructs a
+`DoubleFaultRecord` containing both page-fault records and makes exactly one
+vector-8 delivery attempt. The #DF frame's error-code slot is zero. It keeps
+the pre-entry RIP as a diagnostic value (not a restart address), does not set
+RF in saved RFLAGS, and does not change CR2 itself. CR2 remains the nested #PF
+linear address. Partial stack and paging effects from the failed #PF attempt
+are retained and the #DF attempt uses the original uncommitted entry registers.
+
+A real #PF during the #DF attempt sets `CpuActivity::Shutdown`; the adapter
+does not attempt another delivery. Subsequent paged CPU execution reports
+`PagedProbeExit::Shutdown` before instruction fetch or memory access. Backend
+and profile errors remain undelivered diagnostics and are not reclassified as
+architectural shutdown. Reports retain the initial #PF delivery result, its
+secondary fault, the #DF record/result, any #DF delivery fault/backend error,
+and cumulative ordered A/D and physical-write effects.
+
+The end-to-end cases cover a read-only GDT target descriptor whose Accessed-bit
+write causes nested #PF followed by a successfully executed #DF handler, and a
+missing stack page that causes #PF during #DF delivery and terminal shutdown.
+This does not implement other exception-pair classifications, TSS/IST or
+privilege transitions, guest page-table repair, INVLPG, IRETQ, instruction
+retry, or complete vCPU lifecycle. Legacy V2 snapshots explicitly reject
+Shutdown because their activity schema contains only Running and Halted. See
+the [S4-19c report](../reports/STAGE_4_S4-19C_2026-11-06.md) and
+[verification record](../testing/MACHINE.md#s4-19c-secondary-pf-double-fault-delivery-and-shutdown).
 
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 

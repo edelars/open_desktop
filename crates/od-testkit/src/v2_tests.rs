@@ -1271,6 +1271,26 @@ fn integer_snapshot_export_rejects_ds_hidden_cache() {
 }
 
 #[test]
+fn integer_snapshot_export_rejects_shutdown_activity_without_panicking() {
+    let state = od_isa::LongModeState {
+        activity: Some(od_isa::CpuActivity::Shutdown),
+        ..od_isa::LongModeState::default()
+    };
+    for result in [
+        IntegerState::try_from(&state),
+        IntegerState::from_cpu_for(&state, Profile::LongIntegerV1),
+    ] {
+        assert!(matches!(
+            result,
+            Err(FormatError::InvalidField {
+                field: "state.activity",
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
 fn integer_snapshot_export_rejects_cr3_not_represented_by_schema() {
     let state = od_isa::LongModeState {
         cr3: Some(0x1000),

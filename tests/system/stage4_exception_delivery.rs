@@ -3,8 +3,8 @@ use od_isa::state::{CodeSegmentDescriptorCache, DataSegmentDescriptorCache, Gdtr
 use od_isa::{CpuActivity, LongModeState, Register, StiShadow};
 use od_machine::{
     AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
-    MemoryRegionKind, MemoryRegionSpec, RamLimits, deliver_and_step_paged_pf_handler,
-    step_paged_cr0_wp_mov, step_paged_lgdt, step_paged_lidt,
+    MemoryRegionKind, MemoryRegionSpec, PagedExceptionDeliveryOutcome, RamLimits,
+    deliver_and_step_paged_pf_handler, step_paged_cr0_wp_mov, step_paged_lgdt, step_paged_lidt,
 };
 
 const CR0: u64 = 0x8001_0033;
@@ -490,6 +490,232 @@ fn read_only_unaccessed_descriptor_update_faults_after_frame_without_entry_commi
     }
 }
 
+// Install separate same-CPL IST=0 gates and code descriptors for #PF and #DF.
+fn configure_double_fault_gates(bus: &mut MachineBus) {
+    put_bytes(bus, 0xb010, &[0xff, 0xff, 0, 0, 0, 0x9a, 0xaf, 0]);
+    put_bytes(bus, 0xa000 + 14 * 16 + 2, &[0x10, 0]);
+    let gate = [
+        (HANDLER_RIP as u16) as u8,
+        (HANDLER_RIP >> 8) as u8,
+        0x08,
+        0,
+        0,
+        0x8e,
+        (HANDLER_RIP >> 16) as u8,
+        (HANDLER_RIP >> 24) as u8,
+        (HANDLER_RIP >> 32) as u8,
+        (HANDLER_RIP >> 40) as u8,
+        (HANDLER_RIP >> 48) as u8,
+        (HANDLER_RIP >> 56) as u8,
+        0,
+        0,
+        0,
+        0,
+    ];
+    put_bytes(bus, 0xa000 + 8 * 16, &gate);
+}
+
+#[test]
+fn descriptor_write_page_fault_delivers_double_fault_and_runs_handler() {
+    let mut bus = make_bus(true, true, true, true);
+    configure_double_fault_gates(&mut bus);
+    put_qword(&mut bus, 0x5008, 0xb000 | 0x25);
+    let mut state = initial_state(0x202);
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let mut writes = Vec::new();
+    let report = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &fault,
+        |range| writes.push(range),
+    )
+    .unwrap();
+
+    assert_eq!(
+        report.delivery.outcome,
+        PagedExceptionDeliveryOutcome::DoubleFaultDelivered
+    );
+    assert!(matches!(&report.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::DeliveryAborted {
+            phase: od_isa::PageFaultDeliveryPhase::TargetCodeDescriptorAccessedWrite,
+            cause: od_isa::memory::MemoryError::Architectural(fault),
+        } if fault.vector == 14 && fault.error_code == Some(3)
+            && fault.linear_address == Some(GDT_BASE + 0x15)));
+    assert_eq!(
+        report
+            .delivery
+            .secondary_page_fault
+            .as_ref()
+            .unwrap()
+            .cr2_value(),
+        GDT_BASE + 0x15
+    );
+    let double_fault = report.delivery.double_fault.as_ref().unwrap();
+    assert_eq!(double_fault.original(), &fault);
+    assert_eq!(
+        double_fault.secondary(),
+        report.delivery.secondary_page_fault.as_ref().unwrap()
+    );
+    assert!(matches!(
+        report.delivery.double_fault_delivery,
+        Some(od_isa::PageFaultDeliveryResult::Delivered {
+            target_rip: HANDLER_RIP,
+            new_rsp: 0x0070_1ff0
+        })
+    ));
+    assert!(report.delivery.double_fault_secondary_page_fault.is_none());
+    assert!(report.delivery.double_fault_access_error.is_none());
+    assert_eq!(state.cr2, Some(GDT_BASE + 0x15));
+    assert_eq!(state.rip, HANDLER_RIP + 3);
+    assert_eq!(state.gpr[Register::Rax as usize], SENTINEL);
+    assert_eq!(state.cs_selector, Some(0x08));
+    assert_eq!(
+        report
+            .handler_step
+            .unwrap()
+            .unwrap()
+            .cpu
+            .instructions_executed,
+        1
+    );
+    for (physical, expected) in [
+        (0xd018, 0x10),
+        (0xd010, ORIGINAL_RSP),
+        (0xd008, 0x202),
+        (0xd000, 0x08),
+        (0xcff8, FAULT_RIP),
+        (0xcff0, 0),
+    ] {
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(physical), AccessWidth::Qword)
+                .unwrap(),
+            expected
+        );
+    }
+    assert_eq!(
+        writes
+            .iter()
+            .filter(|r| (0xc000..0xe000).contains(&r.start().get()))
+            .count(),
+        12
+    );
+    assert_eq!(writes, report.delivery.committed_writes);
+}
+
+#[test]
+fn double_fault_stack_page_fault_shuts_down_and_preserves_partial_writes() {
+    let mut bus = make_bus(true, true, false, true);
+    configure_double_fault_gates(&mut bus);
+    let mut state = initial_state(0x202);
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let mut writes = Vec::new();
+    let report = deliver_and_step_paged_pf_handler(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        &fault,
+        |range| writes.push(range),
+    )
+    .unwrap();
+
+    assert_eq!(
+        report.delivery.outcome,
+        PagedExceptionDeliveryOutcome::Shutdown
+    );
+    assert!(matches!(
+        report.delivery.delivery,
+        od_isa::PageFaultDeliveryResult::DeliveryAborted {
+            phase: od_isa::PageFaultDeliveryPhase::StackWrite {
+                slot: od_isa::PageFaultFrameSlot::SavedRip
+            },
+            ..
+        }
+    ));
+    assert_eq!(
+        report
+            .delivery
+            .secondary_page_fault
+            .as_ref()
+            .unwrap()
+            .cr2_value(),
+        0x0070_1ff8
+    );
+    assert!(report.delivery.double_fault.is_some());
+    assert!(matches!(
+        report.delivery.double_fault_delivery,
+        Some(od_isa::PageFaultDeliveryResult::DeliveryAborted {
+            phase: od_isa::PageFaultDeliveryPhase::StackWrite {
+                slot: od_isa::PageFaultFrameSlot::SavedRip
+            },
+            cause: od_isa::memory::MemoryError::Architectural(_),
+        })
+    ));
+    assert_eq!(
+        report
+            .delivery
+            .double_fault_secondary_page_fault
+            .as_ref()
+            .unwrap()
+            .cr2_value(),
+        0x0070_1ff8
+    );
+    assert_eq!(state.cr2, Some(0x0070_1ff8));
+    assert_eq!(state.activity, Some(CpuActivity::Shutdown));
+    assert!(report.handler_step.is_none());
+    assert_eq!(writes, report.delivery.committed_writes);
+    assert_eq!(
+        writes
+            .iter()
+            .filter(|r| (0xc000..0xe000).contains(&r.start().get()))
+            .count(),
+        8
+    );
+    for (physical, expected) in [
+        (0xd018, 0x10),
+        (0xd010, ORIGINAL_RSP),
+        (0xd008, 0x202),
+        (0xd000, 0x08),
+    ] {
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(physical), AccessWidth::Qword)
+                .unwrap(),
+            expected
+        );
+    }
+    // An unmapped instruction address makes any accidental fetch observable as #PF.
+    state.rip = HANDLER_RIP + 0x1000;
+    let before = state.clone();
+    let mut later_writes = Vec::new();
+    let step = step_paged_cr0_wp_mov(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |r| later_writes.push(r),
+    )
+    .unwrap();
+    assert_eq!(step.cpu.exit, od_isa::PagedProbeExit::Shutdown);
+    assert_eq!(step.cpu.instructions_executed, 0);
+    assert!(step.page_fault.is_none());
+    assert!(step.ad_updates.is_empty());
+    assert!(step.committed_writes.is_empty());
+    assert!(later_writes.is_empty());
+    assert_eq!(state, before);
+}
+
 #[test]
 fn already_accessed_descriptor_does_not_write_read_only_gdt() {
     let mut bus = make_bus(true, true, true, true);
@@ -919,10 +1145,34 @@ fn secondary_idt_gdt_and_partial_stack_faults_replace_cr2_and_keep_original() {
         assert_eq!(original.cr2_value(), DATA_LINEAR);
         assert_eq!(
             state.cr2,
-            Some(expected_cr2),
+            Some(if idt_present {
+                expected_cr2
+            } else {
+                IDT_BASE + 8 * 16
+            }),
             "delivery report: {:?}",
             report.delivery
         );
+        assert_eq!(
+            report.delivery.outcome,
+            if idt_present {
+                PagedExceptionDeliveryOutcome::Undelivered
+            } else {
+                PagedExceptionDeliveryOutcome::Shutdown
+            }
+        );
+        assert!(report.delivery.double_fault.is_some());
+        if !idt_present {
+            assert_eq!(
+                report
+                    .delivery
+                    .double_fault_secondary_page_fault
+                    .as_ref()
+                    .unwrap()
+                    .cr2_value(),
+                IDT_BASE + 8 * 16
+            );
+        }
         assert!(
             matches!(report.delivery.delivery, od_isa::PageFaultDeliveryResult::DeliveryAborted { phase, .. } if phase == expected_phase)
         );

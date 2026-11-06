@@ -839,6 +839,8 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Нормативная основа:** Intel SDM version 090, [Vol. 1 §6.14.1](https://cdrdv2-public.intel.com/874241/253665-090-sdm-vol-1.pdf)
   и [Vol. 3A §3.4.5](https://cdrdv2-public.intel.com/782157/325384-sdm-vol-3abcd.pdf).
 
+<a id="s4-19-доставка-исключений-и-восстановление-после-fault"></a>
+
 ### S4-19. Доставка исключений и восстановление после fault
 
 - [ ] Принято после ревью.
@@ -894,6 +896,29 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Результат:** реализация и проверки записаны в
   [S4-19b report](../reports/STAGE_4_S4-19B_2026-11-06.md) и
   [manifest](../reports/data/stage4/s4-19b-paged-pf-delivery-2026-11-06.json).
+
+#### S4-19c. Secondary #PF, #DF delivery, and shutdown
+
+- [x] Ограниченный срез принят после независимого code review; замечания P2/P3 исправлены и повторно проверены.
+- **Case:** в существующем Long64/CPL0/same-CPL/IST=0 profile настоящий #PF
+  при доставке исходного #PF инициирует ровно одну попытку vector 8. Успешная
+  доставка #DF строит frame с error code 0, сохраняет исходный RIP только для
+  диагностики, не добавляет RF и оставляет CR2 равным последнему реальному
+  page fault. Page fault при доставке #DF переводит `CpuActivity` в
+  `Shutdown`; нового exception delivery не выполняется. Backend/profile
+  failures сами по себе не синтезируют shutdown.
+- **Проверка:** A=0 target descriptor на read-only GDT даёт nested #PF, затем
+  #DF и выполнение первой handler MOV; отдельный stack case проверяет #PF во
+  время #DF frame, последнее CR2, сохранённый частичный frame и отсутствие
+  fetch/памяти после shutdown. Проверены #DF error-code slot и RFLAGS без RF.
+- **Граница:** только #PF → #DF для фактического page fault при ограниченной
+  доставке #PF и shutdown для page fault при доставке #DF. Другие пары
+  исключений, TSS/IST, privilege transitions, guest PTE repair, INVLPG,
+  IRETQ, retry исходной инструкции и общий vCPU lifecycle остаются открытыми.
+  Старый V2 testkit snapshot не кодирует Shutdown и явно отклоняет такую
+  конверсию.
+- **Результат:** см. [S4-19c report](../reports/STAGE_4_S4-19C_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-19c-double-fault-shutdown-2026-11-06.json).
 
 ### S4-20. CPL3 и системные вызовы/возвраты
 
