@@ -2075,6 +2075,10 @@ pub struct PagedCpl0Cr3ProbeV1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0Cr0WpProbeV1;
 
+/// Explicit opt-in for one exact paged data MOV under the CPU-owned CR0.WP profile.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0Cr0WpMovV1;
+
 /// Explicit opt-in marker for the paged probe profile that additionally
 /// admits the exact qword `PUSH RCX` and `POP RAX` stack forms.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -16552,6 +16556,7 @@ pub fn step_paged_probe<P: crate::PortIo>(
         false,
         false,
         false,
+        false,
         0,
         state,
         memory,
@@ -16731,6 +16736,7 @@ pub fn step_paged_cr3_probe<P: crate::PortIo>(
         true,
         false,
         false,
+        false,
         efer,
         state,
         memory,
@@ -16740,9 +16746,11 @@ pub fn step_paged_cr3_probe<P: crate::PortIo>(
     )
 }
 
-/// Execute one instruction from the bounded CPU-owned CR0.WP profile.
-/// Unlike the machine runner, this CPU entry accepts any CPL so exact
-/// MOV CR0 can fetch and then produce its architectural #GP(0) at CPL1–3.
+/// Execute one instruction from the parent CPU-owned CR0.WP profile. It admits
+/// MOV CR0 and the exact paged qword store; S4-19b's load form has a separate
+/// selector. The machine supplies translation through `GuestMemory`. This CPU
+/// entry accepts any CPL so MOV CR0 can fetch and then produce its architectural
+/// #GP(0) at CPL1–3.
 pub fn step_paged_cr0_wp_probe<P: crate::PortIo>(
     _profile: PagedCpl0Cr0WpProbeV1,
     state: &mut LongModeState,
@@ -16757,10 +16765,54 @@ pub fn step_paged_cr0_wp_probe<P: crate::PortIo>(
         false,
         true,
         false,
+        true,
         efer,
         state,
         memory,
         pio,
+        context,
+        initial_rflags_defined,
+    )
+}
+
+/// Execute only the exact qword data MOV forms admitted by the CPU-owned
+/// CR0.WP profile. CR0 writes and non-CPL0 data accesses are excluded.
+pub fn step_paged_cr0_wp_mov(
+    _profile: PagedCpl0Cr0WpMovV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let rejected = |reason| PagedProbeResult {
+        exit: PagedProbeExit::Rejected(reason),
+        instructions_executed: 0,
+        rflags_defined: initial_rflags_defined,
+    };
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return rejected(PagedProbeRejection::WrongPrivilege);
+    }
+    struct NoPortIo;
+    impl crate::PortIo for NoPortIo {
+        type Error = std::convert::Infallible;
+        fn read_u8(&mut self, _: u16) -> Result<u8, Self::Error> {
+            unreachable!("paged MOV profile cannot perform port reads")
+        }
+        fn write_u8(&mut self, _: u16, _: u8) -> Result<(), Self::Error> {
+            unreachable!("paged MOV profile cannot perform port writes")
+        }
+    }
+    step_paged_probe_inner(
+        false,
+        false,
+        true,
+        false,
+        false,
+        efer,
+        state,
+        memory,
+        &mut NoPortIo,
         context,
         initial_rflags_defined,
     )
@@ -16792,6 +16844,7 @@ pub fn step_mov_cr0_wp(
         false,
         true,
         true,
+        true,
         efer,
         state,
         memory,
@@ -16817,6 +16870,7 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
         false,
         false,
         false,
+        false,
         0,
         state,
         memory,
@@ -16831,6 +16885,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     allow_cr3: bool,
     allow_cr0_wp: bool,
     cr0_mov_only: bool,
+    allow_mov_cr0: bool,
     efer: u64,
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -16990,17 +17045,21 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         return unsupported();
     }
     if allow_cr0_wp
-        && !(matches!(instruction.operation, Operation::WriteCr0)
+        && !((allow_mov_cr0 && matches!(instruction.operation, Operation::WriteCr0))
             || (!cr0_mov_only
-                && matches!(
-                    instruction.operation,
-                    Operation::Mov {
-                        dst: Operand::Memory(_),
-                        src: Operand::Register(_),
-                    }
-                )))
+                && if allow_mov_cr0 {
+                    is_paged_mov_store_instruction(&instruction)
+                } else {
+                    is_paged_mov_instruction(&instruction)
+                }))
     {
         return unsupported();
+    }
+    if allow_cr0_wp
+        && context.privilege != PrivilegeLevel::Ring0
+        && is_paged_mov_instruction(&instruction)
+    {
+        return reject(PagedProbeRejection::WrongPrivilege);
     }
     match instruction.operation {
         Operation::WriteCr0
@@ -23809,6 +23868,10 @@ fn is_paged_mov_instruction(instruction: &long_decode::Instruction) -> bool {
             }
             _ => false,
         }
+}
+
+fn is_paged_mov_store_instruction(instruction: &long_decode::Instruction) -> bool {
+    instruction.opcode.byte == 0x89 && is_paged_mov_instruction(instruction)
 }
 
 fn is_paged_mov_dword_read(instruction: &long_decode::Instruction) -> bool {
@@ -149101,6 +149164,92 @@ mod paged_cr0_wp_probe_tests {
             assert_eq!(state, before);
             assert!(memory.accesses.is_empty());
         }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_only_profile_excludes_control_register_writes() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rax as usize] = Cr0Profile::BASE & !(1 << 16);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xc0]);
+        let result = step_paged_cr0_wp_mov(
+            PagedCpl0Cr0WpMovV1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x22 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn paged_cr0_wp_probe_rejects_nonzero_cpl_data_load_before_access() {
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+            let result = step(&mut state, &mut memory, privilege);
+            assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x8b });
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+            assert_eq!(memory.fetches, [0, 1, 2]);
+        }
+    }
+
+    #[test]
+    fn paged_cr0_wp_mov_selector_rejects_nonzero_cpl_before_fetch() {
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+            let result = step_paged_cr0_wp_mov(
+                PagedCpl0Cr0WpMovV1,
+                &mut state,
+                &mut memory,
+                AccessContext {
+                    privilege,
+                    ..AccessContext::default()
+                },
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Rejected(PagedProbeRejection::WrongPrivilege)
+            );
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty() && memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn paged_cr0_wp_probe_preserves_parent_allowlist_by_rejecting_data_load() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rbx as usize] = 0x1000;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x8b, 0x03]);
+        let result = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x8b });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
     }
 
     #[test]

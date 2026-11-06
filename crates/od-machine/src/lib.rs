@@ -6,6 +6,7 @@ mod event_queue;
 mod identity_memory_adapter;
 mod page_walk;
 mod paged_descriptor;
+mod paged_exception_delivery;
 mod paged_memory_adapter;
 mod paged_pio_step;
 mod paged_probe;
@@ -46,6 +47,11 @@ pub use page_walk::{
 };
 
 pub use paged_descriptor::{PagedLidtError, PagedLidtReport, step_paged_lidt};
+pub use paged_exception_delivery::{
+    PagedCr0WpMovStepReport, PagedExceptionDeliveryError, PagedExceptionDeliveryReport,
+    PagedExceptionHandlerEntryReport, deliver_and_step_paged_pf_handler, deliver_paged_page_fault,
+    step_paged_cr0_wp_mov,
+};
 pub use paged_memory_adapter::{
     PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope, PagedMovStepError,
     PagedMovStepReport, step_paged_invlpg, step_paged_mov, step_paged_mov_dword_read,

@@ -25,6 +25,8 @@ pub enum InstructionMode {
 pub enum AccessOrigin {
     /// An explicit instruction fetch or data operand access.
     Explicit,
+    /// An implicit access made while the processor constructs a stack frame.
+    ImplicitStack,
     /// An implicit access to a segment descriptor table entry, including writes.
     DescriptorTable,
 }
@@ -42,7 +44,7 @@ impl AccessContext {
     /// Page-protection privilege for this individual linear-memory access.
     pub const fn page_privilege(self) -> PrivilegeLevel {
         match self.origin {
-            AccessOrigin::Explicit => self.privilege,
+            AccessOrigin::Explicit | AccessOrigin::ImplicitStack => self.privilege,
             AccessOrigin::DescriptorTable => PrivilegeLevel::Ring0,
         }
     }

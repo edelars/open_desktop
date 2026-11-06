@@ -799,7 +799,7 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 
 #### S4-19b. Bounded paged #PF delivery and handler entry
 
-- [ ] Реализация и независимое ревью пройдены.
+- [x] Ограниченный срез принят после независимого code review и повторного review исправлений.
 - **Case:** Long64/CPL0, один CPU, private RAM, same-CPL interrupt gate с IST=0.
   Guest выполняет `MOV [RBX],RCX` в present supervisor read-only страницу при
   `CR0.WP=1`, получает настоящий `#PF` с PFEC `3`, прежним RIP, без retirement
@@ -809,16 +809,26 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** literal state и все шесть qword frame, полный fault record,
   CR2, RF=1 в сохранённом RFLAGS образе fault-class `#PF`, page-table A/D
   effects и ordered callbacks. Синхронный `#PF` доставляется и при IF=0.
-  Отрицательные случаи покрывают profile rejection, IDT/GDT read
-  fault, stack write failure после частичного commit и backend failure.
+  Исходный невыравненный RSP сохраняется в frame при аппаратном выравнивании
+  нового stack. Отрицательные случаи покрывают profile rejection, selector TI
+  и code descriptor Accessed=0, IDT/GDT read fault, stack write failure после
+  частичного commit и backend failure. Ошибка fetch первой handler instruction
+  учитывается отдельно от уже успешной доставки.
 - **Граница:** один #PF vector, CPL0→CPL0, IST=0, фиксированные 4 KiB tables,
-  frame/table accesses в заранее ограниченных RAM mappings. Secondary faults
-  при delivery — терминальный недоставленный результат; автоматическая `#DF`,
-  shutdown classification, исправление PTE, INVLPG, IRETQ и retry остаются
-  следующими частями S4-19. Не называть этот slice полным recovery.
+  frame/table accesses в заранее ограниченных RAM mappings. Target code
+  descriptor — GDT, Accessed=1, base=0, effective limit 4 GiB; доставка не
+  синтезирует его Accessed-bit write. Secondary faults при delivery —
+  терминальный недоставленный результат; автоматическая `#DF`, shutdown
+  classification, исправление PTE, INVLPG, IRETQ и retry остаются следующими
+  частями S4-19. `MOV RAX,[RBX]` доступен только в новом selector этого slice;
+  родительский S4-12d probe сохраняет свой прежний allowlist. Не называть этот
+  slice полным recovery.
 - **Нормативная основа:** Intel SDM Vol. 3A §6.14.2, [64-Bit Mode Stack
   Frame](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-3a-part-1-manual.pdf)
-  и Vol. 3B §18.3.1.1, [RF in the fault-class exception frame](https://cdrdv2-public.intel.com/874250/253669-090-sdm-vol-3b.pdf).
+  и Vol. 3B §20.3.1.1, [RF in the fault-class exception frame](https://cdrdv2-public.intel.com/874250/253669-090-sdm-vol-3b.pdf).
+- **Результат:** реализация и проверки записаны в
+  [S4-19b report](../reports/STAGE_4_S4-19B_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-19b-paged-pf-delivery-2026-11-06.json).
 
 ### S4-20. CPL3 и системные вызовы/возвраты
 

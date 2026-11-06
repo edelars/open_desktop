@@ -1,0 +1,52 @@
+{
+  "stage": 4,
+  "slice": "S4-19b",
+  "title": "Bounded paged #PF delivery and handler entry",
+  "date": "2026-11-06",
+  "status": "reviewed",
+  "scope": {
+    "faulting_instruction": "MOV [RBX],RCX",
+    "profile": "Long64 CPL0, CR0.WP=1, same-CPL vector-14 interrupt gate, IST=0, 4 KiB paging",
+    "page_fault_error_code": 3,
+    "faulting_instruction_retires": false,
+    "faulting_rip_preserved": true,
+    "faulting_data_preserved": true,
+    "cr2_updates_on_original_and_secondary_page_faults": true,
+    "frame_qwords": ["old SS", "old RSP", "saved RFLAGS with RF=1", "old CS", "saved RIP", "PFEC"],
+    "same_cpl_stack_alignment": "Align new stack down to 16 bytes; save original RSP",
+    "descriptor_profile": "GDT target; Accessed=1; base=0; effective limit=0xffffffff",
+    "handler_instruction": "MOV RAX,[RBX]",
+    "handler_observes_original_sentinel": true,
+    "secondary_delivery_faults": "Terminal undelivered result retaining original and secondary records, CR2, and committed effects",
+    "excluded": ["automatic #DF", "shutdown classification", "PTE repair", "INVLPG", "IRETQ", "fault retry", "MOV CR2"]
+  },
+  "checks": [
+    {"command": "cargo check --workspace --all-targets --offline", "result": "passed"},
+    {"command": "cargo test -p od-isa --lib interrupt::tests:: --offline -- --test-threads=1", "result": "passed", "passed": 22, "failed": 0},
+    {"command": "cargo test -p od-isa --lib paged_cr0_wp_probe_tests --offline -- --test-threads=1", "result": "passed", "passed": 14, "failed": 0},
+    {"command": "cargo test -p od-machine --lib paged_exception_delivery::tests --offline -- --test-threads=1", "result": "passed", "passed": 2, "failed": 0},
+    {"command": "cargo test -p od-host --test stage4_exception_delivery --offline -- --test-threads=1", "result": "passed", "passed": 6, "failed": 0},
+    {"command": "cargo fmt --all -- --check", "result": "passed"},
+    {"command": "git diff --check", "result": "passed"}
+  ],
+  "review": {
+    "architecture": "gpt-6-astra/high approved bounded handler-entry split; mandatory constraints incorporated",
+    "implementation": "gpt-6-luna/high",
+    "independent_code_review": "passed; findings corrected and the affected documentation re-reviewed"
+  },
+  "graphify": {
+    "cli_update": "interrupted during Python 3.15 pathlib repository scan",
+    "ast_refresh": "changed Rust files and test re-extracted and merged into existing graph",
+    "cluster_only": "passed",
+    "counts": {"nodes": 27326, "edges": 67153, "communities": 1018},
+    "corpus_file_statistics": "unavailable in cluster-only report"
+  },
+  "limitations": [
+    "Only the bounded CPL0 same-CPL IST=0 profile is implemented",
+    "Target descriptor Accessed=1 is required; descriptor A-bit writes are not modeled",
+    "Secondary delivery faults remain terminal and are not converted to #DF or shutdown",
+    "PTE repair, INVLPG, IRETQ, retry, and complete recovery remain open under S4-19",
+    "MOV CR2 is not in the Stage 4 plan",
+    "S4-19 and Stage 4 remain open"
+  ]
+}

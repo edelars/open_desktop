@@ -25,5 +25,9 @@ path = "../../tests/cpu/stage3_dword_store_corpus.rs"
 name = "stage4_memory_fault"
 path = "../../tests/system/stage4_memory_fault.rs"
 
+[[test]]
+name = "stage4_exception_delivery"
+path = "../../tests/system/stage4_exception_delivery.rs"
+
 [lints]
 workspace = true
