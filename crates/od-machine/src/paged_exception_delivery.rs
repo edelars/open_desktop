@@ -5,10 +5,13 @@ use crate::{
     MachineBus, PageFaultReason, ProbeConfigError, ProbeError, ProbeOutcome, RamAccessOperation,
     TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest,
 };
+use od_isa::execute::step_paged_exception_stack_discard as cpu_step_paged_exception_stack_discard;
 use od_isa::{
     CpuActivity, LongModeState, OperandSize, PageFaultDeliveryResult, PagedCpl0Cr0WpMovV1,
     PagedCpl0PageTableRepairMovV1, PagedProbeResult, deliver_page_fault,
+    execute::PagedCpl0ExceptionStackDiscardV1,
     interrupt::deliver_double_fault,
+    iretq::IretqResult,
     memory::{
         AccessContext, AccessKind, DoubleFaultRecord, GuestMemory, MemoryError, PageFaultRecord,
     },
@@ -60,6 +63,25 @@ pub struct PagedExceptionHandlerEntryReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PagedCr0WpMovStepReport {
     pub cpu: PagedProbeResult<Infallible>,
+    pub page_fault: Option<PageFaultRecord>,
+    pub access_error: Option<TrackedAccessError>,
+    pub ad_updates: Vec<AdUpdate>,
+    pub committed_writes: Vec<GuestPhysicalRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedExceptionStackDiscardReport {
+    pub cpu: PagedProbeResult<Infallible>,
+    pub page_fault: Option<PageFaultRecord>,
+    pub access_error: Option<TrackedAccessError>,
+    pub ad_updates: Vec<AdUpdate>,
+    pub committed_writes: Vec<GuestPhysicalRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedIretqStepReport {
+    pub cpu: IretqResult,
+    pub rflags_defined: u64,
     pub page_fault: Option<PageFaultRecord>,
     pub access_error: Option<TrackedAccessError>,
     pub ad_updates: Vec<AdUpdate>,
@@ -146,6 +168,87 @@ pub fn step_paged_cr0_wp_page_table_repair_mov(
     }
     Ok(PagedCr0WpMovStepReport {
         cpu,
+        page_fault: memory.secondary_page_fault,
+        access_error: memory.access_error,
+        ad_updates: memory.ad_updates,
+        committed_writes: memory.committed_writes,
+    })
+}
+
+/// Execute the guest LEA that discards the #PF error-code stack slot.
+pub fn step_paged_exception_stack_discard(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedExceptionStackDiscardReport, PagedExceptionDeliveryError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedExceptionDeliveryError::Configuration)?;
+    let mut memory = PagedExceptionMemory {
+        bus,
+        paging,
+        instruction_rip: state.rip,
+        committed_write: &mut committed_write,
+        secondary_page_fault: None,
+        access_error: None,
+        ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
+    };
+    let cpu = cpu_step_paged_exception_stack_discard(
+        PagedCpl0ExceptionStackDiscardV1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    );
+    if let Some(record) = &memory.secondary_page_fault {
+        state.cr2 = Some(record.cr2_value());
+    }
+    Ok(PagedExceptionStackDiscardReport {
+        cpu,
+        page_fault: memory.secondary_page_fault,
+        access_error: memory.access_error,
+        ad_updates: memory.ad_updates,
+        committed_writes: memory.committed_writes,
+    })
+}
+
+/// Execute one same-CPL paged IRETQ after the guest has discarded its error code.
+pub fn step_paged_iretq(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedIretqStepReport, PagedExceptionDeliveryError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedExceptionDeliveryError::Configuration)?;
+    let mut memory = PagedExceptionMemory {
+        bus,
+        paging,
+        instruction_rip: state.rip,
+        committed_write: &mut committed_write,
+        secondary_page_fault: None,
+        access_error: None,
+        ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
+    };
+    let mut defined = rflags_defined;
+    let cpu = od_isa::iretq::step_paged_iretq(state, &mut memory, context, &mut defined, efer);
+    if let Some(record) = &memory.secondary_page_fault {
+        state.cr2 = Some(record.cr2_value());
+    }
+    Ok(PagedIretqStepReport {
+        cpu,
+        rflags_defined: defined,
         page_fault: memory.secondary_page_fault,
         access_error: memory.access_error,
         ad_updates: memory.ad_updates,

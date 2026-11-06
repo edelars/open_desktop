@@ -2084,6 +2084,10 @@ pub struct PagedCpl0Cr0WpMovV1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0PageTableRepairMovV1;
 
+/// Exact paged `LEA RSP,[RSP+8]` for discarding an exception error code.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0ExceptionStackDiscardV1;
+
 /// Explicit opt-in marker for the paged probe profile that additionally
 /// admits the exact qword `PUSH RCX` and `POP RAX` stack forms.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2152,6 +2156,7 @@ pub struct PioU8Result<E> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PagedProbeRejection {
     InvalidRflagsDefined { value: u64 },
+    ResumeFlagSet,
     WrongMode,
     WrongPrivilege,
     ControlRegistersMissing,
@@ -17079,6 +17084,103 @@ pub fn step_paged_cr0_wp_page_table_repair_mov(
         };
     }
     state.rip = next_rip;
+    result(PagedProbeExit::Retired, 1)
+}
+
+/// Execute exact `48 8D 64 24 08`, discarding one error-code slot without a data-memory access.
+pub fn step_paged_exception_stack_discard(
+    _profile: PagedCpl0ExceptionStackDiscardV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    if state.activity == Some(crate::CpuActivity::Shutdown) {
+        return result(PagedProbeExit::Shutdown, 0);
+    }
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if state.rflags & (1 << 16) != 0 {
+        return reject(PagedProbeRejection::ResumeFlagSet);
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return reject(PagedProbeRejection::WrongPrivilege);
+    }
+    if state.cr0.is_none() || state.cr3.is_none() || state.cr4.is_none() {
+        return reject(PagedProbeRejection::ControlRegistersMissing);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state
+            .cr3
+            .is_some_and(|value| value & !((1u64 << 36) - 1) != 0)
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    for (offset, expected) in [0x48, 0x8d, 0x64, 0x24, 0x08].into_iter().enumerate() {
+        let address = state.rip.checked_add(offset as u64);
+        if address.is_none_or(|address| address >> 47 != 0 && address >> 47 != 0x1ffff) {
+            return result(
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                0,
+            );
+        }
+        let byte = match memory.fetch(address.unwrap(), context) {
+            Ok(byte) => byte,
+            Err(MemoryError::Architectural(fault)) => {
+                return result(PagedProbeExit::Fault(fault), 0);
+            }
+            Err(error) => return result(PagedProbeExit::Backend(error), 0),
+        };
+        if byte != expected {
+            return result(
+                PagedProbeExit::Unsupported {
+                    opcode: if offset >= 2 { 0x8d } else { byte },
+                },
+                0,
+            );
+        }
+    }
+    state.gpr[Register::Rsp as usize] = state.gpr[Register::Rsp as usize].wrapping_add(8);
+    state.rip = state.rip.wrapping_add(5);
     result(PagedProbeExit::Retired, 1)
 }
 
@@ -149703,6 +149805,148 @@ mod paged_cr0_wp_probe_tests {
             0xd00,
             crate::INTEGER_FLAGS,
         )
+    }
+
+    fn discard(
+        state: &mut LongModeState,
+        memory: &mut Memory,
+    ) -> PagedProbeResult<std::convert::Infallible> {
+        step_paged_exception_stack_discard(
+            PagedCpl0ExceptionStackDiscardV1,
+            state,
+            memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS,
+        )
+    }
+
+    #[test]
+    fn exception_stack_discard_exact_encoding_preserves_state_and_wraps_rsp() {
+        for rsp in [0x1235, u64::MAX - 3] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rsp as usize] = rsp;
+            state.gpr[Register::Rax as usize] = 0x9876;
+            let mut expected = state.clone();
+            expected.gpr[Register::Rsp as usize] = rsp.wrapping_add(8);
+            expected.rip = 5;
+            let mut memory = Memory::new(&[0x48, 0x8d, 0x64, 0x24, 0x08]);
+            let result = discard(&mut state, &mut memory);
+            assert_eq!(result.exit, PagedProbeExit::Retired);
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(
+                result.rflags_defined,
+                crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS
+            );
+            assert_eq!(state, expected);
+            assert_eq!(memory.fetches, [0, 1, 2, 3, 4]);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn exception_stack_discard_refuses_other_encodings_and_invalid_profile() {
+        for code in [
+            &[0x48, 0x8d, 0x64, 0x24, 0x10][..],
+            &[0x48, 0x8d, 0x44, 0x24, 0x08],
+            &[0x66, 0x48, 0x8d, 0x64, 0x24, 0x08],
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            let result = discard(&mut state, &mut memory);
+            assert!(matches!(result.exit, PagedProbeExit::Unsupported { .. }));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut state = make_state(Cr0Profile::BASE);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x8d, 0x64, 0x24, 0x08]);
+        let result = step_paged_exception_stack_discard(
+            PagedCpl0ExceptionStackDiscardV1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring3,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::WrongPrivilege)
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+        state.activity = Some(crate::CpuActivity::Shutdown);
+        let before = state.clone();
+        assert_eq!(
+            discard(&mut state, &mut memory).exit,
+            PagedProbeExit::Shutdown
+        );
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn exception_stack_discard_rejects_resume_flag_before_fetch() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.rflags |= 1 << 16;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x8d, 0x64, 0x24, 0x08]);
+        let result = discard(&mut state, &mut memory);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::ResumeFlagSet)
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(
+            result.rflags_defined,
+            crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS
+        );
+        assert_eq!(state, before);
+        assert!(memory.fetches.is_empty());
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn exception_stack_discard_fetch_faults_and_canonical_boundary_do_not_retire() {
+        let mut state = make_state(Cr0Profile::BASE);
+        let before = state.clone();
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(2),
+        };
+        let mut memory = Memory::new(&[0x48, 0x8d, 0x64, 0x24, 0x08]);
+        memory.fetch_error = Some((2, MemoryError::Architectural(fault.clone())));
+        let result = discard(&mut state, &mut memory);
+        assert_eq!(result.exit, PagedProbeExit::Fault(fault));
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+
+        state.rip = 0x0000_7fff_ffff_fffe;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x48, 0x8d], state.rip);
+        let result = discard(&mut state, &mut memory);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [before.rip, before.rip + 1]);
     }
 
     #[test]

@@ -612,3 +612,22 @@ This stops before IRETQ and retry. Since the tracked paged path does not keep a
 translation cache, the scenario demonstrates guest invalidation execution but
 not stale-TLB eviction or that the invalidation is needed. Results are recorded
 in the [S4-19d report](../reports/STAGE_4_S4-19D_2026-11-06.md).
+
+<a id="s4-19e1-guest-error-code-discard-and-paged-iretq"></a>
+
+## S4-19e1: guest error-code discard and paged IRETQ
+
+The system scenario extends the actual #PF → guest PTE repair → INVLPG path.
+Guest `LEA RSP,[RSP+8]` removes the error-code slot and guest `IRETQ` reads the
+five-qword frame plus real CS/SS descriptors through the tracked Long64 walker.
+It checks return to the original faulting RIP, exact restoration of the
+unaligned RSP and RF=1, unchanged CR2/control registers/GPR and unchanged data.
+The fixture provides a real pre-accessed writable CPL0 SS descriptor. No host
+instruction patches the frame or return state.
+
+Read page faults update CR2 and retain already completed tracked A/D effects;
+backend failures remain separate. Paged IRETQ validates CS before checking
+saved SS selector/bounds and does not commit partial CPU state. This stops at
+the original MOV before retry. The tracked path has no translation cache.
+Results are recorded in the
+[S4-19e1 report](../reports/STAGE_4_S4-19E1_2026-11-06.md).

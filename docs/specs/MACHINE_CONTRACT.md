@@ -1289,6 +1289,34 @@ successful data commit remain for S4-19e. See the
 [S4-19d report](../reports/STAGE_4_S4-19D_2026-11-06.md) and
 [verification record](../testing/MACHINE.md#s4-19d-guest-pte-repair-and-invlpg).
 
+## Guest error-code discard and paged IRETQ (S4-19e1)
+
+After the guest has repaired the supervisor-only leaf PTE and retired INVLPG,
+the bounded handler executes only exact `LEA RSP,[RSP+8]` to discard the
+eight-byte #PF error-code slot, followed by exact `48 CF` IRETQ. The separate
+paged IRETQ selector validates Long64 CPL0 state and the active CR0/CR3/CR4
+and EFER profile. It reads the five-qword same-CPL frame and the real CS and
+SS descriptors through tracked guest memory; CS is read and validated before
+saved SS selector/bounds are checked. Descriptors must be valid and already
+Accessed, with SS a writable CPL0 data segment.
+
+Live RF=1 is outside this profile and is rejected before fetch. RF=1 in the
+saved fault frame is accepted and restored only after the complete frame and
+both descriptors pass validation. CPU return state is committed atomically;
+page-walk A/D writes from reads already completed remain visible on later
+failure. A tracked #PF is reported separately from backend errors and updates
+CR2. The system fixture verifies restoration of the original faulting RIP,
+unaligned RSP, RF and unchanged control registers while faulting data remains
+untouched. It stops before retrying the original store.
+
+Intel SDM Vol. 3A §6.14 describes the 64-bit exception frame and notes that
+IRET does not pop the error code, so the handler removes it. Intel SDM Vol. 3B
+§20.3.1.1 describes RF in fault frames, transfer by IRETQ and clearing at the
+start of the next instruction. This bounded profile does not cover other IRETQ
+forms or demonstrate stale-TLB invalidation because tracked execution is
+uncached. See the [S4-19e1 report](../reports/STAGE_4_S4-19E1_2026-11-06.md)
+and [verification record](../testing/MACHINE.md#s4-19e1-guest-error-code-discard-and-paged-iretq).
+
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 
 `with_paged_mov_memory` gives one synchronous callback a temporary, read-only

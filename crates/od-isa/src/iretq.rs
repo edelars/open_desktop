@@ -8,6 +8,7 @@ use crate::{INTEGER_FLAGS, LongModeState};
 const IF: u64 = 1 << 9;
 const IOPL: u64 = 3 << 12;
 const RESTORABLE_FLAGS: u64 = INTEGER_FLAGS | IF | IOPL;
+const RF: u64 = 1 << 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IretqProfile {
@@ -113,9 +114,46 @@ pub fn step_with_iretq_profile(
     rflags_defined: &mut u64,
     _profile: IretqProfile,
 ) -> IretqResult {
-    if state.cr0.is_some()
-        || state.cr3.is_some()
-        || state.cr4.is_some()
+    step_iretq(state, memory, context, rflags_defined, false)
+}
+
+/// Execute `48 CF` with CPU-owned paging controls and a five-qword frame.
+/// The caller certifies private synchronous RAM and disabled FRED, CET,
+/// shadow-stack, VMX and SMM state. Translation side effects can persist on
+/// failure, while CPU state is committed only after all reads and validation.
+pub fn step_paged_iretq(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    efer: u64,
+) -> IretqResult {
+    if state.cr0 != Some(crate::execute::Cr0Profile::BASE)
+        || state.cr4 != Some(crate::execute::Cr4Profile::BASE)
+        || state.cr3.is_none_or(|cr3| cr3 & !((1u64 << 36) - 1) != 0)
+        || efer != 0xd00
+    {
+        return IretqResult::Unsupported;
+    }
+    step_iretq(state, memory, context, rflags_defined, true)
+}
+
+fn read_error(phase: IretqReadPhase, cause: MemoryError, paged: bool) -> IretqResult {
+    match cause {
+        MemoryError::Architectural(fault) if paged => IretqResult::Fault(fault),
+        cause => IretqResult::ReadAborted { phase, cause },
+    }
+}
+
+fn step_iretq(
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    rflags_defined: &mut u64,
+    paged: bool,
+) -> IretqResult {
+    let allowed_flags = RESTORABLE_FLAGS | if paged { RF } else { 0 };
+    if (!paged && (state.cr0.is_some() || state.cr3.is_some() || state.cr4.is_some()))
         || context.mode != crate::memory::InstructionMode::Long64
         || context.privilege != PrivilegeLevel::Ring0
         || state.activity != Some(CpuActivity::Running)
@@ -126,32 +164,44 @@ pub fn step_with_iretq_profile(
     {
         return IretqResult::Unsupported;
     }
-    let Some(second_address) = state.rip.checked_add(1) else {
+    let second_address = state.rip.checked_add(1);
+    if !paged && (!canonical(state.rip) || second_address.is_none_or(|a| !canonical(a))) {
         return IretqResult::Unsupported;
+    }
+    let gp = || {
+        IretqResult::Fault(crate::memory::ArchitecturalFault {
+            vector: 13,
+            error_code: Some(0),
+            linear_address: None,
+        })
     };
-    if !canonical(state.rip) || !canonical(second_address) {
-        return IretqResult::Unsupported;
+    if paged && !canonical(state.rip) {
+        return gp();
     }
 
     let first = match memory.fetch(state.rip, context) {
         Ok(byte) => byte,
         Err(cause) => {
-            return IretqResult::ReadAborted {
-                phase: IretqReadPhase::Fetch,
-                cause,
-            };
+            return read_error(IretqReadPhase::Fetch, cause, paged);
         }
     };
     if first == 0xcf || first != 0x48 && first != 0xf0 {
         return IretqResult::Unsupported;
     }
+    if paged && first != 0x48 {
+        return IretqResult::Unsupported;
+    }
+    let Some(second_address) = second_address.filter(|address| canonical(*address)) else {
+        return if paged {
+            gp()
+        } else {
+            IretqResult::Unsupported
+        };
+    };
     let second = match memory.fetch(second_address, context) {
         Ok(byte) => byte,
         Err(cause) => {
-            return IretqResult::ReadAborted {
-                phase: IretqReadPhase::Fetch,
-                cause,
-            };
+            return read_error(IretqReadPhase::Fetch, cause, paged);
         }
     };
     if first == 0x48 {
@@ -198,10 +248,7 @@ pub fn step_with_iretq_profile(
     }
     let mut frame = [0u8; 40];
     if let Err(cause) = memory.read(rsp, context, &mut frame) {
-        return IretqResult::ReadAborted {
-            phase: IretqReadPhase::Frame,
-            cause,
-        };
+        return read_error(IretqReadPhase::Frame, cause, paged);
     }
     let qword = |n: usize| u64::from_le_bytes(frame[n * 8..n * 8 + 8].try_into().unwrap());
     let saved_rip = qword(0);
@@ -210,33 +257,41 @@ pub fn step_with_iretq_profile(
     let saved_rsp = qword(3);
     let saved_ss = qword(4) as u16;
     if saved_flags & 2 == 0
-        || saved_flags & !RESTORABLE_FLAGS != 0
+        || saved_flags & !allowed_flags != 0
         || !canonical(saved_rip)
         || !canonical(saved_rsp)
         || !valid_selector(saved_cs)
-        || !valid_selector(saved_ss)
+        || (!paged && !valid_selector(saved_ss))
     {
         return IretqResult::Unsupported;
     }
     let Some(cs_address) = descriptor_address(gdtr, saved_cs) else {
         return IretqResult::Unsupported;
     };
-    let Some(ss_address) = descriptor_address(gdtr, saved_ss) else {
-        return IretqResult::Unsupported;
+    let legacy_ss_address = if !paged {
+        let Some(address) = descriptor_address(gdtr, saved_ss) else {
+            return IretqResult::Unsupported;
+        };
+        Some(address)
+    } else {
+        None
     };
     let mut cs_raw = [0; 8];
     if let Err(cause) = memory.read(cs_address, context.descriptor_table(), &mut cs_raw) {
-        return IretqResult::ReadAborted {
-            phase: IretqReadPhase::CsDescriptor,
-            cause,
-        };
+        return read_error(IretqReadPhase::CsDescriptor, cause, paged);
     }
+    if paged && !valid_cs(&cs_raw) {
+        return IretqResult::Unsupported;
+    }
+    if paged && !valid_selector(saved_ss) {
+        return IretqResult::Unsupported;
+    }
+    let Some(ss_address) = legacy_ss_address.or_else(|| descriptor_address(gdtr, saved_ss)) else {
+        return IretqResult::Unsupported;
+    };
     let mut ss_raw = [0; 8];
     if let Err(cause) = memory.read(ss_address, context.descriptor_table(), &mut ss_raw) {
-        return IretqResult::ReadAborted {
-            phase: IretqReadPhase::SsDescriptor,
-            cause,
-        };
+        return read_error(IretqReadPhase::SsDescriptor, cause, paged);
     }
     if !valid_cs(&cs_raw) || !valid_ss(&ss_raw) {
         return IretqResult::Unsupported;
@@ -406,6 +461,8 @@ mod tests {
         writes: usize,
         fail_read: Option<usize>,
         fail_fetch: Option<u64>,
+        fetch_override: Option<(u64, u8)>,
+        architectural_failure: bool,
     }
 
     impl Memory {
@@ -417,6 +474,8 @@ mod tests {
                 writes: 0,
                 fail_read: None,
                 fail_fetch: None,
+                fetch_override: None,
+                architectural_failure: false,
             };
             memory.bytes[CODE as usize..CODE as usize + 2].copy_from_slice(&[0x48, 0xcf]);
             let frame = [0x1234, 0x8, 0x2 | IF | IOPL, 0x711, 0x10];
@@ -477,7 +536,15 @@ mod tests {
         fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
             self.fetches.push(address);
             if self.fail_fetch == Some(address) {
+                if self.architectural_failure {
+                    return Err(MemoryError::Architectural(page_fault(address)));
+                }
                 return Err(MemoryError::Backend("fetch abort".into()));
+            }
+            if let Some((override_address, byte)) = self.fetch_override {
+                if address == override_address {
+                    return Ok(byte);
+                }
             }
             Ok(self.bytes[self.range(address, 1)?.start])
         }
@@ -490,6 +557,9 @@ mod tests {
             let index = self.reads.len();
             self.reads.push((address, out.len(), context));
             if self.fail_read == Some(index) {
+                if self.architectural_failure {
+                    return Err(MemoryError::Architectural(page_fault(address)));
+                }
                 return Err(MemoryError::Backend("read abort".into()));
             }
             out.copy_from_slice(&self.bytes[self.range(address, out.len())?]);
@@ -565,6 +635,232 @@ mod tests {
             privilege: PrivilegeLevel::Ring0,
             mode: InstructionMode::Long64,
             ..AccessContext::default()
+        }
+    }
+
+    fn page_fault(address: u64) -> crate::memory::ArchitecturalFault {
+        crate::memory::ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(address),
+        }
+    }
+
+    fn paged_state() -> LongModeState {
+        LongModeState {
+            cr0: Some(crate::execute::Cr0Profile::BASE),
+            cr3: Some(0x1000),
+            cr4: Some(crate::execute::Cr4Profile::BASE),
+            ..state()
+        }
+    }
+
+    #[test]
+    fn paged_fetch_checks_each_address_after_prior_fetch() {
+        let last = 0x0000_7fff_ffff_ffff;
+        for (rip, fail, expected, fetches) in [
+            (last, true, IretqResult::Fault(page_fault(last)), vec![last]),
+            (
+                last,
+                false,
+                IretqResult::Fault(crate::memory::ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                vec![last],
+            ),
+            (
+                last + 1,
+                false,
+                IretqResult::Fault(crate::memory::ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                vec![],
+            ),
+        ] {
+            let mut cpu = paged_state();
+            cpu.rip = rip;
+            let before = cpu.clone();
+            let mut memory = Memory::setup();
+            memory.fetch_override = Some((last, 0x48));
+            memory.fail_fetch = fail.then_some(last);
+            memory.architectural_failure = true;
+            let mut defined = INTEGER_FLAGS;
+            assert_eq!(
+                step_paged_iretq(&mut cpu, &mut memory, ring0(), &mut defined, 0xd00),
+                expected
+            );
+            assert_eq!(memory.fetches, fetches);
+            assert!(memory.reads.is_empty());
+            assert_eq!(cpu, before);
+            assert_eq!(defined, INTEGER_FLAGS);
+        }
+    }
+
+    #[test]
+    fn paged_invalid_cs_precedes_ss_read_failure() {
+        let mut cpu = paged_state();
+        let before = cpu.clone();
+        let mut memory = Memory::setup();
+        memory.bytes[(GDT + 8 + 5) as usize] = 0x1b;
+        memory.fail_read = Some(2);
+        memory.architectural_failure = true;
+        let mut defined = INTEGER_FLAGS;
+        assert_eq!(
+            step_paged_iretq(&mut cpu, &mut memory, ring0(), &mut defined, 0xd00),
+            IretqResult::Unsupported
+        );
+        assert_eq!(memory.reads.len(), 2);
+        assert_eq!(memory.reads[1].0, GDT + 8);
+        assert_eq!(cpu, before);
+        assert_eq!(defined, INTEGER_FLAGS);
+    }
+
+    #[test]
+    fn paged_cs_fault_precedes_invalid_ss_selector_and_bounds() {
+        for saved_ss in [0u64, 0x18] {
+            let mut cpu = paged_state();
+            let before = cpu.clone();
+            let mut memory = Memory::setup();
+            memory.bytes[(FRAME + 32) as usize..(FRAME + 40) as usize]
+                .copy_from_slice(&saved_ss.to_le_bytes());
+            memory.fail_read = Some(1);
+            memory.architectural_failure = true;
+            let mut defined = INTEGER_FLAGS;
+            assert_eq!(
+                step_paged_iretq(&mut cpu, &mut memory, ring0(), &mut defined, 0xd00),
+                IretqResult::Fault(page_fault(GDT + 8))
+            );
+            assert_eq!(memory.reads.len(), 2);
+            assert_eq!(memory.reads[1].0, GDT + 8);
+            assert_eq!(cpu, before);
+            assert_eq!(defined, INTEGER_FLAGS);
+        }
+    }
+
+    #[test]
+    fn paged_iretq_rejects_live_rf_before_memory_access() {
+        let mut cpu = paged_state();
+        cpu.rflags |= RF;
+        let before = cpu.clone();
+        let mut memory = Memory::setup();
+        let mut defined = INTEGER_FLAGS;
+        assert_eq!(
+            step_paged_iretq(&mut cpu, &mut memory, ring0(), &mut defined, 0xd00),
+            IretqResult::Unsupported
+        );
+        assert!(memory.fetches.is_empty());
+        assert!(memory.reads.is_empty());
+        assert_eq!(memory.writes, 0);
+        assert_eq!(cpu, before);
+        assert_eq!(defined, INTEGER_FLAGS);
+    }
+
+    #[test]
+    fn paged_iretq_restores_rf_and_preserves_control_state() {
+        let mut cpu = paged_state();
+        let mut expected = cpu.clone();
+        let mut memory = Memory::setup();
+        let flags = 2 | IF | IOPL | RF;
+        memory.bytes[(FRAME + 16) as usize..(FRAME + 24) as usize]
+            .copy_from_slice(&flags.to_le_bytes());
+        let mut defined = INTEGER_FLAGS;
+        assert_eq!(
+            step_paged_iretq(&mut cpu, &mut memory, ring0(), &mut defined, 0xd00),
+            IretqResult::Retired
+        );
+        expected.rip = 0x1234;
+        expected.cs_selector = Some(8);
+        expected.cs_cache = Some(crate::CodeSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x9b,
+            flags: 0xa,
+        });
+        expected.rflags = flags;
+        expected.gpr[crate::Register::Rsp as usize] = 0x711;
+        expected.ss_selector = Some(0x10);
+        expected.ss_cache = Some(DataSegmentDescriptorCache {
+            base: 0,
+            limit: u32::MAX,
+            access: 0x93,
+            flags: 0xc,
+        });
+        assert_eq!(cpu, expected);
+        assert_eq!(defined, INTEGER_FLAGS);
+    }
+
+    #[test]
+    fn paged_iretq_rejects_invalid_controls_frames_and_descriptors_atomically() {
+        for case in 0..12 {
+            let mut cpu = paged_state();
+            let mut memory = Memory::setup();
+            let mut efer = 0xd00;
+            match case {
+                0 => cpu.cr0 = None,
+                1 => cpu.cr3 = Some(1 << 36),
+                2 => cpu.cr4 = None,
+                3 => efer = 0,
+                4 => memory.bytes[(FRAME + 16) as usize] &= !2,
+                5 => memory.bytes[(FRAME + 18) as usize] |= 2,
+                6 => memory.bytes[(FRAME + 8) as usize] = 3,
+                7 => memory.bytes[(FRAME + 32) as usize] = 0,
+                8 => memory.bytes[(GDT + 8 + 5) as usize] = 0x9a,
+                9 => memory.bytes[(GDT + 16 + 5) as usize] = 0x91,
+                10 => memory.bytes[FRAME as usize..FRAME as usize + 8]
+                    .copy_from_slice(&0x8000_0000_0000u64.to_le_bytes()),
+                _ => memory.bytes[(FRAME + 24) as usize..(FRAME + 32) as usize]
+                    .copy_from_slice(&0x8000_0000_0000u64.to_le_bytes()),
+            }
+            let before = cpu.clone();
+            let mut defined = INTEGER_FLAGS;
+            assert_eq!(
+                step_paged_iretq(&mut cpu, &mut memory, ring0(), &mut defined, efer),
+                IretqResult::Unsupported,
+                "case {case}"
+            );
+            assert_eq!(cpu, before);
+            assert_eq!(defined, INTEGER_FLAGS);
+        }
+    }
+
+    #[test]
+    fn paged_iretq_preserves_cpu_on_architectural_and_backend_read_failures() {
+        for phase in 0..4 {
+            for architectural in [false, true] {
+                let mut cpu = paged_state();
+                assert_eq!(cpu.rflags & RF, 0);
+                let before = cpu.clone();
+                let mut memory = Memory::setup();
+                memory.architectural_failure = architectural;
+                if phase == 0 {
+                    memory.fail_fetch = Some(CODE + 1);
+                } else {
+                    memory.fail_read = Some(phase - 1);
+                }
+                let mut defined = INTEGER_FLAGS;
+                let result = step_paged_iretq(&mut cpu, &mut memory, ring0(), &mut defined, 0xd00);
+                let expected_phase = [
+                    IretqReadPhase::Fetch,
+                    IretqReadPhase::Frame,
+                    IretqReadPhase::CsDescriptor,
+                    IretqReadPhase::SsDescriptor,
+                ][phase];
+                if architectural {
+                    assert!(matches!(result, IretqResult::Fault(f) if f.vector == 14));
+                } else {
+                    assert!(
+                        matches!(result, IretqResult::ReadAborted { phase, cause: MemoryError::Backend(_) } if phase == expected_phase)
+                    );
+                }
+                assert_eq!(cpu, before);
+                assert_eq!(cpu.rflags & RF, 0);
+                assert_eq!(defined, INTEGER_FLAGS);
+                assert_eq!(memory.writes, 0);
+            }
         }
     }
 

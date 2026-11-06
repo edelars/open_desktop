@@ -935,10 +935,48 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   translation в tracked execution path нет, поэтому этот срез не утверждает
   необходимость INVLPG для видимости нового PTE или eviction stale TLB entry.
   Cross-page qword operands отклоняются до operand access.
-  Следующий срез S4-19e покрывает guest stack adjustment, paged IRETQ, retry и
+  Следующие S4-19e1/e2 покрывают guest stack adjustment, paged IRETQ, retry и
   завершение записи.
 - **Результат:** см. [S4-19d report](../reports/STAGE_4_S4-19D_2026-11-06.md)
   и [manifest](../reports/data/stage4/s4-19d-guest-pte-repair-invlpg-2026-11-06.json).
+
+#### S4-19e1. Guest error-code discard and paged IRETQ
+
+- [x] Принято после независимого ревью и проверок; исходную запись ещё не повторяем.
+- **Case:** после S4-19d handler гостевой точной `LEA RSP,[RSP+8]`
+  (`48 8D 64 24 08`) удаляет error-code slot, затем paged `IRETQ` (`48 CF`)
+  читает настоящий пяти-qword same-CPL frame и CS/SS descriptors через
+  tracked RAM. Возврат восстанавливает faulting RIP, исходный невыравненный
+  RSP и RF=1. SS descriptor настоящий, CPL0 writable, заранее Accessed.
+- **Граница профиля:** Long64 CPL0→CPL0, WP=1, точные формы инструкций,
+  заранее accessed валидные CS/SS, private synchronous RAM и выключенные
+  FRED/CET/shadow-stack/VMX/SMM. Live RF должен быть 0 перед LEA и IRETQ;
+  сохранённый RF принимается из fault frame и восстанавливается только при
+  успешном IRETQ. Ошибка tracked чтения обновляет CR2 и не частично коммитит
+  возврат; уже завершённые A/D effects остаются наблюдаемыми.
+- **Проверка:** весь guest путь от настоящего WP #PF через repair/INVLPG и
+  error-code discard возвращает RIP к исходному MOV, сохраняет CR2, control
+  registers и GPR, возвращает точный RSP/RFLAGS, не меняя faulting data.
+  Хост не подменяет RIP/RSP/PTE после начала сценария.
+- **Не заявлено:** повтор faulting MOV, его RF-clear timing и commit данных
+  остаются в S4-19e2. Tracked path не кеширует translation, поэтому INVLPG
+  necessity/stale-TLB eviction не проверяются.
+- **Результат:** см. [S4-19e1 report](../reports/STAGE_4_S4-19E1_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-19e1-guest-paged-iretq-2026-11-06.json).
+
+#### S4-19e2. Faulting MOV retry and data commit
+
+- [ ] Следующий ограниченный срез; реализация не начата.
+- **Case:** после успешного S4-19e1 IRETQ гостевой CPU повторно исполняет
+  исходный exact `MOV [RBX],RCX` с сохранённого RIP. Исправленный supervisor
+  PTE допускает одну запись; следующая guest load читает новое значение.
+- **Проверка:** одна успешная data write и одна retirement, RIP проходит к
+  следующей guest instruction, восстановленный RF очищается в начале повторной
+  инструкции по профилю Intel, итоговое значение и canary подтверждены.
+- **Граница:** только same-CPL Long64 WP=1, частный RAM и заданный faulting
+  store. Общая обработка debug breakpoints, FP exceptions, иных RF-переходов и
+  cached TLB остаётся вне этого среза.
+- **Результат:** ожидает реализации, независимого ревью и воспроизводимой проверки.
 
 ### S4-20. CPL3 и системные вызовы/возвраты
 

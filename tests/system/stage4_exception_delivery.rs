@@ -5,7 +5,8 @@ use od_machine::{
     AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
     MemoryRegionKind, MemoryRegionSpec, PagedExceptionDeliveryOutcome, RamLimits,
     deliver_and_step_paged_pf_handler, deliver_paged_page_fault, step_paged_cr0_wp_mov,
-    step_paged_cr0_wp_page_table_repair_mov, step_paged_invlpg, step_paged_lgdt, step_paged_lidt,
+    step_paged_cr0_wp_page_table_repair_mov, step_paged_exception_stack_discard, step_paged_invlpg,
+    step_paged_iretq, step_paged_lgdt, step_paged_lidt,
 };
 
 const CR0: u64 = 0x8001_0033;
@@ -134,6 +135,118 @@ fn guest_repairs_faulting_pte_and_retires_invlpg() {
     assert!(invlpg.access_error.is_none());
     assert!(invlpg_writes.is_empty());
     assert_eq!(state.rip, HANDLER_RIP + 6);
+    assert_eq!(state.cr2, Some(DATA_LINEAR));
+    assert_eq!(state.gpr[Register::Rbx as usize], original_rbx);
+    assert_eq!(state.gpr[Register::Rcx as usize], original_rcx);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+            .unwrap(),
+        SENTINEL
+    );
+}
+
+#[test]
+fn guest_discards_page_fault_error_code_and_returns_with_paged_iretq() {
+    let mut bus = make_bus(true, true, true, true);
+    put_qword(&mut bus, 0x4018, 0x6027);
+    put_bytes(
+        &mut bus,
+        0x9000,
+        &[
+            0x48, 0x89, 0x37, // MOV [RDI], RSI: repair only R/W, preserve U/S=0 and A
+            0x0f, 0x01, 0x3b, // INVLPG [RBX]
+            0x48, 0x8d, 0x64, 0x24, 0x08, // LEA RSP, [RSP + 8]: discard #PF error code
+            0x48, 0xcf, // IRETQ
+        ],
+    );
+    // The return profile reads the real, pre-accessed writable CPL0 SS descriptor.
+    put_bytes(&mut bus, 0xb010, &[0xff, 0xff, 0, 0, 0, 0x93, 0xcf, 0]);
+    let mut state = initial_state(0x202);
+    state.gpr[Register::Rdi as usize] = 0x0040_3000;
+    state.gpr[Register::Rsi as usize] = 0xe023;
+    let original_rbx = state.gpr[Register::Rbx as usize];
+    let original_rcx = state.gpr[Register::Rcx as usize];
+
+    let fault = start_faulting_store(&mut bus, &mut state)
+        .page_fault
+        .unwrap();
+    let delivery =
+        deliver_paged_page_fault(&mut state, &mut bus, CR3, EFER, context(), &fault, |_| {})
+            .unwrap();
+    assert_eq!(
+        delivery.outcome,
+        PagedExceptionDeliveryOutcome::PageFaultDelivered
+    );
+    assert_eq!(state.rip, HANDLER_RIP);
+    assert_eq!(state.cr2, Some(DATA_LINEAR));
+
+    for (step, expected_rip) in [(0, HANDLER_RIP + 3), (1, HANDLER_RIP + 6)] {
+        let report = if step == 0 {
+            step_paged_cr0_wp_page_table_repair_mov(
+                &mut state,
+                &mut bus,
+                CR3,
+                EFER,
+                context(),
+                od_isa::INTEGER_FLAGS,
+                |_| {},
+            )
+            .unwrap()
+        } else {
+            let report = step_paged_invlpg(
+                &mut state,
+                &mut bus,
+                CR3,
+                EFER,
+                context(),
+                od_isa::INTEGER_FLAGS,
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(report.cpu.instructions_executed, 1);
+            assert_eq!(state.rip, expected_rip);
+            continue;
+        };
+        assert_eq!(report.cpu.instructions_executed, 1);
+        assert_eq!(state.rip, expected_rip);
+    }
+
+    let error_code_rsp = state.gpr[Register::Rsp as usize];
+    let discard = step_paged_exception_stack_discard(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(discard.cpu.instructions_executed, 1);
+    assert_eq!(discard.page_fault, None);
+    assert_eq!(state.rip, HANDLER_RIP + 11);
+    assert_eq!(state.gpr[Register::Rsp as usize], error_code_rsp + 8);
+
+    let returned = step_paged_iretq(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(returned.cpu, od_isa::iretq::IretqResult::Retired);
+    assert_eq!(returned.rflags_defined, od_isa::INTEGER_FLAGS);
+    assert!(returned.page_fault.is_none());
+    assert!(returned.access_error.is_none());
+    assert_eq!(state.rip, FAULT_RIP);
+    assert_eq!(state.gpr[Register::Rsp as usize], ORIGINAL_RSP);
+    assert_eq!(state.rflags, 0x1_0202);
+    assert_eq!(state.cr0, Some(CR0));
+    assert_eq!(state.cr3, Some(CR3));
+    assert_eq!(state.cr4, Some(CR4));
     assert_eq!(state.cr2, Some(DATA_LINEAR));
     assert_eq!(state.gpr[Register::Rbx as usize], original_rbx);
     assert_eq!(state.gpr[Register::Rcx as usize], original_rcx);
