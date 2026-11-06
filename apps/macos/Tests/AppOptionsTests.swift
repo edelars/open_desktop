@@ -42,4 +42,36 @@ final class AppOptionsXCTests: XCTestCase {
         XCTAssertEqual(override.source, .argument)
         XCTAssertFalse(override.isExecutable)
     }
+
+    func testOpenBundleBothFormsAndTogetherWithVMHost() throws {
+        XCTAssertNil(try AppOptions(arguments: []).openBundle)
+        XCTAssertEqual(try AppOptions(arguments: ["--open", "/b/A.odvm"]).openBundle, "/b/A.odvm")
+        XCTAssertEqual(try AppOptions(arguments: ["--open=/b/B.odvm"]).openBundle, "/b/B.odvm")
+        let both = try AppOptions(arguments: ["--vmhost", "/x/od-vmhost", "--open", "/b/C.odvm", "-psn_0_1"])
+        XCTAssertEqual(both.vmhostOverride, "/x/od-vmhost")
+        XCTAssertEqual(both.openBundle, "/b/C.odvm")
+    }
+
+    func testOpenMissingAndEmptyValueAreErrors() {
+        XCTAssertThrowsError(try AppOptions(arguments: ["--open"])) {
+            XCTAssertEqual($0 as? AppOptions.ParseError, .missingValue("--open"))
+        }
+        XCTAssertThrowsError(try AppOptions(arguments: ["--open="])) {
+            XCTAssertEqual($0 as? AppOptions.ParseError, .emptyValue("--open"))
+        }
+    }
+
+    func testAnOptionIsNotTheValueOfAnotherOption() {
+        XCTAssertThrowsError(try AppOptions(arguments: ["--open", "--vmhost", "/x/od-vmhost"])) {
+            XCTAssertEqual($0 as? AppOptions.ParseError, .missingValue("--open"))
+        }
+        XCTAssertThrowsError(try AppOptions(arguments: ["--vmhost", "--open", "/b/A.odvm"])) {
+            XCTAssertEqual($0 as? AppOptions.ParseError, .missingValue("--vmhost"))
+        }
+        XCTAssertThrowsError(try AppOptions(arguments: ["--vmhost", "/x", "--open", "--other"])) {
+            XCTAssertEqual($0 as? AppOptions.ParseError, .missingValue("--open"))
+        }
+        // The form with `=` states the value explicitly.
+        XCTAssertEqual(try AppOptions(arguments: ["--open=--odd.odvm"]).openBundle, "--odd.odvm")
+    }
 }

@@ -1,33 +1,10 @@
 import SwiftUI
 
-/// Window of `OpenDesktop.app` (S11-05b). Intermediate fact, not the product: the window opens and says that the
-/// machine library does not exist yet (S11-06). The application executes no guest code and does not link the engine.
-struct LibraryPlaceholderView: View {
-    let vmhost: VMHostLocation
-
-    var body: some View {
-        VStack(spacing: 12) {
-            Text("Open Desktop").font(.largeTitle)
-            Text("Библиотека машин — S11-06").font(.title3)
-            Text(vmhostDescription)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .textSelection(.enabled)
-        }
-        .padding(32)
-        .frame(minWidth: 480, minHeight: 240)
-    }
-
-    private var vmhostDescription: String {
-        let origin = vmhost.source == .argument ? "--vmhost" : "bundle"
-        let state = vmhost.isExecutable ? "found" : "not found"
-        return "VMHost (\(origin), \(state)): \(vmhost.url.path)"
-    }
-}
-
+/// `OpenDesktop.app` (S11-05b window, S11-06b library). The application executes no guest code and does not link the engine: it lists
+/// machines, spawns VMHost per machine through `ControlClientV2` and shows the state that the events and the exit status say.
 @main
 struct OpenDesktopApp: App {
-    private let vmhost: VMHostLocation
+    @StateObject private var model: LibraryModel
 
     init() {
         let options: AppOptions
@@ -37,12 +14,25 @@ struct OpenDesktopApp: App {
             FileHandle.standardError.write(Data("OpenDesktop: \(error)\n".utf8))
             exit(2)
         }
-        vmhost = VMHostLocation.locate(options: options, bundleURL: Bundle.main.bundleURL)
+        let vmhost = VMHostLocation.locate(options: options, bundleURL: Bundle.main.bundleURL)
+        let library = LibraryModel(catalog: .standard(), vmhost: vmhost)
+        library.load()
+        if let path = options.openBundle {
+            // `--open <bundle>` (smoke S11-14): list the bundle and select it.
+            // A refusal is in the banner of the window and in stderr (a smoke run has no one to read the window).
+            if !library.open(bundle: URL(fileURLWithPath: path)) {
+                let reason = [library.banner, library.bannerDetails].compactMap { $0 }.joined(separator: " ")
+                FileHandle.standardError.write(Data("OpenDesktop: --open: \(reason)\n".utf8))
+            }
+        }
+        _model = StateObject(wrappedValue: library)
     }
 
     var body: some Scene {
-        WindowGroup("Open Desktop") {
-            LibraryPlaceholderView(vmhost: vmhost)
+        // One window: a second library window would show the same machines twice.
+        Window("Open Desktop", id: "library") {
+            LibraryView(model: model)
         }
+        .commands { MachineCommands(model: model) }
     }
 }

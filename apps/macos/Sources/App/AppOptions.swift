@@ -1,8 +1,9 @@
 import Foundation
 
-/// Command line of the application (S11-05b). Only `--vmhost PATH` (or `--vmhost=PATH`) is known: the override of the
-/// VMHost helper for smoke runs. Other arguments (for example `-NSDocumentRevisionsDebugMode` from Xcode or
-/// `-psn_...` from older launchers) are the system's and are ignored, not rejected.
+/// Command line of the application (S11-05b, S11-06b). Known: `--vmhost PATH` (or `--vmhost=PATH`), the override of the VMHost helper for
+/// smoke runs, and `--open PATH` (or `--open=PATH`), a bundle that the library opens and selects (for the smoke S11-14). The value of the form `--option VALUE` cannot
+/// start with `--` (it would be the next option: `--open --vmhost X` is an error, not a bundle named `--vmhost`). Other arguments
+/// (for example `-NSDocumentRevisionsDebugMode` from Xcode or `-psn_...` from older launchers) are the system's and are ignored, not rejected.
 struct AppOptions: Equatable {
     enum ParseError: Error, Equatable, CustomStringConvertible {
         case missingValue(String)
@@ -18,24 +19,35 @@ struct AppOptions: Equatable {
 
     /// Path given with `--vmhost`, or nil when the bundled helper is used.
     var vmhostOverride: String?
+    /// Path given with `--open` (the last one wins), or nil.
+    var openBundle: String?
+
+    private static let knownOptions = ["--vmhost", "--open"]
 
     /// `arguments` are the arguments after the program name.
     init(arguments: [String]) throws {
-        var override: String?
+        var values: [String: String] = [:]
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
-            if argument == "--vmhost" {
-                guard index + 1 < arguments.count else { throw ParseError.missingValue("--vmhost") }
-                index += 1
-                override = arguments[index]
-            } else if argument.hasPrefix("--vmhost=") {
-                override = String(argument.dropFirst("--vmhost=".count))
+            for option in Self.knownOptions {
+                if argument == option {
+                    // The next argument is the value unless it is an option itself (`--open --vmhost X`): `--opt=--x` still passes `--x`.
+                    guard index + 1 < arguments.count, !arguments[index + 1].hasPrefix("--") else { throw ParseError.missingValue(option) }
+                    index += 1
+                    values[option] = arguments[index]
+                } else if argument.hasPrefix(option + "=") {
+                    values[option] = String(argument.dropFirst(option.count + 1))
+                } else {
+                    continue
+                }
+                if values[option]?.isEmpty == true { throw ParseError.emptyValue(option) }
+                break
             }
-            if let value = override, value.isEmpty { throw ParseError.emptyValue("--vmhost") }
             index += 1
         }
-        vmhostOverride = override
+        vmhostOverride = values["--vmhost"]
+        openBundle = values["--open"]
     }
 }
 

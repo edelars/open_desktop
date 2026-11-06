@@ -373,7 +373,7 @@
 ### S11-06. Библиотека машин: список, запуск, пауза, остановка, удаление, события
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-06):** S11-06a (пункты 1–3) реализовано и закоммичено, ревью пройдено, **не принято**; допущение «path вместо bookmark» ждёт решения (б) ADR-0006. Пункты 4–6 (UI) — S11-06b, не начаты. Детали — в [отчёте](../reports/STAGE_11_REPORT.md).
+- **Текущий статус (2026-11-06):** S11-06a закоммичен (`4789d7f`); S11-06b реализован и ревьюирован, не закоммичен, **не принят**. Ручной чеклист не выполнен. Детали и расхождения — в [отчёте](../reports/STAGE_11_REPORT.md).
 - **Где:** `apps/macos/Sources/App/OpenDesktopApp.swift`, `LibraryView.swift`, `MachineRowView.swift`, `MachineController.swift` (новые); `apps/macos/Sources/Shared/Catalog.swift`, `BundleConfig.swift`, `ControlClientV2.swift` (новые, цель `ODShared`); `apps/macos/Sources/Shared/VMHostLaunch.swift` (расширить `spawnHelper`: `--bundle`, `--display-fd 5`, `--control-v2`; существующие вызовы без изменений); `apps/macos/Tests/CatalogTests.swift`, `ControlClientV2Tests.swift` (новые).
 - **Сделать:**
   1. `BundleConfig`: чтение/запись `config.plist` по S11-02 с валидацией и атомарной записью; неизвестная версия → состояние «несовместимый».
