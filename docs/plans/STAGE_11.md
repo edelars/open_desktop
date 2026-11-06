@@ -293,6 +293,7 @@
 ### S11-02. Контракт bundle VM и каталога машин
 
 - [ ] Принято после архитектурного ревью.
+- **Текущий статус (2026-11-06):** написан в `docs/specs/VM_BUNDLE.md`, ревью пройдено, **не принят** (архитектурного принятия нет). Детали и открытые вопросы — в [отчёте](../reports/STAGE_11_REPORT.md) и §11 спецификации.
 - **Где:** `docs/specs/VM_BUNDLE.md` (новый). Ссылки: [ARCHITECTURE §7](../ARCHITECTURE.md), [VM_STATE.md](../specs/VM_STATE.md), [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md), [storage_io.rs](../../crates/od-host/src/storage_io.rs) (эксклюзивное открытие S9-04).
 - **Сделать:**
   1. Раскладка `<Имя>.odvm/`: `config.plist`, `disks/`, `firmware/` (зарезервировано, пусто до этапа 7), `tpm/` (зарезервировано), `snapshots/` (принадлежит `od-storage`, этап 9), `logs/` (`vmhost.log`, `serial.log`; лимит размера и ротация — числа), `lock` — файл, на котором VMHost держит `flock(LOCK_EX)` через `open_read_write_exclusive`/`create_new_exclusive` `od-host`; управляющий процесс до запуска может проверить занятость неблокирующим `flock` и показать «уже запущена»; ручной очистки lock нет.
