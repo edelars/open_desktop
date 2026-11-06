@@ -281,13 +281,25 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   commits A updates during the walk, then validates the final RAM operand, commits
   D for permitted writes, and finally commits the operand. Literal local tests
   cover successful fetch/read/write and preserved A effects on later failures.
-  Full S4-09 remains open: injected table-write failure, full permission-level
-  matrix, CPU execution integration and system acceptance remain open. See
+  S4-09b closes the injected table-write failure criterion. Full S4-09 remains
+  open for the full permission-level matrix, CPU execution integration and
+  system acceptance. See [S4-09b](#s4-09b-table-write-failure) and the
   [machine contract](../specs/MACHINE_CONTRACT.md#tracked-ram-access).
 - **Где:** page walker/physical writer `od-machine`, CPU contract и системные тесты.
 - **Сделать:** определить, на каких уровнях и при каких успешных/неуспешных accesses меняются A/D bits. Разделить эти записи и commit конечного memory operand. Использовать общий tracked physical-write путь.
 - **Проверка:** read, write, fetch, protection fault, nonpresent на разных уровнях, permission fault после предыдущих обращений; page-table bytes совпадают с ожидаемыми разрешёнными эффектами.
 - **Готово:** rollback memory operand не стирает обязательные page-walk effects; тесты не требуют неизменности всей памяти после любого fault.
+
+<a id="s4-09b-table-write-failure"></a>
+
+#### S4-09b. Отказ отдельной записи page-table entry
+
+- [x] Bounded test seam остаётся private внутри `od-machine`; штатный writer по-прежнему вызывает `PhysicalMemory::write_u64`. Принят после независимого `gpt-6.1-sol/high` review без оставшихся P0—P3 замечаний.
+- При injected failure A на каждом из четырёх уровней ранее committed A остаются; отказавшая entry и последующие уровни не меняются. Отчёт содержит только committed `AdUpdate`, а callbacks содержат только committed writes в фактическом порядке.
+- Отдельный отказ D после успешного полного A-prefix сохраняет A, не меняет leaf D и operand и не вызывает последующих callbacks.
+- Каждый результат проверяет точные уровень, адрес entry, тип A/D write и физическую ошибку. Существующие `PhysicalMemory` tests остаются доказательством atomicity и отсутствия callback при обычном отказе physical write.
+- Срез не добавляет production fault injection/API, whole-operation rollback, cross-page, MMIO/guest-store, exception delivery или cached A/D semantics. Panic callback остаётся host panic после уже committed write.
+- Полный S4-09 остаётся открытым для permission-level matrix, CPU integration и system acceptance.
 
 ### S4-10. Добавить необходимые page sizes и режимы
 

@@ -654,6 +654,23 @@ struct WalkResult {
     ad_update_count: usize,
 }
 
+type TrackedTableWriter<'a> = dyn FnMut(
+        &mut PhysicalMemory,
+        GuestPhysicalAddress,
+        u64,
+        &mut dyn FnMut(GuestPhysicalRange),
+    ) -> Result<(), MemoryAccessError>
+    + 'a;
+
+fn write_tracked_table_entry(
+    memory: &mut PhysicalMemory,
+    address: GuestPhysicalAddress,
+    value: u64,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+) -> Result<(), MemoryAccessError> {
+    memory.write_u64(address, value, committed_write)
+}
+
 fn walk_long64_4k(
     memory: &mut PhysicalMemory,
     paging: &Long64ProbeConfig,
@@ -662,6 +679,28 @@ fn walk_long64_4k(
     context: AccessContext,
     access: AccessKind,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
+) -> WalkResult {
+    walk_long64_4k_with_writer(
+        memory,
+        paging,
+        instruction_rip,
+        address,
+        context,
+        access,
+        committed_write,
+        &mut write_tracked_table_entry,
+    )
+}
+
+fn walk_long64_4k_with_writer(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
+    access: AccessKind,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    table_writer: &mut TrackedTableWriter<'_>,
 ) -> WalkResult {
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 4];
@@ -778,7 +817,7 @@ fn walk_long64_4k(
 
         if entry_value & (1 << 5) == 0 {
             let after = entry_value | (1 << 5);
-            if let Err(source) = memory.write_u64(entry_address, after, &mut *committed_write) {
+            if let Err(source) = table_writer(memory, entry_address, after, &mut *committed_write) {
                 return fail(
                     TrackedAccessError::TableWrite {
                         level,
@@ -885,7 +924,27 @@ fn access_long64_4k_internal(
     request: TrackedAccessRequest,
     mut committed_write: impl FnMut(GuestPhysicalRange),
     set_mmio_dirty_before_dispatch: bool,
+    mmio: Option<&mut MmioDispatch<'_>>,
+) -> TrackedAccessReport {
+    access_long64_4k_internal_with_writer(
+        memory,
+        paging,
+        request,
+        &mut committed_write,
+        set_mmio_dirty_before_dispatch,
+        mmio,
+        &mut write_tracked_table_entry,
+    )
+}
+
+fn access_long64_4k_internal_with_writer(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    set_mmio_dirty_before_dispatch: bool,
     mut mmio: Option<&mut MmioDispatch<'_>>,
+    table_writer: &mut TrackedTableWriter<'_>,
 ) -> TrackedAccessReport {
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 5];
@@ -908,14 +967,15 @@ fn access_long64_4k_internal(
             ad_update_count,
         );
     }
-    let walk = walk_long64_4k(
+    let walk = walk_long64_4k_with_writer(
         memory,
         paging,
         request.instruction_rip,
         address,
         request.context,
         access,
-        &mut committed_write,
+        committed_write,
+        table_writer,
     );
     trace = walk.trace;
     ad_update_count = walk.ad_update_count;
@@ -988,7 +1048,7 @@ fn access_long64_4k_internal(
         if !is_mmio || set_mmio_dirty_before_dispatch {
             if leaf.1 & (1 << 6) == 0 {
                 let after = leaf.1 | (1 << 6);
-                if let Err(source) = memory.write_u64(leaf.0, after, &mut committed_write) {
+                if let Err(source) = table_writer(memory, leaf.0, after, committed_write) {
                     return fail(
                         TrackedAccessError::TableWrite {
                             level: PageTableLevel::Pt,
@@ -1038,7 +1098,7 @@ fn access_long64_4k_internal(
         if let Err(source) = memory.write_bytes(
             physical,
             &bytes[..usize::from(width.bytes())],
-            &mut committed_write,
+            &mut *committed_write,
         ) {
             return fail(
                 TrackedAccessError::OperandPhysical {
@@ -1285,6 +1345,28 @@ mod tracked_access_tests {
         bytes
     }
 
+    fn expected_accessed_updates(count: usize) -> [Option<AdUpdate>; 5] {
+        let expected = [
+            (PageTableLevel::Pml4, 0x1008, 0x2007, 0x2027),
+            (PageTableLevel::Pdpt, 0x2010, 0x3007, 0x3027),
+            (PageTableLevel::Pd, 0x3018, 0x4007, 0x4027),
+            (PageTableLevel::Pt, 0x4020, 0x4007, 0x4027),
+        ];
+        std::array::from_fn(|index| {
+            if index >= count {
+                return None;
+            }
+            let (level, address, before, after) = expected[index];
+            Some(AdUpdate {
+                level,
+                address: GuestPhysicalAddress::new(address),
+                before,
+                after,
+                bit: AdBit::Accessed,
+            })
+        })
+    }
+
     #[test]
     fn successful_read_and_fetch_commit_only_accessed_bits() {
         for operation in [
@@ -1313,6 +1395,144 @@ mod tracked_access_tests {
                 [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
             );
         }
+    }
+
+    #[test]
+    fn accessed_write_failures_preserve_committed_prefix_at_each_level() {
+        let levels = [
+            PageTableLevel::Pml4,
+            PageTableLevel::Pdpt,
+            PageTableLevel::Pd,
+            PageTableLevel::Pt,
+        ];
+        let addresses = [0x1008, 0x2010, 0x3018, 0x4020];
+        let original = [0x2007, 0x3007, 0x4007, 0x4007];
+
+        for failed_index in 0..levels.len() {
+            let (mut memory, paging) = setup(0x4007, 0x6000);
+            let failed_address = GuestPhysicalAddress::new(addresses[failed_index]);
+            let mut attempts = Vec::new();
+            let mut callbacks = Vec::new();
+            let mut writes =
+                |memory: &mut PhysicalMemory,
+                 address: GuestPhysicalAddress,
+                 value: u64,
+                 callback: &mut dyn FnMut(GuestPhysicalRange)| {
+                    attempts.push(address);
+                    if address == failed_address {
+                        Err(MemoryAccessError::Unmapped(address))
+                    } else {
+                        write_tracked_table_entry(memory, address, value, callback)
+                    }
+                };
+            let mut callback = |range| callbacks.push(range);
+            let report = access_long64_4k_internal_with_writer(
+                &mut memory,
+                &paging,
+                request(RamAccessOperation::Write {
+                    width: AccessWidth::Byte,
+                    value: 0xa5,
+                }),
+                &mut callback,
+                false,
+                None,
+                &mut writes,
+            );
+
+            assert!(matches!(
+                report.outcome,
+                Err(TrackedAccessError::TableWrite {
+                    level,
+                    entry_address,
+                    bit: AdBit::Accessed,
+                    source: MemoryAccessError::Unmapped(source_address),
+                }) if level == levels[failed_index]
+                    && entry_address == failed_address
+                    && source_address == failed_address
+            ));
+            assert_eq!(report.ad_update_count, failed_index);
+            assert_eq!(report.ad_updates, expected_accessed_updates(failed_index));
+            assert_eq!(
+                attempts,
+                addresses[..=failed_index]
+                    .iter()
+                    .copied()
+                    .map(GuestPhysicalAddress::new)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                logged(&callbacks),
+                addresses[..failed_index]
+                    .iter()
+                    .map(|address| (*address, 8))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                entries(&memory),
+                std::array::from_fn(|index| {
+                    original[index] | if index < failed_index { 1 << 5 } else { 0 }
+                })
+            );
+            assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
+            assert_eq!(memory.read_u64(failed_address), Ok(original[failed_index]));
+        }
+    }
+
+    #[test]
+    fn dirty_write_failure_preserves_accessed_prefix_without_operand_commit() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let dirty_address = GuestPhysicalAddress::new(0x4020);
+        let mut attempts = Vec::new();
+        let mut callbacks = Vec::new();
+        let mut pt_writes = 0;
+        let mut writes = |memory: &mut PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            attempts.push(address);
+            if address == dirty_address {
+                pt_writes += 1;
+                if pt_writes == 2 {
+                    return Err(MemoryAccessError::Unmapped(address));
+                }
+            }
+            write_tracked_table_entry(memory, address, value, callback)
+        };
+        let mut callback = |range| callbacks.push(range);
+        let report = access_long64_4k_internal_with_writer(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 0xa5,
+            }),
+            &mut callback,
+            false,
+            None,
+            &mut writes,
+        );
+
+        assert_eq!(
+            report.outcome,
+            Err(TrackedAccessError::TableWrite {
+                level: PageTableLevel::Pt,
+                entry_address: dirty_address,
+                bit: AdBit::Dirty,
+                source: MemoryAccessError::Unmapped(dirty_address),
+            })
+        );
+        assert_eq!(report.ad_update_count, 4);
+        assert_eq!(report.ad_updates, expected_accessed_updates(4));
+        assert_eq!(
+            attempts,
+            [0x1008, 0x2010, 0x3018, 0x4020, 0x4020].map(GuestPhysicalAddress::new)
+        );
+        assert_eq!(
+            logged(&callbacks),
+            [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
+        );
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4027]);
+        assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
     }
 
     #[test]

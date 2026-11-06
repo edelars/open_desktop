@@ -284,6 +284,25 @@ API не реализует `GuestMemory`, cross-page операции, huge pag
 исключение-доставку или SMP/DMA coherence; pure probe выше остаётся без A/D
 эффектов.
 
+#### Injected table-write failure ordering (S4-09b)
+
+The private tracked-walker test seam supplies a table-entry writer. Production
+calls still delegate each A/D update to `PhysicalMemory::write_u64`; there is no
+public or general fault-injection API. Injected A-write failures at PML4, PDPT,
+PD and PT prove that only earlier successful writes remain committed. The
+failing entry and all later entries stay unchanged, and the error names the
+exact level, entry address and A/D bit. `TrackedAccessReport` includes only
+committed `AdUpdate` values; callbacks contain only successfully committed
+entry writes, in commit order.
+
+A separate injected D failure after all four A updates preserves that A prefix,
+leaves the leaf D bit and operand unchanged, and emits no D or operand callback.
+The normal `PhysicalMemory` writer tests separately verify that an ordinary
+rejected write leaves its complete range unchanged and invokes no callback.
+Callback panic remains a host panic after the write has committed. The seam does
+not add whole-operation rollback, cross-page or MMIO/guest-store behavior,
+exception delivery, or cached A/D semantics; full S4-09 remains open.
+
 ## S4-06b CPU-connected paged MOV
 
 The public `od_machine::step_paged_mov` entry uses its internal

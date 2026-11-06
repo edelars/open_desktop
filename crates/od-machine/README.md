@@ -20,6 +20,13 @@ only a pure-probe experiment for S4-13a; it does not implement production TLB
 invalidation or cache tracked A/D effects. Full CPU/MMU paging and fault
 delivery, UART/APIC/PCI, production vCPU scheduling, JIT integration и Linux
 boot ещё не реализованы.
+S4-09b adds a private tracked-walker test seam and verifies injected A-write
+failure at each page-table level plus D-write failure after the complete A
+prefix. Committed `AdUpdate` and callback order, exact `TableWrite` metadata,
+unchanged rejected entries and the absent operand/D commit are checked. The
+production writer still uses `PhysicalMemory::write_u64`; full S4-09 remains
+open for permission-level coverage, CPU integration and system acceptance. See
+the [S4-09b report](../../docs/reports/STAGE_4_S4-09B_2026-11-05.md).
 Bounded S4-21a adds a synchronous diagnostic vCPU session owning one
 `LongModeState` and `MachineBus`, with runnable/paused/stopped/terminal states,
 finite interpreter calls, preserved RFLAGS definedness, and distinct fault,
