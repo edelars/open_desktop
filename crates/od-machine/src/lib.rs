@@ -54,6 +54,7 @@ pub use paged_exception_delivery::{
     PagedCr0WpMovStepReport, PagedExceptionDeliveryError, PagedExceptionDeliveryOutcome,
     PagedExceptionDeliveryReport, PagedExceptionHandlerEntryReport,
     deliver_and_step_paged_pf_handler, deliver_paged_page_fault, step_paged_cr0_wp_mov,
+    step_paged_cr0_wp_page_table_repair_mov,
 };
 pub use paged_memory_adapter::{
     PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope, PagedMovStepError,

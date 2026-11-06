@@ -1264,6 +1264,31 @@ Shutdown because their activity schema contains only Running and Halted. See
 the [S4-19c report](../reports/STAGE_4_S4-19C_2026-11-06.md) and
 [verification record](../testing/MACHINE.md#s4-19c-secondary-pf-double-fault-delivery-and-shutdown).
 
+## Guest PTE repair and INVLPG (S4-19d)
+
+The bounded #PF handler profile adds one separate exact `MOV [RDI],RSI`
+qword-store selector. It does not widen the established `MOV [RBX],RCX` / `MOV
+RAX,[RBX]` allowlist. After the actual WP=1 write fault and successful vector-14
+entry through IDTR/GDTR values initialized in the fixture, the handler writes
+a repaired leaf PTE through a writable guest alias to the page-table page,
+then executes the existing exact
+`INVLPG [RBX]` profile for the original faulting linear address. RBX and RCX
+remain available for the original store and are not host-patched after fault
+entry. The instruction selector admits only the exact store form; the fixture
+sets RDI to the alias and RSI to the repaired PTE value, and those fixture
+preconditions preserve Present, Accessed, supervisor-only U/S=0, the physical
+page address and the selected other bits. The qword operand must remain within one 4 KiB page; a
+crossing address is rejected before operand access. Tracked writes and
+page-table A/D changes remain visible in execution order.
+
+This bounded stop point verifies the guest's PTE store and retired INVLPG;
+data has not yet been modified. The tracked execution path is uncached, so this
+does not prove a stale translation would otherwise be observed or that INVLPG
+is necessary for visibility. Guest error-code discard, IRETQ, fault retry and
+successful data commit remain for S4-19e. See the
+[S4-19d report](../reports/STAGE_4_S4-19D_2026-11-06.md) and
+[verification record](../testing/MACHINE.md#s4-19d-guest-pte-repair-and-invlpg).
+
 ## Scoped tracked memory for one Published V2 JIT load (S4-15a)
 
 `with_paged_mov_memory` gives one synchronous callback a temporary, read-only

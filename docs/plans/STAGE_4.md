@@ -920,6 +920,26 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Результат:** см. [S4-19c report](../reports/STAGE_4_S4-19C_2026-11-06.md)
   и [manifest](../reports/data/stage4/s4-19c-double-fault-shutdown-2026-11-06.json).
 
+#### S4-19d. Guest PTE repair and INVLPG
+
+- [x] Принято после независимого ревью и проверок.
+- **Case:** после реального #PF при WP=1 handler через отдельный exact qword
+  `MOV [RDI],RSI` записывает новый RW leaf PTE в writable alias page-table
+  page, затем исполняет настоящий `INVLPG [RBX]` для исходной faulting GVA.
+  Fixture задаёт RDI и RSI так, чтобы менять только нужный leaf PTE; сам
+  selector этого alias/value не ограничивает. RBX/RCX остаются без изменений.
+- **Проверка:** PTE меняется только гостевой инструкцией, A и supervisor-only
+  U/S=0 сохраняются, D задаётся tracked store для alias mapping, исходные данные остаются прежними,
+  CR2 остаётся исходным, INVLPG ретируется ровно один раз с faulting GVA.
+- **Граница:** guest IRETQ и retry исходного MOV не выполняются; кэшированной
+  translation в tracked execution path нет, поэтому этот срез не утверждает
+  необходимость INVLPG для видимости нового PTE или eviction stale TLB entry.
+  Cross-page qword operands отклоняются до operand access.
+  Следующий срез S4-19e покрывает guest stack adjustment, paged IRETQ, retry и
+  завершение записи.
+- **Результат:** см. [S4-19d report](../reports/STAGE_4_S4-19D_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-19d-guest-pte-repair-invlpg-2026-11-06.json).
+
 ### S4-20. CPL3 и системные вызовы/возвраты
 
 - [ ] Принято после ревью.

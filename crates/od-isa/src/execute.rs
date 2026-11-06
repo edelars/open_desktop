@@ -2080,6 +2080,10 @@ pub struct PagedCpl0Cr0WpProbeV1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0Cr0WpMovV1;
 
+/// Exact paged `MOV [RDI], RSI` for a CPL0 page-table repair handler.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0PageTableRepairMovV1;
+
 /// Explicit opt-in marker for the paged probe profile that additionally
 /// admits the exact qword `PUSH RCX` and `POP RAX` stack forms.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2156,6 +2160,7 @@ pub enum PagedProbeRejection {
     NotRunning,
     StiShadowMissing,
     StiShadowActive,
+    CrossPageOperand { address: u64, length: usize },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -16947,6 +16952,134 @@ pub fn step_paged_cr0_wp_probe<P: crate::PortIo>(
         context,
         initial_rflags_defined,
     )
+}
+
+/// Execute exactly bare `MOV [RDI], RSI` with paging and CR0.WP enabled.
+pub fn step_paged_cr0_wp_page_table_repair_mov(
+    _profile: PagedCpl0PageTableRepairMovV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    let result = |exit, instructions_executed| PagedProbeResult {
+        exit,
+        instructions_executed,
+        rflags_defined: initial_rflags_defined,
+    };
+    let reject = |reason| result(PagedProbeExit::Rejected(reason), 0);
+    if state.activity == Some(crate::CpuActivity::Shutdown) {
+        return result(PagedProbeExit::Shutdown, 0);
+    }
+    if initial_rflags_defined & !crate::INTEGER_FLAGS != 0 {
+        return reject(PagedProbeRejection::InvalidRflagsDefined {
+            value: initial_rflags_defined,
+        });
+    }
+    if context.mode != InstructionMode::Long64 {
+        return reject(PagedProbeRejection::WrongMode);
+    }
+    if context.privilege != PrivilegeLevel::Ring0 {
+        return reject(PagedProbeRejection::WrongPrivilege);
+    }
+    if state.cr0.is_none() || state.cr3.is_none() || state.cr4.is_none() {
+        return reject(PagedProbeRejection::ControlRegistersMissing);
+    }
+    if state.cr0 != Some(Cr0Profile::BASE)
+        || state.cr4 != Some(Cr4Profile::BASE)
+        || efer != 0xd00
+        || state
+            .cr3
+            .is_some_and(|value| value & !((1u64 << 36) - 1) != 0)
+    {
+        return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
+    }
+    if state.activity == Some(crate::CpuActivity::Halted) {
+        return result(PagedProbeExit::Halted, 0);
+    }
+    if state.activity.is_none() {
+        return reject(PagedProbeRejection::ActivityMissing);
+    }
+    if state.activity != Some(crate::CpuActivity::Running) {
+        return reject(PagedProbeRejection::NotRunning);
+    }
+    if state.sti_shadow.is_none() {
+        return reject(PagedProbeRejection::StiShadowMissing);
+    }
+    if state.sti_shadow != Some(crate::StiShadow::Clear) {
+        return reject(PagedProbeRejection::StiShadowActive);
+    }
+
+    let context = AccessContext {
+        origin: AccessOrigin::Explicit,
+        ..context
+    };
+    for (offset, expected) in [0x48, 0x89, 0x37].into_iter().enumerate() {
+        let address = state.rip.checked_add(offset as u64);
+        if address.is_none_or(|address| address >> 47 != 0 && address >> 47 != 0x1ffff) {
+            return result(
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                }),
+                0,
+            );
+        }
+        let byte = match memory.fetch(address.unwrap(), context) {
+            Ok(byte) => byte,
+            Err(MemoryError::Architectural(fault)) => {
+                return result(PagedProbeExit::Fault(fault), 0);
+            }
+            Err(error) => return result(PagedProbeExit::Backend(error), 0),
+        };
+        if byte != expected {
+            return result(
+                PagedProbeExit::Unsupported {
+                    opcode: if offset == 2 { 0x89 } else { byte },
+                },
+                0,
+            );
+        }
+    }
+    let destination = MemoryOperand {
+        base: AddressBase::Register(Register::Rdi),
+        index: None,
+        scale: 1,
+        displacement: 0,
+        address_size: OperandSize::Qword,
+        size: OperandSize::Qword,
+    };
+    let next_rip = state.rip.wrapping_add(3);
+    let start = match destination.linear_address_48(state, next_rip) {
+        Ok(start) => start,
+        Err(fault) => return result(PagedProbeExit::Fault(fault), 0),
+    };
+    if start & 0xfff > 0xff8 {
+        return reject(PagedProbeRejection::CrossPageOperand {
+            address: start,
+            length: 8,
+        });
+    }
+    let address = match destination.access_address_48(state, next_rip) {
+        Ok(address) => address,
+        Err(MemoryError::Architectural(fault)) => return result(PagedProbeExit::Fault(fault), 0),
+        Err(error) => return result(PagedProbeExit::Backend(error), 0),
+    };
+    if let Err(error) = memory.write_integer(
+        address,
+        context,
+        OperandSize::Qword,
+        state.gpr[Register::Rsi as usize],
+    ) {
+        return match error {
+            MemoryError::Architectural(fault) => result(PagedProbeExit::Fault(fault), 0),
+            error => result(PagedProbeExit::Backend(error), 0),
+        };
+    }
+    state.rip = next_rip;
+    result(PagedProbeExit::Retired, 1)
 }
 
 /// Execute only the exact qword data MOV forms admitted by the CPU-owned
@@ -149553,6 +149686,246 @@ mod paged_cr0_wp_probe_tests {
             rflags: 0x8d7,
             ..LongModeState::default()
         }
+    }
+
+    fn repair(
+        state: &mut LongModeState,
+        memory: &mut Memory,
+    ) -> PagedProbeResult<std::convert::Infallible> {
+        step_paged_cr0_wp_page_table_repair_mov(
+            PagedCpl0PageTableRepairMovV1,
+            state,
+            memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        )
+    }
+
+    #[test]
+    fn page_table_repair_mov_writes_unaligned_and_preserves_registers_and_flags() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rdi as usize] = 0x1001;
+        state.gpr[Register::Rsi as usize] = 0x1234_5678_9abc_def3;
+        state.gpr[Register::Rbx as usize] = 0x8765;
+        state.gpr[Register::Rcx as usize] = 0x4321;
+        let mut expected = state.clone();
+        expected.rip = 3;
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        let result = repair(&mut state, &mut memory);
+        assert_eq!(result.exit, PagedProbeExit::Retired);
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+        assert_eq!(state, expected);
+        assert_eq!(&memory.bytes[1..9], &0x1234_5678_9abc_def3u64.to_le_bytes());
+        assert_eq!(memory.fetches, [0, 1, 2]);
+    }
+
+    #[test]
+    fn page_table_repair_mov_checks_each_fetch_address_before_fetch() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.rip = 0x0000_7fff_ffff_fffe;
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x48, 0x89], state.rip);
+        let result = repair(&mut state, &mut memory);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [before.rip, before.rip + 1]);
+        assert!(memory.accesses.is_empty());
+
+        let mut memory = Memory::at(&[0x48, 0x89], state.rip);
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(0),
+            linear_address: Some(before.rip + 1),
+        };
+        memory.fetch_error = Some((before.rip + 1, MemoryError::Architectural(fault.clone())));
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Fault(fault)
+        );
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [before.rip, before.rip + 1]);
+
+        state.rip = u64::MAX;
+        let before_wrap = state.clone();
+        let mut memory = Memory::at(&[0x48], state.rip);
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before_wrap);
+        assert_eq!(memory.fetches, [u64::MAX]);
+    }
+
+    #[test]
+    fn page_table_repair_mov_rejects_cross_page_operand_before_access() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rdi as usize] = 0x1ff9;
+        state.gpr[Register::Rsi as usize] = 0x1234;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        let result = repair(&mut state, &mut memory);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::CrossPageOperand {
+                address: 0x1ff9,
+                length: 8,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0, 1, 2]);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn page_table_repair_mov_handles_canonical_address_boundaries() {
+        for address in [0x0000_7fff_ffff_fff9, 0xffff_ffff_ffff_fff9] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rdi as usize] = address;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+            assert_eq!(
+                repair(&mut state, &mut memory).exit,
+                PagedProbeExit::Rejected(PagedProbeRejection::CrossPageOperand {
+                    address,
+                    length: 8,
+                })
+            );
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rdi as usize] = 0xffff_ffff_ffff_fff8;
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        memory.data_base = 0xffff_ffff_ffff_fff8;
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Retired
+        );
+        assert_eq!(
+            memory.accesses,
+            [(crate::AccessKind::Write, 0xffff_ffff_ffff_fff8, 8)]
+        );
+
+        state.rip = 0;
+        state.gpr[Register::Rdi as usize] = 0x0000_8000_0000_0ff9;
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn page_table_repair_mov_reports_opcode_for_unsupported_modrm() {
+        let mut state = make_state(Cr0Profile::BASE);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x48, 0x89, 0x0b]);
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Unsupported { opcode: 0x89 }
+        );
+        assert_eq!(state, before);
+        assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn page_table_repair_mov_faults_and_rejections_do_not_retire() {
+        let fault = ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(0x1000),
+        };
+        for fetch_fault in [true, false] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rdi as usize] = 0x1000;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+            if fetch_fault {
+                memory.fetch_error = Some((1, MemoryError::Architectural(fault.clone())));
+            } else {
+                memory.error = Some(MemoryError::Architectural(fault.clone()));
+            }
+            let result = repair(&mut state, &mut memory);
+            assert_eq!(result.exit, PagedProbeExit::Fault(fault.clone()));
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            if fetch_fault {
+                assert!(memory.accesses.is_empty());
+            }
+        }
+        for code in [
+            &[0x48, 0x89, 0x0b][..],
+            &[0x48, 0x8b, 0x37],
+            &[0x66, 0x48, 0x89, 0x37],
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            let before = state.clone();
+            let mut memory = Memory::new(code);
+            assert!(matches!(
+                repair(&mut state, &mut memory).exit,
+                PagedProbeExit::Unsupported { .. }
+            ));
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+        let mut state = make_state(Cr0Profile::BASE & !(1 << 16));
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile)
+        );
+        assert!(memory.fetches.is_empty());
+        state.activity = Some(crate::CpuActivity::Shutdown);
+        assert_eq!(
+            repair(&mut state, &mut memory).exit,
+            PagedProbeExit::Shutdown
+        );
+        assert!(memory.fetches.is_empty());
+    }
+
+    #[test]
+    fn page_table_repair_form_is_not_admitted_by_existing_mov_profile() {
+        let mut state = make_state(Cr0Profile::BASE);
+        let mut memory = Memory::new(&[0x48, 0x89, 0x37]);
+        let result = step_paged_cr0_wp_mov(
+            PagedCpl0Cr0WpMovV1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert!(matches!(result.exit, PagedProbeExit::Unsupported { .. }));
+        assert!(memory.accesses.is_empty());
     }
 
     fn step(

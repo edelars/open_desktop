@@ -593,3 +593,22 @@ This is local emulator evidence for #PF → #DF and #DF-delivery #PF → shutdow
 inside the bounded profile. It does not establish other exception-pair
 precedence, hardware ordering, handler repair, INVLPG, IRETQ, or retry. Results
 are recorded in the [S4-19c report](../reports/STAGE_4_S4-19C_2026-11-06.md).
+
+<a id="s4-19d-guest-pte-repair-and-invlpg"></a>
+
+## S4-19d: guest PTE repair and INVLPG
+
+The system scenario raises a real write-protection #PF, delivers it through
+the IDTR/GDTR values set in its initial fixture state, then executes guest
+`MOV [RDI],RSI` to change the selected writable alias PTE-page mapping's leaf
+data PTE from read-only to read-write while retaining A and supervisor-only
+U/S=0. It next executes guest `INVLPG [RBX]` for the
+original faulting address. Checks cover unchanged faulting data, unchanged
+RBX/RCX, CR2, retired instruction count, exact PTE value, invalidation address,
+and tracked A/D and callback order. No host PTE patch occurs after the initial
+fixture setup.
+
+This stops before IRETQ and retry. Since the tracked paged path does not keep a
+translation cache, the scenario demonstrates guest invalidation execution but
+not stale-TLB eviction or that the invalidation is needed. Results are recorded
+in the [S4-19d report](../reports/STAGE_4_S4-19D_2026-11-06.md).

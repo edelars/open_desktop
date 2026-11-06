@@ -4,7 +4,8 @@ use od_isa::{CpuActivity, LongModeState, Register, StiShadow};
 use od_machine::{
     AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
     MemoryRegionKind, MemoryRegionSpec, PagedExceptionDeliveryOutcome, RamLimits,
-    deliver_and_step_paged_pf_handler, step_paged_cr0_wp_mov, step_paged_lgdt, step_paged_lidt,
+    deliver_and_step_paged_pf_handler, deliver_paged_page_fault, step_paged_cr0_wp_mov,
+    step_paged_cr0_wp_page_table_repair_mov, step_paged_invlpg, step_paged_lgdt, step_paged_lidt,
 };
 
 const CR0: u64 = 0x8001_0033;
@@ -21,6 +22,127 @@ const DATA_PHYSICAL: u64 = 0xe000;
 const SENTINEL: u64 = 0x0123_4567_89ab_cdef;
 const STORE: [u8; 3] = [0x48, 0x89, 0x0b]; // MOV [RBX],RCX
 const LOAD: [u8; 3] = [0x48, 0x8b, 0x03]; // MOV RAX,[RBX]
+
+#[test]
+fn guest_repairs_faulting_pte_and_retires_invlpg() {
+    let mut bus = make_bus(true, true, true, true);
+    put_qword(&mut bus, 0x4018, 0x6027); // writable alias of the data page table
+    put_bytes(&mut bus, 0x9000, &[0x48, 0x89, 0x37, 0x0f, 0x01, 0x3b]);
+    let mut state = initial_state(0x202);
+    state.gpr[Register::Rdi as usize] = 0x0040_3000;
+    state.gpr[Register::Rsi as usize] = 0xe023;
+    let original_rbx = state.gpr[Register::Rbx as usize];
+    let original_rcx = state.gpr[Register::Rcx as usize];
+
+    let fault_step = start_faulting_store(&mut bus, &mut state);
+    let fault = fault_step.page_fault.unwrap();
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x6000), AccessWidth::Qword)
+            .unwrap(),
+        0xe021
+    );
+    let mut delivery_writes = Vec::new();
+    let delivery = deliver_paged_page_fault(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        &fault,
+        |range| delivery_writes.push(range),
+    )
+    .unwrap();
+    assert_eq!(
+        delivery.outcome,
+        PagedExceptionDeliveryOutcome::PageFaultDelivered
+    );
+    assert_eq!(delivery.committed_writes, delivery_writes);
+    assert_eq!(
+        delivery_writes
+            .iter()
+            .map(|r| (r.start().get(), r.len()))
+            .collect::<Vec<_>>(),
+        [
+            (0x5810, 8),
+            (0xd018, 8),
+            (0xd010, 8),
+            (0xd008, 8),
+            (0xd000, 8),
+            (0x5808, 8),
+            (0xcff8, 8),
+            (0xcff0, 8)
+        ]
+    );
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x6000), AccessWidth::Qword)
+            .unwrap(),
+        0xe021
+    );
+    assert_eq!(state.rip, HANDLER_RIP);
+
+    let mut repair_writes = Vec::new();
+    let repair = step_paged_cr0_wp_page_table_repair_mov(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |range| repair_writes.push(range),
+    )
+    .unwrap();
+    assert_eq!(repair.cpu.instructions_executed, 1);
+    assert!(repair.page_fault.is_none());
+    assert!(repair.access_error.is_none());
+    assert_eq!(state.rip, HANDLER_RIP + 3);
+    assert_eq!(repair.committed_writes, repair_writes);
+    assert_eq!(
+        repair_writes
+            .iter()
+            .map(|r| (r.start().get(), r.len()))
+            .collect::<Vec<_>>(),
+        [(0x4018, 8), (0x6000, 8)]
+    );
+    assert_eq!(repair.ad_updates.len(), 1);
+    assert_eq!(repair.ad_updates[0].address.get(), 0x4018);
+    assert_eq!(repair.ad_updates[0].bit, od_machine::AdBit::Dirty);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(0x6000), AccessWidth::Qword)
+            .unwrap(),
+        0xe023
+    );
+
+    let mut invlpg_writes = Vec::new();
+    let invlpg = step_paged_invlpg(
+        &mut state,
+        &mut bus,
+        CR3,
+        EFER,
+        context(),
+        od_isa::INTEGER_FLAGS,
+        |range| invlpg_writes.push(range),
+    )
+    .unwrap();
+    assert_eq!(invlpg.cpu.instructions_executed, 1);
+    assert_eq!(
+        invlpg.cpu.exit,
+        od_isa::InvlpgExit::TranslationInvalidation(od_isa::TranslationInvalidation::Invlpg {
+            linear_address: DATA_LINEAR
+        })
+    );
+    assert!(invlpg.page_fault.is_none());
+    assert!(invlpg.access_error.is_none());
+    assert!(invlpg_writes.is_empty());
+    assert_eq!(state.rip, HANDLER_RIP + 6);
+    assert_eq!(state.cr2, Some(DATA_LINEAR));
+    assert_eq!(state.gpr[Register::Rbx as usize], original_rbx);
+    assert_eq!(state.gpr[Register::Rcx as usize], original_rcx);
+    assert_eq!(
+        bus.read_physical(GuestPhysicalAddress::new(DATA_PHYSICAL), AccessWidth::Qword)
+            .unwrap(),
+        SENTINEL
+    );
+}
 
 fn context() -> AccessContext {
     AccessContext {

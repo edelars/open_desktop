@@ -7,12 +7,13 @@ use crate::{
 };
 use od_isa::{
     CpuActivity, LongModeState, OperandSize, PageFaultDeliveryResult, PagedCpl0Cr0WpMovV1,
-    PagedProbeResult, deliver_page_fault,
+    PagedCpl0PageTableRepairMovV1, PagedProbeResult, deliver_page_fault,
     interrupt::deliver_double_fault,
     memory::{
         AccessContext, AccessKind, DoubleFaultRecord, GuestMemory, MemoryError, PageFaultRecord,
     },
     step_paged_cr0_wp_mov as cpu_step_paged_cr0_wp_mov,
+    step_paged_cr0_wp_page_table_repair_mov as cpu_step_paged_cr0_wp_page_table_repair_mov,
 };
 use std::convert::Infallible;
 
@@ -91,6 +92,49 @@ pub fn step_paged_cr0_wp_mov(
     };
     let cpu = cpu_step_paged_cr0_wp_mov(
         PagedCpl0Cr0WpMovV1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    );
+    if let Some(record) = &memory.secondary_page_fault {
+        state.cr2 = Some(record.cr2_value());
+    }
+    Ok(PagedCr0WpMovStepReport {
+        cpu,
+        page_fault: memory.secondary_page_fault,
+        access_error: memory.access_error,
+        ad_updates: memory.ad_updates,
+        committed_writes: memory.committed_writes,
+    })
+}
+
+/// Execute the bounded guest page-table repair store through tracked RAM.
+pub fn step_paged_cr0_wp_page_table_repair_mov(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedCr0WpMovStepReport, PagedExceptionDeliveryError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedExceptionDeliveryError::Configuration)?;
+    let mut memory = PagedExceptionMemory {
+        bus,
+        paging,
+        instruction_rip: state.rip,
+        committed_write: &mut committed_write,
+        secondary_page_fault: None,
+        access_error: None,
+        ad_updates: Vec::new(),
+        committed_writes: Vec::new(),
+        descriptor_accessed_target: None,
+    };
+    let cpu = cpu_step_paged_cr0_wp_page_table_repair_mov(
+        PagedCpl0PageTableRepairMovV1,
         state,
         &mut memory,
         context,
