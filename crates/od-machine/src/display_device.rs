@@ -42,7 +42,11 @@ const CAPS_MODE_LIST: u32 = 1 << 0;
 const CAPS_EVENTS: u32 = 1 << 1;
 /// `CAPS` bit 2: the cursor block `0x200-0x2FC` exists (section 15).
 const CAPS_CURSOR: u32 = 1 << 2;
+const CAPS_SECOND_SCREEN: u32 = 1 << 3;
 const CAPS: u32 = CAPS_MODE_LIST | CAPS_EVENTS | CAPS_CURSOR;
+/// Framebuffer GPA of the second screen (DISPLAY_DEVICE.md 16.3).
+pub const DISPLAY_SECOND_FRAMEBUFFER_BASE: u64 = 0xF400_0000;
+const STATUS_DISABLED: u32 = 1 << 2;
 /// Driver protocol versions the device supports: bit `n` = version `n`.
 const DRIVER_PROTOCOLS: u32 = 1 << 1;
 /// Event queue capacity in records.
@@ -394,6 +398,8 @@ struct DisplayState {
     active_shape: CursorShapeInfo,
     cursor_seq: u64,
     shape_seq: u64,
+    /// Second screen (DISPLAY_DEVICE.md 16); `None` in the one-screen configuration.
+    screen1: Option<Screen1>,
 }
 
 impl DisplayState {
@@ -456,6 +462,7 @@ impl DisplayState {
             },
             cursor_seq: 0,
             shape_seq: 0,
+            screen1: None,
         }
     }
 
@@ -490,10 +497,19 @@ impl DisplayState {
             next_event_seq: self.next_event_seq,
             mode_request: self.mode_request,
             cursor_seq,
+            screen1: self.screen1.map(Screen1::after_reset),
             ..Self::with_buffers(staging, active)
         };
         if was_active {
             self.mode_change_count = self.mode_change_count.saturating_add(1);
+        }
+    }
+
+    fn caps(&self) -> u32 {
+        if self.screen1.is_some() {
+            CAPS | CAPS_SECOND_SCREEN
+        } else {
+            CAPS
         }
     }
 
@@ -538,7 +554,7 @@ impl DisplayState {
         let value = match offset {
             reg::ID => ID,
             reg::VERSION => VERSION,
-            reg::CAPS => CAPS,
+            reg::CAPS => self.caps(),
             reg::MAX_WIDTH => DISPLAY_MAX_WIDTH,
             reg::MAX_HEIGHT => DISPLAY_MAX_HEIGHT,
             reg::FORMATS => FORMATS,
@@ -576,6 +592,7 @@ impl DisplayState {
                 self.cursor_read(offset)
             }
             reg::MODE_TABLE..reg::MODE_TABLE_END => Self::mode_table_word(offset),
+            0x300..0x400 => self.screen1_read(offset),
             // MODE_COMMIT, EVENT_POP, REQUEST_RESPONSE (write-only) and every
             // reserved offset read as zero.
             _ => 0,
@@ -600,6 +617,7 @@ impl DisplayState {
             reg::CURSOR_BLOCK_START..reg::CURSOR_BLOCK_END if CAPS & CAPS_CURSOR != 0 => {
                 self.cursor_write(offset, value);
             }
+            0x300..0x400 => self.screen1_write(offset, value),
             // Read-only and reserved offsets: the write is ignored.
             _ => {}
         }
@@ -1072,6 +1090,20 @@ impl DisplayDevice {
             DisplayHandle { state },
         )
     }
+
+    /// Creates a powered-on device with two screens (DISPLAY_DEVICE.md 16.2):
+    /// `CAPS` bit 3 is set and the block `0x300–0x3FC` is live.
+    pub fn new_two_screens_with_handle() -> (Self, DisplayHandle) {
+        let mut state = DisplayState::new();
+        state.screen1 = Some(Screen1::new());
+        let state = Arc::new(Mutex::new(state));
+        (
+            Self {
+                state: Arc::clone(&state),
+            },
+            DisplayHandle { state },
+        )
+    }
 }
 
 fn lock(state: &Mutex<DisplayState>) -> std::sync::MutexGuard<'_, DisplayState> {
@@ -1092,6 +1124,13 @@ impl BusDevice for DisplayDevice {
     fn framebuffer_binding(&self) -> Option<FramebufferBinding> {
         Some(FramebufferBinding {
             base: GuestPhysicalAddress::new(DISPLAY_FRAMEBUFFER_BASE),
+            size: DISPLAY_FRAMEBUFFER_BYTES,
+        })
+    }
+
+    fn secondary_framebuffer_binding(&self) -> Option<FramebufferBinding> {
+        lock(&self.state).screen1.map(|_| FramebufferBinding {
+            base: GuestPhysicalAddress::new(DISPLAY_SECOND_FRAMEBUFFER_BASE),
             size: DISPLAY_FRAMEBUFFER_BYTES,
         })
     }
@@ -1117,6 +1156,69 @@ impl DisplayHandle {
     /// `ACTIVE && generation > 0 && frame_mode_epoch == mode_change_count`.
     pub fn has_current_frame(&self) -> bool {
         lock(&self.state).has_current_frame()
+    }
+
+    /// The second screen (16.10), or `None` in the one-screen configuration.
+    pub fn second_screen_state(&self) -> Option<SecondScreenState> {
+        lock(&self.state).screen1.map(|screen1| SecondScreenState {
+            mode: screen1.mode,
+            disabled: screen1.disabled,
+            generation: screen1.generation,
+            mode_change_count: screen1.mode_change_count,
+            frame_mode_epoch: screen1.frame_mode_epoch,
+        })
+    }
+
+    /// Copies exactly `stride * height` bytes of the second screen's current
+    /// frame (16.5) from the start of its framebuffer region. Same rules as
+    /// [`DisplayHandle::read_frame_into`]: the mode counter is sampled before
+    /// and after the copy. Read-only.
+    pub fn read_second_frame_into(
+        &self,
+        bus: &MachineBus,
+        output: &mut [u8],
+    ) -> Result<FrameInfo, DisplayReadError> {
+        let before = {
+            let state = lock(&self.state);
+            let Some(screen1) = state.screen1 else {
+                return Err(DisplayReadError::NoActiveMode);
+            };
+            if !screen1.mode.is_active() {
+                return Err(DisplayReadError::NoActiveMode);
+            }
+            if !screen1.has_current_frame() {
+                return Err(DisplayReadError::NoFrame);
+            }
+            FrameInfo {
+                mode: screen1.mode,
+                generation: screen1.generation,
+                mode_change_count: screen1.mode_change_count,
+            }
+        };
+        let expected = usize::try_from(before.mode.frame_bytes()).map_err(|_| {
+            DisplayReadError::BufferLength {
+                expected: usize::MAX,
+                actual: output.len(),
+            }
+        })?;
+        if output.len() != expected {
+            return Err(DisplayReadError::BufferLength {
+                expected,
+                actual: output.len(),
+            });
+        }
+        bus.read_framebuffer_bytes(
+            GuestPhysicalAddress::new(DISPLAY_SECOND_FRAMEBUFFER_BASE),
+            output,
+        )
+        .map_err(DisplayReadError::Memory)?;
+        let after = lock(&self.state)
+            .screen1
+            .map(|screen1| screen1.mode_change_count);
+        if after != Some(before.mode_change_count) {
+            return Err(DisplayReadError::ModeChanged);
+        }
+        Ok(before)
     }
 
     /// The enabled driver protocol version; `0` means no driver
@@ -1225,6 +1327,190 @@ impl DisplayHandle {
             return Err(DisplayReadError::ModeChanged);
         }
         Ok(before)
+    }
+}
+
+/// State of the second screen (DISPLAY_DEVICE.md 16.5–16.9). It has no cursor
+/// and no events; its registers mirror screen 0 at `0x300 + offset`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Screen1 {
+    requested_width: u32,
+    requested_height: u32,
+    requested_format: u32,
+    mode: DisplayMode,
+    disabled: bool,
+    frame_since_commit: bool,
+    commit_error: u8,
+    frame_error: u8,
+    generation: u64,
+    mode_change_count: u64,
+    frame_mode_epoch: u64,
+}
+
+impl Screen1 {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reset of the second screen (16.9): mode and flags return to `NO_MODE`,
+    /// the counter grows when a mode or the disabled state existed, the
+    /// generation, the epoch and the framebuffer are kept.
+    fn after_reset(self) -> Self {
+        let had_state = self.mode.is_active() || self.disabled;
+        Self {
+            mode_change_count: if had_state {
+                self.mode_change_count.saturating_add(1)
+            } else {
+                self.mode_change_count
+            },
+            generation: self.generation,
+            frame_mode_epoch: self.frame_mode_epoch,
+            ..Self::new()
+        }
+    }
+
+    fn status(&self) -> u32 {
+        let mut status = 0;
+        if self.mode.is_active() {
+            status |= STATUS_ACTIVE;
+        }
+        if self.frame_since_commit {
+            status |= STATUS_FRAME_SINCE_COMMIT;
+        }
+        if self.disabled {
+            status |= STATUS_DISABLED;
+        }
+        status |= u32::from(self.commit_error) << STATUS_COMMIT_ERROR_SHIFT;
+        status |= u32::from(self.frame_error) << STATUS_FRAME_ERROR_SHIFT;
+        status
+    }
+
+    fn has_current_frame(&self) -> bool {
+        self.mode.is_active()
+            && self.generation > 0
+            && self.frame_mode_epoch == self.mode_change_count
+    }
+}
+
+impl DisplayState {
+    /// Read of `0x300..0x400`: mirrors of screen 0 (16.4); reserved otherwise.
+    fn screen1_read(&self, offset: u64) -> u32 {
+        let Some(screen1) = self.screen1 else {
+            return 0;
+        };
+        match offset {
+            0x30C => DISPLAY_MAX_WIDTH,
+            0x310 => DISPLAY_MAX_HEIGHT,
+            0x314 => FORMATS,
+            0x318 => DISPLAY_SECOND_FRAMEBUFFER_BASE as u32,
+            0x31C => (DISPLAY_SECOND_FRAMEBUFFER_BASE >> 32) as u32,
+            0x320 => DISPLAY_FRAMEBUFFER_BYTES as u32,
+            0x340 => screen1.requested_width,
+            0x344 => screen1.requested_height,
+            0x348 => screen1.requested_format,
+            0x360 => screen1.mode.width,
+            0x364 => screen1.mode.height,
+            0x368 => screen1.mode.format,
+            0x36C => screen1.mode.stride,
+            0x370 => screen1.status(),
+            0x380 => screen1.generation as u32,
+            0x384 => (screen1.generation >> 32) as u32,
+            _ => 0,
+        }
+    }
+
+    /// Write of `0x300..0x400`: only the RW registers, `MODE_COMMIT` and the
+    /// doorbell have effects; every other write is ignored (16.4).
+    fn screen1_write(&mut self, offset: u64, value: u32) {
+        let Some(screen1) = self.screen1.as_mut() else {
+            return;
+        };
+        match offset {
+            0x340 => screen1.requested_width = value,
+            0x344 => screen1.requested_height = value,
+            0x348 => screen1.requested_format = value,
+            0x34C => Self::screen1_commit(screen1, value),
+            0x380 => Self::screen1_doorbell(screen1),
+            _ => {}
+        }
+    }
+
+    /// `S1_MODE_COMMIT` (16.5, 16.6).
+    fn screen1_commit(screen1: &mut Screen1, command: u32) {
+        match command {
+            1 => {
+                let mode = match Self::validate_mode(
+                    screen1.requested_width,
+                    screen1.requested_height,
+                    screen1.requested_format,
+                ) {
+                    Ok(mode) => mode,
+                    Err(code) => {
+                        screen1.commit_error = code;
+                        return;
+                    }
+                };
+                if screen1.mode_change_count == u64::MAX {
+                    screen1.commit_error = ERR_COUNTER_EXHAUSTED;
+                    return;
+                }
+                screen1.mode = mode;
+                screen1.disabled = false;
+                screen1.frame_since_commit = false;
+                screen1.commit_error = ERR_NONE;
+                screen1.mode_change_count += 1;
+            }
+            2 => {
+                // 16.6: already disabled is a success without change.
+                if screen1.disabled {
+                    screen1.commit_error = ERR_NONE;
+                    return;
+                }
+                if screen1.mode_change_count == u64::MAX {
+                    screen1.commit_error = ERR_COUNTER_EXHAUSTED;
+                    return;
+                }
+                screen1.mode = DisplayMode::NONE;
+                screen1.disabled = true;
+                screen1.frame_since_commit = false;
+                screen1.commit_error = ERR_NONE;
+                screen1.mode_change_count += 1;
+            }
+            _ => screen1.commit_error = ERR_INVALID_COMMAND,
+        }
+    }
+
+    /// `S1_FRAME_GENERATION` (16.5): the written value is discarded.
+    fn screen1_doorbell(screen1: &mut Screen1) {
+        if !screen1.mode.is_active() {
+            screen1.frame_error = ERR_NO_ACTIVE_MODE;
+        } else if screen1.generation == u64::MAX {
+            screen1.frame_error = ERR_COUNTER_EXHAUSTED;
+        } else {
+            screen1.generation += 1;
+            screen1.frame_mode_epoch = screen1.mode_change_count;
+            screen1.frame_since_commit = true;
+            screen1.frame_error = ERR_NONE;
+        }
+    }
+}
+
+/// Host-side view of the second screen (DISPLAY_DEVICE.md 16.10).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SecondScreenState {
+    pub mode: DisplayMode,
+    pub disabled: bool,
+    pub generation: u64,
+    pub mode_change_count: u64,
+    pub frame_mode_epoch: u64,
+}
+
+impl SecondScreenState {
+    /// A frame of the current mode exists (16.5).
+    pub fn has_current_frame(&self) -> bool {
+        self.mode.is_active()
+            && self.generation > 0
+            && self.frame_mode_epoch == self.mode_change_count
     }
 }
 
@@ -3858,5 +4144,258 @@ mod tests {
         let elapsed = started.elapsed();
         eprintln!("cursor 64x64 upload, 4102 writes: {elapsed:?}");
         assert_eq!(handle.cursor_state().shape.unwrap().shape_seq, 1);
+    }
+}
+
+#[cfg(test)]
+mod screen1_tests {
+    use super::*;
+    use crate::{AccessWidth, BusDevice, GuestPhysicalAddress, MemoryRegionKind};
+    use crate::{MachineBus, MachineMemoryMap, MemoryRegionSpec, MmioBinding, RamLimits};
+
+    const RAM_BYTES: u64 = 0x0010_0000;
+
+    fn range(start: u64, len: u64) -> crate::GuestPhysicalRange {
+        crate::GuestPhysicalRange::new(GuestPhysicalAddress::new(start), len).unwrap()
+    }
+
+    fn two_screen_regions() -> Vec<MemoryRegionSpec> {
+        vec![
+            MemoryRegionSpec::new(range(0, RAM_BYTES), MemoryRegionKind::Ram),
+            MemoryRegionSpec::new(
+                range(DISPLAY_SECOND_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES),
+                MemoryRegionKind::Framebuffer,
+            ),
+            MemoryRegionSpec::new(
+                range(DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES),
+                MemoryRegionKind::Framebuffer,
+            ),
+            MemoryRegionSpec::new(
+                range(DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES),
+                MemoryRegionKind::Mmio,
+            ),
+        ]
+    }
+
+    fn bus_with(device: Box<dyn BusDevice>, regions: Vec<MemoryRegionSpec>) -> MachineBus {
+        MachineBus::new(
+            MachineMemoryMap::new(36, regions).unwrap(),
+            RamLimits::new(RAM_BYTES),
+            vec![device],
+            vec![MmioBinding {
+                region_start: GuestPhysicalAddress::new(DISPLAY_REGISTERS_BASE),
+                device_index: 0,
+            }],
+            vec![],
+        )
+        .unwrap()
+    }
+
+    fn setup_two() -> (MachineBus, DisplayHandle) {
+        let (device, handle) = DisplayDevice::new_two_screens_with_handle();
+        (bus_with(Box::new(device), two_screen_regions()), handle)
+    }
+
+    fn reg(offset: u64) -> GuestPhysicalAddress {
+        GuestPhysicalAddress::new(DISPLAY_REGISTERS_BASE + offset)
+    }
+
+    fn read(bus: &mut MachineBus, offset: u64) -> u32 {
+        bus.read_physical(reg(offset), AccessWidth::Dword).unwrap() as u32
+    }
+
+    fn write(bus: &mut MachineBus, offset: u64, value: u32) {
+        bus.write_physical(reg(offset), AccessWidth::Dword, u64::from(value), |_| {
+            panic!("register writes must not reach the committed-write callback")
+        })
+        .unwrap();
+    }
+
+    fn set_mode(bus: &mut MachineBus, width: u32, height: u32, format: u32) {
+        write(bus, reg::WIDTH, width);
+        write(bus, reg::HEIGHT, height);
+        write(bus, reg::FORMAT, format);
+    }
+
+    const S1: u64 = 0x300;
+
+    #[test]
+    fn caps_and_mirror_reset_values_of_the_second_screen() {
+        let (mut bus, _handle) = setup_two();
+        assert_eq!(read(&mut bus, reg::CAPS), 0xF);
+        assert_eq!(read(&mut bus, reg::VERSION), 2);
+        assert_eq!(read(&mut bus, S1 + 0x0C), DISPLAY_MAX_WIDTH);
+        assert_eq!(
+            read(&mut bus, S1 + 0x18),
+            DISPLAY_SECOND_FRAMEBUFFER_BASE as u32
+        );
+        assert_eq!(read(&mut bus, S1 + 0x20), DISPLAY_FRAMEBUFFER_BYTES as u32);
+        assert_eq!(read(&mut bus, S1 + 0x70), 0, "NO_MODE at power-on");
+        assert_eq!(read(&mut bus, S1 + 0x80), 0);
+        // ID, VERSION and CAPS are not mirrored (16.4).
+        assert_eq!(read(&mut bus, S1), 0);
+        assert_eq!(read(&mut bus, S1 + 0x08), 0);
+    }
+
+    #[test]
+    fn one_screen_configuration_keeps_the_block_reserved() {
+        let (device, _handle) = DisplayDevice::new_with_handle();
+        let mut bus = bus_with(
+            Box::new(device),
+            vec![
+                MemoryRegionSpec::new(range(0, RAM_BYTES), MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(
+                    range(DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES),
+                    MemoryRegionKind::Framebuffer,
+                ),
+                MemoryRegionSpec::new(
+                    range(DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES),
+                    MemoryRegionKind::Mmio,
+                ),
+            ],
+        );
+        assert_eq!(read(&mut bus, reg::CAPS), 0x7);
+        write(&mut bus, S1 + 0x40, 64);
+        assert_eq!(read(&mut bus, S1 + 0x40), 0);
+        assert_eq!(read(&mut bus, S1 + 0x0C), 0);
+    }
+
+    #[test]
+    fn second_screen_commit_changes_only_the_second_screen() {
+        let (mut bus, handle) = setup_two();
+        write(&mut bus, S1 + 0x40, 64);
+        write(&mut bus, S1 + 0x44, 48);
+        write(&mut bus, S1 + 0x48, 1);
+        write(&mut bus, S1 + 0x4C, 1);
+        assert_eq!(read(&mut bus, S1 + 0x60), 64);
+        assert_eq!(read(&mut bus, S1 + 0x64), 48);
+        assert_eq!(read(&mut bus, S1 + 0x6C), 256);
+        assert_eq!(read(&mut bus, S1 + 0x70) & 1, 1, "ACTIVE_1");
+        let second = handle.second_screen_state().unwrap();
+        assert_eq!(second.mode.width, 64);
+        assert_eq!(second.mode_change_count, 1);
+        // Screen 0 is untouched.
+        assert_eq!(handle.current_mode(), DisplayMode::NONE);
+        assert_eq!(handle.mode_change_count(), 0);
+        assert_eq!(read(&mut bus, reg::STATUS) & 1, 0);
+    }
+
+    #[test]
+    fn second_screen_commit_errors_stay_in_its_own_status() {
+        let (mut bus, _handle) = setup_two();
+        write(&mut bus, S1 + 0x40, 0);
+        write(&mut bus, S1 + 0x4C, 1);
+        assert_eq!(
+            (read(&mut bus, S1 + 0x70) >> 8) & 0xFF,
+            u32::from(ERR_SIZE_NOT_SET)
+        );
+        write(&mut bus, S1 + 0x40, 64);
+        write(&mut bus, S1 + 0x44, 48);
+        write(&mut bus, S1 + 0x48, 9);
+        write(&mut bus, S1 + 0x4C, 1);
+        assert_eq!(
+            (read(&mut bus, S1 + 0x70) >> 8) & 0xFF,
+            u32::from(ERR_UNSUPPORTED_FORMAT)
+        );
+        write(&mut bus, S1 + 0x4C, 3);
+        assert_eq!(
+            (read(&mut bus, S1 + 0x70) >> 8) & 0xFF,
+            u32::from(ERR_INVALID_COMMAND)
+        );
+        assert_eq!(
+            read(&mut bus, reg::STATUS) >> 8 & 0xFF,
+            0,
+            "screen 0 status"
+        );
+    }
+
+    #[test]
+    fn disable_hides_the_mode_counts_and_refuses_the_doorbell() {
+        let (mut bus, handle) = setup_two();
+        write(&mut bus, S1 + 0x40, 64);
+        write(&mut bus, S1 + 0x44, 48);
+        write(&mut bus, S1 + 0x48, 1);
+        write(&mut bus, S1 + 0x4C, 1);
+        write(&mut bus, S1 + 0x80, 0);
+        assert_eq!(handle.second_screen_state().unwrap().generation, 1);
+
+        write(&mut bus, S1 + 0x4C, 2);
+        let state = read(&mut bus, S1 + 0x70);
+        assert_eq!(state & 1, 0, "not active");
+        assert_eq!(state & 4, 4, "DISABLED");
+        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, 2);
+
+        // Repeating the disable is a success without another count step.
+        write(&mut bus, S1 + 0x4C, 2);
+        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, 2);
+
+        write(&mut bus, S1 + 0x80, 0);
+        assert_eq!(
+            (read(&mut bus, S1 + 0x70) >> 16) & 0xFF,
+            u32::from(ERR_NO_ACTIVE_MODE)
+        );
+        assert_eq!(handle.second_screen_state().unwrap().generation, 1);
+
+        // Re-enabling is an ordinary commit.
+        write(&mut bus, S1 + 0x4C, 1);
+        assert_eq!(read(&mut bus, S1 + 0x70) & 4, 0);
+        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, 3);
+    }
+
+    #[test]
+    fn doorbells_of_the_two_screens_are_independent() {
+        let (mut bus, handle) = setup_two();
+        set_mode(&mut bus, 4, 4, 1);
+        write(&mut bus, reg::MODE_COMMIT, 1);
+        write(&mut bus, reg::FRAME_GENERATION, 0);
+        write(&mut bus, reg::FRAME_GENERATION, 0);
+        assert_eq!(handle.frame_generation(), 2);
+        assert_eq!(handle.second_screen_state().unwrap().generation, 0);
+
+        write(&mut bus, S1 + 0x40, 8);
+        write(&mut bus, S1 + 0x44, 8);
+        write(&mut bus, S1 + 0x48, 1);
+        write(&mut bus, S1 + 0x4C, 1);
+        write(&mut bus, S1 + 0x80, 0);
+        assert_eq!(handle.second_screen_state().unwrap().generation, 1);
+        assert_eq!(handle.frame_generation(), 2);
+        // Screen 0's mode change does not touch screen 1's counters.
+        write(&mut bus, reg::MODE_COMMIT, 2);
+        assert_eq!(
+            read(&mut bus, reg::STATUS) >> 8 & 0xFF,
+            u32::from(ERR_INVALID_COMMAND)
+        );
+        assert_eq!(handle.second_screen_state().unwrap().mode_change_count, 1);
+    }
+
+    #[test]
+    fn second_screen_frame_reads_back_its_own_framebuffer() {
+        let (mut bus, handle) = setup_two();
+        write(&mut bus, S1 + 0x40, 2);
+        write(&mut bus, S1 + 0x44, 1);
+        write(&mut bus, S1 + 0x48, 1);
+        write(&mut bus, S1 + 0x4C, 1);
+        // Pixels land in the second region only.
+        bus.write_physical(
+            GuestPhysicalAddress::new(DISPLAY_SECOND_FRAMEBUFFER_BASE),
+            AccessWidth::Dword,
+            0x0403_0201,
+            |_| {},
+        )
+        .unwrap();
+        let mut frame = vec![0u8; 8];
+        assert_eq!(
+            handle.read_second_frame_into(&bus, &mut frame),
+            Err(DisplayReadError::NoFrame)
+        );
+        write(&mut bus, S1 + 0x80, 0);
+        handle.read_second_frame_into(&bus, &mut frame).unwrap();
+        assert_eq!(&frame[..4], &[0x01, 0x02, 0x03, 0x04]);
+        // Screen 0 has no mode, so its frame read still fails.
+        let mut primary = vec![0u8; 8];
+        assert_eq!(
+            handle.read_frame_into(&bus, &mut primary),
+            Err(DisplayReadError::NoActiveMode)
+        );
     }
 }
