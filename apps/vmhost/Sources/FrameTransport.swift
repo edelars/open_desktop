@@ -48,6 +48,8 @@ struct DisplaySmokeOptions {
     let inputFD: Int32?
     /// S10-16, test-only: print the records that leave the VMHost input queue (section 10) instead of leaving them in the queue.
     let inputTrace: Bool
+    /// S10-15, test-only: 1 (default, transport v3 with one screen) or 2 (two screens, profile 4).
+    let screens: Int
 
     /// Returns nil when `--display-smoke` is absent (normal VMHost path).
     static func parse(_ args: [String]) throws -> DisplaySmokeOptions? {
@@ -57,6 +59,7 @@ struct DisplaySmokeOptions {
         var hold = false
         var inputFD: Int32?
         var inputTrace = false
+        var screens = 1
         var sawPattern = false
         var index = 0
         while index < args.count {
@@ -82,6 +85,9 @@ struct DisplaySmokeOptions {
             case "--input-trace":
                 guard value == "1" else { throw FrameTransportError.usage }
                 inputTrace = true
+            case "--display-screens":
+                guard value == "1" || value == "2", let count = Int(value) else { throw FrameTransportError.usage }
+                screens = count
             default:
                 throw FrameTransportError.usage
             }
@@ -91,7 +97,8 @@ struct DisplaySmokeOptions {
         // The input descriptor must be another one than the frame socket; the trace needs a channel.
         guard inputFD != socketFD, inputFD != nil || !inputTrace else { throw FrameTransportError.usage }
         return DisplaySmokeOptions(
-            socketFD: socketFD, pollHz: pollHz, holdUntilClaim: hold, inputFD: inputFD, inputTrace: inputTrace)
+            socketFD: socketFD, pollHz: pollHz, holdUntilClaim: hold, inputFD: inputFD, inputTrace: inputTrace,
+            screens: screens)
     }
 }
 
@@ -134,7 +141,7 @@ enum Layout {
 /// Message constants (section 4).
 private enum Message {
     static let magic: [UInt8] = Array("ODFT".utf8)
-    static let version: UInt16 = 2
+    static let version: UInt16 = 3
     static let headerLength = 16
     static let kindVersion: UInt16 = 0
     static let kindHello: UInt16 = 1
@@ -152,32 +159,47 @@ private enum Message {
         return bytes
     }
 
-    static func mode(count: UInt64, active: Bool, width: UInt32, height: UInt32, stride: UInt32, format: UInt32) -> [UInt8] {
+    /// Section 11.4: `flags` bit 0 ACTIVE, bit 1 DISABLED (screen 1 only); `screen` at offset 28.
+    static func mode(count: UInt64, active: Bool, disabled: Bool = false, width: UInt32, height: UInt32, stride: UInt32,
+                     format: UInt32, screen: UInt32) -> [UInt8] {
         var bytes = header(kind: kindMode, payloadLength: 32)
         bytes.appendLE(count)
-        bytes.appendLE(UInt32(active ? 1 : 0))
+        bytes.appendLE(UInt32((active ? 1 : 0) | (disabled ? 2 : 0)))
         // ACTIVE = 0 means "no signal": the remaining fields are zero (section 4.2).
         bytes.appendLE(active ? width : 0)
         bytes.appendLE(active ? height : 0)
         bytes.appendLE(active ? stride : 0)
         bytes.appendLE(active ? format : 0)
-        bytes.appendLE(UInt32(0))
+        bytes.appendLE(screen)
         return bytes
     }
 
-    static func frame(generation: UInt64, modeChangeCount: UInt64, slot: UInt32) -> [UInt8] {
+    /// Section 11.4: `screen` at offset 20.
+    static func frame(generation: UInt64, modeChangeCount: UInt64, slot: UInt32, screen: UInt32) -> [UInt8] {
         var bytes = header(kind: kindFrame, payloadLength: 24)
         bytes.appendLE(generation)
         bytes.appendLE(modeChangeCount)
         bytes.appendLE(slot)
-        bytes.appendLE(UInt32(0))
+        bytes.appendLE(screen)
         return bytes
     }
 
+    /// Section 11.4: `screen` at offset 12; CURSOR exists for screen 0 only.
     static func cursor(seq: UInt64, slot: UInt32) -> [UInt8] {
         var bytes = header(kind: kindCursor, payloadLength: 16)
         bytes.appendLE(seq)
         bytes.appendLE(slot)
+        bytes.appendLE(UInt32(0))
+        return bytes
+    }
+
+    /// Section 11.4: ANNOUNCE of one screen object, 24 bytes of payload.
+    static func announce(totalSize: UInt64, slotCount: UInt32, screen: UInt32, screenCount: UInt32) -> [UInt8] {
+        var bytes = header(kind: kindAnnounce, payloadLength: 24)
+        bytes.appendLE(totalSize)
+        bytes.appendLE(slotCount)
+        bytes.appendLE(screen)
+        bytes.appendLE(screenCount)
         bytes.appendLE(UInt32(0))
         return bytes
     }
@@ -203,46 +225,57 @@ private func pollAll(_ descriptors: inout [pollfd], timeoutMs: Int32) throws {
     }
 }
 
-/// Sections 6.4 and 10.5: at most one partial message, one pending MODE, one pending FRAME and one pending CURSOR
-/// (48 + 48 + 40 + 32 = 168 bytes).
-struct NotificationQueue {
+/// Sections 6.4, 10.5 and 11.5: at most one partial message, per screen one pending MODE and one pending FRAME, and one
+/// pending CURSOR (screen 0). Order of sending: partial, MODE(0), FRAME(0), CURSOR, MODE(1), FRAME(1).
+/// Bound: 48 + 2 * 48 + 2 * 40 + 32 = 256 bytes.
+final class NotificationQueue {
     private var partial: [UInt8] = []
-    private var pendingMode: [UInt8]?
-    private var pendingFrame: [UInt8]?
+    private var pendingMode: [[UInt8]?] = [nil, nil]
+    private var pendingFrame: [[UInt8]?] = [nil, nil]
     private var pendingCursor: [UInt8]?
 
-    var isEmpty: Bool { partial.isEmpty && pendingMode == nil && pendingFrame == nil && pendingCursor == nil }
+    var isEmpty: Bool {
+        partial.isEmpty && pendingMode.allSatisfy { $0 == nil } && pendingFrame.allSatisfy { $0 == nil }
+            && pendingCursor == nil
+    }
 
-    /// Bytes held by the queue; never above 168 (10.5).
+    /// Bytes held by the queue; never above 256 (11.5).
     var bufferedBytes: Int {
-        partial.count + (pendingMode?.count ?? 0) + (pendingFrame?.count ?? 0) + (pendingCursor?.count ?? 0)
+        partial.count + pendingMode.reduce(0) { $0 + ($1?.count ?? 0) }
+            + pendingFrame.reduce(0) { $0 + ($1?.count ?? 0) } + (pendingCursor?.count ?? 0)
     }
 
-    /// A new MODE replaces an unsent MODE and drops the unsent FRAME. An unsent CURSOR stays (10.5).
-    mutating func queueMode(_ message: [UInt8]) {
-        pendingMode = message
-        pendingFrame = nil
+    /// A new MODE of screen `screen` replaces its unsent MODE and drops its unsent FRAME (11.5).
+    func queueMode(screen: Int, _ message: [UInt8]) {
+        pendingMode[screen] = message
+        pendingFrame[screen] = nil
     }
 
-    /// A new FRAME replaces an unsent FRAME.
-    mutating func queueFrame(_ message: [UInt8]) { pendingFrame = message }
+    /// A new FRAME of screen `screen` replaces its unsent FRAME.
+    func queueFrame(screen: Int, _ message: [UInt8]) { pendingFrame[screen] = message }
 
     /// A new CURSOR replaces an unsent CURSOR; MODE and FRAME do not remove it and it does not remove them.
-    mutating func queueCursor(_ message: [UInt8]) { pendingCursor = message }
+    func queueCursor(_ message: [UInt8]) { pendingCursor = message }
 
-    /// Sends as much as the non-blocking socket accepts: partial message, then MODE, FRAME, CURSOR.
-    mutating func flush(fd: Int32) throws {
+    /// Sends as much as the non-blocking socket accepts, in the order of section 11.5.
+    func flush(fd: Int32) throws {
         while true {
             if partial.isEmpty {
-                if let mode = pendingMode {
+                if let mode = pendingMode[0] {
                     partial = mode
-                    pendingMode = nil
-                } else if let frame = pendingFrame {
+                    pendingMode[0] = nil
+                } else if let frame = pendingFrame[0] {
                     partial = frame
-                    pendingFrame = nil
+                    pendingFrame[0] = nil
                 } else if let cursor = pendingCursor {
                     partial = cursor
                     pendingCursor = nil
+                } else if let mode = pendingMode[1] {
+                    partial = mode
+                    pendingMode[1] = nil
+                } else if let frame = pendingFrame[1] {
+                    partial = frame
+                    pendingFrame[1] = nil
                 } else {
                     return
                 }
@@ -290,7 +323,9 @@ final class FrameTransportWriter {
     private var front: Int?
     private var lastPublished: UInt64 = 0
     private var queuedModeCount: UInt64 = 0
-    private var queue = NotificationQueue()
+    private let queue: NotificationQueue
+    /// Screen of this object (section 11.3): 0 or 1.
+    let screen: Int
     // Cursor publication state (section 10.5), private like the frame state.
     private var lastCursorSeq: UInt64 = 0
     private var cursorFront: Int?
@@ -300,7 +335,9 @@ final class FrameTransportWriter {
     private var cursorSlotShape = [UInt64](repeating: 0, count: Layout.cursorSlotCount)
 
     /// Steps 1-7 of section 2.2 for a fixed maximum mode (test-only writer).
-    init(maxWidth: UInt32, maxHeight: UInt32) throws {
+    init(maxWidth: UInt32, maxHeight: UInt32, screen: Int = 0, queue: NotificationQueue = NotificationQueue()) throws {
+        self.screen = screen
+        self.queue = queue
         guard Self.pageSizeSupported() else { throw FrameTransportError.unsupportedHostPage }
         guard (1...4096).contains(maxWidth), (1...2304).contains(maxHeight) else {
             throw FrameTransportError.hostRefusal("mode \(maxWidth)x\(maxHeight) outside device limits")
@@ -361,6 +398,7 @@ final class FrameTransportWriter {
         base.storeBytes(of: Layout.magic[3], toByteOffset: 3, as: UInt8.self)
         base.storeBytes(of: Message.version.littleEndian, toByteOffset: 4, as: UInt16.self)
         base.storeBytes(of: UInt16(Layout.headerSize).littleEndian, toByteOffset: 6, as: UInt16.self)
+        base.storeBytes(of: UInt32(screen).littleEndian, toByteOffset: 60, as: UInt32.self)
         base.storeBytes(of: UInt32(Layout.readerBlockOffset).littleEndian, toByteOffset: 8, as: UInt32.self)
         base.storeBytes(of: UInt32(Layout.descriptorsOffset).littleEndian, toByteOffset: 12, as: UInt32.self)
         base.storeBytes(of: UInt32(Layout.descriptorSize).littleEndian, toByteOffset: 16, as: UInt32.self)
@@ -421,11 +459,9 @@ final class FrameTransportWriter {
     // MARK: ANNOUNCE (section 4.3)
 
     /// One `sendmsg` with the descriptor. On EAGAIN/EINTR the same `sendmsg` is repeated.
-    func sendAnnounce(on fd: Int32) throws {
-        var message = Message.header(kind: Message.kindAnnounce, payloadLength: 16)
-        message.appendLE(UInt64(totalSize))
-        message.appendLE(UInt32(slotCount))
-        message.appendLE(UInt32(0))
+    func sendAnnounce(on fd: Int32, screenCount: Int) throws {
+        var message = Message.announce(totalSize: UInt64(totalSize), slotCount: UInt32(slotCount),
+                                       screen: UInt32(screen), screenCount: UInt32(screenCount))
         // cmsghdr on Darwin: len u32, level i32, type i32, data at offset 12; CMSG_LEN(4) = CMSG_SPACE(4) = 16.
         var control = [UInt8](repeating: 0, count: 16)
         control.withUnsafeMutableBytes { raw in
@@ -486,14 +522,21 @@ final class FrameTransportWriter {
 
     /// Section 6.3: an active mode beyond the announced limits or with another format cannot be
     /// announced on this connection; that is a host refusal.
-    func queueMode(count: UInt64, active: Bool, width: UInt32, height: UInt32, stride: UInt32, format: UInt32) throws {
+    func queueMode(count: UInt64, active: Bool, disabled: Bool = false, width: UInt32, height: UInt32, stride: UInt32,
+                   format: UInt32) throws {
         if active {
             guard width >= 1, height >= 1, width <= maxWidth, height <= maxHeight,
                   format == Layout.pixelFormatBGRX8888, UInt64(stride) == UInt64(width) * 4 else {
                 throw FrameTransportError.hostRefusal("mode \(width)x\(height) exceeds the announced layout")
             }
         }
-        queue.queueMode(Message.mode(count: count, active: active, width: width, height: height, stride: stride, format: format))
+        // DISABLED is only for screen 1 (section 11.4).
+        if disabled && screen == 0 {
+            throw FrameTransportError.hostRefusal("screen 0 cannot be disabled (section 11.4)")
+        }
+        queue.queueMode(screen: screen, Message.mode(count: count, active: active, disabled: disabled, width: width,
+                                                     height: height, stride: stride, format: format,
+                                                     screen: UInt32(screen)))
         queuedModeCount = count
     }
 
@@ -522,6 +565,7 @@ final class FrameTransportWriter {
     /// Reads the device frame straight into a free slot and publishes it.
     /// Returns true when a frame was published.
     func publishFrame(session: OpaquePointer, mode: od_display_mode) throws -> Bool {
+        // Section 11.5: the frame of this writer's screen; screen 0 uses the same read as before.
         guard let slot = chooseSlot() else { return false }
         let descriptor = descriptorOffset(slot)
         // 5.1 steps 2-3: invalidate, make the mark visible before any pixel write.
@@ -539,14 +583,14 @@ final class FrameTransportWriter {
         var info = od_display_frame_info()
         info.abi_version = vmhost_display_abi_version_v1()
         info.struct_size = UInt32(OD_DISPLAY_FRAME_INFO_SIZE_V1)
-        let status = od_display_session_read_frame(session, slotPixels(slot), length, &info)
+        let status = od_display_session_read_screen_frame(session, UInt32(screen), slotPixels(slot), length, &info)
         if status != OD_DISPLAY_STATUS_OK.rawValue {
             switch status {
             case OD_DISPLAY_STATUS_NO_FRAME.rawValue, OD_DISPLAY_STATUS_NO_ACTIVE_MODE.rawValue,
                  OD_DISPLAY_STATUS_MODE_CHANGED.rawValue, OD_DISPLAY_STATUS_BUFFER_LENGTH.rawValue:
                 return false // slot stays invalid; retry on the next check
             default:
-                throw FrameTransportError.displayABI("od_display_session_read_frame", status)
+                throw FrameTransportError.displayABI("od_display_session_read_screen_frame", status)
             }
         }
         // 6.3: a mode beyond the announced limits cannot be published on this connection.
@@ -579,7 +623,7 @@ final class FrameTransportWriter {
         front = slot
         lastPublished = generation
         // Step 8: the socket write happens after the publication.
-        queue.queueFrame(Message.frame(generation: generation, modeChangeCount: modeCount, slot: UInt32(slot)))
+        queue.queueFrame(screen: screen, Message.frame(generation: generation, modeChangeCount: modeCount, slot: UInt32(slot), screen: UInt32(screen)))
         return true
     }
 
@@ -680,6 +724,18 @@ enum DisplaySmoke {
         return mode
     }
 
+    /// Mode, flags and counters of one screen (DISPLAY_DEVICE.md 16.10). Flags: 1 ACTIVE, 2 HAS_FRAME, 4 DISABLED.
+    static func screenMode(_ session: OpaquePointer, screen: Int) throws -> od_display_screen_mode {
+        var mode = od_display_screen_mode()
+        mode.abi_version = vmhost_display_abi_version_v1()
+        mode.struct_size = UInt32(MemoryLayout<od_display_screen_mode>.size)
+        let status = od_display_session_screen_mode(session, UInt32(screen), &mode)
+        guard status == OD_DISPLAY_STATUS_OK.rawValue else {
+            throw FrameTransportError.displayABI("od_display_session_screen_mode", status)
+        }
+        return mode
+    }
+
     /// One read of the device cursor through the display ABI (S10-14, DISPLAY_DEVICE.md 15.10, 15.11).
     /// nil on `BUSY`: the check is skipped and repeated at the next one.
     static func cursorSnapshot(_ session: OpaquePointer) throws -> CursorSnapshot? {
@@ -749,7 +805,9 @@ enum DisplaySmoke {
         var config = od_display_session_config()
         config.abi_version = vmhost_display_abi_version_v1()
         config.struct_size = UInt32(OD_DISPLAY_SESSION_CONFIG_SIZE_V1)
-        config.profile = OD_DISPLAY_PROFILE_TEST_PATTERN.rawValue
+        // Profile 1: one screen; profile 4 (test-only): two screens (DISPLAY_DEVICE.md 16.2).
+        config.profile = options.screens == 2 ? OD_DISPLAY_PROFILE_TWO_SCREENS_TEST.rawValue
+            : OD_DISPLAY_PROFILE_TEST_PATTERN.rawValue
         var created: OpaquePointer?
         let createStatus = od_display_session_create(&config, &created)
         guard createStatus == OD_DISPLAY_STATUS_OK.rawValue, let session = created else {
@@ -761,8 +819,16 @@ enum DisplaySmoke {
         guard initial.flags & vmhost_display_mode_flag_active() != 0 else {
             throw FrameTransportError.hostRefusal("test pattern profile has no active mode")
         }
-        // Test-only writer with a fixed mode declares that mode as its maximum (section 3.1).
-        let writer = try FrameTransportWriter(maxWidth: initial.width, maxHeight: initial.height)
+        // Section 11.3: one object per screen, all created before the first ANNOUNCE. Each screen's maximum is its
+        // initial mode (test-only writer with a fixed mode, section 3.1). The notification queue is shared.
+        let queue = NotificationQueue()
+        var writers: [FrameTransportWriter] = []
+        for screen in 0..<options.screens {
+            let mode = try DisplaySmoke.screenMode(session, screen: screen)
+            writers.append(try FrameTransportWriter(maxWidth: mode.width, maxHeight: mode.height,
+                                                    screen: screen, queue: queue))
+        }
+        let writer = writers[0]
 
         // 6.1: HELLO first (blocking), then everything is non-blocking.
         guard let hello = try readHello(from: fd) else { return }
@@ -786,9 +852,14 @@ enum DisplaySmoke {
         guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else {
             throw FrameTransportError.channel("O_NONBLOCK errno \(errno)")
         }
-        try writer.sendAnnounce(on: fd)
-        try writer.queueMode(count: initial.mode_change_count, active: true, width: initial.width,
-                             height: initial.height, stride: initial.stride, format: initial.format)
+        // 11.4.1: ANNOUNCE of every screen, in screen order, before anything else.
+        for announced in writers { try announced.sendAnnounce(on: fd, screenCount: options.screens) }
+        for (screen, sending) in writers.enumerated() {
+            let mode = try DisplaySmoke.screenMode(session, screen: screen)
+            try sending.queueMode(count: mode.mode_change_count, active: mode.flags & 1 != 0,
+                                  disabled: mode.flags & 4 != 0, width: mode.width, height: mode.height,
+                                  stride: mode.stride, format: mode.format)
+        }
 
         let tickMs = Int32(max(1, 1000 / options.pollHz))
         var gateOpen = !options.holdUntilClaim
@@ -801,19 +872,27 @@ enum DisplaySmoke {
             guard stepStatus == OD_DISPLAY_STATUS_OK.rawValue else {
                 throw FrameTransportError.displayABI("od_display_session_step", stepStatus)
             }
-            let mode = try currentMode(session)
-            if mode.mode_change_count != writer.queuedMode {
-                try writer.queueMode(count: mode.mode_change_count,
-                                     active: mode.flags & vmhost_display_mode_flag_active() != 0,
-                                     width: mode.width, height: mode.height, stride: mode.stride, format: mode.format)
+            // Each screen is checked on its own: its MODE by mode_change_count, its FRAME by generation (11.5).
+            for (screen, current) in writers.enumerated() {
+                let mode = try DisplaySmoke.screenMode(session, screen: screen)
+                if mode.mode_change_count != current.queuedMode {
+                    try current.queueMode(count: mode.mode_change_count, active: mode.flags & 1 != 0,
+                                          disabled: mode.flags & 4 != 0, width: mode.width, height: mode.height,
+                                          stride: mode.stride, format: mode.format)
+                }
             }
             if !gateOpen, writer.readerHasClaimed { gateOpen = true } // latched
-            if gateOpen,
-               mode.flags & vmhost_display_mode_flag_active() != 0,
-               mode.flags & vmhost_display_mode_flag_has_frame() != 0,
-               mode.generation > writer.lastPublishedGeneration {
-                if try writer.publishFrame(session: session, mode: mode) {
-                    fputs("od-vmhost-smoke: display-smoke published generation \(writer.lastPublishedGeneration)\n", stderr)
+            for (screen, current) in writers.enumerated() {
+                let mode = try DisplaySmoke.screenMode(session, screen: screen)
+                guard gateOpen, mode.flags & 1 != 0, mode.flags & 2 != 0,
+                      mode.generation > current.lastPublishedGeneration else { continue }
+                let plain = od_display_mode(abi_version: vmhost_display_abi_version_v1(),
+                                            struct_size: UInt32(OD_DISPLAY_MODE_SIZE_V1), width: mode.width,
+                                            height: mode.height, stride: mode.stride, format: mode.format,
+                                            flags: mode.flags, reserved: 0, generation: mode.generation,
+                                            mode_change_count: mode.mode_change_count)
+                if try current.publishFrame(session: session, mode: plain) {
+                    fputs("od-vmhost-smoke: display-smoke screen \(screen) published generation \(current.lastPublishedGeneration)\n", stderr)
                 }
             }
             // S10-14 (10.5): the cursor is checked at the same rate. It is published on its own and never
