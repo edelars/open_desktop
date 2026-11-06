@@ -2785,7 +2785,9 @@ fn build_block_with_profile(
                     ));
                 }
                 let reason = match error {
-                    DecodeError::Unsupported { .. } | DecodeError::InvalidMovCr3Lock { .. } => {
+                    DecodeError::Unsupported { .. }
+                    | DecodeError::InvalidMovCr3Lock { .. }
+                    | DecodeError::InvalidMovCr0Lock { .. } => {
                         BlockStopReason::UnsupportedEncoding { guest_rip, error }
                     }
                     error => BlockStopReason::DecodeBoundary(deferred_boundary(guest_rip, error)),
@@ -4674,6 +4676,111 @@ mod tests {
         };
         assert_eq!(boundary.guest_rip, 0x400a);
         assert_eq!(boundary.consumed_prefix_length, Some(1));
+    }
+
+    #[test]
+    fn lock_mov_cr0_is_an_exact_unsupported_boundary_and_preserves_progress() {
+        const ENTRY: u64 = 0x4a00;
+        const LOCK_MOV_CR0: [u8; 4] = [0xf0, 0x0f, 0x22, 0xc0];
+
+        let no_block =
+            no_block(build(&LOCK_MOV_CR0, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+        assert!(matches!(
+            no_block.stop_reason,
+            BlockStopReason::UnsupportedEncoding {
+                guest_rip: ENTRY,
+                error: DecodeError::InvalidMovCr0Lock { length: 4, .. },
+            }
+        ));
+
+        let mut source = mov_rax_imm(3).to_vec();
+        source.extend(LOCK_MOV_CR0);
+        source.extend(mov_rax_imm(7));
+        let block = block(build(&source, ENTRY, ENTRY, BlockLimits::default()).unwrap());
+        assert_eq!(block.instructions.len(), 1);
+        assert_eq!(block.instructions[0].guest_rip, ENTRY);
+        assert_eq!(block.instructions[0].next_rip, ENTRY + 10);
+        assert_eq!(block.guest_ranges.len(), 1);
+        assert_eq!(block.guest_ranges[0].end_rip, ENTRY + 10);
+        assert!(matches!(
+            block.stop_reason,
+            BlockStopReason::UnsupportedEncoding {
+                guest_rip,
+                error: DecodeError::InvalidMovCr0Lock { length: 4, .. },
+            } if guest_rip == ENTRY + 10
+        ));
+
+        // The helper still carries the complete encoding length if this error
+        // is ever deferred through a bounded source boundary.
+        let mut source_memory = CodeMemory::full_code(CodeView::new(ENTRY, &LOCK_MOV_CR0).unwrap());
+        let error =
+            long_decode::decode(&mut source_memory, ENTRY, AccessContext::default()).unwrap_err();
+        assert_eq!(
+            deferred_boundary(ENTRY, error).consumed_prefix_length,
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn lock_mov_cr3_remains_a_typed_unsupported_boundary() {
+        const ENTRY: u64 = 0x4b00;
+        let no_block = no_block(
+            build(
+                &[0xf0, 0x0f, 0x22, 0xd8],
+                ENTRY,
+                ENTRY,
+                BlockLimits::default(),
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            no_block.stop_reason,
+            BlockStopReason::UnsupportedEncoding {
+                guest_rip: ENTRY,
+                error: DecodeError::InvalidMovCr3Lock { length: 4, .. },
+            }
+        ));
+    }
+
+    #[test]
+    fn ordinary_invalid_and_unsupported_decode_errors_keep_their_boundaries() {
+        const ENTRY: u64 = 0x4c00;
+
+        let invalid = no_block(
+            build(
+                &[0xf0, 0x0f, 0x20, 0xc0],
+                ENTRY,
+                ENTRY,
+                BlockLimits::default(),
+            )
+            .unwrap(),
+        );
+        let BlockStopReason::DecodeBoundary(invalid_boundary) = invalid.stop_reason else {
+            panic!("expected invalid decode boundary");
+        };
+        assert_eq!(invalid_boundary.guest_rip, ENTRY);
+        assert_eq!(invalid_boundary.consumed_prefix_length, Some(4));
+        assert!(matches!(
+            invalid_boundary.error,
+            DecodeError::Invalid { .. }
+        ));
+
+        let unsupported = no_block(
+            build(
+                &[0xf0, 0xf0, 0x0f, 0x22, 0xc0],
+                ENTRY,
+                ENTRY,
+                BlockLimits::default(),
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            unsupported.stop_reason,
+            BlockStopReason::UnsupportedEncoding {
+                guest_rip: ENTRY,
+                error: DecodeError::Unsupported { .. },
+            }
+        ));
     }
 
     #[test]
@@ -8540,6 +8647,7 @@ fn deferred_boundary(guest_rip: u64, error: DecodeError) -> DecodeBoundary {
             .and_then(|length| u8::try_from(length).ok()),
         DecodeError::Unsupported { length, .. }
         | DecodeError::InvalidMovCr3Lock { length, .. }
+        | DecodeError::InvalidMovCr0Lock { length, .. }
         | DecodeError::Invalid { length, .. } => Some(*length),
         DecodeError::Memory(_) => None,
     };

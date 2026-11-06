@@ -207,6 +207,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Матрица границ:** translation integration остаётся владельцем `od-machine`; page-fault probe/record отделён от S4-19 delivery/retry; JIT и Linux entry не покрыты. Нет claims о CPU-integrated paging, `#PF`, privileged hardware или Linux boot.
 - **Проверки:** обе команды из отчёта завершились с exit code 0 и `1 passed, 0 failed, 0 ignored; 67 filtered out`; toolchain/host/page-size и исходный clean status сохранены в JSON.
 
+#### S4-01b. Классификация LOCK MOV CR0 в потребителях JIT
+
+- [x] Принято после независимого `gpt-6.1-sol/high` ревью; родительские S4-01 и Stage 4 остаются открытыми.
+- **Evidence:** [отчёт S4-01b](../reports/STAGE_4_S4-01B_2026-11-06.md) и [JSON manifest](../reports/data/stage4/s4-01b-invalid-mov-cr0-lock-2026-11-06.json).
+- **Объём:** block builder сохраняет `InvalidMovCr0Lock` как typed `UnsupportedEncoding` на точном RIP и не теряет уже построенный префикс; deferred boundary сохраняет длину 4. Bounded memory dispatcher останавливается как `Unsupported` до executor; LOCK MOV CR3 остаётся прежним. Допуск native/JIT не расширен.
+- **Контрольные границы:** existing tests сохраняют ordinary Invalid/Unsupported, truncation и byte-budget поведение. CPU #UD не изменялся; существующие canaries перечислены в отчёте.
+- **Ревью:** independent review found no remaining findings after the memory-spy and full-state assertions were added.
+
 ### S4-02. Описать единую карту машины
 
 - [x] Принято после ревью.

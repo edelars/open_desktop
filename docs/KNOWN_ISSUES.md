@@ -1845,10 +1845,10 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 
 - **Дата обнаружения:** 2026-11-05.
 - **Компонент:** `od-jit` decode-error classification in `block.rs` and `memory_dispatch.rs`.
-- **Статус:** открыта; workspace compile blocker observed while validating S4-14c, outside the files changed by this slice.
+- **Статус:** решена в S4-01b 2026-11-06.
 - **Суть и последствия:** `cargo check --workspace --all-targets --offline` fails because two exhaustive matches do not cover `od_isa::long_decode::DecodeError::InvalidMovCr0Lock`. This blocks workspace-wide build validation; the affected cases are independent of the new `od-machine` mutable session.
-- **Основание:** compiler diagnostics at `crates/od-jit/src/block.rs:8537` and `crates/od-jit/src/memory_dispatch.rs:1698`. In contrast, `cargo check -p od-machine --all-targets --locked --offline` succeeds with the cache feature both disabled and enabled.
-- **Следующий шаг:** add the appropriate unsupported/error classification for `InvalidMovCr0Lock` at both consumers and a focused `od-jit` regression, then rerun the workspace all-target check. This issue is not fixed by S4-14c.
+- **Основание и результат:** the previously recorded exhaustive-match gap was resolved in both JIT consumers. `block::tests::lock_mov_cr0_is_an_exact_unsupported_boundary_and_preserves_progress` verifies exact RIP, typed `InvalidMovCr0Lock`, length 4, and preserved decoded prefix; `memory_dispatch::tests::lock_mov_cr0_stops_strict_dispatch_without_retirement_or_tail_execution` verifies strict `Unsupported`, zero retirement at entry, and stopping after the preceding supported memory artifact without executing the suffix. The LOCK MOV CR3 regression also passes. Fresh `cargo check --workspace --all-targets --offline` completed with exit code 0. Details and commands: [S4-01b report](reports/STAGE_4_S4-01B_2026-11-06.md) and [manifest](reports/data/stage4/s4-01b-invalid-mov-cr0-lock-2026-11-06.json).
+- **Граница:** this closes only the missing `InvalidMovCr0Lock` classification in `od-jit`. JIT/native admission was not widened; the parent S4-01 baseline and Stage 4 remain open.
 
 <a id="issue-056-layout-check-unmapped-smoke-root"></a>
 

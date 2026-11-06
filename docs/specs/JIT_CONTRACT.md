@@ -4461,3 +4461,23 @@ STOP without replay remain required. Published IR uses immutable
 compiler-issued source bytes and does not fetch guest instruction bytes at
 runtime; instruction-fetch errors are checked through the demand interpreter
 path. See the [S3-20ga report](../reports/STAGE_3_S3-20ga_2026-11-02.md).
+
+### S4-01b: LOCK MOV CR0 decode boundary in JIT consumers
+
+The exact decoder error `InvalidMovCr0Lock` (`F0 0F 22 C0`, length 4) remains
+architecturally invalid. The block builder stops at that source RIP and keeps
+the typed decode error in `UnsupportedEncoding`; previously decoded
+instructions and their exact guest ranges are preserved. Deferred decode
+boundaries retain the consumed encoded length as well. The bounded memory
+dispatcher returns `Unsupported` at the current RIP before invoking its memory
+executor, and does not continue into subsequent source bytes. This is an
+integration classification only: it does not admit LOCK MOV CR0 to block/JIT
+execution or change the CPU profile's #UD behavior.
+
+The exact LOCK MOV CR3 boundary remains unchanged. Ordinary invalid/unsupported
+encodings, truncated source, and byte/instruction budget boundaries retain
+their existing classifications. CPU #UD behavior is covered by the existing
+`od-isa::execute::paged_mov_profile_tests::lock_prefixed_mov_cr0_is_ud_after_complete_fetch`
+and `od-isa::execute::paged_cr3_probe_tests::paged_cr3_profile_keeps_lock_mov_cr0_as_ud`;
+this JIT slice does not alter CPU semantics. See
+[S4-01b evidence](../reports/STAGE_4_S4-01B_2026-11-06.md).
