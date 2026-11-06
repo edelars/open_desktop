@@ -1,5 +1,6 @@
-//! `od-image-tool info|check <image>`: see the library crate for the exit
-//! statuses and the read-only guarantee.
+//! `od-image-tool info|check|export|salvage ...`: see the library crate for the
+//! exit statuses, the read-only guarantee of `info`/`check` and the new-file-only
+//! rule of `export` and `salvage`.
 
 use std::ffi::OsString;
 use std::io::Write;

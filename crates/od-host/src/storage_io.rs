@@ -259,6 +259,15 @@ impl HostFileStorage {
         Ok(storage)
     }
 
+    /// `(st_dev, st_ino)` of the file this instance holds the exclusive writer
+    /// lock on (from `fstat` on the locked descriptor); `None` for an instance
+    /// without a writer lock.
+    pub fn file_identity(&self) -> Option<(u64, u64)> {
+        self.lock
+            .as_ref()
+            .map(|lock| (lock.identity.dev, lock.identity.ino))
+    }
+
     /// Opens an existing regular file for reading and writing and takes the
     /// exclusive writer lock (`flock(LOCK_EX | LOCK_NB)`) on the opened file.
     ///

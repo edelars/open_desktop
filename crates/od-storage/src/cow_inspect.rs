@@ -231,7 +231,7 @@ impl InspectReport {
     }
 }
 
-fn classify_cow(e: &CowError) -> (Outcome, &'static str, Option<u64>) {
+pub fn classify_cow(e: &CowError) -> (Outcome, &'static str, Option<u64>) {
     match e {
         CowError::Storage(_) => (Outcome::Io, "io_error", None),
         CowError::UnsupportedRoot(_) => (Outcome::Unsupported, "unsupported_root", None),
@@ -256,7 +256,7 @@ fn classify_cow(e: &CowError) -> (Outcome, &'static str, Option<u64>) {
     }
 }
 
-fn classify_snap(e: &SnapError) -> (Outcome, &'static str, Option<u64>) {
+pub fn classify_snap(e: &SnapError) -> (Outcome, &'static str, Option<u64>) {
     match e {
         SnapError::Cow(c) => classify_cow(c),
         SnapError::NotSnapFile(_) => (Outcome::Unsupported, "not_a_layer_file", None),

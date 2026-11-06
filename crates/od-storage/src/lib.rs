@@ -30,11 +30,21 @@ pub mod cow_snapshot;
 #[cfg(any(test, feature = "test-support"))]
 pub mod cow_inspect;
 
+/// RAW import/export with a verified result (S9-20) and salvage into a new
+/// copy (S9-21). Not normative.
+#[cfg(any(test, feature = "test-support"))]
+pub mod cow_export;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod cow_salvage;
+
 /// In-memory backend and the shared backend contract suite. Enabled by tests
 /// and by the `test-support` feature for host crates that run the same suite.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
+#[cfg(test)]
+mod cow_export_tests;
 #[cfg(test)]
 mod cow_inspect_tests;
 #[cfg(test)]
@@ -45,6 +55,8 @@ mod cow_parse_tests;
 mod cow_proto_tests;
 #[cfg(test)]
 mod cow_recovery_tests;
+#[cfg(test)]
+mod cow_salvage_tests;
 #[cfg(test)]
 mod cow_snapshot_tests;
 #[cfg(test)]

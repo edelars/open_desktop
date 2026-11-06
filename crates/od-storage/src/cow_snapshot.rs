@@ -603,7 +603,7 @@ fn clear_bit(bitmap: &mut Block, b: u64) {
     }
 }
 
-fn bit(bitmap: &Block, b: u64) -> bool {
+pub(crate) fn bit(bitmap: &Block, b: u64) -> bool {
     usize::try_from(b / 8)
         .ok()
         .and_then(|i| bitmap.get(i))
@@ -617,11 +617,11 @@ fn set_bit(bitmap: &mut Block, b: u64) {
 }
 
 /// Bits at or above the disk size must be clear.
-fn bitmap_within(bitmap: &Block, disk_blocks: u64) -> bool {
+pub(crate) fn bitmap_within(bitmap: &Block, disk_blocks: u64) -> bool {
     (disk_blocks..MAX_DISK_BLOCKS).all(|b| !bit(bitmap, b))
 }
 
-fn block_of(v: Vec<u8>) -> Result<Block, SnapError> {
+pub(crate) fn block_of(v: Vec<u8>) -> Result<Block, SnapError> {
     Block::try_from(v).map_err(|_| SnapError::BlockCorrupt)
 }
 
@@ -748,7 +748,7 @@ pub(crate) fn chain_links(first: &ParentRef, chain: &[Ancestor]) -> Vec<ParentRe
 
 /// Block `b` as the chain shows it, starting below a level whose own blocks
 /// did not hold it. Holes at every level end in zeros.
-fn chain_read(chain: &[Ancestor], b: u64) -> Result<Block, SnapError> {
+pub(crate) fn chain_read(chain: &[Ancestor], b: u64) -> Result<Block, SnapError> {
     for a in chain {
         if b >= a.level.header.disk_blocks {
             break;
@@ -870,7 +870,7 @@ pub(crate) fn resolve_chain<R: ParentResolver>(
     Ok(chain)
 }
 
-fn read_range(
+pub(crate) fn read_range(
     disk_blocks: u64,
     offset: u64,
     buf: &mut [u8],
@@ -910,11 +910,11 @@ fn read_range(
 // ------------------------------------------------------------------ file
 
 /// State proven by [`SnapFile::open`] before the CoW file may write.
-struct Verified {
-    header: Header,
-    presence: Block,
-    snapshots: BTreeMap<u64, Level>,
-    chain: Vec<Ancestor>,
+pub(crate) struct Verified {
+    pub(crate) header: Header,
+    pub(crate) presence: Block,
+    pub(crate) snapshots: BTreeMap<u64, Level>,
+    pub(crate) chain: Vec<Ancestor>,
 }
 
 /// An open writable layer file: a base disk or a child over a parent snapshot.
@@ -1150,7 +1150,7 @@ impl<B: StorageBackend> SnapFile<B> {
     }
 
     /// Everything `open` checks, from read-only state (no write).
-    fn verify_open<R: ParentResolver>(
+    pub(crate) fn verify_open<R: ParentResolver>(
         view: &CowView<B>,
         resolver: &mut R,
     ) -> Result<Verified, SnapError> {
@@ -1174,6 +1174,58 @@ impl<B: StorageBackend> SnapFile<B> {
             snapshots,
             chain,
         })
+    }
+
+    /// Creates an empty *building* base file (S9-20/S9-21): a target that no
+    /// open accepts ([`SnapError::BuildInProgress`]) until
+    /// [`finish_building`](Self::finish_building) publishes it. A crash or an
+    /// error before that leaves a file that does not open, never a partial
+    /// image that looks complete.
+    pub(crate) fn create_building(
+        storage: CheckedStorage<B>,
+        file_uid: u64,
+    ) -> Result<Self, SnapError> {
+        if file_uid == 0 {
+            return Err(SnapError::BadWrite("file uid zero"));
+        }
+        let (file, _ack) = Self::init(
+            storage,
+            Header {
+                building: true,
+                file_uid,
+                disk_blocks: 0,
+                next_snapshot_id: 1,
+                depth: 0,
+                parent: None,
+                snapshots: Vec::new(),
+            },
+            Vec::new(),
+        )?;
+        Ok(file)
+    }
+
+    /// Publishes a building file: releases the storage and reopens it from the
+    /// media (CoW recovery verifies every reachable block, the reopened header
+    /// and bitmap must equal what was written), runs `verify` on the reopened
+    /// file, and only then clears the building flag in one commit. Any error,
+    /// including one from `verify`, leaves the flag set.
+    pub(crate) fn finish_building<E: From<SnapError>>(
+        self,
+        verify: impl FnOnce(&Self) -> Result<(), E>,
+    ) -> Result<(Self, DurableAck), E> {
+        if !self.header.building {
+            return Err(SnapError::BadWrite("file is not building").into());
+        }
+        let mut out = self.reopen_from_media()?;
+        verify(&out)?;
+        let mut header = out.header.clone();
+        header.building = false;
+        let ack = out
+            .file
+            .commit(&[(0, encode_header(&header).as_slice())])
+            .map_err(SnapError::from)?;
+        out.header = header;
+        Ok((out, ack))
     }
 
     pub fn file_uid(&self) -> u64 {

@@ -539,17 +539,17 @@ fn read_slot<S: Source + ?Sized>(
 }
 
 /// The root a recovery decided on, before its map is read.
-struct Selection {
-    chosen: RootRecord,
+pub(crate) struct Selection {
+    pub(crate) chosen: RootRecord,
     /// State of the slot that does not hold `chosen`.
-    other_slot: SlotState,
+    pub(crate) other_slot: SlotState,
     /// The other slot is damaged or blank.
-    damaged: bool,
+    pub(crate) damaged: bool,
     /// Root copy of `chosen.generation + 1` that explains the damage.
-    forward: Option<RootRecord>,
+    pub(crate) forward: Option<RootRecord>,
 }
 
-fn select_root<S: Source + ?Sized>(
+pub(crate) fn select_root<S: Source + ?Sized>(
     src: &S,
     size: u64,
     caps: &Capabilities,

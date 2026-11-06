@@ -136,6 +136,93 @@ fn repair_checking<R>(
     Ok(f(&mut writer))
 }
 
+/// Why [`publish_no_replace`] did not publish.
+#[derive(Debug)]
+pub enum PublishError {
+    /// Something already has the target name. Nothing was replaced, truncated
+    /// or removed.
+    TargetExists,
+    /// The partial name no longer names the file the caller wrote (it was
+    /// replaced), so nothing is published under the target name.
+    PartialChanged,
+    Io(io::Error),
+}
+
+impl fmt::Display for PublishError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TargetExists => f.write_str("publish refused: the target name exists"),
+            Self::PartialChanged => f.write_str("publish refused: the partial name was replaced"),
+            Self::Io(error) => write!(f, "publish failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PublishError {}
+
+/// Result of a successful [`publish_no_replace`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Published {
+    /// The partial name was removed after the target name existed. `false`
+    /// means both names now refer to the same file (harmless; nothing was
+    /// lost).
+    pub partial_removed: bool,
+}
+
+/// Gives the finished file `partial` the name `target` **without ever
+/// replacing** an existing name: a hard link, which the file system refuses
+/// atomically when `target` exists. `expected` is the `(st_dev, st_ino)` of
+/// the file the caller wrote; a partial name that no longer names it is
+/// refused before linking and re-checked after.
+///
+/// This is an atomic *no-replace* publication of a name, not the durable
+/// atomic rename that ISSUE-055 asks for: there is no directory flush, so a
+/// power loss may lose the new name (the finished data stays reachable under
+/// `partial`), and a file system without hard links yields an error here and
+/// publishes nothing. Nothing is ever truncated, and a name is removed only
+/// when it was created by this call or is the partial name of the very file
+/// just published.
+pub fn publish_no_replace(
+    partial: &Path,
+    target: &Path,
+    expected: (u64, u64),
+) -> Result<Published, PublishError> {
+    let identity_of = |path: &Path| -> io::Result<(u64, u64)> {
+        let meta = std::fs::metadata(path)?;
+        Ok((meta.dev(), meta.ino()))
+    };
+    match identity_of(partial) {
+        Ok(id) if id == expected => {}
+        Ok(_) => return Err(PublishError::PartialChanged),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(PublishError::PartialChanged);
+        }
+        Err(error) => return Err(PublishError::Io(error)),
+    }
+    std::fs::hard_link(partial, target).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            PublishError::TargetExists
+        } else {
+            PublishError::Io(error)
+        }
+    })?;
+    // The link was made by this call; if it does not name the written file
+    // (the partial name was swapped in between) take our own name back.
+    match identity_of(target) {
+        Ok(id) if id == expected => {}
+        other => {
+            let _ = std::fs::remove_file(target);
+            return Err(match other {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => PublishError::Io(error),
+                _ => PublishError::PartialChanged,
+            });
+        }
+    }
+    let partial_removed = matches!(identity_of(partial), Ok(id) if id == expected)
+        && std::fs::remove_file(partial).is_ok();
+    Ok(Published { partial_removed })
+}
+
 /// Failure of a [`ParentLease`] operation.
 #[derive(Debug)]
 pub enum ParentLeaseError {
@@ -335,6 +422,68 @@ mod tests {
     /// Generous bound: a non-blocking call returns in microseconds; this only
     /// catches a call that waits.
     const NO_WAIT: Duration = Duration::from_secs(2);
+
+    #[test]
+    fn publish_no_replace_links_the_finished_file_and_never_replaces() {
+        let dir = TempDir::new();
+        let partial = dir.file("out.raw.partial", BYTES);
+        let target = dir.path("out.raw");
+        let meta = std::fs::metadata(&partial).expect("meta");
+        let id = (meta.dev(), meta.ino());
+        let done = publish_no_replace(&partial, &target, id).expect("publish");
+        assert!(done.partial_removed);
+        assert_eq!(std::fs::read(&target).expect("read"), BYTES);
+        assert!(!partial.exists());
+
+        // An existing target is refused and keeps its bytes; the partial file
+        // is left where it was.
+        let partial = dir.file("again.partial", b"new bytes");
+        let meta = std::fs::metadata(&partial).expect("meta");
+        let id = (meta.dev(), meta.ino());
+        let result = publish_no_replace(&partial, &target, id);
+        assert!(
+            matches!(result, Err(PublishError::TargetExists)),
+            "{result:?}"
+        );
+        assert_eq!(std::fs::read(&target).expect("read"), BYTES);
+        assert_eq!(std::fs::read(&partial).expect("read"), b"new bytes");
+    }
+
+    #[test]
+    fn publish_no_replace_refuses_a_partial_name_that_is_not_the_written_file() {
+        let dir = TempDir::new();
+        let partial = dir.file("x.partial", b"swapped in");
+        let target = dir.path("x.raw");
+        // Identity of some other file than the one at the partial name.
+        let other = dir.file("other", b"the file that was written");
+        let meta = std::fs::metadata(&other).expect("meta");
+        let result = publish_no_replace(&partial, &target, (meta.dev(), meta.ino()));
+        assert!(
+            matches!(result, Err(PublishError::PartialChanged)),
+            "{result:?}"
+        );
+        assert!(!target.exists(), "nothing may be published");
+        assert_eq!(std::fs::read(&partial).expect("read"), b"swapped in");
+        // A missing partial name is the same refusal.
+        let result = publish_no_replace(&dir.path("gone"), &target, (meta.dev(), meta.ino()));
+        assert!(
+            matches!(result, Err(PublishError::PartialChanged)),
+            "{result:?}"
+        );
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn a_writer_reports_the_identity_of_its_file() {
+        let dir = TempDir::new();
+        let path = dir.path("w.raw");
+        let writer = HostFileStorage::create_new_exclusive(&path, 0).expect("create");
+        let meta = std::fs::metadata(&path).expect("meta");
+        assert_eq!(writer.file_identity(), Some((meta.dev(), meta.ino())));
+        drop(writer);
+        let reader = HostFileStorage::open_read_only(&path).expect("read only");
+        assert_eq!(reader.file_identity(), None);
+    }
 
     #[test]
     fn export_during_active_writer_is_busy_without_waiting_or_calling_f() {
