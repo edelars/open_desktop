@@ -1,0 +1,49 @@
+{
+  "slice": "S4-14e",
+  "date": "2026-11-06",
+  "scope": "MOV-only CR0.WP transition profile and mutable diagnostic translation-session handoff.",
+  "profiles": {
+    "cpu": "MovCr0WpLong64V1",
+    "session": "MutableTranslationProbeSession",
+    "cr0_values": ["0x80010033", "0x80000033"],
+    "cr4": "0x20",
+    "efer": "0xd00",
+    "translation": "canonical48 physical36 four-level 4KiB",
+    "cache_capacity": 1,
+    "same_value_cr0_invalidation": "conservative diagnostic policy"
+  },
+  "behavior": {
+    "standalone_cpu_profile_admits_only_mov_cr0_rax": true,
+    "retired_effect_replaces_snapshot_and_clears_cache_synchronously": true,
+    "pure_instruction_fetch_bypasses_cache_and_does_not_commit_ad": true,
+    "invlpg_and_mov_cr3_require_wp_one": true,
+    "unsupported_context_effect_poisons_session": true
+  },
+  "verification": {
+    "od_isa_cr0_wp_tests": {"passed": 10, "failed": 0},
+    "od_machine_feature_on_translation_session_tests": {"passed": 28, "failed": 0},
+    "od_machine_feature_off_library_tests": {"passed": 91, "failed": 0},
+    "od_isa_all_targets_check": "passed",
+    "od_machine_all_targets_check_feature_off": "passed",
+    "od_machine_all_targets_check_feature_on": "passed",
+    "cargo_fmt_all_check": "passed",
+    "git_diff_check": "passed",
+    "graphify_update": {"nodes": 26688, "edges": 66619, "communities": 1053}
+  },
+  "coverage": [
+    "WP=1 to WP=0 permits supervisor write through read-only leaf after snapshot change",
+    "WP=0 to WP=1 restores write protection and invalidates the entry",
+    "same-value CR0 write after PTE permission change clears stale cached mapping",
+    "WP=0 does not permit a Ring3 write to a user-accessible read-only leaf",
+    "matching Ring0 fetch-cache entry is not used after its PTE is removed; exact #PF is reported",
+    "LOCK #UD, Ring3 #GP(0), invalid CR0 value, unsupported store and fetch fault preserve pre-retirement state",
+    "INVLPG and MOV CR3 reject WP=0 before fetch and are admitted again after returning to WP=1",
+    "invalid/unexpected retired effects clear cache and poison the session"
+  ],
+  "limits": [
+    "No production TLB or tracked A/D cache",
+    "No reset, EFER transitions, generations, huge pages, PCID/global, JIT, DMA or SMP",
+    "No performance claim"
+  ],
+  "independent_review": "clean on final gpt-6.1-sol review; earlier findings fixed and rechecked"
+}

@@ -238,6 +238,23 @@ Revision 093, Vol. 2B `MOV—Move to/from Control Registers`, and Vol. 3A §§2.
 5.1.3 and 5.6.1 (CR0 fields and supervisor write protection). See the
 [official Intel SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
 
+### Standalone CR0.WP transition profile `MovCr0WpLong64V1` (S4-14e)
+
+`step_mov_cr0_wp` admits only the exact bare `0F 22 C0` (`MOV CR0,RAX`) form.
+It reuses the accepted CR0.WP commit semantics above, but has no store form in
+its allowlist. It requires Long64/CPL0, a valid CPU-owned CR3, CR4=`0x20`,
+EFER=`0xd00`, Running activity with no blocking interrupt shadow, and CR0 equal
+to `0x80010033` or `0x80000033`. The source value must be one of those same two
+CR0 values. LOCK raises #UD after complete fetch; CPL1–3 raises #GP(0) after
+fetch; unsupported instructions or CR0 values do not commit CPU state or
+retire. The existing page-end instruction-start boundary remains in force.
+
+A successful instruction commits CR0 and RIP, retires once, clears arithmetic
+flag definedness and returns `TranslationContextChange::Cr0Write`, including
+for an identical-value write. The profile is a CPU-only bounded entry: it does
+not itself update a machine translation snapshot or invalidate a cache. The
+feature-gated S4-14e machine session consumes that effect synchronously.
+
 ### Standalone INVLPG profile `InvlpgLong64V1` (S4-14b)
 
 `step_invlpg` is an opt-in, feature-independent, one-instruction Long64 entry.

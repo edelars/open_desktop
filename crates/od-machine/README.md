@@ -61,8 +61,8 @@ feature-gated `MutableTranslationProbeSession`, эксклюзивно заим�
 `PhysicalMemory` и сохраняющую только values-only pure translation. Checked
 aligned PTE writes сами не очищают cache; matching lookup может вернуть
 resident entry до потребления инвалидирующего эффекта. Retired canonical
-INVLPG или MOV CR3 effect синхронно очищает entry. Fetch обеих инструкций
-обходит resident entry и не пишет A/D.
+INVLPG, MOV CR3 или MOV CR0.WP effect синхронно очищает entry. Fetch всех трёх
+инструкций обходит resident entry и не пишет A/D.
 Remap и R/W permission refresh проверяются в одной сессии. Это ограниченный
 диагностический эксперимент, а не tracked-access cache или production TLB;
 CPU-owned `MOV CR3,RAX` синхронно меняет snapshot и инвалидирует entry даже
@@ -70,8 +70,10 @@ CPU-owned `MOV CR3,RAX` синхронно меняет snapshot и инвали
 lookup. Несогласованный retired effect очищает entry и блокирует дальнейшие
 операции с сессией, поэтому stale translation не может быть использован.
 Остальные
-reset/CR0/EFER transitions, tracked A/D, JIT hooks, huge pages, PCID/global и
-DMA/SMP остаются вне реализации.
+reset/EFER transitions, tracked A/D, JIT hooks, huge pages, PCID/global и
+DMA/SMP остаются вне реализации. S4-14e добавляет отдельный MOV-only CR0.WP
+handoff: запись invalidates session cache и обновляет snapshot; при WP=0
+существующие INVLPG/MOV CR3 profiles пока отклоняются до fetch.
 Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости
 добавлять вместе с фактическим использованием.

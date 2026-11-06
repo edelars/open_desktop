@@ -2037,6 +2037,10 @@ pub struct PagedMovCrossPageWordReadLong64V1;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MovCr3Long64V1;
 
+/// Exact opt-in CPU profile for one bare `MOV CR0, RAX` WP toggle in Long64.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MovCr0WpLong64V1;
+
 /// Exact opt-in CPU profile for the S4-11f cross-page fetch plus word read.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedMovCrossPageWordFetchLong64V1;
@@ -16252,6 +16256,7 @@ pub fn step_paged_probe<P: crate::PortIo>(
         false,
         false,
         false,
+        false,
         0,
         state,
         memory,
@@ -16403,6 +16408,7 @@ pub fn step_paged_cr3_probe<P: crate::PortIo>(
         false,
         true,
         false,
+        false,
         efer,
         state,
         memory,
@@ -16428,10 +16434,46 @@ pub fn step_paged_cr0_wp_probe<P: crate::PortIo>(
         false,
         false,
         true,
+        false,
         efer,
         state,
         memory,
         pio,
+        context,
+        initial_rflags_defined,
+    )
+}
+
+/// Execute exactly one bare `MOV CR0, RAX` WP-toggle instruction.
+/// This standalone profile intentionally excludes the store form admitted by
+/// `PagedCpl0Cr0WpProbeV1`; both profiles share the same architectural commit.
+pub fn step_mov_cr0_wp(
+    _profile: MovCr0WpLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<std::convert::Infallible> {
+    struct NoPortIo;
+    impl crate::PortIo for NoPortIo {
+        type Error = std::convert::Infallible;
+        fn read_u8(&mut self, _: u16) -> Result<u8, Self::Error> {
+            unreachable!("MOV CR0 profile cannot perform port I/O")
+        }
+        fn write_u8(&mut self, _: u16, _: u8) -> Result<(), Self::Error> {
+            unreachable!("MOV CR0 profile cannot perform port I/O")
+        }
+    }
+    step_paged_probe_inner(
+        false,
+        false,
+        true,
+        true,
+        efer,
+        state,
+        memory,
+        &mut NoPortIo,
         context,
         initial_rflags_defined,
     )
@@ -16452,6 +16494,7 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
         true,
         false,
         false,
+        false,
         0,
         state,
         memory,
@@ -16465,6 +16508,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     allow_stack_forms: bool,
     allow_cr3: bool,
     allow_cr0_wp: bool,
+    cr0_mov_only: bool,
     efer: u64,
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -16624,14 +16668,15 @@ fn step_paged_probe_inner<P: crate::PortIo>(
         return unsupported();
     }
     if allow_cr0_wp
-        && !matches!(
-            instruction.operation,
-            Operation::WriteCr0
-                | Operation::Mov {
-                    dst: Operand::Memory(_),
-                    src: Operand::Register(_),
-                }
-        )
+        && !(matches!(instruction.operation, Operation::WriteCr0)
+            || (!cr0_mov_only
+                && matches!(
+                    instruction.operation,
+                    Operation::Mov {
+                        dst: Operand::Memory(_),
+                        src: Operand::Register(_),
+                    }
+                )))
     {
         return unsupported();
     }
@@ -147934,6 +147979,147 @@ mod paged_cr0_wp_probe_tests {
             0xd00,
             crate::INTEGER_FLAGS,
         )
+    }
+
+    #[test]
+    fn standalone_mov_cr0_wp_profile_excludes_store_allowlisted_by_parent_profile() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rax as usize] = Cr0Profile::BASE & !(1 << 16);
+        let mut memory = Memory::new(&[0x48, 0x89, 0x03]);
+        let result = step_mov_cr0_wp(
+            MovCr0WpLong64V1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x89 });
+        assert_eq!(result.instructions_executed, 0);
+        assert!(memory.accesses.is_empty());
+
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rax as usize] = Cr0Profile::BASE & !(1 << 16);
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xc0]);
+        let result = step_mov_cr0_wp(
+            MovCr0WpLong64V1,
+            &mut state,
+            &mut memory,
+            AccessContext {
+                privilege: PrivilegeLevel::Ring0,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::TranslationContextChange(TranslationContextChange::Cr0Write {
+                old_cr0: Cr0Profile::BASE,
+                new_cr0: Cr0Profile::BASE & !(1 << 16),
+            })
+        );
+    }
+
+    #[test]
+    fn standalone_mov_cr0_wp_exact_fault_and_rejection_matrix_is_atomic() {
+        let ring0 = AccessContext {
+            privilege: PrivilegeLevel::Ring0,
+            ..AccessContext::default()
+        };
+        let ring3 = AccessContext::default();
+
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rax as usize] = Cr0Profile::BASE & !(1 << 16);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0xf0, 0x0f, 0x22, 0xc0]);
+        let result = step_mov_cr0_wp(
+            MovCr0WpLong64V1,
+            &mut state,
+            &mut memory,
+            ring0,
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0, 1, 2, 3]);
+
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rax as usize] = Cr0Profile::BASE & !(1 << 16);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xc0]);
+        let result = step_mov_cr0_wp(
+            MovCr0WpLong64V1,
+            &mut state,
+            &mut memory,
+            ring3,
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0, 1, 2]);
+
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rax as usize] = Cr0Profile::BASE ^ (1 << 5);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xc0]);
+        let result = step_mov_cr0_wp(
+            MovCr0WpLong64V1,
+            &mut state,
+            &mut memory,
+            ring0,
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x22 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0, 1, 2]);
+
+        let mut state = make_state(Cr0Profile::BASE);
+        state.rip = 0x1000;
+        state.gpr[Register::Rax as usize] = Cr0Profile::BASE & !(1 << 16);
+        let before = state.clone();
+        let mut memory = Memory::at(&[0x0f, 0x22, 0xc0], 0x1000);
+        memory.fetch_error = Some((0x1001, MemoryError::Backend("injected fetch".into())));
+        let result = step_mov_cr0_wp(
+            MovCr0WpLong64V1,
+            &mut state,
+            &mut memory,
+            ring0,
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Backend(MemoryError::Backend("injected fetch".into()))
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0x1000, 0x1001]);
     }
 
     #[test]

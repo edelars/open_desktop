@@ -468,6 +468,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   cover roots A/B, same-CR3 PTE remap and permission tightening, precise
   post-switch faults, rejected paths and pure fetch. This does not complete
   S4-14. See the [S4-14d report](../reports/STAGE_4_S4-14D_2026-11-06.md).
+- [x] S4-14e composes a standalone MOV-only `MOV CR0,RAX` WP profile with the
+  mutable session. The profile excludes S4-12d's store allowlist. The session
+  accepts WP=0/1, validates and installs each retired CR0 snapshot and clears
+  its cache synchronously; current INVLPG/MOV CR3 profiles stay unavailable at
+  WP=0. Same-value writes conservatively invalidate as this prototype's policy.
+  Acceptance includes supervisor write permissions in both WP states, exact
+  rejected/faulting paths, poison behavior and restored INVLPG/MOV CR3
+  admission. This does not complete S4-14. See the
+  [S4-14e report](../reports/STAGE_4_S4-14E_2026-11-06.md).
 - **Где:** `od-machine`, system instruction effects `od-isa`.
 - **Сделать:** CR3/context transitions, INVLPG, paging/permission-control changes, reset; global/PCID/INVPCID — только при объявленной поддержке. Развести software-cache generations и архитектурную семантику guest page tables.
 - **Проверка:** remap A→B, tighten/relax rights с обязательной invalidation, stale entry после context switch, huge-page coverage, код/данные, разные guest pages внутри host page. Поведение без invalidation проверять в пределах разрешённого стандартом, не требовать несуществующей гарантии.

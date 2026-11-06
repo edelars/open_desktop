@@ -863,3 +863,8 @@ The `DC` reverse and `DE` pop forms remain gap-capped; alias cancellation and
 unsupported results refuse atomically. JIT/native and physical x86 acceptance
 remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30dj-large-gap-fsubr-st0-sti-d8-e8-ef) and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30dj--large-gap-fsubr-st0-sti).
+
+Stage 4 adds a separate `MovCr0WpLong64V1` CPU entry for exact bare
+`MOV CR0,RAX` WP toggles. It shares the validated S4-12d commit logic but
+excludes that profile's memory store form; it emits a typed context-change
+effect and leaves machine cache invalidation to `od-machine`.

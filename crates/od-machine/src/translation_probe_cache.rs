@@ -14,8 +14,9 @@ use crate::{GuestPhysicalAddress, GuestPhysicalRange, MemoryAccessError, Physica
 use od_isa::TranslationInvalidation;
 use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 use od_isa::{
-    InvlpgExit, InvlpgLong64V1, InvlpgResult, LongModeState, MovCr3Exit, MovCr3InputError,
-    MovCr3Long64V1, MovCr3Result, OperandSize, TranslationContextChange, step_invlpg, step_mov_cr3,
+    InvlpgExit, InvlpgLong64V1, InvlpgResult, LongModeState, MovCr0WpLong64V1, MovCr3Exit,
+    MovCr3InputError, MovCr3Long64V1, MovCr3Result, OperandSize, PagedProbeExit, PagedProbeResult,
+    TranslationContextChange, step_invlpg, step_mov_cr0_wp, step_mov_cr3,
 };
 
 const PHYSICAL_ADDRESS_LIMIT: u128 = 1u128 << 36;
@@ -195,6 +196,21 @@ pub enum MutableTranslationSessionError {
         effect: TranslationContextChange,
         source: crate::page_walk::ProbeConfigError,
     },
+    Cr0RetiredSessionStateMismatch {
+        effect: TranslationContextChange,
+        cpu_cr0: Option<u64>,
+        cpu_cr3: Option<u64>,
+        cpu_cr4: Option<u64>,
+        instructions_executed: u64,
+    },
+    Cr0RetiredWithoutEffect {
+        exit: PagedProbeExit<std::convert::Infallible>,
+        instructions_executed: u64,
+    },
+    Cr0RetiredInvalidSnapshot {
+        effect: TranslationContextChange,
+        source: crate::page_walk::ProbeConfigError,
+    },
     UnalignedPteWrite {
         address: GuestPhysicalAddress,
     },
@@ -219,7 +235,10 @@ impl<'a> MutableTranslationProbeSession<'a> {
         memory: &'a mut PhysicalMemory,
         paging: Long64ProbeConfig,
     ) -> Result<Self, MutableTranslationSessionError> {
-        if paging.cr0() != 0x8001_0033 || paging.cr4() != 0x20 || paging.efer() != 0xd00 {
+        if !matches!(paging.cr0(), 0x8001_0033 | 0x8000_0033)
+            || paging.cr4() != 0x20
+            || paging.efer() != 0xd00
+        {
             return Err(MutableTranslationSessionError::UnsupportedPagingProfile);
         }
         Ok(Self {
@@ -246,8 +265,8 @@ impl<'a> MutableTranslationProbeSession<'a> {
 
     /// Commit one aligned guest physical PTE-sized write. The write does not
     /// itself invalidate cached translations: a matching probe may still hit
-    /// its resident stale entry until a retired INVLPG or MOV CR3 effect is
-    /// consumed synchronously.
+    /// its resident stale entry until a retired INVLPG, MOV CR3, or MOV CR0.WP
+    /// effect is consumed synchronously.
     pub fn write_pte(
         &mut self,
         address: GuestPhysicalAddress,
@@ -276,6 +295,9 @@ impl<'a> MutableTranslationProbeSession<'a> {
         initial_rflags_defined: u64,
     ) -> Result<InvlpgResult, MutableTranslationSessionError> {
         self.ensure_usable()?;
+        if self.paging.cr0() != 0x8001_0033 {
+            return Err(MutableTranslationSessionError::UnsupportedPagingProfile);
+        }
         if cpu.cr3 != Some(self.paging.cr3()) {
             return Err(MutableTranslationSessionError::Cr3Mismatch {
                 expected: self.paging.cr3(),
@@ -319,6 +341,9 @@ impl<'a> MutableTranslationProbeSession<'a> {
         initial_rflags_defined: u64,
     ) -> Result<MovCr3Result, MutableTranslationSessionError> {
         self.ensure_usable()?;
+        if self.paging.cr0() != 0x8001_0033 {
+            return Err(MutableTranslationSessionError::UnsupportedPagingProfile);
+        }
         if cpu.cr3 != Some(self.paging.cr3()) {
             return Err(MutableTranslationSessionError::Cr3Mismatch {
                 expected: self.paging.cr3(),
@@ -351,6 +376,124 @@ impl<'a> MutableTranslationProbeSession<'a> {
         };
         self.consume_retired_cr3_effect(effect, cpu.cr3, result.instructions_executed)?;
         Ok(result)
+    }
+
+    /// Execute one standalone MOV CR0, RAX WP toggle and consume its effect
+    /// before another translation lookup. The diagnostic cache is cleared for
+    /// every accepted write, including a same-value write.
+    pub fn execute_mov_cr0_wp(
+        &mut self,
+        cpu: &mut LongModeState,
+        context: AccessContext,
+        initial_rflags_defined: u64,
+    ) -> Result<PagedProbeResult<std::convert::Infallible>, MutableTranslationSessionError> {
+        self.ensure_usable()?;
+        if cpu.cr0 != Some(self.paging.cr0())
+            || cpu.cr3 != Some(self.paging.cr3())
+            || cpu.cr4 != Some(self.paging.cr4())
+        {
+            return Err(MutableTranslationSessionError::UnsupportedPagingProfile);
+        }
+        let result = {
+            let mut fetch = SessionFetchMemory {
+                memory: self.memory,
+                paging: self.paging,
+            };
+            step_mov_cr0_wp(
+                MovCr0WpLong64V1,
+                cpu,
+                &mut fetch,
+                context,
+                self.paging.efer(),
+                initial_rflags_defined,
+            )
+        };
+        self.consume_retired_cr0_result(&result, cpu)?;
+        Ok(result)
+    }
+
+    fn consume_retired_cr0_result(
+        &mut self,
+        result: &PagedProbeResult<std::convert::Infallible>,
+        cpu: &LongModeState,
+    ) -> Result<(), MutableTranslationSessionError> {
+        if let PagedProbeExit::TranslationContextChange(effect) = &result.exit {
+            return self.consume_retired_cr0_effect(
+                *effect,
+                cpu.cr0,
+                cpu.cr3,
+                cpu.cr4,
+                result.instructions_executed,
+            );
+        }
+        if matches!(result.exit, PagedProbeExit::Retired) || result.instructions_executed != 0 {
+            self.poison();
+            return Err(MutableTranslationSessionError::Cr0RetiredWithoutEffect {
+                exit: result.exit.clone(),
+                instructions_executed: result.instructions_executed,
+            });
+        }
+        Ok(())
+    }
+
+    fn consume_retired_cr0_effect(
+        &mut self,
+        effect: TranslationContextChange,
+        cpu_cr0: Option<u64>,
+        cpu_cr3: Option<u64>,
+        cpu_cr4: Option<u64>,
+        instructions_executed: u64,
+    ) -> Result<(), MutableTranslationSessionError> {
+        let new_cr0 = match effect {
+            TranslationContextChange::Cr0Write { new_cr0, .. } => new_cr0,
+            _ => {
+                self.poison();
+                return Err(
+                    MutableTranslationSessionError::Cr0RetiredSessionStateMismatch {
+                        effect,
+                        cpu_cr0,
+                        cpu_cr3,
+                        cpu_cr4,
+                        instructions_executed,
+                    },
+                );
+            }
+        };
+        if instructions_executed != 1
+            || effect
+                != (TranslationContextChange::Cr0Write {
+                    old_cr0: self.paging.cr0(),
+                    new_cr0,
+                })
+            || cpu_cr0 != Some(new_cr0)
+            || cpu_cr3 != Some(self.paging.cr3())
+            || cpu_cr4 != Some(self.paging.cr4())
+            || !matches!(new_cr0, 0x8001_0033 | 0x8000_0033)
+        {
+            self.poison();
+            return Err(
+                MutableTranslationSessionError::Cr0RetiredSessionStateMismatch {
+                    effect,
+                    cpu_cr0,
+                    cpu_cr3,
+                    cpu_cr4,
+                    instructions_executed,
+                },
+            );
+        }
+        let replacement = Long64ProbeConfig::new(
+            new_cr0,
+            self.paging.cr3(),
+            self.paging.cr4(),
+            self.paging.efer(),
+        )
+        .map_err(|source| {
+            self.poison();
+            MutableTranslationSessionError::Cr0RetiredInvalidSnapshot { effect, source }
+        })?;
+        self.paging = replacement;
+        self.state.clear();
+        Ok(())
     }
 
     fn consume_retired_cr3_effect(
@@ -527,8 +670,9 @@ mod tests {
         PrivilegeLevel,
     };
     use od_isa::{
-        CpuActivity, InvlpgExit, InvlpgLong64V1, LongModeState, MovCr3Exit, OperandSize, Register,
-        StiShadow, TranslationContextChange, TranslationInvalidation, step_invlpg,
+        CpuActivity, InvlpgExit, InvlpgLong64V1, LongModeState, MovCr3Exit, OperandSize,
+        PagedProbeExit, PagedProbeResult, Register, StiShadow, TranslationContextChange,
+        TranslationInvalidation, step_invlpg,
     };
 
     const ROOT: u64 = 0x1000;
@@ -624,6 +768,18 @@ mod tests {
             privilege: PrivilegeLevel::Ring0,
             origin: AccessOrigin::Explicit,
         }
+    }
+
+    fn mov_cr0_cpu(rip: u64, new_cr0: u64) -> LongModeState {
+        let mut cpu = LongModeState::default();
+        cpu.rip = rip;
+        cpu.gpr[Register::Rax as usize] = new_cr0;
+        cpu.cr0 = Some(0x8001_0033);
+        cpu.cr3 = Some(ROOT);
+        cpu.cr4 = Some(0x20);
+        cpu.activity = Some(CpuActivity::Running);
+        cpu.sti_shadow = Some(StiShadow::Clear);
+        cpu
     }
 
     #[test]
@@ -1298,6 +1454,253 @@ mod tests {
     }
 
     #[test]
+    fn mov_cr0_wp_switches_snapshot_clears_cache_and_changes_supervisor_write_result() {
+        let mut memory = memory(PHYSICAL_PAGE | 5);
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
+                &[0x0f, 0x22, 0xc0],
+                |_| {},
+            )
+            .unwrap();
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x30),
+                &[0x0f, 0x01, 0x3b],
+                |_| {},
+            )
+            .unwrap();
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x40),
+                &[0x0f, 0x22, 0xd8],
+                |_| {},
+            )
+            .unwrap();
+        let wp0 = 0x8000_0033;
+        let paging = config(0x8001_0033, ROOT, 0x20, 0xd00);
+        let ring0 = mov_cr3_context();
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x40);
+        let instruction = GuestLinearAddress::new(LINEAR_PAGE + 0x20);
+        let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+
+        // WP=1 denies a supervisor write to the read-only leaf.
+        let TranslationProbeCacheOutcome::Walk(denied) =
+            session.probe(linear, AccessKind::Write, ring0).unwrap()
+        else {
+            panic!("initial denied write must walk");
+        };
+        assert!(
+            matches!(denied.outcome, Ok(crate::ProbeOutcome::PageFault(ref f)) if f.error_code == 3)
+        );
+        let _ = session.probe(linear, AccessKind::Read, ring0).unwrap();
+        assert!(!session.is_cache_empty());
+
+        let mut cpu = mov_cr0_cpu(instruction.get(), wp0);
+        let table_addresses = [ROOT, PDPT, PD + 16, PT];
+        let entries_before = table_addresses.map(|address| {
+            session
+                .memory
+                .read_u64(GuestPhysicalAddress::new(address))
+                .unwrap()
+        });
+        let result = session
+            .execute_mov_cr0_wp(&mut cpu, ring0, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        let entries_after = table_addresses.map(|address| {
+            session
+                .memory
+                .read_u64(GuestPhysicalAddress::new(address))
+                .unwrap()
+        });
+        assert_eq!(
+            entries_after, entries_before,
+            "MOV CR0 fetch/effect must not set A/D bits"
+        );
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(cpu.cr0, Some(wp0));
+        assert!(
+            session.is_cache_empty(),
+            "effect must clear the cache immediately"
+        );
+        let TranslationProbeCacheOutcome::Walk(allowed) =
+            session.probe(linear, AccessKind::Write, ring0).unwrap()
+        else {
+            panic!("first WP=0 write must walk");
+        };
+        assert!(matches!(
+            allowed.outcome,
+            Ok(crate::ProbeOutcome::Translated(_))
+        ));
+        let TranslationProbeCacheOutcome::Walk(ring3_denied) = session
+            .probe(linear, AccessKind::Write, explicit_ring3())
+            .unwrap()
+        else {
+            panic!("Ring3 write uses a distinct cache tag and must walk");
+        };
+        assert!(matches!(
+            ring3_denied.outcome,
+            Ok(crate::ProbeOutcome::PageFault(ref fault)) if fault.error_code == 7
+        ));
+        let _ = session.probe(linear, AccessKind::Read, ring0).unwrap();
+        assert!(
+            !session.is_cache_empty(),
+            "successful Ring0 read must refill the cache before WP is restored"
+        );
+
+        // INVLPG and MOV CR3 profiles keep their original WP=1 admission.
+        let mut rejected_cpu = cpu.clone();
+        assert_eq!(
+            session.execute_invlpg(&mut rejected_cpu, ring0, od_isa::INTEGER_FLAGS),
+            Err(MutableTranslationSessionError::UnsupportedPagingProfile)
+        );
+        assert_eq!(
+            session.execute_mov_cr3(&mut rejected_cpu, ring0, od_isa::INTEGER_FLAGS),
+            Err(MutableTranslationSessionError::UnsupportedPagingProfile)
+        );
+        assert_eq!(rejected_cpu, cpu);
+
+        let mut cpu = mov_cr0_cpu(instruction.get(), 0x8001_0033);
+        cpu.cr0 = Some(wp0);
+        let result = session
+            .execute_mov_cr0_wp(&mut cpu, ring0, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert_eq!(result.instructions_executed, 1);
+        assert_eq!(cpu.cr0, Some(0x8001_0033));
+        assert!(session.is_cache_empty());
+        let TranslationProbeCacheOutcome::Walk(protected) =
+            session.probe(linear, AccessKind::Write, ring0).unwrap()
+        else {
+            panic!("first WP=1 write must walk after effect");
+        };
+        assert!(
+            matches!(protected.outcome, Ok(crate::ProbeOutcome::PageFault(ref f)) if f.error_code == 3)
+        );
+
+        // The prior profiles are admitted again after returning to WP=1.
+        let mut invlpg = invlpg_cpu(LINEAR_PAGE + 0x30, LINEAR_PAGE + 0x80);
+        assert!(matches!(
+            session
+                .execute_invlpg(&mut invlpg, ring0, od_isa::INTEGER_FLAGS)
+                .unwrap()
+                .exit,
+            InvlpgExit::TranslationInvalidation(_)
+        ));
+        let mut mov_cr3 = mov_cr3_cpu(LINEAR_PAGE + 0x40, ROOT);
+        assert!(matches!(
+            session
+                .execute_mov_cr3(&mut mov_cr3, ring0, od_isa::INTEGER_FLAGS)
+                .unwrap()
+                .exit,
+            MovCr3Exit::TranslationContextChange(TranslationContextChange::Cr3Write { .. })
+        ));
+    }
+
+    #[test]
+    fn same_value_mov_cr0_clears_stale_mapping_and_permission_cache() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        for physical in [PHYSICAL_PAGE, 0xa000] {
+            memory
+                .write_bytes(
+                    GuestPhysicalAddress::new(physical + 0x20),
+                    &[0x0f, 0x22, 0xc0],
+                    |_| {},
+                )
+                .unwrap();
+        }
+        let wp1 = 0x8001_0033;
+        let paging = config(wp1, ROOT, 0x20, 0xd00);
+        let ring0 = mov_cr3_context();
+        let data = GuestLinearAddress::new(LINEAR_PAGE + 0x50);
+        let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+        let (hit, initial) = translated(session.probe(data, AccessKind::Write, ring0).unwrap());
+        assert!(!hit);
+        assert_eq!(initial.physical.get(), PHYSICAL_PAGE + 0x50);
+        assert_eq!(initial.permissions.writable, true);
+        assert!(matches!(
+            session.probe(data, AccessKind::Write, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+
+        session
+            .write_pte(GuestPhysicalAddress::new(PT), 0xa000 | 5, |_| {})
+            .unwrap();
+        let (hit, stale) = translated(session.probe(data, AccessKind::Write, ring0).unwrap());
+        assert!(hit, "PTE writes alone leave a matching entry resident");
+        assert_eq!(stale.physical.get(), PHYSICAL_PAGE + 0x50);
+        assert!(stale.permissions.writable);
+
+        let rip = GuestLinearAddress::new(LINEAR_PAGE + 0x20);
+        let mut cpu = mov_cr0_cpu(rip.get(), wp1);
+        let effect = session
+            .execute_mov_cr0_wp(&mut cpu, ring0, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert_eq!(effect.instructions_executed, 1);
+        assert_eq!(cpu.cr0, Some(wp1));
+        assert!(
+            session.is_cache_empty(),
+            "same-value effect clears synchronously"
+        );
+        let TranslationProbeCacheOutcome::Walk(updated) =
+            session.probe(data, AccessKind::Write, ring0).unwrap()
+        else {
+            panic!("post-effect lookup must walk the changed PTE");
+        };
+        let Ok(crate::ProbeOutcome::PageFault(fault)) = updated.outcome else {
+            panic!("same-value MOV CR0 must expose tightened write permission");
+        };
+        assert_eq!(fault.error_code, 3);
+    }
+
+    #[test]
+    fn mov_cr0_fetch_fault_preserves_matching_ring0_fetch_cache_hit() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
+                &[0x0f, 0x22, 0xc0],
+                |_| {},
+            )
+            .unwrap();
+        let paging = config(0x8001_0033, ROOT, 0x20, 0xd00);
+        let ring0 = mov_cr3_context();
+        let rip = GuestLinearAddress::new(LINEAR_PAGE + 0x20);
+        let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+        assert!(matches!(
+            session.probe(rip, AccessKind::Fetch, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Walk(_)
+        ));
+        assert!(matches!(
+            session.probe(rip, AccessKind::Fetch, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+        session
+            .write_pte(GuestPhysicalAddress::new(PT), 0, |_| {})
+            .unwrap();
+
+        let mut cpu = mov_cr0_cpu(rip.get(), 0x8000_0033);
+        let before = cpu.clone();
+        let result = session
+            .execute_mov_cr0_wp(&mut cpu, ring0, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(od_isa::memory::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(rip.get()),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!(session.paging.cr0(), 0x8001_0033);
+        assert!(matches!(
+            session.probe(rip, AccessKind::Fetch, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+    }
+
+    #[test]
     fn rejected_mov_cr3_paths_preserve_session_cache_and_snapshot() {
         fn check(
             instruction: &[u8],
@@ -1532,6 +1935,159 @@ mod tests {
             Some(ROOT),
             false,
         );
+    }
+
+    #[test]
+    fn unexpected_retired_cr0_effect_poisons_and_clears_session() {
+        fn exercise(
+            effect: TranslationContextChange,
+            cpu_cr0: Option<u64>,
+            cpu_cr3: Option<u64>,
+            cpu_cr4: Option<u64>,
+        ) {
+            let mut memory = memory(PHYSICAL_PAGE | 7);
+            let paging = config(0x8001_0033, ROOT, 0x20, 0xd00);
+            let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+            let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x51);
+            let _ = session
+                .probe(linear, AccessKind::Read, explicit_ring3())
+                .unwrap();
+            assert!(!session.is_cache_empty());
+
+            assert!(matches!(
+                session.consume_retired_cr0_effect(effect, cpu_cr0, cpu_cr3, cpu_cr4, 1),
+                Err(MutableTranslationSessionError::Cr0RetiredSessionStateMismatch { .. })
+            ));
+            assert!(session.is_cache_empty());
+            assert_eq!(
+                session.probe(linear, AccessKind::Read, explicit_ring3()),
+                Err(MutableTranslationSessionError::SessionPoisoned)
+            );
+        }
+
+        exercise(
+            TranslationContextChange::Cr3Write {
+                old_cr3: ROOT,
+                new_cr3: ROOT,
+            },
+            Some(0x8001_0033),
+            Some(ROOT),
+            Some(0x20),
+        );
+        exercise(
+            TranslationContextChange::Cr0Write {
+                old_cr0: 0x8000_0033,
+                new_cr0: 0x8000_0033,
+            },
+            Some(0x8000_0033),
+            Some(ROOT),
+            Some(0x20),
+        );
+        exercise(
+            TranslationContextChange::Cr0Write {
+                old_cr0: 0x8001_0033,
+                new_cr0: 0x8000_0033,
+            },
+            Some(0x8000_0033),
+            Some(ROOT_B),
+            Some(0x20),
+        );
+        exercise(
+            TranslationContextChange::Cr0Write {
+                old_cr0: 0x8001_0033,
+                new_cr0: 0x8000_0033,
+            },
+            Some(0x8000_0033),
+            Some(ROOT),
+            Some(0x30),
+        );
+
+        let mut memory2 = memory(PHYSICAL_PAGE | 7);
+        let mut session = MutableTranslationProbeSession::new(
+            &mut memory2,
+            config(0x8001_0033, ROOT, 0x20, 0xd00),
+        )
+        .unwrap();
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x51);
+        let _ = session
+            .probe(linear, AccessKind::Read, explicit_ring3())
+            .unwrap();
+        let cpu = mov_cr0_cpu(LINEAR_PAGE, 0x8000_0033);
+        let missing_effect = PagedProbeResult {
+            exit: PagedProbeExit::Retired,
+            instructions_executed: 1,
+            rflags_defined: od_isa::INTEGER_FLAGS,
+        };
+        assert!(matches!(
+            session.consume_retired_cr0_result(&missing_effect, &cpu),
+            Err(MutableTranslationSessionError::Cr0RetiredWithoutEffect {
+                instructions_executed: 1,
+                ..
+            })
+        ));
+        assert!(session.is_cache_empty());
+        assert_eq!(
+            session.probe(linear, AccessKind::Read, explicit_ring3()),
+            Err(MutableTranslationSessionError::SessionPoisoned)
+        );
+    }
+
+    #[test]
+    fn retired_without_cr0_effect_poisoning_distinguishes_consistent_nonretirement() {
+        let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x51);
+        let cpu = mov_cr0_cpu(LINEAR_PAGE, 0x8000_0033);
+
+        let mut memory_first = memory(PHYSICAL_PAGE | 7);
+        let mut session = MutableTranslationProbeSession::new(
+            &mut memory_first,
+            config(0x8001_0033, ROOT, 0x20, 0xd00),
+        )
+        .unwrap();
+        let _ = session
+            .probe(linear, AccessKind::Read, explicit_ring3())
+            .unwrap();
+        let contradictory_retirement = PagedProbeResult {
+            exit: PagedProbeExit::Retired,
+            instructions_executed: 0,
+            rflags_defined: od_isa::INTEGER_FLAGS,
+        };
+        assert!(matches!(
+            session.consume_retired_cr0_result(&contradictory_retirement, &cpu),
+            Err(MutableTranslationSessionError::Cr0RetiredWithoutEffect {
+                instructions_executed: 0,
+                ..
+            })
+        ));
+        assert!(session.is_cache_empty());
+        assert_eq!(
+            session.probe(linear, AccessKind::Read, explicit_ring3()),
+            Err(MutableTranslationSessionError::SessionPoisoned)
+        );
+
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let mut session = MutableTranslationProbeSession::new(
+            &mut memory,
+            config(0x8001_0033, ROOT, 0x20, 0xd00),
+        )
+        .unwrap();
+        let _ = session
+            .probe(linear, AccessKind::Read, explicit_ring3())
+            .unwrap();
+        let valid_nonretired = PagedProbeResult {
+            exit: PagedProbeExit::Unsupported { opcode: 0x90 },
+            instructions_executed: 0,
+            rflags_defined: od_isa::INTEGER_FLAGS,
+        };
+        assert!(
+            session
+                .consume_retired_cr0_result(&valid_nonretired, &cpu)
+                .is_ok()
+        );
+        assert!(!session.is_cache_empty());
+        assert!(matches!(
+            session.probe(linear, AccessKind::Read, explicit_ring3()),
+            Ok(TranslationProbeCacheOutcome::Hit(_))
+        ));
     }
 
     #[test]

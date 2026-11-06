@@ -747,7 +747,8 @@ reference, cache entry reference or reusable access handle escapes the session.
 failed alignment/range/region writes leave RAM unchanged and do not notify.
 Neither successful nor failed writes implicitly invalidate the entry; a
 matching probe may continue to return the resident translation until the
-caller consumes an architectural invalidation effect. The standalone INVLPG
+caller consumes a retired INVLPG, MOV CR3 or MOV CR0.WP invalidation effect.
+The standalone INVLPG
 entry fetches instruction bytes through a pure walker over
 the current memory, bypassing the resident cache and producing no A/D writes.
 For this S4-14c path, only a retired CPL0 canonical invalidation effect is
@@ -794,6 +795,31 @@ advanced. This diagnostic integration does not add tracked A/D caching,
 reset/EFER/CR0 transitions, PCID/global semantics, generations, JIT hooks or a
 production TLB. Full S4-14 remains open. See the
 [S4-14d report](../reports/STAGE_4_S4-14D_2026-11-06.md).
+
+### CPU-owned CR0.WP invalidation in the mutable diagnostic session (S4-14e)
+
+`MutableTranslationProbeSession` admits exactly CR0=`0x80010033` (WP=1) or
+`0x80000033` (WP=0), with the same CR3/CR4/EFER, canonical48/physical36,
+four-level/4 KiB profile. `execute_mov_cr0_wp` uses the separate exact
+`MovCr0WpLong64V1` CPU entry; it does not reuse the broader S4-12d profile,
+whose allowlist also includes a store. Fetch bypasses the resident cache and
+uses the pure walker.
+
+After a validated retired `Cr0Write`, the session installs a validated
+replacement snapshot and clears its one-entry cache before returning. The
+diagnostic policy also clears for same-value CR0 writes. A matching probe may
+still return the old resident entry after a direct `write_pte` and before the
+retired effect is consumed. The effect consumer itself performs no table walk,
+A/D write or committed-write callback. Mismatched/unexpected retired effects
+or invalid replacement snapshots clear the entry and poison the session, as in
+S4-14d.
+
+While CR0.WP=0, the existing INVLPG and MOV CR3 entry points reject the
+unsupported CR0 profile before fetch and leave CPU/session state unchanged;
+returning to WP=1 makes those bounded entries available again. This slice does
+not broaden their CPU contracts. It also does not add tracked A/D caching,
+reset, generations, PCID/global semantics, JIT integration or production TLB
+behavior. See the [S4-14e report](../reports/STAGE_4_S4-14E_2026-11-06.md).
 
 ## Bounded diagnostic vCPU session boundary
 
