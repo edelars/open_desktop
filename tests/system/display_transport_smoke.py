@@ -32,7 +32,7 @@ REFERENCE = ROOT / "tests" / "fixtures" / "guest" / "stage10" / "bars_64x48_seed
 COMPARE = ROOT / "tests" / "system" / "display_compare.py"
 
 GRANULE = 16384
-VERSION = 2
+VERSION = 3
 SLOTS_OFFSET = 65536
 MIN_TOTAL = SLOTS_OFFSET + 2 * 16384
 MAX_TOTAL = SLOTS_OFFSET + 4 * 37_748_736
@@ -178,11 +178,12 @@ def scenario_frame(binary: Path, workdir: Path) -> None:
         reader = Reader(host.sock)
 
         head = reader.take(16)
-        check(head[:4] == b"ODFT" and struct.unpack("<HHII", head[4:]) == (VERSION, KIND_ANNOUNCE, 0, 16), "ANNOUNCE header")
+        check(head[:4] == b"ODFT" and struct.unpack("<HHII", head[4:]) == (VERSION, KIND_ANNOUNCE, 0, 24), "ANNOUNCE header")
         check(len(reader.fds) == 1, "ANNOUNCE did not carry exactly one descriptor")
         fd = reader.fds[0]
-        total_size, slot_count, announce_reserved = struct.unpack("<QII", reader.take(16))
-        check(announce_reserved == 0 and 2 <= slot_count <= 4, "ANNOUNCE payload")
+        total_size, slot_count, announce_screen, announce_count, announce_reserved = struct.unpack("<QIIII", reader.take(24))
+        check(announce_screen == 0 and announce_count == 1 and announce_reserved == 0, "ANNOUNCE screen fields")
+        check(2 <= slot_count <= 4, "ANNOUNCE payload")
         check(MIN_TOTAL <= total_size <= MAX_TOTAL and total_size % GRANULE == 0, "total_size out of range")
         # Section 7.1 step 3: fstat before mmap.
         check(os.fstat(fd).st_size == total_size, f"fstat size {os.fstat(fd).st_size} != ANNOUNCE {total_size}")
@@ -194,6 +195,8 @@ def scenario_frame(binary: Path, workdir: Path) -> None:
         (magic, version, header_size, reader_off, desc_off, desc_size, h_slots, slots_off, slot_size,
          pixel_format, max_w, max_h, flags, h_total, cursor_off, h_reserved) = fields
         check(magic == b"ODFS" and version == VERSION and header_size == 64, "memory header identity")
+        # FRAME_TRANSPORT_V1.md 11.3: the object names its screen; a single-screen run has screen 0 at offset 60.
+        check(struct.unpack_from("<I", header_map, 60)[0] == 0, "memory header screen")
         check((reader_off, desc_off, desc_size, slots_off) == (64, 128, 64, SLOTS_OFFSET), "memory header offsets")
         check(h_slots == slot_count and h_total == total_size and pixel_format == 1 and flags == 0, "memory header values")
         check(slot_size % GRANULE == 0 and max_w * 4 * max_h <= slot_size, "slot_size")
@@ -209,8 +212,8 @@ def scenario_frame(binary: Path, workdir: Path) -> None:
 
         kind, payload = reader.message()
         check(kind == KIND_MODE and len(payload) == 32, "second message must be MODE")
-        mode_count, mode_flags, mode_w, mode_h, mode_stride, mode_fmt, mode_reserved = struct.unpack("<QIIIIII", payload)
-        check(mode_flags == 1 and mode_reserved == 0, "MODE must be ACTIVE")
+        mode_count, mode_flags, mode_w, mode_h, mode_stride, mode_fmt, mode_screen = struct.unpack("<QIIIIII", payload)
+        check(mode_flags == 1 and mode_screen == 0, "MODE must be ACTIVE on screen 0")
         check((mode_w, mode_h, mode_stride, mode_fmt) == (64, 48, 256, 1), "MODE geometry")
 
         # Generation transition 0 -> N, deterministic: the test-only writer holds publication until the
@@ -229,8 +232,8 @@ def scenario_frame(binary: Path, workdir: Path) -> None:
 
         kind, payload = reader.message()
         check(kind == KIND_FRAME and len(payload) == 24, "third message must be FRAME")
-        generation, frame_mode_count, slot, frame_reserved = struct.unpack("<QQII", payload)
-        check(generation > 0 and slot < slot_count and frame_reserved == 0, "FRAME fields")
+        generation, frame_mode_count, slot, frame_screen = struct.unpack("<QQII", payload)
+        check(generation > 0 and slot < slot_count and frame_screen == 0, "FRAME fields")
         # The gate was opened with reader_claim = 1 (slot 0): the writer must pick another slot, here slot 1
         # (the oldest candidate; slots 1 and 2 are both empty, the lowest index wins).
         check(slot == 1, f"FRAME slot {slot}, expected 1 (slot 0 is claimed by the reader)")
@@ -319,8 +322,8 @@ def main(argv: list[str]) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="display_transport_smoke_") as tmp:
             scenario_frame(binary, Path(tmp))
-        scenario_foreign_version(binary, 1)  # a v1 UI against this v2 VMHost: INCOMPATIBLE on its side by 8.1
-        scenario_foreign_version(binary, 3)
+        scenario_foreign_version(binary, 2)  # a v2 UI against this v3 VMHost: VERSION reply, then EOF (8.1)
+        scenario_foreign_version(binary, 4)
         scenario_protocol_error(binary, "foreign magic", b"ODCP" + bytes(12))
         scenario_protocol_error(binary, "malformed HELLO", header(KIND_FRAME))
         scenario_bytes_after_hello(binary)

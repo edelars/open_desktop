@@ -84,3 +84,15 @@ python3 tests/system/cursor_overlay_smoke.py [target/open-desktop-display-viewer
 ```
 
 `--dump-cursor-test X,Y,HX,HY,E` (viewer, offscreen only, test-only, needs `--dump-frame`) injects a synthetic accepted cursor into the presenter after the frame is shown: a fixed 4x4 `BGRA8888_PREMUL` image (formula in the header of `cursor_overlay_smoke.py`), hotspot `HX,HY` (0…3), position `X,Y`, enabled `E` (0 or 1). It goes through the real `uploadCursor`/`commitCursor` and the real draw, but not through the transport or the device. The dump line gains `cursor=none` or `cursor=rect=x0,y0,x1,y1 uv=u0,v0,du,dv` (drawable pixels). Without the flag the viewer draws only what arrives in `CURSOR` messages, and the test pattern profile sends none: **a cursor from a guest on a window or in a dump has not been shown.** The window with a cursor was not looked at. The host cursor over the window (`NSCursor`) is a separate limit of S10-16.
+
+## Два экрана (S10-15, тестовый путь)
+
+- `--screens 2` — viewer ждёт ANNOUNCE обоих экранов, создаёт два окна (экран 0 — основное, его закрытие завершает viewer и VMHost; экран 1 — только окно) и запускает VMHost с `--display-screens 2` (профиль 4, DISPLAY_HOST_ABI_V1.md, раздел 10).
+- `--dump-screen 1` (нужен `--screens 2`) — offscreen-дамп экрана 1; без флага дампится экран 0.
+- Пример (после сборки по строке 18 и `target/od-vmhost-smoke` из `apps/vmhost/README.md`):
+
+```bash
+target/open-desktop-display-viewer --vmhost target/od-vmhost-smoke --screens 2 --dump-screen 1 --dump-frame /private/tmp/screen1.raw
+```
+
+Экран 1 в тестовом профиле — шахматка 32×24 (клетка 8×8), проверяется побайтно эталоном, который строит скрипт. Окна глазами не проверены; сквозной путь «регистры гостя → VMHost» для экрана 1 не проверен (нужен probe S10-08).

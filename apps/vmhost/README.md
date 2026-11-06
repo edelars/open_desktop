@@ -82,3 +82,7 @@ xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as
 ```
 
 `apps/vmhost/Tests/CursorTransportTests.swift` covers: the v2 layout the writer produces, publication and the shape copy count (once per slot in the writer, once in the reader), slot choice under untrusted `cursor_claim` values (0, 1…3, 4, `0xFFFF_FFFF`), a slot rewritten between `g1` and `g2` (update discarded, state kept, recovery), 24 protocol violations one by one, 14 wrong header values of v2 and the cursor area (`INCOMPATIBLE`), and queue replacement and order. The VMHost build command above is unchanged and already includes the new code; the smokes `display_transport_smoke.py` and `input_channel_smoke.py` were updated to v2 (HELLO with version 1 or 3 is answered with `VERSION`, version 2).
+
+## Два экрана (S10-15, тестовый путь)
+
+`--display-smoke pattern --display-screens 2` запускает профиль 4 (DISPLAY_HOST_ABI_V1.md, раздел 10): экран 0 — полосы, экран 1 — шахматка. Каждый экран публикуется в собственный объект памяти (FRAME_TRANSPORT_V1.md, раздел 11), `ANNOUNCE` идут по порядку экранов. Флаг только для smoke.

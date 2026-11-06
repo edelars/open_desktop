@@ -50,6 +50,10 @@ private enum ViewerError: Error, CustomStringConvertible {
 private struct ViewerConfig {
     var vmhost: String
     var profile = "pattern"
+    /// S10-15, test-only: 1 (default) or 2 screens; 2 starts VMHost with profile 4 (DISPLAY_HOST_ABI_V1.md, section 10).
+    var screens = 1
+    /// S10-15, test-only: which screen the offscreen dump renders (1 needs `--screens 2`).
+    var dumpScreen = 0
     var dumpPath: String?
     var timeoutMs: UInt64 = 10_000
     var closeAfterMs: UInt64?
@@ -85,7 +89,7 @@ private struct ViewerConfig {
             index += 2
         }
         let known: Set<String> = [
-            "vmhost", "profile", "dump-frame", "timeout-ms", "close-after-ms", "dump-size", "backing-scale",
+            "vmhost", "profile", "dump-frame", "timeout-ms", "close-after-ms", "dump-size", "backing-scale", "screens", "dump-screen",
             "dump-cursor-test",
         ]
         if let unknown = values.keys.first(where: { !known.contains($0) }) {
@@ -93,6 +97,17 @@ private struct ViewerConfig {
         }
         guard let vmhost = values["vmhost"] else { throw ViewerError.usage("--vmhost is required") }
         var config = ViewerConfig(vmhost: vmhost)
+        if let text = values["screens"] {
+            guard text == "1" || text == "2" else { throw ViewerError.usage("bad --screens (1 or 2)") }
+            config.screens = Int(text) ?? 1
+        }
+        if let text = values["dump-screen"] {
+            guard text == "0" || text == "1" else { throw ViewerError.usage("bad --dump-screen (0 or 1)") }
+            config.dumpScreen = Int(text) ?? 0
+            guard config.dumpScreen == 0 || config.screens == 2 else {
+                throw ViewerError.usage("--dump-screen 1 needs --screens 2")
+            }
+        }
         if let profile = values["profile"] {
             guard profile == "pattern" else {
                 throw ViewerError.usage("unsupported --profile \(profile) (only `pattern`; `probe` arrives in S10-09)")
@@ -150,13 +165,19 @@ private struct ViewerConfig {
 /// A running VMHost with the UI end of its socketpair wrapped in a FrameReader.
 private final class ViewerSession {
     let reader: FrameReader
-    let presenter: MetalPresenter
+    /// One presenter per screen (S10-15). Index 0 is created with the session; index 1 only after its ANNOUNCE and only
+    /// on the main thread, before the reader thread starts.
+    private(set) var presenters: [MetalPresenter]
+    var presenter: MetalPresenter { presenters[0] }
     /// S10-16: the UI end of the input socketpair; nil without `--input-channel`.
     let input: InputChannelUI?
     private let pid: pid_t
 
     init(config: ViewerConfig, presenter: MetalPresenter) throws {
-        self.presenter = presenter
+        // One presenter per configured screen, created before any frame can arrive (main thread).
+        var presenters = [presenter]
+        if config.screens == 2 { presenters.append(try MetalPresenter()) }
+        self.presenters = presenters
         let sockets = try VMHostLaunch.makeSocketPair()
         var inputSockets: (parent: Int32, child: Int32)?
         if config.inputChannel {
@@ -172,7 +193,8 @@ private final class ViewerSession {
         do {
             child = try VMHostLaunch.spawnHelper(
                 path: config.vmhost,
-                extraArguments: ["--display-smoke", config.profile],
+                extraArguments: ["--display-smoke", config.profile]
+                    + (config.screens == 2 ? ["--display-screens", "2"] : []),
                 parentFD: sockets.parent, childFD: sockets.child, input: inputSockets)
         } catch {
             Darwin.close(sockets.parent)
@@ -195,37 +217,49 @@ private final class ViewerSession {
         reader.start(announceTimeoutMs: config.timeoutMs)
     }
 
-    /// One reader step: pump, then commit or discard the staged texture, and clear it when no frame is current.
+    /// State of screen 0 (the single-screen view and the dump); the connection state before any ANNOUNCE.
+    var primaryState: FrameReaderState { reader.primary?.state ?? reader.state }
+
+    /// One reader step: pump, then commit or discard the staged texture of each screen, and clear a screen's texture
+    /// when that screen shows no frame. The cursor belongs to screen 0 (S10-14, 16.8).
     @discardableResult
     func step(timeoutMs: Int32) -> Bool {
-        let acceptedBefore = reader.acceptedCount
-        let cursorAcceptedBefore = reader.cursorAcceptedCount
-        var uploaded = false
+        let counts = reader.screens.map { ($0.acceptedCount, $0.cursorAcceptedCount) }
+        var uploaded = [Bool](repeating: false, count: presenters.count)
         var cursorUploaded = false
+        let presentersNow = presenters
         let changed = reader.pump(
             timeoutMs: timeoutMs,
-            copy: { [presenter] pixels, frame in
-                uploaded = true
-                presenter.upload(pixels: pixels, frame: frame)
+            copy: { screen, pixels, frame in
+                guard screen < presentersNow.count else { return }
+                uploaded[screen] = true
+                presentersNow[screen].upload(pixels: pixels, frame: frame)
             },
             cursorCopy: { [presenter] pixels, cursor in
                 cursorUploaded = true
                 return presenter.uploadCursor(pixels: pixels, cursor: cursor)
             })
-        if reader.acceptedCount != acceptedBefore {
-            presenter.commit()
-        } else if uploaded {
-            presenter.discard()
+        for (screen, presenter) in presentersNow.enumerated() {
+            guard screen < reader.screens.count else { break }
+            let current = reader.screens[screen]
+            // A screen announced during this pump had no counts before it (0 is the value before any frame).
+            let acceptedBefore = screen < counts.count ? counts[screen].0 : 0
+            if current.acceptedCount != acceptedBefore {
+                presenter.commit()
+            } else if uploaded[screen] {
+                presenter.discard()
+            }
+            if current.state != .showing { presenter.clear() }
+            if reader.state.isTerminal || current.state.isTerminal { presenter.clear() }
         }
         // The cursor is independent of the frame: an accepted update commits the cursor state (and a new texture if the
         // shape changed); a discarded one drops only the staged texture. The reader state does not clear the cursor state
         // (10.6): the presenter draws it only over a shown frame.
-        if reader.cursorAcceptedCount != cursorAcceptedBefore {
-            presenter.commitCursor(reader.cursor)
+        if let primary = reader.primary, primary.cursorAcceptedCount != (counts.first?.1 ?? 0) {
+            presenter.commitCursor(primary.cursor)
         } else if cursorUploaded {
             presenter.discardCursor()
         }
-        if reader.state != .showing { presenter.clear() }
         if reader.state.isTerminal { presenter.commitCursor(nil) }
         return changed
     }
@@ -285,6 +319,15 @@ private final class ViewerSession {
         reader.teardown()
         return stopChild()
     }
+
+    /// Pumps until the connection is announced (or failed), before any window exists (S10-15).
+    func waitForAnnounce(timeoutMs: UInt64) {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutMs * 1_000_000
+        while reader.state == .connecting && !reader.state.isTerminal {
+            if DispatchTime.now().uptimeNanoseconds >= deadline { break }
+            step(timeoutMs: 20)
+        }
+    }
 }
 
 private func describe(_ state: FrameReaderState) -> String {
@@ -334,14 +377,19 @@ private func describe(_ placement: CursorPlacement?) -> String {
 }
 
 private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
-    let presenter = try MetalPresenter()
-    let session = try ViewerSession(config: config, presenter: presenter)
+    let target = config.dumpScreen
+    let session = try ViewerSession(config: config, presenter: try MetalPresenter())
+    let presenter = session.presenters[target]
+    // The state of the dumped screen; the connection state while no ANNOUNCE of it has arrived.
+    func targetState() -> FrameReaderState {
+        session.reader.screens.count > target ? session.reader.screens[target].state : session.reader.state
+    }
     let deadline = DispatchTime.now().uptimeNanoseconds + config.timeoutMs * 1_000_000
-    while session.reader.state != .showing && !session.reader.state.isTerminal {
+    while targetState() != .showing && !targetState().isTerminal {
         if DispatchTime.now().uptimeNanoseconds >= deadline { break }
         session.step(timeoutMs: 50)
     }
-    let finalState = session.reader.state
+    let finalState = targetState()
     var rendered: (width: Int, height: Int, pixels: [UInt8], viewport: Viewport, cursor: CursorPlacement?)?
     var logical = (width: 0, height: 0)
     if finalState == .showing, let frame = presenter.shownSize {
@@ -357,7 +405,7 @@ private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
         rendered = presenter.renderOffscreen(targetWidth: physical.width, targetHeight: physical.height, mode: config.mode)
     }
     let frameSize = presenter.shownSize
-    let generation = session.reader.lastFrame?.generation ?? 0
+    let generation = (session.reader.screens.count > target ? session.reader.screens[target].lastFrame : nil)?.generation ?? 0
     let status = session.shutdown()
     guard finalState == .showing else {
         throw ViewerError.state("no frame before the end: \(describe(finalState)) (VMHost exit status \(status))")
@@ -381,7 +429,8 @@ private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
 private final class ViewerDelegate: NSObject, NSApplicationDelegate {
     private let config: ViewerConfig
     private var session: ViewerSession?
-    private var displayWindow: DisplayWindow?
+    /// One window per screen (S10-15); index 0 is the primary window whose closing ends the viewer (16.11).
+    private var windows: [DisplayWindow] = []
     private let stopped = DispatchSemaphore(value: 0)
     private let stopLock = NSLock()
     private var stopFlag = false
@@ -395,11 +444,26 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
             let presenter = try MetalPresenter()
             let session = try ViewerSession(config: config, presenter: presenter)
             self.session = session
-            let window = DisplayWindow(
-                presenter: presenter, title: "Open Desktop display viewer (test pattern)",
+            // The windows are created after the ANNOUNCE of every screen, on the main thread, before the reader thread.
+            session.waitForAnnounce(timeoutMs: config.timeoutMs)
+            let title = session.presenters.count == 2 ? "Open Desktop display viewer (screen 0)"
+                : "Open Desktop display viewer (test pattern)"
+            let first = DisplayWindow(
+                presenter: session.presenters[0], title: title,
                 contentSize: NSSize(width: 640, height: 480), mode: config.mode, input: session.input)
-            displayWindow = window
-            window.show()
+            windows.append(first)
+            first.show()
+            if session.presenters.count == 2 {
+                let second = DisplayWindow(
+                    presenter: session.presenters[1], title: "Open Desktop display viewer (screen 1)",
+                    contentSize: NSSize(width: 640, height: 480), mode: config.mode, input: nil)
+                windows.append(second)
+                second.show()
+            }
+            // Closing the screen-0 window ends the viewer and therefore VMHost (FRAME_TRANSPORT_V1.md, 11.8).
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: first.window, queue: .main
+            ) { _ in NSApp.terminate(nil) }
             session.input?.start()
             NSApp.activate(ignoringOtherApps: true)
             readerStarted = true
@@ -414,34 +478,42 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Reader thread: owns the FrameReader until it ends, then reports the state to the main thread.
+    /// Reader thread: owns the FrameReader until it ends, then reports each window's state to the main thread.
     private func readerLoop(_ session: ViewerSession) {
-        var published: FrameReaderState?
+        var published: [FrameReaderState] = []
         var statusDetail: String?
         var publishedShown: ShownFrame?
         while !isStopRequested() {
             let changed = session.step(timeoutMs: 100)
-            let state = session.reader.state
-            if state.isTerminal, statusDetail == nil {
+            let connection = session.reader.state
+            if connection.isTerminal, statusDetail == nil {
                 // section 7.2: munmap and close are done by the reader; stop and reap VMHost, keep its real status.
                 let status = session.stopChild()
-                statusDetail = "\(describe(state)) (VMHost exit status \(status))"
+                statusDetail = "\(describe(connection)) (VMHost exit status \(status))"
                 setFailed()
+            }
+            // Each window shows its own screen; before the announce of a screen, the connection state.
+            let states: [FrameReaderState] = session.presenters.indices.map { index in
+                connection.isTerminal || index >= session.reader.screens.count
+                    ? connection : session.reader.screens[index].state
             }
             // S10-16: the shown frame for absolute mouse positions: only while SHOWING, with the mode count of that frame.
             var shown: ShownFrame?
-            if state == .showing, let frame = session.reader.lastFrame {
+            if let primary = session.reader.primary, primary.state == .showing, let frame = primary.lastFrame {
                 shown = ShownFrame(width: frame.width, height: frame.height, modeChangeCount: frame.modeChangeCount)
             }
-            if changed || published == nil || shown != publishedShown {
-                published = state
+            if changed || published != states || shown != publishedShown {
+                published = states
                 publishedShown = shown
                 let detail = statusDetail
                 DispatchQueue.main.async { [weak self] in
-                    self?.displayWindow?.update(state: state, detail: detail, shown: shown)
+                    guard let self else { return }
+                    for (index, window) in self.windows.enumerated() where index < states.count {
+                        window.update(state: states[index], detail: detail, shown: index == 0 ? shown : nil)
+                    }
                 }
             }
-            if state.isTerminal { break }
+            if connection.isTerminal { break }
         }
         // The reader belongs to this thread; ownership returns to the main thread through the semaphore.
         stopped.signal()
@@ -466,7 +538,7 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
         stopFlag = true
         stopLock.unlock()
         if readerStarted { _ = stopped.wait(timeout: .now() + 8) }
-        if let window = displayWindow {
+        if let window = windows.first {
             print("window geometry: \(window.geometryDescription)")
             if let text = window.inputStatusText { print("input channel: \(text)") }
             window.tearDownInput() // closes the input channel: VMHost sees EOF on it

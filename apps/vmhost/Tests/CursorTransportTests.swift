@@ -66,9 +66,9 @@ private final class Rig {
         reader.start()
         var hello = [UInt8](repeating: 0, count: 16)
         precondition(recv(hostFD, &hello, 16, 0) == 16)
-        precondition(Array(hello[0..<6]) == Array("ODFT".utf8) + [2, 0], "the reader must speak version 2")
+        precondition(Array(hello[0..<6]) == Array("ODFT".utf8) + [3, 0], "the reader must speak version 3")
         writer = try FrameTransportWriter(maxWidth: 64, maxHeight: 48)
-        try writer.sendAnnounce(on: hostFD)
+        try writer.sendAnnounce(on: hostFD, screenCount: 1)
         try writer.queueMode(count: 1, active: true, width: 64, height: 48, stride: 256, format: 1)
         try writer.flush(fd: hostFD)
         pump()
@@ -84,7 +84,7 @@ private final class Rig {
     /// Flush the writer queue and let the reader process what arrived.
     func pump(copy: @escaping (UnsafeRawPointer, AcceptedCursor) -> Void = { _, _ in }) {
         try? writer.flush(fd: hostFD)
-        reader.pump(timeoutMs: 50, copy: { _, _ in }, cursorCopy: { [unowned self] pixels, cursor in
+        reader.pump(timeoutMs: 50, copy: { _, _, _ in }, cursorCopy: { [unowned self] pixels, cursor in
             uploads += 1
             lastUpload = Array(UnsafeRawBufferPointer(start: pixels, count: cursor.width * cursor.height * 4))
             copy(pixels, cursor)
@@ -138,7 +138,7 @@ struct CursorTransportTests {
         let base = rig.writer.base
         func u32(_ offset: Int) -> UInt32 { base.load(fromByteOffset: offset, as: UInt32.self) }
         check(u32(0) == 0x5346_444F, "magic ODFS")
-        check(u32(4) == 2 | (64 << 16), "version 2, header_size 64")
+        check(u32(4) == 3 | (64 << 16), "version 3, header_size 64")
         check(u32(24) == 65_536, "slots_offset 65536")
         check(base.load(fromByteOffset: 48, as: UInt64.self) == 65_536 + 3 * 16_384, "total_size = 65536 + 3 * 16384 for 64x48")
         check(u32(56) == 384 && u32(60) == 0, "cursor_offset 384, reserved 0")
@@ -306,7 +306,7 @@ struct CursorTransportTests {
             }
         }
         func raw(_ rig: Rig, kind: UInt16 = 5, length: UInt32 = 16, reserved: UInt32 = 0, seq: UInt64, slot: UInt32, tail: UInt32 = 0) {
-            var bytes = Array("ODFT".utf8) + [2, 0] + [UInt8(kind & 0xFF), UInt8(kind >> 8)] + le32(reserved) + le32(length)
+            var bytes = Array("ODFT".utf8) + [3, 0] + [UInt8(kind & 0xFF), UInt8(kind >> 8)] + le32(reserved) + le32(length)
             bytes += le64(seq) + le32(slot) + le32(tail)
             precondition(send(rig.hostFD, bytes, bytes.count, 0) == bytes.count)
         }
@@ -384,7 +384,7 @@ struct CursorTransportTests {
     // MARK: 10.3.1, 10.3.2: each header value of v2 is checked by the reader
 
     /// A fake writer: its own shared memory and header, built here from the numbers of the spec, then mutated.
-    static func headerOutcome(mutate: (UnsafeMutableRawPointer) -> Void, messageVersion: UInt16 = 2) -> FrameReaderState {
+    static func headerOutcome(mutate: (UnsafeMutableRawPointer) -> Void, messageVersion: UInt16 = 3) -> FrameReaderState {
         let total = 65_536 + 2 * 16_384
         var fd: Int32 = -1
         var name = ""
@@ -400,7 +400,7 @@ struct CursorTransportTests {
         defer { munmap(base, total) }
         func put(_ offset: Int, _ value: UInt32) { base.storeBytes(of: value, toByteOffset: offset, as: UInt32.self) }
         put(0, 0x5346_444F)
-        put(4, 2 | (64 << 16))
+        put(4, 3 | (64 << 16))
         put(8, 64); put(12, 128); put(16, 64); put(20, 2); put(24, 65_536); put(28, 16_384)
         put(32, 1); put(36, 64); put(40, 48); put(44, 0)
         base.storeBytes(of: UInt64(total), toByteOffset: 48, as: UInt64.self)
@@ -412,8 +412,9 @@ struct CursorTransportTests {
         let reader = FrameReader(fd: sockets.ui)
         reader.start()
         // ANNOUNCE with SCM_RIGHTS, built by hand.
-        var message = Array("ODFT".utf8) + [UInt8(messageVersion & 0xFF), UInt8(messageVersion >> 8), 2, 0] + le32(0) + le32(16)
-        message += le64(UInt64(total)) + le32(2) + le32(0)
+        var message = Array("ODFT".utf8) + [UInt8(messageVersion & 0xFF), UInt8(messageVersion >> 8), 2, 0] + le32(0) + le32(24)
+        // ANNOUNCE payload of section 11.4: total_size, slot_count, screen = 0, screen_count = 1, reserved = 0.
+        message += le64(UInt64(total)) + le32(2) + le32(0) + le32(1) + le32(0)
         var control = [UInt8](repeating: 0, count: 16)
         control.withUnsafeMutableBytes { raw in
             raw.storeBytes(of: UInt32(16), toByteOffset: 0, as: UInt32.self)
@@ -435,7 +436,10 @@ struct CursorTransportTests {
             }
         }
         Darwin.close(fd)
-        reader.pump(timeoutMs: 500, copy: { _, _ in })
+        // The viewer pumps in a loop; a fake ANNOUNCE needs two passes (header, then the 24-byte payload).
+        for _ in 0..<4 where reader.state == .connecting {
+            reader.pump(timeoutMs: 100, copy: { _, _, _ in })
+        }
         let state = reader.state
         reader.teardown()
         Darwin.close(sockets.host)
@@ -443,7 +447,7 @@ struct CursorTransportTests {
     }
 
     static func headerMutations() throws {
-        check(headerOutcome(mutate: { _ in }) == .noSignal, "an untouched fake v2 writer is accepted")
+        check(headerOutcome(mutate: { _ in }) == .noSignal, "an untouched fake v3 writer is accepted")
 
         func incompatible(_ name: String, _ mutate: @escaping (UnsafeMutableRawPointer) -> Void) {
             if case .incompatible = headerOutcome(mutate: mutate) { return }
@@ -457,7 +461,7 @@ struct CursorTransportTests {
             { $0.storeBytes(of: value, toByteOffset: offset, as: UInt32.self) }
         }
         incompatible("memory version 1") { $0.storeBytes(of: UInt16(1), toByteOffset: 4, as: UInt16.self) }
-        incompatible("memory version 3") { $0.storeBytes(of: UInt16(3), toByteOffset: 4, as: UInt16.self) }
+        incompatible("memory version 2") { $0.storeBytes(of: UInt16(2), toByteOffset: 4, as: UInt16.self) }
         incompatible("slots_offset 16384 (v1 layout)", set(24, 16_384))
         incompatible("cursor_offset 0", set(56, 0))
         incompatible("cursor_offset 448", set(56, 448))
@@ -474,8 +478,8 @@ struct CursorTransportTests {
         if case .incompatible = headerOutcome(mutate: { _ in }, messageVersion: 1) {} else {
             check(false, "ANNOUNCE with message version 1: expected INCOMPATIBLE")
         }
-        if case .incompatible = headerOutcome(mutate: { _ in }, messageVersion: 3) {} else {
-            check(false, "ANNOUNCE with message version 3: expected INCOMPATIBLE")
+        if case .incompatible = headerOutcome(mutate: { _ in }, messageVersion: 2) {} else {
+            check(false, "ANNOUNCE with message version 2: expected INCOMPATIBLE")
         }
     }
 
@@ -506,13 +510,13 @@ struct CursorTransportTests {
 
         // The bound: partial 48 + MODE 48 + FRAME 40 + CURSOR 32 = 168 bytes.
         var queue = NotificationQueue()
-        queue.queueMode([UInt8](repeating: 0, count: 48))
-        queue.queueFrame([UInt8](repeating: 0, count: 40))
+        queue.queueMode(screen: 0, [UInt8](repeating: 0, count: 48))
+        queue.queueFrame(screen: 0, [UInt8](repeating: 0, count: 40))
         queue.queueCursor([UInt8](repeating: 0, count: 32))
         check(queue.bufferedBytes == 120, "pending bytes: \(queue.bufferedBytes)")
         queue.queueCursor([UInt8](repeating: 0, count: 32))
-        queue.queueFrame([UInt8](repeating: 0, count: 40))
-        queue.queueMode([UInt8](repeating: 0, count: 48)) // drops the pending FRAME, keeps the CURSOR
+        queue.queueFrame(screen: 0, [UInt8](repeating: 0, count: 40))
+        queue.queueMode(screen: 0, [UInt8](repeating: 0, count: 48)) // drops the pending FRAME, keeps the CURSOR
         check(queue.bufferedBytes == 48 + 32, "MODE drops FRAME, keeps CURSOR: \(queue.bufferedBytes)")
         // A partially sent MODE (48) plus a full set of pending messages is the 168-byte bound.
         var bounded = NotificationQueue()
@@ -524,10 +528,10 @@ struct CursorTransportTests {
         // Fill the socket so the next message stays (partly) unsent.
         let filler = [UInt8](repeating: 0, count: 1024)
         while send(sockets.host, filler, filler.count, 0) > 0 {}
-        bounded.queueMode([UInt8](repeating: 1, count: 48))
+        bounded.queueMode(screen: 0, [UInt8](repeating: 1, count: 48))
         try bounded.flush(fd: sockets.host) // EAGAIN: nothing leaves, or part of it does
-        bounded.queueMode([UInt8](repeating: 2, count: 48))
-        bounded.queueFrame([UInt8](repeating: 3, count: 40))
+        bounded.queueMode(screen: 0, [UInt8](repeating: 2, count: 48))
+        bounded.queueFrame(screen: 0, [UInt8](repeating: 3, count: 40))
         bounded.queueCursor([UInt8](repeating: 4, count: 32))
         check(bounded.bufferedBytes <= 168, "bound 168 bytes: \(bounded.bufferedBytes)")
         Darwin.close(sockets.host)

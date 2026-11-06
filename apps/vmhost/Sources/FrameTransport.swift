@@ -411,7 +411,6 @@ final class FrameTransportWriter {
         base.storeBytes(of: UInt32(0), toByteOffset: 44, as: UInt32.self)
         base.storeBytes(of: UInt64(total).littleEndian, toByteOffset: 48, as: UInt64.self)
         base.storeBytes(of: UInt32(Layout.cursorOffset).littleEndian, toByteOffset: 56, as: UInt32.self)
-        base.storeBytes(of: UInt32(0), toByteOffset: 60, as: UInt32.self)
         // Cursor area header (10.3.2): constants the reader checks.
         let cursorHeader: [UInt32] = [
             UInt32(Layout.cursorSlotCount), UInt32(Layout.descriptorSize), UInt32(Layout.cursorDescriptorsOffset),

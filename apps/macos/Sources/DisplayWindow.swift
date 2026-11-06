@@ -171,6 +171,10 @@ final class DisplayWindow {
         case .modeChanging:
             background = MTLClearColor(red: 0.08, green: 0.16, blue: 0.40, alpha: 1)
             text = "Changing mode"
+        case .disabled:
+            // Screen 1 disabled by the guest (DISPLAY_DEVICE.md 16.6): no frame, no stale picture.
+            background = MTLClearColor(red: 0.10, green: 0.10, blue: 0.10, alpha: 1)
+            text = "Display disabled"
         case let .disconnected(reason):
             background = MTLClearColor(red: 0.40, green: 0.08, blue: 0.08, alpha: 1)
             text = "No signal: VMHost disconnected\n\(detail ?? reason)"
