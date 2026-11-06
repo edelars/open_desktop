@@ -361,7 +361,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-22. Версии формата и migration
 
 - [ ] Принято после ревью.
-- **Текущий статус (2026-11-05):** не начат; осмысленно начинать после принятия формата (S9-40).
+- **Текущий статус (2026-11-05):** частично, коммит `b5f75d3`: замороженная фикстура текущего прототипа (`crates/od-storage/tests/fixtures/cow/v1_created_committed.img`, 2560 Б) и регрессионные тесты чтения (writable, salvage, отказ неизвестного mandatory-бита). Не сделано: таблица совместимости и миграция между версиями — второй версии нет, формат не принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-22-версии-формата-и-migration--частично).
 - **Где:** `od-storage` codecs, `STORAGE_FORMAT.md`, image-tool.
 - **Сделать:** compatibility table read/write/upgrade/downgrade; unknown mandatory features отклонять. Migration сначала в новый target, с проверкой logical data, snapshots/parent links и identities; activation отделить от copy. Не обещать произвольный downgrade.
 - **Проверить:** tiny frozen fixtures поддержанных старых versions, interrupted migration, source untouched, recovery после publish-before-response, insufficient space и unsupported version.
