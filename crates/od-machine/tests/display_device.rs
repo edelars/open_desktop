@@ -7,10 +7,10 @@ use od_isa::memory::{AccessContext, AccessOrigin, InstructionMode, MemoryError, 
 use od_isa::{INTEGER_FLAGS, LongModeState, Register};
 use od_machine::{
     AccessWidth, DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE,
-    DISPLAY_REGISTERS_BYTES, DisplayDevice, DisplayHandle, DisplayReadError, GuestPhysicalAddress,
-    GuestPhysicalRange, MachineBus, MachineMemoryMap, MemoryAccessError, MemoryRegionKind,
-    MemoryRegionSpec, MmioBinding, RamLimits, TrackedAccessError, step_diagnostic_pio_u8,
-    step_paged_mov, step_paged_pio_u8,
+    DISPLAY_REGISTERS_BYTES, DisplayDevice, DisplayHandle, DisplayReadError, DisplayRejectReason,
+    DisplayRequestError, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+    MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding, ModeRequestOutcome,
+    RamLimits, TrackedAccessError, step_diagnostic_pio_u8, step_paged_mov, step_paged_pio_u8,
 };
 
 const CR0: u64 = 0x8001_0033;
@@ -306,4 +306,115 @@ fn guest_register_flow_and_host_frame_read_through_public_api() {
     );
     assert_eq!(&frame[..4], &[0x01, 0x01, 0x01, 0xFF]);
     assert_eq!(&frame[12..], &[0x04, 0x04, 0x04, 0xFF]);
+}
+
+fn reg_read(bus: &mut MachineBus, offset: u64) -> u32 {
+    bus.read_physical(
+        GuestPhysicalAddress::new(DISPLAY_REGISTERS_BASE + offset),
+        AccessWidth::Dword,
+    )
+    .unwrap() as u32
+}
+
+fn reg_write(bus: &mut MachineBus, offset: u64, value: u32) {
+    bus.write_physical(
+        GuestPhysicalAddress::new(DISPLAY_REGISTERS_BASE + offset),
+        AccessWidth::Dword,
+        u64::from(value),
+        |_| panic!("register writes must not reach the committed-write callback"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn version_1_guest_never_sees_events_and_keeps_the_frame_flow() {
+    let (mut bus, display) = make_bus();
+    // A version 1 guest does not read VERSION/CAPS and never writes
+    // DRIVER_PROTOCOL; the host cannot queue anything for it.
+    assert_eq!(
+        display.post_mode_request(1280, 720, 1),
+        Err(DisplayRequestError::NoDriver)
+    );
+    assert_eq!(reg_read(&mut bus, 0x140), 0);
+    for (offset, value) in [(0x40, 64u32), (0x44, 48), (0x48, 1), (0x4C, 1)] {
+        reg_write(&mut bus, offset, value);
+    }
+    reg_write(&mut bus, 0x80, 0);
+    assert_eq!(reg_read(&mut bus, 0x70), 0b11);
+    let mut frame = vec![0u8; 64 * 48 * 4];
+    let info = display.read_frame_into(&bus, &mut frame).unwrap();
+    assert_eq!((info.generation, info.mode.width), (1, 64));
+    // Version 2 only adds values for the new registers.
+    assert_eq!((reg_read(&mut bus, 0x04), reg_read(&mut bus, 0x08)), (2, 3));
+}
+
+#[test]
+fn version_2_request_exchange_through_public_api() {
+    let (mut bus, display) = make_bus();
+    assert_eq!(reg_read(&mut bus, 0x100), 2);
+    reg_write(&mut bus, 0x104, 0);
+    reg_write(&mut bus, 0x104, 1);
+    assert_eq!(reg_read(&mut bus, 0x108) >> 16 & 0xFF, 0);
+    assert_eq!(display.driver_protocol(), 1);
+
+    let seq = display.post_mode_request(1920, 1080, 1).unwrap();
+    assert_eq!(reg_read(&mut bus, 0x140), 1);
+    reg_write(&mut bus, 0x148, 1);
+    assert_eq!(reg_read(&mut bus, 0x108) & 0xFF, 0);
+    assert_eq!(reg_read(&mut bus, 0x150), seq as u32);
+    assert_eq!(reg_read(&mut bus, 0x158), 1);
+    assert_eq!(
+        [
+            reg_read(&mut bus, 0x160),
+            reg_read(&mut bus, 0x164),
+            reg_read(&mut bus, 0x168),
+            reg_read(&mut bus, 0x16C)
+        ],
+        [1920, 1080, 1, 0]
+    );
+
+    // The guest applies the mode with the version 1 path, then accepts.
+    reg_write(&mut bus, 0x180, seq as u32);
+    reg_write(&mut bus, 0x184, (seq >> 32) as u32);
+    reg_write(&mut bus, 0x188, 1);
+    assert_eq!(reg_read(&mut bus, 0x108) >> 8 & 0xFF, 0x0A, "MODE_MISMATCH");
+    for (offset, value) in [(0x40, 1920u32), (0x44, 1080), (0x48, 1), (0x4C, 1)] {
+        reg_write(&mut bus, offset, value);
+    }
+    reg_write(&mut bus, 0x188, 1);
+    assert_eq!(reg_read(&mut bus, 0x108) >> 8 & 0xFF, 0);
+    let state = display.mode_request_state().unwrap();
+    assert_eq!(state.outcome, ModeRequestOutcome::Accepted);
+    assert_eq!((state.width, state.height), (1920, 1080));
+    assert_eq!(display.current_mode().width, 1920);
+
+    // A new request, rejected with a reason.
+    let next = display.post_mode_request(2560, 1440, 1).unwrap();
+    assert!(next > seq);
+    reg_write(&mut bus, 0x148, 1);
+    reg_write(&mut bus, 0x180, next as u32);
+    reg_write(&mut bus, 0x184, (next >> 32) as u32);
+    reg_write(&mut bus, 0x188, 0x0000_0102);
+    assert_eq!(
+        display.mode_request_state().unwrap().outcome,
+        ModeRequestOutcome::Rejected(DisplayRejectReason::Unsupported)
+    );
+    // The mode did not change on REJECT.
+    assert_eq!(display.current_mode().width, 1920);
+
+    // Reset turns the protocol off; a later request is refused.
+    let open = display.post_mode_request(1280, 720, 1).unwrap();
+    display.reset();
+    assert_eq!(reg_read(&mut bus, 0x104), 0);
+    assert_eq!(reg_read(&mut bus, 0x140), 0);
+    assert_eq!(
+        display.mode_request_state().unwrap().outcome,
+        ModeRequestOutcome::Cancelled
+    );
+    assert_eq!(
+        display.post_mode_request(1280, 720, 1),
+        Err(DisplayRequestError::NoDriver)
+    );
+    reg_write(&mut bus, 0x104, 1);
+    assert!(display.post_mode_request(1280, 720, 1).unwrap() > open);
 }

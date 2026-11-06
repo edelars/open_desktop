@@ -28,9 +28,10 @@ pub use bus::{
 };
 
 pub use display_device::{
-    DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES,
-    DISPLAY_MAX_HEIGHT, DISPLAY_MAX_WIDTH, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
-    DisplayDevice, DisplayHandle, DisplayMode, DisplayReadError, FrameInfo,
+    DISPLAY_EVENT_CAPACITY, DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE,
+    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_MAX_HEIGHT, DISPLAY_MAX_WIDTH, DISPLAY_REGISTERS_BASE,
+    DISPLAY_REGISTERS_BYTES, DisplayDevice, DisplayHandle, DisplayMode, DisplayReadError,
+    DisplayRejectReason, DisplayRequestError, FrameInfo, ModeRequestOutcome, ModeRequestState,
 };
 
 pub use diagnostic_vcpu::{

@@ -207,8 +207,9 @@ and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu
 - **Reset.** `DisplayHandle::reset()` — host-операция: режим и регистры
   возвращаются к значениям после reset, `mode_change_count` растёт на 1, если
   режим был активен; `generation` и память framebuffer сохраняются.
-- **Не реализовано.** Курсор, несколько экранов, PCI/BAR, прерывания, список
-  режимов, dirty rects, snapshot/restore, другие форматы. Dword MMIO-запись в
+- **Не реализовано.** Курсор, несколько экранов, PCI/BAR, прерывания,
+  dirty rects, snapshot/restore, другие форматы (список режимов и события —
+  ревизия 2, следующий раздел). Dword MMIO-запись в
   tracked paged CPU-пути остаётся блокером гостевого probe S10-08
   (DISPLAY_DEVICE.md, 13.1): `PagedMovMemoryAdapter` пишет только qword, а
   qword-запись в регистр — backend-ошибка `UnsupportedWidth`.
@@ -220,6 +221,70 @@ and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu
   согласование карты и устройства. На `feat/s9-stage` нет page generations и
   `tracked_code_snapshot` (они есть на `main`): пункты 7.4 (а)–(д) контракта
   устройства про них не сверены и не реализованы здесь.
+
+## Display device, revision 2 (S10-13)
+
+Нормативно: [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md), раздел 14, и
+[DISPLAY_DRIVER_V1.md](../../protocols/guest/DISPLAY_DRIVER_V1.md). Здесь записаны
+только границы, реализованные в `crates/od-machine/src/display_device.rs`. Код
+написан и ожидает ревью.
+
+- **Ревизия.** `VERSION = 2`, `CAPS = 0x3` (бит 0 `MODE_LIST`, бит 1 `EVENTS`;
+  биты 2–3 зарезервированы, равны `0`). Один тип `DisplayDevice` обслуживает
+  гостей обеих ревизий: регистры ревизии 1, их значения, порядок проверок,
+  счётчики, backend-ошибки и host API раздела «Display device (S10-03)» не
+  изменены; меняются только значения `VERSION` и `CAPS`. Новые регистры
+  занимают бывший резерв `0x100–0x1FC` и `0x400–0x7FC`; `0x200–0x3FC`, `IRQ_*` и
+  остальной резерв читаются как `0`, запись игнорируется.
+- **Регистры.** 17 именованных (`DRIVER_PROTOCOLS`, `DRIVER_PROTOCOL`,
+  `EVENT_STATUS`, `MODE_COUNT`, `EVENT_PENDING`, `EVENT_CAPACITY`, `EVENT_POP`,
+  `EVENT_SEQ_LO/HI`, `EVENT_TYPE`, `EVENT_ARG0..3`, `RESPONSE_SEQ_LO/HI`,
+  `REQUEST_RESPONSE`) и `MODE_TABLE`. Доступ — как в ревизии 1: только
+  `Mmio`, `Dword`, выровненный; иначе `DeviceError` до изменения состояния.
+  `DRIVER_PROTOCOL` — класс «RW с проверкой»: допустимое значение (`0` или `1`)
+  применяется, недопустимое даёт `PROTOCOL_ERROR = UNSUPPORTED_PROTOCOL`.
+- **Список режимов.** Константа устройства: `MODE_COUNT = 14`, записи по 16
+  байт (`width`, `height`, `format = 1`, `0`), записи `i ≥ 14` читаются нулями.
+  Чтение без побочных эффектов; reset список не меняет; `MODE_COMMIT` им не
+  ограничен.
+- **Очередь событий.** Ёмкость `DISPLAY_EVENT_CAPACITY = 16` записей
+  (`seq: u64`, `type`, 4 аргумента). `EVENT_POP` берёт голову в защёлку; защёлку
+  меняют только успешный `EVENT_POP` гостя, `DRIVER_PROTOCOL <- 0` и reset, host
+  её не трогает. Пока `DRIVER_PROTOCOL = 0`, очередь пуста и `EVENT_PENDING = 0`.
+  Ошибки `EVENT_STATUS` (`POP_ERROR`, `RESPONSE_ERROR`, `PROTOCOL_ERROR`) —
+  `INVALID_COMMAND`, `NOT_ENABLED`, `QUEUE_EMPTY`, `STALE_REQUEST`,
+  `MODE_MISMATCH`, `UNSUPPORTED_PROTOCOL` (`0x07–0x0B`); в `STATUS` они не
+  попадают.
+- **Host API** (`DisplayHandle`, без downcast): `driver_protocol()`,
+  `post_mode_request(width, height, format) -> Result<u64, DisplayRequestError>`,
+  `mode_request_state() -> Option<ModeRequestState>`. Проверки постановки по
+  порядку: `NoDriver`, `InvalidMode` (проверки `MODE_COMMIT` 2–4),
+  `SequenceExhausted`, `QueueFull`; при отказе состояние не меняется. Новый
+  запрос удаляет непринятый `MODE_REQUEST` экрана 0 и вытесняет открытый;
+  переполнение не сбрасывает старые события. Правило вызова — как у остального
+  handle: только между квантами, владельцем `MachineBus`, в его потоке.
+- **Ответ.** `REQUEST_RESPONSE` проверяет кодирование (`ACCEPT = 0x01`,
+  `REJECT` с причиной `1..=3` в битах 15:8, биты 31:16 нулевые), затем
+  `DRIVER_PROTOCOL`, затем открытый запрос с номером из `RESPONSE_SEQ_HI:LO`,
+  затем для `ACCEPT` — равенство активного режима запрошенному (`MODE_MISMATCH`).
+  Режим меняет только `MODE_COMMIT`.
+- **Reset.** `DisplayHandle::reset()` дополнительно выключает протокол как
+  `DRIVER_PROTOCOL <- 0` (открытый запрос → `Cancelled`), обнуляет
+  `RESPONSE_SEQ_*` и `EVENT_STATUS`; `next_event_seq` и последний запрос
+  сохраняются.
+- **Не реализовано.** Блоки курсора и второго экрана, прерывания, snapshot,
+  путь запроса UI → VMHost → C ABI `od-host` (ABI в этом срезе не менялся;
+  DISPLAY_DEVICE.md, 14.15.1), драйверы. Гостевой CPU-путь по-прежнему не имеет
+  dword MMIO-записи (13.1), поэтому гостевой код не проверен: события и ответы
+  проверены записями и чтениями через `MachineBus`.
+- **Проверено.** Unit-тесты `display_device.rs` и интеграционные
+  `tests/display_device.rs`: значения после reset регистров 14.5, неизменность
+  при записи в RO и резерв, проба ревизии 1, таблица режимов (побайтное сравнение образа, собранного из dword-чтений; каждая
+  запись проходит commit), `DRIVER_PROTOCOL`, порядок и защёлка очереди,
+  объединение и вытеснение, ответы (`ACCEPT`/`REJECT`/`MODE_MISMATCH`/
+  `STALE_REQUEST`, неверные кодирования, `seq` с разницей в `HI`), порядок
+  отказов host API, `QueueFull`/`SequenceExhausted` через прямую подготовку
+  состояния в тесте, reset, backend-ошибки на новых смещениях.
 
 ## Stage 4 flat probe image and direct handoff (S4-32a)
 
