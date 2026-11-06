@@ -70,6 +70,7 @@ fn run_inner(args: &[String]) -> Result<(Value, u8), (Value, u8)> {
         PagedProbeExit::Fault(_) => "fault",
         PagedProbeExit::Backend(_) => "backend_error",
         PagedProbeExit::PortIo(_) => "pio_error",
+        PagedProbeExit::IntegrationError(_) => "integration_error",
     };
     let error = error_details(
         &report.exit,
@@ -168,6 +169,9 @@ fn error_details(
         }
         PagedProbeExit::Rejected(error) => {
             json!({"kind": "rejected", "detail": format!("{error:?}")})
+        }
+        PagedProbeExit::IntegrationError(error) => {
+            json!({"kind": "integration_error", "detail": format!("{error:?}")})
         }
         PagedProbeExit::Unsupported { opcode } => {
             json!({"kind": "unsupported", "detail": format!("unsupported opcode 0x{opcode:02x}")})

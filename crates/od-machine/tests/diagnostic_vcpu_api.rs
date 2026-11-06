@@ -46,6 +46,7 @@ fn session_at(
         .unwrap();
     }
     let state = LongModeState {
+        cr3: None,
         rip: address,
         ..LongModeState::default()
     };

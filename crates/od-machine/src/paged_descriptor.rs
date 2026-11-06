@@ -1,0 +1,885 @@
+//! Narrow CPU-connected paging adapter for a 10-byte LIDT pseudo-descriptor.
+
+use crate::{
+    GuestLinearAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus, ProbeConfigError,
+    RamAccessOperation, TrackedAccessError, TrackedAccessOutcome, TrackedAccessRequest,
+};
+use od_isa::{
+    PagedLidtLong64V1,
+    memory::{
+        AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
+    },
+    state::LongModeState,
+};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedLidtError {
+    Configuration(ProbeConfigError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedLidtReport {
+    pub cpu: od_isa::PagedProbeResult<std::convert::Infallible>,
+    pub page_fault: Option<PageFaultRecord>,
+    pub memory_error: Option<TrackedAccessError>,
+}
+
+/// Execute the exact bounded LIDT profile through the uncached tracked walker.
+/// The descriptor access is one RAM-only 10-byte transaction contained in one
+/// 4 KiB page; committed page-table A updates are reported to the writer.
+pub fn step_paged_lidt(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedLidtReport, PagedLidtError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedLidtError::Configuration)?;
+    let instruction_rip = state.rip;
+    let mut memory = PagedLidtMemory {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+    };
+    let cpu = od_isa::step_paged_lidt(
+        PagedLidtLong64V1,
+        state,
+        &mut memory,
+        AccessContext {
+            origin: AccessOrigin::Explicit,
+            ..context
+        },
+        efer,
+        rflags_defined,
+    );
+    Ok(PagedLidtReport {
+        cpu,
+        page_fault: memory.page_fault,
+        memory_error: memory.memory_error,
+    })
+}
+
+struct PagedLidtMemory<'a> {
+    bus: &'a mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
+    page_fault: Option<PageFaultRecord>,
+    memory_error: Option<TrackedAccessError>,
+}
+
+impl PagedLidtMemory<'_> {
+    fn access(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        operation: RamAccessOperation,
+    ) -> Result<TrackedAccessOutcome, MemoryError> {
+        let report = self.bus.access_tracked_ram(
+            &self.paging,
+            TrackedAccessRequest {
+                instruction_rip: self.instruction_rip,
+                address: GuestLinearAddress::new(address),
+                context,
+                operation,
+            },
+            &mut *self.committed_write,
+        );
+        report.outcome.map_err(|error| match error {
+            TrackedAccessError::PageFault { record, .. } => {
+                self.page_fault = Some(record.clone());
+                MemoryError::Architectural(record.fault().clone())
+            }
+            error => {
+                self.memory_error = Some(error.clone());
+                MemoryError::Backend(format!("paged LIDT RAM access failed: {error:?}"))
+            }
+        })
+    }
+}
+
+impl GuestMemory for PagedLidtMemory<'_> {
+    fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        match self.access(address, context, RamAccessOperation::Fetch)? {
+            TrackedAccessOutcome::Fetched(byte) => Ok(byte),
+            _ => Err(MemoryError::Backend(
+                "paged LIDT fetch returned a non-fetch result".into(),
+            )),
+        }
+    }
+
+    fn read(
+        &mut self,
+        address: u64,
+        context: AccessContext,
+        destination: &mut [u8],
+    ) -> Result<(), MemoryError> {
+        if destination.len() != 10 {
+            return Err(MemoryError::Backend(
+                "paged LIDT only reads a 10-byte pseudo-descriptor".into(),
+            ));
+        }
+        let last = address.checked_add(9);
+        if !canonical48(address) || last.is_none_or(|end| !canonical48(end)) {
+            return Err(MemoryError::Architectural(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            }));
+        }
+        if address & 0xfff > 0xff6 {
+            let error = TrackedAccessError::CrossesPage {
+                address: GuestLinearAddress::new(address),
+                width: 10,
+            };
+            self.memory_error = Some(error.clone());
+            return Err(MemoryError::Backend(format!(
+                "paged LIDT RAM access failed: {error:?}"
+            )));
+        }
+        match self.access(address, context, RamAccessOperation::ReadPseudoDescriptor)? {
+            TrackedAccessOutcome::ReadPseudoDescriptor(bytes) => {
+                destination.copy_from_slice(&bytes);
+                Ok(())
+            }
+            _ => Err(MemoryError::Backend(
+                "paged LIDT read returned a non-descriptor result".into(),
+            )),
+        }
+    }
+
+    fn write(&mut self, _: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend(
+            "paged LIDT does not write guest memory".into(),
+        ))
+    }
+    fn atomic_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend(
+            "paged LIDT does not perform atomic memory operations".into(),
+        ))
+    }
+    fn atomic_fetch_add_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend(
+            "paged LIDT does not perform atomic memory operations".into(),
+        ))
+    }
+    fn atomic_compare_exchange_integer(
+        &mut self,
+        _: u64,
+        _: AccessContext,
+        _: od_isa::OperandSize,
+        _: u64,
+        _: u64,
+    ) -> Result<u64, MemoryError> {
+        Err(MemoryError::Backend(
+            "paged LIDT does not perform atomic memory operations".into(),
+        ))
+    }
+    fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+        Err(MemoryError::Backend(
+            "paged LIDT does not perform fences".into(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AccessWidth, BusDevice, DeviceAccess, DeviceError, GuestPhysicalAddress, MachineMemoryMap,
+        MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
+    };
+    use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+    use od_isa::{
+        INTEGER_FLAGS,
+        state::{CpuActivity, Idtr, StiShadow},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    const CR0: u64 = 0x8001_0033;
+    const CR4: u64 = 1 << 5;
+    const EFER: u64 = 0xd00;
+    const ROOT: u64 = 0x1000;
+    const CODE: u64 = 0x0040_0000;
+    const RAM_LEN: u64 = 0x20_000;
+
+    fn context() -> AccessContext {
+        AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: PrivilegeLevel::Ring0,
+            origin: AccessOrigin::Explicit,
+        }
+    }
+
+    fn put(bus: &mut MachineBus, address: u64, value: u64) {
+        bus.write_physical(
+            GuestPhysicalAddress::new(address),
+            AccessWidth::Qword,
+            value,
+            |_| {},
+        )
+        .unwrap();
+    }
+
+    fn put_bytes(bus: &mut MachineBus, address: u64, bytes: &[u8]) {
+        for (offset, byte) in bytes.iter().copied().enumerate() {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address + offset as u64),
+                AccessWidth::Byte,
+                u64::from(byte),
+                |_| {},
+            )
+            .unwrap();
+        }
+    }
+
+    fn read_entry(bus: &mut MachineBus, address: u64) -> u64 {
+        bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+            .unwrap()
+    }
+
+    fn bus(descriptor_pte: u64) -> MachineBus {
+        bus_with_ram_len(descriptor_pte, RAM_LEN)
+    }
+
+    fn bus_with_ram_len(descriptor_pte: u64, ram_len: u64) -> MachineBus {
+        let range = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), ram_len).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![MemoryRegionSpec::new(range, MemoryRegionKind::Ram)],
+        )
+        .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(ram_len), vec![], vec![], vec![]).unwrap();
+        put(&mut bus, 0x1000, 0x2007);
+        put(&mut bus, 0x2000, 0x3007);
+        put(&mut bus, 0x3010, 0x4007);
+        put(&mut bus, 0x3020, 0x5007);
+        put(&mut bus, 0x4000, 0x7007); // CODE -> GPA 0x7000
+        put(&mut bus, 0x5000, descriptor_pte); // descriptor -> configured GPA
+        put(&mut bus, 0x7000, 0x0000_0624_5c01_0f); // exact LIDT bytes + sentinel
+        put(&mut bus, 0x7008, 0);
+        if ram_len >= 0x9018 {
+            put(&mut bus, 0x9000, 0x55aa_0000_0000_0000);
+            put(&mut bus, 0x9008, 0x0000_7fff_0000_1234);
+            put(&mut bus, 0x9010, 0xfeed_face_cafe_beef);
+        }
+        bus
+    }
+
+    struct CountingDevice(Arc<AtomicUsize>);
+
+    impl BusDevice for CountingDevice {
+        fn read(&mut self, _: DeviceAccess) -> Result<u64, DeviceError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(0)
+        }
+
+        fn write(&mut self, _: DeviceAccess, _: u64) -> Result<(), DeviceError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn bus_with_mmio_descriptor(calls: Arc<AtomicUsize>) -> MachineBus {
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x9000).unwrap();
+        let mmio = GuestPhysicalRange::new(GuestPhysicalAddress::new(0x9000), 0x1000).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(mmio, MemoryRegionKind::Mmio),
+            ],
+        )
+        .unwrap();
+        let mut bus = MachineBus::new(
+            map,
+            RamLimits::new(0x9000),
+            vec![Box::new(CountingDevice(calls))],
+            vec![MmioBinding {
+                region_start: GuestPhysicalAddress::new(0x9000),
+                device_index: 0,
+            }],
+            vec![],
+        )
+        .unwrap();
+        put(&mut bus, 0x1000, 0x2007);
+        put(&mut bus, 0x2000, 0x3007);
+        put(&mut bus, 0x3010, 0x4007);
+        put(&mut bus, 0x3020, 0x5007);
+        put(&mut bus, 0x4000, 0x7007);
+        put(&mut bus, 0x5000, 0x9007);
+        put(&mut bus, 0x7000, 0x0000_0624_5c01_0f);
+        bus
+    }
+
+    fn state(rsp: u64) -> LongModeState {
+        LongModeState {
+            rip: CODE,
+            cr0: Some(CR0),
+            cr3: Some(ROOT),
+            cr4: Some(CR4),
+            gpr: {
+                let mut gpr = [0; 16];
+                gpr[od_isa::Register::Rsp as usize] = rsp;
+                gpr
+            },
+            idtr: Some(Idtr {
+                base: 0x3000,
+                limit: 0x5678,
+            }),
+            activity: Some(CpuActivity::Running),
+            sti_shadow: Some(StiShadow::Clear),
+            ..LongModeState::default()
+        }
+    }
+
+    #[test]
+    fn nonidentity_lidt_reads_ten_ram_bytes_and_commits_only_idtr_and_rip() {
+        let mut bus = bus(0x9007);
+        let mut cpu = state(0x0080_0000);
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |r| callbacks.push(r),
+        )
+        .unwrap();
+        assert_eq!(report.cpu.exit, od_isa::PagedProbeExit::Retired);
+        assert_eq!(report.cpu.instructions_executed, 1);
+        assert_eq!(report.cpu.rflags_defined, INTEGER_FLAGS);
+        assert_eq!(cpu.rip, CODE + 5);
+        assert_eq!(
+            cpu.idtr,
+            Some(Idtr {
+                base: 0x0000_7fff_0000_1234,
+                limit: 0x55aa
+            })
+        );
+        let mut expected = before;
+        expected.rip += 5;
+        expected.idtr = cpu.idtr;
+        assert_eq!(cpu, expected);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.memory_error, None);
+        assert_eq!(
+            callbacks.len(),
+            6,
+            "four A writes for code walk, then the new PDE and PTE for the descriptor"
+        );
+        assert_eq!(
+            callbacks,
+            [0x1000, 0x2000, 0x3010, 0x4000, 0x3020, 0x5000].map(|address| {
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+            })
+        );
+        assert!(callbacks.iter().all(|range| range.len() == 8));
+        for (entry, expected) in [
+            (0x1000, 0x2027),
+            (0x2000, 0x3027),
+            (0x3010, 0x4027),
+            (0x4000, 0x7027),
+            (0x3020, 0x5027),
+            (0x5000, 0x9027),
+        ] {
+            assert_eq!(read_entry(&mut bus, entry), expected, "PTE at {entry:#x}");
+        }
+    }
+
+    #[test]
+    fn missing_descriptor_page_preserves_cpu_and_reports_exact_pf_after_fetch_a_effects() {
+        let mut bus = bus(0);
+        let mut cpu = state(0x0080_0000);
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |r| callbacks.push(r),
+        )
+        .unwrap();
+        assert_eq!(cpu, before);
+        let record = report.page_fault.unwrap();
+        assert_eq!(record.saved_rip(), CODE);
+        assert_eq!(record.cr2_value(), 0x0080_0006);
+        assert_eq!(record.access(), od_isa::memory::AccessKind::Read);
+        assert_eq!(record.fault().error_code, Some(0));
+        assert_eq!(
+            record,
+            od_isa::memory::PageFaultRecord::new(
+                CODE,
+                od_isa::memory::AccessKind::Read,
+                context(),
+                0,
+                0x0080_0006,
+            )
+        );
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(
+            callbacks.len(),
+            5,
+            "four code A writes and one eligible descriptor-walk A write"
+        );
+        assert_eq!(
+            callbacks,
+            [0x1000, 0x2000, 0x3010, 0x4000, 0x3020].map(|address| GuestPhysicalRange::new(
+                GuestPhysicalAddress::new(address),
+                8
+            )
+            .unwrap())
+        );
+        for (address, expected) in [
+            (0x1000, 0x2027),
+            (0x2000, 0x3027),
+            (0x3010, 0x4027),
+            (0x4000, 0x7027),
+            (0x3020, 0x5027),
+        ] {
+            assert_eq!(
+                read_entry(&mut bus, address),
+                expected,
+                "entry at {address:#x}"
+            );
+        }
+        assert_eq!(
+            read_entry(&mut bus, 0x5000),
+            0,
+            "non-present leaf is unchanged"
+        );
+        assert_eq!(
+            report.cpu.exit,
+            od_isa::PagedProbeExit::Fault(record.fault().clone())
+        );
+    }
+
+    #[test]
+    fn tracked_nx_fetch_fault_reports_exact_record_and_committed_a_updates() {
+        let mut bus = bus(0x9007);
+        put(&mut bus, 0x4000, 0x8000_0000_0000_7007); // NX code leaf.
+        let mut cpu = state(0x0080_0000);
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+        let record = PageFaultRecord::new(
+            CODE,
+            od_isa::memory::AccessKind::Fetch,
+            context(),
+            0x11,
+            CODE,
+        );
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+        assert_eq!(
+            report.cpu.exit,
+            od_isa::PagedProbeExit::Fault(record.fault().clone())
+        );
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!(report.page_fault, Some(record));
+        assert_eq!(report.memory_error, None);
+        assert_eq!(
+            callbacks,
+            [0x1000, 0x2000, 0x3010, 0x4000].map(|address| GuestPhysicalRange::new(
+                GuestPhysicalAddress::new(address),
+                8
+            )
+            .unwrap())
+        );
+        for (address, expected) in [
+            (0x1000, 0x2027),
+            (0x2000, 0x3027),
+            (0x3010, 0x4027),
+            (0x4000, 0x8000_0000_0000_7027),
+        ] {
+            assert_eq!(read_entry(&mut bus, address), expected);
+        }
+    }
+
+    #[test]
+    fn positive_and_negative_disp8_load_from_the_signed_rsp_address() {
+        for (rsp, disp, descriptor_address) in [
+            (0x0080_0000, 0x06, 0x0080_0006),
+            (0x0080_0010, 0xf6, 0x0080_0006),
+        ] {
+            let mut bus = bus(0x9007);
+            put_bytes(&mut bus, 0x7004, &[disp]);
+            let mut cpu = state(rsp);
+            let report = step_paged_lidt(
+                &mut cpu,
+                &mut bus,
+                ROOT,
+                EFER,
+                context(),
+                INTEGER_FLAGS,
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(report.cpu.exit, od_isa::PagedProbeExit::Retired);
+            assert_eq!(cpu.idtr.unwrap().base, 0x0000_7fff_0000_1234);
+            assert_eq!(descriptor_address, 0x0080_0006);
+        }
+    }
+
+    #[test]
+    fn privilege_fault_occurs_after_fetch_without_operand_walk() {
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut bus = bus(0x9007);
+            let mut cpu = state(0x0080_0000);
+            let before = cpu.clone();
+            let mut callbacks = Vec::new();
+            let report = step_paged_lidt(
+                &mut cpu,
+                &mut bus,
+                ROOT,
+                EFER,
+                AccessContext {
+                    privilege,
+                    ..context()
+                },
+                INTEGER_FLAGS,
+                |range| callbacks.push(range),
+            )
+            .unwrap();
+            assert_eq!(
+                report.cpu.exit,
+                od_isa::PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(cpu, before);
+            assert_eq!(report.cpu.instructions_executed, 0);
+            assert_eq!(report.page_fault, None);
+            assert_eq!(report.memory_error, None);
+            assert_eq!(callbacks.len(), 4, "only instruction fetch A writes");
+            assert!(!callbacks.iter().any(|range| range.start().get() == 0x3020));
+        }
+    }
+
+    #[test]
+    fn lock_ud_and_unsupported_form_precede_operand_access() {
+        let mut bus = self::bus(0x9007);
+        put_bytes(&mut bus, 0x7000, &[0xf0, 0x0f, 0x01, 0x5c, 0x24, 0x06]);
+        let mut cpu = state(0x0080_0000);
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+        assert_eq!(
+            report.cpu.exit,
+            od_isa::PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(callbacks.len(), 4);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.memory_error, None);
+
+        let mut bus = self::bus(0x9007);
+        put_bytes(&mut bus, 0x7000, &[0x90]); // NOP is outside the exact profile.
+        let mut cpu = state(0x0080_0000);
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+        assert_eq!(
+            report.cpu.exit,
+            od_isa::PagedProbeExit::Unsupported { opcode: 0x0f }
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(callbacks.len(), 4, "unsupported form only fetches code");
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.memory_error, None);
+    }
+
+    #[test]
+    fn source_crossing_page_and_noncanonical_range_are_rejected_before_operand_walk() {
+        let mut bus = self::bus(0x9007);
+        let mut cpu = state(0x0080_0ff1); // +6 => ...ff7, crossing the guest page.
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+        assert_eq!(cpu, before);
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(
+            report.memory_error,
+            Some(TrackedAccessError::CrossesPage {
+                address: GuestLinearAddress::new(0x0080_0ff7),
+                width: 10,
+            })
+        );
+        assert_eq!(
+            callbacks.len(),
+            4,
+            "crossing is rejected before operand walk"
+        );
+
+        let mut bus = self::bus(0x9007);
+        let mut cpu = state(0x0000_7fff_ffff_fff3); // +6 is canonical; byte 10 is not.
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+        assert_eq!(
+            report.cpu.exit,
+            od_isa::PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 12,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(cpu, before);
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(callbacks.len(), 4);
+        assert_eq!(report.memory_error, None);
+    }
+
+    #[test]
+    fn non_ram_descriptor_source_fails_without_device_dispatch() {
+        let mut bus = bus(0x30_007); // mapped page-table leaf points outside RAM.
+        let mut cpu = state(0x0080_0000);
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+        assert_eq!(cpu, before);
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(report.page_fault, None);
+        assert!(matches!(
+            report.memory_error,
+            Some(TrackedAccessError::OperandPhysical { .. })
+        ));
+        assert_eq!(callbacks.len(), 6);
+    }
+
+    #[test]
+    fn registered_mmio_descriptor_target_fails_without_device_callbacks() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut bus = bus_with_mmio_descriptor(Arc::clone(&calls));
+        let mut cpu = state(0x0080_0000);
+        let before = cpu.clone();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(cpu, before);
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(report.page_fault, None);
+        assert!(matches!(
+            report.memory_error,
+            Some(TrackedAccessError::OperandPhysical { .. })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn descriptor_read_with_ram_start_and_unmapped_tail_preserves_destination_and_idtr() {
+        let mut bus = bus_with_ram_len(0x8007, 0x800b);
+        let mut cpu = state(0x0080_0000);
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+        assert_eq!(cpu, before);
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(report.page_fault, None);
+        assert!(matches!(
+            report.memory_error,
+            Some(TrackedAccessError::OperandPhysical { .. })
+        ));
+        assert_eq!(callbacks.len(), 6);
+
+        // Also exercise the adapter's caller-buffer contract directly: the
+        // physical range starts in RAM at GPA 0x8006 and its tail exceeds RAM.
+        let paging = Long64ProbeConfig::from_cpu_state(&cpu, ROOT, EFER).unwrap();
+        let mut notify = |_| {};
+        let mut memory = PagedLidtMemory {
+            bus: &mut bus,
+            paging,
+            instruction_rip: CODE,
+            committed_write: &mut notify,
+            page_fault: None,
+            memory_error: None,
+        };
+        let mut destination = [0xa5; 10];
+        let result = memory.read(0x0080_0006, context(), &mut destination);
+        assert!(result.is_err());
+        assert_eq!(destination, [0xa5; 10]);
+        assert!(matches!(
+            memory.memory_error,
+            Some(TrackedAccessError::OperandPhysical { .. })
+        ));
+        drop(memory);
+
+        assert_eq!(cpu.idtr, before.idtr);
+        assert_eq!(cpu, before);
+        assert_eq!(read_entry(&mut bus, 0x5000), 0x8027);
+    }
+
+    #[test]
+    fn aliased_descriptor_read_observes_committed_accessed_bit() {
+        let mut bus = bus(0x3007); // Descriptor aliases the PD entry at GPA 0x3020.
+        let mut cpu = state(0x0080_001a); // RSP + 6 starts at GPA 0x3020.
+        let mut callbacks = Vec::new();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert_eq!(report.cpu.exit, od_isa::PagedProbeExit::Retired);
+        assert_eq!(report.cpu.instructions_executed, 1);
+        assert_eq!(read_entry(&mut bus, 0x3020), 0x5027);
+        assert_eq!(cpu.idtr.unwrap().limit, 0x5027);
+        assert_eq!(cpu.idtr.unwrap().base, 0);
+        assert!(callbacks.iter().any(|range| range.start().get() == 0x3020));
+    }
+
+    #[test]
+    fn read_only_descriptor_mapping_succeeds_at_last_ten_byte_page_offset() {
+        let mut bus = bus(0x9005);
+        let descriptor = [0x34, 0x12, 0x78, 0x56, 0x34, 0x12, 0x00, 0x00, 0x00, 0x00];
+        put_bytes(&mut bus, 0x9ff6, &descriptor);
+        let mut cpu = state(0x0080_0ff0); // RSP + 6 = page offset 0xff6.
+        let before = cpu.clone();
+        let mut callbacks = Vec::new();
+        let report = step_paged_lidt(
+            &mut cpu,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert_eq!(report.cpu.exit, od_isa::PagedProbeExit::Retired);
+        assert_eq!(report.cpu.instructions_executed, 1);
+        let mut expected = before;
+        expected.rip += 5;
+        expected.idtr = Some(Idtr {
+            limit: 0x1234,
+            base: 0x0000_0000_1234_5678,
+        });
+        assert_eq!(cpu, expected);
+        assert_eq!(read_entry(&mut bus, 0x5000), 0x9025);
+        assert!(
+            !callbacks
+                .iter()
+                .any(|range| range.start().get() == 0x5000 + 8)
+        );
+    }
+}
+
+fn canonical48(address: u64) -> bool {
+    (address as i64) >> 47 == 0 || (address as i64) >> 47 == -1
+}

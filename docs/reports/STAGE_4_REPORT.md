@@ -10,7 +10,9 @@ reviewed S4-11c cross-page dword read. Также приняты bounded S4-21b
 paged probe quantum, bounded S4-23c UART RX event delivery, bounded S4-24a
 COM1 polling TX, bounded S4-24b CPU PIO and bounded S4-24c paged CPU PIO
 slices. S4-11e cross-page word read is implemented and accepted after independent
-review; its findings were fixed and no P0—P3 items remain. Этап 4 не завершён: S4-00—S4-01,
+review; its findings were fixed and no P0—P3 items remain. S4-11f word-MOV
+cross-page fetch is implemented and accepted after independent review with no
+remaining P0—P3 findings. Этап 4 не завершён: S4-00—S4-01,
 integrated faults/delivery, vCPU/events, полный UART/IRQ, JIT
 integration, hardware cases и Linux userspace остаются открытыми. Ограниченный
 срез S4-32a принят после независимого ревью и зафиксирован ниже; родительский
@@ -271,10 +273,43 @@ permission fault и сохранение CPU state/нулевого retirement �
   и [manifest](data/stage4/s4-11d-cross-page-instruction-fetch.json). Полный
   S4-11 остаётся открытым.
 - S4-11e добавляет отдельный exact `PagedMovCrossPageWordReadLong64V1` для `66 8B 03` (`MOV AX,[RBX]`). Same-page контроль и crossing read из offset `0xfff` проходят только через две non-contiguous RAM pages; обе walks, права и RAM admission происходят до чтения. Успех меняет AX, сохраняет RAX[63:16], продвигает RIP на 3 и retire-ит один раз. CPL0/CPL3 second-page faults проверены с точным PFEC, A-prefix persistence, без D, CPU/buffer commit и retirement; hole/MMIO/alias и negative profiles покрыты. Для профиля требуется AC=0. Независимое `gpt-6.1-sol/high` review одобрило срез после исправления двух P2 admission findings и P3 рассинхронизации Graphify evidence; оставшихся P0—P3 нет. См. [отчёт](STAGE_4_S4-11E_2026-11-05.md), [контракт](../specs/MACHINE_CONTRACT.md#bounded-cross-page-word-read-s4-11e), [CPU contract](../specs/CPU_CONTRACT.md#exact-paged-word-read-profile-pagedmovcrosspagewordreadlong64v1-s4-11e) и [manifest](data/stage4/s4-11e-cross-page-word-read.json). Родительский S4-11 и ISSUE-054 остаются открытыми.
+- S4-11f adds only a separate word-MOV profile: exact `66 8B 03` may start at code-page offsets `0xffe` and `0xfff`, while its operand remains within a separate RAM page. S4-11e V1 retains its no-crossing-fetch restriction. Same-page, PFEC, A/D, no-operand-walk, hole/MMIO, fetch-priority, cross-page-operand rejection, CR0/CR4 pairing and NXE admission are verified; 33 integration, 82 machine unit and 3 focused ISA tests pass. `gpt-6.1-sol/high` review approved after fixing three P2 and three P3 findings; no P0—P3 remain. See [S4-11f report](STAGE_4_S4-11F_2026-11-05.md) and [manifest](data/stage4/s4-11f-cross-page-word-fetch.json). ISSUE-054 and parent S4-11 remain open.
 - S4-12a добавляет `Long64ProbeConfig::from_cpu_state`: CR0 и CR4 читаются из
   `LongModeState` с явной ошибкой отсутствующего регистра, CR3 и EFER остаются
   явными входами, а вся существующая validation переиспользуется без defaults,
   masking или mode-transition effects. Snapshot immutable и диагностический.
+- S4-12b реализует точный CPU-профиль `0F 22 D8` (`MOV CR3,RAX`) с CPL0,
+  reserved-bit validation, CPU-owned CR3 и typed context-change exit после
+  единственного retired instruction. Старты на `0xff2–0xfff` отклоняются до
+  fetch, а legacy/JIT пути отказываются исполнять CPU-owned CR3. Активная
+  machine translation смена не входила в этот CPU-срез. Независимое
+  `gpt-6.1-sol/high` ревью приняло срез после пяти раундов и исправления
+  найденных дефектов. Результаты записаны в
+  [отчёте](STAGE_4_S4-12B_2026-11-05.md) и
+  [manifest](data/stage4/s4-12b-mov-cr3.json).
+- S4-12c добавляет opt-in bounded CPU-owned CR3 machine quantum: после
+  успешного `MOV CR3` проверяется typed effect, строится новый immutable
+  translation snapshot, и следующий fetch/operand access использует новый
+  root. Доказаны A→B code/data mappings, quantum handoff и precise fetch fault
+  после переключения с сохранённым retirement. Профиль ограничен `MOV CR3,RAX`
+  и exact `MOV RAX,[RBX]`; stores, PIO и HLT отклоняются. Независимое
+  `gpt-6.1-sol/high` одобрило код; синхронизированы evidence и результаты
+  Graphify после замечания к манифесту. См. [отчёт](STAGE_4_S4-12C_2026-11-05.md),
+  [контракт](../specs/MACHINE_CONTRACT.md#cpu-owned-cr3-translation-handoff-s4-12c)
+  и [manifest](data/stage4/s4-12c-mov-cr3-machine.json). Родитель S4-12 остаётся
+  открытым для EFER, startup transitions и TLB/invalidation.
+- S4-12d добавляет CPU-owned CR0.WP handoff для exact `MOV CR0,RAX` с двумя
+  разрешёнными значениями CR0 и следующей supervisor-записи `MOV [RBX],RCX`.
+  Машина применяет новый immutable snapshot до следующего poll/fetch/access;
+  проверены WP `1→0`, точный fault для `0→1`, STOP/fetch boundaries и отсутствие
+  data/D commit при fault. Direct CPU path разделяет #GP для bare MOV CR0 и
+  profile rejection для обычной записи вне CPL0, отвергает cross-page stores
+  до доступа к данным; только exact LOCK MOV CR0 даёт #UD. Итоговая независимая
+  проверка и ссылки: [отчёт](STAGE_4_S4-12D_2026-11-06.md),
+  [contract](../specs/CPU_CONTRACT.md#paged-cpu-owned-cr0wp-profile-pagedcpl0cr0wpprobev1-s4-12d),
+  [machine contract](../specs/MACHINE_CONTRACT.md#cpu-owned-cr0wp-translation-handoff-s4-12d)
+  и [manifest](data/stage4/s4-12d-cr0-wp-machine.json). Полный S4-12 остаётся
+  открытым.
 - S4-13a добавляет opt-in one-entry pure-translation cache и release comparison
   harness. Три процесса завершили 600 retained paired samples на synthetic
   profiles; результаты включают locality wins и two-page alternating slowdown,
@@ -283,6 +318,15 @@ permission fault и сохранение CPU state/нулевого retirement �
   не пишет RAM/A-D, failed replacement не resident, а remap и изменения RW/NX
   наблюдаются только после завершения старого immutable-borrow scope и создания
   нового cache. Guest invalidation и CPU hooks не добавлены.
+- S4-14b добавляет standalone feature-independent `INVLPG [RBX]` CPU profile с
+  typed effect; feature-gated consumer очищает one-entry experimental cache до
+  следующего lookup. Проверен `Walk → Hit → INVLPG → consume → Walk → Hit`,
+  включая full-clear при другой resident page и сохранение cache при fault/no-op.
+  S4-14a immutable-memory boundary сохраняется: tracked A/D, remap,
+  huge pages, global/PCID, CR3 invalidation, JIT и production TLB не заявлены.
+  См. [report](STAGE_4_S4-14B_2026-11-06.md),
+  [CPU contract](../specs/CPU_CONTRACT.md#standalone-invlpg-profile-invlpglong64v1-s4-14b)
+  и [machine contract](../specs/MACHINE_CONTRACT.md#bounded-invlpg-effect-consumption-s4-14b).
 - S4-21a добавляет синхронную bounded diagnostic vCPU session над одним
   `LongModeState` и `MachineBus`: runnable/paused/stopped/terminal states,
   finite instruction budget, сохранение `rflags_defined`, STOP callback и

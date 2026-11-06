@@ -62,6 +62,9 @@ pub struct BoundedArithmeticLoadResult {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoundedArithmeticLoadError<NE, ME> {
+    UnsupportedCr3State {
+        value: u64,
+    },
     InvalidPlan {
         rip: u64,
     },
@@ -129,6 +132,9 @@ where
     E: ControlledBlockExecutor,
     M: MemoryBlockExecutor,
 {
+    if let Some(value) = state.cr3 {
+        return Err(BoundedArithmeticLoadError::UnsupportedCr3State { value });
+    }
     let plan = bounded_arithmetic_load_plan(code)
         .ok_or(BoundedArithmeticLoadError::InvalidPlan { rip: state.rip })?;
     if !plan.admits_entry(state.rip) {
@@ -1048,6 +1054,9 @@ impl FixtureExecutionBoundary {
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoundedMemoryError<E> {
     Executor(E),
+    UnsupportedCr3State {
+        value: u64,
+    },
     InvalidExecutionBoundary {
         end_rip: u64,
     },
@@ -1155,6 +1164,9 @@ pub unsafe fn run_controlled<E: MemoryBlockExecutor>(
     let mut remaining = total_budget;
     let mut retired = 0u64;
     let mut blocks = 0u64;
+    if let Some(value) = state.cr3 {
+        return Err(BoundedMemoryError::UnsupportedCr3State { value });
+    }
     if boundary.end_rip < code.base_rip() || boundary.end_rip > code.code_end() {
         return Err(BoundedMemoryError::InvalidExecutionBoundary {
             end_rip: boundary.end_rip,
@@ -1686,6 +1698,8 @@ fn compile_at(code: CodeView<'_>, rip: u64, execution_end: u64) -> CompileAt {
     let decoded = match long_decode::decode(&mut source, rip, AccessContext::default()) {
         Ok(decoded) => decoded,
         Err(DecodeError::Unsupported { .. }) => return CompileAt::Unsupported,
+        Err(DecodeError::InvalidMovCr3Lock { .. }) => return CompileAt::Unsupported,
+        Err(DecodeError::InvalidMovCr0Lock { .. }) => return CompileAt::Unsupported,
         Err(DecodeError::Invalid { .. }) => return CompileAt::Invalid,
         Err(DecodeError::Memory(MemoryError::Unmapped {
             address,
@@ -3241,6 +3255,101 @@ mod tests {
         }
     }
 
+    #[derive(Default, Clone, Debug, Eq, PartialEq)]
+    struct MemoryCallCounts {
+        fetch: usize,
+        read: usize,
+        write: usize,
+        atomic_exchange: usize,
+        atomic_fetch_add: usize,
+        atomic_compare_exchange: usize,
+        mfence: usize,
+    }
+
+    #[derive(Default)]
+    struct MemorySpy {
+        calls: MemoryCallCounts,
+    }
+
+    impl GuestMemory for MemorySpy {
+        fn fetch(&mut self, address: u64, _: AccessContext) -> Result<u8, MemoryError> {
+            self.calls.fetch += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Fetch,
+            })
+        }
+
+        fn read(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: &mut [u8],
+        ) -> Result<(), MemoryError> {
+            self.calls.read += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Read,
+            })
+        }
+
+        fn write(&mut self, address: u64, _: AccessContext, _: &[u8]) -> Result<(), MemoryError> {
+            self.calls.write += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+
+        fn atomic_exchange_integer(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            self.calls.atomic_exchange += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+
+        fn atomic_fetch_add_integer(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            self.calls.atomic_fetch_add += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+
+        fn atomic_compare_exchange_integer(
+            &mut self,
+            address: u64,
+            _: AccessContext,
+            _: od_isa::OperandSize,
+            _: u64,
+            _: u64,
+        ) -> Result<u64, MemoryError> {
+            self.calls.atomic_compare_exchange += 1;
+            Err(MemoryError::Unmapped {
+                address,
+                access: AccessKind::Write,
+            })
+        }
+
+        fn mfence(&mut self, _: AccessContext) -> Result<(), MemoryError> {
+            self.calls.mfence += 1;
+            Ok(())
+        }
+    }
+
     #[derive(Default)]
     struct PairContinuationExecutor {
         entries: Vec<(u64, bool)>,
@@ -3285,6 +3394,7 @@ mod tests {
         let code = CodeView::new(ENTRY, &source).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -3337,6 +3447,7 @@ mod tests {
     #[derive(Default)]
     struct AdvancingExecutor {
         entries: Vec<(u64, usize)>,
+        states_after_entry: Vec<LongModeState>,
         request_event_after_entry: bool,
         request_stop_after_entry: bool,
         invalidate_after_entry: bool,
@@ -3361,6 +3472,7 @@ mod tests {
             };
             self.entries.push((state.rip, source.len()));
             state.rip = site.next_rip();
+            self.states_after_entry.push(state.clone());
             Ok(MemoryBlockReport {
                 exit: if self.invalidate_after_entry {
                     MemoryBlockExit::CodeInvalidated
@@ -3505,6 +3617,42 @@ mod tests {
     }
 
     #[test]
+    fn cpu_owned_cr3_is_rejected_before_memory_block_execution() {
+        const ENTRY: u64 = 0x99b0;
+        let source = [0x48, 0x8b, 0x30];
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let mut state = LongModeState {
+            cr3: Some(0x2000),
+            rip: ENTRY,
+            ..LongModeState::default()
+        };
+        let mut memory = EmptyMemory;
+        let stop = AtomicU8::new(0);
+        let mut executor = AdvancingExecutor::default();
+        let result = unsafe {
+            run_controlled(
+                code,
+                boundary,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                1,
+                None,
+                &stop,
+                None,
+                &mut executor,
+            )
+        };
+        assert_eq!(
+            result,
+            Err(BoundedMemoryError::UnsupportedCr3State { value: 0x2000 })
+        );
+        assert!(executor.entries.is_empty());
+        assert_eq!(state.rip, ENTRY);
+    }
+
+    #[test]
     fn event_after_publication_skips_entry_and_stop_wins() {
         const ENTRY: u64 = 0x99c0;
         let source = [0x48, 0x8b, 0x30];
@@ -3512,6 +3660,7 @@ mod tests {
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut memory = EmptyMemory;
         let initial = LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -3561,6 +3710,7 @@ mod tests {
         let code = CodeView::new(ENTRY, &source).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -3596,6 +3746,7 @@ mod tests {
         let stop_requested = AtomicU8::new(0);
         let event_requested = AtomicBool::new(true);
         let initial = LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -3717,6 +3868,7 @@ mod tests {
             let stop = AtomicU8::new(0);
             let event = AtomicBool::new(false);
             let mut state = LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -3778,6 +3930,7 @@ mod tests {
             stop_requested.store(stop, Ordering::Release);
             let boundary = FixtureExecutionBoundary::new(code, end).unwrap();
             let mut state = LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -3812,6 +3965,7 @@ mod tests {
         let stop_requested = AtomicU8::new(0);
         let event_requested = AtomicBool::new(false);
         let mut state = LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -3887,6 +4041,7 @@ mod tests {
         let code = CodeView::new(ENTRY, &source).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let initial = LongModeState {
+            cr3: None,
             gpr: [
                 0x1234_5678_9abc_def0,
                 0x0123_4567_89ab_cdef,
@@ -3976,6 +4131,170 @@ mod tests {
     }
 
     #[test]
+    fn lock_mov_cr0_stops_strict_dispatch_without_retirement_or_tail_execution() {
+        const ENTRY: u64 = 0x9e00;
+        const LOCK_MOV_CR0: [u8; 4] = [0xf0, 0x0f, 0x22, 0xc0];
+        let stop = AtomicU8::new(0);
+        let mut memory = MemorySpy::default();
+
+        let mut at_start = LOCK_MOV_CR0.to_vec();
+        at_start.extend([0x48, 0x89, 0x03]); // The supported store remains unreachable.
+        let code = CodeView::new(ENTRY, &at_start).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let initial = LongModeState {
+            rip: ENTRY,
+            gpr: [0x5a5a; 16],
+            rflags: 0x8d7,
+            ..Default::default()
+        };
+        let mut state = initial.clone();
+        let mut executor = AdvancingExecutor::default();
+        let result = unsafe {
+            run(
+                code,
+                boundary,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                2,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(result.exit, BoundedMemoryExit::Unsupported { rip: ENTRY });
+        assert_eq!(result.retired_instructions, 0);
+        assert_eq!(result.remaining_budget, 2);
+        assert_eq!(result.blocks_executed, 0);
+        assert_eq!(state, initial);
+        assert!(executor.entries.is_empty());
+        assert_eq!(memory.calls, MemoryCallCounts::default());
+
+        let mut after_prefix = vec![0x48, 0x8b, 0x03]; // Supported bounded load.
+        after_prefix.extend(LOCK_MOV_CR0);
+        after_prefix.extend([0x48, 0x89, 0x03]); // This store must not execute.
+        let code = CodeView::new(ENTRY, &after_prefix).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let mut state = initial.clone();
+        let mut executor = AdvancingExecutor::default();
+        let result = unsafe {
+            run(
+                code,
+                boundary,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                3,
+                None,
+                &stop,
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            result.exit,
+            BoundedMemoryExit::Unsupported { rip: ENTRY + 3 }
+        );
+        assert_eq!(result.retired_instructions, 1);
+        assert_eq!(result.remaining_budget, 2);
+        assert_eq!(result.blocks_executed, 1);
+        let mut expected_after_prefix = initial;
+        expected_after_prefix.rip = ENTRY + 3;
+        assert_eq!(executor.states_after_entry, [expected_after_prefix.clone()]);
+        assert_eq!(state, expected_after_prefix);
+        assert_eq!(executor.entries, [(ENTRY, 3)]);
+        assert_eq!(memory.calls, MemoryCallCounts::default());
+    }
+
+    #[test]
+    fn lock_mov_cr3_remains_unsupported_before_execution() {
+        const ENTRY: u64 = 0x9f00;
+        let mut source = vec![0xf0, 0x0f, 0x22, 0xd8];
+        source.extend([0x48, 0x89, 0x03]);
+        let code = CodeView::new(ENTRY, &source).unwrap();
+        let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+        let initial = LongModeState {
+            rip: ENTRY,
+            ..Default::default()
+        };
+        let mut state = initial.clone();
+        let mut memory = EmptyMemory;
+        let mut executor = AdvancingExecutor::default();
+        let result = unsafe {
+            run(
+                code,
+                boundary,
+                &mut state,
+                &mut memory,
+                AccessContext::default(),
+                1,
+                None,
+                &AtomicU8::new(0),
+                &mut executor,
+            )
+        }
+        .unwrap();
+        assert_eq!(result.exit, BoundedMemoryExit::Unsupported { rip: ENTRY });
+        assert_eq!(result.retired_instructions, 0);
+        assert_eq!(state, initial);
+        assert!(executor.entries.is_empty());
+    }
+
+    #[test]
+    fn invalid_unsupported_truncated_and_zero_budget_boundaries_remain_distinct() {
+        const ENTRY: u64 = 0xa000;
+        let cases: &[(&[u8], u64, BoundedMemoryExit)] = &[
+            (
+                &[0xf0, 0x0f, 0x20, 0xc0],
+                1,
+                BoundedMemoryExit::Invalid { rip: ENTRY },
+            ),
+            (
+                &[0xf0, 0xf0, 0x0f, 0x22, 0xc0],
+                1,
+                BoundedMemoryExit::Unsupported { rip: ENTRY },
+            ),
+            (
+                &[0x48],
+                1,
+                BoundedMemoryExit::BoundaryReached { rip: ENTRY },
+            ),
+            (&[0x48, 0x8b, 0x03], 0, BoundedMemoryExit::BudgetExhausted),
+        ];
+
+        for (source, budget, expected_exit) in cases {
+            let code = CodeView::new(ENTRY, source).unwrap();
+            let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
+            let initial = LongModeState {
+                rip: ENTRY,
+                ..Default::default()
+            };
+            let mut state = initial.clone();
+            let mut memory = EmptyMemory;
+            let mut executor = AdvancingExecutor::default();
+            let result = unsafe {
+                run(
+                    code,
+                    boundary,
+                    &mut state,
+                    &mut memory,
+                    AccessContext::default(),
+                    *budget,
+                    None,
+                    &AtomicU8::new(0),
+                    &mut executor,
+                )
+            }
+            .unwrap();
+            assert_eq!(&result.exit, expected_exit, "source={source:02x?}");
+            assert_eq!(result.retired_instructions, 0);
+            assert_eq!(state, initial);
+            assert!(executor.entries.is_empty());
+        }
+    }
+
+    #[test]
     fn nop_fallback_handles_code_end_at_u64_max() {
         let base = u64::MAX - 1;
         let source = [0x90];
@@ -3984,6 +4303,7 @@ mod tests {
         let boundary = FixtureExecutionBoundary::new(code, u64::MAX).unwrap();
         let stop = AtomicU8::new(0);
         let mut state = LongModeState {
+            cr3: None,
             rip: base,
             ..Default::default()
         };
@@ -4035,6 +4355,7 @@ mod tests {
                         let boundary =
                             FixtureExecutionBoundary::new(code, ENTRY + window as u64).unwrap();
                         let mut state = LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             ..Default::default()
                         };
@@ -4068,6 +4389,7 @@ mod tests {
                     let boundary =
                         FixtureExecutionBoundary::new(code, ENTRY + source.len() as u64).unwrap();
                     let mut state = LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };
@@ -4105,6 +4427,7 @@ mod tests {
                     assert_eq!(state.rip, ENTRY + source.len() as u64);
 
                     let mut guarded_state = LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };

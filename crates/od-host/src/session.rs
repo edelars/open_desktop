@@ -9,9 +9,10 @@ use crate::{
 use od_isa::{LongModeState, decode};
 use od_jit::block::{AdmittedInstructionBoundaries, CodeView};
 use od_jit::dispatch::{
-    DispatchControl, DispatchError, DispatchResult, MAX_MULTI_ENTRY_CACHE_BLOCKS,
-    MAX_MULTI_ENTRY_CACHE_CODE_BYTES, MAX_MULTI_ENTRY_CACHE_METADATA_BYTES, MultiEntryBlockCache,
-    MultiEntryCacheConfigError, MultiEntryCacheCounters, run_multi_cached_controlled,
+    DispatchControl, DispatchError, DispatchResult, ExecutionContextError,
+    MAX_MULTI_ENTRY_CACHE_BLOCKS, MAX_MULTI_ENTRY_CACHE_CODE_BYTES,
+    MAX_MULTI_ENTRY_CACHE_METADATA_BYTES, MultiEntryBlockCache, MultiEntryCacheConfigError,
+    MultiEntryCacheCounters, run_multi_cached_controlled,
 };
 use od_jit::translation::{
     AddressSpaceId, BackingId, BackingVersion, CodeDependencySpan, CodeIdentity,
@@ -127,6 +128,11 @@ impl Session {
         budget: u64,
         stop_requested: &AtomicU8,
     ) -> Result<SessionRunResult, SessionRunError> {
+        if let Some(value) = state.cr3 {
+            return Err(SessionRunError(DispatchError::ExecutionContext(
+                ExecutionContextError::UnsupportedCr3State { value },
+            )));
+        }
         if self.backend.is_none() {
             self.backend = Some(
                 PublishedArenaBackend::new(MAX_PUBLISHED_ARENA_BLOCKS)
@@ -192,6 +198,7 @@ mod tests {
         let mut session = Session::new(&MOV_RAX_7).unwrap();
         let stop = AtomicU8::new(0);
         let mut first = LongModeState {
+            cr3: None,
             gpr: [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
             rip: 0,
             rflags: 2,
@@ -203,6 +210,7 @@ mod tests {
         assert_eq!(cold.cache.successful_publications, 1);
 
         let mut stopped = LongModeState {
+            cr3: None,
             gpr: [99; 16],
             rip: 0,
             rflags: 2,
@@ -219,6 +227,7 @@ mod tests {
 
         stop.store(0, Ordering::Release);
         let mut second = LongModeState {
+            cr3: None,
             gpr: [42; 16],
             rip: 0,
             rflags: 2,
@@ -237,6 +246,7 @@ mod tests {
         let mut session = Session::new(&MOV_RAX_7).unwrap();
         let stop = AtomicU8::new(0);
         let mut state = LongModeState {
+            cr3: None,
             rip: 0,
             rflags: 2,
             ..LongModeState::default()
@@ -271,6 +281,7 @@ mod tests {
         let mut session = Session::new(&MOV_RAX_7).unwrap();
         let stop = AtomicU8::new(0);
         let mut invalid = LongModeState {
+            cr3: None,
             rip: 1,
             rflags: 2,
             ..LongModeState::default()

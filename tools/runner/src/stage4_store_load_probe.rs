@@ -62,6 +62,7 @@ pub fn run(args: &[String]) -> ExitCode {
         PagedProbeExit::Fault(_) => "fault",
         PagedProbeExit::Backend(_) => "backend_error",
         PagedProbeExit::PortIo(_) => "pio_error",
+        PagedProbeExit::IntegrationError(_) => "integration_error",
     };
     let ok = matches!(report.exit, PagedProbeExit::Halted);
     let result = json!({

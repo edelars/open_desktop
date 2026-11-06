@@ -863,3 +863,26 @@ The `DC` reverse and `DE` pop forms remain gap-capped; alias cancellation and
 unsupported results refuse atomically. JIT/native and physical x86 acceptance
 remain closed. See the [CPU contract](../../docs/specs/CPU_CONTRACT.md#local-s2-30dj-large-gap-fsubr-st0-sti-d8-e8-ef) and
 [Stage 2 report](../../docs/reports/STAGE_2_REPORT.md#s2-30dj--large-gap-fsubr-st0-sti).
+
+Stage 4 adds a separate `MovCr0WpLong64V1` CPU entry for exact bare
+`MOV CR0,RAX` WP toggles. It shares the validated S4-12d commit logic but
+excludes that profile's memory store form; it emits a typed context-change
+effect and leaves machine cache invalidation to `od-machine`.
+
+S4-14f adds the opt-in `InvlpgWpLong64V1` / `step_invlpg_wp` entry. It shares
+the exact bare `0F 01 3B` decoder, privilege/fetch ordering and invalidation
+effect with `step_invlpg`, while accepting CR0.WP=0 or 1. The original
+`InvlpgLong64V1` keeps its WP=1 requirement.
+
+S4-14g adds a separate `MovCr3WpLong64V1` / `step_mov_cr3_wp` entry for the
+exact bare `0F 22 D8` form under CR0.WP=0 or 1. It reuses the same fetch,
+privilege, reserved-bit, commit and `Cr3Write` behavior. The existing
+`MovCr3Long64V1` / `step_mov_cr3` remains WP=1-only; other profiles are
+unchanged.
+
+S4-18a adds the separate exact `PagedLidtLong64V1` / `step_paged_lidt`
+entry for `0F 01 5C 24 ib`. It reuses the decoder and `load_idtr`, fixes the
+Long64 paging controls, fetches before operand access, enforces LOCK/CPL fault
+ordering, and commits only IDTR and RIP on success. The machine adapter owns
+the tracked paged read; this CPU profile does not add descriptor caching or
+exception delivery. Review is pending; see the [CPU contract](../../docs/specs/CPU_CONTRACT.md#paged-lidt-entry-pagedlidtlong64v1-s4-18a).

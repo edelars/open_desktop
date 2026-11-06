@@ -2064,6 +2064,7 @@ fn registers(pid: libc::pid_t) -> Result<libc::user_regs_struct, String> {
 
 fn state(regs: &libc::user_regs_struct) -> LongModeState {
     LongModeState {
+        cr3: None,
         cr4: None,
         cr0: None,
         gpr: [

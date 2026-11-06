@@ -258,6 +258,7 @@ fn load_stage4_image_profile(
     configure_polling_uart(&mut bus)?;
 
     let mut state = LongModeState {
+        cr3: None,
         rip: STAGE4_FLAT_PROBE_ENTRY_GVA,
         rflags: 2,
         cr0: Some(CR0),

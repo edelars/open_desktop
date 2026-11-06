@@ -26,7 +26,14 @@ pub mod sti;
 pub mod swapgs;
 pub mod x87;
 pub use cli::CliProfile;
-pub use execute::Cr0Profile;
+pub use execute::{
+    Cr0Profile, InvlpgExit, InvlpgLong64V1, InvlpgResult, InvlpgWpLong64V1, MovCr0WpLong64V1,
+    MovCr3Exit, MovCr3InputError, MovCr3Long64V1, MovCr3Result, MovCr3WpLong64V1,
+    PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedLidtLong64V1, PagedProbeExit,
+    PagedProbeRejection, PagedProbeResult, TranslationContextChange, TranslationInvalidation,
+    step_invlpg, step_invlpg_wp, step_mov_cr0_wp, step_mov_cr3, step_mov_cr3_wp,
+    step_paged_cr0_wp_probe, step_paged_cr3_probe, step_paged_lidt,
+};
 pub use hlt::HaltProfile;
 pub use interrupt::{
     InterruptDeliveryPhase, InterruptDeliveryResult, InterruptFrameSlot, InterruptOutsideProfile,

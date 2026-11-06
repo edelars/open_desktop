@@ -4461,3 +4461,185 @@ STOP without replay remain required. Published IR uses immutable
 compiler-issued source bytes and does not fetch guest instruction bytes at
 runtime; instruction-fetch errors are checked through the demand interpreter
 path. See the [S3-20ga report](../reports/STAGE_3_S3-20ga_2026-11-02.md).
+
+### S4-01b: LOCK MOV CR0 decode boundary in JIT consumers
+
+The exact decoder error `InvalidMovCr0Lock` (`F0 0F 22 C0`, length 4) remains
+architecturally invalid. The block builder stops at that source RIP and keeps
+the typed decode error in `UnsupportedEncoding`; previously decoded
+instructions and their exact guest ranges are preserved. Deferred decode
+boundaries retain the consumed encoded length as well. The bounded memory
+dispatcher returns `Unsupported` at the current RIP before invoking its memory
+executor, and does not continue into subsequent source bytes. This is an
+integration classification only: it does not admit LOCK MOV CR0 to block/JIT
+execution or change the CPU profile's #UD behavior.
+
+The exact LOCK MOV CR3 boundary remains unchanged. Ordinary invalid/unsupported
+encodings, truncated source, and byte/instruction budget boundaries retain
+their existing classifications. CPU #UD behavior is covered by the existing
+`od-isa::execute::paged_mov_profile_tests::lock_prefixed_mov_cr0_is_ud_after_complete_fetch`
+and `od-isa::execute::paged_cr3_probe_tests::paged_cr3_profile_keeps_lock_mov_cr0_as_ud`;
+this JIT slice does not alter CPU semantics. See
+[S4-01b evidence](../reports/STAGE_4_S4-01B_2026-11-06.md).
+
+### S4-16a: production tracked loader patch for two inactive code aliases
+
+`od-host::PagedCodeSession` borrows one `MachineBus` exclusively and fixes one
+Long64 paging snapshot for its lifetime. It accepts at most two linear aliases
+of one physical RAM page and one exact `NativeRegisterV1` code range contained
+in that guest 4 KiB page. It owns two one-entry caches and a two-slot published
+arena. The cache uses the existing backing-content invalidation contract; no
+new general cache policy is introduced. Backing and mapping IDs are local to
+the bus-bound session, and the backing version is the `PhysicalMemory` version
+of the physical guest page.
+
+Before lookup, each alias gets a fresh owned code snapshot from
+`MachineBus::tracked_code_snapshot`. Its first byte is fetched through the
+tracked Long64 walker with `AccessOrigin::Explicit`, which checks execute
+permissions at the supplied CPL and commits actual A updates; descriptor-table
+origin is rejected because it would apply supervisor page permissions. The
+snapshot preserves the range's page offset. Both aliases must map the same
+physical byte range, and a loader patch must lie in
+`[range_offset, range_offset + code_length)`. The session rejects another
+physical page, third alias, changed source length/offset, or non-register-only
+admission. It binds backing, range and alias only after admission succeeds.
+The selected cache entry is invalidated against the fresh backing version
+before dispatch. The loader patch API writes one byte through a selected
+writable guest alias after a tracked mapping preflight; a committed write
+advances that physical page's version and invalidates both alias caches.
+
+A failed operand write does not commit the requested patch byte. Either
+tracked walk may commit Accessed effects; only the write walk may commit Dirty
+effects before a later failure. If page-table storage physically overlaps the
+code backing, those effects can change code bytes and their page generation even
+when the patch is rejected. That overlap is outside this slice's fail-with-unchanged-code
+guarantee. Every later lookup captures fresh bytes and generation and
+invalidates the selected alias entry before dispatch, preventing execution of
+an obsolete cached block. Before S4-16d, another idle alias entry could remain
+resident after a page-table A/D write until its next lookup. S4-16d forwards
+tracked snapshot and patch callbacks into synchronous invalidation of both idle
+aliases when the committed write overlaps their code backing.
+
+The existing synchronous NativeRegisterV1 dispatcher is fixture-profiled and
+rejects a populated CR3. This bounded host adapter runs it against a local copy
+of `LongModeState` with CR3 cleared only for the admitted register-only call,
+then restores the original CR3 into the returned state. Thus an unwind leaves
+the caller's state untouched. Published block allocation and PC map remain
+owned by the selected cache through native execution and result decoding.
+
+The macOS ARM64 host test warms both aliases, rejects a read-only patch without
+dropping either entry, changes one immediate byte through alias A, verifies
+both entries are removed, then executes through B and A and observes the new
+RAX value. This is one-vCPU loader-patch coverage only. Guest JIT stores,
+general writer notifications, remap/TLB changes, cross-page code, MMIO/DMA,
+SMP and active-block mutation remain outside this slice; parent S4-16 stays
+open. Per-page generation adds 8 bytes per RAM guest page and updates touched
+pages on committed writes. It is provisional: no performance measurements or
+speed claim are available. See the [S4-16a report](../reports/STAGE_4_S4-16A_2026-11-06.md).
+
+### S4-16b: one interpreted guest store invalidates inactive aliased code
+
+`PagedCodeSession::step_guest_mov` runs the existing one-instruction
+`od-machine::step_paged_mov` profile synchronously between native calls. The
+host session requires its fixed Long64 mode, CR0/CR3/CR4 snapshot and preserves
+the caller's CPL. CR3 is passed separately to the machine adapter, while the
+interpreter receives a local clone of `LongModeState` with CR3 cleared, because
+the profile takes CR3 as a separate paging argument. After a successful machine
+input result, the original CR3 is restored before the clone is copied back to the
+caller. A machine input error leaves caller CPU state unchanged; an architectural
+fault follows the interpreter profile's normal state-commit semantics. The
+interpreter profile remains limited to its exact admitted MOV encodings; this
+slice tests `48 89 0B` (`MOV [RBX],RCX`).
+
+The adapter collects physical ranges from actual committed-write callbacks,
+including page-walker Accessed/Dirty updates. It reconciles those ranges with
+the captured physical code page before propagating a machine-step error or
+returning its guest report. If any committed write overlaps the code page, it
+reads the current per-page generation and invalidates both alias cache entries
+synchronously. Thus a later page fault does not discard an earlier committed
+page-table update or leave stale code resident. A write confined to another
+RAM page leaves the code generation and both entries unchanged.
+
+The existing machine step may also dispatch an operand access to registered
+MMIO. This slice validates RAM-backed stores only; MMIO behavior is not tested.
+Cache reconciliation consumes committed physical RAM write callbacks and does
+not represent device-side writes.
+
+Acceptance covers: successful code mutation through the guest store and fresh
+execution through both aliases; a CPL3 store whose PML4 Accessed update
+overlaps the code backing and precedes an operand #PF, with zero retirement,
+unchanged CPU state, no operand write, and both caches invalidated; and a
+successful unrelated-page store that preserves the code generation and cache
+entries. The code range remains within one page under S4-16a's snapshot
+contract. This slice does not test cross-page data operands or assert their
+behavior. General writer integration, remap/TLB coupling, active-block
+mutation, MMIO behavior, DMA, SMP, and broader instruction admission remain open under
+parent S4-16. Performance is not measured here and no speed claim is made. See the
+[S4-16b report](../reports/STAGE_4_S4-16B_2026-11-06.md).
+
+### S4-16c: synchronous physical RAM loader write invalidates inactive aliases
+
+`MachineBus::patch_physical_ram_with_callback` preserves the existing checked
+`PhysicalMemory::write_bytes` behavior and reports the exact physical range only
+after commit. The existing no-callback convenience method remains available.
+`PagedCodeSession::write_physical_ram` is a narrow privileged operation for the
+one-vCPU fixture; it accepts a typed physical address and byte slice between
+native calls, and exposes neither mutable RAM nor an arbitrary writer callback.
+
+The session collects actual committed notifications and runs the same physical
+code-page generation reconciliation used by the guest MOV writer before
+returning success or an error. Any overlapping committed write invalidates both
+inactive alias cache entries, including writes outside the admitted instruction
+range. A write confined to another guest page preserves the code generation and
+entries. The test uses neighboring pages at `0x6000` and `0x7000`, exact callback
+ranges, an immediate replacement followed by execution through both aliases,
+and failed RAM/ROM boundary and ROM writes that preserve the cache.
+
+This does not connect every possible physical-memory writer and does not cover
+remap/TLB, cross-page code, MMIO/DMA, SMP or mutation of an active native block.
+The path is synchronous and only admits writes while native code is inactive;
+performance is not measured. Parent S4-16 remains open. See the
+[S4-16c report](../reports/STAGE_4_S4-16C_2026-11-06.md).
+
+### S4-16d: tracked snapshot and loader-patch A/D notifications
+
+The callback-bearing machine APIs report only physical writes that actually
+committed, in operation order. A snapshot may report page-walker Accessed
+updates before a later translation fault. A tracked alias patch may report
+Accessed/Dirty updates committed by its read preflight/write walk before an
+error; the requested code byte is reported only when that byte commits.
+
+`PagedCodeSession::execute_alias` and `patch_alias_byte` collect these ranges
+and invoke the shared code-page reconciliation before propagating a snapshot,
+mapping/admission, or patch result. An overlapping committed A/D write updates
+the backing generation view and invalidates both idle alias entries before the
+next lookup, even when the guest operation returns a fault. A failed patch does
+not imply that its operand byte committed. The callback-free machine methods
+remain wrappers around the same tracked behavior.
+
+The S4-16d tests cover ordered A/D and operand callbacks on success. In the
+CPL3 write-protection case, the read preflight sets the alternate PDE A bit at
+`0x7010` in the code page before the write walk faults. In the snapshot case,
+the walk sets the unused PML4 A bit at `0x7400` in the code page before a later
+missing-PDE fault. They do not imply TLB
+invalidation, mapping-change handling, cross-page code, or active-block
+retirement; parent S4-16 remains open. See the
+[S4-16d report](../reports/STAGE_4_S4-16D_2026-11-06.md).
+
+### S4-16e: retired INVLPG releases bounded aliased-code admission
+
+The host session can execute one exact `INVLPG [RBX]` between native calls
+through the tracked Long64 RAM fetch adapter. It reconciles fetch-time A/D
+writes before returning. Instruction faults and ISA rejections are carried in
+`Ok(result).step.cpu.exit`; tracked fetch backend failures are carried in
+`Ok(result).step.access_error`; `Err` is reserved for configuration errors. A
+retired canonical invalidation clears both inactive alias cache entries and
+releases the fixed backing, code-range, and alias binding so remapped code can
+be admitted. The session intentionally over-invalidates its two-entry cache
+for any canonical retired INVLPG effect; the guest still executes a separate
+architectural invalidation for each linear alias.
+
+The bounded S4-16e result has no production TLB, general remap notification,
+cross-page code, arbitrary writer, MMIO/DMA, SMP, or active-block retirement
+semantics. Parent S4-16 and Stage 4 remain open; no performance claim is made.
+See the [S4-16e report](../reports/STAGE_4_S4-16E_2026-11-06.md).

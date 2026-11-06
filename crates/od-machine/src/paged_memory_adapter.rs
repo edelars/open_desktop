@@ -1,4 +1,4 @@
-//! Opt-in one-instruction Long64 MOV bridge through the uncached RAM walker.
+//! Opt-in one-instruction Long64 bridge through the uncached RAM walker.
 
 use crate::{
     GuestLinearAddress, GuestPhysicalRange, Long64ProbeConfig, MachineBus, RamAccessOperation,
@@ -6,11 +6,15 @@ use crate::{
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
-    PagedMovCrossPageDwordReadLong64V1, PagedMovCrossPageWordReadLong64V1,
-    step_paged_mov_dword_read as cpu_step_paged_mov_dword_read,
-    step_paged_mov_word_read as cpu_step_paged_mov_word_read,
+    InvlpgExit, InvlpgLong64V1, InvlpgResult, RunExit, RunInputError, RunResult,
+    step_invlpg as cpu_step_invlpg, step_paged_mov as cpu_step_paged_mov,
 };
-use od_isa::execute::{RunInputError, RunResult, step_paged_mov as cpu_step_paged_mov};
+use od_isa::execute::{
+    PagedMovCrossPageDwordReadLong64V1, PagedMovCrossPageWordFetchLong64V1,
+    PagedMovCrossPageWordReadLong64V1, step_paged_mov_dword_read as cpu_step_paged_mov_dword_read,
+    step_paged_mov_word_read as cpu_step_paged_mov_word_read,
+    step_paged_mov_word_read_cross_page_fetch as cpu_step_paged_mov_word_read_cross_page_fetch,
+};
 use od_isa::memory::{AccessContext, GuestMemory, MemoryError, PageFaultRecord};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,6 +30,118 @@ pub struct PagedMovStepReport {
     pub page_fault: Option<PageFaultRecord>,
     /// Retains non-architectural walker/backend classifications.
     pub memory_error: Option<TrackedAccessError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedInvlpgStepReport {
+    pub cpu: InvlpgResult,
+    /// Retains the walker's precise saved RIP, linear address, and PFEC.
+    pub page_fault: Option<PageFaultRecord>,
+    /// Retains the original tracked-walker classification, including faults.
+    pub access_error: Option<TrackedAccessError>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedInvlpgStepError {
+    Configuration(crate::ProbeConfigError),
+}
+
+/// Execute exactly one `INVLPG [RBX]` step through tracked physical RAM fetches.
+/// The CPU profile owns decode and retirement semantics; this adapter only
+/// supplies the fixed paging snapshot and forwards committed walker writes.
+pub fn step_paged_invlpg(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedInvlpgStepReport, PagedInvlpgStepError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedInvlpgStepError::Configuration)?;
+    let instruction_rip = state.rip;
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: true,
+        reject_crossing_qword: false,
+        read_only_qword: false,
+    };
+    let cpu = cpu_step_invlpg(
+        InvlpgLong64V1,
+        state,
+        &mut memory,
+        context,
+        efer,
+        rflags_defined,
+    );
+    // A fetch fault may follow committed page-walker A/D writes. Keep those
+    // callbacks observable. Rejected inputs are refused before the first fetch.
+    let report = PagedInvlpgStepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+    };
+    debug_assert!(matches!(report.cpu.exit, InvlpgExit::Fault(_)) || report.page_fault.is_none());
+    Ok(report)
+}
+
+/// Result of one synchronous JIT invocation against the tracked paged adapter.
+/// The memory borrow ends before this value is returned and is never retained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovMemoryScope<R> {
+    pub callback_result: R,
+    pub page_fault: Option<PageFaultRecord>,
+    pub access_error: Option<TrackedAccessError>,
+    pub committed_ad_updates: Vec<crate::AdUpdate>,
+    pub committed_writes: Vec<GuestPhysicalRange>,
+}
+
+/// Run a synchronous callback with a temporary RAM-only, same-page qword MOV
+/// memory adapter. The callback cannot retain the adapter beyond this call.
+pub fn with_paged_mov_memory<R>(
+    bus: &mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    callback: impl FnOnce(&mut dyn GuestMemory) -> R,
+) -> PagedMovMemoryScope<R> {
+    let mut ignore_write = |_| {};
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut ignore_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        committed_ad_updates: Some(Vec::new()),
+        committed_writes: Some(Vec::new()),
+        capture_effects: true,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: true,
+        reject_crossing_qword: true,
+        read_only_qword: true,
+    };
+    let callback_result = callback(&mut memory);
+    PagedMovMemoryScope {
+        callback_result,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+        committed_ad_updates: memory.committed_ad_updates.unwrap_or_default(),
+        committed_writes: memory.committed_writes.unwrap_or_default(),
+    }
 }
 
 /// Execute the CPU profile's exact one-step MOV through four-level 4 KiB RAM paging.
@@ -57,8 +173,15 @@ pub fn step_paged_mov(
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
         dword_read_profile: false,
         word_read_profile: false,
+        ram_only: false,
+        reject_crossing_qword: false,
+        read_only_qword: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -93,11 +216,86 @@ pub fn step_paged_mov_word_read(
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
         dword_read_profile: false,
         word_read_profile: true,
+        ram_only: false,
+        reject_crossing_qword: false,
+        read_only_qword: false,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
+        state,
+        &mut memory,
+        context,
+        rflags_defined,
+    )
+    .map_err(PagedMovStepError::CpuInput)?;
+    Ok(PagedMovStepReport {
+        cpu,
+        page_fault: memory.page_fault,
+        memory_error: memory.memory_error,
+    })
+}
+
+/// Execute the exact S4-11f AX word-read profile, including one code-page
+/// fetch crossing, through the uncached RAM walker.
+pub fn step_paged_mov_word_read_cross_page_fetch(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    cr3: u64,
+    efer: u64,
+    context: AccessContext,
+    rflags_defined: u64,
+    mut committed_write: impl FnMut(GuestPhysicalRange),
+) -> Result<PagedMovStepReport, PagedMovStepError> {
+    let paging = Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+        .map_err(PagedMovStepError::Configuration)?;
+    if rflags_defined & !od_isa::INTEGER_FLAGS != 0 {
+        return Err(PagedMovStepError::CpuInput(
+            RunInputError::InvalidRflagsDefined {
+                value: rflags_defined,
+            },
+        ));
+    }
+    if efer & (1 << 11) == 0 {
+        return Ok(PagedMovStepReport {
+            cpu: RunResult {
+                exit: RunExit::Unsupported { opcode: 0x66 },
+                instructions_executed: 0,
+                rflags_defined,
+            },
+            page_fault: None,
+            memory_error: None,
+        });
+    }
+    let context = AccessContext {
+        origin: od_isa::memory::AccessOrigin::Explicit,
+        ..context
+    };
+    let instruction_rip = state.rip;
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut committed_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
+        dword_read_profile: false,
+        word_read_profile: true,
+        ram_only: false,
+        reject_crossing_qword: false,
+        read_only_qword: false,
+    };
+    let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
+        PagedMovCrossPageWordFetchLong64V1,
         state,
         &mut memory,
         context,
@@ -136,8 +334,15 @@ pub fn step_paged_mov_dword_read(
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
         dword_read_profile: true,
         word_read_profile: false,
+        ram_only: false,
+        reject_crossing_qword: false,
+        read_only_qword: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -173,8 +378,15 @@ pub struct PagedMovMemoryAdapter<'a> {
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
+    access_error: Option<TrackedAccessError>,
+    committed_ad_updates: Option<Vec<crate::AdUpdate>>,
+    committed_writes: Option<Vec<GuestPhysicalRange>>,
+    capture_effects: bool,
     dword_read_profile: bool,
     word_read_profile: bool,
+    ram_only: bool,
+    reject_crossing_qword: bool,
+    read_only_qword: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -184,19 +396,52 @@ impl PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         operation: RamAccessOperation,
     ) -> Result<TrackedAccessOutcome, MemoryError> {
-        let report = self.bus.access_tracked(
-            &self.paging,
-            TrackedAccessRequest {
-                instruction_rip: self.instruction_rip,
-                address: GuestLinearAddress::new(address),
-                context,
-                operation,
-            },
-            &mut *self.committed_write,
-        );
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
+        let request = TrackedAccessRequest {
+            instruction_rip: self.instruction_rip,
+            address: GuestLinearAddress::new(address),
+            context,
+            operation,
+        };
+        let report = if self.capture_effects {
+            let mut writes = Vec::new();
+            let report = if self.ram_only {
+                self.bus
+                    .access_tracked_ram(&self.paging, request, |range| writes.push(range))
+            } else {
+                self.bus
+                    .access_tracked(&self.paging, request, |range| writes.push(range))
+            };
+            self.committed_writes
+                .as_mut()
+                .expect("capture mode has a write collector")
+                .extend(writes);
+            self.committed_ad_updates
+                .as_mut()
+                .expect("capture mode has an A/D collector")
+                .extend(
+                    report.ad_updates[..report.ad_update_count]
+                        .iter()
+                        .flatten()
+                        .copied(),
+                );
+            report
+        } else if self.ram_only {
+            self.bus
+                .access_tracked_ram(&self.paging, request, &mut *self.committed_write)
+        } else {
+            self.bus
+                .access_tracked(&self.paging, request, &mut *self.committed_write)
+        };
         match report.outcome {
             Ok(outcome) => Ok(outcome),
-            Err(error) => Err(self.map_access_error(error)),
+            Err(error) => {
+                self.access_error = Some(error.clone());
+                Err(self.map_access_error(error))
+            }
         }
     }
 
@@ -206,6 +451,10 @@ impl PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         width: crate::AccessWidth,
     ) -> Result<u64, MemoryError> {
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
         let result = self.bus.read_tracked_bounded_ram_read(
             &self.paging,
             TrackedAccessRequest {
@@ -245,6 +494,9 @@ impl PagedMovMemoryAdapter<'_> {
 
 impl GuestMemory for PagedMovMemoryAdapter<'_> {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        if self.read_only_qword {
+            return Err(Self::unsupported("instruction fetch"));
+        }
         match self.access(address, context, RamAccessOperation::Fetch)? {
             TrackedAccessOutcome::Fetched(value) => Ok(value),
             _ => Err(Self::unsupported("non-fetch result")),
@@ -263,6 +515,12 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
             8 if !self.dword_read_profile && !self.word_read_profile => crate::AccessWidth::Qword,
             _ => return Err(Self::unsupported("read width")),
         };
+        if self.reject_crossing_qword
+            && width == crate::AccessWidth::Qword
+            && (address & 0xfff) + 8 > 4096
+        {
+            return Err(Self::unsupported("cross-page qword read"));
+        }
         let value = if self.dword_read_profile
             || self.word_read_profile
             || (address & 0xfff) + u64::from(width.bytes()) > 4096
@@ -284,6 +542,9 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         source: &[u8],
     ) -> Result<(), MemoryError> {
+        if self.read_only_qword {
+            return Err(Self::unsupported("write"));
+        }
         if source.len() != 8 {
             return Err(Self::unsupported("non-qword writes"));
         }
@@ -347,6 +608,7 @@ mod tests {
         RamLimits,
     };
     use od_isa::memory::{AccessOrigin, InstructionMode, PrivilegeLevel};
+    use od_isa::{CpuActivity, InvlpgExit, StiShadow, TranslationInvalidation};
 
     const CR0: u64 = 0x8001_0033;
     const CR4: u64 = 1 << 5;
@@ -406,9 +668,208 @@ mod tests {
             committed_write: callbacks,
             page_fault: None,
             memory_error: None,
+            access_error: None,
+            committed_ad_updates: None,
+            committed_writes: None,
+            capture_effects: false,
             dword_read_profile: false,
             word_read_profile: false,
+            ram_only: false,
+            reject_crossing_qword: false,
+            read_only_qword: false,
         }
+    }
+
+    fn invlpg_state(target: u64) -> LongModeState {
+        let mut state = LongModeState {
+            rip: DATA_LINEAR,
+            cr0: Some(CR0),
+            cr3: Some(ROOT),
+            cr4: Some(CR4),
+            activity: Some(CpuActivity::Running),
+            sti_shadow: Some(StiShadow::Clear),
+            ..LongModeState::default()
+        };
+        state.gpr[od_isa::Register::Rbx as usize] = target;
+        state
+    }
+
+    fn install_invlpg(bus: &mut MachineBus) {
+        put(bus, 0x7000, 0x0000_0000_003b_010f);
+    }
+
+    #[test]
+    fn step_paged_invlpg_retires_exact_linear_operand_and_forwards_ad_writes() {
+        let mut bus = bus(0x7007);
+        install_invlpg(&mut bus);
+        let target = 0x0000_1234_5678_9abc;
+        let mut state = invlpg_state(target);
+        let mut callbacks = Vec::new();
+
+        let report = step_paged_invlpg(
+            &mut state,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            od_isa::INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.cpu.exit,
+            InvlpgExit::TranslationInvalidation(TranslationInvalidation::Invlpg {
+                linear_address: target,
+            })
+        );
+        assert_eq!(report.cpu.instructions_executed, 1);
+        assert_eq!(report.cpu.rflags_defined, od_isa::INTEGER_FLAGS);
+        assert_eq!(state.rip, DATA_LINEAR + 3);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.access_error, None);
+        assert_eq!(
+            callbacks,
+            [range(0x1000), range(0x2000), range(0x3020), range(0x5000)]
+        );
+    }
+
+    #[test]
+    fn step_paged_invlpg_noncanonical_operand_retires_without_invalidation() {
+        let mut bus = bus(0x7007);
+        install_invlpg(&mut bus);
+        let mut state = invlpg_state(0x0000_8000_0000_0000);
+        let mut callbacks = Vec::new();
+
+        let report = step_paged_invlpg(
+            &mut state,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            od_isa::INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert_eq!(report.cpu.exit, InvlpgExit::Retired);
+        assert_eq!(report.cpu.instructions_executed, 1);
+        assert_eq!(state.rip, DATA_LINEAR + 3);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.access_error, None);
+        assert_eq!(
+            callbacks,
+            [range(0x1000), range(0x2000), range(0x3020), range(0x5000)]
+        );
+    }
+
+    #[test]
+    fn step_paged_invlpg_rejection_does_not_fetch_or_change_cpu_state() {
+        let mut bus = bus(0x7007);
+        install_invlpg(&mut bus);
+        let mut state = invlpg_state(0x1234);
+        let before = state.clone();
+        let mut callbacks = Vec::new();
+
+        let report = step_paged_invlpg(
+            &mut state,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            1 << 63,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.cpu.exit,
+            InvlpgExit::Rejected(od_isa::PagedProbeRejection::InvalidRflagsDefined {
+                value: 1 << 63,
+            })
+        );
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.access_error, None);
+        assert!(callbacks.is_empty());
+    }
+
+    #[test]
+    fn step_paged_invlpg_privilege_fault_preserves_completed_fetch_ad_callbacks() {
+        let mut bus = bus(0x7007);
+        install_invlpg(&mut bus);
+        let mut state = invlpg_state(0x1234);
+        let mut callbacks = Vec::new();
+        let user_context = AccessContext {
+            privilege: PrivilegeLevel::Ring3,
+            ..context()
+        };
+
+        let report = step_paged_invlpg(
+            &mut state,
+            &mut bus,
+            ROOT,
+            EFER,
+            user_context,
+            od_isa::INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.cpu.exit,
+            InvlpgExit::Fault(od_isa::memory::ArchitecturalFault {
+                vector: 13,
+                error_code: Some(0),
+                linear_address: None,
+            })
+        );
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(state.rip, DATA_LINEAR);
+        assert_eq!(report.page_fault, None);
+        assert_eq!(report.access_error, None);
+        assert_eq!(
+            callbacks,
+            [range(0x1000), range(0x2000), range(0x3020), range(0x5000)]
+        );
+    }
+
+    #[test]
+    fn step_paged_invlpg_fetch_fault_preserves_record_and_prior_ad_callbacks() {
+        let mut bus = bus(0);
+        let mut state = invlpg_state(0x1234);
+        let before = state.clone();
+        let mut callbacks = Vec::new();
+
+        let report = step_paged_invlpg(
+            &mut state,
+            &mut bus,
+            ROOT,
+            EFER,
+            context(),
+            od_isa::INTEGER_FLAGS,
+            |range| callbacks.push(range),
+        )
+        .unwrap();
+
+        let record = report
+            .page_fault
+            .as_ref()
+            .expect("tracked fetch page fault");
+        assert_eq!(record.saved_rip(), DATA_LINEAR);
+        assert_eq!(record.cr2_value(), DATA_LINEAR);
+        assert_eq!(record.fault().vector, 14);
+        assert_eq!(record.fault().error_code, Some(0x10));
+        assert!(matches!(report.cpu.exit, InvlpgExit::Fault(ref fault) if fault == record.fault()));
+        assert!(matches!(
+            report.access_error,
+            Some(TrackedAccessError::PageFault { record: ref error_record, .. })
+                if error_record == record
+        ));
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(callbacks, [range(0x1000), range(0x2000), range(0x3020)]);
     }
 
     #[test]

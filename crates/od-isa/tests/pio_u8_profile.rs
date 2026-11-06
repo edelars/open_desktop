@@ -137,6 +137,7 @@ fn context(privilege: PrivilegeLevel, origin: AccessOrigin) -> AccessContext {
 
 fn state_for(code: &[u8]) -> (LongModeState, Memory) {
     let mut state = LongModeState {
+        cr3: None,
         rip: RIP,
         rflags: 0x8d7,
         ..LongModeState::default()

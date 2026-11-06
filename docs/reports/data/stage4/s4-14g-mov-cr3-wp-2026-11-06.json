@@ -1,0 +1,65 @@
+{
+  "slice": "S4-14g",
+  "date": "2026-11-06",
+  "scope": "Opt-in MOV CR3 WP profile and mutable diagnostic translation-session integration.",
+  "profiles": {
+    "cpu": "MovCr3WpLong64V1",
+    "cpu_entry": "step_mov_cr3_wp",
+    "session": "MutableTranslationProbeSession::execute_mov_cr3_wp",
+    "instruction": "bare 0F 22 D8 (MOV CR3,RAX)",
+    "cr0_values": ["0x80010033", "0x80000033"],
+    "cr4": "0x20",
+    "efer": "0xd00",
+    "translation": "canonical48 physical36 four-level 4KiB",
+    "cache_capacity": 1
+  },
+  "behavior": {
+    "legacy_mov_cr3_long64_v1_requires_wp_one": true,
+    "other_profiles_unchanged": true,
+    "instruction_semantics_shared_with_legacy_mov_cr3": true,
+    "session_validates_cpu_cr0_cr3_cr4_before_fetch": true,
+    "instruction_fetch_bypasses_resident_cache_via_pure_walker": true,
+    "valid_single_retired_cr3write_installs_snapshot_and_clears_cache": true,
+    "same_value_cr3_write_clears_cache": true,
+    "nonretiring_and_fetch_fault_preserve_snapshot_and_cache": true,
+    "retired_malformed_or_state_mismatch_clears_cache_and_poisons": true,
+    "contradictory_nonzero_retirement_without_cr3write_returns_typed_error": true,
+    "zero_retirement_fault_preserves_cache": true,
+    "unusable_root_walk_deferred_until_next_probe": true,
+    "fetch_effect_has_no_page_table_ad_writes": true,
+    "performance_claim": false
+  },
+  "verification": {
+    "od_isa_mov_cr3_tests": {"passed": 11, "failed": 0},
+    "od_machine_feature_on_translation_session_tests": {"passed": 35, "failed": 0},
+    "od_machine_feature_off_library_tests": {"passed": 91, "failed": 0},
+    "od_isa_all_targets_check": "passed",
+    "od_machine_all_targets_check_feature_off": "passed",
+    "od_machine_all_targets_check_feature_on": "passed",
+    "cargo_fmt_all_check": "passed",
+    "git_diff_check": "passed",
+    "json_validation": "passed",
+    "graphify_query_used": true,
+    "graphify_update": {"nodes": 26718, "edges": 66803, "communities": 1044},
+    "independent_review": "clean on final gpt-6.1-sol/high review; three findings fixed and rechecked"
+  },
+  "coverage": [
+    "WP=0 and WP=1 root A-to-B switch starts with a resident hit and clears the entry before the next lookup",
+    "After each root switch the replacement root produces Walk then Hit",
+    "The original execute_mov_cr3 path rejects WP=0 before fetch",
+    "Same-value CR3 writes after user-accessible read-only PTE remap invalidate the stale hit under both WP values",
+    "After same-value invalidation, Ring0 write succeeds with WP=0, receives PFEC 0x03 with WP=1, and Ring3 write with WP=0 receives PFEC 0x07",
+    "A matching AccessKind::Fetch key at the MOV CR3 RIP is bypassed; removed PTE yields exact fetch #PF, zero retirement and unchanged CPU, and stale Fetch hit remains resident",
+    "All four page-table entries remain unchanged across successful MOV CR3 fetch and effect consumption",
+    "Unusable replacement roots commit; a precise page fault occurs only on the next probe",
+    "Every CR3 source bit 36 through 63 faults atomically with #GP(0)",
+    "Pre-fetch CR0/CR4 mismatch preserves cache and CPU; injected post-retirement CR4 mismatch with matching CR0 clears and poisons",
+    "Injected zero-retirement fault preserves cache; contradictory one-retirement fault without Cr3Write returns typed error, clears cache, poisons, and makes subsequent operations return SessionPoisoned",
+    "Existing MOV CR3 tests cover LOCK, CPL, fetch failure, prefixes, legacy input gates and exact start boundary"
+  ],
+  "limits": [
+    "One-entry diagnostic cache, not a production TLB",
+    "No reset, EFER/other control-register transitions, tracked A/D caching, PCID/global, JIT or SMP",
+    "No performance claim"
+  ]
+}

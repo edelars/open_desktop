@@ -52,7 +52,7 @@
     "format": "cargo fmt --all -- --check",
     "diff_check": "passed",
     "cpu_profile_gate_test": "cargo test -p od-isa paged_word_profile_shared_entry_enforces_privilege_ac_and_fetch_page --locked --offline: 1 passed",
-    "layout_check": "pending integrated main checkout"
+    "layout_check": "passed: 48 required directories, 6 crate scaffolds, 14 instruction scopes"
   },
   "review": {
     "model": "gpt-6.1-sol",
@@ -66,7 +66,11 @@
     "worktree_nodes": 24739,
     "worktree_edges": 63802,
     "worktree_communities": 825,
-    "global_update": "pending"
+    "global_update": "pending",
+    "global_graph_updated": true,
+    "global_nodes": 26164,
+    "global_edges": 65633,
+    "global_communities": 944
   },
   "issue_054": "open",
   "parent_s4_11": "open",

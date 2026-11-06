@@ -1,0 +1,93 @@
+{
+  "slice": "S4-01b",
+  "date": "2026-11-06",
+  "captured_at": "2026-11-06T04:08:29-03:00",
+  "repository": {
+    "baseline_head": "326154b73f528b2d36b9c44b488ae44a4fc85c0f",
+    "preexisting_user_files_preserved": [
+      "docs/plans/CLAUDE.md",
+      "docs/plans/.claude/"
+    ]
+  },
+  "host": {
+    "os": "Darwin 25.6.0",
+    "architecture": "arm64",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)"
+  },
+  "scope": {
+    "decode_error": "od_isa::long_decode::DecodeError::InvalidMovCr0Lock",
+    "encoding": "F0 0F 22 C0",
+    "encoded_length_bytes": 4,
+    "block_builder": "typed UnsupportedEncoding at exact source RIP; prior decoded ranges preserved",
+    "deferred_boundary_length": 4,
+    "bounded_memory_dispatcher": "Unsupported before executor entry; no tail execution",
+    "jit_or_native_admission_widened": false,
+    "lock_mov_cr3_behavior_changed": false
+  },
+  "tests": [
+    {
+      "purpose": "Block builder typed error, exact RIP, prefix progress, helper byte length, and LOCK MOV CR3 regression",
+      "command": "cargo test -p od-jit --lib block::tests --offline",
+      "exit_code": 0,
+      "executed_tests": 32,
+      "passed": 32,
+      "failed": 0,
+      "ignored": 0,
+      "result": "ok"
+    },
+    {
+      "purpose": "Instrumented zero fetch/read/write/atomic/fence calls and zero executor callbacks at LOCK MOV CR0 entry; after prefix, full state matches captured post-artifact state, memory calls remain zero, and only prefix callback ran; LOCK MOV CR3 remains rejected",
+      "command": "cargo test -p od-jit --lib memory_dispatch::tests --offline",
+      "exit_code": 0,
+      "executed_tests": 14,
+      "passed": 14,
+      "failed": 0,
+      "ignored": 0,
+      "result": "ok"
+    }
+  ],
+  "checks": [
+    {
+      "command": "cargo check --workspace --all-targets --offline",
+      "exit_code": 0,
+      "result": "ok",
+      "duration": "1m 20s",
+      "warnings": [
+        "od-jit: CodeMemory::one_instruction is unused",
+        "od-host/tests/memory_corpus.rs: unused MEMORY_CORPUS_SEQUENCES import",
+        "od-host/src/lib.rs: unused scale variable",
+        "od-host/src/lib.rs: unnecessary mut on callback_stop"
+      ]
+    },
+    {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "result": "ok"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "result": "ok"
+    }
+  ],
+  "existing_cpu_ud_canaries": {
+    "inspected_not_rerun": true,
+    "tests": [
+      "od-isa::execute::paged_mov_profile_tests::lock_prefixed_mov_cr0_is_ud_after_complete_fetch",
+      "od-isa::execute::paged_cr3_probe_tests::paged_cr3_profile_keeps_lock_mov_cr0_as_ud"
+    ]
+  },
+  "independent_review": {
+    "status": "clean",
+    "reviewer": "gpt-6.1-sol/high",
+    "findings": "fixed and rechecked; no remaining findings"
+  },
+  "graphify_update": {"nodes": 26745, "edges": 66867, "communities": 1088},
+  "non_claims": [
+    "No JIT/native admission was widened",
+    "No CPU semantics were changed",
+    "No physical x86 acceptance is claimed",
+    "Parent S4-01 and Stage 4 remain open"
+  ]
+}

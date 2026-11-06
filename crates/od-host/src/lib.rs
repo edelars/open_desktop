@@ -627,6 +627,7 @@ impl PublishedCode {
         stop_rip: Option<u64>,
         stop_requested: &std::sync::atomic::AtomicU8,
     ) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+        reject_cpu_owned_cr3(state)?;
         let metadata = self
             .checked_two_site_metadata_v2
             .as_ref()
@@ -666,6 +667,7 @@ impl PublishedCode {
         stop_rip: Option<u64>,
         stop_requested: &std::sync::atomic::AtomicU8,
     ) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+        reject_cpu_owned_cr3(state)?;
         let metadata = self
             .checked_two_site_metadata_v2
             .as_ref()
@@ -716,6 +718,7 @@ impl PublishedCode {
         stop_rip: Option<u64>,
         stop_requested: &std::sync::atomic::AtomicU8,
     ) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+        reject_cpu_owned_cr3(state)?;
         let ir = self
             .checked_store_ir_metadata_v2
             .as_ref()
@@ -780,6 +783,7 @@ impl PublishedCode {
         stop_rip: Option<u64>,
         stop_requested: &std::sync::atomic::AtomicU8,
     ) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+        reject_cpu_owned_cr3(state)?;
         let ir = self
             .checked_dword_store_ir_metadata_v2
             .as_ref()
@@ -833,6 +837,7 @@ impl PublishedCode {
         stop_rip: Option<u64>,
         stop_requested: &std::sync::atomic::AtomicU8,
     ) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+        reject_cpu_owned_cr3(state)?;
         let ir = self
             .checked_load_ir_metadata_v2
             .as_ref()
@@ -884,6 +889,7 @@ impl PublishedCode {
         stop_rip: Option<u64>,
         stop_requested: &std::sync::atomic::AtomicU8,
     ) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+        reject_cpu_owned_cr3(state)?;
         let ir = self
             .checked_dword_load_ir_metadata_v2
             .as_ref()
@@ -988,6 +994,104 @@ impl PublishedCode {
         }
     }
 
+    /// Execute exactly one existing V2 `MOV RAX,[RBX]` through the tracked
+    /// machine RAM adapter. The temporary GuestMemory borrow is confined to
+    /// this synchronous call and is not retained by the published mapping.
+    pub fn execute_paged_mov_rax_rbx_v2(
+        &self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<
+        od_machine::PagedMovMemoryScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        >,
+        PagedMemoryLoadV2Error,
+    > {
+        use od_isa::memory::{InstructionMode, PrivilegeLevel};
+
+        if access_context.mode != InstructionMode::Long64 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedMode);
+        }
+        if !matches!(
+            access_context.privilege,
+            PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+        ) {
+            return Err(PagedMemoryLoadV2Error::UnsupportedPrivilege(
+                access_context.privilege,
+            ));
+        }
+        if let Some(activity) = state.activity
+            && activity != od_isa::state::CpuActivity::Running
+        {
+            return Err(PagedMemoryLoadV2Error::UnsupportedCpuActivity(activity));
+        }
+        if let Some(shadow) = state.sti_shadow
+            && shadow != od_isa::state::StiShadow::Clear
+        {
+            return Err(PagedMemoryLoadV2Error::UnsupportedInterruptShadow(shadow));
+        }
+        let metadata = self
+            .memory_operation_metadata_v2
+            .as_ref()
+            .ok_or(PagedMemoryLoadV2Error::UnsupportedBlock)?;
+        let source_len = usize::from(metadata.source_len);
+        let site = metadata.site;
+        let operand = site.operand();
+        if metadata.compile_flavor != od_jit::translation::CompileFlavor::S3_19bMemoryLoadV2
+            || source_len != 3
+            || metadata.source_bytes[..source_len] != [0x48, 0x8b, 0x03]
+            || !site.matches_source_bytes(
+                &metadata.source_bytes[..source_len],
+                od_jit::runtime::MemorySiteOperationV2::Load,
+            )
+            || site.operation() != od_jit::runtime::MemorySiteOperationV2::Load
+            || site.instruction_index() != 0
+            || site.guest_rip() != metadata.entry_rip
+            || metadata.entry_rip.checked_add(source_len as u64) != Some(site.next_rip())
+            || !site.has_supported_profile()
+            || site.destination() != Some(od_isa::Register::Rax as u8)
+            || site.source().is_some()
+            || operand.base != od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            || operand.index.is_some()
+            || operand.scale != 1
+            || operand.displacement != 0
+            || operand.address_size != od_isa::OperandSize::Qword
+            || operand.size != od_isa::OperandSize::Qword
+        {
+            return Err(PagedMemoryLoadV2Error::UnsupportedBlock);
+        }
+        if state.rip != metadata.entry_rip {
+            return Err(PagedMemoryLoadV2Error::EntryRipMismatch {
+                expected: metadata.entry_rip,
+                actual: state.rip,
+            });
+        }
+        if let Some(value) = state.cr3 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value });
+        }
+        let operand_address = state.gpr[od_isa::Register::Rbx as usize];
+        if (operand_address & 0xfff) + 8 > 4096 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: operand_address,
+                length: 8,
+            });
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(PagedMemoryLoadV2Error::Paging)?;
+        let stop_requested = AtomicU8::new(0);
+        Ok(od_machine::with_paged_mov_memory(
+            bus,
+            paging,
+            state.rip,
+            |memory| {
+                self.execute_memory_load_v2(state, memory, access_context, 1, None, &stop_requested)
+            },
+        ))
+    }
+
     /// Execute a verified V2 MOV store using only a backend whose ownership
     /// and write semantics satisfy the private synchronous RAM contract.
     ///
@@ -1040,6 +1144,7 @@ impl PublishedCode {
         stop_requested: &std::sync::atomic::AtomicU8,
         expected_operation: od_jit::runtime::MemorySiteOperationV2,
     ) -> Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2> {
+        reject_cpu_owned_cr3(state)?;
         let metadata = self
             .memory_operation_metadata_v2
             .as_ref()
@@ -1172,6 +1277,9 @@ impl PublishedCode {
         stop_rip: Option<u64>,
         stop_requested: &std::sync::atomic::AtomicU8,
     ) -> Result<BlockExecutionResult, BlockExecutionError> {
+        if let Some(value) = state.cr3 {
+            return Err(BlockExecutionError::UnsupportedCr3State { value });
+        }
         let metadata = self
             .block_metadata
             .as_ref()
@@ -1570,6 +1678,9 @@ fn execute_block_at(
     stop_rip: Option<u64>,
     stop_requested: &std::sync::atomic::AtomicU8,
 ) -> Result<BlockExecutionResult, BlockExecutionError> {
+    if let Some(value) = state.cr3 {
+        return Err(BlockExecutionError::UnsupportedCr3State { value });
+    }
     if !metadata.safe_entry {
         return Err(BlockExecutionError::UntrustedHelper);
     }
@@ -1661,6 +1772,7 @@ pub struct MemoryOperationMemoryErrorV2 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MemoryOperationExecutionErrorV2 {
     NotV2MemoryBlock,
+    UnsupportedCr3State { value: u64 },
     InvalidMetadata,
     EntryRipMismatch { expected: u64, actual: u64 },
     InvalidExitTag(u32),
@@ -1669,6 +1781,28 @@ pub enum MemoryOperationExecutionErrorV2 {
     InvalidAccounting,
     MemoryError(MemoryOperationMemoryErrorV2),
     HelperBoundaryFailure { status: u32 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedMemoryLoadV2Error {
+    UnsupportedMode,
+    UnsupportedPrivilege(od_isa::memory::PrivilegeLevel),
+    UnsupportedCpuActivity(od_isa::state::CpuActivity),
+    UnsupportedInterruptShadow(od_isa::state::StiShadow),
+    UnsupportedBlock,
+    UnsupportedOperandRange { address: u64, length: u8 },
+    EntryRipMismatch { expected: u64, actual: u64 },
+    UnsupportedCpuCr3 { value: u64 },
+    Paging(od_machine::ProbeConfigError),
+}
+
+fn reject_cpu_owned_cr3(
+    state: &od_isa::LongModeState,
+) -> Result<(), MemoryOperationExecutionErrorV2> {
+    if let Some(value) = state.cr3 {
+        return Err(MemoryOperationExecutionErrorV2::UnsupportedCr3State { value });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1692,6 +1826,7 @@ pub struct ActiveCodeExecutionResultV3 {
 pub enum ActiveCodeExecutionErrorV3 {
     InvalidHandle,
     InvalidMetadata,
+    UnsupportedCr3State { value: u64 },
     EntryRipMismatch { expected: u64, actual: u64 },
     InvalidAccounting,
     InvalidExitTag(u32),
@@ -1953,6 +2088,9 @@ pub struct BlockExecutionResult {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockExecutionError {
     NotRuntimeBlock,
+    UnsupportedCr3State {
+        value: u64,
+    },
     UntrustedHelper,
     EntryRipMismatch {
         expected: u64,
@@ -1983,6 +2121,11 @@ impl od_jit::dispatch::BlockExecutor for PublishedBlockExecutor {
         state: &mut od_isa::LongModeState,
         incoming_budget: u64,
     ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+        if let Some(value) = state.cr3 {
+            return Err(PublishedBlockExecutionError::Execute(
+                BlockExecutionError::UnsupportedCr3State { value },
+            ));
+        }
         let published = PublishedCode::publish_block(block.emitted())
             .map_err(PublishedBlockExecutionError::Publish)?;
         let stop_requested = AtomicU8::new(0);
@@ -2009,6 +2152,11 @@ impl od_jit::dispatch::ControlledBlockExecutor for PublishedBlockExecutor {
         incoming_budget: u64,
         control: od_jit::dispatch::DispatchControl<'_>,
     ) -> Result<od_jit::dispatch::BlockExecutionReport, Self::Error> {
+        if let Some(value) = state.cr3 {
+            return Err(PublishedBlockExecutionError::Execute(
+                BlockExecutionError::UnsupportedCr3State { value },
+            ));
+        }
         let published = PublishedCode::publish_block(block.emitted())
             .map_err(PublishedBlockExecutionError::Publish)?;
         let result = published.execute_block(
@@ -2034,6 +2182,11 @@ impl od_jit::dispatch::ControlledBlockExecutor for PublishedBlockExecutor {
         incoming_budget: u64,
         control: od_jit::dispatch::DispatchControl<'_>,
     ) -> Result<od_jit::dispatch::ControlledBlockExecution, Self::Error> {
+        if let Some(value) = state.cr3 {
+            return Err(PublishedBlockExecutionError::Execute(
+                BlockExecutionError::UnsupportedCr3State { value },
+            ));
+        }
         let published = PublishedCode::publish_block(block.emitted())
             .map_err(PublishedBlockExecutionError::Publish)?;
         if control.stop_rip == Some(state.rip) {
@@ -2133,6 +2286,7 @@ pub struct PublishedMemoryBlockExecutor;
 pub enum PublishedMemoryBlockError {
     Publish(ExecutableMemoryError),
     Execute(MemoryOperationExecutionErrorV2),
+    UnsupportedCr3State { value: u64 },
 }
 
 unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for PublishedMemoryBlockExecutor {
@@ -2176,6 +2330,10 @@ unsafe impl od_jit::memory_dispatch::MemoryBlockExecutor for PublishedMemoryBloc
         event_requested: Option<&AtomicBool>,
     ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error> {
         use od_jit::memory_dispatch::{MemoryBlockExit, MemoryBlockReport};
+
+        if let Some(value) = state.cr3 {
+            return Err(PublishedMemoryBlockError::UnsupportedCr3State { value });
+        }
 
         let published = match block {
             od_jit::memory_dispatch::BoundedMemoryArtifact::Pair(compiled) => {
@@ -2290,6 +2448,7 @@ pub enum CachedPublishedMemoryPairError {
     Publish(ExecutableMemoryError),
     Execute(MemoryOperationExecutionErrorV2),
     ArtifactProfileMismatch,
+    UnsupportedCr3State { value: u64 },
 }
 
 impl od_jit::memory_cache::CachedMemoryPairBackend for CachedPublishedMemoryPairBackend {
@@ -2327,6 +2486,9 @@ impl od_jit::memory_cache::CachedMemoryPairBackend for CachedPublishedMemoryPair
         event_requested: Option<&AtomicBool>,
     ) -> Result<od_jit::memory_dispatch::MemoryBlockReport, Self::Error> {
         use od_jit::memory_dispatch::{MemoryBlockExit, MemoryBlockReport};
+        if let Some(value) = state.cr3 {
+            return Err(CachedPublishedMemoryPairError::UnsupportedCr3State { value });
+        }
         let pre_entry_exit = if stop_rip == Some(state.rip) {
             Some(MemoryBlockExit::StopAddress)
         } else if stop_requested.load(Ordering::Acquire) != 0 {
@@ -2669,6 +2831,7 @@ pub unsafe trait TrackedExecutableCodeOwner: od_isa::memory::GuestMemory {
 pub enum TrackedCodeStoreExecutionErrorV2 {
     InvalidHandle,
     InvalidMetadata,
+    UnsupportedCr3State { value: u64 },
     Preflight(TrackedCodeStorePreflightError),
     Execution(MemoryOperationExecutionErrorV2),
 }
@@ -2759,6 +2922,9 @@ impl PublishedArenaMemoryStore {
         tracked_region: Option<TrackedCodeRegionV2<'_>>,
         mut notify: impl FnMut(od_jit::dispatch::CodeInvalidation),
     ) -> Result<MemoryOperationExecutionResultV2, TrackedCodeStoreExecutionErrorV2> {
+        if let Some(value) = state.cr3 {
+            return Err(TrackedCodeStoreExecutionErrorV2::UnsupportedCr3State { value });
+        }
         let arena = self._block.arena.borrow();
         let slot = arena
             .slots
@@ -2898,6 +3064,9 @@ impl PublishedArenaActiveCodeV3 {
         stop_requested: &std::sync::atomic::AtomicU8,
         mut notify: impl FnMut(od_jit::dispatch::CodeInvalidation),
     ) -> Result<ActiveCodeExecutionResultV3, ActiveCodeExecutionErrorV3> {
+        if let Some(value) = state.cr3 {
+            return Err(ActiveCodeExecutionErrorV3::UnsupportedCr3State { value });
+        }
         let arena = self._block.arena.borrow();
         let slot = arena
             .slots
@@ -3383,6 +3552,432 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
                 ExecutableMemoryError::UnsupportedPlatform,
             ))
         }
+    }
+}
+
+/// One-vCPU loader-patch session for a single executable RAM page and its
+/// virtual aliases. The mutable bus borrow serializes patch and dispatch; no
+/// code handle or RAM pointer escapes the session.
+pub struct PagedCodeSession<'a> {
+    bus: &'a mut od_machine::MachineBus,
+    paging: od_machine::Long64ProbeConfig,
+    access_context: od_isa::memory::AccessContext,
+    backing_page: Option<od_machine::GuestPhysicalAddress>,
+    code_page_offset: Option<usize>,
+    code_length: Option<usize>,
+    aliases: [Option<u64>; 2],
+    caches: [od_jit::dispatch::SingleEntryBlockCache<PublishedArenaBlock>; 2],
+    backend: PublishedArenaBackend,
+}
+
+/// Outcome of one interpreted guest store issued between native code calls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeStoreResult {
+    pub step: od_machine::PagedMovStepReport,
+    /// Physical RAM writes committed by the page walker, including A/D updates.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    /// True when a committed write overlapped the captured code page and the
+    /// session applied generation invalidation to both alias caches. This does
+    /// not imply that either cache held a resident entry.
+    pub code_invalidated: bool,
+}
+
+/// Outcome of one privileged physical RAM write issued while native code is
+/// inactive in a `PagedCodeSession`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeWriteResult {
+    /// Physical RAM ranges committed by the checked memory writer.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    /// True when a committed range overlapped the captured code page and the
+    /// session applied generation invalidation to both alias caches. This does
+    /// not imply that either cache held a resident entry.
+    pub code_invalidated: bool,
+}
+
+/// Outcome of one interpreted `INVLPG` executed between native calls.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedCodeInvlpgResult {
+    pub step: od_machine::PagedInvlpgStepReport,
+    /// Physical RAM writes committed by the instruction fetch walk.
+    pub committed_writes: Vec<od_machine::GuestPhysicalRange>,
+    /// True when a retired canonical invalidation cleared both idle caches and
+    /// released the session's pinned backing/alias admission.
+    pub session_reset: bool,
+}
+
+#[derive(Debug)]
+pub enum PagedCodeSessionError {
+    Backend(PublishedArenaError),
+    Cache(od_jit::dispatch::CacheConfigError),
+    Snapshot(od_machine::TrackedCodeSnapshotError),
+    Admission(od_jit::block::S0_09NopAdmissionError),
+    UnsupportedAlias,
+    UnsupportedIdentity,
+    Dispatch(od_jit::dispatch::DispatchError<PublishedArenaError>),
+    Patch(od_machine::MemoryAccessError),
+    TrackedPatch(od_machine::TrackedCodePatchError),
+    PagingControlsMismatch,
+    StoreStep(od_machine::PagedMovStepError),
+    InvlpgStep(od_machine::PagedInvlpgStepError),
+}
+
+impl<'a> PagedCodeSession<'a> {
+    pub fn new(
+        bus: &'a mut od_machine::MachineBus,
+        paging: od_machine::Long64ProbeConfig,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<Self, PagedCodeSessionError> {
+        let backend = PublishedArenaBackend::new(2).map_err(PagedCodeSessionError::Backend)?;
+        let cache0 = od_jit::dispatch::SingleEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+        )
+        .map_err(PagedCodeSessionError::Cache)?;
+        let cache1 = od_jit::dispatch::SingleEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+        )
+        .map_err(PagedCodeSessionError::Cache)?;
+        Ok(Self {
+            bus,
+            paging,
+            access_context,
+            backing_page: None,
+            code_page_offset: None,
+            code_length: None,
+            aliases: [None, None],
+            caches: [cache0, cache1],
+            backend,
+        })
+    }
+
+    pub fn resident_entries(&self) -> usize {
+        self.caches
+            .iter()
+            .map(|cache| cache.resident_entries())
+            .sum()
+    }
+
+    pub fn execute_alias(
+        &mut self,
+        linear_start: u64,
+        code_length: usize,
+        state: &mut od_isa::LongModeState,
+        budget: u64,
+    ) -> Result<od_jit::dispatch::FallbackDispatchResult, PagedCodeSessionError> {
+        if state.rip != linear_start {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        }
+        if state.cr3 != Some(self.paging.cr3()) {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        }
+        let mut committed_writes = Vec::new();
+        let snapshot = self.bus.tracked_code_snapshot_with_callback(
+            &self.paging,
+            linear_start,
+            code_length,
+            self.access_context,
+            |range| committed_writes.push(range),
+        );
+        self.reconcile_code_writes(&committed_writes)?;
+        let snapshot = snapshot.map_err(PagedCodeSessionError::Snapshot)?;
+        let code_page_offset = (linear_start & 0xfff) as usize;
+        if self
+            .backing_page
+            .is_some_and(|physical| physical != snapshot.physical_base)
+            || self
+                .code_page_offset
+                .is_some_and(|offset| offset != code_page_offset)
+            || self.code_length.is_some_and(|length| length != code_length)
+        {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        }
+        let alias_base = linear_start & !0xfff;
+        let cache_index = if let Some(index) = self
+            .aliases
+            .iter()
+            .position(|alias| *alias == Some(alias_base))
+        {
+            index
+        } else if let Some(index) = self.aliases.iter().position(|alias| alias.is_none()) {
+            index
+        } else {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        };
+
+        use std::num::NonZeroU64;
+        let nz =
+            |value: u64| NonZeroU64::new(value).ok_or(PagedCodeSessionError::UnsupportedIdentity);
+        let backing_number = snapshot.physical_base.get() / 0x1000 + 1;
+        let mapping_number = (linear_start & !0xfff) / 0x1000 + 1;
+        let version = od_jit::translation::BackingVersion::new(nz(snapshot.backing_generation)?);
+        let backing = od_jit::translation::BackingId::new(nz(backing_number)?);
+        let mapping = od_jit::translation::MappingId::new(nz(mapping_number)?);
+        let view = od_jit::block::CodeView::new(linear_start, &snapshot.bytes)
+            .map_err(|_| PagedCodeSessionError::UnsupportedAlias)?;
+        let admission = od_jit::block::NativeRegisterV1Admission::from_code(view)
+            .map_err(PagedCodeSessionError::Admission)?;
+        // Bind the session only after the complete code range has passed
+        // NativeRegisterV1 admission. A rejected candidate must not reserve
+        // this session's backing, range, or alias slot.
+        self.backing_page = Some(snapshot.physical_base);
+        self.code_page_offset = Some(code_page_offset);
+        self.code_length = Some(code_length);
+        self.aliases[cache_index] = Some(alias_base);
+        let identity = od_jit::translation::CodeIdentity {
+            address_space: od_jit::translation::AddressSpaceId::new(nz(1)?),
+            mapping,
+            mapping_version: od_jit::translation::MappingVersion::new(nz(1)?),
+            backing,
+            backing_version: version,
+            executable: true,
+        };
+        let dependencies = [od_jit::translation::CodeDependencySpan {
+            start_rip: view.base_rip(),
+            end_rip: view.code_end(),
+            identity,
+        }];
+        self.caches[cache_index].invalidate(
+            od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing,
+                current_version: version,
+            },
+        );
+        let context = od_jit::translation::ExecutionContextSnapshot::native_register_v1_fixture(
+            od_jit::translation::ExecutionContextId::from_u64(1).unwrap(),
+        );
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+
+        // The admitted NativeRegisterV1 profile contains no system or memory
+        // instructions. Hide the fixed paging snapshot from this fixture-only
+        // dispatcher and restore it on every return path.
+        let mut execution_state = state.clone();
+        execution_state.cr3 = None;
+        let result = od_jit::dispatch::run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut execution_state,
+            budget,
+            control,
+            &mut self.caches[cache_index],
+            &mut self.backend,
+        );
+        execution_state.cr3 = state.cr3;
+        *state = execution_state;
+        result.map_err(PagedCodeSessionError::Dispatch)
+    }
+
+    /// Commit one inactive-code loader patch byte through either captured
+    /// guest virtual alias. A failed tracked write does not commit the requested
+    /// patch byte, but either walk may commit Accessed effects and the write walk
+    /// may commit Dirty effects first. If page-table storage overlaps the code
+    /// backing page, those effects can change its bytes and generation even when
+    /// the patch fails.
+    pub fn patch_alias_byte(
+        &mut self,
+        linear_address: u64,
+        value: u8,
+    ) -> Result<(), PagedCodeSessionError> {
+        let base = self
+            .backing_page
+            .ok_or(PagedCodeSessionError::UnsupportedAlias)?;
+        let alias_base = linear_address & !0xfff;
+        let offset = usize::try_from(linear_address & 0xfff).ok();
+        let range_start = self.code_page_offset.unwrap_or(0);
+        let range_end = range_start.saturating_add(self.code_length.unwrap_or(0));
+        if !self.aliases.contains(&Some(alias_base))
+            || offset.is_none_or(|offset| !(range_start..range_end).contains(&offset))
+        {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        }
+        let mut committed_writes = Vec::new();
+        let patch = self.bus.patch_tracked_code_byte_with_callback(
+            &self.paging,
+            linear_address,
+            base,
+            value,
+            self.access_context,
+            |range| committed_writes.push(range),
+        );
+        self.reconcile_code_writes(&committed_writes)?;
+        patch.map_err(PagedCodeSessionError::TrackedPatch)?;
+        Ok(())
+    }
+
+    /// Perform one checked physical RAM write while native blocks are
+    /// inactive. A committed overlap with the captured code backing is
+    /// reconciled against its current generation before the method returns.
+    /// Failed writes preserve cache entries because PhysicalMemory validates
+    /// the full write before committing any bytes.
+    pub fn write_physical_ram(
+        &mut self,
+        address: od_machine::GuestPhysicalAddress,
+        bytes: &[u8],
+    ) -> Result<PagedCodeWriteResult, PagedCodeSessionError> {
+        let mut committed_writes = Vec::new();
+        let write = self
+            .bus
+            .patch_physical_ram_with_callback(address, bytes, |range| committed_writes.push(range));
+        let code_invalidated = self.reconcile_code_writes(&committed_writes)?;
+        write.map_err(PagedCodeSessionError::Patch)?;
+        Ok(PagedCodeWriteResult {
+            committed_writes,
+            code_invalidated,
+        })
+    }
+
+    fn reconcile_code_writes(
+        &mut self,
+        committed_writes: &[od_machine::GuestPhysicalRange],
+    ) -> Result<bool, PagedCodeSessionError> {
+        let Some(code_page) = self.backing_page else {
+            return Ok(false);
+        };
+        let code_page_start = u128::from(code_page.get());
+        let code_page_end = code_page_start + 0x1000;
+        let code_page_written = committed_writes.iter().any(|range| {
+            let write_start = u128::from(range.start().get());
+            let write_end = range.end_exclusive();
+            write_start < code_page_end && code_page_start < write_end
+        });
+        if !code_page_written {
+            return Ok(false);
+        }
+
+        let current_generation = self
+            .bus
+            .code_page_generation(code_page)
+            .map_err(PagedCodeSessionError::Patch)?;
+        let backing = od_jit::translation::BackingId::new(
+            std::num::NonZeroU64::new(code_page.get() / 0x1000 + 1)
+                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+        );
+        let current_version = od_jit::translation::BackingVersion::new(
+            std::num::NonZeroU64::new(current_generation)
+                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+        );
+        for cache in &mut self.caches {
+            cache.invalidate(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing,
+                current_version,
+            });
+        }
+        Ok(true)
+    }
+
+    /// Interpret exactly one admitted paged MOV load/store while native blocks
+    /// are inactive. Any committed physical write (including page-table A/D
+    /// writes) is observed, then the current code-page generation is reconciled
+    /// and both alias caches are invalidated before either success or failure
+    /// is returned.
+    pub fn step_guest_mov(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        rflags_defined: u64,
+    ) -> Result<PagedCodeStoreResult, PagedCodeSessionError> {
+        let Some(_) = self.backing_page else {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        };
+        if state.cr0 != Some(self.paging.cr0())
+            || state.cr3 != Some(self.paging.cr3())
+            || state.cr4 != Some(self.paging.cr4())
+            || self.access_context.mode != od_isa::memory::InstructionMode::Long64
+        {
+            return Err(PagedCodeSessionError::PagingControlsMismatch);
+        }
+        let mut committed_writes = Vec::new();
+        // The machine profile receives CR3 as a separate paging input and
+        // rejects a populated state.cr3. Keep the caller's paging controls
+        // intact for session validation, then adapt only this local copy.
+        let original_cr3 = state.cr3;
+        let mut machine_state = state.clone();
+        machine_state.cr3 = None;
+        let step = od_machine::step_paged_mov(
+            &mut machine_state,
+            self.bus,
+            self.paging.cr3(),
+            self.paging.efer(),
+            self.access_context,
+            rflags_defined,
+            |range| committed_writes.push(range),
+        );
+
+        // Do not use `?` on the interpreter result before reconciling writes:
+        // the page walker may have committed A/D or operand writes before a
+        // later fault/backend/input result is produced.
+        let code_invalidated = self.reconcile_code_writes(&committed_writes)?;
+        let step = step.map_err(PagedCodeSessionError::StoreStep)?;
+        // Machine input errors leave caller state untouched. The profile's
+        // architectural fault result is successful input and follows its
+        // normal CPU-state commit semantics; restore the caller-owned CR3
+        // before committing that resulting state back.
+        machine_state.cr3 = original_cr3;
+        *state = machine_state;
+        Ok(PagedCodeStoreResult {
+            step,
+            committed_writes,
+            code_invalidated,
+        })
+    }
+
+    /// Interpret exactly one bounded `INVLPG [RBX]` between native calls.
+    /// A retired canonical invalidation conservatively clears both inactive
+    /// aliases and releases the fixed backing/range binding so they can be
+    /// admitted again after a page-table remap. Noncanonical retirement,
+    /// faults, and rejected inputs do not reset the session.
+    pub fn execute_invlpg(
+        &mut self,
+        state: &mut od_isa::LongModeState,
+        rflags_defined: u64,
+    ) -> Result<PagedCodeInvlpgResult, PagedCodeSessionError> {
+        if state.cr0 != Some(self.paging.cr0())
+            || state.cr3 != Some(self.paging.cr3())
+            || state.cr4 != Some(self.paging.cr4())
+            || self.access_context.mode != od_isa::memory::InstructionMode::Long64
+        {
+            return Err(PagedCodeSessionError::PagingControlsMismatch);
+        }
+        let mut committed_writes = Vec::new();
+        let mut execution_state = state.clone();
+        let step = od_machine::step_paged_invlpg(
+            &mut execution_state,
+            self.bus,
+            self.paging.cr3(),
+            self.paging.efer(),
+            self.access_context,
+            rflags_defined,
+            |range| committed_writes.push(range),
+        );
+        self.reconcile_code_writes(&committed_writes)?;
+        let step = step.map_err(PagedCodeSessionError::InvlpgStep)?;
+
+        let session_reset = step.cpu.instructions_executed == 1
+            && matches!(
+                step.cpu.exit,
+                od_isa::execute::InvlpgExit::TranslationInvalidation(_)
+            );
+        if session_reset {
+            for cache in &mut self.caches {
+                cache.clear();
+            }
+            self.backing_page = None;
+            self.code_page_offset = None;
+            self.code_length = None;
+            self.aliases = [None, None];
+        }
+        *state = execution_state;
+        Ok(PagedCodeInvlpgResult {
+            step,
+            committed_writes,
+            session_reset,
+        })
     }
 }
 
@@ -5201,6 +5796,7 @@ pub(crate) mod tests {
         };
         memory.bytes[4..12].copy_from_slice(&0x8877_6655_4433_2211_u64.to_le_bytes());
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x9a00,
             rflags: 0x8d7,
             ..od_isa::LongModeState::default()
@@ -5227,6 +5823,7 @@ pub(crate) mod tests {
         stop.store(0, Ordering::Release);
         memory.stop_on_read = Some(&stop);
         let mut stopped_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x9a00,
             ..od_isa::LongModeState::default()
         };
@@ -5259,6 +5856,7 @@ pub(crate) mod tests {
         memory.failure = Some(architectural);
         stop.store(0, Ordering::Release);
         let mut fault_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x9a00,
             rflags: 0x202,
             ..od_isa::LongModeState::default()
@@ -5411,6 +6009,7 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut guarded_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..od_isa::LongModeState::default()
         };
@@ -5468,6 +6067,7 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..od_isa::LongModeState::default()
         };
@@ -5522,6 +6122,7 @@ pub(crate) mod tests {
                 stop_on_read: None,
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 ..od_isa::LongModeState::default()
             };
@@ -5556,6 +6157,7 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut failed_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..od_isa::LongModeState::default()
         };
@@ -5586,6 +6188,7 @@ pub(crate) mod tests {
             stop_on_read: Some(&callback_stop),
         };
         let mut stopped_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..od_isa::LongModeState::default()
         };
@@ -5709,6 +6312,7 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut guarded_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..od_isa::LongModeState::default()
         };
@@ -5766,6 +6370,7 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             gpr: [0xfeed_face_dead_beef; 16],
             rflags: 0x8d5,
@@ -5798,6 +6403,7 @@ pub(crate) mod tests {
             stop_on_read: Some(&callback_stop),
         };
         let mut stopped_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..Default::default()
         };
@@ -5839,6 +6445,7 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut failed_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..Default::default()
         };
@@ -6011,6 +6618,7 @@ pub(crate) mod tests {
             let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
             let effective_address = u64::from((rcx as u32).wrapping_add(displacement as u32));
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 gpr: [0xfeed_face_dead_beef; 16],
                 rflags: 0x8d5,
@@ -6063,6 +6671,7 @@ pub(crate) mod tests {
         .unwrap();
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
         let mut guarded_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             gpr: [0xfeed_face_dead_beef; 16],
             ..Default::default()
@@ -6353,6 +6962,7 @@ pub(crate) mod tests {
                     _ => {}
                 }
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: entry,
                     gpr: [0xfeed_face_dead_beef; 16],
                     rflags: 0x8d5,
@@ -6406,6 +7016,7 @@ pub(crate) mod tests {
         .unwrap();
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
         let mut guarded_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             gpr: [0xfeed_face_dead_beef; 16],
             ..Default::default()
@@ -6625,6 +7236,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_ir_memory_dword_store_block_v2(code, entry).unwrap();
         let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..Default::default()
         };
@@ -6933,6 +7545,7 @@ pub(crate) mod tests {
                 );
                 let expected = (effective_address, vec![0xef, 0xcd, 0xab, 0x89]);
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: entry,
                     gpr: [0x9876_5432_fedc_ba98; 16],
                     rflags: 0x8d5,
@@ -6988,6 +7601,7 @@ pub(crate) mod tests {
             .unwrap();
             let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 gpr: [0xfeed_face_dead_beef; 16],
                 rflags: 0x8d5,
@@ -7287,6 +7901,7 @@ pub(crate) mod tests {
         }
         fn state_at(rax: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -7660,6 +8275,7 @@ pub(crate) mod tests {
                     .wrapping_mul(u64::from(scale))
                     .wrapping_add(displacement as i64 as u64);
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: entry,
                     ..Default::default()
                 };
@@ -7703,6 +8319,7 @@ pub(crate) mod tests {
             .unwrap();
             let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 ..Default::default()
             };
@@ -8118,6 +8735,7 @@ pub(crate) mod tests {
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
         let stop = AtomicU8::new(0);
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..Default::default()
         };
@@ -8624,6 +9242,7 @@ pub(crate) mod tests {
             let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
             let effective_address = u64::from((rax as u32).wrapping_add(displacement as u32));
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 gpr: [0xfeed_face_dead_beef; 16],
                 rflags: 0x8d5,
@@ -8680,6 +9299,7 @@ pub(crate) mod tests {
         .unwrap();
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
         let initial = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             gpr: [0xfeed_face_dead_beef; 16],
             rflags: 0x8d5,
@@ -9019,6 +9639,7 @@ pub(crate) mod tests {
                         .wrapping_add(displacement as u32),
                 );
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: entry,
                     gpr: [0xfeed_face_dead_beef; 16],
                     rflags: 0x8d5,
@@ -9085,6 +9706,7 @@ pub(crate) mod tests {
                 .unwrap();
                 let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: entry,
                     gpr: [0xfeed_face_dead_beef; 16],
                     ..Default::default()
@@ -9120,6 +9742,7 @@ pub(crate) mod tests {
             .unwrap();
             let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 gpr: [0xfeed_face_dead_beef; 16],
                 rflags: 0x8d5,
@@ -9439,6 +10062,7 @@ pub(crate) mod tests {
             let published = PublishedCode::publish_ir_memory_dword_load_v2(&block).unwrap();
 
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 ..Default::default()
             };
@@ -9510,6 +10134,7 @@ pub(crate) mod tests {
                 .unwrap();
                 let published = PublishedCode::publish_ir_memory_dword_load_v2(&block).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: entry,
                     ..Default::default()
                 };
@@ -9566,6 +10191,7 @@ pub(crate) mod tests {
             .unwrap();
             let published = PublishedCode::publish_ir_memory_dword_load_v2(&block).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 ..Default::default()
             };
@@ -9618,6 +10244,7 @@ pub(crate) mod tests {
             ),
         ] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 ..Default::default()
             };
@@ -9663,6 +10290,7 @@ pub(crate) mod tests {
         }
 
         let mut failed_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..Default::default()
         };
@@ -9727,6 +10355,7 @@ pub(crate) mod tests {
                 (0x0000_8000_0000_0000 / scale, "canonical boundary crossing"),
             ] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: entry,
                     ..Default::default()
                 };
@@ -9772,6 +10401,7 @@ pub(crate) mod tests {
             let overflow_published =
                 PublishedCode::publish_ir_memory_dword_load_v2(&overflow_block).unwrap();
             let mut overflow_state = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 ..Default::default()
             };
@@ -9816,6 +10446,7 @@ pub(crate) mod tests {
         let callback_published =
             PublishedCode::publish_ir_memory_dword_load_v2(&callback_block).unwrap();
         let mut callback_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..Default::default()
         };
@@ -9953,6 +10584,7 @@ pub(crate) mod tests {
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
         let stop = AtomicU8::new(0);
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..Default::default()
         };
@@ -10287,6 +10919,7 @@ pub(crate) mod tests {
                 let aligned_base = 0x0000_0100_0000_1000_u64;
                 let target = aligned_base.wrapping_add(displacement as i64 as u64);
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: entry,
                     ..Default::default()
                 };
@@ -10334,6 +10967,7 @@ pub(crate) mod tests {
             let wrapping_index = (1_u64 << (64 - scale.trailing_zeros())).wrapping_add(0x1234);
             let target = wrapping_index.wrapping_mul(scale).wrapping_sub(4);
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 ..Default::default()
             };
@@ -10379,6 +11013,7 @@ pub(crate) mod tests {
         let wrapping_index = (1_u64 << 63).wrapping_add(0x1234);
         let target = wrapping_index.wrapping_mul(2).wrapping_sub(4);
         let mut before = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..Default::default()
         };
@@ -10533,6 +11168,7 @@ pub(crate) mod tests {
             PublishedCode::publish_ir_memory_dword_load_v2(&crossing_compiled).unwrap();
         for rcx in [0x1000_0000_0001, 0x1000_0000_0000] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 ..Default::default()
             };
@@ -10576,6 +11212,7 @@ pub(crate) mod tests {
         let overflow_published =
             PublishedCode::publish_ir_memory_dword_load_v2(&overflow_compiled).unwrap();
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..Default::default()
         };
@@ -10710,6 +11347,7 @@ pub(crate) mod tests {
             stop_on_write: None,
         };
         let mut guarded_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..od_isa::LongModeState::default()
         };
@@ -11039,6 +11677,7 @@ pub(crate) mod tests {
         memory.bytes[8..16].copy_from_slice(&0x1234_5678_9abc_def0_u64.to_le_bytes());
 
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x9b00,
             ..od_isa::LongModeState::default()
         };
@@ -11128,6 +11767,7 @@ pub(crate) mod tests {
         assert_eq!(memory.reads, 1);
 
         let mut noncanonical = od_isa::LongModeState {
+            cr3: None,
             rip: 0x9b00,
             ..od_isa::LongModeState::default()
         };
@@ -11273,6 +11913,7 @@ pub(crate) mod tests {
             read_error: None,
         };
         let base_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x9c00,
             rflags: 0x246,
             ..od_isa::LongModeState::default()
@@ -11684,6 +12325,7 @@ pub(crate) mod tests {
             let mut native_ram = base_ram.clone();
             let mut interpreter_ram = base_ram;
             let mut base_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -11735,6 +12377,7 @@ pub(crate) mod tests {
                 read_error: None,
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -11769,6 +12412,7 @@ pub(crate) mod tests {
             read_error: Some(architectural),
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -11839,6 +12483,7 @@ pub(crate) mod tests {
                 read_error: None,
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -11870,6 +12515,7 @@ pub(crate) mod tests {
             read_error: None,
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -12032,6 +12678,7 @@ pub(crate) mod tests {
             let mut native_ram = base_ram.clone();
             let mut interpreter_ram = base_ram;
             let mut base_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -12102,6 +12749,7 @@ pub(crate) mod tests {
             let mut native_ram = ram.clone();
             let mut interpreter_ram = ram;
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -12163,6 +12811,7 @@ pub(crate) mod tests {
             callback_ram.bytes.insert(ADDRESS + offset as u64, byte);
         }
         let mut callback_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -12206,6 +12855,7 @@ pub(crate) mod tests {
                 stop_on_read: None,
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -12241,6 +12891,7 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -12313,6 +12964,7 @@ pub(crate) mod tests {
                 stop_on_read: None,
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -12349,6 +13001,7 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -12435,6 +13088,7 @@ pub(crate) mod tests {
             let mut native_ram = ram.clone();
             let mut interpreter_ram = ram;
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -12493,6 +13147,7 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -12633,6 +13288,7 @@ pub(crate) mod tests {
 
         for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffe] {
             let mut noncanonical_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -12820,6 +13476,7 @@ pub(crate) mod tests {
             let mut native_ram = base_ram.clone();
             let mut interpreter_ram = base_ram;
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -12870,6 +13527,7 @@ pub(crate) mod tests {
         .unwrap();
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
         let mut original = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -12893,6 +13551,7 @@ pub(crate) mod tests {
         let mut native_wrap_ram = wrap_ram.clone();
         let mut interpreter_wrap_ram = wrap_ram;
         let mut wrap_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -12927,6 +13586,7 @@ pub(crate) mod tests {
         // The effective-address sum wraps, but the subsequent four-byte
         // memory range does not: this is a diagnostic overflow, no callback.
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -13048,6 +13708,7 @@ pub(crate) mod tests {
         for address in [0x0000_7fff_ffff_fffe_u64, 0x0000_8000_0000_0000_u64] {
             let displacement = 1_i8;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -13287,6 +13948,7 @@ pub(crate) mod tests {
             let mut native_ram = base_ram.clone();
             let mut interpreter_ram = base_ram;
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -13337,6 +13999,7 @@ pub(crate) mod tests {
         .unwrap();
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
         let mut original = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -13360,6 +14023,7 @@ pub(crate) mod tests {
         let mut native_wrap_ram = wrap_ram.clone();
         let mut interpreter_wrap_ram = wrap_ram;
         let mut wrap_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -13394,6 +14058,7 @@ pub(crate) mod tests {
         // The effective-address sum wraps, but the subsequent four-byte
         // memory range does not: this is a diagnostic overflow, no callback.
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -13515,6 +14180,7 @@ pub(crate) mod tests {
         for address in [0x0000_7fff_ffff_fffe_u64, 0x0000_8000_0000_0000_u64] {
             let displacement = 1_i32;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -13556,6 +14222,7 @@ pub(crate) mod tests {
         // The same noncanonical start through RBX is #GP, not RBP's #SS.
         drop(published);
         let mut rbx_control_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -13790,6 +14457,7 @@ pub(crate) mod tests {
 
         fn state_for(rax: u64, entry: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -14250,6 +14918,7 @@ pub(crate) mod tests {
         }
         fn state() -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -14785,6 +15454,7 @@ pub(crate) mod tests {
 
         fn state_for(rsp: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -15218,6 +15888,7 @@ pub(crate) mod tests {
 
         fn state_for(rsp: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -15750,6 +16421,7 @@ pub(crate) mod tests {
 
         fn state_for(rsp: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -16345,6 +17017,7 @@ pub(crate) mod tests {
 
         fn state_for(rbx: u64, rcx: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -16701,6 +17374,7 @@ pub(crate) mod tests {
 
         fn state_for(rbx: u64, rcx: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -17042,6 +17716,7 @@ pub(crate) mod tests {
 
         fn state_for(rbx: u64, rcx: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -17392,6 +18067,7 @@ pub(crate) mod tests {
 
         fn state_for(rbx: u64, rcx: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -17917,6 +18593,7 @@ pub(crate) mod tests {
                 ram.bytes.insert(rcx.wrapping_add(offset as u64), byte);
             }
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -17953,6 +18630,7 @@ pub(crate) mod tests {
             failure: Some(fault),
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -17996,6 +18674,7 @@ pub(crate) mod tests {
         assert_eq!(ram.reads, [(0xffff_fffd, 4), (0xffff_fffd, 4)]);
 
         let mut stopped = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -18172,6 +18851,7 @@ pub(crate) mod tests {
                 ram.bytes.insert(decoy.wrapping_add(offset as u64), byte);
             }
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -18220,6 +18900,7 @@ pub(crate) mod tests {
             fetch_failure: None,
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -18263,6 +18944,7 @@ pub(crate) mod tests {
         assert_eq!(ram.reads, [(0xffff_fffd, 4), (0xffff_fffd, 4)]);
 
         let mut stopped = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -18320,6 +19002,7 @@ pub(crate) mod tests {
             );
         }
         let mut positive_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -18351,6 +19034,7 @@ pub(crate) mod tests {
             MemoryError::Backend("RCX disp8 fetch failed".into()),
         ] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -18505,6 +19189,7 @@ pub(crate) mod tests {
                 }
             }
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -18550,6 +19235,7 @@ pub(crate) mod tests {
             failure: Some(fault),
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -18593,6 +19279,7 @@ pub(crate) mod tests {
         assert_eq!(ram.reads, [(0xffff_ffff, 4), (0xffff_ffff, 4)]);
 
         let mut stopped = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -18891,6 +19578,7 @@ pub(crate) mod tests {
                     stop_on_read: None,
                 };
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -18926,6 +19614,7 @@ pub(crate) mod tests {
                 ram.bytes.insert(ADDRESS + offset as u64, byte);
             }
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -18981,6 +19670,7 @@ pub(crate) mod tests {
                 ram.bytes.insert(address + offset as u64, byte);
             }
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -19018,6 +19708,7 @@ pub(crate) mod tests {
                 ram.bytes.insert(offset as u64, byte);
             }
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -19067,6 +19758,7 @@ pub(crate) mod tests {
                 ram.bytes.insert(canonical_ea + offset as u64, byte);
             }
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -19111,6 +19803,7 @@ pub(crate) mod tests {
             (1, None, 1, MemoryOperationExecutionExitV2::StopRequested),
         ] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -19165,6 +19858,7 @@ pub(crate) mod tests {
         }
 
         let mut wrong_rip_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY + 1,
             ..Default::default()
         };
@@ -19234,6 +19928,7 @@ pub(crate) mod tests {
             stop_on_read: None,
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -19344,6 +20039,7 @@ pub(crate) mod tests {
 
         for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffd] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -19377,6 +20073,7 @@ pub(crate) mod tests {
         }
 
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -19413,6 +20110,7 @@ pub(crate) mod tests {
 
         let callback_stop = Arc::new(AtomicU8::new(0));
         let mut stopped_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -19618,6 +20316,7 @@ pub(crate) mod tests {
             .unwrap();
             let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -19655,6 +20354,7 @@ pub(crate) mod tests {
         .unwrap();
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -19703,6 +20403,7 @@ pub(crate) mod tests {
         let mut callback_ram = ram_for(source, 0xffff_ffa0, 0xcafe_babe);
         callback_ram.stop_on_read = Some(callback_stop.clone());
         let mut callback_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -19910,6 +20611,7 @@ pub(crate) mod tests {
             .unwrap();
             let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -19952,6 +20654,7 @@ pub(crate) mod tests {
         let published = PublishedCode::publish_ir_memory_dword_load_v2(&compiled).unwrap();
         let address = 0xffff_ffc0;
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -20068,6 +20771,7 @@ pub(crate) mod tests {
         let mut callback_ram = ram_for(callback_source, 0xffff_fffd, 0xcafe_babe);
         callback_ram.stop_on_read = Some(callback_stop.clone());
         let mut callback_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -20265,6 +20969,7 @@ pub(crate) mod tests {
             let mut ram = ram_for(address, value);
             let mut interpreter_ram = ram.clone();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -20312,6 +21017,7 @@ pub(crate) mod tests {
             linear_address: Some(u64::from(address)),
         });
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -20653,6 +21359,7 @@ pub(crate) mod tests {
             let mut native_ram = base_ram.clone();
             let mut interpreter_ram = base_ram;
             let mut base_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -20709,6 +21416,7 @@ pub(crate) mod tests {
             let address = 0x1_0000_2000;
             let mut ram = ram_at(address);
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -20739,6 +21447,7 @@ pub(crate) mod tests {
         let mut ram = ram_at(address);
         ram.stop_on_write = Some(stop.clone());
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -20779,6 +21488,7 @@ pub(crate) mod tests {
             ram.write_error = Some(error.clone());
             let before_ram = ram.clone();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -20989,6 +21699,7 @@ pub(crate) mod tests {
             let mut native_ram = ram_for(source, address);
             let mut interpreter_ram = native_ram.clone();
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -21044,6 +21755,7 @@ pub(crate) mod tests {
         let before_bytes = wrap_ram.bytes.clone();
         let mut interpreter_wrap_ram = wrap_ram.clone();
         let mut wrap_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -21091,6 +21803,7 @@ pub(crate) mod tests {
         let source = [0x89, 0x45, 1];
         let published = compile(source);
         let mut entry_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -21213,6 +21926,7 @@ pub(crate) mod tests {
         // RBP faults use #SS; the neighboring RBX profile retains #GP.
         for address in [0x0000_7fff_ffff_fffe_u64, 0x0000_8000_0000_0000_u64] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -21252,6 +21966,7 @@ pub(crate) mod tests {
         .unwrap();
         let rbx_published = PublishedCode::publish_ir_memory_dword_store_v2(&rbx_block).unwrap();
         let mut rbx_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -21284,6 +21999,7 @@ pub(crate) mod tests {
         // Checked four-byte range overflow remains an internal memory error.
         let published = compile(source);
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -21485,6 +22201,7 @@ pub(crate) mod tests {
         // checked callback writes only low32 RAX and preserves the full state.
         let target = 0x1_0000_1001;
         let mut before = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -21872,6 +22589,7 @@ pub(crate) mod tests {
 
         fn state_for(rsp: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -22332,6 +23050,7 @@ pub(crate) mod tests {
 
         fn state_for(rsp: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -22844,6 +23563,7 @@ pub(crate) mod tests {
             let mut native_ram = ram_for(source, address);
             let mut interpreter_ram = native_ram.clone();
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -22899,6 +23619,7 @@ pub(crate) mod tests {
         let before_bytes = wrap_ram.bytes.clone();
         let mut interpreter_wrap_ram = wrap_ram.clone();
         let mut wrap_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -22946,6 +23667,7 @@ pub(crate) mod tests {
         let source = [0x89, 0x85, 1, 0, 0, 0];
         let published = compile(source);
         let mut entry_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -23068,6 +23790,7 @@ pub(crate) mod tests {
         // RBP faults use #SS; the neighboring RBX profile retains #GP.
         for address in [0x0000_7fff_ffff_fffe_u64, 0x0000_8000_0000_0000_u64] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -23107,6 +23830,7 @@ pub(crate) mod tests {
         .unwrap();
         let rbx_published = PublishedCode::publish_ir_memory_dword_store_v2(&rbx_block).unwrap();
         let mut rbx_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -23139,6 +23863,7 @@ pub(crate) mod tests {
         // Checked four-byte range overflow remains an internal memory error.
         let published = compile(source);
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -23326,6 +24051,7 @@ pub(crate) mod tests {
             let mut native_ram = ram_for(source, address);
             let mut interpreter_ram = native_ram.clone();
             let mut base_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -23384,6 +24110,7 @@ pub(crate) mod tests {
         .unwrap();
         let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
         let mut before = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -23692,6 +24419,7 @@ pub(crate) mod tests {
 
         fn state_at(entry: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -24205,6 +24933,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -24585,6 +25314,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -24988,6 +25718,7 @@ pub(crate) mod tests {
 
         fn state_for(rsp: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -25315,6 +26046,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u32, index: u32) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -25691,6 +26423,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -26055,6 +26788,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -26431,6 +27165,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -26816,6 +27551,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -27260,6 +27996,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -27644,6 +28381,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u32, index: u32, high_halves: bool) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -27993,6 +28731,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u32, index: u32, high_halves: bool) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -28357,6 +29096,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u32, index: u32) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -28762,6 +29502,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u32, index: u32, high_halves: bool) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -29142,6 +29883,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u32, index: u32, high_halves: bool) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -29513,6 +30255,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -29849,6 +30592,7 @@ pub(crate) mod tests {
 
         fn state_for(rax: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -30260,6 +31004,7 @@ pub(crate) mod tests {
 
         fn state_for(rax: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -30682,6 +31427,7 @@ pub(crate) mod tests {
 
         fn state_for(rax: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -31098,6 +31844,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -31547,6 +32294,7 @@ pub(crate) mod tests {
         }
         fn state_for(rsp: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -31914,6 +32662,7 @@ pub(crate) mod tests {
 
         fn state_for(rsp: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -32268,6 +33017,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -32622,6 +33372,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -32978,6 +33729,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -33338,6 +34090,7 @@ pub(crate) mod tests {
 
         fn state_for(base: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -33737,6 +34490,7 @@ pub(crate) mod tests {
             let mut native_ram = ram_for(source, address);
             let mut interpreter_ram = native_ram.clone();
             let mut base_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -33799,6 +34553,7 @@ pub(crate) mod tests {
         .unwrap();
         let published = PublishedCode::publish_ir_memory_dword_store_v2(&compiled).unwrap();
         let mut before = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -34065,6 +34820,7 @@ pub(crate) mod tests {
 
         fn state_for(rbx: u64, rcx: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -34431,6 +35187,7 @@ pub(crate) mod tests {
 
         fn state_for(rbx: u64, rcx: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -34877,6 +35634,7 @@ pub(crate) mod tests {
 
         fn state_for(rbx: u64, rcx: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -35413,6 +36171,7 @@ pub(crate) mod tests {
 
         fn state_for(rbx: u64, rcx: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -35970,6 +36729,7 @@ pub(crate) mod tests {
 
         fn state_for(entry: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: entry,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -36485,6 +37245,7 @@ pub(crate) mod tests {
 
         fn state_for_target(target: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -36821,6 +37582,7 @@ pub(crate) mod tests {
             let mut native_ram = ram_at(address);
             let mut interpreter_ram = native_ram.clone();
             let mut native_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -36865,6 +37627,7 @@ pub(crate) mod tests {
 
         let address = 0x1_0000_2000_u64;
         let mut base_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -36986,6 +37749,7 @@ pub(crate) mod tests {
         let mut ram = ram_at(bad_address);
         let before_bytes = ram.bytes.clone();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -37193,6 +37957,7 @@ pub(crate) mod tests {
 
         fn state_at(rcx: u64, rax: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d5,
                 ..Default::default()
@@ -37847,6 +38612,7 @@ pub(crate) mod tests {
         let mut native_ram = ram_at(target);
         let mut interpreter_ram = native_ram.clone();
         let mut native_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -37901,6 +38667,7 @@ pub(crate) mod tests {
             case_ram.source = source;
             let mut case_interpreter_ram = case_ram.clone();
             let mut case_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -37945,6 +38712,7 @@ pub(crate) mod tests {
             let mut wrap_ram = ram_at(wrap_target);
             let mut wrap_interpreter_ram = wrap_ram.clone();
             let mut wrap_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -37986,6 +38754,7 @@ pub(crate) mod tests {
         }
 
         let before_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -38180,6 +38949,7 @@ pub(crate) mod tests {
 
         let noncanonical_rax = 0x0000_8000_0000_0000_u64;
         let mut fault_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -38214,6 +38984,7 @@ pub(crate) mod tests {
         let crossing_target = crossing_rax.wrapping_add(0x7f);
         assert_eq!(crossing_target, u64::MAX - 2);
         let mut crossing_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -38374,6 +39145,7 @@ pub(crate) mod tests {
             stop_on_write: None,
         };
         let base_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x9d00,
             rflags: 0x246,
             ..od_isa::LongModeState::default()
@@ -38819,6 +39591,7 @@ pub(crate) mod tests {
                                         *byte = (offset as u8).wrapping_mul(29).wrapping_add(7);
                                     }
                                     let mut initial_state = od_isa::LongModeState {
+                                        cr3: None,
                                         rip: 0xa000,
                                         rflags: 0x8d7,
                                         ..od_isa::LongModeState::default()
@@ -38964,6 +39737,7 @@ pub(crate) mod tests {
                 )
                 .unwrap();
                 let mut initial_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: 0xa200,
                     rflags: 0x8d7,
                     ..od_isa::LongModeState::default()
@@ -39194,6 +39968,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_memory_load_block_v2(wrapping_code, 0xa100).unwrap();
         let wrapping_published = PublishedCode::publish_memory_load_v2(&wrapping_block).unwrap();
         let mut wrapping_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0xa100,
             ..od_isa::LongModeState::default()
         };
@@ -39282,6 +40057,7 @@ pub(crate) mod tests {
                         };
                         let base = if displacement == -128 { 200 } else { 100 };
                         let mut state = od_isa::LongModeState {
+                            cr3: None,
                             rip: 0xa200,
                             ..od_isa::LongModeState::default()
                         };
@@ -39361,6 +40137,7 @@ pub(crate) mod tests {
         // A canonical base plus disp8 reaches a noncanonical final address,
         // faulting before any helper access or state commit.
         let mut noncanonical_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0xa100,
             ..od_isa::LongModeState::default()
         };
@@ -39415,6 +40192,7 @@ pub(crate) mod tests {
         // A checked backend boundary failure from a SIB site also preserves
         // CPU and RAM and remains distinct from an architectural guest fault.
         let mut boundary_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0xa100,
             ..od_isa::LongModeState::default()
         };
@@ -39465,6 +40243,7 @@ pub(crate) mod tests {
         // A qword beginning near the architectural endpoint is rejected
         // without invoking GuestMemory, even when the start is canonical.
         let mut endpoint_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0xa100,
             ..od_isa::LongModeState::default()
         };
@@ -39557,6 +40336,7 @@ pub(crate) mod tests {
             };
             for error in errors {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: 0xa300,
                     ..od_isa::LongModeState::default()
                 };
@@ -39640,6 +40420,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_memory_store_block_v2(store_code, 0xa400).unwrap();
         let store_published = PublishedCode::publish_memory_store_v2(&store_compiled).unwrap();
         let mut late_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0xa400,
             ..od_isa::LongModeState::default()
         };
@@ -39722,6 +40503,7 @@ pub(crate) mod tests {
                             PublishedCode::publish_memory_store_v2(&compiled).unwrap()
                         };
                         let mut initial_state = od_isa::LongModeState {
+                            cr3: None,
                             rip: code_rip,
                             rflags: 0x8d7,
                             ..od_isa::LongModeState::default()
@@ -39950,6 +40732,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_memory_load_block_v2(stale_code, 0xa700).unwrap();
         let stale_published = PublishedCode::publish_memory_load_v2(&stale_compiled).unwrap();
         let mut stale_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0xa701,
             ..od_isa::LongModeState::default()
         };
@@ -39992,6 +40775,7 @@ pub(crate) mod tests {
         let late_rip_published =
             PublishedCode::publish_memory_store_v2(&late_rip_compiled).unwrap();
         let mut late_rip_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x100,
             rflags: 0x8d7,
             ..od_isa::LongModeState::default()
@@ -40053,6 +40837,7 @@ pub(crate) mod tests {
             let published = PublishedCode::publish_memory_store_v2(&compiled).unwrap();
             let payload = 0x8877_6655_4433_2211_u64 ^ u64::from(register);
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: 0x100,
                 rflags: 0x8d7,
                 ..od_isa::LongModeState::default()
@@ -40108,6 +40893,7 @@ pub(crate) mod tests {
                 od_jit::memory_load_v2::compile_ir_memory_store_block_v2(code, 0x100).unwrap();
             let ir_published = PublishedCode::publish_ir_memory_store_v2(&ir_compiled).unwrap();
             let mut ir_state = od_isa::LongModeState {
+                cr3: None,
                 rip: 0x100,
                 rflags: 0x8d7,
                 ..od_isa::LongModeState::default()
@@ -40176,6 +40962,7 @@ pub(crate) mod tests {
         let noncanonical_published =
             PublishedCode::publish_memory_load_v2(&noncanonical_compiled).unwrap();
         let mut noncanonical_state = od_isa::LongModeState {
+            cr3: None,
             rip: noncanonical_rip,
             ..od_isa::LongModeState::default()
         };
@@ -40244,6 +41031,7 @@ pub(crate) mod tests {
                     };
                     let low_addresses = [16_u64, 24, 32, 40];
                     let mut initial_state = od_isa::LongModeState {
+                        cr3: None,
                         rip: 0xb000,
                         rflags: 0x8d7,
                         ..od_isa::LongModeState::default()
@@ -40337,6 +41125,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_memory_load_block_v2(boundary_code, 0xb100).unwrap();
         let boundary_published = PublishedCode::publish_memory_load_v2(&boundary_compiled).unwrap();
         let mut boundary_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0xb100,
             ..od_isa::LongModeState::default()
         };
@@ -40554,6 +41343,7 @@ pub(crate) mod tests {
                         let other_target =
                             other_rip.wrapping_add_signed(7_i64 + i64::from(displacement));
                         let mut initial_state = od_isa::LongModeState {
+                            cr3: None,
                             rip: code_rip,
                             rflags: 0x8d7,
                             ..od_isa::LongModeState::default()
@@ -40757,6 +41547,7 @@ pub(crate) mod tests {
                 let code = CodeView::new(0x100, &source).unwrap();
                 let target = 0x127_u64;
                 let mut initial_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: 0x100,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -41014,6 +41805,7 @@ pub(crate) mod tests {
             };
             let target = 0x107_u64;
             let initial_state = od_isa::LongModeState {
+                cr3: None,
                 rip: 0x100,
                 gpr: [
                     0x8877_6655_4433_2211,
@@ -41222,6 +42014,7 @@ pub(crate) mod tests {
                         PublishedCode::publish_memory_store_v2(&artifact).unwrap()
                     };
                     let mut initial_state = od_isa::LongModeState {
+                        cr3: None,
                         rip: 0x100,
                         ..Default::default()
                     };
@@ -41353,6 +42146,7 @@ pub(crate) mod tests {
                     PublishedCode::publish_ir_memory_store_v2(&compiled).unwrap()
                 };
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: 0x100,
                     ..Default::default()
                 };
@@ -41425,6 +42219,7 @@ pub(crate) mod tests {
                 PublishedCode::publish_ir_memory_store_v2(&compiled).unwrap()
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: 0x100,
                 ..Default::default()
             };
@@ -41505,6 +42300,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_ir_memory_store_block_v2(store_code, 0x100).unwrap();
         let store_published = PublishedCode::publish_ir_memory_store_v2(&store_compiled).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x100,
             ..Default::default()
         };
@@ -41563,6 +42359,7 @@ pub(crate) mod tests {
                     assert_ne!(target, wrong_view_base_target);
                     let loaded = 0x0000_8000_0000_0000_u64 | u64::from(data_register);
                     let mut initial = od_isa::LongModeState {
+                        cr3: None,
                         rip: code_rip,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -41719,6 +42516,7 @@ pub(crate) mod tests {
                 od_jit::memory_load_v2::compile_ir_memory_store_block_v2(code, code_rip).unwrap();
             let published = PublishedCode::publish_ir_memory_store_v2(&compiled).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: code_rip,
                 ..Default::default()
             };
@@ -41776,6 +42574,7 @@ pub(crate) mod tests {
                     linear_address: None,
                 };
                 let mut initial_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: code_rip,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -42090,6 +42889,7 @@ pub(crate) mod tests {
                         PublishedCode::publish_memory_store_v2(&artifact).unwrap()
                     };
                     let mut initial_state = od_isa::LongModeState {
+                        cr3: None,
                         rip: BASE,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -42348,6 +43148,7 @@ pub(crate) mod tests {
         const ENTRY: u64 = 0x1_0000;
         let stop = AtomicU8::new(0);
         let make_state = || od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [0xdead_beef_1234_5678; 16],
             rflags: 0x8d7,
@@ -43134,6 +43935,7 @@ pub(crate) mod tests {
         const ENTRY: u64 = 0x2b00;
         let stop = AtomicU8::new(0);
         let make_state = || od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [0xdead_beef_1234_5678; 16],
             rflags: 0x8d7,
@@ -45784,6 +46586,7 @@ pub(crate) mod tests {
                                     .clone()
                             };
                             let mut initial_state = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -45974,6 +46777,7 @@ pub(crate) mod tests {
                 let source = [0x48, opcode, data_register << 3 | 4, 0x08];
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut initial_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -46129,6 +46933,7 @@ pub(crate) mod tests {
                         }
                         let code = CodeView::new(ENTRY, &source).unwrap();
                         let mut initial_state = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -46647,6 +47452,7 @@ pub(crate) mod tests {
                     }
                     let code = CodeView::new(ENTRY, &source).unwrap();
                     let mut initial_state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -46822,6 +47628,7 @@ pub(crate) mod tests {
                 .unwrap();
         for bad_base in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffc] {
             let mut bad_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 gpr: [0, 0, 0, bad_base, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                 rflags: 0x8d7,
@@ -46870,6 +47677,7 @@ pub(crate) mod tests {
         let load_site = load_ir.site().clone();
         let load_published = PublishedCode::publish_ir_memory_load_v2(&load_ir).unwrap();
         let mut noncanonical_start = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0xaaaa,
@@ -46934,6 +47742,7 @@ pub(crate) mod tests {
         drop(load_published);
 
         let mut noncanonical_end = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0,
@@ -46988,6 +47797,7 @@ pub(crate) mod tests {
 
         let backend_published = PublishedCode::publish_ir_memory_load_v2(&load_ir).unwrap();
         let mut backend_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [0xaaaa, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ..Default::default()
@@ -47032,6 +47842,7 @@ pub(crate) mod tests {
             linear_address: Some(16),
         };
         let mut fault_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0x1234_5678_9abc_def0,
@@ -47126,6 +47937,7 @@ pub(crate) mod tests {
 
         let store_stop = AtomicU8::new(0);
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0x1234_5678_9abc_def0,
@@ -47201,6 +48013,7 @@ pub(crate) mod tests {
                 PublishedCode::publish_ir_memory_load_v2(&stack_data_ir).unwrap();
             for case in 0..3 {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -47564,6 +48377,7 @@ pub(crate) mod tests {
                                     }
                                 };
                                 let mut initial = od_isa::LongModeState {
+                                    cr3: None,
                                     rip: ENTRY,
                                     rflags: 0x8d7,
                                     ..Default::default()
@@ -47725,6 +48539,7 @@ pub(crate) mod tests {
         let wrap_source = [0x48, 0x89, 0x6c, 0xf4, 0xff]; // [RSP+RSI*8-1] <- RBP
         let wrap_code = CodeView::new(ENTRY, &wrap_source).unwrap();
         let mut wrap_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -47789,6 +48604,7 @@ pub(crate) mod tests {
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 for rbp in [0x0000_8000_0000_0000_u64, 0x0000_7fff_ffff_fffc] {
                     let mut before = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -47858,6 +48674,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0x44, 0x28, 0];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_before = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -47912,6 +48729,7 @@ pub(crate) mod tests {
                 CodeView::new(ENTRY, &source).unwrap()
             };
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -47964,6 +48782,7 @@ pub(crate) mod tests {
             let source = [0x48, 0x8b, 0x84, 0x28, 0, 0, 0, last_displacement_byte];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -47992,6 +48811,7 @@ pub(crate) mod tests {
         let store_source = [0x48, 0x89, 0x84, 0x28, 0, 0, 0, 0];
         let store_code = CodeView::new(ENTRY, &store_source).unwrap();
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -48046,6 +48866,7 @@ pub(crate) mod tests {
         let fault_code = CodeView::new(ENTRY, &fault_source).unwrap();
         for rsp in [0x0000_8000_0000_0000_u64, 0x0000_7fff_ffff_fffc] {
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -48134,6 +48955,7 @@ pub(crate) mod tests {
         let store_source = [0x48, 0x89, 0x24, 0x0c];
         let store_code = CodeView::new(ENTRY, &store_source).unwrap();
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -48196,6 +49018,7 @@ pub(crate) mod tests {
             };
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -48325,6 +49148,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let mut initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -48426,6 +49250,7 @@ pub(crate) mod tests {
         .unwrap();
         let make_rbp_index_state = || {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -48527,6 +49352,7 @@ pub(crate) mod tests {
             write_error: None,
         };
         let mut rsp_rbp_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -48592,6 +49418,7 @@ pub(crate) mod tests {
             )
             .unwrap();
             let mut partial_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -48640,6 +49467,7 @@ pub(crate) mod tests {
             )
             .unwrap();
             let mut partial_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -48688,6 +49516,7 @@ pub(crate) mod tests {
             )
             .unwrap();
             let mut partial_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -48735,6 +49564,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let mut invalid_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -48791,6 +49621,7 @@ pub(crate) mod tests {
                         ];
                         let code = CodeView::new(ENTRY, &source).unwrap();
                         let before = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -48841,6 +49672,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x44, 0x30, 0]; // [RAX+RSI]
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -48887,6 +49719,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x44, 0x75, 0]; // [RBP+RSI*2]
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -48931,6 +49764,7 @@ pub(crate) mod tests {
             let source = [0x48, 0x8b, 0x84, 0x75, 0, 0, 0, last_byte];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -48977,6 +49811,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = 0x120;
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -49033,6 +49868,7 @@ pub(crate) mod tests {
         let store_target = 0x11f;
         let store_value = 0xfedc_ba98_7654_3210;
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -49093,6 +49929,7 @@ pub(crate) mod tests {
                 let source = [0x48, opcode, (data_register << 3) | 4, 0x2c];
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut before = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -49139,6 +49976,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x04, 0x28]; // [RAX+RBP]
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -49178,6 +50016,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0x04, 0x2c];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -49217,6 +50056,7 @@ pub(crate) mod tests {
         let no_base_fault_source = [0x48, 0x8b, 0x04, 0x2d, 0, 0, 0, 0];
         let no_base_fault_code = CodeView::new(ENTRY, &no_base_fault_source).unwrap();
         let mut no_base_fault_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -49266,6 +50106,7 @@ pub(crate) mod tests {
         let indexed_overflow_source = [0x48, 0x8b, 0x04, 0x6d, 0, 0, 0, 0];
         let indexed_overflow_code = CodeView::new(ENTRY, &indexed_overflow_source).unwrap();
         let mut indexed_overflow_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -49313,6 +50154,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x2c, 0x2d, 0, 0, 0, 0];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -49359,6 +50201,7 @@ pub(crate) mod tests {
         let rbx_fault_source = [0x48, 0x8b, 0x84, 0x0b, 0, 0, 0, 0];
         let rbx_fault_code = CodeView::new(ENTRY, &rbx_fault_source).unwrap();
         let mut rbx_fault_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -49400,6 +50243,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0x84, 0x0d, 0, 0, 0, 0];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -49441,6 +50285,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             for shared_ir in [false, true] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -49488,6 +50333,7 @@ pub(crate) mod tests {
         let stop_store_code = CodeView::new(ENTRY, &stop_store_source).unwrap();
         let store_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut stop_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -49541,6 +50387,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             for shared_ir in [false, true] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -49588,6 +50435,7 @@ pub(crate) mod tests {
         let rbp_store_code = CodeView::new(ENTRY, &rbp_store_source).unwrap();
         let rbp_store_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut rbp_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -49637,6 +50485,7 @@ pub(crate) mod tests {
                 od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
             let published = PublishedCode::publish_ir_memory_load_v2(&block).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -49690,6 +50539,7 @@ pub(crate) mod tests {
         .unwrap();
         let pre_entry_stop = AtomicU8::new(1);
         let mut pre_entry_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -49742,6 +50592,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let mut rbp_disp32_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -50046,6 +50897,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             for rbp in [0x0000_4000_0000_0000_u64, 0x0000_3fff_ffff_fffe] {
                 let mut before = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -50113,6 +50965,7 @@ pub(crate) mod tests {
         let low_base_source = [0x48, 0x8b, 0x44, 0x28, 0];
         let low_base_code = CodeView::new(ENTRY, &low_base_source).unwrap();
         let mut low_base_before = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -50151,6 +51004,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0x44, 0x2d, 1];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -50193,6 +51047,7 @@ pub(crate) mod tests {
         ] {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -50243,6 +51098,7 @@ pub(crate) mod tests {
         let stop_store_code = CodeView::new(ENTRY, &stop_store_source).unwrap();
         let stop_flag = std::sync::Arc::new(AtomicU8::new(0));
         let mut stop_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -50296,6 +51152,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let mut initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -50466,6 +51323,7 @@ pub(crate) mod tests {
                         source.extend_from_slice(&displacement.to_le_bytes());
                         let code = CodeView::new(ENTRY, &source).unwrap();
                         let mut initial = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -50555,6 +51413,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = 0x101_u64 + displacement as u32 as u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -50587,6 +51446,7 @@ pub(crate) mod tests {
         let stop_store_code = CodeView::new(ENTRY, &stop_store_source).unwrap();
         let stop_flag = std::sync::Arc::new(AtomicU8::new(0));
         let mut stop_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -50638,6 +51498,7 @@ pub(crate) mod tests {
         };
         for rsp in [0x0000_8000_0000_0000_u64, 0x0000_7fff_ffff_fffc] {
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -50677,6 +51538,7 @@ pub(crate) mod tests {
         let rsp_store_fault_code = CodeView::new(ENTRY, &rsp_store_fault_source).unwrap();
         for rsp in [0x0000_8000_0000_0000_u64, 0x0000_7fff_ffff_fffc] {
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -50718,6 +51580,7 @@ pub(crate) mod tests {
         let low_base_source = [0x48, 0x8b, 0x44, 0x30, 0]; // RAX <- [RAX+RSI]
         let low_base_code = CodeView::new(ENTRY, &low_base_source).unwrap();
         let mut low_base_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -50761,6 +51624,7 @@ pub(crate) mod tests {
         let rsp_store_code = CodeView::new(ENTRY, &rsp_store_source).unwrap();
         let rsp_store_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut rsp_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -50812,6 +51676,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0x04, 0x34];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -50853,6 +51718,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x44, 0x74, 0];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -50908,6 +51774,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = 0x100_u64 + displacement as u32 as u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -50954,6 +51821,7 @@ pub(crate) mod tests {
                             source.extend_from_slice(&displacement.to_le_bytes());
                             let code = CodeView::new(ENTRY, &source).unwrap();
                             let mut initial = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -51064,6 +51932,7 @@ pub(crate) mod tests {
             let target = index_value.wrapping_mul(scale).wrapping_add_signed(-1);
             assert_eq!(target, expected_target);
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -51113,6 +51982,7 @@ pub(crate) mod tests {
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 for shared_ir in [false, true] {
                     let mut state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -51185,6 +52055,7 @@ pub(crate) mod tests {
                             ];
                             let code = CodeView::new(ENTRY, &source).unwrap();
                             let mut initial = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -51313,6 +52184,7 @@ pub(crate) mod tests {
                                 }
                                 let code = CodeView::new(ENTRY, &source).unwrap();
                                 let mut initial = od_isa::LongModeState {
+                                    cr3: None,
                                     rip: ENTRY,
                                     rflags: 0x8d7,
                                     ..Default::default()
@@ -51442,6 +52314,7 @@ pub(crate) mod tests {
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 for shared_ir in [false, true] {
                     let mut state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -51513,6 +52386,7 @@ pub(crate) mod tests {
         let mut sequence_data = BTreeMap::new();
         put(&mut sequence_data, 0x88, &payload.to_le_bytes());
         let mut sequence_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -51712,6 +52586,7 @@ pub(crate) mod tests {
             };
             for visible in 1..singleton_len {
                 let mut partial_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -51746,6 +52621,7 @@ pub(crate) mod tests {
             }
 
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -51830,6 +52706,7 @@ pub(crate) mod tests {
         let store_code = CodeView::new(ENTRY, &store_source).unwrap();
         let store_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -51881,6 +52758,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = 0x101_u64 + displacement as u32 as u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -51927,6 +52805,7 @@ pub(crate) mod tests {
         put(&mut alias_data, alias_target, &alias_value.to_le_bytes());
         for shared_ir in [false, true] {
             let mut alias_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -51963,6 +52842,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             for shared_ir in [false, true] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -52125,6 +53005,7 @@ pub(crate) mod tests {
             ram.data[target..target + 8].copy_from_slice(&value.to_le_bytes());
         }
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -52193,6 +53074,7 @@ pub(crate) mod tests {
             partial_bytes[..partial_source.len()].copy_from_slice(&partial_source);
             let partial_view = CodeView::new(BASE, &partial_bytes).unwrap();
             let mut partial_state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -52288,6 +53170,7 @@ pub(crate) mod tests {
             rbp_ram.data[target..target + 8].copy_from_slice(&value.to_le_bytes());
         }
         let mut rbp_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -52385,6 +53268,7 @@ pub(crate) mod tests {
             for visible in windows {
                 let view = CodeView::new(BASE, &RBP_CODE).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: BASE + entry_offset,
                     ..Default::default()
                 };
@@ -52446,6 +53330,7 @@ pub(crate) mod tests {
         no_base_ram.data[0x80..0x88].copy_from_slice(&0x1111_u64.to_le_bytes());
         no_base_ram.data[0xa0..0xa8].copy_from_slice(&0x2222_u64.to_le_bytes());
         let mut no_base_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -52686,6 +53571,7 @@ pub(crate) mod tests {
         let code = CodeView::new(BASE, &CODE).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let initial_state = || od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             gpr: [0x1111, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             rflags: 0x8d7,
@@ -54934,6 +55820,7 @@ pub(crate) mod tests {
                             .clone()
                     };
                     let mut initial_state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -55084,6 +55971,7 @@ pub(crate) mod tests {
         let load_block =
             od_jit::memory_load_v2::compile_ir_memory_load_block_v2(boundary_code, ENTRY).unwrap();
         let mut cross_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0,
@@ -55139,6 +56027,7 @@ pub(crate) mod tests {
         drop(cross_published);
 
         let mut load_fault_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0,
@@ -55213,6 +56102,7 @@ pub(crate) mod tests {
             linear_address: Some(0x1000),
         };
         let mut fault_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0,
@@ -55348,6 +56238,7 @@ pub(crate) mod tests {
         );
 
         let mut guard_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0,
@@ -55550,6 +56441,7 @@ pub(crate) mod tests {
         let view = CodeView::new(BASE, &CODE).unwrap();
         let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
         let make_state = || od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             gpr: [0x20, 0, 0, 0x30, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             rflags: 0x8d7,
@@ -57089,6 +57981,7 @@ pub(crate) mod tests {
                         };
                         let low_base = 0xffff_fffcu32.wrapping_sub(displacement as u32);
                         let mut initial = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -57231,6 +58124,7 @@ pub(crate) mod tests {
         let fault_block =
             od_jit::memory_load_v2::compile_ir_memory_load_block_v2(fault_code, ENTRY).unwrap();
         let mut fault_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -57271,6 +58165,7 @@ pub(crate) mod tests {
         let store_block =
             od_jit::memory_load_v2::compile_ir_memory_store_block_v2(store_code, ENTRY).unwrap();
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -57341,6 +58236,7 @@ pub(crate) mod tests {
             )
             .unwrap();
             let mut partial_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -57388,6 +58284,7 @@ pub(crate) mod tests {
             )
             .unwrap();
             let mut invalid_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -57429,6 +58326,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let mut dispatch_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -57552,6 +58450,7 @@ pub(crate) mod tests {
                 .unwrap();
         let noncanonical_rbp = 0x0000_8000_0000_0000_u64;
         let mut ebp_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -57630,6 +58529,7 @@ pub(crate) mod tests {
             let source = [0x67, 0x48, opcode, 0x6d, 0]; // [EBP+0], RBP
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -57705,6 +58605,7 @@ pub(crate) mod tests {
         .unwrap();
         let old_rbp = 0x0000_8000_0000_0010_u64;
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -57809,6 +58710,7 @@ pub(crate) mod tests {
             )
             .unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -57853,6 +58755,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let mut absolute_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -58039,6 +58942,7 @@ pub(crate) mod tests {
         }
         fn make_state(_data_register: u8, base_register: u8, target: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 gpr: [0xdead_beef_1234_5678; 16],
                 rflags: 0x8d7,
@@ -59123,6 +60027,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0x70, 0];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -59265,6 +60170,7 @@ pub(crate) mod tests {
                 let dispatch_code = CodeView::new(ENTRY, &source).unwrap();
                 let target = 0x40;
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     gpr: [0xdead_beef_1234_5678; 16],
                     ..Default::default()
@@ -59331,6 +60237,7 @@ pub(crate) mod tests {
         let forbidden_dispatch = [0x4c, 0x8b, 0x7d, 1]; // extended data register
         let forbidden_code = CodeView::new(ENTRY, &forbidden_dispatch).unwrap();
         let mut forbidden_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -60064,6 +60971,7 @@ pub(crate) mod tests {
         }
         fn make_state(base: u8, value: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 gpr: [0x9123_4567_89ab_cdef; 16],
                 rflags: 0x8d7,
@@ -60754,6 +61662,7 @@ pub(crate) mod tests {
                                     .clone()
                             };
                             let mut initial_state = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -60983,6 +61892,7 @@ pub(crate) mod tests {
                                 .clone()
                         };
                         let mut initial_state = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -61188,6 +62098,7 @@ pub(crate) mod tests {
                     .clone()
             };
             let initial_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 gpr: [
                     0x1234_0000_0000_1000,
@@ -61439,6 +62350,7 @@ pub(crate) mod tests {
         let store_block =
             od_jit::memory_load_v2::compile_ir_memory_store_block_v2(store_code, ENTRY).unwrap();
         let mut stopped_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0x1234_0000_0000_1000,
@@ -61507,6 +62419,7 @@ pub(crate) mod tests {
         );
 
         let mut direct_stopped_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0x1234_0000_0000_1000,
@@ -61623,6 +62536,7 @@ pub(crate) mod tests {
                         assert_eq!(direct_site, ir_site);
                         assert_eq!(source_storage.0, source);
                         let mut initial_state = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             gpr: [
                                 0xffff_0000_ffff_fff0,
@@ -61785,6 +62699,7 @@ pub(crate) mod tests {
         let old_rsp = 0xdead_beef_ffff_fffc;
         let store_target = 0xffff_fffc_u64;
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -61846,6 +62761,7 @@ pub(crate) mod tests {
         let rbp_store_code = CodeView::new(ENTRY, &rbp_store_source).unwrap();
         let old_rbp = 0xdead_beef_ffff_fffc;
         let mut rbp_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -61933,6 +62849,7 @@ pub(crate) mod tests {
                 .site()
                 .clone();
             let initial_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 gpr: [
                     0x1234_0000_0000_0020,
@@ -62027,6 +62944,7 @@ pub(crate) mod tests {
         let rbp_source_low = [0x67, 0x48, 0x8b, 0x84, 0x0d, 0, 0, 0, 0];
         let rbp_source_high = [0x67, 0x48, 0x8b, 0x84, 0x0d, 0, 0, 0, 1];
         let rbp_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0,
@@ -62141,6 +63059,7 @@ pub(crate) mod tests {
                     .clone()
             };
             let mut initial_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 gpr: [
                     0x1234_0000_0000_0020,
@@ -62303,6 +63222,7 @@ pub(crate) mod tests {
         .unwrap();
         let stop_after_store = AtomicU8::new(0);
         let mut stopped_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             gpr: [
                 0x1234_0000_0000_0020,
@@ -62401,6 +63321,7 @@ pub(crate) mod tests {
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                 );
                 let mut initial_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -62584,6 +63505,7 @@ pub(crate) mod tests {
                     od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbp)
                 );
                 let mut initial_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -62762,6 +63684,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_ir_memory_load_block_v2(rbp_load_code, ENTRY).unwrap();
         for rbp in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffc] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -62809,6 +63732,7 @@ pub(crate) mod tests {
         let rbx_load =
             od_jit::memory_load_v2::compile_ir_memory_load_block_v2(rbx_code, ENTRY).unwrap();
         let mut rbx_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -62852,6 +63776,7 @@ pub(crate) mod tests {
         assert_eq!((rbx_ram.reads, rbx_ram.writes), (0, 0));
 
         let mut rbx_end_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -62900,6 +63825,7 @@ pub(crate) mod tests {
         // Canonical high-half arithmetic overflow remains a host diagnostic,
         // not an architectural #SS synthesized by the RBP profile.
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -62936,6 +63862,7 @@ pub(crate) mod tests {
 
         // Backend failures keep host classification and no architectural commit.
         let mut backend_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -62976,6 +63903,7 @@ pub(crate) mod tests {
         assert_eq!((backend_ram.reads, backend_ram.writes), (1, 0));
 
         let mut guarded_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -63040,6 +63968,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_ir_memory_store_block_v2(rbp_store_code, ENTRY)
                 .unwrap();
         let mut stop_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -63105,6 +64034,7 @@ pub(crate) mod tests {
                         .clone()
                 };
                 let mut initial_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -63254,6 +64184,7 @@ pub(crate) mod tests {
                 od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
             for base in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffc] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -63306,6 +64237,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_ir_memory_store_block_v2(rsp_disp_store_code, ENTRY)
                 .unwrap();
         let mut rsp_disp_stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -63368,6 +64300,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_ir_memory_store_block_v2(rsp_disp32_store_code, ENTRY)
                 .unwrap();
         let mut rsp_disp32_stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -63434,6 +64367,7 @@ pub(crate) mod tests {
         let rsp_load =
             od_jit::memory_load_v2::compile_ir_memory_load_block_v2(rsp_code, ENTRY).unwrap();
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -63469,6 +64403,7 @@ pub(crate) mod tests {
         assert_eq!((overflow_ram.reads, overflow_ram.writes), (0, 0));
 
         let mut backend_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -63509,6 +64444,7 @@ pub(crate) mod tests {
         assert_eq!((backend_ram.reads, backend_ram.writes), (1, 0));
 
         let mut guarded_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -63572,6 +64508,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_ir_memory_store_block_v2(rsp_store_code, ENTRY)
                 .unwrap();
         let mut stop_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -63640,6 +64577,7 @@ pub(crate) mod tests {
                         .clone()
                 };
                 let mut initial_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -63771,6 +64709,7 @@ pub(crate) mod tests {
         let wrap_ir_block =
             od_jit::memory_load_v2::compile_ir_memory_load_block_v2(wrap_code, ENTRY).unwrap();
         let mut wrap_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -63875,6 +64814,7 @@ pub(crate) mod tests {
                         .clone()
                 };
                 let mut initial_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -64008,6 +64948,7 @@ pub(crate) mod tests {
             let ir_block =
                 od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -64094,6 +65035,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_ir_memory_load_block_v2(dword_wrap_code, ENTRY)
                 .unwrap();
         let mut dword_wrap_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -64180,6 +65122,7 @@ pub(crate) mod tests {
                 od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
             for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffc] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -64237,6 +65180,7 @@ pub(crate) mod tests {
                 od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
             for address in [0x0000_8000_0000_0000, 0x0000_7fff_ffff_fffc] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -64290,6 +65234,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_ir_memory_load_block_v2(rsp_disp32_zero_code, ENTRY)
                 .unwrap();
         let mut disp32_overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -64328,6 +65273,7 @@ pub(crate) mod tests {
         );
 
         let mut disp32_backend_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -64373,6 +65319,7 @@ pub(crate) mod tests {
         );
 
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -64408,6 +65355,7 @@ pub(crate) mod tests {
         assert_eq!((overflow_ram.reads, overflow_ram.writes), (0, 0));
 
         let mut backend_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -64448,6 +65396,7 @@ pub(crate) mod tests {
         assert_eq!((backend_ram.reads, backend_ram.writes), (1, 0));
 
         let mut guarded_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -64691,6 +65640,7 @@ pub(crate) mod tests {
                 };
                 let base = target.wrapping_sub(displacement as u32);
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: 0xb200,
                     rflags: 0x8d7,
                     ..od_isa::LongModeState::default()
@@ -67706,6 +68656,7 @@ pub(crate) mod tests {
             },
         }];
         let mut uncached_state = od_isa::LongModeState {
+            cr3: None,
             rip: base_rip,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -68341,6 +69292,7 @@ pub(crate) mod tests {
             let admission =
                 AdmittedInstructionBoundaries::from_fixture_decode(view, &decoded).unwrap();
             let initial = od_isa::LongModeState {
+                cr3: None,
                 rip: base_rip,
                 rflags: 0xA55,
                 ..od_isa::LongModeState::default()
@@ -68384,6 +69336,7 @@ pub(crate) mod tests {
                 },
             }];
             let mut actual_state = od_isa::LongModeState {
+                cr3: None,
                 rip: base_rip,
                 rflags: 0xA55,
                 ..od_isa::LongModeState::default()
@@ -68421,6 +69374,7 @@ pub(crate) mod tests {
             },
         }];
         let mut actual_state = od_isa::LongModeState {
+            cr3: None,
             rip: base_rip,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -68484,6 +69438,7 @@ pub(crate) mod tests {
                     },
                 }];
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: base_rip,
                     rflags: 0xA55,
                     ..od_isa::LongModeState::default()
@@ -68533,6 +69488,7 @@ pub(crate) mod tests {
                 },
             }];
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: base_rip,
                 ..od_isa::LongModeState::default()
             };
@@ -68650,6 +69606,7 @@ pub(crate) mod tests {
             identity: b_identity,
         }];
         let mut untouched = od_isa::LongModeState {
+            cr3: None,
             rip: 0x2000,
             ..od_isa::LongModeState::default()
         };
@@ -68680,6 +69637,7 @@ pub(crate) mod tests {
         owner.stop_byte = Some(stop.clone());
         owner.request_stop_on_write = true;
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -68761,6 +69719,7 @@ pub(crate) mod tests {
             od_jit::memory_load_v2::compile_memory_store_block_v2(store_view, 0x1000).unwrap();
         let published_store = arena.publish_memory_store_v2(&store).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             gpr: [
                 u64::from_le_bytes(replacement),
@@ -68841,6 +69800,7 @@ pub(crate) mod tests {
         interpreter_owner.active_source_rip = 0x1000;
         interpreter_owner.active_source = (0, 0, store_source.len());
         let mut interpreter_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             gpr: [
                 u64::from_le_bytes(replacement),
@@ -68934,6 +69894,7 @@ pub(crate) mod tests {
                 .unwrap();
                 run_tracked_code_block(&owner, 0x7000, &mut cache, &mut arena);
                 let before_state = od_isa::LongModeState {
+                    cr3: None,
                     rip: 0x1000,
                     gpr: [
                         0x1122_3344_5566_7788,
@@ -69158,6 +70119,7 @@ pub(crate) mod tests {
         let published_store = arena.publish_memory_store_v2(&store).unwrap();
         let before_version = owner.backings[1].version;
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -69209,6 +70171,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let mut interpreter_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -69327,6 +70290,7 @@ pub(crate) mod tests {
                 .map(|backing| backing.version)
                 .collect();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: 0x1000,
                 rflags: 0xA55,
                 ..od_isa::LongModeState::default()
@@ -69474,6 +70438,7 @@ pub(crate) mod tests {
 
         let value = 0x8877_6655_4433_2211_u64;
         let mut interpreter_state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -69778,6 +70743,7 @@ pub(crate) mod tests {
         assert_eq!(jit_cache.resident_entries(), 5);
 
         let initial = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             rflags: 0xA55,
             gpr: {
@@ -70063,6 +71029,7 @@ pub(crate) mod tests {
         assert_eq!(cache.resident_entries(), 3);
 
         let initial = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             rflags: 0xA55,
             gpr: {
@@ -70341,6 +71308,7 @@ pub(crate) mod tests {
             assert_eq!(cache.resident_entries(), 5);
 
             let initial = LongModeState {
+                cr3: None,
                 rip: entry,
                 rflags: 0xA55,
                 gpr: {
@@ -70715,6 +71683,7 @@ pub(crate) mod tests {
             second.backing = second_backing;
             second.backing_offset = second_offset;
             let mut rejected_state = LongModeState {
+                cr3: None,
                 rip: entry,
                 ..LongModeState::default()
             };
@@ -70747,6 +71716,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let mut old_tail_state = LongModeState {
+            cr3: None,
             rip: entry + 13,
             ..LongModeState::default()
         };
@@ -70761,6 +71731,7 @@ pub(crate) mod tests {
         assert_eq!(old_tail_report.retired_instructions, 1);
         assert_eq!(stale_tail.gpr[1], old_immediate);
         let mut split_state = LongModeState {
+            cr3: None,
             rip: entry,
             ..LongModeState::default()
         };
@@ -70963,6 +71934,7 @@ pub(crate) mod tests {
         assert_eq!(arena.available_slots(), 1);
         assert_eq!(active.pc_map().unwrap(), retained_map);
         let unchanged = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..Default::default()
         };
@@ -70986,6 +71958,7 @@ pub(crate) mod tests {
         assert_eq!(prefix.retired_instructions, 1);
         assert_eq!(arena.available_slots(), 0);
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             rflags: 0xA55,
             ..Default::default()
@@ -71124,6 +72097,7 @@ pub(crate) mod tests {
         owner.request_stop_on_write = true;
         owner.stop_byte = Some(stop.clone());
         let mut stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             rflags: 0xA55,
             ..Default::default()
@@ -71200,6 +72174,7 @@ pub(crate) mod tests {
             owner
         };
         let mut initial = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -71577,6 +72552,7 @@ pub(crate) mod tests {
             owner
         };
         let mut initial = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -71768,6 +72744,7 @@ pub(crate) mod tests {
         };
 
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: entry,
             ..od_isa::LongModeState::default()
         };
@@ -71908,6 +72885,7 @@ pub(crate) mod tests {
             let before_bytes = owner.backings[0].bytes.clone();
             let before_version = owner.backings[0].version;
             let mut source_overlap = od_isa::LongModeState {
+                cr3: None,
                 rip: 0x1000,
                 rflags: 0xA55,
                 ..od_isa::LongModeState::default()
@@ -71938,6 +72916,7 @@ pub(crate) mod tests {
         }
 
         let mut guarded = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -72003,6 +72982,7 @@ pub(crate) mod tests {
         assert_eq!(owner.write_count, 0);
 
         let mut out_of_range = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             ..od_isa::LongModeState::default()
         };
@@ -72024,6 +73004,7 @@ pub(crate) mod tests {
         );
 
         let mut denied = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             ..od_isa::LongModeState::default()
         };
@@ -72095,6 +73076,7 @@ pub(crate) mod tests {
                 .unwrap();
         let unrelated_site_published = arena.publish_memory_store_v2(&unrelated_site).unwrap();
         let mut wrong_source = od_isa::LongModeState {
+            cr3: None,
             rip: 0x2000,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -72125,6 +73107,7 @@ pub(crate) mod tests {
         drop(unrelated_site_published);
 
         let mut active_overlap = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -72155,6 +73138,7 @@ pub(crate) mod tests {
         assert_eq!(cache.resident_entries(), 2);
 
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x1000,
             rflags: 0xA55,
             ..od_isa::LongModeState::default()
@@ -73878,6 +74862,7 @@ pub(crate) mod tests {
                 od_jit::dispatch::MovRaxImm32InterpreterFallbackAdmission::from_code(view).unwrap();
             for rflags in [0x202, 0x203, 0xAD46, 0x0C97] {
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: base,
                     rflags,
                     ..Default::default()
@@ -73997,6 +74982,7 @@ pub(crate) mod tests {
             let branch_rip = scenario_base + 10;
             assert_eq!(scenario[10], branch_opcode);
             let mut scenario_initial = od_isa::LongModeState {
+                cr3: None,
                 rip: scenario_base,
                 rflags: 0xAD07,
                 ..Default::default()
@@ -74074,6 +75060,7 @@ pub(crate) mod tests {
             od_jit::dispatch::MovRaxImm32InterpreterFallbackAdmission::from_code(fallback_view)
                 .unwrap();
         let mut fallback_initial = od_isa::LongModeState {
+            cr3: None,
             rip: fallback_base,
             rflags: 0xAD07,
             ..Default::default()
@@ -74337,6 +75324,7 @@ pub(crate) mod tests {
         for value in [0, 1, 0x7fff_ffff_ffff_ffff, 0x8000_0000_0000_0000, u64::MAX] {
             for flags in [2, 2 | (1 << 0), 2 | (1 << 6), 2 | (1 << 11)] {
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: base,
                     rflags: flags,
                     ..od_isa::LongModeState::default()
@@ -74368,6 +75356,7 @@ pub(crate) mod tests {
         let (baseline_first, candidate_first) = compile_pair(view, base, &admission);
         let (baseline_second, candidate_second) = compile_pair(view, base + 3, &admission);
         let initial = od_isa::LongModeState {
+            cr3: None,
             rip: base,
             gpr: [3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59],
             ..od_isa::LongModeState::default()
@@ -74434,6 +75423,7 @@ pub(crate) mod tests {
             compile_pair(branch_view, base, &branch_admission);
         for (initial_rax, expected_rip) in [(0, base + 27), (1, base + 17)] {
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: base,
                 rflags: 0x202,
                 ..od_isa::LongModeState::default()
@@ -75600,6 +76590,7 @@ pub(crate) mod tests {
         let admission =
             od_jit::dispatch::CmpRaxImm8InterpreterFallbackAdmission::from_code(view).unwrap();
         let mut stopped = od_isa::LongModeState {
+            cr3: None,
             rip: base,
             ..od_isa::LongModeState::default()
         };
@@ -78457,6 +79448,7 @@ pub(crate) mod tests {
         );
 
         let mut state_a = od_isa::LongModeState {
+            cr3: None,
             rip: 0x8000,
             ..od_isa::LongModeState::default()
         };
@@ -78466,6 +79458,7 @@ pub(crate) mod tests {
         assert_eq!(state_a.gpr[0], 11);
 
         let mut state_b = od_isa::LongModeState {
+            cr3: None,
             rip: 0x8100,
             ..od_isa::LongModeState::default()
         };
@@ -78485,6 +79478,7 @@ pub(crate) mod tests {
         assert_eq!(state_b.gpr[0], 22, "publishing C must not overwrite B");
 
         let mut state_c = od_isa::LongModeState {
+            cr3: None,
             rip: 0x8200,
             ..od_isa::LongModeState::default()
         };
@@ -78558,6 +79552,7 @@ pub(crate) mod tests {
             owner_id: Rc::new(()),
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: 0x8400,
             ..od_isa::LongModeState::default()
         };
@@ -78956,6 +79951,7 @@ pub(crate) mod tests {
         let mut direct_ram = make_ram();
         let mut interp_ram = make_ram();
         let mut initial = od_isa::LongModeState {
+            cr3: None,
             rip: 0x9d00,
             rflags: 0x246,
             ..Default::default()
@@ -79302,6 +80298,7 @@ pub(crate) mod tests {
         }
         fn state() -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: 0x9e00,
                 rflags: 0x246,
                 ..Default::default()
@@ -80454,6 +81451,7 @@ pub(crate) mod tests {
         }
         fn state() -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 rflags: 0x246,
                 ..Default::default()
@@ -80897,6 +81895,7 @@ pub(crate) mod tests {
         }
         fn state() -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 rflags: 0x246,
                 ..Default::default()
@@ -81314,6 +82313,7 @@ pub(crate) mod tests {
         let mut first_ram = TrackedCodeFixture::new(&CODE, &[], &[]);
         first_ram.backings[1].bytes[..8].copy_from_slice(&0x1111_u64.to_le_bytes());
         let mut first_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -81355,6 +82355,7 @@ pub(crate) mod tests {
         fresh_ram.backings[0].version = BackingVersion::new(TrackedCodeFixture::nz(2));
         fresh_ram.backings[1].bytes[..8].copy_from_slice(&0x3333_u64.to_le_bytes());
         let mut fresh_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -81556,6 +82557,7 @@ pub(crate) mod tests {
         };
 
         let mut first_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -81593,6 +82595,7 @@ pub(crate) mod tests {
         // Same typed key hits the resident code, while this call supplies a
         // new CPU, callback object, privilege context, and one-instruction budget.
         let mut hit_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -81633,6 +82636,7 @@ pub(crate) mod tests {
 
         let hit_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -81673,6 +82677,7 @@ pub(crate) mod tests {
         assert_eq!(hit_stop.load(Ordering::Acquire), 1);
 
         let mut stop_rip_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -81708,6 +82713,7 @@ pub(crate) mod tests {
 
         let hit_event = std::sync::Arc::new(AtomicBool::new(false));
         let mut event_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -81747,6 +82753,7 @@ pub(crate) mod tests {
 
         let pre_entry_event = std::sync::Arc::new(AtomicBool::new(true));
         let mut pre_entry_event_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -81780,6 +82787,7 @@ pub(crate) mod tests {
         assert!(pre_entry_event_ram.reads.is_empty());
 
         let mut fault_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             rflags: 0x246,
             ..Default::default()
@@ -81885,6 +82893,7 @@ pub(crate) mod tests {
         // A backend failure on the second read is a host error. The first
         // load remains committed, and the suspect retained mapping is evicted.
         let mut backend_error_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             rflags: 0x202,
             ..Default::default()
@@ -81967,6 +82976,7 @@ pub(crate) mod tests {
         // CPU/RAM bindings after the interpreter resumes the second site.
         let counters_before_republish = cache.counters();
         let mut republished_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             rflags: 0x246,
             ..Default::default()
@@ -82037,6 +83047,7 @@ pub(crate) mod tests {
         let dependency_change_before = cache.counters();
 
         let mut generation_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             rflags: 0x202,
             ..Default::default()
@@ -82111,6 +83122,7 @@ pub(crate) mod tests {
         );
 
         let mut generation_hit_state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             rflags: 0x246,
             ..Default::default()
@@ -82301,6 +83313,7 @@ pub(crate) mod tests {
         }
 
         let initial_state = || od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             gpr: [0x8877, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ..od_isa::LongModeState::default()
@@ -82622,6 +83635,7 @@ pub(crate) mod tests {
         let view = CodeView::new(BASE, &CODE).unwrap();
         let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
         let initial_state = || od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             gpr: [0x7777, 0, 24, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             rflags: 0x202,
@@ -83343,6 +84357,7 @@ pub(crate) mod tests {
         const BASE: u64 = 0x12C0;
         const PREFIX: [u8; 6] = [0x48, 0x8b, 0x03, 0x48, 0x89, 0x02];
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -83478,6 +84493,7 @@ pub(crate) mod tests {
         let view = CodeView::new(BASE, &code).unwrap();
         let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             ..Default::default()
         };
@@ -83523,6 +84539,7 @@ pub(crate) mod tests {
             let view = CodeView::new(BASE, bytes).unwrap();
             let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -83885,6 +84902,7 @@ pub(crate) mod tests {
         let view = CodeView::new(BASE, &CODE).unwrap();
         let boundary = FixtureExecutionBoundary::new(view, view.code_end()).unwrap();
         let initial_state = || od_isa::LongModeState {
+            cr3: None,
             gpr: [
                 0,
                 0x0123_4567_89ab_cdef,
@@ -84287,6 +85305,7 @@ pub(crate) mod tests {
             ram
         };
         let make_state = || od_isa::LongModeState {
+            cr3: None,
             rip: BASE,
             gpr: [0, 0, 32, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             ..od_isa::LongModeState::default()
@@ -84982,6 +86001,7 @@ pub(crate) mod tests {
                     let source = vec![0x48, opcode, (data_register << 3) | base];
                     let code = CodeView::new(ENTRY, &source).unwrap();
                     let mut initial = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -85145,6 +86165,7 @@ pub(crate) mod tests {
                 let published = PublishedCode::publish_ir_memory_load_v2(&block).unwrap();
                 for case in 0..3 {
                     let mut state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };
@@ -85213,6 +86234,7 @@ pub(crate) mod tests {
             let published = PublishedCode::publish_ir_memory_load_v2(&block).unwrap();
             for case in 0..3 {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -85280,6 +86302,7 @@ pub(crate) mod tests {
                 (0, 0, BoundedMemoryExit::BudgetExhausted),
             ] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -85326,6 +86349,7 @@ pub(crate) mod tests {
         let code = CodeView::new(ENTRY, &sequence).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -85392,6 +86416,7 @@ pub(crate) mod tests {
                 let source = [0x48, opcode, (data_register << 3) | 3]; // RSP/RBP data, [RBX]
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -85513,6 +86538,7 @@ pub(crate) mod tests {
         let code = CodeView::new(ENTRY, &sequence).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -85591,6 +86617,7 @@ pub(crate) mod tests {
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         for stop_after_first in [false, true] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -85681,6 +86708,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x24, 0x24];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -85813,6 +86841,7 @@ pub(crate) mod tests {
                 let source = [0x48, opcode, 0x64, 0x24, displacement as u8];
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -85959,6 +86988,7 @@ pub(crate) mod tests {
                 ];
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -86095,6 +87125,7 @@ pub(crate) mod tests {
                 od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
             assert_eq!(block.source_bytes(), &source);
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -86146,6 +87177,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0xa4, 0x24, 0, 0, 0, 0];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -86275,6 +87307,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0xa4, 0x24, 0, 0, 0, 0];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -86321,6 +87354,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x24, 0x24];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -86395,6 +87429,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x64, 0x24, 0];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -86524,6 +87559,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0x64, 0x24, 1];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -86578,6 +87614,7 @@ pub(crate) mod tests {
             let published = PublishedCode::publish_ir_memory_load_v2(&block).unwrap();
             for case in 0..3 {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -86644,6 +87681,7 @@ pub(crate) mod tests {
             (true, 1, BoundedMemoryExit::StopRequested),
         ] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -86684,6 +87722,7 @@ pub(crate) mod tests {
         }
         for callback_stop in [false, true] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -86767,6 +87806,7 @@ pub(crate) mod tests {
         for window_len in 1..8_u64 {
             let boundary = FixtureExecutionBoundary::new(full_code, ENTRY + window_len).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -86823,6 +87863,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -86870,6 +87911,7 @@ pub(crate) mod tests {
             FixtureExecutionBoundary::new(store_code, store_code.code_end()).unwrap();
         let stop_flag = std::sync::Arc::new(AtomicU8::new(0));
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -86922,6 +87964,7 @@ pub(crate) mod tests {
             FixtureExecutionBoundary::new(disp32_store_code, disp32_store_code.code_end()).unwrap();
         let stop_flag = std::sync::Arc::new(AtomicU8::new(0));
         let mut disp32_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -86977,6 +88020,7 @@ pub(crate) mod tests {
             FixtureExecutionBoundary::new(fault_code, fault_code.code_end()).unwrap();
         for callback_stop in [false, true] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -87071,6 +88115,7 @@ pub(crate) mod tests {
             FixtureExecutionBoundary::new(sequence_code, sequence_code.code_end()).unwrap();
         for callback_stop in [false, true] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -87182,6 +88227,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x2c, 0x24];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 rflags: 0x8d7,
                 ..Default::default()
@@ -87304,6 +88350,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x2c, 0x24];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -87374,6 +88421,7 @@ pub(crate) mod tests {
         let source = [0x48, 0x89, 0x2c, 0x24];
         let code = CodeView::new(ENTRY, &source).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -87418,6 +88466,7 @@ pub(crate) mod tests {
         let code = CodeView::new(ENTRY, &sequence).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -87499,6 +88548,7 @@ pub(crate) mod tests {
                     source.extend_from_slice(&d[..width]);
                     let code = CodeView::new(ENTRY, &source).unwrap();
                     let mut initial = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -87636,6 +88686,7 @@ pub(crate) mod tests {
                 source.resize(length, 0);
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut before = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -87713,6 +88764,7 @@ pub(crate) mod tests {
             source.resize(length, 0);
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -87758,6 +88810,7 @@ pub(crate) mod tests {
         let source = [0x48, 0x8b, 0xac, 0x24, 0, 0, 0, 0];
         let code = CodeView::new(ENTRY, &source).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -87833,6 +88886,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &sequence).unwrap();
             let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -87931,6 +88985,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &sequence).unwrap();
             let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -88015,6 +89070,7 @@ pub(crate) mod tests {
             let published = PublishedCode::publish_ir_memory_load_v2(&block).unwrap();
             for case in 0..3 {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -88231,6 +89287,7 @@ pub(crate) mod tests {
                     source.extend_from_slice(&disp_bytes[..length - 3]);
                     let code = CodeView::new(ENTRY, &source).unwrap();
                     let mut initial = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -88390,6 +89447,7 @@ pub(crate) mod tests {
                 stop_on_write: None,
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -88434,6 +89492,7 @@ pub(crate) mod tests {
             stop_on_write: None,
         };
         let mut direct_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -88452,6 +89511,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         let mut ir_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -88470,6 +89530,7 @@ pub(crate) mod tests {
             )
             .unwrap();
         let mut interp_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -88497,6 +89558,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &invalid_source).unwrap();
             let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -88544,6 +89606,7 @@ pub(crate) mod tests {
                 let code = CodeView::new(ENTRY, &full).unwrap();
                 let boundary = FixtureExecutionBoundary::new(code, ENTRY + partial as u64).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -88596,6 +89659,7 @@ pub(crate) mod tests {
                 source.resize(length, 0);
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -88674,6 +89738,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let stop = std::sync::Arc::new(AtomicU8::new(0));
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -88732,6 +89797,7 @@ pub(crate) mod tests {
                     od_jit::memory_dispatch::FixtureExecutionBoundary::new(code, code.code_end())
                         .unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -88854,6 +89920,7 @@ pub(crate) mod tests {
         let code = CodeView::new(ENTRY, &sequence).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -88928,6 +89995,7 @@ pub(crate) mod tests {
                 od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
             let published = PublishedCode::publish_ir_memory_load_v2(&block).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -88975,6 +90043,7 @@ pub(crate) mod tests {
                 od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
             let published = PublishedCode::publish_ir_memory_load_v2(&block).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -89030,6 +90099,7 @@ pub(crate) mod tests {
                             source.extend_from_slice(&disp_bytes[..length - 3]);
                             let code = CodeView::new(ENTRY, &source).unwrap();
                             let mut initial = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -89190,6 +90260,7 @@ pub(crate) mod tests {
                         source.resize(length, 0);
                         let code = CodeView::new(ENTRY, &source).unwrap();
                         let mut state = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             ..Default::default()
                         };
@@ -89276,6 +90347,7 @@ pub(crate) mod tests {
             };
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -89368,6 +90440,7 @@ pub(crate) mod tests {
                     let code = CodeView::new(ENTRY, &source).unwrap();
                     let stop = std::sync::Arc::new(AtomicU8::new(0));
                     let mut state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };
@@ -89440,6 +90513,7 @@ pub(crate) mod tests {
                         let stop = std::sync::Arc::new(AtomicU8::new(0));
                         let loaded_value: u64 = if data_register == 4 { 64 } else { 72 };
                         let mut state = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             ..Default::default()
                         };
@@ -89580,6 +90654,7 @@ pub(crate) mod tests {
                     stop_on_write: None,
                 };
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -89647,6 +90722,7 @@ pub(crate) mod tests {
                 let code = CodeView::new(ENTRY, &full).unwrap();
                 let boundary = FixtureExecutionBoundary::new(code, ENTRY + partial as u64).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -89700,6 +90776,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &invalid_source).unwrap();
             let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -89863,6 +90940,7 @@ pub(crate) mod tests {
                 let source = [0x48, opcode, 0x6d, displacement as u8];
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -89993,6 +91071,7 @@ pub(crate) mod tests {
                 let source = [0x48, opcode, 0xad, d[0], d[1], d[2], d[3]];
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -90117,6 +91196,7 @@ pub(crate) mod tests {
             let source = [0x48, 0x8b, 0xad, 0, 0, 0, high_byte];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -90166,6 +91246,7 @@ pub(crate) mod tests {
         let source = [0x48, 0x8b, 0xad, 0, 0, 0, 0];
         let code = CodeView::new(ENTRY, &source).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -90209,6 +91290,7 @@ pub(crate) mod tests {
         let source = [0x48, 0x89, 0xad, 0, 0, 0, 0];
         let code = CodeView::new(ENTRY, &source).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -90274,6 +91356,7 @@ pub(crate) mod tests {
         let code = CodeView::new(ENTRY, &sequence).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -90345,6 +91428,7 @@ pub(crate) mod tests {
         let code = CodeView::new(ENTRY, &sequence).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -90430,6 +91514,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0xad, 0, 0, 0, 0];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -90497,6 +91582,7 @@ pub(crate) mod tests {
         let source = [0x48, 0x8b, 0x6d, 0x00];
         let code = CodeView::new(ENTRY, &source).unwrap();
         let mut initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -90570,6 +91656,7 @@ pub(crate) mod tests {
             let published = PublishedCode::publish_ir_memory_load_v2(&block).unwrap();
             for case in 0..3 {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -90631,6 +91718,7 @@ pub(crate) mod tests {
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         for callback_stop in [false, true] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -90830,6 +91918,7 @@ pub(crate) mod tests {
                     let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
                     let stop = std::sync::Arc::new(AtomicU8::new(0));
                     let mut state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };
@@ -90917,6 +92006,7 @@ pub(crate) mod tests {
                         let partial_boundary =
                             FixtureExecutionBoundary::new(code, ENTRY + partial as u64).unwrap();
                         let mut partial_state = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             ..Default::default()
                         };
@@ -91127,6 +92217,7 @@ pub(crate) mod tests {
                     let code = CodeView::new(ENTRY, &source).unwrap();
                     let value = 0x0000_8000_1020_3040_u64 + u64::from(data_register);
                     let mut initial = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -91310,6 +92401,7 @@ pub(crate) mod tests {
                         }
                         let code = CodeView::new(ENTRY, &source).unwrap();
                         let mut initial = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -91464,6 +92556,7 @@ pub(crate) mod tests {
             &crossing_value.to_le_bytes(),
         );
         let mut crossing_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -91511,6 +92604,7 @@ pub(crate) mod tests {
         let mut data = BTreeMap::new();
         put(&mut data, target, &value.to_le_bytes());
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -91593,6 +92687,7 @@ pub(crate) mod tests {
             let mut data = BTreeMap::new();
             put(&mut data, target, &value.to_le_bytes());
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -91636,6 +92731,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, partial).unwrap();
             let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -91680,6 +92776,7 @@ pub(crate) mod tests {
             let source = [0x67, 0x48, opcode, 0x04, 0x2c];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -91755,6 +92852,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -91822,6 +92920,7 @@ pub(crate) mod tests {
         let payload = 0x1234_5678_9abc_def0_u64;
         let target = 0xffff_ffff_u64;
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -91868,6 +92967,7 @@ pub(crate) mod tests {
             let source = [0x67, 0x48, opcode, 0x04, 0x24];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -91947,6 +93047,7 @@ pub(crate) mod tests {
         let mut data = BTreeMap::new();
         put(&mut data, target, &loaded.to_le_bytes());
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -91992,6 +93093,7 @@ pub(crate) mod tests {
         let mut data = BTreeMap::new();
         put(&mut data, 0xffff_fffc, &noncanonical.to_le_bytes());
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -92045,6 +93147,7 @@ pub(crate) mod tests {
         let mut data = BTreeMap::new();
         put(&mut data, target, &0x1234_u64.to_le_bytes());
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -92130,6 +93233,7 @@ pub(crate) mod tests {
         let old_rsp = 0x0000_8000_ffff_fffc_u64;
         let make_store_state = || {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -92239,6 +93343,7 @@ pub(crate) mod tests {
         let indexed_boundary =
             FixtureExecutionBoundary::new(indexed_code, indexed_code.code_end()).unwrap();
         let mut indexed_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -92340,6 +93445,7 @@ pub(crate) mod tests {
         let old_rbp = 0xffff_ffff_0000_0003_u64;
         let store_target = 0xffff_fffc_u64;
         let mut indexed_store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -92393,6 +93499,7 @@ pub(crate) mod tests {
             let block =
                 od_jit::memory_load_v2::compile_ir_memory_load_block_v2(code, ENTRY).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -92441,6 +93548,7 @@ pub(crate) mod tests {
             let fault_boundary =
                 FixtureExecutionBoundary::new(fault_code, fault_code.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -92506,6 +93614,7 @@ pub(crate) mod tests {
             let fault_boundary =
                 FixtureExecutionBoundary::new(fault_code, fault_code.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -92574,6 +93683,7 @@ pub(crate) mod tests {
             let boundary =
                 FixtureExecutionBoundary::new(disp32_code, ENTRY + window as u64).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -92628,6 +93738,7 @@ pub(crate) mod tests {
                 FixtureExecutionBoundary::new(rbp_index_disp32_code, ENTRY + window as u64)
                     .unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -92701,6 +93812,7 @@ pub(crate) mod tests {
                         }
                         let code = CodeView::new(ENTRY, &source).unwrap();
                         let mut initial = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -92856,6 +93968,7 @@ pub(crate) mod tests {
         let mut alias_data = BTreeMap::new();
         put(&mut alias_data, alias_target, &loaded_rbp.to_le_bytes());
         let mut alias_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -92903,6 +94016,7 @@ pub(crate) mod tests {
         let mut data = BTreeMap::new();
         put(&mut data, target, &payload.to_le_bytes());
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -92976,6 +94090,7 @@ pub(crate) mod tests {
             for window in 1..complete.len() {
                 let boundary = FixtureExecutionBoundary::new(code, ENTRY + window as u64).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -93023,6 +94138,7 @@ pub(crate) mod tests {
         let code = CodeView::new(ENTRY, &unsupported).unwrap();
         let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -93072,6 +94188,7 @@ pub(crate) mod tests {
             .wrapping_add(0)) as u64;
         let stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -93131,6 +94248,7 @@ pub(crate) mod tests {
             &crossing_value.to_le_bytes(),
         );
         let mut crossing_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -93190,6 +94308,7 @@ pub(crate) mod tests {
             let mut data = BTreeMap::new();
             put(&mut data, target, &value.to_le_bytes());
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -93237,6 +94356,7 @@ pub(crate) mod tests {
         ] {
             let stop = AtomicU8::new(stop_value);
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -93283,6 +94403,7 @@ pub(crate) mod tests {
                 .wrapping_add(0xffff_ffff_u32)
                 .wrapping_add((-1_i32) as u32)) as u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -93347,6 +94468,7 @@ pub(crate) mod tests {
                 .wrapping_add(0xffff_ffff_u32)
                 .wrapping_add((-1_i32) as u32)) as u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -93430,6 +94552,7 @@ pub(crate) mod tests {
                             ];
                             let code = CodeView::new(ENTRY, &source).unwrap();
                             let mut initial = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -93592,6 +94715,7 @@ pub(crate) mod tests {
         let mut data = BTreeMap::new();
         put(&mut data, target, &value.to_le_bytes());
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -93684,6 +94808,7 @@ pub(crate) mod tests {
                 let source = [0x48, opcode, 0x04, 0x06 | (base - 6)];
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -93739,6 +94864,7 @@ pub(crate) mod tests {
         let range_source = [0x48, 0x8b, 0x24, 0x06]; // MOV RSP,[RSI+RAX]
         let range_code = CodeView::new(ENTRY, &range_source).unwrap();
         let mut end_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -93790,6 +94916,7 @@ pub(crate) mod tests {
         // A canonical high-half qword start whose range overflows u64 stays
         // a host AddressOverflow diagnostic and does not call guest RAM.
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -93849,6 +94976,7 @@ pub(crate) mod tests {
             (0, 0, BoundedMemoryExit::BudgetExhausted),
         ] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -93894,6 +95022,7 @@ pub(crate) mod tests {
         let store_code = CodeView::new(ENTRY, &store_source).unwrap();
         let store_target = 0x1020_u64;
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -93944,6 +95073,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x0c, 0x06]; // data RCX, EA RSI+RAX
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -94035,6 +95165,7 @@ pub(crate) mod tests {
                             }
                             let code = CodeView::new(ENTRY, &source).unwrap();
                             let mut initial = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -94191,6 +95322,7 @@ pub(crate) mod tests {
         ];
         let dispatch_code = CodeView::new(ENTRY, &dispatch_source).unwrap();
         let mut dispatch_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -94265,6 +95397,7 @@ pub(crate) mod tests {
         ];
         let dispatch32_code = CodeView::new(ENTRY, &dispatch32_source).unwrap();
         let mut dispatch32_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -94337,6 +95470,7 @@ pub(crate) mod tests {
             let source = [0x48, 0x8b, 0x84, 0x0e, 0, 0, 0, last_byte];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -94403,6 +95537,7 @@ pub(crate) mod tests {
         let wrap_source = [0x48, 0x8b, 0x44, 0xc6, 0xff]; // MOV RAX,[RSI+RAX*8-1]
         let wrap_code = CodeView::new(ENTRY, &wrap_source).unwrap();
         let mut wrap_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -94472,6 +95607,7 @@ pub(crate) mod tests {
             (0x0000_7fff_ffff_fffc_u64, 13),
         ] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -94515,6 +95651,7 @@ pub(crate) mod tests {
             assert_eq!((ram.reads, ram.writes), (0, 0));
         }
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -94568,6 +95705,7 @@ pub(crate) mod tests {
             (0, 0, BoundedMemoryExit::BudgetExhausted),
         ] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -94615,6 +95753,7 @@ pub(crate) mod tests {
             let partial_code = CodeView::new(ENTRY, &partial_source).unwrap();
             for length in 1..partial_source.len() {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -94660,6 +95799,7 @@ pub(crate) mod tests {
             let source = [0x48, opcode, 0x4c, 0x0e, 0x00]; // data RCX, [RSI+RCX]
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -94718,6 +95858,7 @@ pub(crate) mod tests {
         let store_stop_code = CodeView::new(ENTRY, &store_stop_source).unwrap();
         let store_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -94801,6 +95942,7 @@ pub(crate) mod tests {
                                 }
                                 let code = CodeView::new(ENTRY, &source).unwrap();
                                 let mut initial = od_isa::LongModeState {
+                                    cr3: None,
                                     rip: ENTRY,
                                     rflags: 0x8d7,
                                     ..Default::default()
@@ -94964,6 +96106,7 @@ pub(crate) mod tests {
         let crossing_source = [0x67, 0x48, 0x8b, 0x14, 0x06];
         let crossing_code = CodeView::new(ENTRY, &crossing_source).unwrap();
         let mut crossing_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95011,6 +96154,7 @@ pub(crate) mod tests {
             let expected_target = 0x1000_u64 + (u64::from(last_disp_byte) << 24);
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -95094,6 +96238,7 @@ pub(crate) mod tests {
         ];
         let dispatch_code = CodeView::new(ENTRY, &dispatch_source).unwrap();
         let mut dispatch_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95173,6 +96318,7 @@ pub(crate) mod tests {
         put(&mut continuation_seed, 0x3011, &second_value.to_le_bytes());
         put(&mut continuation_seed, 0x2024, &third_value.to_le_bytes());
         let mut continuation_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95251,6 +96397,7 @@ pub(crate) mod tests {
         let stop_code = CodeView::new(ENTRY, &stop_source).unwrap();
         let stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95291,6 +96438,7 @@ pub(crate) mod tests {
         assert_eq!(get(&stop_ram.data, 0x0fff), stop_value.to_le_bytes());
 
         let mut pre_stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95326,6 +96474,7 @@ pub(crate) mod tests {
         assert_eq!((pre_stop_ram.reads, pre_stop_ram.writes), (0, 0));
 
         let mut stop_rip_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95362,6 +96511,7 @@ pub(crate) mod tests {
         assert_eq!((stop_rip_ram.reads, stop_rip_ram.writes), (0, 0));
 
         let mut zero_budget_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95400,6 +96550,7 @@ pub(crate) mod tests {
         let fault_source = [0x67, 0x48, 0x8b, 0x44, 0x0e, 0xff];
         let fault_code = CodeView::new(ENTRY, &fault_source).unwrap();
         let mut fault_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95445,6 +96596,7 @@ pub(crate) mod tests {
         assert_eq!(fault_ram.last_read, Some((0x101f, 8)));
 
         let mut backend_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95490,6 +96642,7 @@ pub(crate) mod tests {
         let store_fault_code = CodeView::new(ENTRY, &store_fault_source).unwrap();
         let store_fault_target = 0x0fff;
         let mut store_fault_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95590,6 +96743,7 @@ pub(crate) mod tests {
         let partial_code = CodeView::new(ENTRY, &partial_source).unwrap();
         for window in 1..partial_source.len() {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -95633,6 +96787,7 @@ pub(crate) mod tests {
         let unsupported_source = [0x67, 0x48, 0x8b, 0x34, 0x26];
         let unsupported_code = CodeView::new(ENTRY, &unsupported_source).unwrap();
         let mut unsupported_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -95701,6 +96856,7 @@ pub(crate) mod tests {
                             }
                             let code = CodeView::new(ENTRY, &source).unwrap();
                             let mut initial = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -95878,6 +97034,7 @@ pub(crate) mod tests {
             ];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -95953,6 +97110,7 @@ pub(crate) mod tests {
         let wrap_source = [0x48, 0x8b, 0x04, 0x2e];
         let wrap_code = CodeView::new(ENTRY, &wrap_source).unwrap();
         let mut wrap_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -96036,6 +97194,7 @@ pub(crate) mod tests {
         let mut dispatch_rip = ENTRY;
         let mut dispatch_seed = BTreeMap::new();
         let mut dispatch_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -96132,6 +97291,7 @@ pub(crate) mod tests {
         ] {
             let stop = AtomicU8::new(stop_value);
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -96178,6 +97338,7 @@ pub(crate) mod tests {
         let stored_value = 0xfeed_face_cafe_beef_u64;
         let store_stop = Arc::new(AtomicU8::new(0));
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -96231,6 +97392,7 @@ pub(crate) mod tests {
             let fault_code = CodeView::new(ENTRY, &fault_source).unwrap();
             for base in [0x0000_8000_0000_0000_u64, 0x0000_7fff_ffff_fffc] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -96285,6 +97447,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0x04, 0x2e];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -96341,6 +97504,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = 0x4020_u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -96445,6 +97609,7 @@ pub(crate) mod tests {
                             }
                             let code = CodeView::new(ENTRY, &source).unwrap();
                             let mut initial = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -96615,6 +97780,7 @@ pub(crate) mod tests {
             let source = [0x67, 0x48, opcode, 0x04, 0x6e]; // [ESI + RBP*2]
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -96741,6 +97907,7 @@ pub(crate) mod tests {
         let crossing_source = [0x67, 0x48, 0x8b, 0x14, 0xaf]; // [EDI + RBP*4]
         let crossing_code = CodeView::new(ENTRY, &crossing_source).unwrap();
         let mut crossing_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -96811,6 +97978,7 @@ pub(crate) mod tests {
         let product_wrap_source = [0x67, 0x48, 0x8b, 0x6c, 0xee, 0xff];
         let product_wrap_code = CodeView::new(ENTRY, &product_wrap_source).unwrap();
         let mut product_wrap_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -96902,6 +98070,7 @@ pub(crate) mod tests {
             source.extend_from_slice(&displacement.to_le_bytes());
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -96950,6 +98119,7 @@ pub(crate) mod tests {
             (1, 1, BoundedMemoryExit::StopRequested),
         ] {
             let before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -96991,6 +98161,7 @@ pub(crate) mod tests {
         let stop_source = [0x67, 0x48, 0x89, 0x2c, 0x2f]; // [EDI + RBP] <- RBP
         let stop_code = CodeView::new(ENTRY, &stop_source).unwrap();
         let mut stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -97037,6 +98208,7 @@ pub(crate) mod tests {
         for window in 1..full_disp32.len() {
             let code = CodeView::new(ENTRY, &full_disp32[..window]).unwrap();
             let before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -97097,6 +98269,7 @@ pub(crate) mod tests {
         let dispatch_boundary =
             FixtureExecutionBoundary::new(dispatch_code, dispatch_code.code_end()).unwrap();
         let mut dispatch_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -97163,6 +98336,7 @@ pub(crate) mod tests {
                             ];
                             let code = CodeView::new(ENTRY, &source).unwrap();
                             let mut initial = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -97351,6 +98525,7 @@ pub(crate) mod tests {
         let sequence_boundary =
             FixtureExecutionBoundary::new(sequence_code, sequence_code.code_end()).unwrap();
         let mut sequence_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -97439,6 +98614,7 @@ pub(crate) mod tests {
                 let index_value = 0;
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -97488,6 +98664,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0x04, 0x30];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -97533,6 +98710,7 @@ pub(crate) mod tests {
         ] {
             let code = CodeView::new(ENTRY, &sequence[..4]).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -97575,6 +98753,7 @@ pub(crate) mod tests {
         for length in 1..full_singleton.len() {
             let code = CodeView::new(ENTRY, &full_singleton[..length]).unwrap();
             let before = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -97614,6 +98793,7 @@ pub(crate) mod tests {
         }
         let stop_rip_code = CodeView::new(ENTRY, &full_singleton).unwrap();
         let mut stop_rip_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -97650,6 +98830,7 @@ pub(crate) mod tests {
         let unsupported = [0x48, 0x8b, 0x04, 0x67]; // non-unit scale with RDI base
         let unsupported_code = CodeView::new(ENTRY, &unsupported).unwrap();
         let unsupported_before = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -97690,6 +98871,7 @@ pub(crate) mod tests {
         let stop_source = [0x48, 0x89, 0x0c, 0x30];
         let stop_code = CodeView::new(ENTRY, &stop_source).unwrap();
         let mut stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -97742,6 +98924,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = 0x1010_u64;
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -97879,6 +99062,7 @@ pub(crate) mod tests {
                                 }
                                 let code = CodeView::new(ENTRY, &source).unwrap();
                                 let mut initial = od_isa::LongModeState {
+                                    cr3: None,
                                     rip: ENTRY,
                                     rflags: 0x8d7,
                                     ..Default::default()
@@ -98059,6 +99243,7 @@ pub(crate) mod tests {
             let source = [0x48, 0x8b, 0x84, 0x30, 0, 0, 0, high_byte];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -98112,6 +99297,7 @@ pub(crate) mod tests {
         ] {
             let code = CodeView::new(ENTRY, &high_index_source).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -98203,6 +99389,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -98292,6 +99479,7 @@ pub(crate) mod tests {
                 let source = [0x48, opcode, 0x44, 0x30, 0];
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -98343,6 +99531,7 @@ pub(crate) mod tests {
         let overflow_source = [0x48, 0x8b, 0x44, 0x30, 0];
         let overflow_code = CodeView::new(ENTRY, &overflow_source).unwrap();
         let mut overflow_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -98410,6 +99599,7 @@ pub(crate) mod tests {
             ] {
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -98453,6 +99643,7 @@ pub(crate) mod tests {
             for partial in 1..length {
                 let code = CodeView::new(ENTRY, &source[..partial]).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -98497,6 +99688,7 @@ pub(crate) mod tests {
         let unsupported_source = [0x48, 0x8b, 0x74, 0x25, 0]; // unsupported RSI data register
         let unsupported_code = CodeView::new(ENTRY, &unsupported_source).unwrap();
         let mut unsupported_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -98541,6 +99733,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = 0x1100;
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -98630,6 +99823,7 @@ pub(crate) mod tests {
         let stop_source = [0x48, 0x89, 0x54, 0x30, 0];
         let stop_code = CodeView::new(ENTRY, &stop_source).unwrap();
         let mut stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -98898,6 +100092,7 @@ pub(crate) mod tests {
                                 let code = CodeView::new(ENTRY, &source).unwrap();
                                 let scale = 1_u64 << scale_shift;
                                 let mut initial = od_isa::LongModeState {
+                                    cr3: None,
                                     rip: ENTRY,
                                     rflags: 0x8d7,
                                     ..Default::default()
@@ -99053,6 +100248,7 @@ pub(crate) mod tests {
         ];
         let identity_state = {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -99095,6 +100291,7 @@ pub(crate) mod tests {
         let crossing_source = [0x67, 0x48, 0x8b, 0x04, 0x3e];
         let crossing_code = CodeView::new(ENTRY, &crossing_source).unwrap();
         let mut crossing_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -99127,6 +100324,7 @@ pub(crate) mod tests {
         let wrap_source = [0x67, 0x48, 0x89, 0x6c, 0xf6, 0xff];
         let wrap_code = CodeView::new(ENTRY, &wrap_source).unwrap();
         let mut wrap_initial = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -99208,6 +100406,7 @@ pub(crate) mod tests {
                 .unwrap()
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -99282,6 +100481,7 @@ pub(crate) mod tests {
                 .unwrap()
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -99371,6 +100571,7 @@ pub(crate) mod tests {
                 .unwrap()
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -99446,6 +100647,7 @@ pub(crate) mod tests {
                 .unwrap();
                 for guard in 0..3 {
                     let mut state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };
@@ -99482,6 +100684,7 @@ pub(crate) mod tests {
         .unwrap();
         let requested_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -99524,6 +100727,7 @@ pub(crate) mod tests {
                 let partial_code = CodeView::new(ENTRY, &partial_source).unwrap();
                 for visible in 1..partial_source.len() as u64 {
                     let mut state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };
@@ -99568,6 +100772,7 @@ pub(crate) mod tests {
         let unsupported_source = [0x67, 0x48, 0x8b, 0x04, 0x65, 0, 0, 0, 0];
         let unsupported_code = CodeView::new(ENTRY, &unsupported_source).unwrap();
         let mut unsupported_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -99610,6 +100815,7 @@ pub(crate) mod tests {
                 source.extend_from_slice(&[0x48, 0x89, 0x03, 0x48, 0x8b, 0x0b]);
                 let code = CodeView::new(ENTRY, &source).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -99697,6 +100903,7 @@ pub(crate) mod tests {
                             ];
                             let code = CodeView::new(ENTRY, &source).unwrap();
                             let mut initial = od_isa::LongModeState {
+                                cr3: None,
                                 rip: ENTRY,
                                 rflags: 0x8d7,
                                 ..Default::default()
@@ -99859,6 +101066,7 @@ pub(crate) mod tests {
         let wrap_source = [0x67, 0x48, 0x89, 0x2c, 0xf5, 0xff, 0xff, 0xff, 0xff];
         let wrap_code = CodeView::new(ENTRY, &wrap_source).unwrap();
         let mut wrap_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -99946,6 +101154,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             let target = displacement as u32 as u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -99988,6 +101197,7 @@ pub(crate) mod tests {
         };
         put_qword(&mut crossing_ram.data, 0xffff_fffc, 0x0123_4567_89ab_cdef);
         let mut crossing_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -100019,6 +101229,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             for shared_ir in [false, true] {
                 let mut before = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -100146,6 +101357,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &source).unwrap();
             for shared_ir in [false, true] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -100263,6 +101475,7 @@ pub(crate) mod tests {
         let stop_source = [0x67, 0x48, 0x89, 0x2c, 0x75, 0, 0, 0, 0];
         let stop_code = CodeView::new(ENTRY, &stop_source).unwrap();
         let mut stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -100318,6 +101531,7 @@ pub(crate) mod tests {
         .unwrap();
         for guard in 0..3 {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -100351,6 +101565,7 @@ pub(crate) mod tests {
         ];
         let dispatcher_code = CodeView::new(ENTRY, &dispatcher_source).unwrap();
         let mut dispatcher_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             rflags: 0x8d7,
             ..Default::default()
@@ -100432,6 +101647,7 @@ pub(crate) mod tests {
         for visible in 1..guard_source.len() {
             let partial_code = CodeView::new(ENTRY, &guard_source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -100466,6 +101682,7 @@ pub(crate) mod tests {
         let unsupported_source = [0x67, 0x48, 0x8b, 0x04, 0x65, 0, 0, 0, 0];
         let unsupported_code = CodeView::new(ENTRY, &unsupported_source).unwrap();
         let mut unsupported_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -100684,6 +101901,7 @@ pub(crate) mod tests {
                                     ^ ((data_reg as u64) << 16)
                                     ^ disp as u32 as u64;
                                 let mut initial = od_isa::LongModeState {
+                                    cr3: None,
                                     rip: ENTRY,
                                     rflags: 0x8d7,
                                     ..Default::default()
@@ -100811,6 +102029,7 @@ pub(crate) mod tests {
         let wrap_value = 0xfedc_ba98_7654_3210;
         let mut wrap_ram = ram(&wrap_source, wrap_ea, wrap_value);
         let mut wrap_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -100842,6 +102061,7 @@ pub(crate) mod tests {
             let partial_code = CodeView::new(ENTRY, &partial_source).unwrap();
             for visible in 1..partial_source.len() as u64 {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -100880,6 +102100,7 @@ pub(crate) mod tests {
         let unsupported = [0x67, 0x48, 0x8b, 0x04, 0x65, 0, 0, 0, 0]; // no-index non-unit-scale SIB is outside this profile
         let unsupported_code = CodeView::new(ENTRY, &unsupported).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -100919,6 +102140,7 @@ pub(crate) mod tests {
         code_bytes.extend_from_slice(&second);
         let code = CodeView::new(ENTRY, &code_bytes).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -100977,6 +102199,7 @@ pub(crate) mod tests {
             bytes[8] = high_byte;
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let mut initial = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -101015,6 +102238,7 @@ pub(crate) mod tests {
         let crossing_source = source(0x8b, 0, 6, 0, 1, 0);
         let crossing_code = CodeView::new(ENTRY, &crossing_source).unwrap();
         let mut crossing_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -101057,6 +102281,7 @@ pub(crate) mod tests {
                 .unwrap()
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -101138,6 +102363,7 @@ pub(crate) mod tests {
                 .unwrap()
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -101209,6 +102435,7 @@ pub(crate) mod tests {
         .unwrap();
         for budget in [0_u64, 1] {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -101234,6 +102461,7 @@ pub(crate) mod tests {
         }
         let requested_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -101288,6 +102516,7 @@ pub(crate) mod tests {
         ] {
             let code = CodeView::new(ENTRY, &store_source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -101512,6 +102741,7 @@ pub(crate) mod tests {
                         let bytes = encode(opcode, data_register, base, mode, displacement);
                         let code = CodeView::new(ENTRY, &bytes).unwrap();
                         let mut initial = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -101696,6 +102926,7 @@ pub(crate) mod tests {
                             encode_address32_sib(opcode, data_register, base, mode, displacement);
                         let code = CodeView::new(ENTRY, &bytes).unwrap();
                         let mut initial = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -101861,6 +103092,7 @@ pub(crate) mod tests {
                 let first_target = 0x7000_u64;
                 let pair_target = 0x8000_u64;
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -101937,6 +103169,7 @@ pub(crate) mod tests {
                 host_ram.code = bytes.clone();
                 let code = CodeView::new(ENTRY, bytes).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -101974,6 +103207,7 @@ pub(crate) mod tests {
             for visible in 1..length {
                 let partial_code = CodeView::new(ENTRY, &bytes[..visible]).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -102011,6 +103245,7 @@ pub(crate) mod tests {
             )
             .unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -102055,6 +103290,7 @@ pub(crate) mod tests {
             };
             let target = 1_u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -102131,6 +103367,7 @@ pub(crate) mod tests {
         let store_code = CodeView::new(ENTRY, &store_bytes).unwrap();
         let stop_request = std::sync::Arc::new(AtomicU8::new(0));
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -102176,6 +103413,7 @@ pub(crate) mod tests {
                 let target = 1_u64;
                 let memory_value = 0x1234_5678_9abc_def0;
                 let mut initial = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     rflags: 0x8d7,
                     ..Default::default()
@@ -102304,6 +103542,7 @@ pub(crate) mod tests {
                         size: od_isa::OperandSize::Qword,
                     };
                     let mut fault_state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };
@@ -102416,6 +103655,7 @@ pub(crate) mod tests {
             let bytes = encode(opcode, 0, 6, 1, 0);
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let mut overflow_state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -102534,6 +103774,7 @@ pub(crate) mod tests {
                 .unwrap()
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -102594,6 +103835,7 @@ pub(crate) mod tests {
         let target = 0x4100_u64;
         let requested_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -102645,6 +103887,7 @@ pub(crate) mod tests {
             };
             for guard in 0..3 {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -102692,6 +103935,7 @@ pub(crate) mod tests {
             let first_target = 0x7000_u64;
             let pair_target = 0x8000_u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -102769,6 +104013,7 @@ pub(crate) mod tests {
                     )
                     .unwrap();
                     let mut state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };
@@ -102808,6 +104053,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let target = 0x1000_u64.wrapping_add_signed(i64::from(displacement));
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -102884,6 +104130,7 @@ pub(crate) mod tests {
                             ^ (u64::from(opcode) << 32)
                             ^ (u64::from(base) << 8 | u64::from(data_register));
                         let mut initial = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -103019,6 +104266,7 @@ pub(crate) mod tests {
         let crossing_target = 0xffff_fffc_u64;
         let crossing_code = CodeView::new(ENTRY, &crossing_bytes).unwrap();
         let mut crossing_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -103075,6 +104323,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let target = u64::from(0x1000_u32.wrapping_add(displacement as u32));
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -103110,6 +104359,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let target = 0x4fff_u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -103181,6 +104431,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let target = 0x4fff_u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -103263,6 +104514,7 @@ pub(crate) mod tests {
         let stop_code = CodeView::new(ENTRY, &stop_bytes).unwrap();
         let requested_stop = std::sync::Arc::new(AtomicU8::new(0));
         let mut stop_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -103315,6 +104567,7 @@ pub(crate) mod tests {
             };
             for guard in 0..3 {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -103363,6 +104616,7 @@ pub(crate) mod tests {
             let first_target = 0x7000_u64;
             let pair_target = 0x8000_u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -103440,6 +104694,7 @@ pub(crate) mod tests {
                 )
                 .unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -103661,6 +104916,7 @@ pub(crate) mod tests {
                     let code = CodeView::new(ENTRY, &bytes).unwrap();
                     let target = 0x4000_u64;
                     let mut initial = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -103814,6 +105070,7 @@ pub(crate) mod tests {
                         _ => unreachable!(),
                     };
                     let mut state = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         ..Default::default()
                     };
@@ -103910,6 +105167,7 @@ pub(crate) mod tests {
                     _ => unreachable!(),
                 };
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -104001,6 +105259,7 @@ pub(crate) mod tests {
                     _ => unreachable!(),
                 };
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -104101,6 +105360,7 @@ pub(crate) mod tests {
             };
             for (budget, requested) in [(0_u64, 0_u8), (1, 1)] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -104140,6 +105400,7 @@ pub(crate) mod tests {
         let store_code = CodeView::new(ENTRY, &store_source).unwrap();
         let stop_request = std::sync::Arc::new(AtomicU8::new(0));
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -104205,6 +105466,7 @@ pub(crate) mod tests {
             identity_ram.code = bytes.clone();
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -104245,6 +105507,7 @@ pub(crate) mod tests {
             let first_target = 0x7000_u64;
             let pair_target = 0x8000_u64;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -104311,6 +105574,7 @@ pub(crate) mod tests {
             for visible in 1..length {
                 let boundary = FixtureExecutionBoundary::new(code, ENTRY + visible as u64).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -104530,6 +105794,7 @@ pub(crate) mod tests {
                     let target = 0x4000;
                     let low_base = (target as u32).wrapping_sub(displacement as u32);
                     let mut initial = od_isa::LongModeState {
+                        cr3: None,
                         rip: ENTRY,
                         rflags: 0x8d7,
                         ..Default::default()
@@ -104695,6 +105960,7 @@ pub(crate) mod tests {
         let crossing_bytes = encode(0x8b, 0, 1, 0);
         let crossing_code = CodeView::new(ENTRY, &crossing_bytes).unwrap();
         let mut crossing_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -104735,6 +106001,7 @@ pub(crate) mod tests {
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let target = 0x7fff;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -104810,6 +106077,7 @@ pub(crate) mod tests {
                 linear_address: Some(target),
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -104881,6 +106149,7 @@ pub(crate) mod tests {
                 let code = CodeView::new(ENTRY, &bytes).unwrap();
                 let target = 0x7000;
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -104945,6 +106214,7 @@ pub(crate) mod tests {
         let store_bytes = encode(0x89, 3, 1, 0);
         let store_code = CodeView::new(ENTRY, &store_bytes).unwrap();
         let mut store_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -104998,6 +106268,7 @@ pub(crate) mod tests {
             let bytes = encode(0x8b, 0, 2, displacement);
             let code = CodeView::new(ENTRY, &bytes).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -105041,6 +106312,7 @@ pub(crate) mod tests {
             let target = 0x7000;
             let pair_target = 0x8000;
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -105101,6 +106373,7 @@ pub(crate) mod tests {
                 let code = CodeView::new(ENTRY, &bytes[..visible]).unwrap();
                 let boundary = FixtureExecutionBoundary::new(code, code.code_end()).unwrap();
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: ENTRY,
                     ..Default::default()
                 };
@@ -105140,6 +106413,7 @@ pub(crate) mod tests {
         let unsupported_boundary =
             FixtureExecutionBoundary::new(unsupported_code, unsupported_code.code_end()).unwrap();
         let mut unsupported_state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -105354,6 +106628,7 @@ pub(crate) mod tests {
                     };
                     let make_state = || {
                         let mut state = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -105507,6 +106782,7 @@ pub(crate) mod tests {
                     }
                     let make_state = || {
                         let mut state = od_isa::LongModeState {
+                            cr3: None,
                             rip: ENTRY,
                             rflags: 0x8d7,
                             ..Default::default()
@@ -105602,6 +106878,7 @@ pub(crate) mod tests {
             fail_access: false,
         };
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -105664,6 +106941,7 @@ pub(crate) mod tests {
                 fail_access: false,
             };
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -105693,6 +106971,7 @@ pub(crate) mod tests {
             let source = [0x48, 0x8b, 0x34, 0x24];
             let code = CodeView::new(ENTRY, &source).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -105741,6 +107020,7 @@ pub(crate) mod tests {
         let source = [0x48, 0x8b, 0x33]; // MOV RSI, [RBX]
         let code = CodeView::new(ENTRY, &source).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -105782,6 +107062,7 @@ pub(crate) mod tests {
         let source = [0x48, 0x8b, 0x34, 0x24];
         let code = CodeView::new(ENTRY, &source).unwrap();
         let mut state = od_isa::LongModeState {
+            cr3: None,
             rip: ENTRY,
             ..Default::default()
         };
@@ -105837,6 +107118,7 @@ pub(crate) mod tests {
             };
             let ram_before = ram.data.clone();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -106220,6 +107502,7 @@ pub(crate) mod tests {
                 &code,
             ));
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -106367,6 +107650,7 @@ pub(crate) mod tests {
                         arithmetic.len() as u64 + if branch_taken { 1 } else { 2 }
                     );
                     let mut interpreter = od_isa::LongModeState {
+                        cr3: None,
                         rip: BASE,
                         ..Default::default()
                     };
@@ -106441,6 +107725,7 @@ pub(crate) mod tests {
                 od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::DemandFlagsCandidate,
             ] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: BASE,
                     ..Default::default()
                 };
@@ -106544,6 +107829,7 @@ pub(crate) mod tests {
             ];
             let full = CodeView::new(BASE, &code).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -106646,6 +107932,7 @@ pub(crate) mod tests {
                 od_jit::memory_dispatch::BoundedArithmeticLoadStrategy::DemandFlagsCandidate,
             ] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: BASE,
                     ..Default::default()
                 };
@@ -106689,6 +107976,7 @@ pub(crate) mod tests {
                 );
 
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: BASE,
                     ..Default::default()
                 };
@@ -106768,6 +108056,7 @@ pub(crate) mod tests {
             ];
             let full = CodeView::new(BASE, &code).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -106908,6 +108197,7 @@ pub(crate) mod tests {
             ];
             let full = CodeView::new(BASE, &code).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -106998,6 +108288,7 @@ pub(crate) mod tests {
             let full = CodeView::new(BASE, &code).unwrap();
             let make_state = || {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: BASE,
                     ..Default::default()
                 };
@@ -107120,6 +108411,7 @@ pub(crate) mod tests {
             ];
             let full = CodeView::new(BASE, &code).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -107240,6 +108532,7 @@ pub(crate) mod tests {
             let full = CodeView::new(BASE, &code).unwrap();
             for expect_yield in [true, false] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: BASE,
                     ..Default::default()
                 };
@@ -107291,6 +108584,7 @@ pub(crate) mod tests {
                 assert_eq!(ram.reads, 0);
             }
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -107334,6 +108628,7 @@ pub(crate) mod tests {
 
             // Runtime-tag yields are not a generic successful exit channel.
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -107369,6 +108664,7 @@ pub(crate) mod tests {
 
             // A valid event yield cannot hide a higher-priority STOP.
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -107424,6 +108720,7 @@ pub(crate) mod tests {
                 }
             }
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE + 8,
                 ..Default::default()
             };
@@ -107506,6 +108803,7 @@ pub(crate) mod tests {
                 (od_jit::memory_dispatch::MemoryBlockExit::Complete, 1),
             ] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: BASE,
                     ..Default::default()
                 };
@@ -107591,6 +108889,7 @@ pub(crate) mod tests {
                 ),
             ] {
                 let mut state = od_isa::LongModeState {
+                    cr3: None,
                     rip: BASE,
                     ..Default::default()
                 };
@@ -107654,6 +108953,7 @@ pub(crate) mod tests {
             ];
             let full = CodeView::new(BASE, &code).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -107716,6 +109016,7 @@ pub(crate) mod tests {
             ];
             let full = CodeView::new(BASE, &code).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -107779,6 +109080,7 @@ pub(crate) mod tests {
             let code = [0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x00];
             let full = CodeView::new(BASE, &code).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -107878,6 +109180,7 @@ pub(crate) mod tests {
             let code = [0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x00];
             let full = CodeView::new(BASE, &code).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -107960,6 +109263,7 @@ pub(crate) mod tests {
             let code = [0x48, 0x03, 0xc3, 0x48, 0x8b, 0x03, 0x74, 0x00];
             let full = CodeView::new(BASE, &code).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -108012,6 +109316,7 @@ pub(crate) mod tests {
             let full = CodeView::new(BASE, &code).unwrap();
             let boundary = FixtureExecutionBoundary::new(full, full.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -108096,6 +109401,7 @@ pub(crate) mod tests {
             let full = CodeView::new(BASE, &code).unwrap();
             let boundary = FixtureExecutionBoundary::new(full, full.code_end()).unwrap();
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: BASE,
                 ..Default::default()
             };
@@ -109679,6 +110985,7 @@ pub(crate) mod tests {
         fn initial_state(case_index: usize) -> od_isa::LongModeState {
             let mut random = SEED ^ (case_index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -110137,6 +111444,7 @@ pub(crate) mod tests {
         }
         fn state_at(rax: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -110323,6 +111631,7 @@ pub(crate) mod tests {
         assert_eq!(
             failed_state,
             od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY + 7,
                 ..before.clone()
             }
@@ -110571,6 +111880,7 @@ pub(crate) mod tests {
         }
         fn state_at(rax: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -111132,6 +112442,7 @@ pub(crate) mod tests {
         }
         fn state_at(rax: u64) -> od_isa::LongModeState {
             let mut state = od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY,
                 ..Default::default()
             };
@@ -111385,6 +112696,7 @@ pub(crate) mod tests {
         assert_eq!(
             failed_state,
             od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY + 6,
                 ..before.clone()
             }
@@ -111546,5 +112858,1506 @@ pub(crate) mod tests {
         assert!(replay.is_err());
         assert_eq!(callback_state, callback_committed_state);
         assert_eq!(callback_ram.writes.len(), 1);
+    }
+
+    #[test]
+    fn s4_15a_paged_v2_qword_load_uses_tracked_ram_and_refuses_out_of_slice_inputs() {
+        use od_isa::memory::{
+            AccessContext, AccessKind, AccessOrigin, InstructionMode, PrivilegeLevel,
+        };
+        use od_machine::{
+            AccessWidth, AdBit, BusDevice, DeviceAccess, DeviceError, GuestPhysicalAddress,
+            GuestPhysicalRange, MachineBus, MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec,
+            MmioBinding, RamLimits, TrackedAccessError,
+        };
+        use std::sync::atomic::AtomicUsize;
+
+        const ENTRY: u64 = 0x0040_1000;
+        const BASE: u64 = 0x0080_0000;
+        const CR0: u64 = 0x8001_0033;
+        const CR4: u64 = 1 << 5;
+        const CR3: u64 = 0x1000;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const RAM_BYTES: u64 = 0x10_000;
+        const MMIO_BASE: u64 = 0x20_000;
+
+        struct CountDevice(Arc<AtomicUsize>);
+        impl BusDevice for CountDevice {
+            fn read(&mut self, _: DeviceAccess) -> Result<u64, DeviceError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(0)
+            }
+            fn write(&mut self, _: DeviceAccess, _: u64) -> Result<(), DeviceError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        fn context() -> AccessContext {
+            context_for(PrivilegeLevel::Ring0)
+        }
+        fn context_for(privilege: PrivilegeLevel) -> AccessContext {
+            AccessContext {
+                mode: InstructionMode::Long64,
+                privilege,
+                origin: AccessOrigin::Explicit,
+            }
+        }
+        fn put(bus: &mut MachineBus, address: u64, value: u64) {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        fn get(bus: &mut MachineBus, address: u64) -> u64 {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        }
+        fn walk_entries(bus: &mut MachineBus) -> [u64; 4] {
+            [
+                get(bus, 0x1000),
+                get(bus, 0x2000),
+                get(bus, 0x3020),
+                get(bus, 0x4000),
+            ]
+        }
+        fn expected_ad_updates(before: [u64; 4], count: usize) -> Vec<od_machine::AdUpdate> {
+            let addresses = [0x1000, 0x2000, 0x3020, 0x4000];
+            addresses
+                .into_iter()
+                .zip(before)
+                .take(count)
+                .map(|(address, value)| od_machine::AdUpdate {
+                    level: match address {
+                        0x1000 => od_machine::PageTableLevel::Pml4,
+                        0x2000 => od_machine::PageTableLevel::Pdpt,
+                        0x3020 => od_machine::PageTableLevel::Pd,
+                        _ => od_machine::PageTableLevel::Pt,
+                    },
+                    address: GuestPhysicalAddress::new(address),
+                    before: value,
+                    after: value | (1 << 5),
+                    bit: AdBit::Accessed,
+                })
+                .collect()
+        }
+        fn expected_ad_ranges(count: usize) -> Vec<GuestPhysicalRange> {
+            [0x1000, 0x2000, 0x3020, 0x4000]
+                .into_iter()
+                .take(count)
+                .map(|address| {
+                    GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+                })
+                .collect()
+        }
+        fn make_bus(leaf: u64, device_calls: Arc<AtomicUsize>) -> MachineBus {
+            let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+            let mmio =
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(MMIO_BASE), 0x1000).unwrap();
+            let map = MachineMemoryMap::new(
+                36,
+                vec![
+                    MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                    MemoryRegionSpec::new(mmio, MemoryRegionKind::Mmio),
+                ],
+            )
+            .unwrap();
+            let bus = MachineBus::new(
+                map,
+                RamLimits::new(RAM_BYTES),
+                vec![Box::new(CountDevice(device_calls))],
+                vec![MmioBinding {
+                    region_start: GuestPhysicalAddress::new(MMIO_BASE),
+                    device_index: 0,
+                }],
+                vec![],
+            )
+            .unwrap();
+            let mut bus = bus;
+            put(&mut bus, 0x1000, 0x2007);
+            put(&mut bus, 0x2000, 0x3007);
+            put(&mut bus, 0x3020, 0x4007);
+            put(&mut bus, 0x4000, leaf);
+            bus
+        }
+        fn state(rbx: u64) -> od_isa::LongModeState {
+            let mut state = od_isa::LongModeState::default();
+            state.rip = ENTRY;
+            state.cr0 = Some(CR0);
+            state.cr4 = Some(CR4);
+            state.gpr[od_isa::Register::Rbx as usize] = rbx;
+            state.gpr[od_isa::Register::Rax as usize] = 0xfeed_face_cafe_beef;
+            state
+        }
+        fn publish_load(code: &[u8]) -> PublishedCode {
+            let view = CodeView::new(ENTRY, code).unwrap();
+            let block = od_jit::memory_load_v2::compile_memory_load_block_v2(view, ENTRY).unwrap();
+            PublishedCode::publish_memory_load_v2(&block).unwrap()
+        }
+        fn run(
+            published: &PublishedCode,
+            state: &mut od_isa::LongModeState,
+            bus: &mut MachineBus,
+        ) -> od_machine::PagedMovMemoryScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        > {
+            published
+                .execute_paged_mov_rax_rbx_v2(state, bus, CR3, EFER, context())
+                .unwrap()
+        }
+
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let published = publish_load(&[0x48, 0x8b, 0x03]);
+        let device_calls = Arc::new(AtomicUsize::new(0));
+
+        // The linear operand maps to physical 0x7000. The helper executes one
+        // instruction and leaves the real tracked A-bit prefix visible.
+        let mut bus = make_bus(0x7007, Arc::clone(&device_calls));
+        put(&mut bus, 0x7120, 0x0123_4567_89ab_cdef);
+        let success_entries_before = walk_entries(&mut bus);
+        let mut cpu = state(BASE + 0x120);
+        let loaded = run(&published, &mut cpu, &mut bus);
+        let execution = loaded.callback_result.as_ref().unwrap();
+        assert_eq!(execution.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(execution.retired_instructions, 1);
+        assert_eq!(
+            cpu.gpr[od_isa::Register::Rax as usize],
+            0x0123_4567_89ab_cdef
+        );
+        assert_eq!(cpu.rip, ENTRY + 3);
+        assert_eq!(loaded.page_fault, None);
+        assert_eq!(loaded.access_error, None);
+        assert_eq!(
+            loaded.committed_ad_updates,
+            expected_ad_updates(success_entries_before, 4)
+        );
+        assert_eq!(loaded.committed_writes, expected_ad_ranges(4));
+        let success_entries_after = walk_entries(&mut bus);
+        assert_eq!(
+            success_entries_after,
+            success_entries_before.map(|v| v | (1 << 5))
+        );
+        assert!(
+            success_entries_after
+                .iter()
+                .all(|entry| entry & (1 << 6) == 0)
+        );
+        assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+
+        // A fresh scoped invocation after a PTE remap observes the new frame.
+        put(&mut bus, 0x4000, 0x8007);
+        put(&mut bus, 0x8120, 0x0fed_cba9_8765_4321);
+        cpu.rip = ENTRY;
+        let remapped = run(&published, &mut cpu, &mut bus);
+        assert_eq!(remapped.callback_result.unwrap().retired_instructions, 1);
+        assert_eq!(
+            cpu.gpr[od_isa::Register::Rax as usize],
+            0x0fed_cba9_8765_4321
+        );
+
+        // A real absent leaf produces exact #PF metadata; previous A writes
+        // remain committed while the destination and instruction remain held.
+        let mut fault_bus = make_bus(0x8006, Arc::clone(&device_calls));
+        let fault_entries_before = walk_entries(&mut fault_bus);
+        let mut fault_cpu = state(BASE + 0x120);
+        let before = fault_cpu.clone();
+        let faulted = run(&published, &mut fault_cpu, &mut fault_bus);
+        let record = faulted.page_fault.as_ref().unwrap();
+        assert_eq!(record.saved_rip(), ENTRY);
+        assert_eq!(record.cr2_value(), BASE + 0x120);
+        assert_eq!(record.access(), AccessKind::Read);
+        assert_eq!(record.fault().error_code, Some(0));
+        assert_eq!(
+            faulted.access_error.as_ref().unwrap(),
+            &TrackedAccessError::PageFault {
+                record: record.clone(),
+                reason: od_machine::PageFaultReason::NotPresent {
+                    level: od_machine::PageTableLevel::Pt
+                },
+            }
+        );
+        assert_eq!(
+            faulted.committed_ad_updates,
+            expected_ad_updates(fault_entries_before, 3)
+        );
+        assert_eq!(faulted.committed_writes, expected_ad_ranges(3));
+        let fault_entries_after = walk_entries(&mut fault_bus);
+        assert_eq!(
+            fault_entries_after,
+            [
+                fault_entries_before[0] | (1 << 5),
+                fault_entries_before[1] | (1 << 5),
+                fault_entries_before[2] | (1 << 5),
+                fault_entries_before[3],
+            ]
+        );
+        assert_eq!(fault_entries_after[3] & 1, 0, "missing leaf remains absent");
+        assert!(
+            fault_entries_after
+                .iter()
+                .all(|entry| entry & (1 << 6) == 0)
+        );
+        let fault_exit = faulted.callback_result.unwrap();
+        assert_eq!(
+            fault_exit.exit,
+            MemoryOperationExecutionExitV2::GuestFault(record.fault().clone())
+        );
+        assert_eq!(fault_exit.retired_instructions, 0);
+        assert_eq!(fault_cpu, before);
+
+        // A translated MMIO target is rejected by the RAM-only path before
+        // device dispatch; a qword crossing is refused before its first walk.
+        let mut mmio_bus = make_bus(MMIO_BASE | 7, Arc::clone(&device_calls));
+        let mut mmio_cpu = state(BASE + 0x120);
+        let mmio = run(&published, &mut mmio_cpu, &mut mmio_bus);
+        assert_eq!(
+            mmio.access_error,
+            Some(TrackedAccessError::OperandPhysical {
+                address: GuestPhysicalAddress::new(MMIO_BASE + 0x120),
+                source: od_machine::MemoryAccessError::UnreadableRegion(MemoryRegionKind::Mmio),
+            })
+        );
+        assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(mmio_cpu.rip, ENTRY);
+        assert!(mmio.callback_result.is_err());
+
+        let mut crossing_bus = make_bus(0x7007, Arc::clone(&device_calls));
+        let crossing_entries_before = walk_entries(&mut crossing_bus);
+        let mut crossing_cpu = state(BASE + 0xffc);
+        let crossing_before = crossing_cpu.clone();
+        assert_eq!(
+            published.execute_paged_mov_rax_rbx_v2(
+                &mut crossing_cpu,
+                &mut crossing_bus,
+                CR3,
+                EFER,
+                context(),
+            ),
+            Err(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: BASE + 0xffc,
+                length: 8,
+            })
+        );
+        assert_eq!(crossing_cpu, crossing_before);
+        assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(walk_entries(&mut crossing_bus), crossing_entries_before);
+
+        // CPL3 succeeds only when every traversed paging entry is user-readable.
+        let mut user_bus = make_bus(0x7007, Arc::clone(&device_calls));
+        for address in [0x1000, 0x2000, 0x3020, 0x4000] {
+            let entry = get(&mut user_bus, address);
+            put(&mut user_bus, address, entry | 4);
+        }
+        put(&mut user_bus, 0x7120, 0xa1b2_c3d4_e5f6_0718);
+        let user_entries_before = walk_entries(&mut user_bus);
+        let mut user_cpu = state(BASE + 0x120);
+        let user_result = published
+            .execute_paged_mov_rax_rbx_v2(
+                &mut user_cpu,
+                &mut user_bus,
+                CR3,
+                EFER,
+                context_for(PrivilegeLevel::Ring3),
+            )
+            .unwrap();
+        assert_eq!(user_result.callback_result.unwrap().retired_instructions, 1);
+        assert_eq!(
+            user_cpu.gpr[od_isa::Register::Rax as usize],
+            0xa1b2_c3d4_e5f6_0718
+        );
+        assert_eq!(user_cpu.rip, ENTRY + 3);
+        assert_eq!(
+            user_result.committed_ad_updates,
+            expected_ad_updates(user_entries_before, 4)
+        );
+        assert_eq!(user_result.committed_writes, expected_ad_ranges(4));
+        let user_entries_after = walk_entries(&mut user_bus);
+        assert_eq!(
+            user_entries_after,
+            user_entries_before.map(|v| v | (1 << 5))
+        );
+        assert!(user_entries_after.iter().all(|entry| entry & (1 << 6) == 0));
+
+        // A supervisor-only leaf must fault for CPL3. If this explicit data
+        // access were downgraded to Ring0, the same present/RW mapping would
+        // incorrectly succeed, so this guards the privilege handoff itself.
+        let mut supervisor_leaf_bus = make_bus(0x7003, Arc::clone(&device_calls));
+        put(&mut supervisor_leaf_bus, 0x7120, 0x1122_3344_5566_7788);
+        let supervisor_leaf_before = walk_entries(&mut supervisor_leaf_bus);
+        let mut supervisor_leaf_cpu = state(BASE + 0x120);
+        let supervisor_leaf_cpu_before = supervisor_leaf_cpu.clone();
+        let supervisor_leaf_fault = published
+            .execute_paged_mov_rax_rbx_v2(
+                &mut supervisor_leaf_cpu,
+                &mut supervisor_leaf_bus,
+                CR3,
+                EFER,
+                context_for(PrivilegeLevel::Ring3),
+            )
+            .unwrap();
+        let supervisor_record = supervisor_leaf_fault.page_fault.as_ref().unwrap();
+        assert_eq!(supervisor_record.saved_rip(), ENTRY);
+        assert_eq!(supervisor_record.cr2_value(), BASE + 0x120);
+        assert_eq!(supervisor_record.access(), AccessKind::Read);
+        assert_eq!(supervisor_record.fault().vector, 14);
+        assert_eq!(supervisor_record.fault().error_code, Some(0x5));
+        assert_eq!(
+            supervisor_leaf_fault.access_error,
+            Some(TrackedAccessError::PageFault {
+                record: supervisor_record.clone(),
+                reason: od_machine::PageFaultReason::Protection {
+                    user_denied: true,
+                    write_denied: false,
+                    execute_denied: false,
+                },
+            })
+        );
+        assert_eq!(
+            supervisor_leaf_fault.committed_ad_updates,
+            expected_ad_updates(supervisor_leaf_before, 4)
+        );
+        assert_eq!(
+            supervisor_leaf_fault.committed_writes,
+            expected_ad_ranges(4)
+        );
+        let supervisor_leaf_after = walk_entries(&mut supervisor_leaf_bus);
+        assert_eq!(
+            supervisor_leaf_after,
+            supervisor_leaf_before.map(|entry| entry | (1 << 5))
+        );
+        assert!(
+            supervisor_leaf_after
+                .iter()
+                .all(|entry| entry & (1 << 6) == 0)
+        );
+        assert_eq!(
+            supervisor_leaf_after[3] & 4,
+            0,
+            "leaf remains supervisor-only"
+        );
+        assert_eq!(supervisor_leaf_cpu, supervisor_leaf_cpu_before);
+        let supervisor_leaf_exit = supervisor_leaf_fault.callback_result.unwrap();
+        assert_eq!(
+            supervisor_leaf_exit.exit,
+            MemoryOperationExecutionExitV2::GuestFault(supervisor_record.fault().clone())
+        );
+        assert_eq!(supervisor_leaf_exit.retired_instructions, 0);
+        assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+
+        // Every unsupported CPU context is rejected before a page walk or commit.
+        for (label, mode, privilege, activity, shadow, expected_error) in [
+            (
+                "unsupported privilege",
+                InstructionMode::Long64,
+                PrivilegeLevel::Ring1,
+                Some(od_isa::state::CpuActivity::Running),
+                Some(od_isa::state::StiShadow::Clear),
+                crate::PagedMemoryLoadV2Error::UnsupportedPrivilege(PrivilegeLevel::Ring1),
+            ),
+            (
+                "halted",
+                InstructionMode::Long64,
+                PrivilegeLevel::Ring0,
+                Some(od_isa::state::CpuActivity::Halted),
+                Some(od_isa::state::StiShadow::Clear),
+                crate::PagedMemoryLoadV2Error::UnsupportedCpuActivity(
+                    od_isa::state::CpuActivity::Halted,
+                ),
+            ),
+            (
+                "blocking STI shadow",
+                InstructionMode::Long64,
+                PrivilegeLevel::Ring0,
+                Some(od_isa::state::CpuActivity::Running),
+                Some(od_isa::state::StiShadow::Blocking),
+                crate::PagedMemoryLoadV2Error::UnsupportedInterruptShadow(
+                    od_isa::state::StiShadow::Blocking,
+                ),
+            ),
+        ] {
+            let mut rejected_bus = make_bus(0x7007, Arc::clone(&device_calls));
+            let entries_before = walk_entries(&mut rejected_bus);
+            let mut rejected_cpu = state(BASE + 0x120);
+            rejected_cpu.activity = activity;
+            rejected_cpu.sti_shadow = shadow;
+            let cpu_before = rejected_cpu.clone();
+            let rejected_context = AccessContext {
+                mode,
+                privilege,
+                origin: AccessOrigin::Explicit,
+            };
+            assert_eq!(
+                published.execute_paged_mov_rax_rbx_v2(
+                    &mut rejected_cpu,
+                    &mut rejected_bus,
+                    CR3,
+                    EFER,
+                    rejected_context,
+                ),
+                Err(expected_error),
+                "{label}"
+            );
+            assert_eq!(rejected_cpu, cpu_before, "{label}");
+            assert_eq!(walk_entries(&mut rejected_bus), entries_before, "{label}");
+            assert_eq!(device_calls.load(Ordering::SeqCst), 0, "{label}");
+        }
+
+        drop(published);
+        let unsupported = publish_load(&[0x48, 0x8b, 0x0b]); // MOV RCX,[RBX]
+        let mut unsupported_bus = make_bus(0x7007, Arc::clone(&device_calls));
+        let mut unsupported_cpu = state(BASE + 0x120);
+        let unsupported_before = unsupported_cpu.clone();
+        let unsupported_entries_before = walk_entries(&mut unsupported_bus);
+        assert_eq!(
+            unsupported.execute_paged_mov_rax_rbx_v2(
+                &mut unsupported_cpu,
+                &mut unsupported_bus,
+                CR3,
+                EFER,
+                context(),
+            ),
+            Err(PagedMemoryLoadV2Error::UnsupportedBlock),
+        );
+        assert_eq!(unsupported_cpu, unsupported_before);
+        assert_eq!(
+            walk_entries(&mut unsupported_bus),
+            unsupported_entries_before
+        );
+        assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn s4_16b_guest_qword_store_invalidates_both_code_aliases() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const STORE_RIP: u64 = 0x0080_2100;
+        const CR0: u64 = 0x8001_0033;
+        const CR3: u64 = 0x1000;
+        const CR4: u64 = 1 << 5;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const RAM_BYTES: u64 = 0x9000;
+
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x3020, 0x4007),
+            (0x4008, 0x7007),
+            (0x4010, 0x8007),
+            (0x4018, 0x5007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7100), &original)
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x8100), &[0x48, 0x89, 0x0b])
+            .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(CR0, CR3, CR4, EFER).unwrap();
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let mut session =
+            PagedCodeSession::new(&mut bus, paging, AccessContext::default()).unwrap();
+
+        let mut alias_state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut alias_state, 1)
+            .unwrap();
+        alias_state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut alias_state, 1)
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+
+        let replacement = 0xa1b2_c3d4_e5f6_0718;
+        let mut store_state = od_isa::LongModeState {
+            rip: STORE_RIP,
+            cr0: Some(CR0),
+            cr3: Some(CR3),
+            cr4: Some(CR4),
+            ..Default::default()
+        };
+        store_state.gpr[od_isa::Register::Rbx as usize] = ALIAS_B + 2;
+        store_state.gpr[od_isa::Register::Rcx as usize] = replacement;
+        assert_eq!(
+            session
+                .bus
+                .tracked_code_snapshot(&paging, STORE_RIP, 3, AccessContext::default())
+                .unwrap()
+                .bytes,
+            [0x48, 0x89, 0x0b]
+        );
+        let result = session.step_guest_mov(&mut store_state, 0).unwrap();
+
+        assert_eq!(
+            result.step.cpu.instructions_executed, 1,
+            "guest store did not retire: {:#?}",
+            result.step
+        );
+        assert_eq!(store_state.rip, STORE_RIP + 3);
+        assert_eq!(store_state.cr3, Some(CR3));
+        assert!(
+            result
+                .committed_writes
+                .iter()
+                .any(|range| range.start().get() == 0x7102 && range.len() == 8)
+        );
+        assert!(result.code_invalidated);
+        assert_eq!(session.resident_entries(), 0);
+        let patched = session
+            .bus
+            .tracked_code_snapshot(&paging, ALIAS_A, original.len(), AccessContext::default())
+            .unwrap();
+        assert_eq!(&patched.bytes[2..10], &replacement.to_le_bytes());
+
+        alias_state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut alias_state, 1)
+            .unwrap();
+        assert_eq!(alias_state.gpr[od_isa::Register::Rax as usize], replacement);
+        alias_state.rip = ALIAS_A;
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut alias_state, 1)
+            .unwrap();
+        assert_eq!(alias_state.gpr[od_isa::Register::Rax as usize], replacement);
+
+        let code_page = GuestPhysicalAddress::new(0x7000);
+        let code_generation_before_unrelated_store =
+            session.bus.code_page_generation(code_page).unwrap();
+        assert_eq!(session.resident_entries(), 2);
+        let unrelated_value = 0x1020_3040_5060_7080;
+        let mut unrelated_store = od_isa::LongModeState {
+            rip: STORE_RIP,
+            cr0: Some(CR0),
+            cr3: Some(CR3),
+            cr4: Some(CR4),
+            ..Default::default()
+        };
+        unrelated_store.gpr[od_isa::Register::Rbx as usize] = 0x0080_3100;
+        unrelated_store.gpr[od_isa::Register::Rcx as usize] = unrelated_value;
+        let unrelated_result = session.step_guest_mov(&mut unrelated_store, 0).unwrap();
+        assert_eq!(unrelated_result.step.cpu.instructions_executed, 1);
+        assert!(!unrelated_result.code_invalidated);
+        assert_eq!(session.resident_entries(), 2);
+        assert_eq!(
+            session.bus.code_page_generation(code_page).unwrap(),
+            code_generation_before_unrelated_store
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x5100), AccessWidth::Qword)
+                .unwrap(),
+            unrelated_value
+        );
+
+        let mut invalid_input_state = unrelated_store.clone();
+        let invalid_input_state_before = invalid_input_state.clone();
+        assert!(matches!(
+            session.step_guest_mov(&mut invalid_input_state, u64::MAX),
+            Err(PagedCodeSessionError::StoreStep(
+                od_machine::PagedMovStepError::CpuInput(
+                    od_isa::execute::RunInputError::InvalidRflagsDefined { .. }
+                )
+            ))
+        ));
+        assert_eq!(invalid_input_state, invalid_input_state_before);
+    }
+
+    #[test]
+    fn s4_16c_physical_loader_write_invalidates_only_committed_code_page() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const CR3: u64 = 0x1000;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const RAM_BYTES: u64 = 0x8000;
+
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+        let rom = GuestPhysicalRange::new(GuestPhysicalAddress::new(RAM_BYTES), 0x1000).unwrap();
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(rom, MemoryRegionKind::Rom),
+            ],
+        )
+        .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x3020, 0x4007),
+            (0x4008, 0x7007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7100), &original)
+            .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(0x8001_0033, CR3, 1 << 5, EFER).unwrap();
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let mut session =
+            PagedCodeSession::new(&mut bus, paging, AccessContext::default()).unwrap();
+
+        let mut state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut state, 1)
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+
+        // A different guest page in the same 16 KiB host-page-sized window
+        // advances only that physical page's generation and keeps both entries.
+        let code_page = GuestPhysicalAddress::new(0x7000);
+        let code_generation = session.bus.code_page_generation(code_page).unwrap();
+        let other_page = GuestPhysicalAddress::new(0x6000);
+        let other_generation = session.bus.code_page_generation(other_page).unwrap();
+        let other = session.write_physical_ram(other_page, &[0x5a]).unwrap();
+        assert_eq!(
+            other.committed_writes,
+            [GuestPhysicalRange::new(other_page, 1).unwrap()]
+        );
+        assert!(!other.code_invalidated);
+        assert_eq!(
+            session.bus.code_page_generation(code_page).unwrap(),
+            code_generation
+        );
+        assert!(session.bus.code_page_generation(other_page).unwrap() > other_generation);
+        assert_eq!(session.resident_entries(), 2);
+
+        // A committed write elsewhere in the backing page is conservatively
+        // treated as code-affecting even though it is outside the admitted range.
+        let outside_range = session
+            .write_physical_ram(GuestPhysicalAddress::new(0x7180), &[0x90])
+            .unwrap();
+        assert!(outside_range.code_invalidated);
+        assert_eq!(outside_range.committed_writes.len(), 1);
+        assert_eq!(session.resident_entries(), 0);
+
+        // Rewarm both aliases, replace the immediate with a physical loader
+        // write, then verify callbacks and both subsequent alias executions.
+        state.rip = ALIAS_A;
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut state, 1)
+            .unwrap();
+        let immediate = 0x1020_3040_5060_7080u64;
+        let generation_before = session.bus.code_page_generation(code_page).unwrap();
+        let patched = session
+            .write_physical_ram(GuestPhysicalAddress::new(0x7102), &immediate.to_le_bytes())
+            .unwrap();
+        assert_eq!(
+            patched.committed_writes,
+            [GuestPhysicalRange::new(GuestPhysicalAddress::new(0x7102), 8).unwrap()]
+        );
+        assert!(patched.code_invalidated);
+        assert!(session.bus.code_page_generation(code_page).unwrap() > generation_before);
+        assert_eq!(session.resident_entries(), 0);
+        state.rip = ALIAS_B;
+        state.gpr[od_isa::Register::Rax as usize] = 0;
+        let result_b = session
+            .execute_alias(ALIAS_B, original.len(), &mut state, 1)
+            .unwrap();
+        assert_eq!(result_b.retired_native, 1);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], immediate);
+        state.rip = ALIAS_A;
+        state.gpr[od_isa::Register::Rax as usize] = 0;
+        let result_a = session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        assert_eq!(result_a.retired_native, 1);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], immediate);
+
+        // A range crossing the RAM/ROM boundary and a ROM write both fail
+        // before commit, emit no callback and preserve the warmed aliases.
+        let generation_before_failure = session.bus.code_page_generation(code_page).unwrap();
+        let before_boundary = session
+            .bus
+            .read_physical(GuestPhysicalAddress::new(0x7fff), AccessWidth::Byte)
+            .unwrap();
+        assert!(matches!(
+            session.write_physical_ram(GuestPhysicalAddress::new(0x7fff), &[0xaa, 0xbb]),
+            Err(PagedCodeSessionError::Patch(_))
+        ));
+        assert!(matches!(
+            session.write_physical_ram(GuestPhysicalAddress::new(0x8000), &[0xcc]),
+            Err(PagedCodeSessionError::Patch(_))
+        ));
+        let mut rejected_callbacks = Vec::new();
+        assert!(
+            session
+                .bus
+                .patch_physical_ram_with_callback(
+                    GuestPhysicalAddress::new(0x7fff),
+                    &[0xaa, 0xbb],
+                    |range| rejected_callbacks.push(range),
+                )
+                .is_err()
+        );
+        assert!(
+            session
+                .bus
+                .patch_physical_ram_with_callback(
+                    GuestPhysicalAddress::new(0x8000),
+                    &[0xcc],
+                    |range| rejected_callbacks.push(range),
+                )
+                .is_err()
+        );
+        assert!(rejected_callbacks.is_empty());
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x7fff), AccessWidth::Byte)
+                .unwrap(),
+            before_boundary
+        );
+        assert_eq!(
+            session.bus.code_page_generation(code_page).unwrap(),
+            generation_before_failure
+        );
+        assert_eq!(session.resident_entries(), 2);
+    }
+
+    #[test]
+    fn s4_16d_tracked_page_walk_writes_reconcile_before_errors() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const FAULTING_ALIAS: u64 = 0x0000_4000_0100_0000;
+        const CR3: u64 = 0x7000;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const CODE_PAGE: u64 = 0x7000;
+        const RAM_BYTES: u64 = 0x9000;
+
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x7000, 0x2007), // PML4[0], physically in code backing.
+            (0x7400, 0x2007), // PML4[128], used by the failing alias fetch.
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x3020, 0x4007),
+            (CODE_PAGE + 0x10, 0x4007), // Unused alternate PD entry.
+            (CODE_PAGE + 0x18, 0x4007),
+            (0x4008, 0x7005), // Read-only code leaf; instruction fetch is allowed.
+            (0x4010, 0x8007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(CODE_PAGE + 0x100), &original)
+            .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(0x8001_0033, CR3, 1 << 5, EFER).unwrap();
+        let ring3 = AccessContext {
+            mode: od_isa::memory::InstructionMode::Long64,
+            privilege: od_isa::memory::PrivilegeLevel::Ring3,
+            origin: od_isa::memory::AccessOrigin::Explicit,
+        };
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let mut session = PagedCodeSession::new(&mut bus, paging, ring3).unwrap();
+        let mut state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut state, 1)
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+
+        // Redirect the PDPT entry through an unused page-directory table that
+        // lives in the code backing. This changes only the non-code PDPT page;
+        // the first walk through the alternate PDE commits its A bit into the
+        // backing, then the read-only leaf faults on the requested write.
+        let generation_before_remap = session
+            .bus
+            .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+            .unwrap();
+        session
+            .bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x2000),
+                AccessWidth::Qword,
+                CODE_PAGE | 0x7,
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+                .unwrap(),
+            generation_before_remap,
+            "fixture remap must not change the code backing"
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(
+                    GuestPhysicalAddress::new(CODE_PAGE + 0x10),
+                    AccessWidth::Qword,
+                )
+                .unwrap(),
+            0x4007,
+            "alternate PDE Accessed bit must start clear"
+        );
+        let generation_before_patch = session
+            .bus
+            .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+        assert!(matches!(
+            session.patch_alias_byte(ALIAS_A + 2, 0xaa),
+            Err(PagedCodeSessionError::TrackedPatch(_))
+        ));
+        assert_eq!(session.resident_entries(), 0);
+        assert!(
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+                .unwrap()
+                > generation_before_patch
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(
+                    GuestPhysicalAddress::new(CODE_PAGE + 0x102),
+                    AccessWidth::Byte,
+                )
+                .unwrap(),
+            u64::from(original[2])
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(
+                    GuestPhysicalAddress::new(CODE_PAGE + 0x10),
+                    AccessWidth::Qword,
+                )
+                .unwrap(),
+            0x4027,
+            "the alternate PDE's committed A update must remain visible"
+        );
+
+        // Rewarm both aliases, then fetch through the unused PML4 branch. Its
+        // root entry was prepared before execution and remains untouched until
+        // this fetch, which commits A into the code page before a missing PDE.
+        state.rip = ALIAS_A;
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut state, 1)
+            .unwrap();
+        state.rip = ALIAS_A;
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut state, 1)
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+        let generation_before_fetch = session
+            .bus
+            .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+            .unwrap();
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x7400), AccessWidth::Qword)
+                .unwrap(),
+            0x2007,
+            "the unused PML4 branch must still have A=0 before the fetch"
+        );
+        let mut faulting_state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: FAULTING_ALIAS,
+            ..Default::default()
+        };
+        let faulting_before = faulting_state.clone();
+        assert!(matches!(
+            session.execute_alias(FAULTING_ALIAS, original.len(), &mut faulting_state, 1,),
+            Err(PagedCodeSessionError::Snapshot(_))
+        ));
+        assert_eq!(faulting_state, faulting_before);
+        assert_eq!(session.resident_entries(), 0);
+        assert!(
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(CODE_PAGE))
+                .unwrap()
+                > generation_before_fetch
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x7400), AccessWidth::Qword)
+                .unwrap(),
+            0x2027,
+            "the failed fetch's committed root A update must remain visible"
+        );
+    }
+
+    #[test]
+    fn s4_16e_retired_invlpg_resets_alias_session_after_remap() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const INVLPG_RIP: u64 = 0x0000_0000_4000_2100;
+        const ALIAS_C: u64 = 0x0080_3180;
+        const CR0: u64 = 0x8001_0033;
+        const CR3: u64 = 0x1000;
+        const CR4: u64 = 1 << 5;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const OLD_CODE_PAGE: u64 = 0x7000;
+        const NEW_CODE_PAGE: u64 = 0x8000;
+        const INVLPG_CODE_PAGE: u64 = 0x9000;
+        const RAM_BYTES: u64 = 0xa000;
+
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x2008, OLD_CODE_PAGE | 0x7),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x3020, 0x4007),
+            (0x4008, OLD_CODE_PAGE | 0x7),
+            (0x4018, NEW_CODE_PAGE | 0x7),
+            (OLD_CODE_PAGE, 0x5000 | 0x7),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let old_immediate = 0x1111_2222_3333_4444u64;
+        let new_immediate = 0xa1b2_c3d4_e5f6_0718u64;
+        let make_mov = |value: u64| {
+            let mut bytes = vec![0x48, 0xb8];
+            bytes.extend_from_slice(&value.to_le_bytes());
+            bytes
+        };
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(OLD_CODE_PAGE + 0x100),
+            &make_mov(old_immediate),
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(NEW_CODE_PAGE + 0x100),
+            &make_mov(new_immediate),
+        )
+        .unwrap();
+        bus.patch_physical_ram(
+            GuestPhysicalAddress::new(INVLPG_CODE_PAGE + 0x100),
+            &[0x0f, 0x01, 0x3b],
+        )
+        .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(CR0, CR3, CR4, EFER).unwrap();
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let kernel_context = AccessContext {
+            mode: od_isa::memory::InstructionMode::Long64,
+            privilege: od_isa::memory::PrivilegeLevel::Ring0,
+            origin: od_isa::memory::AccessOrigin::Explicit,
+        };
+        let mut session = PagedCodeSession::new(&mut bus, paging, kernel_context).unwrap();
+
+        let mut state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        let old_a = session.execute_alias(ALIAS_A, 10, &mut state, 1).unwrap();
+        assert_eq!(old_a.retired_native, 1);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], old_immediate);
+        state.rip = ALIAS_B;
+        state.gpr[od_isa::Register::Rax as usize] = 0;
+        let old_b = session.execute_alias(ALIAS_B, 10, &mut state, 1).unwrap();
+        assert_eq!(old_b.retired_native, 1);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], old_immediate);
+        assert_eq!(session.resident_entries(), 2);
+
+        // The INVLPG fetch walks a second PDPT branch whose PD is the warmed
+        // code backing itself. Its A-bit update commits there before the next
+        // level faults, so both idle alias entries must be invalidated while
+        // the session's original admission remains bound.
+        let mut faulting_invlpg = od_isa::LongModeState {
+            rip: INVLPG_RIP,
+            cr0: Some(CR0),
+            cr3: Some(CR3),
+            cr4: Some(CR4),
+            activity: Some(od_isa::state::CpuActivity::Running),
+            sti_shadow: Some(od_isa::state::StiShadow::Clear),
+            ..Default::default()
+        };
+        let fault = session
+            .execute_invlpg(&mut faulting_invlpg, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert!(matches!(
+            fault.step.cpu.exit,
+            od_isa::execute::InvlpgExit::Fault(_)
+        ));
+        assert!(fault.step.page_fault.is_some());
+        assert!(fault.committed_writes.iter().any(|range| {
+            let start = range.start().get();
+            let end = range.end_exclusive();
+            u128::from(start) < u128::from(OLD_CODE_PAGE + 0x1000)
+                && u128::from(OLD_CODE_PAGE) < end
+        }));
+        assert!(!fault.session_reset);
+        assert_eq!(session.resident_entries(), 0);
+        assert_eq!(
+            session.backing_page,
+            Some(GuestPhysicalAddress::new(OLD_CODE_PAGE))
+        );
+        assert_eq!(session.code_page_offset, Some((ALIAS_A & 0xfff) as usize));
+        assert_eq!(session.code_length, Some(10));
+        assert_eq!(
+            session.aliases,
+            [Some(ALIAS_A & !0xfff), Some(ALIAS_B & !0xfff)]
+        );
+
+        // Complete the previously faulting fetch mapping for later retired
+        // INVLPG instructions. The missing leaf PTE was the cause of #PF.
+        session
+            .write_physical_ram(
+                GuestPhysicalAddress::new(0x5010),
+                &(INVLPG_CODE_PAGE | 0x7).to_le_bytes(),
+            )
+            .unwrap();
+        state.rip = ALIAS_A;
+        session.execute_alias(ALIAS_A, 10, &mut state, 1).unwrap();
+        state.rip = ALIAS_B;
+        session.execute_alias(ALIAS_B, 10, &mut state, 1).unwrap();
+        assert_eq!(session.resident_entries(), 2);
+
+        // A retired noncanonical INVLPG has no translation effect. A rejected
+        // instruction input likewise preserves the warmed native aliases.
+        let mut invlpg_state = od_isa::LongModeState {
+            rip: INVLPG_RIP,
+            cr0: Some(CR0),
+            cr3: Some(CR3),
+            cr4: Some(CR4),
+            activity: Some(od_isa::state::CpuActivity::Running),
+            sti_shadow: Some(od_isa::state::StiShadow::Clear),
+            ..Default::default()
+        };
+        invlpg_state.gpr[od_isa::Register::Rbx as usize] = 0x0000_8000_0000_0000;
+        let noncanonical = session
+            .execute_invlpg(&mut invlpg_state, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert_eq!(
+            noncanonical.step.cpu.exit,
+            od_isa::execute::InvlpgExit::Retired
+        );
+        assert_eq!(noncanonical.step.cpu.instructions_executed, 1);
+        assert!(!noncanonical.session_reset);
+        assert_eq!(session.resident_entries(), 2);
+        invlpg_state.rip = INVLPG_RIP;
+        let rejected = session.execute_invlpg(&mut invlpg_state, 1 << 63).unwrap();
+        assert!(matches!(
+            rejected.step.cpu.exit,
+            od_isa::execute::InvlpgExit::Rejected(_)
+        ));
+        assert!(!rejected.session_reset);
+        assert_eq!(session.resident_entries(), 2);
+
+        // Remap the shared leaf to a new code page. The PTE write itself is
+        // not an invalidation event and must leave the old native entries.
+        let old_generation = session
+            .bus
+            .code_page_generation(GuestPhysicalAddress::new(OLD_CODE_PAGE))
+            .unwrap();
+        let remap_result = session
+            .write_physical_ram(
+                GuestPhysicalAddress::new(0x4008),
+                &(NEW_CODE_PAGE | 0x7).to_le_bytes(),
+            )
+            .unwrap();
+        assert!(!remap_result.code_invalidated);
+        assert_eq!(session.resident_entries(), 2);
+        assert_eq!(
+            session
+                .bus
+                .code_page_generation(GuestPhysicalAddress::new(OLD_CODE_PAGE))
+                .unwrap(),
+            old_generation
+        );
+
+        state.rip = ALIAS_A;
+        assert!(matches!(
+            session.execute_alias(ALIAS_A, 10, &mut state, 1),
+            Err(PagedCodeSessionError::UnsupportedAlias)
+        ));
+        assert_eq!(session.resident_entries(), 2);
+
+        // Each virtual alias requires its own architectural INVLPG. The
+        // bounded host session conservatively clears both native cache entries
+        // and its pinned backing on either retired canonical invalidation.
+        for alias in [ALIAS_A, ALIAS_B] {
+            invlpg_state.rip = INVLPG_RIP;
+            invlpg_state.gpr[od_isa::Register::Rbx as usize] = alias;
+            let result = session
+                .execute_invlpg(&mut invlpg_state, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(
+                result.step.cpu.exit,
+                od_isa::execute::InvlpgExit::TranslationInvalidation(
+                    od_isa::TranslationInvalidation::Invlpg {
+                        linear_address: alias
+                    }
+                )
+            );
+            assert_eq!(result.step.cpu.instructions_executed, 1);
+            assert!(result.session_reset);
+            assert_eq!(session.resident_entries(), 0);
+        }
+
+        // A new alias with a different byte offset and code length can be
+        // admitted only after the invalidation released the old binding.
+        let mut relocated_code = make_mov(new_immediate);
+        relocated_code.push(0x90);
+        session
+            .write_physical_ram(
+                GuestPhysicalAddress::new(NEW_CODE_PAGE + 0x180),
+                &relocated_code,
+            )
+            .unwrap();
+        state.rip = ALIAS_C;
+        state.gpr[od_isa::Register::Rax as usize] = 0;
+        let new_c = session.execute_alias(ALIAS_C, 11, &mut state, 1).unwrap();
+        assert_eq!(new_c.retired_native, 1);
+        assert_eq!(state.rip, ALIAS_C + 10);
+        assert_eq!(state.gpr[od_isa::Register::Rax as usize], new_immediate);
+        assert_eq!(
+            session.backing_page,
+            Some(GuestPhysicalAddress::new(NEW_CODE_PAGE))
+        );
+        assert_eq!(session.code_page_offset, Some((ALIAS_C & 0xfff) as usize));
+        assert_eq!(session.code_length, Some(11));
+        assert_eq!(session.aliases, [Some(ALIAS_C & !0xfff), None]);
+    }
+
+    #[test]
+    fn s4_16b_fault_after_code_backing_ad_write_invalidates_without_operand_commit() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const STORE_RIP: u64 = 0x0080_2100;
+        const FAULTING_USER_ADDRESS: u64 = 0x4000_0000_0000;
+        const CR0: u64 = 0x8001_0033;
+        const CR3: u64 = 0x7000;
+        const CR4: u64 = 1 << 5;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const RAM_BYTES: u64 = 0x9000;
+
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus =
+            MachineBus::new(map, RamLimits::new(RAM_BYTES), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x7000, 0x2007), // PML4[0] is the code backing page.
+            (0x7400, 0x2007), // PML4[128], used by the faulting data walk.
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x3020, 0x4007),
+            (0x4008, 0x7007),
+            (0x4010, 0x8007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7100), &original)
+            .unwrap();
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x8100), &[0x48, 0x89, 0x0b])
+            .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(CR0, CR3, CR4, EFER).unwrap();
+        let ring3 = AccessContext {
+            mode: od_isa::memory::InstructionMode::Long64,
+            privilege: od_isa::memory::PrivilegeLevel::Ring3,
+            origin: od_isa::memory::AccessOrigin::Explicit,
+        };
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let mut session = PagedCodeSession::new(&mut bus, paging, ring3).unwrap();
+        let mut alias_state = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut alias_state, 1)
+            .unwrap();
+        alias_state.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut alias_state, 1)
+            .unwrap();
+        assert_eq!(session.resident_entries(), 2);
+
+        let code_page = GuestPhysicalAddress::new(0x7000);
+        let generation_before_fault = session.bus.code_page_generation(code_page).unwrap();
+        let mut store_state = od_isa::LongModeState {
+            rip: STORE_RIP,
+            cr0: Some(CR0),
+            cr3: Some(CR3),
+            cr4: Some(CR4),
+            ..Default::default()
+        };
+        store_state.gpr[od_isa::Register::Rbx as usize] = FAULTING_USER_ADDRESS;
+        store_state.gpr[od_isa::Register::Rcx as usize] = 0xa1b2_c3d4_e5f6_0718;
+        let state_before_fault = store_state.clone();
+        assert_eq!(
+            session
+                .bus
+                .tracked_code_snapshot(&paging, STORE_RIP, 3, ring3)
+                .unwrap()
+                .bytes,
+            [0x48, 0x89, 0x0b],
+            "STORE_RIP must translate to the intended CPL3 MOV store before stepping"
+        );
+        let result = session.step_guest_mov(&mut store_state, 0).unwrap();
+
+        assert_eq!(result.step.cpu.instructions_executed, 0);
+        assert_eq!(store_state, state_before_fault);
+        assert!(
+            matches!(
+                result.step.cpu.exit,
+                od_isa::execute::RunExit::Fault(od_isa::ArchitecturalFault {
+                    vector: 14,
+                    error_code: Some(0x6),
+                    linear_address: Some(FAULTING_USER_ADDRESS),
+                })
+            ),
+            "unexpected paged MOV result: {:#?}",
+            result.step
+        );
+        assert_eq!(
+            result.committed_writes,
+            [GuestPhysicalRange::new(GuestPhysicalAddress::new(0x7400), 8).unwrap()],
+            "only the PML4 Accessed-bit write may commit; the operand write must not"
+        );
+        assert_eq!(
+            session
+                .bus
+                .read_physical(GuestPhysicalAddress::new(0x7400), AccessWidth::Qword)
+                .unwrap(),
+            0x2027,
+            "the faulting data walk must leave the exact PML4 Accessed bit set"
+        );
+        assert!(result.code_invalidated);
+        assert!(session.bus.code_page_generation(code_page).unwrap() > generation_before_fault);
+        assert_eq!(session.resident_entries(), 0);
+    }
+
+    #[test]
+    fn s4_16a_loader_patch_through_one_alias_invalidates_the_other_alias() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const CR3: u64 = 0x1000;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x9000).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus = MachineBus::new(map, RamLimits::new(0x9000), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x4008, 0x7007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7100), &original)
+            .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(0x8001_0033, CR3, 1 << 5, EFER).unwrap();
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let mut session =
+            PagedCodeSession::new(&mut bus, paging, AccessContext::default()).unwrap();
+
+        let mut first = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        // A rejected one-byte prefix must not bind the candidate alias or
+        // range; the same session can then admit the full ten-byte block.
+        assert!(matches!(
+            session.execute_alias(ALIAS_A, 1, &mut first, 1),
+            Err(PagedCodeSessionError::Admission(_))
+        ));
+        assert_eq!(session.resident_entries(), 0);
+        let result_a = session
+            .execute_alias(ALIAS_A, original.len(), &mut first, 1)
+            .unwrap();
+        assert_eq!(result_a.retired_native, 1);
+        assert_eq!(first.gpr[0], 0x8877_6655_4433_2211);
+        first.rip = ALIAS_B + 1;
+        assert!(matches!(
+            session.execute_alias(ALIAS_B + 1, original.len(), &mut first, 1),
+            Err(PagedCodeSessionError::UnsupportedAlias)
+        ));
+        first.rip = ALIAS_B;
+        let result_b = session
+            .execute_alias(ALIAS_B, original.len(), &mut first, 1)
+            .unwrap();
+        assert_eq!(result_b.retired_native, 1);
+        assert_eq!(first.gpr[0], 0x8877_6655_4433_2211);
+        assert_eq!(session.resident_entries(), 2);
+        // The requested range begins at page offset 0x100. A patch at offset
+        // 2 must be rejected even though it lies within the same page.
+        assert!(matches!(
+            session.patch_alias_byte((ALIAS_A & !0xfff) + 2, 0xaa),
+            Err(PagedCodeSessionError::UnsupportedAlias)
+        ));
+
+        // A write-protected alias fails before the RAM commit and leaves both
+        // compiled alias entries resident.
+        session
+            .bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x4008),
+                AccessWidth::Qword,
+                0x7005,
+                |_| {},
+            )
+            .unwrap();
+        assert!(matches!(
+            session.patch_alias_byte(ALIAS_A + 2, 0xaa),
+            Err(PagedCodeSessionError::TrackedPatch(_))
+        ));
+        assert_eq!(session.resident_entries(), 2);
+        session
+            .bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x4008),
+                AccessWidth::Qword,
+                0x7007,
+                |_| {},
+            )
+            .unwrap();
+        let unchanged = session
+            .bus
+            .tracked_code_snapshot(&paging, ALIAS_A, original.len(), AccessContext::default())
+            .unwrap()
+            .bytes;
+        assert_eq!(unchanged, original);
+
+        session.patch_alias_byte(ALIAS_A + 2, 0xaa).unwrap();
+        assert_eq!(session.resident_entries(), 0);
+        first.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut first, 1)
+            .unwrap();
+        assert_eq!(first.gpr[0], 0x8877_6655_4433_22aa);
+        first.rip = ALIAS_A;
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut first, 1)
+            .unwrap();
+        assert_eq!(first.gpr[0], 0x8877_6655_4433_22aa);
     }
 }

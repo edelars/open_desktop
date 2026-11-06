@@ -205,6 +205,7 @@ pub enum MemoryAccessError {
         requested_bytes: u64,
         max_bytes: u64,
     },
+    CodeGenerationExhausted,
     Unmapped(GuestPhysicalAddress),
     AccessCrossesRegion(GuestPhysicalRange),
     UnreadableRegion(MemoryRegionKind),
@@ -222,6 +223,7 @@ impl std::error::Error for MemoryAccessError {}
 struct Region {
     spec: MemoryRegionSpec,
     backing: Option<Vec<u8>>,
+    page_generations: Vec<u64>,
 }
 
 /// The sole owner of production RAM backing in this crate.
@@ -261,7 +263,8 @@ impl PhysicalMemory {
         for &spec in &map.regions {
             // Framebuffer backing is allocated like RAM but is not counted in
             // `requested_ram`; its size is bounded by the map validation.
-            let backing = if matches!(
+            // Page generations exist only for RAM: Framebuffer is never code.
+            let (backing, page_generations) = if matches!(
                 spec.kind,
                 MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer
             ) {
@@ -277,13 +280,59 @@ impl PhysicalMemory {
                         bytes: spec.range.len,
                     })?;
                 bytes.resize(len, 0);
-                Some(bytes)
+                if spec.kind == MemoryRegionKind::Framebuffer {
+                    (Some(bytes), Vec::new())
+                } else {
+                    let covered = (spec.range.start.get() & 0xfff)
+                        .checked_add(spec.range.len)
+                        .and_then(|bytes| bytes.checked_add(0xfff))
+                        .ok_or(MemoryAccessError::AddressOverflow)?
+                        / 0x1000;
+                    let page_count = usize::try_from(covered).map_err(|_| {
+                        MemoryAccessError::AllocationFailed {
+                            bytes: covered.saturating_mul(std::mem::size_of::<u64>() as u64),
+                        }
+                    })?;
+                    let generation_bytes = covered
+                        .checked_mul(std::mem::size_of::<u64>() as u64)
+                        .ok_or(MemoryAccessError::AddressOverflow)?;
+                    let mut generations = Vec::new();
+                    generations.try_reserve_exact(page_count).map_err(|_| {
+                        MemoryAccessError::AllocationFailed {
+                            bytes: generation_bytes,
+                        }
+                    })?;
+                    generations.resize(page_count, 1);
+                    (Some(bytes), generations)
+                }
             } else {
-                None
+                (None, Vec::new())
             };
-            regions.push(Region { spec, backing });
+            regions.push(Region {
+                spec,
+                backing,
+                page_generations,
+            });
         }
         Ok(Self { regions })
+    }
+
+    pub fn code_page_generation(
+        &self,
+        address: GuestPhysicalAddress,
+    ) -> Result<u64, MemoryAccessError> {
+        let (region, _) = self.locate(address, 1)?;
+        if region.spec.kind != MemoryRegionKind::Ram {
+            return Err(MemoryAccessError::UnreadableRegion(region.spec.kind));
+        }
+        let page_index = (address.get() >> 12) - (region.spec.range.start.get() >> 12);
+        let page_index =
+            usize::try_from(page_index).map_err(|_| MemoryAccessError::AddressOverflow)?;
+        region
+            .page_generations
+            .get(page_index)
+            .copied()
+            .ok_or(MemoryAccessError::AddressOverflow)
     }
 
     pub fn read_bytes(
@@ -313,18 +362,51 @@ impl PhysicalMemory {
         let len = checked_access_len(input.len())?;
         let (region_index, offset) = self.locate_index(address, len)?;
         let region = &mut self.regions[region_index];
+        if region.backing.is_none() {
+            return Err(MemoryAccessError::ReadOnlyRegion(region.spec.kind));
+        }
+        if region.spec.kind == MemoryRegionKind::Framebuffer {
+            // Device-owned pixel memory: no page generations, no callback.
+            let backing = region
+                .backing
+                .as_mut()
+                .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
+            backing[offset..offset + input.len()].copy_from_slice(input);
+            return Ok(());
+        }
+        let first_page = address.get() >> 12;
+        let last_page = ((u128::from(address.get()) + u128::from(len) - 1) >> 12) as u64;
+        let region_first_page = region.spec.range.start.get() >> 12;
+        let first_generation = usize::try_from(first_page - region_first_page)
+            .map_err(|_| MemoryAccessError::AddressOverflow)?;
+        let generation_count = usize::try_from(last_page - first_page + 1)
+            .map_err(|_| MemoryAccessError::AddressOverflow)?;
+        let end_generation = first_generation
+            .checked_add(generation_count)
+            .ok_or(MemoryAccessError::AddressOverflow)?;
+        let generations = region
+            .page_generations
+            .get_mut(first_generation..end_generation)
+            .ok_or(MemoryAccessError::AddressOverflow)?;
+        if generations
+            .iter()
+            .any(|generation| generation.checked_add(1).is_none())
+        {
+            return Err(MemoryAccessError::CodeGenerationExhausted);
+        }
         let backing = region
             .backing
             .as_mut()
             .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
         backing[offset..offset + input.len()].copy_from_slice(input);
-        if region.spec.kind == MemoryRegionKind::Ram {
-            let committed = GuestPhysicalRange {
-                start: address,
-                len,
-            };
-            committed_write(committed);
+        for generation in generations {
+            *generation += 1;
         }
+        let committed = GuestPhysicalRange {
+            start: address,
+            len,
+        };
+        committed_write(committed);
         Ok(())
     }
 
@@ -612,6 +694,38 @@ mod tests {
     }
 
     #[test]
+    fn committed_writes_advance_only_the_physical_pages_they_touch() {
+        let mut memory = memory(&[(0x1000, 0x3000, MemoryRegionKind::Ram)]);
+        let first = GuestPhysicalAddress::new(0x1000);
+        let second = GuestPhysicalAddress::new(0x2000);
+        let third = GuestPhysicalAddress::new(0x3000);
+        assert_eq!(memory.code_page_generation(first), Ok(1));
+        assert_eq!(memory.code_page_generation(second), Ok(1));
+        assert_eq!(memory.code_page_generation(third), Ok(1));
+
+        memory
+            .write_u8(GuestPhysicalAddress::new(0x1010), 0x90, |_| {})
+            .unwrap();
+        assert_eq!(memory.code_page_generation(first), Ok(2));
+        assert_eq!(memory.code_page_generation(second), Ok(1));
+        assert_eq!(memory.code_page_generation(third), Ok(1));
+
+        assert!(
+            memory
+                .write_bytes(GuestPhysicalAddress::new(0x3fff), &[1, 2], |_| {})
+                .is_err()
+        );
+        assert_eq!(memory.code_page_generation(third), Ok(1));
+
+        memory
+            .write_bytes(GuestPhysicalAddress::new(0x1fff), &[1, 2], |_| {})
+            .unwrap();
+        assert_eq!(memory.code_page_generation(first), Ok(3));
+        assert_eq!(memory.code_page_generation(second), Ok(2));
+        assert_eq!(memory.code_page_generation(third), Ok(1));
+    }
+
+    #[test]
     fn write_crossing_adjacent_ram_regions_is_atomic_and_unnotified() {
         let mut memory = memory(&[
             (0x1000, 2, MemoryRegionKind::Ram),
@@ -693,6 +807,67 @@ mod tests {
             memory.read_framebuffer_bytes(GuestPhysicalAddress::new(0x1000), &mut out),
             Err(MemoryAccessError::UnreadableRegion(MemoryRegionKind::Ram))
         );
+    }
+
+    #[test]
+    fn framebuffer_has_no_page_generations_and_ram_writes_still_bump_them() {
+        const FB_START: u64 = 0x10_0000;
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(range(0x1000, 0x2000), MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(range(FB_START, 0x4000), MemoryRegionKind::Framebuffer),
+            ],
+        )
+        .unwrap();
+        let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x2000)).unwrap();
+        let ram0 = GuestPhysicalAddress::new(0x1000);
+        let ram1 = GuestPhysicalAddress::new(0x2000);
+        assert_eq!(memory.code_page_generation(ram0), Ok(1));
+        assert_eq!(memory.code_page_generation(ram1), Ok(1));
+
+        // Framebuffer: the generation API rejects every page of the region,
+        // including the first and the last one.
+        for offset in [0, 0x1000, 0x3fff] {
+            assert_eq!(
+                memory.code_page_generation(GuestPhysicalAddress::new(FB_START + offset)),
+                Err(MemoryAccessError::UnreadableRegion(
+                    MemoryRegionKind::Framebuffer
+                ))
+            );
+        }
+
+        // Writes to the framebuffer (page-crossing and last page) succeed
+        // without callback and without touching RAM generations.
+        let mut commits = Vec::new();
+        for (offset, bytes) in [
+            (0u64, &[1u8][..]),
+            (0xffe, &[2, 3, 4, 5][..]),
+            (0x3ffc, &[6, 7, 8, 9][..]),
+        ] {
+            memory
+                .write_bytes(GuestPhysicalAddress::new(FB_START + offset), bytes, |r| {
+                    commits.push(r)
+                })
+                .unwrap();
+        }
+        assert!(commits.is_empty());
+        assert_eq!(
+            memory.read_u32(GuestPhysicalAddress::new(FB_START + 0x3ffc)),
+            Ok(0x0908_0706)
+        );
+        assert_eq!(memory.code_page_generation(ram0), Ok(1));
+        assert_eq!(memory.code_page_generation(ram1), Ok(1));
+
+        // RAM writes still bump exactly the touched generations and notify once.
+        memory
+            .write_bytes(GuestPhysicalAddress::new(0x1ffe), &[1, 2, 3, 4], |r| {
+                commits.push(r)
+            })
+            .unwrap();
+        assert_eq!(commits, vec![range(0x1ffe, 4)]);
+        assert_eq!(memory.code_page_generation(ram0), Ok(2));
+        assert_eq!(memory.code_page_generation(ram1), Ok(2));
     }
 
     #[test]

@@ -1,0 +1,98 @@
+{
+  "stage": 4,
+  "slice": "S4-16d",
+  "title": "Tracked code-walk writes invalidate aliased code",
+  "date": "2026-11-06",
+  "status": "accepted_after_independent_review",
+  "commit_subject": "feat: reconcile tracked code-walk writes with JIT caches",
+  "scope": {
+    "vcpus": 1,
+    "paging": "fixed Long64 snapshot",
+    "code_backing_pages": 1,
+    "aliases": 2,
+    "native_blocks_active_during_walk": false
+  },
+  "machine_api": {
+    "snapshot": "tracked_code_snapshot_with_callback",
+    "alias_patch": "patch_tracked_code_byte_with_callback",
+    "existing_api_compatibility": "callback-free wrappers retained",
+    "notification": "actual committed physical ranges, preserving operation order"
+  },
+  "evidence": {
+    "success_patch_callbacks": [
+      {"physical_address": "0x1000", "length": 8, "effect": "Accessed"},
+      {"physical_address": "0x2000", "length": 8, "effect": "Accessed"},
+      {"physical_address": "0x3000", "length": 8, "effect": "Accessed"},
+      {"physical_address": "0x4020", "length": 8, "effect": "Accessed"},
+      {"physical_address": "0x4020", "length": 8, "effect": "Dirty"},
+      {"physical_address": "0x7002", "length": 1, "effect": "patch byte"}
+    ],
+    "snapshot_fault": {
+      "linear_address": "0x400000000000",
+      "callbacks": ["0x7400/8", "0x2000/8"],
+      "cr2": "0x400000000000",
+      "page_fault_error_code": "0x14"
+    },
+    "write_protection_fault": {
+      "linear_address": "0x00401202",
+      "callbacks": ["0x7000/8", "0x2000/8", "0x3010/8", "0x4008/8"],
+      "cr2": "0x00401202",
+      "page_fault_error_code": "0x7",
+      "operand_callback": false
+    },
+    "physical_page_mismatch": {
+      "expected_page": "0x8000",
+      "actual_physical_address": "0x7202",
+      "callbacks": ["0x7000/8", "0x2000/8", "0x3010/8", "0x4008/8"],
+      "write_walk_or_operand_callback": false
+    },
+    "host_cache_reconciliation": {
+      "patch_failure_code_page_write": "0x7010",
+      "snapshot_fault_code_page_write": "0x7400",
+      "both_alias_entries_evicted_before_error": true,
+      "failed_patch_byte_unchanged": true,
+      "caller_state_unchanged_on_snapshot_error": true
+    }
+  },
+  "checks": [
+    {
+      "command": "cargo test -p od-host --lib --offline s4_16 -- --test-threads=1",
+      "result": "passed",
+      "passed": 5,
+      "failed": 0,
+      "coverage": ["S4-16a", "S4-16b", "S4-16c", "S4-16d"]
+    },
+    {
+      "command": "cargo test -p od-machine --lib --offline",
+      "result": "passed",
+      "passed": 106,
+      "failed": 0
+    },
+    {
+      "command": "cargo check -p od-host --all-targets --offline",
+      "result": "passed_with_existing_warnings"
+    },
+    {
+      "command": "cargo fmt --all -- --check && git diff --check",
+      "result": "passed"
+    }
+  ],
+  "review": {
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "high",
+    "implementation": "no code defects found; callback/error and fixture precision findings fixed and re-reviewed",
+    "documentation": "report/manifest links and exact PDE/PML4 addresses fixed; final independent re-review passed without findings"
+  },
+  "graphify": {
+    "updated": true,
+    "nodes": 26945,
+    "edges": 67465,
+    "communities": 1049
+  },
+  "limitations": [
+    "No general notification for all possible writers",
+    "No TLB or page-table remap invalidation policy",
+    "No cross-page code, MMIO/DMA, SMP, or active-block retirement",
+    "No performance measurement or speed claim"
+  ]
+}

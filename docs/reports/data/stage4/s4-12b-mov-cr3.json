@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "slice": "S4-12b",
+  "title": "Bounded CPU-side MOV CR3 execution effect",
+  "date": "2026-11-05",
+  "baseline_commit": "c09736c",
+  "status": "implemented_review_pending",
+  "profile": {
+    "name": "MovCr3Long64V1",
+    "encoding": "0F 22 D8",
+    "operation": "MOV CR3,RAX",
+    "vcpus": 1,
+    "mode": "Long64",
+    "success_privilege": "CPL0",
+    "efer": "0xd00",
+    "cr0": "0x80010033",
+    "cr4": "0x20",
+    "pcide": false,
+    "la57": false,
+    "pge": false,
+    "physical_address_width": 36,
+    "initial_cr3_required": true
+  },
+  "success": {
+    "stored_cr3": "full accepted RAX value",
+    "rip_advance": 3,
+    "retirement": 1,
+    "typed_effect": "TranslationContextChange::Cr3Write",
+    "effect_emitted_for_identical_value": true,
+    "next_instruction_fetched": false,
+    "concrete_rflags_preserved": true,
+    "arithmetic_flags_definedness_cleared": true
+  },
+  "fault_contract": {
+    "reserved_source_bits": "CR3[63:36] => #GP(0), no state commit",
+    "nonzero_cpl": "#GP(0)",
+    "lock_prefix": "#UD within the opt-in profile",
+    "other_prefixes_and_forms": "Unsupported",
+    "missing_or_invalid_initial_profile_state": "API input error before fetch",
+    "cross_page_instruction_start": "Unsupported before fetch at offsets 0xff2 through 0xfff (maximal 15-byte encoding boundary)",
+    "lock_ud_form": "only exact F0 0F 22 D8; preceding REX makes form Unsupported"
+  },
+  "compatibility_gates": {
+    "legacy_execution_with_cr3_state": "rejected before fetch, IRETQ/LRETQ/interrupt and JIT entries",
+    "generic_cr0_cr4_entry_can_activate_profile": false,
+    "fragment_state_rejects_unrepresented_cr3": true,
+    "v2_integer_snapshot_rejects_unrepresented_cr3": true,
+    "translation_snapshot_rejects_cr3_mismatch": true
+  },
+  "exclusions": [
+    "machine application of the effect (S4-12c)",
+    "EFER writes and mode transitions",
+    "startup-state provenance",
+    "TLB and invalidation",
+    "PCID and global pages",
+    "exception delivery and CR2",
+    "other control-register instructions",
+    "instruction starts at offsets 0xff2 through 0xfff",
+    "Linux execution"
+  ],
+  "architecture_review": {
+    "model": "gpt-6-astra",
+    "reasoning": "high",
+    "verdict": "approved"
+  },
+  "implementation_review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approved",
+    "review_rounds": 5,
+    "findings_fixed": [
+      "decoder and profile admission",
+      "CPU-state adapters and translation snapshot consistency",
+      "legacy and direct JIT/host entry side-effect gates",
+      "page-boundary instruction fetch classification",
+      "contract and report accuracy"
+    ]
+  },
+  "graphify": {
+    "query_before_source_reads": true,
+    "global_update_after_latest_code": true,
+    "global_nodes": 26432,
+    "global_edges": 65799,
+    "global_communities": 1042
+  },
+  "parent_s4_12": "open",
+  "next_slice": "S4-12c",
+  "report": "docs/reports/STAGE_4_S4-12B_2026-11-05.md",
+  "checks": {
+    "cargo_check_workspace_all_targets": "passed",
+    "cargo_fmt": "passed",
+    "od_isa_lib_tests": "2031 passed",
+    "cr3_focused_tests": "12 od-isa, 1 od-jit, 1 od-machine, 1 od-testkit passed",
+    "diff_check": "passed",
+    "layout_check": "passed: 48 required directories, 6 crate scaffolds, 14 instruction scopes"
+  }
+}

@@ -68,7 +68,7 @@ pub fn run_with_iretq_profile(
         instructions_executed: retired,
         rflags_defined,
     };
-    if state.cr0.is_some() || state.cr4.is_some() {
+    if state.cr0.is_some() || state.cr3.is_some() || state.cr4.is_some() {
         return finish(IretqRunExit::Unsupported, 0);
     }
     if config.stop_rip == Some(state.rip) {
@@ -114,6 +114,7 @@ pub fn step_with_iretq_profile(
     _profile: IretqProfile,
 ) -> IretqResult {
     if state.cr0.is_some()
+        || state.cr3.is_some()
         || state.cr4.is_some()
         || context.mode != crate::memory::InstructionMode::Long64
         || context.privilege != PrivilegeLevel::Ring0
@@ -320,6 +321,7 @@ mod tests {
     #[test]
     fn cr0_state_rejects_run_and_step_before_stop_or_memory_access() {
         let mut cpu = LongModeState {
+            cr3: None,
             cr4: None,
             cr0: Some(crate::execute::Cr0Profile::BASE),
             ..LongModeState::default()
@@ -345,6 +347,44 @@ mod tests {
         );
         assert_eq!(cpu, before);
         assert!(memory.fetches.is_empty() && memory.reads.is_empty());
+        let mut defined = INTEGER_FLAGS;
+        assert_eq!(
+            step_with_iretq_profile(
+                &mut cpu,
+                &mut memory,
+                AccessContext::default(),
+                &mut defined,
+                IretqProfile::SameCpl0ValidFrameV1,
+            ),
+            IretqResult::Unsupported
+        );
+        assert!(memory.fetches.is_empty() && memory.reads.is_empty());
+    }
+
+    #[test]
+    fn cpu_owned_cr3_rejects_run_and_step_before_stop_or_memory_access() {
+        let mut cpu = LongModeState {
+            cr3: Some(0x1000),
+            ..LongModeState::default()
+        };
+        let mut memory = Memory::setup();
+        let stop_rip = cpu.rip;
+        assert_eq!(
+            run_with_iretq_profile(
+                &mut cpu,
+                &mut memory,
+                crate::execute::RunConfig {
+                    instruction_budget: 0,
+                    stop_rip: Some(stop_rip),
+                    context: AccessContext::default(),
+                },
+                INTEGER_FLAGS,
+                IretqProfile::SameCpl0ValidFrameV1,
+                || false,
+            )
+            .exit,
+            IretqRunExit::Unsupported
+        );
         let mut defined = INTEGER_FLAGS;
         assert_eq!(
             step_with_iretq_profile(
@@ -501,6 +541,7 @@ mod tests {
 
     fn state() -> LongModeState {
         LongModeState {
+            cr3: None,
             cr4: None,
             rip: CODE,
             rflags: 2 | IF,
@@ -824,6 +865,7 @@ mod tests {
                 memory.configure_gate(14, CODE + 0x20);
                 let old_rsp = 0xf00 + offset;
                 let mut cpu = LongModeState {
+                    cr3: None,
                     cr4: None,
                     rip: CODE,
                     rflags: 2 | (iopl << 12),

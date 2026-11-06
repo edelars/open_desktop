@@ -146,6 +146,15 @@ XPC полезен для интеграции с системными серв�
 
 Программный TLB, проверка прав и перевод адреса принадлежат движку. RAM имеет быстрый путь; MMIO передаётся модели устройства. В горячем пути нет обращения к Swift, IPC или универсального сериализатора.
 
+Feature-gated `MutableTranslationProbeSession` — ограниченный diagnostic prototype:
+он эксклюзивно заимствует единственный `PhysicalMemory`, хранит одну успешную
+pure translation как value и разрешает aligned PTE-sized writes через checked
+memory API. Запись сама по себе не сбрасывает запись cache. Точный standalone
+INVLPG fetch использует pure probe в обход resident entry; retired effect
+потребляется синхронно и очищает entry до следующего lookup. Этот опыт не
+заменяет tracked A/D access, production TLB, guest-store integration или
+concurrent memory ownership; ссылки и access handles из сессии не выдаются.
+
 Работу с гостевой RAM оформить как отдельный контракт владения и конкурентного доступа. Нельзя выдавать долгоживущие Rust `&mut` на память, которую одновременно меняют JIT, DMA или другой vCPU. Нужны проверяемые правила для raw accesses, атомарных операций, барьеров и остановки мира; один `UnsafeCell` не доказывает корректность. Начать с одного vCPU и явно синхронизированного I/O, расширяя модель до SMP после проверки.
 
 Ошибки гостевой памяти — значения результата и гостевые исключения, а не host `panic`. Проверять пересечения страниц и несовпадение размеров host/guest pages.

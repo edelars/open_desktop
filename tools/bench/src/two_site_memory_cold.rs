@@ -677,6 +677,7 @@ pub(super) fn repeat_outcomes_equal(first: &Outcome, second: &Outcome) -> bool {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(super) fn make_state(input: &MemoryCorpusInput) -> od_isa::LongModeState {
     let mut state = od_isa::LongModeState {
+        cr3: None,
         rip: ENTRY_RIP,
         rflags: input.flags | 2,
         ..od_isa::LongModeState::default()

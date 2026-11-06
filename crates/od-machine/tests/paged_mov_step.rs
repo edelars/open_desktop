@@ -208,6 +208,34 @@ fn step_word(
     .unwrap()
 }
 
+fn step_word_fetch(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    privilege: PrivilegeLevel,
+    writes: &mut Vec<GuestPhysicalRange>,
+) -> PagedMovStepReport {
+    step_word_fetch_with_efer(state, bus, privilege, EFER, writes)
+}
+
+fn step_word_fetch_with_efer(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    privilege: PrivilegeLevel,
+    efer: u64,
+    writes: &mut Vec<GuestPhysicalRange>,
+) -> PagedMovStepReport {
+    od_machine::step_paged_mov_word_read_cross_page_fetch(
+        state,
+        bus,
+        ROOT,
+        efer,
+        context(privilege),
+        INTEGER_FLAGS & !(1 << 7),
+        |range| writes.push(range),
+    )
+    .unwrap()
+}
+
 fn make_user_bus() -> MachineBus {
     let mut bus = make_bus();
     for entry in [0x1000, 0x2000, 0x3010, 0x3020, 0x4000, 0x5000] {
@@ -1218,6 +1246,7 @@ fn s4_11e_ram_hole_mmio_alias_and_profile_boundaries() {
     put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x8b);
     put_byte(&mut bus, NEXT_CODE_PHYSICAL, 0x03);
     let mut cpu = LongModeState {
+        cr3: None,
         rip: CODE_LINEAR + 0xffe,
         cr0: Some(CR0),
         cr4: Some(CR4),
@@ -1402,6 +1431,373 @@ fn cross_page_alias_reads_operand_after_both_walks_commit_accessed_bits() {
     );
     assert_eq!(qword(&mut bus, 0x5000), 0x5027);
     assert_eq!(qword(&mut bus, 0x5008), 0x5027);
+}
+
+#[test]
+fn s4_11f_word_read_fetch_crosses_both_code_page_offsets() {
+    for offset in [0xffe, 0xfff] {
+        let mut bus = make_bus();
+        put(&mut bus, 0x4008, NEXT_CODE_PHYSICAL | 7);
+        let bytes = [0x66, 0x8b, 0x03];
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            let instruction_offset = offset + index as u64;
+            let physical = if instruction_offset <= 0xfff {
+                CODE_PHYSICAL + instruction_offset
+            } else {
+                NEXT_CODE_PHYSICAL + instruction_offset - 0x1000
+            };
+            put_byte(&mut bus, physical, byte);
+        }
+        put_byte(&mut bus, DATA_PHYSICAL + 0x100, 0xef);
+        put_byte(&mut bus, DATA_PHYSICAL + 0x101, 0xbe);
+        let rip = CODE_LINEAR + offset;
+        let mut cpu = LongModeState {
+            rip,
+            cr0: Some(CR0),
+            cr4: Some(CR4),
+            rflags: 0x8d7,
+            ..LongModeState::default()
+        };
+        for (index, register) in cpu.gpr.iter_mut().enumerate() {
+            *register = 0x1111_2222_3333_4400 + index as u64;
+        }
+        cpu.gpr[0] = 0x1234_5678_9abc_ffff;
+        cpu.gpr[3] = DATA_LINEAR + 0x100;
+        let before = cpu.clone();
+        let mut writes = Vec::new();
+
+        let report = step_word_fetch(&mut cpu, &mut bus, PrivilegeLevel::Ring0, &mut writes);
+
+        assert_eq!(report.cpu.exit, RunExit::StopAddress, "offset {offset:#x}");
+        assert_eq!(report.cpu.instructions_executed, 1);
+        assert_eq!(report.cpu.rflags_defined, INTEGER_FLAGS & !(1 << 7));
+        assert!(report.page_fault.is_none());
+        assert!(report.memory_error.is_none());
+        assert_eq!(cpu.rip, rip + 3);
+        assert_eq!(cpu.gpr[0], (before.gpr[0] & !0xffff) | 0xbeef);
+        for index in 1..cpu.gpr.len() {
+            assert_eq!(cpu.gpr[index], before.gpr[index], "GPR {index}");
+        }
+        assert_eq!(cpu.rflags, before.rflags);
+        assert_eq!(
+            writes,
+            [0x1000, 0x2000, 0x3010, 0x4000, 0x4008, 0x3020, 0x5000].map(range)
+        );
+        for pte in [0x4000, 0x4008, 0x5000] {
+            assert_ne!(qword(&mut bus, pte) & (1 << 5), 0, "PTE {pte:#x}");
+            assert_eq!(qword(&mut bus, pte) & (1 << 6), 0, "PTE {pte:#x}");
+        }
+    }
+}
+
+#[test]
+fn s4_11f_same_page_offset_ffd_needs_no_next_code_page() {
+    let mut bus = make_bus();
+    for (index, byte) in [0x66, 0x8b, 0x03].into_iter().enumerate() {
+        put_byte(&mut bus, CODE_PHYSICAL + 0xffd + index as u64, byte);
+    }
+    put_byte(&mut bus, DATA_PHYSICAL + 0x100, 0x34);
+    put_byte(&mut bus, DATA_PHYSICAL + 0x101, 0x12);
+    let rip = CODE_LINEAR + 0xffd;
+    let mut cpu = LongModeState {
+        rip,
+        cr0: Some(CR0),
+        cr4: Some(CR4),
+        ..LongModeState::default()
+    };
+    cpu.gpr[0] = 0xfeed_face_cafe_babe;
+    cpu.gpr[3] = DATA_LINEAR + 0x100;
+    let mut writes = Vec::new();
+
+    let report = step_word_fetch(&mut cpu, &mut bus, PrivilegeLevel::Ring0, &mut writes);
+
+    assert_eq!(report.cpu.exit, RunExit::StopAddress);
+    assert_eq!(report.cpu.instructions_executed, 1);
+    assert_eq!(cpu.rip, rip + 3);
+    assert_eq!(cpu.gpr[0], 0xfeed_face_cafe_1234);
+    assert_eq!(qword(&mut bus, 0x4008), 0);
+    assert_eq!(
+        writes,
+        [0x1000, 0x2000, 0x3010, 0x4000, 0x3020, 0x5000].map(range)
+    );
+}
+
+#[test]
+fn s4_11f_second_code_page_fault_precedes_operand_walk() {
+    for (offset, second_pte, pfec, expected_writes, second_a) in [
+        (
+            0xffe,
+            0,
+            0x10,
+            [0x1000, 0x2000, 0x3010, 0x4000].as_slice(),
+            false,
+        ),
+        (
+            0xffe,
+            NEXT_CODE_PHYSICAL | 7 | (1 << 63),
+            0x11,
+            [0x1000, 0x2000, 0x3010, 0x4000, 0x4008].as_slice(),
+            true,
+        ),
+        (
+            0xfff,
+            0,
+            0x10,
+            [0x1000, 0x2000, 0x3010, 0x4000].as_slice(),
+            false,
+        ),
+        (
+            0xfff,
+            NEXT_CODE_PHYSICAL | 7 | (1 << 63),
+            0x11,
+            [0x1000, 0x2000, 0x3010, 0x4000, 0x4008].as_slice(),
+            true,
+        ),
+    ] {
+        let mut bus = make_bus();
+        put(&mut bus, 0x4008, second_pte);
+        put(&mut bus, 0x5000, 0); // Operand page is also inaccessible.
+        if offset == 0xffe {
+            put_byte(&mut bus, CODE_PHYSICAL + 0xffe, 0x66);
+            put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x8b);
+        } else {
+            put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x66);
+        }
+        let rip = CODE_LINEAR + offset;
+        let mut cpu = LongModeState {
+            rip,
+            cr0: Some(CR0),
+            cr4: Some(CR4),
+            ..LongModeState::default()
+        };
+        cpu.gpr[0] = 0xdead_beef_cafe_babe;
+        cpu.gpr[3] = DATA_LINEAR;
+        let before = cpu.clone();
+        let mut writes = Vec::new();
+
+        let report = step_word_fetch(&mut cpu, &mut bus, PrivilegeLevel::Ring0, &mut writes);
+
+        assert!(matches!(report.cpu.exit, RunExit::Fault(_)));
+        let fault = report.page_fault.as_ref().expect("next-code-page #PF");
+        assert_eq!(fault.fault().vector, 14);
+        assert_eq!(fault.fault().error_code, Some(pfec));
+        assert_eq!(fault.fault().linear_address, Some(CODE_LINEAR + 0x1000));
+        assert_eq!(fault.saved_rip(), rip);
+        assert_eq!(fault.access(), AccessKind::Fetch);
+        assert_eq!(fault.context(), context(PrivilegeLevel::Ring0));
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!(qword(&mut bus, 0x4000) & (1 << 5), 1 << 5);
+        assert_eq!(qword(&mut bus, 0x4000) & (1 << 6), 0);
+        assert_eq!(qword(&mut bus, 0x4008) & (1 << 5) != 0, second_a);
+        assert_eq!(qword(&mut bus, 0x4008) & (1 << 6), 0);
+        assert_eq!(qword(&mut bus, 0x3020) & (1 << 5), 0);
+        assert_eq!(qword(&mut bus, 0x5000) & (1 << 5), 0);
+        assert_eq!(
+            writes,
+            expected_writes
+                .iter()
+                .copied()
+                .map(range)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn s4_11f_code_page_hole_and_mmio_never_dispatch_devices() {
+    for (physical, expected_mmio) in [(0x30_000, false), (RAM_LEN, true)] {
+        let journal = Arc::new(Mutex::new(Vec::new()));
+        let mut bus = make_bus_with_mmio(Arc::clone(&journal));
+        put(&mut bus, 0x4008, physical | 7);
+        put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x66);
+        let rip = CODE_LINEAR + 0xfff;
+        let mut cpu = LongModeState {
+            rip,
+            cr0: Some(CR0),
+            cr4: Some(CR4),
+            ..LongModeState::default()
+        };
+        let before = cpu.clone();
+        let mut writes = Vec::new();
+
+        let report = step_word_fetch(&mut cpu, &mut bus, PrivilegeLevel::Ring0, &mut writes);
+
+        assert!(matches!(report.cpu.exit, RunExit::MemoryError(_)));
+        assert!(report.page_fault.is_none());
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert_eq!(
+            matches!(
+                report.memory_error,
+                Some(TrackedAccessError::MmioBackend { .. })
+            ),
+            expected_mmio
+        );
+        if !expected_mmio {
+            assert!(matches!(
+                report.memory_error,
+                Some(TrackedAccessError::OperandPhysical { .. })
+            ));
+        }
+        assert!(journal.lock().unwrap().is_empty());
+        assert!(!writes.contains(&range(0x3020)));
+        assert_eq!(qword(&mut bus, 0x3020) & (1 << 5), 0);
+    }
+}
+
+#[test]
+fn s4_11f_negative_admission_and_s4_11e_fetch_boundary() {
+    for (offset, privilege, ac) in [
+        (0xffc, PrivilegeLevel::Ring0, false),
+        (0xffe, PrivilegeLevel::Ring1, false),
+        (0xffe, PrivilegeLevel::Ring2, false),
+        (0xffe, PrivilegeLevel::Ring3, false),
+        (0xffe, PrivilegeLevel::Ring0, true),
+    ] {
+        let mut bus = make_bus();
+        put(&mut bus, 0x4008, NEXT_CODE_PHYSICAL | 7);
+        let mut cpu = LongModeState {
+            cr3: None,
+            rip: CODE_LINEAR + offset,
+            cr0: Some(CR0),
+            cr4: Some(CR4),
+            rflags: u64::from(ac) << 18,
+            ..LongModeState::default()
+        };
+        let before = cpu.clone();
+        let mut writes = Vec::new();
+        let report = step_word_fetch(&mut cpu, &mut bus, privilege, &mut writes);
+        assert!(matches!(report.cpu.exit, RunExit::Unsupported { .. }));
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert!(writes.is_empty());
+    }
+
+    for (offset, instruction) in [(0xffd, [0x66, 0x8b, 0x0b]), (0xffd, [0x66, 0x8b, 0x1b])] {
+        let mut bus = make_bus();
+        for (index, byte) in instruction.into_iter().enumerate() {
+            put_byte(&mut bus, CODE_PHYSICAL + offset + index as u64, byte);
+        }
+        let mut cpu = LongModeState {
+            cr3: None,
+            rip: CODE_LINEAR + offset,
+            cr0: Some(CR0),
+            cr4: Some(CR4),
+            ..LongModeState::default()
+        };
+        cpu.gpr[3] = DATA_LINEAR;
+        let before = cpu.clone();
+        let mut writes = Vec::new();
+        let report = step_word_fetch(&mut cpu, &mut bus, PrivilegeLevel::Ring0, &mut writes);
+        assert!(matches!(report.cpu.exit, RunExit::Unsupported { .. }));
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert!(!writes.contains(&range(0x3020)));
+        assert!(!writes.contains(&range(0x5000)));
+    }
+
+    for offset in [0xffe, 0xfff] {
+        let mut bus = make_bus();
+        put(&mut bus, 0x4008, NEXT_CODE_PHYSICAL | 7);
+        let bytes = [0x66, 0x8b, 0x03];
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            let instruction_offset = offset + index as u64;
+            let physical = if instruction_offset <= 0xfff {
+                CODE_PHYSICAL + instruction_offset
+            } else {
+                NEXT_CODE_PHYSICAL + instruction_offset - 0x1000
+            };
+            put_byte(&mut bus, physical, byte);
+        }
+        let mut cpu = LongModeState {
+            cr3: None,
+            rip: CODE_LINEAR + offset,
+            cr0: Some(CR0),
+            cr4: Some(CR4),
+            ..LongModeState::default()
+        };
+        let before = cpu.clone();
+        let mut writes = Vec::new();
+        let report = step_word(&mut cpu, &mut bus, ROOT, PrivilegeLevel::Ring0, &mut writes);
+        assert!(matches!(report.cpu.exit, RunExit::Unsupported { .. }));
+        assert_eq!(report.cpu.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert!(writes.is_empty());
+    }
+}
+
+#[test]
+fn s4_11f_rejects_nxe_disabled_before_any_code_fetch() {
+    let mut bus = make_bus();
+    put(&mut bus, 0x4008, NEXT_CODE_PHYSICAL | 7);
+    put_byte(&mut bus, CODE_PHYSICAL + 0xffe, 0x66);
+    put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x8b);
+    put_byte(&mut bus, NEXT_CODE_PHYSICAL, 0x03);
+    let mut cpu = LongModeState {
+        cr3: None,
+        rip: CODE_LINEAR + 0xffe,
+        cr0: Some(CR0),
+        cr4: Some(CR4),
+        ..LongModeState::default()
+    };
+    cpu.gpr[3] = DATA_LINEAR;
+    let before = cpu.clone();
+    let mut writes = Vec::new();
+    let report = step_word_fetch_with_efer(
+        &mut cpu,
+        &mut bus,
+        PrivilegeLevel::Ring0,
+        EFER & !(1 << 11),
+        &mut writes,
+    );
+
+    assert!(matches!(report.cpu.exit, RunExit::Unsupported { .. }));
+    assert_eq!(report.cpu.instructions_executed, 0);
+    assert!(report.page_fault.is_none());
+    assert!(report.memory_error.is_none());
+    assert_eq!(cpu, before);
+    assert!(writes.is_empty());
+    for entry in [0x1000, 0x2000, 0x3010, 0x4000, 0x4008, 0x3020, 0x5000] {
+        assert_eq!(qword(&mut bus, entry) & (1 << 5), 0, "entry {entry:#x}");
+    }
+}
+
+#[test]
+fn s4_11f_cross_page_operand_is_rejected_after_fetch_before_data_walk() {
+    let offset = 0xffe;
+    let mut bus = make_bus();
+    put(&mut bus, 0x4008, NEXT_CODE_PHYSICAL | 7);
+    put(&mut bus, 0x5008, NEXT_DATA_PHYSICAL | 7);
+    put_byte(&mut bus, CODE_PHYSICAL + 0xffe, 0x66);
+    put_byte(&mut bus, CODE_PHYSICAL + 0xfff, 0x8b);
+    put_byte(&mut bus, NEXT_CODE_PHYSICAL, 0x03);
+    put_byte(&mut bus, DATA_PHYSICAL + 0xfff, 0xef);
+    put_byte(&mut bus, NEXT_DATA_PHYSICAL, 0xbe);
+
+    let mut cpu = LongModeState {
+        cr3: None,
+        rip: CODE_LINEAR + offset,
+        cr0: Some(CR0),
+        cr4: Some(CR4),
+        ..LongModeState::default()
+    };
+    cpu.gpr[3] = DATA_LINEAR + 0xfff;
+    let before = cpu.clone();
+    let mut writes = Vec::new();
+    let report = step_word_fetch(&mut cpu, &mut bus, PrivilegeLevel::Ring0, &mut writes);
+
+    assert!(matches!(report.cpu.exit, RunExit::Unsupported { .. }));
+    assert_eq!(report.cpu.instructions_executed, 0);
+    assert!(report.page_fault.is_none());
+    assert!(report.memory_error.is_none());
+    assert_eq!(cpu, before);
+    assert_eq!(writes, [0x1000, 0x2000, 0x3010, 0x4000, 0x4008].map(range));
+    assert!(!writes.contains(&range(0x3020)));
+    assert!(!writes.contains(&range(0x5000)));
+    assert!(!writes.contains(&range(0x5008)));
+    assert_eq!(qword(&mut bus, 0x5000) & (1 << 6), 0);
+    assert_eq!(qword(&mut bus, 0x5008) & (1 << 6), 0);
 }
 
 fn range(address: u64) -> GuestPhysicalRange {

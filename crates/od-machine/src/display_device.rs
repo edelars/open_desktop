@@ -1260,6 +1260,70 @@ mod tests {
     }
 
     #[test]
+    fn framebuffer_is_rejected_by_code_generation_and_tracked_snapshot_apis() {
+        use crate::{Long64ProbeConfig, TrackedAccessError, TrackedCodeSnapshotError};
+        use od_isa::memory::AccessContext;
+
+        let (mut bus, _handle) = setup();
+        let fb_base = GuestPhysicalAddress::new(DISPLAY_FRAMEBUFFER_BASE);
+        // code_page_generation: Framebuffer is a non-RAM region, RAM still works.
+        assert_eq!(
+            bus.code_page_generation(fb_base),
+            Err(MemoryAccessError::UnreadableRegion(
+                MemoryRegionKind::Framebuffer
+            ))
+        );
+        assert_eq!(
+            bus.code_page_generation(GuestPhysicalAddress::new(0x1000)),
+            Ok(1)
+        );
+
+        // Identity-style tables in RAM: linear 0x0 maps the first framebuffer page.
+        for (address, value) in [
+            (0x1000u64, 0x2007u64),
+            (0x2000, 0x3007),
+            (0x3000, 0x4007),
+            (0x4000, DISPLAY_FRAMEBUFFER_BASE | 7),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let paging =
+            Long64ProbeConfig::new(0x8001_0033, 0x1000, 1 << 5, 1 << 8 | 1 << 10 | 1 << 11)
+                .unwrap();
+        let ram_generation = bus
+            .code_page_generation(GuestPhysicalAddress::new(0x4000))
+            .unwrap();
+        // The instruction fetch from framebuffer pixels is rejected, not snapshotted.
+        assert!(matches!(
+            bus.tracked_code_snapshot(&paging, 0, 4, AccessContext::default()),
+            Err(TrackedCodeSnapshotError::Access(
+                TrackedAccessError::OperandPhysical {
+                    source: MemoryAccessError::UnreadableRegion(MemoryRegionKind::Framebuffer),
+                    ..
+                }
+            ))
+        ));
+        // A page-walk A-bit commit in RAM may bump RAM generations, never framebuffer ones.
+        assert!(
+            bus.code_page_generation(GuestPhysicalAddress::new(0x4000))
+                .unwrap()
+                >= ram_generation
+        );
+        assert_eq!(
+            bus.code_page_generation(fb_base),
+            Err(MemoryAccessError::UnreadableRegion(
+                MemoryRegionKind::Framebuffer
+            ))
+        );
+    }
+
+    #[test]
     fn frame_read_returns_pixels_written_through_the_bus_without_callbacks() {
         let (mut bus, handle) = setup();
         set_mode(&mut bus, 3, 2, 1);

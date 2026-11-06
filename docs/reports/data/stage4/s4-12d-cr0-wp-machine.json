@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "slice": "S4-12d",
+  "title": "CPU-owned CR0.WP translation handoff",
+  "date": "2026-11-06",
+  "status": "complete",
+  "profile": {
+    "name": "PagedCpl0Cr0WpProbeV1",
+    "instructions": ["0F 22 C0 (MOV CR0,RAX)", "48 89 0B (MOV [RBX],RCX)"],
+    "mode": "Long64",
+    "machine_privilege": "CPL0",
+    "cpu_cr0_values": ["0x80010033", "0x80000033"],
+    "cr0_wp_transitions": ["1_to_0", "0_to_1", "identical_value"],
+    "cr3": "CPU-owned and fixed during this profile",
+    "cr4": "0x20",
+    "efer": "0xd00",
+    "vcpus": 1,
+    "translation": "uncached four-level 4 KiB",
+    "store_operand": "one 4 KiB RAM page"
+  },
+  "effect": {
+    "type": "TranslationContextChange::Cr0Write { old_cr0, new_cr0 }",
+    "emitted_on_identical_write": true,
+    "machine_verifies_old_snapshot_and_committed_cpu_state": true,
+    "snapshot_installed_before_next_stop_fetch_or_access": true,
+    "effect_application_walks_or_writes_ad": false,
+    "cpu_state_retired_before_integration_error": true
+  },
+  "verified_scenarios": {
+    "wp_1_to_0_supervisor_store_through_read_only_mapping": true,
+    "wp_0_to_1_precise_fault_without_data_or_dirty_commit": true,
+    "prior_accessed_updates_may_remain_on_fault": true,
+    "does_not_assert_dirty_for_successful_read_only_mapping_store": true,
+    "stop_after_mov_cr0_before_operand_walk": true,
+    "next_instruction_fetch_fault_preserves_mov_cr0_retirement": true,
+    "whole_and_split_quantum": true,
+    "cross_page_store_operand_rejected": true,
+    "canonical_top_boundary_and_address_overflow_cross_page_stores_rejected_before_data_access": true,
+    "unrelated_invalid_encodings_remain_unsupported_in_this_profile": true,
+    "exact_lock_mov_cr0_remains_ud_in_existing_paths": true,
+    "nonzero_cpl_exact_mov_cr0_gp_after_fetch": true,
+    "legacy_and_existing_cr3_profiles_preserved": true
+  },
+  "exclusions": [
+    "other CR0 bits",
+    "PE/PG and mode transitions",
+    "EFER writes",
+    "TLB and invalidation",
+    "exception delivery and CR2",
+    "CET-specific dirty-bit behavior"
+  ],
+  "architecture_review": {
+    "model": "gpt-6-astra",
+    "reasoning": "high",
+    "verdict": "approved"
+  },
+  "implementation_review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approved"
+  },
+  "graphify": {
+    "query_before_source_reads": true,
+    "update_after_code_integration": true,
+    "global_nodes": 26508,
+    "global_edges": 66024,
+    "global_communities": 879
+  },
+  "report": "docs/reports/STAGE_4_S4-12D_2026-11-06.md",
+  "checks": {
+    "cargo_check_affected_crates_all_targets": "passed",
+    "cargo_fmt": "passed",
+    "od_isa_paged_cr0_wp_tests": "8 passed",
+    "od_machine_paged_probe_quantum_tests": "21 passed",
+    "od_isa_paged_cr3_regression_tests": "4 passed",
+    "od_isa_mov_cr3_profile_compatibility_test": "1 passed",
+    "layout_check": "passed: 48 required directories, 6 crate scaffolds, 14 instruction scopes",
+    "local_markdown_links": "passed",
+    "json_validation": "passed",
+    "diff_check": "passed"
+  }
+}

@@ -183,6 +183,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Открыто:** подписанные `.dsc`, `orig.tar.gz`, `diff.gz`, `Sources.xz`, `InRelease` и `apt-provenance.json`; authenticated source/config-to-binary mapping. S4-00 и S4-01 остаются открытыми.
 - **Проверки:** `shasum -a 256`, `file`, read-only Python 3 ELF64 section parser, `objdump -h`, `ar`, `zstd`, `tar`; ограничения инструментария и отсутствующие inputs описаны в отчёте.
 
+#### S4-00b. Проверить boot entry и paging transitions выбранного Linux
+
+- [x] Ограниченный evidence capture выполнен и принят после независимого ревью `gpt-6.1-sol/high`; приёмка родительских S4-00 и S4-01 не подтверждена.
+- **Evidence:** [отчёт S4-00b](../reports/STAGE_4_S4-00B_2026-11-06.md) и [manifest](../reports/data/stage4/s4-00b-kernel-entry-2026-11-06.json).
+- **Подтверждено:** заголовок точного `vmlinuz` — protocol 2.15, relocatable, direct 64-bit entry на `+0x200` от загруженного protected-mode payload (`setup_sects=39`, file offset `0x5200`); decompression выполняет kernel startup после входа. Официальный boot protocol требует Long64, paging, identity maps для `init_size`/zero page/command line, selectors `CS=0x10`, `DS=ES=SS=0x18` с соответствующими плоскими GDT descriptors и выключенные interrupts. В recovered source snapshot присутствуют 32-bit `startup_32` и условный LA57 selection/trampoline; четырёхуровневому профилю нужно согласованно исключить LA57 или реализовать переход. `no5lvl` отдельно не гарантирует отсутствия trampoline, если стартовый CR4.LA57 установлен.
+- **Открыто:** выбрать/зафиксировать loader handoff и CPU feature profile; initramfs/boot data; аутентифицированное source-to-binary provenance; фактическая загрузка Linux. S4-00 и S4-01 остаются открытыми.
+- **Проверки:** локальный read-only разбор boot header и измерение длины `vmlinuz`; SHA-256 `.deb` совпал с опубликованным checksum Ubuntu; source snapshot прочитан по ранее зафиксированным hashes. Код не менялся; тесты репозитория не запускались.
+
 ### S4-01. Снять baseline и разбить зависимости CPU/JIT
 
 - [ ] Принято после ревью.
@@ -198,6 +206,14 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Подтверждено:** два exact-теста реально исполнили по одному тесту: CPU interpreter через `IdentityMemoryAdapter → MachineBus → PhysicalMemory` с успешными load/store и отказом на hole `0x3000` без retirement/mutation; отдельный immutable page-walk snapshot control с разными CR3 roots. Профиль — diagnostic flat identity (`linear == physical`), не Linux manifest.
 - **Матрица границ:** translation integration остаётся владельцем `od-machine`; page-fault probe/record отделён от S4-19 delivery/retry; JIT и Linux entry не покрыты. Нет claims о CPU-integrated paging, `#PF`, privileged hardware или Linux boot.
 - **Проверки:** обе команды из отчёта завершились с exit code 0 и `1 passed, 0 failed, 0 ignored; 67 filtered out`; toolchain/host/page-size и исходный clean status сохранены в JSON.
+
+#### S4-01b. Классификация LOCK MOV CR0 в потребителях JIT
+
+- [x] Принято после независимого `gpt-6.1-sol/high` ревью; родительские S4-01 и Stage 4 остаются открытыми.
+- **Evidence:** [отчёт S4-01b](../reports/STAGE_4_S4-01B_2026-11-06.md) и [JSON manifest](../reports/data/stage4/s4-01b-invalid-mov-cr0-lock-2026-11-06.json).
+- **Объём:** block builder сохраняет `InvalidMovCr0Lock` как typed `UnsupportedEncoding` на точном RIP и не теряет уже построенный префикс; deferred boundary сохраняет длину 4. Bounded memory dispatcher останавливается как `Unsupported` до executor; LOCK MOV CR3 остаётся прежним. Допуск native/JIT не расширен.
+- **Контрольные границы:** existing tests сохраняют ordinary Invalid/Unsupported, truncation и byte-budget поведение. CPU #UD не изменялся; существующие canaries перечислены в отчёте.
+- **Ревью:** independent review found no remaining findings after the memory-spy and full-state assertions were added.
 
 ### S4-02. Описать единую карту машины
 
@@ -281,13 +297,36 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   commits A updates during the walk, then validates the final RAM operand, commits
   D for permitted writes, and finally commits the operand. Literal local tests
   cover successful fetch/read/write and preserved A effects on later failures.
-  Full S4-09 remains open: injected table-write failure, full permission-level
-  matrix, CPU execution integration and system acceptance remain open. See
-  [machine contract](../specs/MACHINE_CONTRACT.md#tracked-ram-access).
+  S4-09b closes the injected table-write failure criterion. S4-09c adds the
+  bounded four-level permission/A-D matrix, accepted after independent review.
+  Full S4-09 remains open for CPU execution integration and system acceptance. See
+  [S4-09b](#s4-09b-table-write-failure), [S4-09c](#s4-09c-permission-level-matrix)
+  and the [machine contract](../specs/MACHINE_CONTRACT.md#tracked-permission-level-matrix-s4-09c).
 - **Где:** page walker/physical writer `od-machine`, CPU contract и системные тесты.
 - **Сделать:** определить, на каких уровнях и при каких успешных/неуспешных accesses меняются A/D bits. Разделить эти записи и commit конечного memory operand. Использовать общий tracked physical-write путь.
 - **Проверка:** read, write, fetch, protection fault, nonpresent на разных уровнях, permission fault после предыдущих обращений; page-table bytes совпадают с ожидаемыми разрешёнными эффектами.
 - **Готово:** rollback memory operand не стирает обязательные page-walk effects; тесты не требуют неизменности всей памяти после любого fault.
+
+<a id="s4-09b-table-write-failure"></a>
+
+#### S4-09b. Отказ отдельной записи page-table entry
+
+- [x] Bounded test seam остаётся private внутри `od-machine`; штатный writer по-прежнему вызывает `PhysicalMemory::write_u64`. Принят после независимого `gpt-6.1-sol/high` review без оставшихся P0—P3 замечаний.
+- При injected failure A на каждом из четырёх уровней ранее committed A остаются; отказавшая entry и последующие уровни не меняются. Отчёт содержит только committed `AdUpdate`, а callbacks содержат только committed writes в фактическом порядке.
+- Отдельный отказ D после успешного полного A-prefix сохраняет A, не меняет leaf D и operand и не вызывает последующих callbacks.
+- Каждый результат проверяет точные уровень, адрес entry, тип A/D write и физическую ошибку. Существующие `PhysicalMemory` tests остаются доказательством atomicity и отсутствия callback при обычном отказе physical write.
+- Срез не добавляет production fault injection/API, whole-operation rollback, cross-page, MMIO/guest-store, exception delivery или cached A/D semantics. Panic callback остаётся host panic после уже committed write.
+- Срез S4-09c дополняет permission/A-D matrix; полный S4-09 остаётся открытым для CPU integration и system acceptance.
+
+<a id="s4-09c-permission-level-matrix"></a>
+
+#### S4-09c. Матрица прав и A/D effects по уровням
+
+- [x] Принят после независимого `gpt-6.1-sol/high` review без оставшихся P0—P3 замечаний.
+- Тесты tracked Long64 4-level/4 KiB RAM access проверяют non-present Read/Write/Fetch на PML4, PDPT, PD и PT для CPL0/CPL3; cumulative U/S, R/W, CR0.WP и NX/NXE на каждом уровне; CPL1/CPL2 трактуются как supervisor. При non-present/reserved fault faulting entry и все нижние entries остаются неизменными, а A-prefix содержит только eligible предшественников. Protection проверяется после полного walk: A может установиться и в denied entry; все четыре eligible A updates сохраняются без D/operand commit. Для fault сверяются точный `PageFaultRecord`, полный массив `ad_updates`, callbacks и неизменность operand.
+- Разрешённые writes проверяют A-prefix → leaf D → один operand commit. Предустановленные A/D не создают лишних table callbacks. Pure probe проверяется отдельно и не меняет A/D.
+- Это тестовый срез: production walker/API и CPU-поведение не меняются. Нет CPU exception delivery/CR2 update, CPU execution integration, cross-page semantics, иных paging modes или system acceptance.
+- Подробная матрица и результаты проверок: [отчёт S4-09c](../reports/STAGE_4_S4-09C_2026-11-06.md) и [контракт машины](../specs/MACHINE_CONTRACT.md#tracked-permission-level-matrix-s4-09c).
 
 ### S4-10. Добавить необходимые page sizes и режимы
 
@@ -344,15 +383,47 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Проверены same-page RAM control и crossing offset `0xfff` между non-contiguous RAM pages. Обе translation/permission/RAM admission завершаются до read; AX обновляется только после полного чтения, RAX[63:16] и остальные CPU state сохраняются. Проверены точные CPL0/CPL3 second-page faults, prior A effects, отсутствие D, no-commit/no-retirement, RAM hole/MMIO отказ, alias walk-then-sample и negative profile cases.
 - Реализация, проверки и reviewer findings записаны в: [S4-11e report](../reports/STAGE_4_S4-11E_2026-11-05.md), [manifest](../reports/data/stage4/s4-11e-cross-page-word-read.json), [machine contract](../specs/MACHINE_CONTRACT.md#bounded-cross-page-word-read-s4-11e). Полный S4-11 и ISSUE-054 остаются открытыми для прочих форм, stores и rollback consumers.
 
+#### S4-11f. Bounded CPU-connected cross-page fetch for word MOV
+
+- [x] Accepted after independent `gpt-6.1-sol/high` review with no remaining P0—P3 findings; three P2 and three P3 findings were fixed during review. Separate opt-in `PagedMovCrossPageWordFetchLong64V1` profile for exact `66 8B 03`, CPL0/AC=0/NXE=1; S4-11e V1 continues to reject split instruction fetch.
+- Cover code offsets `0xffe` and `0xfff` across non-contiguous RAM pages; same-page control at `0xffd` with next page absent; operand wholly on separate RAM page. No code/operand/page-table aliases. Success preserves upper RAX and other state, advances RIP by 3 and retires once.
+- Verify precise second-page non-present/NX fetch faults (`PFEC=0x10/0x11`), exact byte address/original RIP/context, A-prefix persistence, no D, no operand walk/retirement; hole/MMIO without dispatch; fetch fault precedence over an inaccessible operand; reject a cross-page data operand after decode but before its walk; require matching CR0/CR4 in all public entries; negative profile cases.
+- Architecture: `gpt-6-astra/high` approved the bounded contract. Implementation, focused checks and independent review are complete with no remaining P0—P3 findings. See [S4-11f report](../reports/STAGE_4_S4-11F_2026-11-05.md), [manifest](../reports/data/stage4/s4-11f-cross-page-word-fetch.json), and [machine contract](../specs/MACHINE_CONTRACT.md#bounded-word-read-instruction-fetch-across-a-4-kib-page-s4-11f). ISSUE-054 and parent S4-11 remain open.
+
 ### S4-12. Подключить CR0/CR3/CR4, EFER и system instructions
 
 - [x] Ограниченный S4-12a snapshot-bridge срез принят после независимого ревью.
-- Реализовано: `Long64ProbeConfig::from_cpu_state` требует CR0 затем CR4 из
-  `LongModeState`, принимает CR3/EFER явно и делегирует raw values текущему
-  validator. Snapshot immutable; guest instructions и transitions не добавлены.
-- Полный S4-12 остаётся открытым: MOV CR3, EFER writes, transition/privilege
-  faults, startup state, TLB/invalidation и system acceptance не приняты.
+- [x] Ограниченная реализация S4-12b CPU-side `MOV CR3,RAX` принята после
+  независимого `gpt-6.1-sol/high` ревью; старты `0xff2–0xfff` отклоняются до
+  fetch. Контракт и результаты: [отчёт](../reports/STAGE_4_S4-12B_2026-11-05.md)
+  и [manifest](../reports/data/stage4/s4-12b-mov-cr3.json).
+- [x] S4-12c применяет новый CR3 к активному machine translation state;
+  следующая инструкция fetch-ится и читает данные через новый root. Проверены
+  precise fetch fault после переключения и STOP сразу после MOV CR3 без walk
+  root B. Независимое `gpt-6.1-sol/high` ревью одобрило код; отчётность
+  синхронизирована с итогами Graphify и проверок. См.
+  [отчёт](../reports/STAGE_4_S4-12C_2026-11-05.md).
+- S4-12a реализует `Long64ProbeConfig::from_cpu_state`: он требует CR0 затем
+  CR4 из `LongModeState`, принимает CR3/EFER явно и делегирует raw values
+  текущему validator. Snapshot immutable; в этом bridge guest instructions и
+  transitions не добавлены.
+- Полный S4-12 остаётся открытым: EFER writes, startup transitions,
+  TLB/invalidation и system acceptance не приняты.
   См. [machine contract](../specs/MACHINE_CONTRACT.md#cpu-state-to-diagnostic-translation-snapshot).
+- [x] S4-12d implemented, focused gates pass and independent review is clean.
+  `MOV CR0,RAX` switches only WP between `0x80010033` and `0x80000033`;
+  a following exact `MOV [RBX],RCX` must use the replacement snapshot. Keep
+  CPU-owned CR3, fixed CR4/EFER and reject other instructions/values as
+  Unsupported (except LOCK `MOV CR0`, which raises #UD after full fetch).
+  Preserve CR3 profile behavior. Reject the ordinary store outside CPL0 without
+  data access; require the store operand to fit one 4 KiB page. Verify WP `1→0` successful
+  supervisor store, WP `0→1` precise protection fault, STOP/fetch boundaries,
+  A/D prefix behavior, store page containment and atomic retirement; keep CPU
+  privilege #GP distinct from machine CPL0 admission. Results:
+  [отчёт](../reports/STAGE_4_S4-12D_2026-11-06.md) and
+  [manifest](../reports/data/stage4/s4-12d-cr0-wp-machine.json). See
+  [CPU contract](../specs/CPU_CONTRACT.md#paged-cpu-owned-cr0wp-profile-pagedcpl0cr0wpprobev1-s4-12d)
+  and [machine contract](../specs/MACHINE_CONTRACT.md#cpu-owned-cr0wp-translation-handoff-s4-12d).
 - **Где:** semantics и decode — `od-isa`; effects на translation — `od-machine`; соответствующие задачи этапа 2.
 - **Сделать:** реализовать исполняемые формы и валидацию переходов выбранного профиля, MSR allowlist, width/reserved/privilege checks, явные эффекты context change. Согласовать INVLPG и поддержку глобальных страниц/PCID с S4-14.
 - **Проверка:** guest instructions меняют действующий перевод; запрещённые записи дают правильное исключение и не оставляют частично обновлённый CR state. Проверить startup state и порядок включения обязательных bits.
@@ -382,6 +453,56 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   не меняет A/D; после remap или изменения прав создаётся новый cache.
 - Этот срез не добавляет guest invalidation, generation counter, INVLPG,
   CR3/EFER transitions или CPU hook. Полный S4-14 остаётся открытым.
+- [x] S4-14b implements feature-independent `step_invlpg` for exact bare
+  `INVLPG [RBX]`; the typed effect is consumed by a feature-gated cache adapter
+  that clears the full one-entry experimental cache before reuse. LOCK, CPL,
+  fetch and canonical/no-op ordering are covered. The composition verifies
+  `Walk → Hit → effect → consume → Walk → Hit` while preserving S4-14a's
+  immutable-memory boundary. See the [report](../reports/STAGE_4_S4-14B_2026-11-06.md).
+  Full S4-14 remains open.
+- [x] S4-14c implements a feature-gated mutable diagnostic session with one
+  exclusive `&mut PhysicalMemory`, values-only one-entry pure cache, checked
+  aligned PTE writes and synchronous INVLPG-effect consumption. Same-session
+  remap and write-permission refresh, post-INVLPG `Walk`, failed-write callback
+  behavior and cache preservation on non-invalidating paths passed; independent
+  `gpt-6.1-sol/high` review found no remaining P0—P3 findings. This does not
+  complete S4-14. See the [S4-14c report](../reports/STAGE_4_S4-14C_2026-11-05.md).
+- [x] S4-14d composes the existing exact `MOV CR3,RAX` CPU effect with that
+  mutable session. A retired `Cr3Write` validates and installs the replacement
+  translation snapshot, then synchronously clears its one-entry cache,
+  including same-value writes. Rejected/faulting paths preserve snapshot and
+  cache; post-retirement reconciliation failures clear the stale entry, poison
+  the session and make subsequent operations fail explicitly. Focused tests
+  cover roots A/B, same-CR3 PTE remap and permission tightening, precise
+  post-switch faults, rejected paths and pure fetch. This does not complete
+  S4-14. See the [S4-14d report](../reports/STAGE_4_S4-14D_2026-11-06.md).
+- [x] S4-14e composes a standalone MOV-only `MOV CR0,RAX` WP profile with the
+  mutable session. The profile excludes S4-12d's store allowlist. The session
+  accepts WP=0/1, validates and installs each retired CR0 snapshot and clears
+  its cache synchronously; current INVLPG/MOV CR3 profiles stay unavailable at
+  WP=0. Same-value writes conservatively invalidate as this prototype's policy.
+  Acceptance includes supervisor write permissions in both WP states, exact
+  rejected/faulting paths, poison behavior and restored INVLPG/MOV CR3
+  admission. This does not complete S4-14. See the
+  [S4-14e report](../reports/STAGE_4_S4-14E_2026-11-06.md).
+- [x] S4-14f adds the separate `InvlpgWpLong64V1` / `step_invlpg_wp` CPU
+  entry and `MutableTranslationProbeSession::execute_invlpg_wp`. The new
+  profile admits only the existing exact bare INVLPG form under WP=0/1 and
+  shares its instruction semantics with the unchanged WP=1 entry. Canonical
+  retired effects clear the one-entry session cache synchronously; the
+  noncanonical retired NOP and rejected/faulting paths preserve it. Focused
+  coverage and feature-on/off checks passed; final independent review found no
+  remaining findings. See the [S4-14f report](../reports/STAGE_4_S4-14F_2026-11-06.md).
+  Full S4-14 remains open.
+- [x] S4-14g implements separate `MovCr3WpLong64V1` / `step_mov_cr3_wp` and
+  `MutableTranslationProbeSession::execute_mov_cr3_wp` entries for CR0.WP=0/1.
+  The legacy MOV CR3 entry remains WP=1-only. The new session entry validates
+  pre-fetch control state, consumes only a valid retired `Cr3Write`, installs
+  the replacement snapshot and clears its one-entry cache synchronously;
+  post-retirement mismatches poison the session. Focused tests, feature-off/on
+  checks, formatting and JSON/diff checks passed. Final independent review
+  found no remaining findings. See [S4-14g report](../reports/STAGE_4_S4-14G_2026-11-06.md) and
+  [manifest](../reports/data/stage4/s4-14g-mov-cr3-wp-2026-11-06.json).
 - **Где:** `od-machine`, system instruction effects `od-isa`.
 - **Сделать:** CR3/context transitions, INVLPG, paging/permission-control changes, reset; global/PCID/INVPCID — только при объявленной поддержке. Развести software-cache generations и архитектурную семантику guest page tables.
 - **Проверка:** remap A→B, tighten/relax rights с обязательной invalidation, stale entry после context switch, huge-page coverage, код/данные, разные guest pages внутри host page. Поведение без invalidation проверять в пределах разрешённого стандартом, не требовать несуществующей гарантии.
@@ -395,6 +516,25 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** одни guest bytes через interpreter и JIT, fault до/после допустимых effects, MMIO side effects, live handle при reset/retirement, реальное освобождение после допустимого срока.
 - **Готово:** хотя бы зафиксированный memory slice работает на production owner; unsupported JIT формы переходят в работающий interpreter. В отчёте указано фактическое покрытие.
 
+#### S4-15a. Один qword load PublishedBlock через tracked RAM
+
+- Реализация ограничена exact `48 8B 03` (`MOV RAX,[RBX]`) в существующем
+  direct V2 published memory-load пути. `od-host` зависит от `od-machine`;
+  scoped callback синхронный и не сохраняет memory borrow в JIT mapping или
+  metadata.
+- `od-machine` временно предоставляет read-only qword `GuestMemory`: один
+  RAM operand в пределах guest 4 KiB страницы, tracked four-level Long64 walk,
+  без MMIO dispatch. Ошибки walk/backend и уже committed A updates возвращаются
+  вызывающему даже при отказе; D не устанавливается для load.
+- Host entry до первого memory access принимает только точную опубликованную
+  форму и runnable Long64 CPL0/CPL3 context; прочие формы/profile отклоняются.
+  Исполняется ровно одна инструкция. Unsupported RAM/MMIO/cross-page access
+  остаётся host/backend отказом, не guest `#PF`.
+- Проверки и ограничения: [S4-15a report](../reports/STAGE_4_S4-15A_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-15a-paged-v2-load-2026-11-06.json).
+  Ограниченный срез принят после независимого ревью; родительский S4-15
+  остаётся открытым.
+
 ### S4-16. Physical aliases и инвалидация исполняемого кода
 
 - [ ] Принято после ревью.
@@ -402,6 +542,179 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** связать блоки с физическими code bytes и нужным translation context. Уведомлять о committed write через любой разрешённый writer; обработать page-table remap и изменение текущего active block.
 - **Проверка:** write alias→execute alias, одна guest page внутри host page, loader patch, cross-page code, fail-before-commit, byte write в active block, повторный lookup после invalidation.
 - **Готово:** старые bytes не исполняются после архитектурно обязательной точки наблюдения; удаление cache entry не освобождает ещё используемую executable allocation преждевременно.
+
+#### S4-16a. Loader patch неактивной register-only code page через два alias
+
+- Реализован bounded срез: один vCPU, фиксированный Long64 paging snapshot,
+  один физический RAM page, два guest linear aliases и exact
+  `NativeRegisterV1` register-only code. Code range целиком помещается в одну
+  guest 4 KiB страницу; patch выполняется между dispatch-вызовами.
+- `PhysicalMemory` хранит непереполняющиеся версии физических RAM страниц.
+  Успешная запись увеличивает только версии затронутых страниц; проверка
+  диапазона, типа RAM и переполнения завершается до commit. Версии выделяют
+  по 8 байт на RAM guest page. Это provisional изменение write path; замеров
+  цены нет и speed claim не делается.
+- `MachineBus` захватывает code range tracked instruction fetch'ем первой
+  byte, проверяет executable translation и RAM-backed physical page, затем
+  копирует только запрошенный диапазон, сохраняя точный offset внутри страницы.
+  Оба alias обязаны отображать один physical page и один и тот же byte range;
+  patch допускается только внутри `[range_offset, range_offset + length)`.
+  Та же page translation покрывает оставшиеся байты страницы; fetch A updates
+  коммитятся walker'ом до snapshot. API принимает только `AccessOrigin::Explicit`;
+  descriptor-table origin отклоняется, чтобы не подменять CPL3 проверки правами CPL0.
+- `PagedCodeSession` держит bus заимствованным эксклюзивно, содержит ровно два
+  alias cache entries и две executable arena slots. Loader меняет один byte
+  через tracked writable alias; после успешного commit версия backing страницы
+  обновляется и обе cache entries удаляются до следующего lookup. Ошибка
+  admission не связывает backing, длину и alias в сессии. Ошибка write не
+  коммитит сам patch byte; оба tracked walk могут отдельно закоммитить
+  Accessed effects, а только write walk может закоммитить Dirty effects до
+  более позднего отказа. Если page-table entry физически перекрывает code backing, эти effects могут
+  изменить и code bytes/generation даже при отказе patch. Перекрытие исключено
+  из гарантии «неизменённый code backing при отказе»; каждый следующий lookup
+  получает свежие bytes/generation и инвалидирует выбранный alias cache до
+  исполнения, поэтому устаревший блок не исполняется повторно.
+- Результат native entry декодируется backend'ом до возврата; published slot и
+  PC map остаются владельческими пока entry исполняется и результат проверяется.
+  CPU state клонируется; только в локальной копии CR3 временно очищается на время
+  fixture-dispatch, затем исходный CR3 восстанавливается до переноса состояния
+  вызывающей стороне.
+- Проверено host сценарием: 10-byte code range начинается с offset `0x100`;
+  patch вне точного диапазона и alias с другим offset отвергаются; отказ
+  admission не резервирует сессию; оба alias исполнили старые bytes, отказ
+  через read-only PTE оставил две cache entries, patch через alias A
+  инвалидировал обе, следующие исполнения через B и A вернули новый immediate.
+  Machine coverage проверяет CPL3 fault на supervisor-only mapping для fetch и
+  patch, а `DescriptorTable` origin отклоняется обеими tracked code API.
+  Graphify обновлён; замечания независимого ревью исправлены и повторно проверены.
+  Финальное независимое ревью завершилось без замечаний; bounded срез принят,
+  родительский S4-16 остаётся открытым.
+- **Ограничения:** это не включает guest JIT stores, arbitrary writer callbacks,
+  remap/TLB invalidation, cross-page code, active-block mutation, MMIO/DMA или
+  SMP. Полный S4-16 остаётся открытым. См. [S4-16a report](../reports/STAGE_4_S4-16A_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-16a-code-alias-patch-2026-11-06.json).
+
+#### S4-16b. Один guest MOV store инвалидирует неактивный JIT code через physical aliases
+
+- Реализован bounded host adapter для одного синхронного `step_paged_mov`
+  между native-вызовами. Допустимы только существующие точные формы CPU
+  профиля; этот срез использует `48 89 0B` (`MOV [RBX],RCX`). Один vCPU,
+  неизменный Long64 paging snapshot, две alias cache entries и одна
+  physical code page из S4-16a.
+- Paging controls и CR3 сверяются с session snapshot. CR3 остаётся отдельным
+  аргументом machine adapter. `step_guest_mov` передаёт клонированный state с
+  `cr3 = None` в `od_machine::step_paged_mov`, затем восстанавливает исходный
+  CR3 перед переносом результата в caller state. При machine input error caller
+  state остаётся без изменений; при архитектурном fault используется обычная
+  commit-семантика profile. Mode/CPL сохраняются; walker получает explicit
+  access origin и проверяет фактические page permissions.
+- Host собирает только фактически committed physical write callbacks, включая
+  A/D writes page walker. После возврата machine step reconciliation сначала
+  сверяет пересечения с physical code page, читает её текущее поколение и при
+  необходимости синхронно инвалидирует обе alias entries; только потом
+  возвращает guest report или host error. Поэтому callback, записанный до
+  последующего #PF, тоже обновляет cache state.
+- Сценарии этого среза используют RAM. Существующий `step_paged_mov` также
+  умеет направлять operand access в MMIO, но MMIO поведение здесь не проверяется;
+  cache reconciliation получает только committed physical RAM write callbacks.
+- Проверено: успешный guest qword store заменяет immediate в code backing,
+  освобождает обе idle cache entries и последующее исполнение обоих aliases
+  видит новые bytes. Отдельный CPL3 faulting store коммитит PML4 Accessed
+  запись по `0x7400` в той же физической странице, что и code, затем получает
+  #PF на unmapped operand: CPU state и retirement остаются неизменны,
+  operand write отсутствует, generation меняется и обе cache entries
+  инвалидируются. Store в другую RAM page коммитится без изменения code page
+  generation и сохраняет обе cache entries.
+- Это не добавляет общего writer notification, remap/TLB coupling,
+  MMIO/DMA validation, SMP или active-block mutation. Code range остаётся внутри одной
+  страницы по ограничению S4-16a; этот срез не проверяет cross-page data
+  operand и не заявляет его поведение. Производительность adapter и write path
+  этим correctness slice не измерялась; speed claim отсутствует. Независимое
+  ревью пройдено без замечаний; bounded срез принят, родительский S4-16 и Stage 4
+  остаются открытыми.
+- См. [S4-16b report](../reports/STAGE_4_S4-16B_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-16b-guest-store-2026-11-06.json).
+
+#### S4-16c. Физическая RAM-запись загрузчика инвалидирует неактивные aliases
+
+- Добавлен `MachineBus::patch_physical_ram_with_callback`; прежний удобный API
+  делегирует ему без изменения поведения. Callback передаётся существующему
+  `PhysicalMemory::write_bytes` и сообщает точный диапазон после commit.
+- `PagedCodeSession::write_physical_ram` принимает типизированный физический
+  адрес и байты между native вызовами. Он не выдаёт mutable bus, ссылки на RAM
+  или writer closure. После успешного либо ошибочного результата все фактически
+  committed диапазоны проверяются общей helper-функцией с S4-16b. Пересечение
+  captured code page перечитывает поколение и синхронно инвалидирует обе
+  alias cache entries. Запись в другую страницу и отказ до commit кэш сохраняют.
+- Проверено: точный callback на восьмибайтовую замену immediate; последующее
+  исполнение обоих aliases видит новые bytes; запись за пределами admitted
+  instruction range в той же code page консервативно инвалидирует обе записи;
+  запись соседней guest page по адресу `0x6000` обновляет только её поколение;
+  ROM write и диапазон, пересекающий RAM/ROM boundary, не меняют bytes,
+  generation или resident cache entries. Срезные проверки прошли, Graphify
+  обновлён, независимое ревью завершилось без замечаний.
+- Ограничения: это только один privileged physical RAM loader write между
+  native вызовами. Remap/TLB, cross-page code, MMIO/DMA, SMP и изменение
+  активного native block остаются открытыми; производительность не измерялась.
+  Родительский S4-16 и Stage 4 остаются открытыми.
+- См. [S4-16c report](../reports/STAGE_4_S4-16C_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-16c-physical-loader-2026-11-06.json).
+
+#### S4-16d. A/D callbacks snapshot и alias patch доходят до cache invalidation
+
+- `MachineBus` предоставляет callback-варианты tracked code snapshot и
+  one-byte alias patch; прежние API сохраняют поведение через no-op callback.
+  Уведомляются только реально committed физические записи page walker и
+  operand byte в порядке их commit.
+- `PagedCodeSession` собирает уведомления snapshot и patch и вызывает общую
+  `reconcile_code_writes` до возврата результата, в том числе перед
+  распространением snapshot/patch fault и admission/alias ошибок после walk.
+  Поэтому A/D-запись, физически перекрывающая code backing, инвалидирует обе
+  idle alias entries до следующего lookup; неуспешный operand patch не
+  изображается как committed write.
+- Проверено: exact callback order для четырёх Accessed обновлений read preflight,
+  Dirty обновления write walk и committed patch byte; CPL3 write-protection
+  failure: read preflight устанавливает PDE A-bit по `0x7010` в code backing,
+  затем write walk fault-ится; committed A update и исходный patch byte
+  сохраняются, а обе cache entries синхронно удаляются. Fetch fault в
+  другой PML4 ветви после PML4 A update по `0x7400` также удаляет обе entries
+  до Snapshot error. Machine API tests дополнительно проверяют callback ranges
+  и PFEC для snapshot fault (`0x14`), write fault (`0x7`) и физического mismatch.
+  S4-16a/b/c regressions и все `od-machine` unit tests проходят.
+- Независимое ревью завершено; исправлены замечания к точным assertions и
+  evidence. Ограничения прежние: один vCPU, одна физическая
+  code page, fixed paging snapshot и inactive native blocks. Это не добавляет
+  TLB/remap invalidation, cross-page code, arbitrary writers, MMIO/DMA, SMP или
+  active-block retirement. Родительский S4-16 и Stage 4 остаются открытыми.
+- См. [S4-16d report](../reports/STAGE_4_S4-16D_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-16d-tracked-ad-callbacks-2026-11-06.json).
+
+#### S4-16e. Retired INVLPG сбрасывает inactive aliases после remap
+
+- `od-machine::step_paged_invlpg` исполняет ровно существующий bounded
+  `od-isa::step_invlpg` профиль через tracked RAM fetch и передаёт фактические
+  A/D callbacks, `PageFaultRecord` и исходную ошибку walker.
+- `PagedCodeSession::execute_invlpg` проверяет фиксированный Long64 paging
+  snapshot. После retired canonical invalidation effect он консервативно
+  очищает обе idle cache entries и сбрасывает backing/range/alias binding.
+  Запись PTE сама cache не очищает. Noncanonical retired INVLPG без
+  translation-effect и rejected input сохраняют session.
+- Проверено: два aliases исполняют старый immediate; remap leaf PTE меняет
+  backing, но сохраняет 2 cache entries; noncanonical и rejected INVLPG их не
+  очищают; отдельные исполненные INVLPG для A и B сбрасывают session; после
+  этого новый alias с другим смещением и длиной допускается к новой backing и
+  исполняет новый immediate с точным retirement/RIP. Machine callbacks
+  покрывают успешный fetch, noncanonical retirement, rejection, CPL3 #GP после
+  fetch и fetch #PF после A/D effects.
+  Все `od-machine` unit tests и S4-16a…e host tests проходят; Graphify обновлён.
+- **Граница:** это session cache reset после CPU invalidation effect, а не
+  production TLB. Любой canonical retired INVLPG в bounded session
+  консервативно очищает обе записи; архитектурные guest invalidations для двух
+  linear aliases всё равно исполняются отдельно. Cross-page code, общие
+  writers, production TLB, MMIO/DMA, SMP и active-block retirement остаются
+  открытыми; S4-16 и Stage 4 остаются открытыми.
+- См. [S4-16e report](../reports/STAGE_4_S4-16E_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-16e-invlpg-remap-2026-11-06.json).
 
 ### S4-17. Собрать локальный memory/fault differential набор
 
@@ -418,6 +731,22 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Сделать:** нужные descriptor/table instructions, descriptor caching, limit/type/present/privilege checks, выбранные TSS/stack switching поля. Читать таблицы через правильный memory/access context.
 - **Проверка:** valid/invalid selector, table limit, not-present, ошибочный type, fault при чтении таблицы и нужный stack switch. Отдельно подтвердить, что давно существующий setter не подменяет guest instruction.
 - **Готово:** обязательные формы manifest исполняются; ошибки классифицируются как архитектурные `#GP/#SS/#NP/#TS/#PF` по выбранному стандарту.
+
+#### S4-18a — bounded paged LIDT
+
+- [x] Реализация и независимое ревью пройдены; срез принят.
+- **Где:** `od-isa` exact `PagedLidtLong64V1`; `od-machine` tracked RAM adapter.
+- **Сделать:** принимать только `0F 01 5C 24 ib` при фиксированных Long64
+  control state; читать SS:RSP+sign-extended disp8 как один RAM-only 10-byte
+  pseudo-descriptor внутри одной guest page. Сохранять фактические fetch/operand
+  A updates, не устанавливать D и не обходить loaded IDT base.
+- **Проверка:** nonidentity и signed disp8, atomic state commit, точный operand
+  #PF после fetch, LOCK #UD/truncated fetch ordering, CPL #GP, crossing and
+  noncanonical source, hole/backend separation, no-MMIO path, exact callbacks
+  and PTE snapshots. Исполнение gate checks, descriptor caching, delivery and
+  cross-page descriptor reads остаются за пределами этого среза.
+- **Результат:** [S4-18a report](../reports/STAGE_4_S4-18A_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-18a-paged-lidt-2026-11-06.json).
 
 ### S4-19. Доставка исключений и восстановление после fault
 

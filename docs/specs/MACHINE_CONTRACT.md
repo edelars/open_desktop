@@ -46,14 +46,156 @@ little-endian encoding.
 
 ## Committed writes
 
-Все byte/scalar writes используют один `write_bytes` path. Для RAM callback
-получает ровно один `GuestPhysicalRange` только после полной записи. Запись в
-`Framebuffer` фиксируется тем же путём, но callback не вызывается ни разу: от
-байтов framebuffer не зависит ни один потребитель (fetch и page tables там
-запрещены). Ошибка, включая отказ region или cross-region access, не вызывает
-callback. Этот hook
-является только локальным уведомлением о committed bytes; он ещё не подключён к
-JIT code-dependency invalidation и не доказывает S4-15—S4-16.
+Все byte/scalar writes используют один `write_bytes` path. Callback получает
+ровно один `GuestPhysicalRange` только после полной записи в RAM. Ошибка,
+включая отказ region, cross-region access или исчерпание page generation,
+не вызывает callback и не меняет bytes или поколения. Для каждого RAM guest
+4 KiB page `PhysicalMemory` хранит непереполняющийся version, изначально равный
+1; успешная запись повышает только поколения затронутых страниц. Проверка
+всех затронутых поколений выполняется до копирования. Запись в ROM/Reserved
+сохраняет `ReadOnlyRegion` классификацию и завершается до generation lookup.
+
+Это консервативная invalidation основа для code snapshots, а не заявление о
+цене write path: на страницу RAM расходуется 8 байт, а каждая запись проверяет
+и повышает версии затронутых страниц. Измерений пока нет; решение provisional.
+
+Запись в `Framebuffer` (device-owned pixel memory, S10-03) фиксируется тем же
+`write_bytes`, но обходит и callback, и поиск/повышение page generations:
+для `Framebuffer` поколения не создаются, поэтому framebuffer-запись не может
+привести к `AddressOverflow` или `CodeGenerationExhausted`, а от байтов
+framebuffer не зависит ни один code-кеш. `code_page_generation` и
+`MachineBus::tracked_code_snapshot` отвергают `Framebuffer` так же, как любой
+не-RAM region (`UnreadableRegion`).
+
+## Executable RAM snapshot и loader patch (S4-16a)
+
+`MachineBus::tracked_code_snapshot` принимает ненулевой byte range внутри одной
+guest 4 KiB страницы и `AccessOrigin::Explicit`; descriptor-table origin
+отклоняется, поскольку walker иначе применяет supervisor page permissions
+вместо предоставленного CPL. Он выполняет tracked `Fetch`
+первой code byte с тем же privilege/mode context, поэтому Long64 walker
+проверяет executable permissions и коммитит фактически нужные page-table
+Accessed bits. После translation шина проверяет, что вся физическая
+страница является RAM, и копирует запрошенный range из того же mapping. В
+пределах одной guest page все байты используют один leaf translation и одну
+permission set; crossing page отклоняется до walk. Snapshot содержит линейный
+base, физический page base, owned bytes и generation именно этой физической
+страницы. Snapshot и loader session сохраняют точный page offset диапазона;
+два alias должны указывать на один physical byte range.
+
+`patch_tracked_code_byte` сначала tracked-чтением проверяет, что virtual alias
+указывает на ожидаемую физическую страницу, затем выполняет одну tracked byte
+запись через этот alias. Отказ операции не коммитит сам patch byte. Оба walk
+могут закоммитить Accessed effects; только write walk может закоммитить Dirty
+effects до более позднего отказа. Если физическое хранение этих записей
+перекрывает code backing, они могут изменить code bytes и увеличить backing
+generation даже при неуспешном patch. Такое совпадение исключено из узкой
+гарантии неизменности backing при отказе. Host перед каждым исполнением получает свежие bytes/generation и
+инвалидирует выбранный alias cache до dispatch; старая версия поэтому не
+исполняется повторно. Этот API намеренно покрывает один byte patch в
+ограниченном loader сценарии. Полный
+writer notification, guest-generated stores, remap/TLB, cross-page code,
+DMA, MMIO и active-code retirement остаются вне S4-16a.
+
+## Guest MOV committed-write observation (S4-16b)
+
+`od-machine::step_paged_mov` retains its exact one-step Long64 MOV profile and
+reports architectural page faults as a `RunResult`; committed physical write
+notifications are delivered synchronously for actual RAM writes, including
+page-walker A/D updates. `PagedCodeSession` supplies the fixed paging snapshot
+and the caller's explicit CPL/origin context, while keeping CR3 as the adapter's
+separate paging input. Because the CPU profile requires `state.cr3 == None`,
+the host passes it a local state clone with CR3 cleared and restores the original
+CR3 before copying a successful profile result back. Machine input errors leave
+the caller's state unchanged; architectural faults retain the profile's ordinary
+state-commit behavior. The host session must not lose committed notifications
+when the guest step reports a fault or another error.
+
+The S4-16b host fixture verifies that a Ring3 write walk can commit a PML4
+Accessed update into the physical code page and then fault on a missing operand
+mapping. The page-table write remains committed; the operand write and guest
+retirement do not occur. This contract does not add cross-page store policy or
+change the interpreter's exact admitted forms. The existing step can dispatch
+MMIO operand accesses, but S4-16b validates RAM only; callback-based code
+reconciliation observes committed physical RAM writes, not device-side writes.
+See the
+[S4-16b report](../reports/STAGE_4_S4-16B_2026-11-06.md).
+
+## Physical RAM loader write observation (S4-16c)
+
+`MachineBus::patch_physical_ram_with_callback` forwards `PhysicalMemory`'s
+committed-write notification for a checked physical RAM byte-range write. The
+callback receives the exact committed `GuestPhysicalRange`; rejected ranges,
+ROM, and other non-RAM targets do not produce a commit notification. The
+existing `patch_physical_ram` convenience method delegates with a no-op
+callback, preserving its caller contract.
+
+`PagedCodeSession::write_physical_ram` is a privileged, synchronous loader path
+that can be called only through the session while native code is inactive. It
+does not expose the bus, RAM references, or an arbitrary writer closure. The
+session collects committed ranges and reconciles them before propagating either
+success or error. An overlap with the captured physical code page reads its
+current generation and invalidates both inactive alias entries. A write to a
+different page preserves those entries; a rejected write has no callback and
+preserves bytes, generation, and entries under PhysicalMemory's validate-before-
+commit contract. Guest CPL permission checks are not part of this privileged
+loader operation.
+
+The S4-16c fixture checks a byte-range callback, loader replacement of a cached
+instruction immediate and fresh execution through both aliases, conservative
+invalidation for a same-page write outside the admitted instruction range,
+generation isolation for a neighboring guest page, and failure at a RAM/ROM
+boundary and within ROM. It does not establish arbitrary writers, remap/TLB,
+active-block retirement, MMIO/DMA or SMP behavior. See the
+[S4-16c report](../reports/STAGE_4_S4-16C_2026-11-06.md).
+
+## Tracked code-walk committed writes (S4-16d)
+
+`tracked_code_snapshot_with_callback` reports physical page-walker writes
+committed while fetching the code snapshot. The callback fires synchronously
+and in walker order; a later translation or physical-memory failure does not
+erase earlier committed A-bit updates. `patch_tracked_code_byte_with_callback`
+reports committed writes from its read preflight, write walk, and requested
+operand byte in actual operation order. A failed patch reports only writes that
+committed before the error; it never reports an uncommitted operand byte. The
+existing callback-free methods delegate to these APIs with a no-op callback.
+
+In `PagedCodeSession`, notifications from both tracked paths are reconciled
+against the captured physical code page before returning either a report or an
+error. If a committed A/D write overlaps that backing, both idle alias caches
+are invalidated synchronously. This does not change page-table permissions,
+translation/TLB semantics, or the ordinary fault classification. The host
+patch-failure fixture observes the read preflight setting the alternate PDE A
+bit at `0x7010` before the write walk faults. The snapshot-failure fixture
+observes the root PML4 A bit at `0x7400` before the later missing-PDE fault. See the
+[S4-16d report](../reports/STAGE_4_S4-16D_2026-11-06.md).
+
+## Bounded tracked INVLPG execution (S4-16e)
+
+`step_paged_invlpg` executes the existing exact `od-isa::step_invlpg` through
+the RAM-only tracked fetch adapter. The callback reports each committed
+page-walker A/D range in order. `Ok(PagedInvlpgStepReport)` carries the exact
+CPU exit (including architectural fault or rejection), optional page-fault
+record, and tracked-access error; fetch effects remain observable when the
+instruction later raises an architectural fault. Rejected inputs are refused
+before fetch. This adapter does not model a production TLB.
+
+`PagedCodeSession::execute_invlpg` accepts the same fixed Long64 paging
+controls as the captured code session. It reconciles fetch callbacks before
+returning. Instruction faults and ISA rejections are carried in
+`Ok(result).step.cpu.exit`; a tracked fetch backend failure is carried in
+`Ok(result).step.access_error`. The `Err` path is reserved for adapter/session
+configuration errors. After exactly one retired canonical INVLPG effect, the
+bounded host session clears both idle native alias entries and releases its
+backing/range/alias binding, permitting fresh admission after remap. Any
+canonical effect conservatively resets both entries; noncanonical retirement
+and rejected/faulting inputs do not reset the binding. Guest code must still
+execute an INVLPG for each virtual alias.
+
+The scope remains one vCPU, one code page, two inactive aliases, and a fixed
+paging snapshot. Cross-page code, arbitrary writers, production TLB behavior,
+MMIO/DMA, SMP, and active-block retirement are outside this slice. See the
+[S4-16e report](../reports/STAGE_4_S4-16E_2026-11-06.md).
 
 ## Синхронная MMIO/PIO bus
 
@@ -428,6 +570,57 @@ API не реализует `GuestMemory`, cross-page операции, huge pag
 исключение-доставку или SMP/DMA coherence; pure probe выше остаётся без A/D
 эффектов.
 
+#### Injected table-write failure ordering (S4-09b)
+
+The private tracked-walker test seam supplies a table-entry writer. Production
+calls still delegate each A/D update to `PhysicalMemory::write_u64`; there is no
+public or general fault-injection API. Injected A-write failures at PML4, PDPT,
+PD and PT prove that only earlier successful writes remain committed. The
+failing entry and all later entries stay unchanged, and the error names the
+exact level, entry address and A/D bit. `TrackedAccessReport` includes only
+committed `AdUpdate` values; callbacks contain only successfully committed
+entry writes, in commit order.
+
+A separate injected D failure after all four A updates preserves that A prefix,
+leaves the leaf D bit and operand unchanged, and emits no D or operand callback.
+The normal `PhysicalMemory` writer tests separately verify that an ordinary
+rejected write leaves its complete range unchanged and invokes no callback.
+Callback panic remains a host panic after the write has committed. The seam does
+not add whole-operation rollback, cross-page or MMIO/guest-store behavior,
+exception delivery, or cached A/D semantics; full S4-09 remains open.
+
+<a id="tracked-permission-level-matrix-s4-09c"></a>
+
+#### Tracked permission-level matrix (S4-09c)
+
+The existing tracked Long64 four-level/4 KiB RAM path is covered at each PML4,
+PDPT, PD and PT level with all other entries permissive. Tests exercise
+non-present Read/Write/Fetch for CPL0 and CPL3 with literal PFEC values; a
+faulting non-present/reserved entry and lower entries remain unchanged while
+only eligible predecessor A updates and callbacks remain committed. Protection
+checks occur after the four-entry walk, so A may already be set on the denied
+entry; the full eligible A prefix remains committed. They compare the complete
+`PageFaultRecord`, all five `ad_updates` slots, complete page-table entry values,
+callback order and unchanged operand bytes.
+
+The permission matrix clears U/S or R/W independently at every level. CPL3
+Read/Write/Fetch faults on U/S denial; CPL0, CPL1 and CPL2 retain supervisor
+access where allowed. Read and Fetch remain allowed through read-only mappings.
+Supervisor Write through R/W=0 succeeds at WP=0 and sets A on the walk, then D,
+then exactly the operand; WP=1 faults with PFEC 3. CPL3 Write faults with PFEC 7
+at either WP setting. CPL1/CPL2 follow supervisor WP behavior. NX at each level
+allows data Read/Write with NXE, denies Fetch for CPL0/CPL1/CPL2/CPL3 with the
+expected PFEC, and is a reserved-bit fault when NXE is clear; in that case only
+predecessor A updates occur because reserved-bit validation precedes A on the
+faulting entry. Preset A/D entries generate no redundant table callbacks.
+
+A separate pure-probe check covers Read/Write/Fetch for CPL0/CPL3 and confirms
+that no page-table bytes change. This slice adds tests only: it does not change
+walker or public CPU behavior, does not deliver #PF or update CR2, and does not
+cover CPU execution integration, system acceptance, cross-page accesses,
+additional paging modes, exception delivery or cached A/D behavior. See the
+[S4-09c report](../reports/STAGE_4_S4-09C_2026-11-06.md).
+
 ## S4-06b CPU-connected paged MOV
 
 The public `od_machine::step_paged_mov` entry uses its internal
@@ -632,6 +825,32 @@ Linux execution are outside this slice. See the
 [S4-11e CPU contract](CPU_CONTRACT.md#exact-paged-word-read-profile-pagedmovcrosspagewordreadlong64v1-s4-11e)
 for the encoding and normative references.
 
+## Bounded word-read instruction fetch across a 4 KiB page (S4-11f)
+
+The separate opt-in `PagedMovCrossPageWordFetchLong64V1` profile admits exact
+`66 8B 03` fetch from offsets `0xffe` and `0xfff` across two non-contiguous RAM
+code pages, with the two-byte operand wholly in a separate RAM page. It uses
+one vCPU, CPL0, Long64, canonical48/physical36, four-level 4 KiB uncached
+paging, NXE=1 and AC=0. The S4-11e `PagedMovCrossPageWordReadLong64V1` profile
+retains its no-crossing-fetch gate. The fixture has no aliases between code,
+operand and page-table mappings.
+
+The same-page instruction at `0xffd` is the control and may execute with the
+next code page absent. For crossing instructions, all required code bytes are
+fetched before an operand translation/read. A second-page non-present or NX
+fetch fault reports the second page's first required linear byte, original
+instruction RIP and Fetch/Long64/Explicit context (PFEC `0x10` or `0x11`),
+without CPU commit or retirement. Earlier A updates persist; D remains clear;
+no operand page walk occurs. Hole and MMIO code-page outcomes do not dispatch a
+device. A simultaneous unavailable operand does not outrank the fetch fault.
+After complete decode, a word operand starting at data-page offset `0xfff` is
+rejected before a data-page walk; the profile never splits its operand. Every
+public entry requires the matching CR0/CR4 profile pair before fetching.
+
+This slice adds no cross-page operand support, stores, exception delivery/CR2,
+restart, JIT/TLB or Linux integration. See the [CPU contract](CPU_CONTRACT.md#exact-paged-word-read-and-cross-page-instruction-fetch-profile-pagedmovcrosspagewordfetchlong64v1-s4-11f)
+and the [S4-11d fetch contract](MACHINE_CONTRACT.md#bounded-cross-page-instruction-fetch-s4-11d).
+
 ## Bounded cross-page instruction fetch (S4-11d)
 
 This is a narrow fetch extension for the existing opt-in
@@ -669,7 +888,8 @@ instruction fetch support. See the [S4-11d CPU contract](CPU_CONTRACT.md#cross-p
 `Long64ProbeConfig::from_cpu_state` строит immutable diagnostic snapshot из
 `LongModeState::cr0` и `LongModeState::cr4`; отсутствующий CR0 отвергается
 раньше отсутствующего CR4 через `MissingCpuRegister`. CR3 и EFER остаются
-явными аргументами, поскольку текущий `LongModeState` ими не владеет.
+явными аргументами adapter; если CPU state содержит CR3, он обязан совпасть
+с переданным значением snapshot.
 
 После извлечения raw values метод вызывает существующий `Long64ProbeConfig::new`.
 Он не подставляет defaults, не маскирует unsupported bits, не меняет CPU/RAM/A/D
@@ -679,8 +899,76 @@ snapshot с другим CR3/EFER.
 
 Этот bridge позволяет диагностическому probe использовать CPU-owned CR0/CR4
 значения и явный CR3/EFER context, включая WP/NXE effects уже существующего
-validator. Он не реализует MOV CR3, WRMSR/EFER, privilege checks, mode transition
-history, startup sequencing, TLB invalidation или CPU-connected paging.
+validator. Он не реализует WRMSR/EFER, mode transition history, startup
+sequencing, TLB invalidation или CPU-connected paging.
+
+## CPU MOV CR3 execution boundary (S4-12b)
+
+`MovCr3Long64V1` returns a typed CR3 context-change effect only after a
+successful instruction commit. It retires exactly one instruction and stops
+before any following fetch. The caller must consume the effect before resuming
+execution. S4-12c integrates it into the opt-in paged CPU profile below. See the
+[CPU contract](CPU_CONTRACT.md#exact-mov-cr3-execution-profile-movcr3long64v1-s4-12b)
+and [S4-12b report](../reports/STAGE_4_S4-12B_2026-11-05.md).
+
+## CPU-owned CR3 translation handoff (S4-12c)
+
+`run_paged_cr3_probe` is the opt-in machine quantum for
+`PagedCpl0Cr3ProbeV1`. It builds the active `Long64ProbeConfig` from CPU-owned
+CR0/CR3/CR4 and fixed EFER before STOP polling. Each instruction gets a fresh
+page-aware memory adapter holding that immutable snapshot.
+
+Its instruction allowlist is exact `MOV CR3,RAX` and exact `MOV RAX,[RBX]`;
+stores, other memory forms, stack operations, PIO and HLT are unsupported.
+
+After a retired `MOV CR3`, the machine verifies that the effect's full old CR3
+matches the active snapshot and that committed `LongModeState.cr3` equals the
+effect's new CR3. It validates a candidate snapshot from that committed CPU
+state and replaces the active value before the next STOP poll or instruction
+fetch. The next fetch and operand access therefore walk the replacement root;
+applying the effect itself performs no page walk or RAM/A-D update. The quantum
+reports consumed context changes in retirement order.
+
+Effect mismatch or candidate-validation failure is a terminal machine
+integration error. The committed MOV and its retirement remain visible; the
+machine does not resume using a stale snapshot. An unavailable or invalid page
+table under the new root is observed only by the next real access with the
+existing precise fault/backend classification. The old `run_paged_probe`
+continues to reject CPU-owned CR3. This profile adds no TLB caching,
+invalidation, PCID, global pages, exception delivery, or EFER transitions. See
+the [CPU profile](CPU_CONTRACT.md#paged-cpu-owned-cr3-profile-pagedcpl0cr3probev1-s4-12c)
+and [S4-12c report](../reports/STAGE_4_S4-12C_2026-11-05.md).
+
+## CPU-owned CR0.WP translation handoff (S4-12d)
+
+`run_paged_cr0_wp_probe` is the opt-in machine quantum for
+`PagedCpl0Cr0WpProbeV1`. The source and target CR0 values are constrained to
+`0x80010033` and `0x80000033`; CR3 is CPU-owned and fixed for the quantum,
+CR4=`0x20`, EFER=`0xd00`, one vCPU and uncached translation. The allowlist is
+exact `MOV CR0,RAX` and `MOV [RBX],RCX` only. The store operand must fit in one
+4 KiB RAM page; a crossing operand is Unsupported before the data walk.
+The exact LOCK-prefixed `MOV CR0` is #UD after full instruction fetch.
+
+After `MOV CR0`, the machine checks the effect's full old value against the
+active immutable snapshot and the new value against committed CPU state. It
+validates a replacement `Long64ProbeConfig` and installs it before the next
+STOP poll or memory access. Committing the effect does not walk page tables or
+write A/D bits; the instruction fetch may already have made A updates. The next
+supervisor store therefore observes WP from the new snapshot: WP=0 permits a
+read-only mapping; WP=1 faults precisely without committing store data or D,
+while prior A updates may remain. A successful store through an R/W=0 mapping
+does not impose a D-bit assertion in this profile. Integration
+mismatch/rejection is terminal and preserves the already retired CR0 write.
+The S4-12c CR3 profile and older paged profiles retain their existing
+instruction allowlists. Machine admission requires CPL0; the CPU instruction
+entry separately classifies bare `MOV CR0` at nonzero CPL as #GP(0) after
+fetch, without retirement/effect. It rejects the ordinary store at nonzero CPL
+as `WrongPrivilege` after fetch without data access or retirement; it is not a
+guest #GP.
+
+The profile does not implement other CR0 bits, PE/PG transitions, EFER changes,
+TLB invalidation, exception delivery or CR2. See the [CPU contract](CPU_CONTRACT.md#paged-cpu-owned-cr0wp-profile-pagedcpl0cr0wpprobev1-s4-12d)
+for the exact CPU allowlist and values.
 
 ## Experimental pure-translation cache boundary
 
@@ -707,6 +995,161 @@ S4-14a проверяет этот lifecycle через remap, tighten/relax lea
 NX fetch rights и committed-write callback ranges. Это host-controlled
 disposal/reconstruction boundary, а не guest invalidation protocol. Результаты
 S4-13a не выбирают production capacity, replacement или TLB integration.
+
+### Bounded INVLPG effect consumption (S4-14b)
+
+The standalone CPU `step_invlpg` entry emits a typed
+`TranslationInvalidation::Invlpg { linear_address }` only when the bare exact
+instruction retires at CPL0 with a canonical operand. The experimental
+`TranslationProbeCache` consumer is feature-gated and clears its one resident
+translation before any subsequent lookup/continuation. Full clear applies even
+when the cached tag names another linear page; empty and repeated consumption
+are successful. The consumer reports the effect as consumed without walking
+page tables or modifying RAM/A/D.
+
+The CPU instruction fetch uses a diagnostic adapter over the same immutable
+physical-memory snapshot and bypasses the resident probe-cache entry. The
+composition demonstrates `Walk → Hit → INVLPG effect → consume → Walk → Hit`.
+That fetch path uses pure translation and supplies no tracked A/D evidence.
+Faulting LOCK/CPL/fetch cases and successful noncanonical no-op emit no effect
+and leave the cache unchanged. This is not a cache-to-mutable-memory owner and
+does not establish remap/permission-refresh, huge-page, global/PCID, CR3
+invalidation, tracked A/D, JIT or production TLB behavior. The existing
+S4-14a drop–mutate–recreate rule remains in force for page-table writes.
+See the [CPU contract](CPU_CONTRACT.md#standalone-invlpg-profile-invlpglong64v1-s4-14b).
+
+### Mutable diagnostic session (S4-14c)
+
+The feature-gated `MutableTranslationProbeSession` is a separate bounded
+experiment that exclusively borrows `&mut PhysicalMemory` for one vCPU and one
+fixed S4-14b Long64/canonical48/physical36/four-level/4 KiB profile. It shares
+the cache's private values-only one-entry state; the immutable
+`TranslationProbeCache` keeps its existing borrow contract. No mutable memory
+reference, cache entry reference or reusable access handle escapes the session.
+
+`write_pte` accepts only 8-byte-aligned physical addresses whose full
+`[address, address + 8)` range is inside physical36, then delegates to checked
+`PhysicalMemory::write_u64`. Successful writes commit and notify once;
+failed alignment/range/region writes leave RAM unchanged and do not notify.
+Neither successful nor failed writes implicitly invalidate the entry; a
+matching probe may continue to return the resident translation until the
+caller consumes a retired INVLPG, MOV CR3 or MOV CR0.WP invalidation effect.
+The standalone INVLPG
+entry fetches instruction bytes through a pure walker over
+the current memory, bypassing the resident cache and producing no A/D writes.
+For this S4-14c path, only a retired CPL0 canonical invalidation effect is
+consumed synchronously; it clears the full entry before control returns.
+Faults, fetch failures and noncanonical no-ops preserve it. A CPU CR3 that
+differs from the session snapshot is rejected before fetch. S4-14d adds the
+separate retired MOV CR3 effect consumer below.
+
+Acceptance covers a same-session `Walk → Hit → PTE remap → INVLPG → Walk → Hit`,
+write-permission tighten/relax with exact page-fault metadata, failed-write
+callbacks, and cache preservation on non-retiring/non-invalidating instruction
+paths. Fetch-only lookup and invalidation remain diagnostic pure probes, not
+tracked memory accesses. The S4-14c slice does not implement cached tracked A/D,
+guest stores, CR3/reset transitions or generations. S4-14d adds only the
+bounded MOV CR3 transition described below. Huge pages, PCID/global semantics,
+DMA/SMP/JIT integration and production TLB behavior remain outside these
+diagnostic slices. See the
+[S4-14c report](../reports/STAGE_4_S4-14C_2026-11-05.md).
+
+### CPU-owned CR3 invalidation in the mutable diagnostic session (S4-14d)
+
+The feature-gated `MutableTranslationProbeSession::execute_mov_cr3` composes
+the existing exact `MovCr3Long64V1` CPU step with the session's fixed
+Long64/canonical48/physical36/four-level/4 KiB translation snapshot. Before
+fetch it requires CPU CR0, CR3 and CR4 to match the active snapshot. Instruction
+bytes are fetched through the pure walker, bypassing the resident translation
+entry and producing no A/D writes.
+
+Only a retired, single-instruction `Cr3Write` effect whose old value matches
+the session and whose new value matches committed CPU state replaces the
+snapshot. The session validates the replacement with `Long64ProbeConfig::new`
+and clears its capacity-one translation entry synchronously before returning.
+This applies to same-value CR3 writes too; after a PTE mutation they force the
+next probe to walk current tables rather than hit the stale entry. The effect
+consumer performs no table walk, A/D write or memory callback.
+
+Rejected instructions, fetch faults and pre-state mismatches do not change the
+snapshot or clear the resident entry. If CPU execution retires but the effect
+cannot be reconciled or the replacement snapshot cannot be validated, the
+session retains its old snapshot, clears its stale entry and becomes poisoned;
+subsequent probe/write/instruction operations return `SessionPoisoned`. The
+caller must stop using that session because CPU state may already have
+advanced. This diagnostic integration does not add tracked A/D caching,
+reset/EFER/CR0 transitions, PCID/global semantics, generations, JIT hooks or a
+production TLB. Full S4-14 remains open. See the
+[S4-14d report](../reports/STAGE_4_S4-14D_2026-11-06.md).
+
+### CPU-owned CR0.WP invalidation in the mutable diagnostic session (S4-14e)
+
+`MutableTranslationProbeSession` admits exactly CR0=`0x80010033` (WP=1) or
+`0x80000033` (WP=0), with the same CR3/CR4/EFER, canonical48/physical36,
+four-level/4 KiB profile. `execute_mov_cr0_wp` uses the separate exact
+`MovCr0WpLong64V1` CPU entry; it does not reuse the broader S4-12d profile,
+whose allowlist also includes a store. Fetch bypasses the resident cache and
+uses the pure walker.
+
+After a validated retired `Cr0Write`, the session installs a validated
+replacement snapshot and clears its one-entry cache before returning. The
+diagnostic policy also clears for same-value CR0 writes. A matching probe may
+still return the old resident entry after a direct `write_pte` and before the
+retired effect is consumed. The effect consumer itself performs no table walk,
+A/D write or committed-write callback. Mismatched/unexpected retired effects
+or invalid replacement snapshots clear the entry and poison the session, as in
+S4-14d.
+
+While CR0.WP=0, the original `execute_invlpg` and MOV CR3 entry points reject
+the unsupported CR0 profile before fetch and leave CPU/session state unchanged;
+returning to WP=1 makes those bounded entries available again. S4-14f adds a
+separate `execute_invlpg_wp` path for either WP value without changing those
+existing entries or the MOV CR3 CPU contract.
+
+### INVLPG while CR0.WP is mutable in the diagnostic session (S4-14f)
+
+`execute_invlpg_wp` validates CPU CR0/CR3/CR4 against the current session
+snapshot before fetch, then uses the exact `InvlpgWpLong64V1` profile. Its
+instruction fetch uses the pure page walker and bypasses the resident cache.
+Canonical retired INVLPG consumes the typed effect and clears the one-entry
+cache synchronously, including when WP=0. A noncanonical operand is the
+architectural retired NOP and preserves the cache. Faults, unsupported forms
+and state mismatches also preserve it; this path does not use MOV CR0's
+retirement-poison rule. Page-table snapshots across fetch/effect show no A/D
+writes, and the instruction has no target walk or data access.
+
+Acceptance covers stale `Hit` after a PTE remap, then post-effect `Walk` and
+`Hit` at the new mapping for both WP states; Ring1–3 #GP(0), LOCK #UD,
+noncanonical NOP, fetch fault, unsupported encoding and CR0/CR3/CR4 mismatch.
+The feature remains experimental and one-entry; no performance claim,
+tracked A/D cache, reset, generations, PCID/global semantics, JIT integration
+or production TLB behavior is added. See the
+[S4-14f report](../reports/STAGE_4_S4-14F_2026-11-06.md).
+
+### MOV CR3 while CR0.WP is mutable in the diagnostic session (S4-14g)
+
+`execute_mov_cr3_wp` is a separate opt-in session entry for CR0=`0x80010033`
+or `0x80000033`; it validates CPU CR0/CR3/CR4 against the current snapshot
+before fetch. The exact bare MOV CR3 fetch uses the pure walker and bypasses
+the resident cache. Only one retired `Cr3Write` whose old root matches the
+snapshot and whose new root matches committed CPU state is consumed. A valid
+replacement snapshot is installed and the capacity-one cache is cleared
+synchronously, including same-value writes. CR0/CR4 must remain unchanged
+across retirement. Malformed effects, retirement-count mismatches, invalid
+replacement snapshots or unexpected CR0/CR4 changes clear the cache and poison
+the session; non-retiring outcomes and fetch faults preserve cache and
+snapshot. The original `execute_mov_cr3` remains WP=1-only.
+
+The replacement root is not walked during effect consumption; an unusable root
+commits and faults on the next probe. Fetch has no target/data access or A/D
+writes. This remains a one-vCPU diagnostic experiment and does not add
+production TLB behavior, tracked A/D caching, reset, PCID/global semantics,
+JIT integration or a performance claim. Full S4-14 remains open. See the
+[S4-14g report](../reports/STAGE_4_S4-14G_2026-11-06.md).
+
+S4-14e also does not add tracked A/D caching, reset, generations, PCID/global
+semantics, JIT integration or production TLB behavior. See the
+[S4-14e report](../reports/STAGE_4_S4-14E_2026-11-06.md).
 
 ## Bounded diagnostic vCPU session boundary
 
@@ -869,3 +1312,49 @@ polling UART and halting. Result acceptance checks the stored qword and RAX;
 HLT alone does not pass. The older S4-32 loaders continue to require their
 original non-alias layouts. This evidence covers uncached interpreter access,
 not TLB/JIT invalidation, cross-page access, or system acceptance.
+
+## Paged `LIDT` adapter (S4-18a)
+
+`step_paged_lidt` composes the exact `PagedLidtLong64V1` CPU entry with the
+uncached tracked four-level walker. Instruction fetches and the operand walk
+commit the actual page-table Accessed-bit writes and report each committed
+eight-byte range; the descriptor read does not set Dirty. The operand is one
+RAM-only ten-byte read contained in one 4 KiB guest page. A page-crossing
+source is rejected before an operand walk, and a noncanonical full SS-based
+range faults before operand access. Physical holes remain backend errors;
+this adapter never dispatches MMIO/PIO. CPU state changes only after the full
+descriptor read and canonical base check, and the loaded IDT base is not
+translated. Tests compare exact callback ranges, relevant page-table entries,
+fault metadata and full CPU state. This bounded slice does not implement LGDT,
+descriptor caching, IDT gate checks, exception delivery, cross-page descriptor
+reads, or production paging ownership. Independent review is pending.
+
+## Scoped tracked memory for one Published V2 JIT load (S4-15a)
+
+`with_paged_mov_memory` gives one synchronous callback a temporary, read-only
+`GuestMemory` adapter over the caller's `MachineBus`. It reuses the tracked
+Long64 four-level/4 KiB walker and the bus's sole physical RAM owner. The scoped
+adapter admits only an eight-byte read contained in one guest page; it rejects
+fetches, writes and crossing qwords. A read translated to MMIO returns the
+tracked `OperandPhysical(UnreadableRegion(Mmio))` backend classification
+without dispatching a device callback. Page-walk A updates already committed before a fault remain in the
+scope result. The scope returns the callback result, precise `PageFaultRecord`
+or tracked access error, committed A updates, and physical write ranges.
+The temporary memory borrow cannot escape the synchronous callback.
+
+`PublishedCode::execute_paged_mov_rax_rbx_v2` admits only the direct V2
+published `48 8B 03` (`MOV RAX,[RBX]`) artifact and runs it with budget one.
+Before opening the memory scope it checks source/site metadata, entry RIP,
+Long64 mode, CPL0 or CPL3, non-halted activity, clear interrupt shadow, and the
+supported paging snapshot. Unsupported artifacts and CPU context fail before
+memory access. A missing operand mapping is returned as guest `#PF` with its
+exact RIP, CR2 and PFEC. MMIO, cross-page and other backend refusals remain
+host-side execution errors and do not retire. Successful loads commit the
+destination and RIP once, set only architecturally reached A bits, and never
+set D.
+
+This slice does not add JIT stores, other load forms, cross-page splitting,
+device accesses, instruction fetch through JIT memory, TLB caching, executable
+alias invalidation or interpreter fallback orchestration. It is evidence for
+one V2 load on the production machine RAM owner, not acceptance of parent
+S4-15. See the [S4-15a report](../reports/STAGE_4_S4-15A_2026-11-06.md).

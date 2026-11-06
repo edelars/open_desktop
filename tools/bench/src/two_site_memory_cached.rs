@@ -1287,6 +1287,7 @@ mod tests {
         ];
         let expected = Outcome {
             state: od_isa::LongModeState {
+                cr3: None,
                 rip: ENTRY_RIP + 6,
                 ..od_isa::LongModeState::default()
             },

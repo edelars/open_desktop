@@ -6,6 +6,7 @@ mod display_device;
 mod event_queue;
 mod identity_memory_adapter;
 mod page_walk;
+mod paged_descriptor;
 mod paged_memory_adapter;
 mod paged_pio_step;
 mod paged_probe;
@@ -24,7 +25,8 @@ mod virtual_clock;
 pub use bus::{
     AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError,
     DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
-    PortRange, PortRegionBinding,
+    PortRange, PortRegionBinding, TrackedCodePatchError, TrackedCodeSnapshot,
+    TrackedCodeSnapshotError,
 };
 
 pub use display_device::{
@@ -52,14 +54,16 @@ pub use page_walk::{
     probe_instruction_access, probe_long64_4k,
 };
 
+pub use paged_descriptor::{PagedLidtError, PagedLidtReport, step_paged_lidt};
 pub use paged_memory_adapter::{
-    PagedMovStepError, PagedMovStepReport, step_paged_mov, step_paged_mov_dword_read,
-    step_paged_mov_word_read,
+    PagedInvlpgStepError, PagedInvlpgStepReport, PagedMovMemoryScope, PagedMovStepError,
+    PagedMovStepReport, step_paged_invlpg, step_paged_mov, step_paged_mov_dword_read,
+    step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch, with_paged_mov_memory,
 };
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{
-    PagedProbeExit, PagedProbeQuantumReport, PagedProbeRejection, run_paged_probe,
-    run_paged_stack_probe,
+    PagedProbeExit, PagedProbeIntegrationError, PagedProbeQuantumReport, PagedProbeRejection,
+    run_paged_cr0_wp_probe, run_paged_cr3_probe, run_paged_probe, run_paged_stack_probe,
 };
 pub use stage4_alias_probe::load_stage4_alias_probe;
 pub use stage4_flat_probe::{
@@ -87,4 +91,8 @@ pub use uart_rx_events::{
 pub use uart16550::{Uart16550Handle, Uart16550PollingTx};
 
 #[cfg(feature = "experimental-translation-probe-cache")]
-pub use translation_probe_cache::{TranslationProbeCache, TranslationProbeCacheOutcome};
+pub use translation_probe_cache::{
+    MutableTranslationProbeSession, MutableTranslationSessionError,
+    TranslationInvalidationConsumption, TranslationProbeCache, TranslationProbeCacheOutcome,
+    consume_translation_invalidation,
+};

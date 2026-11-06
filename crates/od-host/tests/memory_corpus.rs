@@ -640,6 +640,7 @@ impl Observation {
 
 fn initial_state(input: &CorpusInput, rip: u64) -> LongModeState {
     LongModeState {
+        cr3: None,
         gpr: input.gpr,
         rip,
         rflags: input.flags,
@@ -3295,6 +3296,7 @@ fn reducer_rejects_malformed_and_unavailable_inputs_and_stops_on_nonreproduction
             native.state_debug = format!(
                 "{:?}",
                 LongModeState {
+                    cr3: None,
                     gpr: native.gpr,
                     rip: native.rip,
                     rflags: native.rflags,

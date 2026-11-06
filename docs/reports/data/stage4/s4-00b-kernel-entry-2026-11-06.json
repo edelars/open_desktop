@@ -1,0 +1,98 @@
+{
+  "slice": "S4-00b",
+  "date": "2026-11-06",
+  "scope": "Read-only evidence capture for boot-entry and paging-transition planning; no loader implementation or parent-task acceptance.",
+  "target": {
+    "distribution": "Ubuntu 26.04 Resolute",
+    "kernel": "linux-image-7.0.0-38-generic",
+    "version": "7.0.0-38.38",
+    "binary_package_path": "work/vms/s2-00-ubuntu-26.04.1/linux-image-7.0.0-38-generic_7.0.0-38.38_amd64.deb",
+    "binary_package_sha256": "f268d635efaa2e19a18e12813ffdbc2e32db2390cf67d4416abd59292975e7aa",
+    "vmlinuz_path": "work/vms/s2-00-ubuntu-26.04.1/vmlinuz-7.0.0-38-generic",
+    "vmlinuz_sha256": "9f55ef7253055a9cf68f8a04323c93dead2fca617386d842fbde9ca7b178b27e",
+    "vmlinuz_length_bytes": 17320328
+  },
+  "boot_header": {
+    "signature": "HdrS",
+    "protocol_version": "2.15",
+    "setup_sects": 39,
+    "protected_mode_payload_file_offset": "0x5000",
+    "direct_64_bit_entry_file_offset": "0x5200",
+    "loadflags": "0x01",
+    "xloadflags": "0x007f",
+    "relocatable_kernel": true,
+    "kernel_alignment": "0x00200000",
+    "init_size": "0x044c1000",
+    "handover_offset": "0x01072530",
+    "header_offsets": {
+      "signature": "0x202",
+      "protocol_version": "0x206",
+      "loadflags": "0x211",
+      "kernel_alignment": "0x230",
+      "relocatable_kernel": "0x234",
+      "xloadflags": "0x236",
+      "init_size": "0x260",
+      "handover_offset": "0x264"
+    }
+  },
+  "source_snapshot": {
+    "source_package_path": "work/vms/s2-00-ubuntu-26.04.1/source/linux-source-7.0.0_7.0.0-38.38_all.deb",
+    "source_package_sha256": "997a13a0c7fd0172a93b0c1ae9a4ffc7d3cbbf91d2fdd91d85334193580687de",
+    "source_archive_path": "work/vms/s2-00-ubuntu-26.04.1/source/linux-source-7.0.0.tar.bz2",
+    "source_archive_sha256": "1610ed026817da29c6be30c2d9c639287ea472d5b805a1f23e2d576be6be6222",
+    "source_archive_retrieval": "Huawei Ubuntu mirror; signed repository chain not recovered, as detailed in S4-00a.",
+    "files": [
+      {
+        "archive_path": "linux-source-7.0.0/arch/x86/boot/compressed/head_64.S",
+        "sha256": "418aa5f554ea94f62a6ea3bd7bb90e71c44d293e1e329ed4c1a94e76d8ef9641",
+        "observations": ["32-bit startup_32 path", "64-bit compressed startup_64 path at image offset +0x200"]
+      },
+      {
+        "archive_path": "linux-source-7.0.0/arch/x86/boot/compressed/pgtable_64.c",
+        "sha256": "8a71665407094b651c96047aec2f11c9926320836afb109002bf80d72acc2319",
+        "observations": ["LA57 selected when no5lvl is absent and CPUID.7.ECX[16] is present", "32-bit-addressable trampoline used when selected paging mode differs from current CR4.LA57"]
+      },
+      {
+        "archive_path": "linux-source-7.0.0/arch/x86/kernel/head_64.S",
+        "sha256": "d50a35df410be7b4813a3860d07f10d9bcb8ba0caadff01f1b53292c980f4c10",
+        "observations": ["decompressed kernel startup_64 expects Long64 and identity-mapped page tables"]
+      }
+    ],
+    "config_path": "work/vms/s2-00-ubuntu-26.04.1/source/extracted/config",
+    "config_sha256": "6cb18717c6914d4947489eedf8cb69ac23db3faa8ef9b9f563ff02c346dcd32d",
+    "config_options_observed": ["CONFIG_X86_64=y", "CONFIG_RELOCATABLE=y", "CONFIG_RANDOMIZE_BASE=y"]
+  },
+  "boot_protocol": {
+    "official_specification": "https://docs.kernel.org/arch/x86/boot.html",
+    "binary_package_page": "https://packages.ubuntu.com/resolute/amd64/linux-image-7.0.0-38-generic/download",
+    "direct_64_bit_entry_offset_from_loaded_protected_mode_payload": "0x200",
+    "compressed_payload_decompressed_by": "kernel startup code after entry",
+    "required_entry_state_summary": ["CPU in 64-bit mode with paging enabled", "identity map for the loaded kernel init_size range, zero page, and command-line buffer", "GDT has 4 GiB flat __BOOT_CS selector 0x10 (execute/read) and __BOOT_DS selector 0x18 (read/write); CS=__BOOT_CS and DS=ES=SS=__BOOT_DS", "interrupts disabled", "boot_params pointer in RSI"],
+    "implementation_status": "candidate path only; project Linux loader contract and boot are not implemented or verified"
+  },
+  "status": {
+    "local_kernel_header_parsed": true,
+    "official_binary_package_sha256_matches_local_deb": true,
+    "local_vmlinuz_length_measured_bytes": 17320328,
+    "direct_long64_entry_path_identified": true,
+    "reachable_32_bit_startup_path_identified": true,
+    "conditional_la57_transition_and_trampoline_identified": true,
+    "source_package_signature_chain_recovered": false,
+    "authenticated_source_to_binary_mapping_established": false,
+    "linux_boot_verified": false,
+    "s4_00_parent_accepted": false,
+    "s4_01_parent_accepted": false
+  },
+  "verification": {
+    "header_parser": "Python 3 struct unpack at offsets defined by the Linux x86 boot protocol; measured local vmlinuz length and SHA-256; setup_sects=39 yields protected-mode payload file offset 0x5000 and corresponding entry bytes at file offset 0x5200.",
+    "official_binary_digest_check": "Compared local linux-image .deb SHA-256 with the checksum published on the official Ubuntu Resolute package page.",
+    "source_review": "Read the three hashed source members from the S4-00a recovered source snapshot; no generated code or runtime behavior inferred beyond the described branches.",
+    "repository_tests": "Not applicable: documentation/evidence-only slice; no source code changed."
+  },
+  "non_claims": [
+    "The recovered source package is not authenticated by a signed repository chain.",
+    "The local source/config snapshot is not proven to have produced the selected binary.",
+    "A direct Long64 candidate does not establish that a project loader currently meets Linux boot protocol requirements.",
+    "No Linux boot, runtime alternative selection, exception delivery, or physical CPU behavior is established."
+  ]
+}

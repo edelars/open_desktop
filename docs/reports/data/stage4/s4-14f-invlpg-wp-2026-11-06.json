@@ -1,0 +1,59 @@
+{
+  "slice": "S4-14f",
+  "date": "2026-11-06",
+  "scope": "Opt-in INVLPG WP profile and mutable diagnostic translation-session integration.",
+  "profiles": {
+    "cpu": "InvlpgWpLong64V1",
+    "cpu_entry": "step_invlpg_wp",
+    "session": "MutableTranslationProbeSession::execute_invlpg_wp",
+    "instruction": "bare 0F 01 3B (INVLPG [RBX])",
+    "cr0_values": ["0x80010033", "0x80000033"],
+    "cr4": "0x20",
+    "efer": "0xd00",
+    "translation": "canonical48 physical36 four-level 4KiB",
+    "cache_capacity": 1
+  },
+  "behavior": {
+    "legacy_invlpg_long64_v1_requires_wp_one": true,
+    "instruction_semantics_shared_with_legacy_invlpg": true,
+    "session_validates_cpu_cr0_cr3_cr4_before_fetch": true,
+    "instruction_fetch_bypasses_resident_cache_via_pure_walker": true,
+    "canonical_retired_invlpg_clears_cache_synchronously": true,
+    "noncanonical_retired_nop_preserves_cache": true,
+    "fault_unsupported_and_mismatch_paths_preserve_cache": true,
+    "mov_cr3_wp_zero_admission_unchanged": true,
+    "mov_cr0_post_retirement_poison_rule_applied_to_invlpg": false,
+    "fetch_effect_has_no_page_table_ad_writes": true,
+    "target_address_is_not_dereferenced": true
+  },
+  "verification": {
+    "od_isa_invlpg_tests": {"passed": 4, "failed": 0},
+    "od_machine_feature_on_translation_session_tests": {"passed": 31, "failed": 0},
+    "od_machine_feature_off_library_tests": {"passed": 91, "failed": 0},
+    "od_isa_all_targets_check": "passed",
+    "od_machine_all_targets_check_feature_off": "passed",
+    "od_machine_all_targets_check_feature_on": "passed",
+    "cargo_fmt_all_check": "passed",
+    "git_diff_check": "passed",
+    "graphify_query_used": true,
+    "graphify_update": {"nodes": 26693, "edges": 66685, "communities": 1005}
+  },
+  "coverage": [
+    "WP=0 and WP=1 canonical invalidation start with a resident matching cache entry",
+    "After PTE remap, the matching probe returns stale Hit before INVLPG; after effect consumption it walks to the new mapping, then hits",
+    "Noncanonical retired NOP preserves the resident entry",
+    "Ring1, Ring2 and Ring3 receive exact #GP(0); LOCK receives exact #UD",
+    "Instruction fetch page fault preserves CPU and cache",
+    "Matching AccessKind::Fetch entry at INVLPG RIP is warmed; after its PTE is removed, execute returns exact fetch #PF with zero retirement and unchanged CPU, while probing that same Fetch key still returns the stale Hit",
+    "Unsupported instruction and CR0/CR3/CR4 mismatch preserve cache",
+    "Page-table entries are unchanged across pure fetch and effect consumption",
+    "The existing WP=1-only CPU entry rejects WP=0 before fetch",
+    "Unsupported CR0 values are rejected before fetch"
+  ],
+  "limits": [
+    "One-entry diagnostic cache, not a production TLB",
+    "No tracked A/D caching, reset, other control-register transitions, PCID/global, JIT, DMA or SMP",
+    "No performance claim"
+  ],
+  "independent_review": "clean on final gpt-6.1-sol/high review; initial finding fixed and rechecked"
+}

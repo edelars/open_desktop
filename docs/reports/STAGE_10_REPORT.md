@@ -269,6 +269,30 @@
   - будущий input ABI `od-host` — описаны только требования (§10), ABI не добавлен.
 - **Уточнение критерия плана.** «Клик в угол даёт угол гостя ±1 на любом размере окна» математически выполняется только при уменьшении кадра меньше чем в 4 раза. При более сильном уменьшении угловой тексель не нарисован, и тест сравнивает с нарисованным текселем (§5.3 протокола). Нужно подтверждение на ревью.
 
+### Перенос из main
+
+Ветка `feat/s9-stage` слита с `main` merge-коммитом (`git merge main --no-ff`, без rebase). Дисплейное устройство S10-03 адаптировано к механизмам main (page generations, tracked code snapshots, tracked guest memory).
+
+- **Что перенесено.** Всё содержимое `main` с S4-14b по S4-18a: page generations для RAM (`PhysicalMemory::code_page_generation`), `MachineBus::tracked_code_snapshot`/`patch_tracked_code_byte`, tracked guest MOV и физический loader (S4-16a…16e), отчёты и манифесты Stage 4, правки `od-isa`, `od-jit`, `od-host`, `od-testkit`.
+- **Конфликты (6) и их разрешение.**
+  - `Cargo.lock` — взята сторона ветки (зависимость `od-storage` у `od-host`); `od-machine` в `od-host` у main уже была. Файл проверен через `cargo metadata --offline` и `cargo check --workspace --offline`, вручную не правился и после проверок не изменился.
+  - `crates/od-host/Cargo.toml` — сохранены `od-storage` (ветка) и `od-machine` (общая).
+  - `crates/od-machine/src/lib.rs` — объединён `pub use bus::{...}`: `DisplayBindingError`, `FramebufferBinding` (ветка) плюс `TrackedCodePatchError`, `TrackedCodeSnapshot`, `TrackedCodeSnapshotError` (main); экспорты `display_device` сохранены.
+  - `crates/od-machine/src/physical_memory.rs` — два конфликта: выделение backing (теперь `(backing, page_generations)`; для `Framebuffer` backing есть, вектор поколений пуст) и `write_bytes` (см. ниже).
+  - `docs/KNOWN_ISSUES.md` — сохранены все записи обеих сторон (ISSUE-055, 056 из main; ISSUE-058…061 ветки).
+  - `docs/specs/MACHINE_CONTRACT.md` — раздел «Committed writes» взят в редакции main (page generations), дополнен абзацем про `Framebuffer`; разделы «Display device (S10-03)» и «Display device, revision 2 (S10-13)» сохранены (git слил их без конфликта).
+- **Адаптация Framebuffer (контракт `DISPLAY_DEVICE.md` §7.4, пункты (а)–(д)).**
+  - (а) Для `MemoryRegionKind::Framebuffer` page generations не создаются.
+  - (б) `PhysicalMemory::write_bytes` для `Framebuffer` сразу копирует байты и возвращает `Ok`: ни callback, ни поиск/повышение поколений. Без этого запись в Framebuffer на коде main давала бы `AddressOverflow` (`get_mut` по пустому вектору).
+  - (в) `code_page_generation` отвергает `Framebuffer` с `UnreadableRegion(Framebuffer)`; `tracked_code_snapshot` отвергает его так же, как любой не-RAM (в самом page walk — `OperandPhysical{UnreadableRegion(Framebuffer)}`, а при прямом обращении к региону — `NotRam`). Новый код для этого не потребовался, добавлены тесты.
+  - (г)/(д) Путь JIT в `od-host` (`PagedCodeSession`): код попадает в кеш только через `tracked_code_snapshot`, а поколение читается через `code_page_generation` от физической страницы, полученной из того же снимка. Оба вызова отвергают `Framebuffer`, committed-write callback для него не вызывается, поэтому `reconcile_code_writes` не видит записей в Framebuffer. Framebuffer в код-кеш попасть не может; изменений в `od-host` не потребовалось.
+- **Добавленные тесты.**
+  - `physical_memory::tests::framebuffer_has_no_page_generations_and_ram_writes_still_bump_them` — запись в Framebuffer (в том числе через границу страницы и в последнюю страницу) работает без callback; generation API отвергает любую страницу региона; запись в RAM по-прежнему повышает поколения только затронутых страниц и вызывает callback один раз.
+  - `display_device::tests::framebuffer_is_rejected_by_code_generation_and_tracked_snapshot_apis` — на `MachineBus` с дисплеем: `code_page_generation(FB)` отвергается, для RAM работает; `tracked_code_snapshot` по линейной странице, отображённой на Framebuffer, возвращает ошибку, а не снимок.
+  - Уже существовавший `frame_read_returns_pixels_written_through_the_bus_without_callbacks` (в т. ч. `write_flat_bytes` в Framebuffer) теперь выполняется на коде main и проходит.
+- **Проверки после слияния.** `cargo fmt --all -- --check` (кроме `tools/power-loss`) чисто; `cargo check --workspace --all-targets --offline` OK; `cargo test -p od-machine --offline` — lib 147 OK, интеграционные тесты OK (включая `tests/display_device.rs`, 7 OK); `cargo test -p od-host --offline display` — 12 OK; `git diff --check` чисто.
+- **Не верифицировано.** Полный `cargo test -p od-host --offline --lib -- --test-threads=1`: 300 OK, 28 FAILED. 21 из них — `s3_20*` (20 штук) и `native_register_v1_corpus::reduce_saved_native_register_v1_case`; падают и поодиночке с `MappingAlreadyLive`, это ISSUE-061 (на HEAD до слияния падали те же классы тестов), к дисплею и к Framebuffer отношения не имеют. Остальные 7 (`s4_15a…`, `s4_16a…16e` — JIT-тесты из main) падают в общем прогоне с `PoisonError` (общий lock отравлен предыдущей паникой), но в отдельном прогоне `-- s4_15a s4_16` проходят (7 OK). Следовательно, JIT-тесты на пути tracked guest memory зелёные при изоляции от ISSUE-061; общий зелёный прогон `od-host --lib` невозможен, пока ISSUE-061 не исправлен.
+
 ## 4. Открытые ограничения
 
 - Этапы 5, 7 и 8 не начаты: GOP, Linux и Windows display-only задачи заблокированы.

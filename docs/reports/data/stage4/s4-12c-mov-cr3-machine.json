@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "slice": "S4-12c",
+  "title": "CPU-owned MOV CR3 machine translation handoff",
+  "date": "2026-11-05",
+  "status": "accepted_after_independent_review",
+  "profile": {
+    "name": "PagedCpl0Cr3ProbeV1",
+    "instructions": ["0F 22 D8 (MOV CR3,RAX)", "48 8B 03 (MOV RAX,[RBX])"],
+    "mode": "Long64",
+    "privilege": "CPL0",
+    "cr0": "0x80010033",
+    "cr4": "0x20",
+    "efer": "0xd00",
+    "vcpus": 1,
+    "physical_address_width": 36,
+    "paging": "four-level, 4 KiB, uncached probe"
+  },
+  "translation_handoff": {
+    "active_snapshot_source": "LongModeState CR0/CR3/CR4 plus fixed EFER",
+    "effect_validation": "full old CR3 matches active snapshot and committed CPU CR3 matches new CR3",
+    "replacement": "validate and install immutable snapshot before next STOP poll or fetch",
+    "effect_application_walks_memory": false,
+    "mismatch_or_invalid_replacement": "terminal integration error; preserve committed retirement; do not resume with stale snapshot"
+  },
+  "verified_scenarios": {
+    "independent_root_a_to_b_code_and_data_mappings": true,
+    "one_instruction_quantum_handoff": true,
+    "stop_on_second_poll_before_new_root_fetch": {
+      "mov_cr3_retirement_preserved": true,
+      "root_b_page_table_entries_unchanged": true
+    },
+    "new_root_next_fetch_nonpresent_fault": {
+      "pfec": "0x10",
+      "fault_address": "CODE_LINEAR+3",
+      "saved_rip": "CODE_LINEAR+3",
+      "mov_cr3_retirement_preserved": true
+    },
+    "unsupported_store_pio_hlt": true
+  },
+  "exclusions": [
+    "EFER writes and mode transitions",
+    "startup-state provenance",
+    "TLB and invalidation",
+    "PCID and global pages",
+    "exception delivery and CR2",
+    "other memory operations and CPU instructions"
+  ],
+  "architecture_review": {
+    "model": "gpt-6-astra",
+    "reasoning": "high",
+    "verdict": "approved"
+  },
+  "implementation_review": {
+    "model": "gpt-6.1-sol",
+    "reasoning": "high",
+    "verdict": "approved",
+    "initial_findings_fixed": [
+      "CPU profile instruction allowlist was broader than agreed scope",
+      "root A and root B fixture tables overlapped",
+      "missing next-root fetch fault coverage",
+      "missing linked slice report",
+      "missing STOP-before-walk evidence",
+      "review and Graphify manifest status mismatch"
+    ]
+  },
+  "graphify": {
+    "query_before_source_reads": true,
+    "update_after_final_code": true,
+    "global_nodes": 26473,
+    "global_edges": 65902,
+    "global_communities": 1017
+  },
+  "parent_s4_12": "open",
+  "report": "docs/reports/STAGE_4_S4-12C_2026-11-05.md",
+  "checks": {
+    "cargo_check_workspace_all_targets": "passed",
+    "cargo_fmt": "passed",
+    "od_machine_paged_probe_quantum": "17 passed",
+    "od_isa_paged_cr3_probe_tests": "3 passed",
+    "layout_check": "passed: 48 required directories, 6 crate scaffolds, 14 instruction scopes",
+    "local_markdown_links": "passed",
+    "json_validation": "passed",
+    "diff_check": "passed"
+  }
+}

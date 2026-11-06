@@ -4,11 +4,13 @@ use od_isa::memory::{
 use od_isa::{CpuActivity, INTEGER_FLAGS, LongModeState, Register};
 use od_machine::{
     AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
-    MemoryRegionKind, MemoryRegionSpec, PagedProbeExit, PortAddress, PortRange, PortRegionBinding,
-    RamLimits, Uart16550Handle, Uart16550PollingTx, run_paged_probe,
+    MemoryRegionKind, MemoryRegionSpec, PagedProbeExit, PagedProbeRejection, PortAddress,
+    PortRange, PortRegionBinding, RamLimits, Uart16550Handle, Uart16550PollingTx,
+    run_paged_cr0_wp_probe, run_paged_cr3_probe, run_paged_probe,
 };
 
 const CR0: u64 = 0x8001_0033;
+const CR0_WP_CLEAR: u64 = CR0 & !(1 << 16);
 const CR4: u64 = 1 << 5;
 const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
 const ROOT: u64 = 0x1000;
@@ -56,6 +58,62 @@ fn fixture() -> (MachineBus, Uart16550Handle) {
             .unwrap();
     }
     (bus, handle)
+}
+
+fn cr3_switch_fixture() -> MachineBus {
+    let (mut bus, _uart) = fixture();
+    const ROOT_B: u64 = 0x11_000;
+    const PDPT_B: u64 = 0x12_000;
+    const PD_B: u64 = 0x13_000;
+    const CODE_PT_B: u64 = 0x14_000;
+    const DATA_PT_B: u64 = 0x15_000;
+    const CODE_B_PHYSICAL: u64 = 0x16_000;
+    const DATA_A_PHYSICAL: u64 = 0x9000;
+    const DATA_B_PHYSICAL: u64 = 0x17_000;
+
+    // Build an independent four-level tree for root B. It maps the same code
+    // and data virtual addresses to different physical pages from root A.
+    put(&mut bus, ROOT_B, PDPT_B | 7);
+    put(&mut bus, PDPT_B, PD_B | 7);
+    put(&mut bus, PD_B + 0x10, CODE_PT_B | 7);
+    put(&mut bus, PD_B + 0x20, DATA_PT_B | 7);
+    put(&mut bus, CODE_PT_B, CODE_B_PHYSICAL | 7);
+    put(&mut bus, CODE_PT_B + 0x20, DATA_B_PHYSICAL | 7);
+    put(&mut bus, DATA_PT_B, DATA_B_PHYSICAL | 7);
+
+    put_bytes_at(&mut bus, CODE_PHYSICAL, &[0x0f, 0x22, 0xd8, 0x90]);
+    put_bytes_at(&mut bus, CODE_B_PHYSICAL + 3, &[0x48, 0x8b, 0x03]);
+    put(&mut bus, DATA_A_PHYSICAL, 0x1111_2222_3333_4444);
+    put(&mut bus, DATA_B_PHYSICAL, 0xaabb_ccdd_eeff_1234);
+    bus
+}
+
+fn cr0_wp_fixture() -> MachineBus {
+    let (mut bus, _uart) = fixture();
+    // Keep the data PTE read-only for both following stores. The exact MOV
+    // CR0 remains in executable RAM and the operand is wholly within one page.
+    put(&mut bus, 0x5000, DATA_PHYSICAL | 5);
+    put_bytes_at(
+        &mut bus,
+        CODE_PHYSICAL,
+        &[0x0f, 0x22, 0xc0, 0x48, 0x89, 0x0b],
+    );
+    bus
+}
+
+fn initial_cr0_wp_state(cr0_source: u64, payload: u64) -> LongModeState {
+    let mut state = initial_state(payload);
+    state.cr3 = Some(ROOT);
+    state.gpr[Register::Rax as usize] = cr0_source;
+    state
+}
+
+fn initial_cr3_state() -> LongModeState {
+    let mut state = initial_state(0);
+    state.cr3 = Some(ROOT);
+    state.gpr[Register::Rax as usize] = 0x11_000;
+    state.gpr[Register::Rbx as usize] = DATA_LINEAR;
+    state
 }
 
 fn put(bus: &mut MachineBus, address: u64, value: u64) {
@@ -115,6 +173,7 @@ fn context() -> AccessContext {
 
 fn initial_state(payload: u64) -> LongModeState {
     let mut state = LongModeState {
+        cr3: None,
         rip: CODE_LINEAR,
         cr0: Some(CR0),
         cr4: Some(CR4),
@@ -197,6 +256,195 @@ fn mixed_nonidentity_stream_runs_as_one_or_one_step_quanta() {
         assert_eq!(split_state, state);
         assert_eq!(split_writes, writes);
         assert_payload(&mut split_bus, &split_handle, payload);
+    }
+}
+
+#[test]
+fn cpu_owned_cr3_is_rejected_before_stop_callback() {
+    let (mut bus, _) = fixture();
+    let mut state = initial_state(0);
+    state.cr3 = Some(ROOT);
+    let mut writes = Vec::new();
+    let result = run(
+        &mut state,
+        &mut bus,
+        4,
+        || panic!("must reject before STOP"),
+        &mut writes,
+    );
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Rejected(PagedProbeRejection::CpuOwnedCr3State { value: ROOT })
+    );
+    assert_eq!(result.instructions_executed, 0);
+    assert!(writes.is_empty());
+}
+
+#[test]
+fn mov_cr3_replaces_translation_root_before_next_fetch_and_operand() {
+    let mut bus = cr3_switch_fixture();
+    assert_eq!(qword(&mut bus, 0x13_020), 0x15_007);
+    assert_eq!(qword(&mut bus, 0x15_000), 0x17_007);
+    assert_eq!(qword(&mut bus, 0x17_000), 0xaabb_ccdd_eeff_1234);
+    let mut state = initial_cr3_state();
+    let result = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(result.instructions_executed, 2);
+    assert_eq!(state.cr3, Some(0x11_000));
+    assert_eq!(state.rip, CODE_LINEAR + 6);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xaabb_ccdd_eeff_1234);
+    assert_eq!(
+        result.translation_context_changes,
+        [od_isa::execute::TranslationContextChange::Cr3Write {
+            old_cr3: ROOT,
+            new_cr3: 0x11_000,
+        }]
+    );
+}
+
+#[test]
+fn mov_cr3_snapshot_is_rebuilt_before_stop_and_budget_handoff() {
+    let mut bus = cr3_switch_fixture();
+    let mut state = initial_cr3_state();
+    let first = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        1,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+    assert_eq!(first.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(first.instructions_executed, 1);
+    assert_eq!(state.cr3, Some(0x11_000));
+    assert_eq!(state.rip, CODE_LINEAR + 3);
+    assert_eq!(first.translation_context_changes.len(), 1);
+
+    let second = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        1,
+        first.rflags_defined,
+        || false,
+        |_| {},
+    );
+    assert_eq!(second.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(second.instructions_executed, 1);
+    assert_eq!(second.translation_context_changes, []);
+    assert_eq!(state.rip, CODE_LINEAR + 6);
+    assert_eq!(state.gpr[Register::Rax as usize], 0xaabb_ccdd_eeff_1234);
+}
+
+#[test]
+fn stop_after_mov_cr3_precedes_any_walk_under_new_root() {
+    let mut bus = cr3_switch_fixture();
+    let root_b_entries = [
+        (0x11_000, 0x12_007),
+        (0x12_000, 0x13_007),
+        (0x13_010, 0x14_007),
+        (0x13_020, 0x15_007),
+        (0x14_000, 0x16_007),
+        (0x15_000, 0x17_007),
+    ];
+    let mut state = initial_cr3_state();
+    let mut polls = 0;
+    let result = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || {
+            polls += 1;
+            polls == 2
+        },
+        |_| {},
+    );
+
+    assert_eq!(result.exit, PagedProbeExit::Stopped);
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.cr3, Some(0x11_000));
+    assert_eq!(state.rip, CODE_LINEAR + 3);
+    assert_eq!(result.translation_context_changes.len(), 1);
+    for (address, expected) in root_b_entries {
+        assert_eq!(
+            qword(&mut bus, address),
+            expected,
+            "root B entry {address:#x}"
+        );
+    }
+}
+
+#[test]
+fn new_root_fetch_fault_keeps_mov_cr3_retirement_and_fault_context() {
+    let mut bus = cr3_switch_fixture();
+    // Root B is valid, but its code PTE is non-present. The MOV itself still
+    // fetches through root A; only the following fetch observes this fault.
+    put(&mut bus, 0x14_000, 0);
+    let mut state = initial_cr3_state();
+    let result = run_paged_cr3_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+
+    let expected_fault = od_isa::memory::ArchitecturalFault {
+        vector: 14,
+        error_code: Some(0x10),
+        linear_address: Some(CODE_LINEAR + 3),
+    };
+    assert_eq!(result.exit, PagedProbeExit::Fault(expected_fault.clone()));
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.cr3, Some(0x11_000));
+    assert_eq!(state.rip, CODE_LINEAR + 3);
+    assert_eq!(result.translation_context_changes.len(), 1);
+    let record = result.page_fault.as_ref().expect("next-root fetch fault");
+    assert_eq!(record.fault(), &expected_fault);
+    assert_eq!(record.saved_rip(), CODE_LINEAR + 3);
+    assert_eq!(record.access(), AccessKind::Fetch);
+}
+
+#[test]
+fn cpu_owned_cr3_profile_rejects_stores_io_and_hlt() {
+    for bytes in [&[0x48, 0x89, 0x0b][..], &[0xec], &[0xee], &[0xf4]] {
+        let (mut bus, _) = fixture();
+        put_bytes_at(&mut bus, CODE_PHYSICAL, bytes);
+        let mut state = initial_cr3_state();
+        let before = state.clone();
+        let result = run_paged_cr3_probe(
+            &mut state,
+            &mut bus,
+            EFER,
+            context(),
+            1,
+            FLAGS_DEFINED,
+            || false,
+            |_| {},
+        );
+        let opcode = if bytes[0] == 0x48 { bytes[1] } else { bytes[0] };
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
     }
 }
 
@@ -616,4 +864,203 @@ fn stop_after_store_and_out_resume_on_same_cpu_and_bus_without_repeating_effects
     assert!(handle.transfer_holding_to_shift());
     assert_eq!(handle.complete_transmission(), Some(payload as u8));
     assert!(!handle.transfer_holding_to_shift());
+}
+
+#[test]
+fn cr0_wp_clear_applies_before_store_and_matches_split_quantum() {
+    let payload = 0x8877_6655_4433_2211;
+    let mut whole_bus = cr0_wp_fixture();
+    let mut whole_state = initial_cr0_wp_state(CR0_WP_CLEAR, payload);
+    let old_flags = whole_state.rflags;
+    let mut whole_writes = Vec::new();
+    let whole = run_paged_cr0_wp_probe(
+        &mut whole_state,
+        &mut whole_bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || false,
+        |write| whole_writes.push(write),
+    );
+    assert_eq!(whole.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(whole.instructions_executed, 2);
+    assert_eq!(whole_state.cr0, Some(CR0_WP_CLEAR));
+    assert_eq!(whole_state.rip, CODE_LINEAR + 6);
+    assert_eq!(whole_state.rflags, old_flags);
+    assert_eq!(whole.rflags_defined, FLAGS_DEFINED & !0x8d5);
+    assert_eq!(qword(&mut whole_bus, DATA_PHYSICAL), payload);
+    assert!(whole_writes.contains(&range(DATA_PHYSICAL)));
+    assert_eq!(
+        whole.translation_context_changes,
+        [od_isa::TranslationContextChange::Cr0Write {
+            old_cr0: CR0,
+            new_cr0: CR0_WP_CLEAR,
+        }]
+    );
+
+    let mut split_bus = cr0_wp_fixture();
+    let mut split_state = initial_cr0_wp_state(CR0_WP_CLEAR, payload);
+    let mut split_writes = Vec::new();
+    let first = run_paged_cr0_wp_probe(
+        &mut split_state,
+        &mut split_bus,
+        EFER,
+        context(),
+        1,
+        FLAGS_DEFINED,
+        || false,
+        |write| split_writes.push(write),
+    );
+    assert_eq!(first.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(first.instructions_executed, 1);
+    assert_eq!(split_state.rip, CODE_LINEAR + 3);
+    assert_eq!(first.translation_context_changes.len(), 1);
+
+    let second = run_paged_cr0_wp_probe(
+        &mut split_state,
+        &mut split_bus,
+        EFER,
+        context(),
+        1,
+        first.rflags_defined,
+        || false,
+        |write| split_writes.push(write),
+    );
+    assert_eq!(second.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(second.instructions_executed, 1);
+    assert!(second.translation_context_changes.is_empty());
+    assert_eq!(split_state, whole_state);
+    assert_eq!(qword(&mut split_bus, DATA_PHYSICAL), payload);
+    assert_eq!(split_writes, whole_writes);
+}
+
+#[test]
+fn cr0_wp_set_faults_readonly_store_without_data_or_dirty_commit() {
+    let original = 0x0123_4567_89ab_cdef;
+    let payload = 0xfedc_ba98_7654_3210;
+    let mut bus = cr0_wp_fixture();
+    put(&mut bus, DATA_PHYSICAL, original);
+    let mut state = initial_cr0_wp_state(CR0, payload);
+    state.cr0 = Some(CR0_WP_CLEAR);
+    let mut writes = Vec::new();
+
+    let result = run_paged_cr0_wp_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || false,
+        |write| writes.push(write),
+    );
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(DATA_LINEAR),
+        })
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.cr0, Some(CR0));
+    assert_eq!(state.rip, CODE_LINEAR + 3);
+    assert_eq!(
+        result.translation_context_changes,
+        [od_isa::TranslationContextChange::Cr0Write {
+            old_cr0: CR0_WP_CLEAR,
+            new_cr0: CR0,
+        }]
+    );
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL), original);
+    let data_pte = qword(&mut bus, 0x5000);
+    assert_eq!(data_pte & (1 << 6), 0, "faulted store must not set D");
+    assert!(!writes.contains(&range(DATA_PHYSICAL)));
+}
+
+#[test]
+fn stop_after_mov_cr0_precedes_operand_walk_and_profile_rejects_invalid_state() {
+    let mut bus = cr0_wp_fixture();
+    let mut state = initial_cr0_wp_state(CR0_WP_CLEAR, 0xfeed_face_cafe_beef);
+    let mut polls = 0;
+    let stopped = run_paged_cr0_wp_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || {
+            polls += 1;
+            polls == 2
+        },
+        |_| {},
+    );
+    assert_eq!(stopped.exit, PagedProbeExit::Stopped);
+    assert_eq!(stopped.instructions_executed, 1);
+    assert_eq!(state.cr0, Some(CR0_WP_CLEAR));
+    assert_eq!(state.rip, CODE_LINEAR + 3);
+    let data_pte = qword(&mut bus, 0x5000);
+    assert_eq!(data_pte & ((1 << 5) | (1 << 6)), 0);
+
+    state.cr0 = Some(CR0 | (1 << 6));
+    let invalid_before = state.clone();
+    let rejected = run_paged_cr0_wp_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        1,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+    assert!(matches!(rejected.exit, PagedProbeExit::Rejected(_)));
+    assert_eq!(rejected.instructions_executed, 0);
+    assert_eq!(state, invalid_before);
+
+    state.cr0 = Some(CR0);
+    state.cr3 = None;
+    let missing_cr3 = run_paged_cr0_wp_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        1,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+    assert_eq!(
+        missing_cr3.exit,
+        PagedProbeExit::Rejected(PagedProbeRejection::CpuCr3Required)
+    );
+    assert_eq!(missing_cr3.instructions_executed, 0);
+}
+
+#[test]
+fn cr0_wp_profile_rejects_qword_store_crossing_a_guest_page() {
+    let mut bus = cr0_wp_fixture();
+    let mut state = initial_cr0_wp_state(CR0_WP_CLEAR, 0xfeed_face_cafe_beef);
+    state.gpr[Register::Rbx as usize] = DATA_LINEAR + 0xff9;
+    let original = qword(&mut bus, DATA_PHYSICAL);
+    let mut writes = Vec::new();
+
+    let result = run_paged_cr0_wp_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || false,
+        |write| writes.push(write),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x89 });
+    assert!(result.page_fault.is_none());
+    assert!(result.memory_error.is_none());
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL), original);
+    assert!(!writes.contains(&range(DATA_PHYSICAL)));
 }

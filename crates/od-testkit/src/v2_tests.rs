@@ -197,6 +197,7 @@ fn cvtdq2ps_memory_pm_zero_schema_keeps_prerequisite_fault_priority() {
 #[test]
 fn iretq_cs_ss_snapshot_fields_are_opt_in_and_lossless() {
     let cpu = od_isa::LongModeState {
+        cr3: None,
         cr4: None,
         cs_selector: Some(8),
         cs_cache: Some(od_isa::CodeSegmentDescriptorCache {
@@ -1255,6 +1256,16 @@ fn integer_snapshot_export_rejects_ds_hidden_cache() {
         access: 0x93,
         flags: 0,
     });
+    assert!(IntegerState::try_from(&state).is_err());
+    assert!(IntegerState::from_cpu_for(&state, Profile::LongIntegerV1).is_err());
+}
+
+#[test]
+fn integer_snapshot_export_rejects_cr3_not_represented_by_schema() {
+    let state = od_isa::LongModeState {
+        cr3: Some(0x1000),
+        ..od_isa::LongModeState::default()
+    };
     assert!(IntegerState::try_from(&state).is_err());
     assert!(IntegerState::from_cpu_for(&state, Profile::LongIntegerV1).is_err());
 }

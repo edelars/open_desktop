@@ -100,13 +100,22 @@ impl Long64ProbeConfig {
         })
     }
 
-    /// Builds an immutable diagnostic snapshot from the CR0/CR4 values carried by CPU state.
-    /// CR3 and EFER remain explicit inputs because `LongModeState` does not own them.
+    /// Builds an immutable diagnostic snapshot from CPU-owned control state.
+    /// CR3 remains an explicit argument for callers without modeled CR3; when
+    /// the CPU state carries CR3, it must match this snapshot value.
     pub fn from_cpu_state(
         state: &od_isa::state::LongModeState,
         cr3: u64,
         efer: u64,
     ) -> Result<Self, ProbeConfigError> {
+        if let Some(cpu_cr3) = state.cr3
+            && cpu_cr3 != cr3
+        {
+            return Err(ProbeConfigError::Cr3Mismatch {
+                cpu_cr3,
+                snapshot_cr3: cr3,
+            });
+        }
         let cr0 = state
             .cr0
             .ok_or(ProbeConfigError::MissingCpuRegister { register: "CR0" })?;
@@ -144,6 +153,10 @@ impl Long64ProbeConfig {
 pub enum ProbeConfigError {
     MissingCpuRegister {
         register: &'static str,
+    },
+    Cr3Mismatch {
+        cpu_cr3: u64,
+        snapshot_cr3: u64,
     },
     Cr0EtRequired {
         value: u64,
@@ -516,15 +529,22 @@ pub struct InstructionProbeReport {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RamAccessOperation {
     Fetch,
-    Read { width: AccessWidth },
-    Write { width: AccessWidth, value: u64 },
+    Read {
+        width: AccessWidth,
+    },
+    /// One bounded 10-byte LIDT/LGDT pseudo-descriptor read from RAM.
+    ReadPseudoDescriptor,
+    Write {
+        width: AccessWidth,
+        value: u64,
+    },
 }
 
 impl RamAccessOperation {
     const fn access_kind(self) -> AccessKind {
         match self {
             Self::Fetch => AccessKind::Fetch,
-            Self::Read { .. } => AccessKind::Read,
+            Self::Read { .. } | Self::ReadPseudoDescriptor => AccessKind::Read,
             Self::Write { .. } => AccessKind::Write,
         }
     }
@@ -533,6 +553,7 @@ impl RamAccessOperation {
         match self {
             Self::Fetch => 1,
             Self::Read { width } | Self::Write { width, .. } => width.bytes(),
+            Self::ReadPseudoDescriptor => 10,
         }
     }
 }
@@ -564,6 +585,7 @@ pub struct AdUpdate {
 pub enum TrackedAccessOutcome {
     Fetched(u8),
     Read(u64),
+    ReadPseudoDescriptor([u8; 10]),
     Written,
 }
 
@@ -641,6 +663,23 @@ struct WalkResult {
     ad_update_count: usize,
 }
 
+type TrackedTableWriter<'a> = dyn FnMut(
+        &mut PhysicalMemory,
+        GuestPhysicalAddress,
+        u64,
+        &mut dyn FnMut(GuestPhysicalRange),
+    ) -> Result<(), MemoryAccessError>
+    + 'a;
+
+fn write_tracked_table_entry(
+    memory: &mut PhysicalMemory,
+    address: GuestPhysicalAddress,
+    value: u64,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+) -> Result<(), MemoryAccessError> {
+    memory.write_u64(address, value, committed_write)
+}
+
 fn walk_long64_4k(
     memory: &mut PhysicalMemory,
     paging: &Long64ProbeConfig,
@@ -649,6 +688,28 @@ fn walk_long64_4k(
     context: AccessContext,
     access: AccessKind,
     committed_write: &mut dyn FnMut(GuestPhysicalRange),
+) -> WalkResult {
+    walk_long64_4k_with_writer(
+        memory,
+        paging,
+        instruction_rip,
+        address,
+        context,
+        access,
+        committed_write,
+        &mut write_tracked_table_entry,
+    )
+}
+
+fn walk_long64_4k_with_writer(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    instruction_rip: u64,
+    address: GuestLinearAddress,
+    context: AccessContext,
+    access: AccessKind,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    table_writer: &mut TrackedTableWriter<'_>,
 ) -> WalkResult {
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 4];
@@ -765,7 +826,7 @@ fn walk_long64_4k(
 
         if entry_value & (1 << 5) == 0 {
             let after = entry_value | (1 << 5);
-            if let Err(source) = memory.write_u64(entry_address, after, &mut *committed_write) {
+            if let Err(source) = table_writer(memory, entry_address, after, &mut *committed_write) {
                 return fail(
                     TrackedAccessError::TableWrite {
                         level,
@@ -872,7 +933,27 @@ fn access_long64_4k_internal(
     request: TrackedAccessRequest,
     mut committed_write: impl FnMut(GuestPhysicalRange),
     set_mmio_dirty_before_dispatch: bool,
+    mmio: Option<&mut MmioDispatch<'_>>,
+) -> TrackedAccessReport {
+    access_long64_4k_internal_with_writer(
+        memory,
+        paging,
+        request,
+        &mut committed_write,
+        set_mmio_dirty_before_dispatch,
+        mmio,
+        &mut write_tracked_table_entry,
+    )
+}
+
+fn access_long64_4k_internal_with_writer(
+    memory: &mut PhysicalMemory,
+    paging: &Long64ProbeConfig,
+    request: TrackedAccessRequest,
+    committed_write: &mut dyn FnMut(GuestPhysicalRange),
+    set_mmio_dirty_before_dispatch: bool,
     mut mmio: Option<&mut MmioDispatch<'_>>,
+    table_writer: &mut TrackedTableWriter<'_>,
 ) -> TrackedAccessReport {
     let mut trace = WalkTrace::new();
     let mut ad_updates = [None; 5];
@@ -895,14 +976,15 @@ fn access_long64_4k_internal(
             ad_update_count,
         );
     }
-    let walk = walk_long64_4k(
+    let walk = walk_long64_4k_with_writer(
         memory,
         paging,
         request.instruction_rip,
         address,
         request.context,
         access,
-        &mut committed_write,
+        committed_write,
+        table_writer,
     );
     trace = walk.trace;
     ad_update_count = walk.ad_update_count;
@@ -980,7 +1062,7 @@ fn access_long64_4k_internal(
         if !is_mmio || set_mmio_dirty_before_dispatch {
             if leaf.1 & (1 << 6) == 0 {
                 let after = leaf.1 | (1 << 6);
-                if let Err(source) = memory.write_u64(leaf.0, after, &mut committed_write) {
+                if let Err(source) = table_writer(memory, leaf.0, after, committed_write) {
                     return fail(
                         TrackedAccessError::TableWrite {
                             level: PageTableLevel::Pt,
@@ -1030,7 +1112,7 @@ fn access_long64_4k_internal(
         if let Err(source) = memory.write_bytes(
             physical,
             &bytes[..usize::from(width.bytes())],
-            &mut committed_write,
+            &mut *committed_write,
         ) {
             return fail(
                 TrackedAccessError::OperandPhysical {
@@ -1076,6 +1158,26 @@ fn access_long64_4k_internal(
         return match memory.read_u8(physical) {
             Ok(value) => TrackedAccessReport {
                 outcome: Ok(TrackedAccessOutcome::Fetched(value)),
+                trace,
+                ad_updates,
+                ad_update_count,
+            },
+            Err(source) => fail(
+                TrackedAccessError::OperandPhysical {
+                    address: physical,
+                    source,
+                },
+                trace,
+                ad_updates,
+                ad_update_count,
+            ),
+        };
+    }
+    if request.operation == RamAccessOperation::ReadPseudoDescriptor {
+        let mut bytes = [0u8; 10];
+        return match memory.read_bytes(physical, &mut bytes) {
+            Ok(()) => TrackedAccessReport {
+                outcome: Ok(TrackedAccessOutcome::ReadPseudoDescriptor(bytes)),
                 trace,
                 ad_updates,
                 ad_update_count,
@@ -1223,6 +1325,10 @@ mod tracked_access_tests {
     const RIP: u64 = 0x1234;
 
     fn setup(entry: u64, size: u64) -> (PhysicalMemory, Long64ProbeConfig) {
+        setup_entries([0x2007, 0x3007, 0x4007, entry], size)
+    }
+
+    fn setup_entries(entries: [u64; 4], size: u64) -> (PhysicalMemory, Long64ProbeConfig) {
         let range = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), size).unwrap();
         let map = MachineMemoryMap::new(
             36,
@@ -1230,12 +1336,7 @@ mod tracked_access_tests {
         )
         .unwrap();
         let mut memory = PhysicalMemory::new(&map, RamLimits::new(size)).unwrap();
-        for (address, value) in [
-            (0x1008, 0x2007),
-            (0x2010, 0x3007),
-            (0x3018, 0x4007),
-            (0x4020, entry),
-        ] {
+        for (address, value) in [0x1008, 0x2010, 0x3018, 0x4020].into_iter().zip(entries) {
             memory
                 .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
                 .unwrap();
@@ -1247,16 +1348,54 @@ mod tracked_access_tests {
     }
 
     fn request(operation: RamAccessOperation) -> TrackedAccessRequest {
-        TrackedAccessRequest {
-            instruction_rip: RIP,
-            address: GuestLinearAddress::new(LINEAR),
-            context: AccessContext {
+        request_as(
+            AccessContext {
                 mode: InstructionMode::Long64,
                 privilege: PrivilegeLevel::Ring0,
                 origin: AccessOrigin::Explicit,
             },
             operation,
+        )
+    }
+
+    fn request_as(context: AccessContext, operation: RamAccessOperation) -> TrackedAccessRequest {
+        TrackedAccessRequest {
+            instruction_rip: RIP,
+            address: GuestLinearAddress::new(LINEAR),
+            context,
+            operation,
         }
+    }
+
+    fn operation(access: AccessKind) -> RamAccessOperation {
+        match access {
+            AccessKind::Read => RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            },
+            AccessKind::Write => RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 0xa5,
+            },
+            AccessKind::Fetch => RamAccessOperation::Fetch,
+        }
+    }
+
+    fn privilege(level: PrivilegeLevel) -> AccessContext {
+        AccessContext {
+            mode: InstructionMode::Long64,
+            privilege: level,
+            origin: AccessOrigin::Explicit,
+        }
+    }
+
+    fn paging_config(wp: bool, nxe: bool) -> Long64ProbeConfig {
+        Long64ProbeConfig::new(
+            0x8000_0033 | if wp { CR0_WP } else { 0 },
+            0x1000,
+            CR4_PAE,
+            EFER_LME | EFER_LMA | if nxe { EFER_NXE } else { 0 },
+        )
+        .unwrap()
     }
 
     fn entries(memory: &PhysicalMemory) -> [u64; 4] {
@@ -1276,6 +1415,551 @@ mod tracked_access_tests {
             .read_bytes(GuestPhysicalAddress::new(start), &mut bytes)
             .unwrap();
         bytes
+    }
+
+    fn expected_accessed_updates(count: usize) -> [Option<AdUpdate>; 5] {
+        let expected = [
+            (PageTableLevel::Pml4, 0x1008, 0x2007, 0x2027),
+            (PageTableLevel::Pdpt, 0x2010, 0x3007, 0x3027),
+            (PageTableLevel::Pd, 0x3018, 0x4007, 0x4027),
+            (PageTableLevel::Pt, 0x4020, 0x4007, 0x4027),
+        ];
+        std::array::from_fn(|index| {
+            if index >= count {
+                return None;
+            }
+            let (level, address, before, after) = expected[index];
+            Some(AdUpdate {
+                level,
+                address: GuestPhysicalAddress::new(address),
+                before,
+                after,
+                bit: AdBit::Accessed,
+            })
+        })
+    }
+
+    fn expected_matrix_updates(entries: [u64; 4], count: usize) -> [Option<AdUpdate>; 5] {
+        let levels = [
+            PageTableLevel::Pml4,
+            PageTableLevel::Pdpt,
+            PageTableLevel::Pd,
+            PageTableLevel::Pt,
+        ];
+        let addresses = [0x1008, 0x2010, 0x3018, 0x4020];
+        std::array::from_fn(|index| {
+            (index < count && index < 4).then(|| AdUpdate {
+                level: levels[index],
+                address: GuestPhysicalAddress::new(addresses[index]),
+                before: entries[index],
+                after: entries[index] | (1 << 5),
+                bit: AdBit::Accessed,
+            })
+        })
+    }
+
+    fn matrix_entries_with_bit(index: usize, bit: u64, set: bool) -> [u64; 4] {
+        let mut entries = [0x2007, 0x3007, 0x4007, 0x4007];
+        if set {
+            entries[index] |= bit;
+        } else {
+            entries[index] &= !bit;
+        }
+        entries
+    }
+
+    fn level(index: usize) -> PageTableLevel {
+        [
+            PageTableLevel::Pml4,
+            PageTableLevel::Pdpt,
+            PageTableLevel::Pd,
+            PageTableLevel::Pt,
+        ][index]
+    }
+
+    fn assert_matrix_fault(
+        initial_entries: [u64; 4],
+        paging: Long64ProbeConfig,
+        context: AccessContext,
+        operation: RamAccessOperation,
+        fault_level: usize,
+        error_code: u32,
+        reason: PageFaultReason,
+    ) {
+        let trace_count = match &reason {
+            PageFaultReason::NotPresent { .. } | PageFaultReason::ReservedBits { .. } => {
+                fault_level + 1
+            }
+            PageFaultReason::Protection { .. } => 4,
+        };
+        let (mut memory, _) = setup_entries(initial_entries, 0x6000);
+        memory
+            .write_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
+            .unwrap();
+        let operand_before = ram_snapshot(&memory, 0x4abc, 8);
+        let mut callbacks = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request_as(context, operation),
+            |range| callbacks.push(range),
+        );
+        let fault = PageFaultRecord::new(RIP, operation.access_kind(), context, error_code, LINEAR);
+        assert_eq!(
+            &report.outcome,
+            &Err(TrackedAccessError::PageFault {
+                record: fault,
+                reason,
+            })
+        );
+        assert_eq!(report.trace.len(), trace_count);
+        assert_eq!(report.ad_update_count, fault_level);
+        assert_eq!(
+            report.ad_updates,
+            expected_matrix_updates(initial_entries, fault_level)
+        );
+        let addresses = [0x1008, 0x2010, 0x3018, 0x4020];
+        assert_eq!(
+            logged(&callbacks),
+            addresses[..fault_level]
+                .iter()
+                .map(|address| (*address, 8))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            entries(&memory),
+            std::array::from_fn(|index| {
+                initial_entries[index] | if index < fault_level { 1 << 5 } else { 0 }
+            })
+        );
+        assert_eq!(ram_snapshot(&memory, 0x4abc, 8), operand_before);
+        let record = match report.outcome.as_ref().unwrap_err() {
+            TrackedAccessError::PageFault { record, .. } => record,
+            other => panic!("expected page fault, got {other:?}"),
+        };
+        assert_eq!(record.fault().vector, 14);
+        assert_eq!(record.fault().error_code, Some(error_code));
+        assert_eq!(record.fault().linear_address, Some(LINEAR));
+        assert_eq!(record.saved_rip(), RIP);
+        assert_eq!(record.access(), operation.access_kind());
+        assert_eq!(record.context(), context);
+        assert_eq!(record.cr2_value(), LINEAR);
+    }
+
+    fn assert_matrix_success(
+        initial_entries: [u64; 4],
+        paging: Long64ProbeConfig,
+        context: AccessContext,
+        access: AccessKind,
+    ) {
+        let (mut memory, _) = setup_entries(initial_entries, 0x6000);
+        memory
+            .write_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
+            .unwrap();
+        let mut callbacks = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request_as(context, operation(access)),
+            |range| callbacks.push(range),
+        );
+        let addresses = [0x1008, 0x2010, 0x3018, 0x4020];
+        let a_callbacks = addresses.map(|address| (address, 8));
+        match access {
+            AccessKind::Read => {
+                assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Read(0x5a)));
+                assert_eq!(report.ad_update_count, 4);
+                assert_eq!(
+                    report.ad_updates,
+                    expected_matrix_updates(initial_entries, 4)
+                );
+                assert_eq!(logged(&callbacks), a_callbacks);
+                assert_eq!(
+                    entries(&memory),
+                    initial_entries.map(|entry| entry | (1 << 5))
+                );
+            }
+            AccessKind::Fetch => {
+                assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Fetched(0x5a)));
+                assert_eq!(report.ad_update_count, 4);
+                assert_eq!(
+                    report.ad_updates,
+                    expected_matrix_updates(initial_entries, 4)
+                );
+                assert_eq!(logged(&callbacks), a_callbacks);
+                assert_eq!(
+                    entries(&memory),
+                    initial_entries.map(|entry| entry | (1 << 5))
+                );
+            }
+            AccessKind::Write => {
+                assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+                assert_eq!(report.ad_update_count, 5);
+                let mut expected = expected_matrix_updates(initial_entries, 4);
+                expected[4] = Some(AdUpdate {
+                    level: PageTableLevel::Pt,
+                    address: GuestPhysicalAddress::new(0x4020),
+                    before: initial_entries[3] | (1 << 5),
+                    after: initial_entries[3] | (1 << 5) | (1 << 6),
+                    bit: AdBit::Dirty,
+                });
+                assert_eq!(report.ad_updates, expected);
+                assert_eq!(
+                    logged(&callbacks),
+                    [a_callbacks.as_slice(), &[(0x4020, 8), (0x4abc, 1)]].concat()
+                );
+                assert_eq!(
+                    entries(&memory),
+                    [
+                        initial_entries[0] | (1 << 5),
+                        initial_entries[1] | (1 << 5),
+                        initial_entries[2] | (1 << 5),
+                        initial_entries[3] | (1 << 5) | (1 << 6),
+                    ]
+                );
+                assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_nonpresent_matrix_covers_every_level_access_and_cpl() {
+        let privileges = [PrivilegeLevel::Ring0, PrivilegeLevel::Ring3];
+        let accesses = [
+            (AccessKind::Read, 0, 4),
+            (AccessKind::Write, 2, 6),
+            (AccessKind::Fetch, 0x10, 0x14),
+        ];
+        for index in 0..4 {
+            for (access, supervisor_code, user_code) in accesses {
+                for (cpl, error_code) in
+                    [(privileges[0], supervisor_code), (privileges[1], user_code)]
+                {
+                    let mut entries = [0x2007, 0x3007, 0x4007, 0x4007];
+                    entries[index] = 0;
+                    assert_matrix_fault(
+                        entries,
+                        paging_config(false, true),
+                        privilege(cpl),
+                        operation(access),
+                        index,
+                        error_code,
+                        PageFaultReason::NotPresent {
+                            level: level(index),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_user_supervisor_matrix_accumulates_us_at_every_level() {
+        for index in 0..4 {
+            let entries = matrix_entries_with_bit(index, 1 << 2, false);
+            for access in [AccessKind::Read, AccessKind::Write, AccessKind::Fetch] {
+                for (privilege_level, error_code) in [
+                    (
+                        PrivilegeLevel::Ring3,
+                        match access {
+                            AccessKind::Read => 0x05,
+                            AccessKind::Write => 0x07,
+                            AccessKind::Fetch => 0x15,
+                        },
+                    ),
+                    (PrivilegeLevel::Ring0, 0),
+                ] {
+                    if privilege_level == PrivilegeLevel::Ring3 {
+                        assert_matrix_fault(
+                            entries,
+                            paging_config(false, true),
+                            privilege(privilege_level),
+                            operation(access),
+                            4,
+                            error_code,
+                            PageFaultReason::Protection {
+                                user_denied: true,
+                                write_denied: false,
+                                execute_denied: false,
+                            },
+                        );
+                    } else {
+                        assert_matrix_success(
+                            entries,
+                            paging_config(false, true),
+                            privilege(privilege_level),
+                            access,
+                        );
+                    }
+                }
+                for privilege_level in [PrivilegeLevel::Ring1, PrivilegeLevel::Ring2] {
+                    assert_matrix_success(
+                        entries,
+                        paging_config(false, true),
+                        privilege(privilege_level),
+                        access,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tracked_read_write_permissions_cover_every_level_and_wp_cpl_combination() {
+        for index in 0..4 {
+            let read_only = matrix_entries_with_bit(index, 1 << 1, false);
+            for privilege_level in [PrivilegeLevel::Ring0, PrivilegeLevel::Ring3] {
+                for access in [AccessKind::Read, AccessKind::Fetch] {
+                    assert_matrix_success(
+                        read_only,
+                        paging_config(false, true),
+                        privilege(privilege_level),
+                        access,
+                    );
+                }
+            }
+
+            assert_matrix_success(
+                read_only,
+                paging_config(false, true),
+                privilege(PrivilegeLevel::Ring0),
+                AccessKind::Write,
+            );
+            assert_matrix_fault(
+                read_only,
+                paging_config(true, true),
+                privilege(PrivilegeLevel::Ring0),
+                operation(AccessKind::Write),
+                4,
+                0x03,
+                PageFaultReason::Protection {
+                    user_denied: false,
+                    write_denied: true,
+                    execute_denied: false,
+                },
+            );
+            for wp in [false, true] {
+                assert_matrix_fault(
+                    read_only,
+                    paging_config(wp, true),
+                    privilege(PrivilegeLevel::Ring3),
+                    operation(AccessKind::Write),
+                    4,
+                    0x07,
+                    PageFaultReason::Protection {
+                        user_denied: false,
+                        write_denied: true,
+                        execute_denied: false,
+                    },
+                );
+            }
+            for privilege_level in [PrivilegeLevel::Ring1, PrivilegeLevel::Ring2] {
+                assert_matrix_success(
+                    read_only,
+                    paging_config(false, true),
+                    privilege(privilege_level),
+                    AccessKind::Write,
+                );
+                assert_matrix_fault(
+                    read_only,
+                    paging_config(true, true),
+                    privilege(privilege_level),
+                    operation(AccessKind::Write),
+                    4,
+                    0x03,
+                    PageFaultReason::Protection {
+                        user_denied: false,
+                        write_denied: true,
+                        execute_denied: false,
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wp_read_then_write_reuses_same_memory_and_preserves_preset_accessed_state() {
+        let initial_entries = [0x2005, 0x3005, 0x4005, 0x4005];
+        let (mut memory, _) = setup_entries(initial_entries, 0x6000);
+        let paging = paging_config(true, true);
+        let context = privilege(PrivilegeLevel::Ring0);
+        memory
+            .write_u8(GuestPhysicalAddress::new(0x4abc), 0x5a, |_| {})
+            .unwrap();
+
+        let mut read_callbacks = Vec::new();
+        let read = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request_as(
+                context,
+                RamAccessOperation::Read {
+                    width: AccessWidth::Byte,
+                },
+            ),
+            |range| read_callbacks.push(range),
+        );
+        assert_eq!(read.outcome, Ok(TrackedAccessOutcome::Read(0x5a)));
+        assert_eq!(read.ad_update_count, 4);
+        assert_eq!(read.ad_updates, expected_matrix_updates(initial_entries, 4));
+        assert_eq!(
+            logged(&read_callbacks),
+            [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
+        );
+        let after_read = initial_entries.map(|entry| entry | (1 << 5));
+        assert_eq!(entries(&memory), after_read);
+
+        let operand_before = ram_snapshot(&memory, 0x4abc, 8);
+        let mut write_callbacks = Vec::new();
+        let write = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request_as(
+                context,
+                RamAccessOperation::Write {
+                    width: AccessWidth::Byte,
+                    value: 0xa5,
+                },
+            ),
+            |range| write_callbacks.push(range),
+        );
+        let expected_fault = PageFaultRecord::new(RIP, AccessKind::Write, context, 0x03, LINEAR);
+        assert_eq!(
+            &write.outcome,
+            &Err(TrackedAccessError::PageFault {
+                record: expected_fault,
+                reason: PageFaultReason::Protection {
+                    user_denied: false,
+                    write_denied: true,
+                    execute_denied: false,
+                },
+            })
+        );
+        assert_eq!(write.trace.len(), 4);
+        assert_eq!(write.ad_update_count, 0);
+        assert_eq!(write.ad_updates, [None; 5]);
+        assert!(write_callbacks.is_empty());
+        assert_eq!(entries(&memory), after_read);
+        assert_eq!(ram_snapshot(&memory, 0x4abc, 8), operand_before);
+        let record = match write.outcome.as_ref().unwrap_err() {
+            TrackedAccessError::PageFault { record, .. } => record,
+            other => panic!("expected page fault, got {other:?}"),
+        };
+        assert_eq!(record.fault().vector, 14);
+        assert_eq!(record.fault().error_code, Some(0x03));
+        assert_eq!(record.fault().linear_address, Some(LINEAR));
+        assert_eq!(record.saved_rip(), RIP);
+        assert_eq!(record.access(), AccessKind::Write);
+        assert_eq!(record.context(), context);
+        assert_eq!(record.cr2_value(), LINEAR);
+    }
+
+    #[test]
+    fn tracked_nx_matrix_checks_fetch_faults_reserved_bits_and_data_access() {
+        for index in 0..4 {
+            let nx_entries = matrix_entries_with_bit(index, ENTRY_NX_BIT, true);
+            for (privilege_level, error_code) in
+                [(PrivilegeLevel::Ring0, 0x11), (PrivilegeLevel::Ring3, 0x15)]
+            {
+                assert_matrix_fault(
+                    nx_entries,
+                    paging_config(false, true),
+                    privilege(privilege_level),
+                    operation(AccessKind::Fetch),
+                    4,
+                    error_code,
+                    PageFaultReason::Protection {
+                        user_denied: false,
+                        write_denied: false,
+                        execute_denied: true,
+                    },
+                );
+                for access in [AccessKind::Read, AccessKind::Write] {
+                    assert_matrix_success(
+                        nx_entries,
+                        paging_config(false, true),
+                        privilege(privilege_level),
+                        access,
+                    );
+                }
+            }
+            for privilege_level in [PrivilegeLevel::Ring1, PrivilegeLevel::Ring2] {
+                assert_matrix_fault(
+                    nx_entries,
+                    paging_config(false, true),
+                    privilege(privilege_level),
+                    operation(AccessKind::Fetch),
+                    4,
+                    0x11,
+                    PageFaultReason::Protection {
+                        user_denied: false,
+                        write_denied: false,
+                        execute_denied: true,
+                    },
+                );
+            }
+
+            for (privilege_level, error_code) in
+                [(PrivilegeLevel::Ring0, 0x09), (PrivilegeLevel::Ring3, 0x0d)]
+            {
+                assert_matrix_fault(
+                    nx_entries,
+                    paging_config(false, false),
+                    privilege(privilege_level),
+                    operation(AccessKind::Fetch),
+                    index,
+                    error_code,
+                    PageFaultReason::ReservedBits {
+                        level: level(index),
+                        offending_bits: ENTRY_NX_BIT,
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pure_probe_permission_cases_never_commit_accessed_or_dirty_bits() {
+        let initial_entries = [0x2007, 0x3007, 0x4007, 0x4007];
+        let (memory, paging) = setup_entries(initial_entries, 0x6000);
+        for privilege_level in [PrivilegeLevel::Ring0, PrivilegeLevel::Ring3] {
+            for access in [AccessKind::Read, AccessKind::Write, AccessKind::Fetch] {
+                assert!(matches!(
+                    probe_long64_4k(
+                        &memory,
+                        &paging,
+                        GuestLinearAddress::new(LINEAR),
+                        access,
+                        privilege(privilege_level),
+                    )
+                    .outcome,
+                    Ok(ProbeOutcome::Translated(_))
+                ));
+                assert_eq!(entries(&memory), initial_entries);
+            }
+        }
+    }
+
+    #[test]
+    fn preset_accessed_and_dirty_bits_do_not_emit_redundant_table_callbacks() {
+        let entries_before = [0x2027, 0x3027, 0x4027, 0x4067];
+        let (mut memory, paging) = setup_entries(entries_before, 0x6000);
+        let mut callbacks = Vec::new();
+        let report = access_long64_4k_ram(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 0xa5,
+            }),
+            |range| callbacks.push(range),
+        );
+        assert_eq!(report.outcome, Ok(TrackedAccessOutcome::Written));
+        assert_eq!(report.ad_update_count, 0);
+        assert_eq!(report.ad_updates, [None; 5]);
+        assert_eq!(entries(&memory), entries_before);
+        assert_eq!(logged(&callbacks), [(0x4abc, 1)]);
+        assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0xa5));
     }
 
     #[test]
@@ -1383,6 +2067,144 @@ mod tracked_access_tests {
                 [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
             );
         }
+    }
+
+    #[test]
+    fn accessed_write_failures_preserve_committed_prefix_at_each_level() {
+        let levels = [
+            PageTableLevel::Pml4,
+            PageTableLevel::Pdpt,
+            PageTableLevel::Pd,
+            PageTableLevel::Pt,
+        ];
+        let addresses = [0x1008, 0x2010, 0x3018, 0x4020];
+        let original = [0x2007, 0x3007, 0x4007, 0x4007];
+
+        for failed_index in 0..levels.len() {
+            let (mut memory, paging) = setup(0x4007, 0x6000);
+            let failed_address = GuestPhysicalAddress::new(addresses[failed_index]);
+            let mut attempts = Vec::new();
+            let mut callbacks = Vec::new();
+            let mut writes =
+                |memory: &mut PhysicalMemory,
+                 address: GuestPhysicalAddress,
+                 value: u64,
+                 callback: &mut dyn FnMut(GuestPhysicalRange)| {
+                    attempts.push(address);
+                    if address == failed_address {
+                        Err(MemoryAccessError::Unmapped(address))
+                    } else {
+                        write_tracked_table_entry(memory, address, value, callback)
+                    }
+                };
+            let mut callback = |range| callbacks.push(range);
+            let report = access_long64_4k_internal_with_writer(
+                &mut memory,
+                &paging,
+                request(RamAccessOperation::Write {
+                    width: AccessWidth::Byte,
+                    value: 0xa5,
+                }),
+                &mut callback,
+                false,
+                None,
+                &mut writes,
+            );
+
+            assert!(matches!(
+                report.outcome,
+                Err(TrackedAccessError::TableWrite {
+                    level,
+                    entry_address,
+                    bit: AdBit::Accessed,
+                    source: MemoryAccessError::Unmapped(source_address),
+                }) if level == levels[failed_index]
+                    && entry_address == failed_address
+                    && source_address == failed_address
+            ));
+            assert_eq!(report.ad_update_count, failed_index);
+            assert_eq!(report.ad_updates, expected_accessed_updates(failed_index));
+            assert_eq!(
+                attempts,
+                addresses[..=failed_index]
+                    .iter()
+                    .copied()
+                    .map(GuestPhysicalAddress::new)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                logged(&callbacks),
+                addresses[..failed_index]
+                    .iter()
+                    .map(|address| (*address, 8))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                entries(&memory),
+                std::array::from_fn(|index| {
+                    original[index] | if index < failed_index { 1 << 5 } else { 0 }
+                })
+            );
+            assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
+            assert_eq!(memory.read_u64(failed_address), Ok(original[failed_index]));
+        }
+    }
+
+    #[test]
+    fn dirty_write_failure_preserves_accessed_prefix_without_operand_commit() {
+        let (mut memory, paging) = setup(0x4007, 0x6000);
+        let dirty_address = GuestPhysicalAddress::new(0x4020);
+        let mut attempts = Vec::new();
+        let mut callbacks = Vec::new();
+        let mut pt_writes = 0;
+        let mut writes = |memory: &mut PhysicalMemory,
+                          address: GuestPhysicalAddress,
+                          value: u64,
+                          callback: &mut dyn FnMut(GuestPhysicalRange)| {
+            attempts.push(address);
+            if address == dirty_address {
+                pt_writes += 1;
+                if pt_writes == 2 {
+                    return Err(MemoryAccessError::Unmapped(address));
+                }
+            }
+            write_tracked_table_entry(memory, address, value, callback)
+        };
+        let mut callback = |range| callbacks.push(range);
+        let report = access_long64_4k_internal_with_writer(
+            &mut memory,
+            &paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: 0xa5,
+            }),
+            &mut callback,
+            false,
+            None,
+            &mut writes,
+        );
+
+        assert_eq!(
+            report.outcome,
+            Err(TrackedAccessError::TableWrite {
+                level: PageTableLevel::Pt,
+                entry_address: dirty_address,
+                bit: AdBit::Dirty,
+                source: MemoryAccessError::Unmapped(dirty_address),
+            })
+        );
+        assert_eq!(report.ad_update_count, 4);
+        assert_eq!(report.ad_updates, expected_accessed_updates(4));
+        assert_eq!(
+            attempts,
+            [0x1008, 0x2010, 0x3018, 0x4020, 0x4020].map(GuestPhysicalAddress::new)
+        );
+        assert_eq!(
+            logged(&callbacks),
+            [(0x1008, 8), (0x2010, 8), (0x3018, 8), (0x4020, 8)]
+        );
+        assert_eq!(entries(&memory), [0x2027, 0x3027, 0x4027, 0x4027]);
+        assert_eq!(memory.read_u8(GuestPhysicalAddress::new(0x4abc)), Ok(0));
     }
 
     #[test]
@@ -3081,6 +3903,7 @@ mod tests {
         );
 
         state.cr4 = Some(0x620);
+        state.cr3 = Some(ROOT | 0x18 | 0x7e0);
         let snapshot = Long64ProbeConfig::from_cpu_state(
             &state,
             ROOT | 0x18 | 0x7e0,
@@ -3091,6 +3914,13 @@ mod tests {
         assert_eq!(snapshot.cr3(), ROOT | 0x18 | 0x7e0);
         assert_eq!(snapshot.cr4(), 0x620);
         assert_eq!(snapshot.efer(), 0xd00);
+        assert_eq!(
+            Long64ProbeConfig::from_cpu_state(&state, ROOT, EFER_LME | EFER_LMA),
+            Err(ProbeConfigError::Cr3Mismatch {
+                cpu_cr3: ROOT | 0x18 | 0x7e0,
+                snapshot_cr3: ROOT,
+            })
+        );
     }
 
     #[test]

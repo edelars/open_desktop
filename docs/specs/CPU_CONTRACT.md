@@ -115,6 +115,191 @@ behavior. See the [official Intel SDM page](https://www.intel.com/content/www/us
 [Vol. 1 PDF](https://cdrdv2.intel.com/v1/dl/getContent/671436), and
 [Vol. 2A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671199).
 
+### Exact paged word-read and cross-page instruction-fetch profile `PagedMovCrossPageWordFetchLong64V1` (S4-11f)
+
+This separate opt-in profile admits only `66 8B 03` (`MOV AX,[RBX]`) in
+Long64, one vCPU, canonical48/physical36, four-level 4 KiB uncached paging,
+CPL0, `RFLAGS.AC=0`, and NXE=1. The instruction may begin at code-page offset
+`0xffe` or `0xfff`; the next code page maps non-contiguous RAM. The operand is
+wholly within a separate RAM page. Code, operand and page-table mappings have
+no aliases in this fixture. This profile does not alter the S4-11e
+word-read profile, which continues to reject cross-page instruction fetch.
+
+A same-page instruction at offset `0xffd` is the control. On success, AX is
+updated, RAX[63:16], other registers, flags and definedness are preserved, RIP
+advances by 3, and the instruction retires once. Fetch of all instruction bytes
+completes before any operand walk. If the first byte on the next page is
+non-present or NX, report a precise Fetch/Long64/Explicit fault at that byte,
+retain the original RIP and CPU state, and retire zero instructions. PFEC is
+`0x10` for non-present and `0x11` for NX. Accessed updates from earlier
+completed fetch walks persist; fetch does not set Dirty. A faulting fetch must
+not reach the operand page, even if it would also fault.
+
+Code mappings are RAM-only. A hole or MMIO second code page preserves its
+backend classification and invokes no device. Stores, crossing operands,
+stack/REP/RMW, exception delivery/CR2/retry, JIT/TLB and Linux are excluded.
+The instruction-fetch boundary behavior follows the established
+[S4-11d contract](CPU_CONTRACT.md#cross-page-fetch-for-pagedmovcrosspagedwordreadlong64v1-s4-11d); word destination semantics and normative references follow the
+[S4-11e contract](CPU_CONTRACT.md#exact-paged-word-read-profile-pagedmovcrosspagewordreadlong64v1-s4-11e).
+After successful decode, an operand whose two bytes would cross a 4 KiB data
+page boundary is unsupported before any operand translation. The CR0-only
+public profile entry points are also unsupported; this profile requires the
+matching CR0 and CR4 pair before instruction fetch.
+
+### Exact MOV CR3 execution profile `MovCr3Long64V1` (S4-12b)
+
+`step_mov_cr3` admits only bare Long64 `0F 22 D8` (`MOV CR3,RAX`). The
+profile fixes EFER=`0xd00`, CR0=`Cr0Profile::BASE`, CR4=`Cr4Profile::BASE`,
+PCIDE=0, LA57=0, PGE=0, canonical48/physical36/four-level paging, and one
+vCPU. Initial CR3 must be present in `LongModeState` and have no bits above
+MAXPHYADDR=36; missing or invalid initial state is an API input error before
+fetch.
+
+LOCK-prefixed form raises #UD only through this profile; other prefixes/forms
+remain unsupported. CPL other than 0 raises #GP(0). With PCIDE=0, CR3[2:0]
+and CR3[11:5] are ignored by the paging format, CR3[3:4] select PWT/PCD, and
+CR3[35:12] hold the root physical address. Source bits [63:36] are reserved
+and fault with #GP(0). Accepted source bits are retained in the CPU-owned CR3
+value. A successful write commits CR3 and RIP+3, retires once, preserves
+concrete RFLAGS and clears arithmetic-flag definedness. Every success returns
+a typed `TranslationContextChange::Cr3Write`, including identical-value
+writes. The caller must stop at this boundary before another instruction can
+use a stale translation snapshot.
+
+This version refuses instruction starts at code-page offsets `0xff2` through
+`0xfff` before fetch, so even a maximal 15-byte x86 encoding cannot cross a
+page while unsupported prefixes are classified. Cross-page instruction fetch
+is outside the profile.
+The LOCK #UD case is recognized only for the exact prefix sequence `F0`.
+
+The separate opt-in `MovCr3WpLong64V1` / `step_mov_cr3_wp` keeps the exact
+`0F 22 D8` form and commit/effect semantics, but admits exactly CR0
+`0x80010033` (WP=1) or `0x80000033` (WP=0). CR4=`0x20`, EFER=`0xd00`,
+Long64, one vCPU, canonical48/physical36, four-level 4 KiB paging, running
+state and clear interrupt shadow remain fixed. The original
+`MovCr3Long64V1` / `step_mov_cr3` continues to admit only CR0=`0x80010033`.
+Both profiles retain the same fetch start boundary, exact encoding, LOCK/CPL
+fault ordering, reserved CR3 source bits [63:36], commit, flags and typed
+`Cr3Write` effect. No other execution profile gains MOV CR3 admission.
+
+This CPU slice does not update machine translation state, walk the replacement
+root, invalidate a TLB, deliver exceptions, update CR2, enable PCID/global
+pages, write EFER, or establish startup state. S4-12c owns active machine
+translation integration.
+
+### Paged CPU-owned CR3 profile `PagedCpl0Cr3ProbeV1` (S4-12c)
+
+`step_paged_cr3_probe` is a separate opt-in CPU entry that requires a modeled,
+valid `LongModeState.cr3`, CR0=`Cr0Profile::BASE`, CR4=`Cr4Profile::BASE`,
+EFER=`0xd00`, Long64/CPL0, and the running/clear-interrupt-shadow state of the
+existing paged probe. It admits exact bare `0F 22 D8` (`MOV CR3,RAX`) and the
+existing exact `MOV RAX,[RBX]` memory-read form. Stores, other memory forms,
+stack operations, PIO and HLT remain unsupported. The old `step_paged_probe`
+continues to reject CPU-owned CR3.
+
+`MOV CR3` uses the shared S4-12b commit logic: reserved source bits fault
+atomically with #GP(0); success commits CR3 and RIP, clears arithmetic-flag
+definedness, retires once, and returns the typed
+`TranslationContextChange::Cr3Write` at a mandatory boundary. The CPU does not
+select or retain a translation snapshot. Starts at code-page offsets
+`0xff2–0xfff` are unsupported before fetch so unsupported maximum-length
+prefix sequences cannot cross a page while being classified.
+
+See the [machine contract](MACHINE_CONTRACT.md#cpu-owned-cr3-translation-handoff-s4-12c)
+for snapshot replacement and subsequent access behavior.
+
+Normative source: Intel 64 and IA-32 Architectures Software Developer's
+Manual, Revision 093, Vol. 3A §5.5.2, Table 5-12 (CR3 format with PCIDE=0),
+and Vol. 2B, `MOV—Move to/from Control Registers`. See the
+[official Intel SDM page](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+[Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190), and
+[Vol. 2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
+
+### Paged CPU-owned CR0.WP profile `PagedCpl0Cr0WpProbeV1` (S4-12d)
+
+`step_paged_cr0_wp_probe` is an opt-in Long64/CPL0 CPU entry with CPU-owned
+CR0 and CR3, fixed CR4=`0x20` and EFER=`0xd00`. The only admitted CR0 values
+are `Cr0Profile::BASE` (`0x80010033`, WP=1) and that value with WP cleared
+(`0x80000033`). It admits exact bare `0F 22 C0` (`MOV CR0,RAX`) and exact
+`48 89 0B` (`MOV [RBX],RCX`). Other instructions/forms and any other CR0 value
+are Unsupported by this profile; they do not imply an architectural exception
+classification for values outside its allowlist. Exact `F0 0F 22 C0` (LOCK
+`MOV CR0,RAX`) raises #UD after complete fetch.
+
+Successful `MOV CR0` commits CPU state and RIP, retires once, clears
+arithmetic-flags definedness while preserving concrete RFLAGS, and returns a
+typed `TranslationContextChange::Cr0Write { old_cr0, new_cr0 }` effect even
+for an identical value. The machine must consume it before the next STOP poll,
+fetch or operand access. The effect itself performs no walk or A/D update; the
+fetch of `MOV CR0` may already have committed A effects. Exact `MOV CR0,RAX` at
+CPL1–3 faults with #GP(0) after fetch, with no CPU commit, retirement or
+effect. At nonzero CPL the bounded CPU entry rejects the ordinary store with
+`WrongPrivilege` after fetch, without data access or retirement; it does not
+report that as guest #GP. The separate machine runner rejects all non-CPL0
+contexts before fetch. At the next access, WP=0 permits
+supervisor writes through read-only page-table entries; WP=1 enforces their
+R/W permissions. A read-only page write denied under WP=1 may retain prior A
+updates, but does not commit data or D. The profile starts only at code-page
+offsets where the full bounded decode cannot cross a page. Exact store operands
+must fit one 4 KiB page; a crossing store is Unsupported before memory access.
+
+Normative source: Intel 64 and IA-32 Architectures Software Developer's Manual,
+Revision 093, Vol. 2B `MOV—Move to/from Control Registers`, and Vol. 3A §§2.5,
+5.1.3 and 5.6.1 (CR0 fields and supervisor write protection). See the
+[official Intel SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
+### Standalone CR0.WP transition profile `MovCr0WpLong64V1` (S4-14e)
+
+`step_mov_cr0_wp` admits only the exact bare `0F 22 C0` (`MOV CR0,RAX`) form.
+It reuses the accepted CR0.WP commit semantics above, but has no store form in
+its allowlist. It requires Long64/CPL0, a valid CPU-owned CR3, CR4=`0x20`,
+EFER=`0xd00`, Running activity with no blocking interrupt shadow, and CR0 equal
+to `0x80010033` or `0x80000033`. The source value must be one of those same two
+CR0 values. LOCK raises #UD after complete fetch; CPL1–3 raises #GP(0) after
+fetch; unsupported instructions or CR0 values do not commit CPU state or
+retire. The existing page-end instruction-start boundary remains in force.
+
+A successful instruction commits CR0 and RIP, retires once, clears arithmetic
+flag definedness and returns `TranslationContextChange::Cr0Write`, including
+for an identical-value write. The profile is a CPU-only bounded entry: it does
+not itself update a machine translation snapshot or invalidate a cache. The
+feature-gated S4-14e machine session consumes that effect synchronously.
+
+### Standalone INVLPG profile `InvlpgLong64V1` (S4-14b)
+
+`step_invlpg` is an opt-in, feature-independent, one-instruction Long64 entry.
+It requires canonical48/physical36 four-level paging, one vCPU, CR0=`0x80010033`,
+CR4=`0x20`, EFER=`0xd00`, a valid CPU-owned CR3, Running activity and a clear
+interrupt shadow. Invalid profile state is rejected before fetch. CPL1–3 are
+admitted to the instruction path so the architectural privilege fault can be
+reported. Instruction starts at offsets `0xff2–0xfff` are rejected before
+fetch. The only successful encoding is bare `0F 01 3B` (`INVLPG [RBX]`); exact
+`F0 0F 01 3B` is fetched in full and raises #UD. Other instructions, prefixes,
+and addressing forms are Unsupported in this profile.
+
+After a complete bare fetch, CPL1–3 raises #GP(0) without retiring or emitting
+an effect. At CPL0, canonical RBX retires once with RIP+3 and emits
+`TranslationInvalidation::Invlpg { linear_address: RBX }`; a noncanonical RBX
+is a successful NOP, advancing RIP by 3 without an effect. Privilege is checked
+before this noncanonical-address behavior. Both successful forms preserve
+GPRs, control registers, concrete RFLAGS and its definedness. RBX is an address
+value and is never dereferenced: it causes no target translation, data access,
+page fault or A/D update. Instruction fetch retains its own memory semantics.
+
+`step_invlpg_wp` is a separate opt-in `InvlpgWpLong64V1` entry for the same
+exact encoding and instruction behavior. Its only admission difference is
+CR0: it accepts either `0x80010033` (WP=1) or `0x80000033` (WP=0). All other
+state checks, fetch/decode ordering, LOCK/CPL faults, noncanonical NOP behavior
+and emitted effect are shared with `step_invlpg`. The original
+`InvlpgLong64V1` continues to require WP=1. Unsupported CR0 values reject
+before fetch in both entries.
+
+Normative source: Intel SDM Revision 093, Vol. 2A, Chapter 3,
+`INVLPG—Invalidate TLB Entries` (Description, Flags Affected and 64-Bit Mode
+Exceptions). In 64-bit mode a noncanonical operand is a no-op; the instruction
+is privileged and LOCK is #UD. See the
+[official Intel Vol. 2A](https://cdrdv2-public.intel.com/812383/253666-sdm-vol-2a.pdf).
+
 ### Cross-page fetch for `PagedMovCrossPageDwordReadLong64V1` (S4-11d)
 
 Only for the exact `8B 03` form in this opt-in profile, one vCPU, synthetic
@@ -19901,3 +20086,27 @@ Vol. 3A §16.1.3/Table 16-1 (legacy prerequisite gates),
 The VEX-only Type 2 table is not this legacy alignment contract. See the
 [plan](../plans/STAGE_2.md#s2-38ba--exact-legacy-long64-cvtdq2ps-xmm0-m128-rax-with-unmasked-exceptions)
 and [fixture format](../testing/TEST_CASE_FORMAT.md#s2-38ba-cvtdq2ps-m128-memory-unmasked-profile).
+
+### Paged `LIDT` entry `PagedLidtLong64V1` (S4-18a)
+
+`step_paged_lidt` is a separate exact entry with the bare `0F 01 5C 24 ib`
+encoding and existing `load_idtr` semantics. It fixes Long64,
+CR0=`0x80010033`, CR4=`0x20`, EFER=`0xd00`, physical36/four-level/4 KiB
+paging, and requires `state.idtr == Some(_)`. The source is SS:RSP plus the
+signed displacement; the machine adapter admits a complete ten-byte range
+inside one guest page, with the complete source span canonical.
+
+To keep the complete instruction fetch within the profile's bounded fetch
+page, instruction starts whose page offset is `0xff2` through `0xfff` are
+rejected before any fetch. Offset `0xff1` remains admitted and can fetch all
+five bytes from the current page.
+
+The entry reuses the existing decoder and pseudo-descriptor loader. It fetches
+the complete instruction before operand access, raises `#UD` for exact LOCK
+after full fetch, reports fetch faults before operand faults, and raises
+`#GP(0)` for CPL1–3 before descriptor access. A halted CPU returns `Halted`
+without fetching; a blocking STI shadow is rejected before fetch. Success
+changes only IDTR and RIP, retires once, and preserves other CPU state and
+RFLAGS definedness. Descriptor-source faults leave CPU state unchanged. The
+loaded IDT base is not walked. Other encodings and control states remain
+unsupported.
