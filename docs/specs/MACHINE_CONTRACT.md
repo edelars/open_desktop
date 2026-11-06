@@ -16,9 +16,14 @@
   width 64 корректно представляет адрес `u64::MAX` с длиной 1.
 - `MachineMemoryMap::new(width, regions)` сортирует regions, проверяет width
   1—64, checked bounds и запрещает overlap. Карта не меняется после создания.
-- `MemoryRegionKind` различает `Ram`, `Rom`, `Reserved` и `Mmio`. Сейчас backing
-  создаётся только для RAM; ROM/reserved/MMIO классифицируются и отклоняют доступ
-  до появления соответствующих владельцев.
+- `MemoryRegionKind` различает `Ram`, `Rom`, `Reserved`, `Mmio` и `Framebuffer`.
+  Backing создаётся для RAM и для `Framebuffer`; ROM/reserved/MMIO
+  классифицируются и отклоняют доступ до появления соответствующих владельцев.
+  `Framebuffer` — память дисплейного устройства (раздел «Display device
+  (S10-03)»): её backing не входит в `RamLimits`, карта принимает не больше одного
+  такого региона, начало и длина кратны 4 KiB, длина не больше `0x0240_0000`
+  (иначе `MultipleFramebufferRegions` / `InvalidFramebufferRegion` при построении
+  карты, до allocation).
 - Port I/O, E820, boot reservations, aliases и remapping пока не реализованы и
   не должны моделироваться перекрывающимися RAM regions.
 
@@ -41,9 +46,12 @@ little-endian encoding.
 
 ## Committed writes
 
-Все byte/scalar writes используют один `write_bytes` path. Callback получает
-ровно один `GuestPhysicalRange` только после полной записи в RAM. Ошибка,
-включая отказ region или cross-region access, не вызывает callback. Этот hook
+Все byte/scalar writes используют один `write_bytes` path. Для RAM callback
+получает ровно один `GuestPhysicalRange` только после полной записи. Запись в
+`Framebuffer` фиксируется тем же путём, но callback не вызывается ни разу: от
+байтов framebuffer не зависит ни один потребитель (fetch и page tables там
+запрещены). Ошибка, включая отказ region или cross-region access, не вызывает
+callback. Этот hook
 является только локальным уведомлением о committed bytes; он ещё не подключён к
 JIT code-dependency invalidation и не доказывает S4-15—S4-16.
 
@@ -141,6 +149,77 @@ fetch remain visible. The slice does not provide exception delivery or CR2
 update. See the [S4-24c report](../reports/STAGE_4_S4-24C_2026-11-05.md),
 [CPU contract](CPU_CONTRACT.md#bounded-paged-cpu-to-pio-profile-pagedcpl0piou8v1-s4-24c)
 and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu-pio).
+
+## Display device (S10-03)
+
+Нормативное guest-visible поведение — [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md);
+здесь записаны только реализованные границы `crates/od-machine/src/display_device.rs`.
+
+- **Карта.** Регистры — `BusDevice` `DisplayDevice`, привязанный `MmioBinding` к
+  региону `Mmio` длиной `0x1000` (`DISPLAY_REGISTERS_BASE = 0xFC00_0000`).
+  Пиксели — регион `Framebuffer` (`DISPLAY_FRAMEBUFFER_BASE = 0xF800_0000`,
+  `DISPLAY_FRAMEBUFFER_BYTES = 0x0240_0000`) внутри `PhysicalMemory`; у
+  устройства байтов кадра нет. Один экран, один формат `BGRX8888`, stride
+  `width × 4`, максимум 4096 × 2304.
+- **Backing и доступ.** Память заполнена нулями; `read_physical`/`write_physical`/
+  flat- и paged-доступ к данным работают как для RAM (любая ширина, невыровненный
+  доступ внутри региона), без committed-write callback. Instruction fetch
+  в `IdentityMemoryAdapter` и `step_diagnostic_pio_u8` — `MemoryError::Backend`
+  (сообщение «unsupported»); в tracked paged-пути fetch — `TrackedAccessError::
+  OperandPhysical { UnreadableRegion(Framebuffer) }`, а элементы таблиц страниц
+  внутри региона (оба walker-а) — `UnreadableRegion(Framebuffer)` в
+  `TableRead`. Везде это backend-ошибка, не `#PF`; A/D-биты в регион не пишутся.
+  Доступ, пересекающий границу региона, и доступ в резерв
+  `0xFA40_0000–0xFBFF_FFFF` отвергаются существующими правилами карты.
+- **Регистры.** Допустимы только `IoSpace::Mmio`, `AccessWidth::Dword`, offset
+  кратен 4 и внутри окна; иначе `DeviceError::{UnsupportedSpace,
+  UnsupportedWidth, Misaligned, UnknownOffset}` до изменения состояния (на шине —
+  `BusAccessError::Device`, в tracked paged-пути — `MmioBackend`). RO и
+  зарезервированные offsets игнорируют запись; `MODE_COMMIT` читается как `0`;
+  `FRAME_GENERATION` — RO + doorbell. Ошибки, исправимые гостем
+  (`SIZE_NOT_SET`, `UNSUPPORTED_SIZE`, `UNSUPPORTED_FORMAT`, `INVALID_COMMAND`,
+  `NO_ACTIVE_MODE`, `COUNTER_EXHAUSTED`), видны только в `STATUS`; порядок
+  проверок `MODE_COMMIT` — раздел 5 контракта устройства, лимиты сравниваются до
+  умножения.
+- **Согласование при сборке.** `BusDevice::framebuffer_binding()` (по умолчанию
+  `None`) возвращает `FB_BASE`/`FB_SIZE` устройства. `MachineBus::new` отвергает
+  `BusBuildError::Display(..)`, если регион `Framebuffer` есть без устройства или
+  наоборот, если начало/длина региона отличаются от регистров, если устройств
+  больше одного, если оно не привязано к MMIO, привязано к нескольким MMIO-регионам или окно
+  не равно `0x1000`.
+- **Host API.** `DisplayDevice::new_with_handle()` возвращает устройство и
+  типизированный `DisplayHandle`, делящий состояние с ним (по образцу
+  `Uart16550Handle`, без downcast из `MachineBus`). Handle даёт
+  `current_mode() -> DisplayMode` (все поля `0` = режима нет),
+  `frame_generation()`, `mode_change_count()`, `has_current_frame()`, `reset()` и
+  `read_frame_into(&MachineBus, &mut [u8]) -> Result<FrameInfo, DisplayReadError>`.
+  Чтение копирует ровно `stride × height` байт с начала региона `Framebuffer`
+  и сверяет счётчик смены режима до и после копирования (`ModeChanged`); отказы:
+  `NoActiveMode`, `NoFrame`, `BufferLength`, `Memory`. Оно ничего не меняет:
+  doorbell не звонит, регистры и `generation` не трогает.
+- **Правило вызова.** Весь host API handle вызывается только между квантами
+  исполнения гостя, владельцем `MachineBus` и тем же потоком, который исполняет
+  квант; `read_frame_into` принимает именно ту шину, которой принадлежит
+  устройство. Handle не потокобезопасен как протокол: `Mutex` внутри защищает
+  состояние от поломки, но не упорядочивает чтение кадра относительно записей гостя.
+  Готовность кадра host определяет только по `frame_generation()`; по таймеру
+  память не сканируется.
+- **Reset.** `DisplayHandle::reset()` — host-операция: режим и регистры
+  возвращаются к значениям после reset, `mode_change_count` растёт на 1, если
+  режим был активен; `generation` и память framebuffer сохраняются.
+- **Не реализовано.** Курсор, несколько экранов, PCI/BAR, прерывания, список
+  режимов, dirty rects, snapshot/restore, другие форматы. Dword MMIO-запись в
+  tracked paged CPU-пути остаётся блокером гостевого probe S10-08
+  (DISPLAY_DEVICE.md, 13.1): `PagedMovMemoryAdapter` пишет только qword, а
+  qword-запись в регистр — backend-ошибка `UnsupportedWidth`.
+- **Проверено.** Unit-тесты в `display_device.rs`, `physical_memory.rs`,
+  `page_walk.rs` и интеграционные `tests/display_device.rs`: значения после reset,
+  успешный commit, каждый отказ, чтение кадра после гостевых записей без
+  callback, обнаружение смены режима между чтениями и во время копирования,
+  запись в RO-регистр, ширины и offsets, fetch и page tables в framebuffer,
+  согласование карты и устройства. На `feat/s9-stage` нет page generations и
+  `tracked_code_snapshot` (они есть на `main`): пункты 7.4 (а)–(д) контракта
+  устройства про них не сверены и не реализованы здесь.
 
 ## Stage 4 flat probe image and direct handoff (S4-32a)
 

@@ -353,7 +353,7 @@ pub fn probe_long64_4k(
     for level in levels {
         let index = ((address.0 >> level.index_shift()) & 0x1ff) as u16;
         let entry_address = GuestPhysicalAddress::new(table_base + u64::from(index) * 8);
-        let entry_value = match memory.read_u64(entry_address) {
+        let entry_value = match read_table_entry(memory, entry_address) {
             Ok(value) => value,
             Err(source) => {
                 return ProbeReport {
@@ -684,7 +684,7 @@ fn walk_long64_4k(
     for level in levels {
         let index = ((address.0 >> level.index_shift()) & 0x1ff) as u16;
         let entry_address = GuestPhysicalAddress::new(table_base + u64::from(index) * 8);
-        let entry_value = match memory.read_u64(entry_address) {
+        let entry_value = match read_table_entry(memory, entry_address) {
             Ok(value) => value,
             Err(source) => {
                 return fail(
@@ -930,6 +930,11 @@ fn access_long64_4k_internal(
     let is_mmio = match memory.locate_region_kind(physical, u64::from(width)) {
         Ok(MemoryRegionKind::Ram) => false,
         Ok(MemoryRegionKind::Mmio) => true,
+        // Data accesses behave like RAM (the region itself suppresses the
+        // committed-write callback); instruction fetch is a backend error.
+        Ok(MemoryRegionKind::Framebuffer) if request.operation != RamAccessOperation::Fetch => {
+            false
+        }
         Ok(kind) => {
             return fail(
                 TrackedAccessError::OperandPhysical {
@@ -1170,20 +1175,21 @@ pub(crate) fn read_long64_4k_bounded_ram_read(
         None
     };
     let second_len = width - first_len;
-    let check_ram = |physical, len| match memory.locate_region_kind(physical, u64::from(len)) {
-        Ok(MemoryRegionKind::Ram) => Ok(()),
-        Ok(kind) => Err(TrackedAccessError::OperandPhysical {
-            address: physical,
-            source: MemoryAccessError::UnreadableRegion(kind),
-        }),
-        Err(source) => Err(TrackedAccessError::OperandPhysical {
-            address: physical,
-            source,
-        }),
-    };
-    check_ram(first.physical, first_len)?;
+    let check_data_backed =
+        |physical, len| match memory.locate_region_kind(physical, u64::from(len)) {
+            Ok(MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer) => Ok(()),
+            Ok(kind) => Err(TrackedAccessError::OperandPhysical {
+                address: physical,
+                source: MemoryAccessError::UnreadableRegion(kind),
+            }),
+            Err(source) => Err(TrackedAccessError::OperandPhysical {
+                address: physical,
+                source,
+            }),
+        };
+    check_data_backed(first.physical, first_len)?;
     if let Some(second) = second {
-        check_ram(second.physical, second_len)?;
+        check_data_backed(second.physical, second_len)?;
     }
 
     let mut bytes = [0; 8];
@@ -1270,6 +1276,83 @@ mod tracked_access_tests {
             .read_bytes(GuestPhysicalAddress::new(start), &mut bytes)
             .unwrap();
         bytes
+    }
+
+    #[test]
+    fn bounded_cross_page_read_accepts_framebuffer_data_and_table_in_framebuffer_is_refused() {
+        let fb_start = 0x10_000u64;
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(
+                    GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x6000).unwrap(),
+                    MemoryRegionKind::Ram,
+                ),
+                MemoryRegionSpec::new(
+                    GuestPhysicalRange::new(GuestPhysicalAddress::new(fb_start), 0x4000).unwrap(),
+                    MemoryRegionKind::Framebuffer,
+                ),
+            ],
+        )
+        .unwrap();
+        let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x6000)).unwrap();
+        for (address, value) in [
+            (0x1008, 0x2007),
+            (0x2010, 0x3007),
+            (0x3018, 0x4007),
+            (0x4020, fb_start | 7),
+            (0x4028, (fb_start + 0x1000) | 7),
+        ] {
+            memory
+                .write_u64(GuestPhysicalAddress::new(address), value, |_| {})
+                .unwrap();
+        }
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(fb_start + 0xffe),
+                &[1, 2, 3, 4],
+                |_| panic!("framebuffer writes never notify"),
+            )
+            .unwrap();
+        let paging =
+            Long64ProbeConfig::new(0x8000_0033, 0x1000, CR4_PAE, EFER_LME | EFER_LMA | EFER_NXE)
+                .unwrap();
+        let mut request = request(RamAccessOperation::Read {
+            width: AccessWidth::Dword,
+        });
+        request.address = GuestLinearAddress::new(0x0000_0080_8060_4ffe);
+        let value = read_long64_4k_bounded_ram_read(&mut memory, &paging, request, |_| {});
+        assert_eq!(value, Ok(0x0403_0201));
+
+        // The same walk with the root table inside the framebuffer region.
+        let tables_in_fb = Long64ProbeConfig::new(
+            0x8000_0033,
+            fb_start,
+            CR4_PAE,
+            EFER_LME | EFER_LMA | EFER_NXE,
+        )
+        .unwrap();
+        assert!(matches!(
+            read_long64_4k_bounded_ram_read(&mut memory, &tables_in_fb, request, |_| {}),
+            Err(TrackedAccessError::TableRead {
+                source: MemoryAccessError::UnreadableRegion(MemoryRegionKind::Framebuffer),
+                ..
+            })
+        ));
+        let probe = probe_long64_4k(
+            &memory,
+            &tables_in_fb,
+            GuestLinearAddress::new(LINEAR),
+            AccessKind::Read,
+            request.context,
+        );
+        assert!(matches!(
+            probe.outcome,
+            Err(ProbeError::Access(ProbeAccessError::TableRead {
+                source: MemoryAccessError::UnreadableRegion(MemoryRegionKind::Framebuffer),
+                ..
+            }))
+        ));
     }
 
     #[test]
@@ -2896,6 +2979,21 @@ pub fn probe_instruction_access(
         outcome,
         trace: report.trace,
     }
+}
+
+/// Page-table structures may live only in RAM. A `Framebuffer` region has
+/// readable backing but is rejected here, so the walkers neither read an entry
+/// from it nor write A/D bits into it.
+fn read_table_entry(
+    memory: &PhysicalMemory,
+    entry_address: GuestPhysicalAddress,
+) -> Result<u64, MemoryAccessError> {
+    if memory.locate_region_kind(entry_address, 8)? == MemoryRegionKind::Framebuffer {
+        return Err(MemoryAccessError::UnreadableRegion(
+            MemoryRegionKind::Framebuffer,
+        ));
+    }
+    memory.read_u64(entry_address)
 }
 
 fn is_canonical_48(address: u64) -> bool {

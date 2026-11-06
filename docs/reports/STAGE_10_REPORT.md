@@ -13,6 +13,7 @@
 | Принято | 0 | — |
 | Ревью пройдено, задача выполнена по своему критерию | 2 | S10-00, S10-01 |
 | Ревью пройдено (контракт, без кода) | 1 | S10-02 |
+| Ревью пройдено (код od-machine) | 1 | S10-03 |
 | `not_started` | 31 | остальные задачи, см. таблицу ниже |
 
 Чекбоксы `[ ]` в плане не отмечены: по `STAGE_10.md` §0 отмечаются только после ревью.
@@ -24,7 +25,7 @@
 | S10-00 | ревью пройдено | 6fcce92 | субагент Opus, замечания учтены | Отчёт, плата, карта проекта |
 | S10-01 | ревью пройдено | (см. коммит ниже) | субагент Opus, замечания учтены | Методика и эталоны |
 | S10-02 | ревью пройдено (контракт, без кода) | (см. коммит ниже) | ревью 1: major 1, minor 8; ревью 2: blocker и major нет, minor учтены | Контракт дисплейного устройства |
-| S10-03 | not_started | — | — | Модель устройства в `od-machine` |
+| S10-03 | ревью пройдено (код в od-machine, тесты OK) | (см. коммит ниже) | ревью 1: blocker/major нет, minor 4 — исправлены, повторного ревью не было | Модель устройства в `od-machine` |
 | S10-04 | not_started | — | — | `od-host` и C ABI |
 | S10-05 | not_started | — | — | Транспорт кадров |
 | S10-06 | not_started | — | — | Публикация кадров из VMHost |
@@ -95,6 +96,14 @@
 - Источник формата: UEFI 2.11, GOP `PixelBlueGreenRedReserved8BitPerColor`. Страница uefi.org вернула 403, номер подраздела не перепроверен.
 - **Блокер для S10-08** (не закрыт): tracked paged-путь CPU делает в MMIO только qword-записи, а контракт требует dword. Без dword MMIO-профиля probe не написать.
 - Открытые вопросы (§13 контракта): подтвердить адреса после карты S4-00/S4-30; reset не сбрасывает `generation`; состав snapshot.
+
+### S10-03. Модель устройства в `od-machine` — ревью пройдено
+
+- Файлы: `crates/od-machine/src/display_device.rs` (новый: регистры, MODE_COMMIT, doorbell, счётчики, host handle `DisplayHandle`, `read_frame_into`); `crates/od-machine/tests/display_device.rs` (новый, 5 интеграционных тестов); `physical_memory.rs` (`MemoryRegionKind::Framebuffer`, backing вне `RamLimits`, без callback и page generations); `bus.rs` (согласование FB_BASE/FB_SIZE и окна регистров при сборке `MachineBus`, `DisplayBindingError`); `page_walk.rs`, `identity_memory_adapter.rs` (fetch и table read из Framebuffer — backend-ошибка); `lib.rs`; раздел «Display device (S10-03)» в `docs/specs/MACHINE_CONTRACT.md`.
+- Проверки: `cargo test -p od-machine --offline` — все наборы OK (lib 99 тестов); `cargo check --workspace --all-targets --offline` — OK; `git diff --check` — чисто. `cargo fmt --all -- --check` падает только на `tools/power-loss/src/main.rs`, не тронутом в этой задаче.
+- Ревью: независимый субагент (Opus, medium): blocker и major нет; minor исправлены (текст о типе ошибки fetch, проверка всех MMIO-привязок дисплея, checked-сравнение смещения, тесты приоритета ошибок размера над форматом). Повторного ревью после minor-правок не проводилось; их покрывают тесты.
+- Отклонения и открытые вопросы: `current_mode()` возвращает структуру с нулевыми полями как «режима нет» (а не `Option`); `read_frame_into` принимает `&MachineBus`, `ModeChanged` в штатном вызове недостижим и проверяется через внутренний хук; handle не привязан к шине кодом (только документом); блокер S10-08 (dword MMIO в tracked paged-пути) не тронут.
+- Не сверено с `main`: пункты §7.4 (а)–(д) контракта (page generations, `tracked_code_snapshot`, JIT-путь od-host). На этой ветке эквивалентных механизмов нет; тестов «code-API отвергает Framebuffer» нет.
 
 ## 4. Открытые ограничения
 

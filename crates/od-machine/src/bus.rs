@@ -116,6 +116,47 @@ pub trait BusDevice {
     /// effect is committed. Implementations validate the complete operation
     /// before applying its synchronous effect.
     fn write(&mut self, access: DeviceAccess, value: u64) -> Result<(), DeviceError>;
+
+    /// A display device reports the framebuffer window its registers
+    /// advertise. `MachineBus::new` checks it against the memory map; every
+    /// other device keeps the default `None`.
+    fn framebuffer_binding(&self) -> Option<FramebufferBinding> {
+        None
+    }
+}
+
+/// Framebuffer GPA window advertised by a display device (`FB_BASE`/`FB_SIZE`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FramebufferBinding {
+    pub base: GuestPhysicalAddress,
+    pub size: u64,
+}
+
+/// Length of the register window an MMIO-bound display device requires.
+pub(crate) const DISPLAY_REGISTER_WINDOW_BYTES: u64 = 0x1000;
+
+/// Why a display device and the `Framebuffer` region of the map disagree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DisplayBindingError {
+    /// The map has a `Framebuffer` region but no device advertises one.
+    MissingDevice,
+    /// A display device exists but the map has no `Framebuffer` region.
+    MissingFramebufferRegion,
+    /// Version 1 has exactly one screen.
+    MultipleDevices,
+    /// The region start or length differs from the device's `FB_BASE`/`FB_SIZE`.
+    FramebufferMismatch {
+        region_start: GuestPhysicalAddress,
+        region_len: u64,
+        device_base: GuestPhysicalAddress,
+        device_size: u64,
+    },
+    /// The display device has no MMIO binding.
+    RegisterWindowUnbound,
+    /// The display device is bound to more than one MMIO region.
+    MultipleRegisterWindows,
+    /// The MMIO region bound to the display device is not 0x1000 bytes long.
+    RegisterWindowLength { actual: u64 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,6 +179,7 @@ pub enum BusBuildError {
     InvalidMmioBinding(GuestPhysicalAddress),
     MissingMmioBinding(GuestPhysicalAddress),
     DuplicateMmioBinding(GuestPhysicalAddress),
+    Display(DisplayBindingError),
     Memory(MemoryAccessError),
 }
 
@@ -301,6 +343,83 @@ impl MachineBus {
             .map_err(map_memory_error)
     }
 
+    /// Cross-checks the display device's advertised `FB_BASE`/`FB_SIZE` and
+    /// register window against the map (see `DISPLAY_DEVICE.md`, 7.3).
+    fn check_display_binding(
+        map: &MachineMemoryMap,
+        devices: &[Box<dyn BusDevice>],
+        mmio: &[MmioBinding],
+    ) -> Result<(), BusBuildError> {
+        let mut displays = devices
+            .iter()
+            .enumerate()
+            .filter_map(|(index, device)| device.framebuffer_binding().map(|b| (index, b)));
+        let display = displays.next();
+        if displays.next().is_some() {
+            return Err(BusBuildError::Display(DisplayBindingError::MultipleDevices));
+        }
+        let framebuffer = map
+            .regions()
+            .iter()
+            .find(|region| region.kind == MemoryRegionKind::Framebuffer);
+        let (device_index, binding, region) = match (display, framebuffer) {
+            (None, None) => return Ok(()),
+            (None, Some(_)) => {
+                return Err(BusBuildError::Display(DisplayBindingError::MissingDevice));
+            }
+            (Some(_), None) => {
+                return Err(BusBuildError::Display(
+                    DisplayBindingError::MissingFramebufferRegion,
+                ));
+            }
+            (Some((index, binding)), Some(region)) => (index, binding, region),
+        };
+        if region.range.start() != binding.base || region.range.len() != binding.size {
+            return Err(BusBuildError::Display(
+                DisplayBindingError::FramebufferMismatch {
+                    region_start: region.range.start(),
+                    region_len: region.range.len(),
+                    device_base: binding.base,
+                    device_size: binding.size,
+                },
+            ));
+        }
+        let mut windows = mmio
+            .iter()
+            .filter(|binding| binding.device_index == device_index);
+        let window = windows.next().ok_or(BusBuildError::Display(
+            DisplayBindingError::RegisterWindowUnbound,
+        ))?;
+        if windows.next().is_some() {
+            return Err(BusBuildError::Display(
+                DisplayBindingError::MultipleRegisterWindows,
+            ));
+        }
+        // Every MMIO binding was already validated to name an `Mmio` region.
+        let window_len = map
+            .regions()
+            .iter()
+            .find(|region| region.range.start() == window.region_start)
+            .map(|region| region.range.len())
+            .unwrap_or(0);
+        if window_len != DISPLAY_REGISTER_WINDOW_BYTES {
+            return Err(BusBuildError::Display(
+                DisplayBindingError::RegisterWindowLength { actual: window_len },
+            ));
+        }
+        Ok(())
+    }
+
+    /// Copies frame bytes out of the `Framebuffer` region at `base`. Used only
+    /// by the display handle between guest quanta.
+    pub(crate) fn read_framebuffer_bytes(
+        &self,
+        base: GuestPhysicalAddress,
+        output: &mut [u8],
+    ) -> Result<(), MemoryAccessError> {
+        self.memory.read_framebuffer_bytes(base, output)
+    }
+
     pub fn new(
         map: MachineMemoryMap,
         ram_limits: RamLimits,
@@ -344,6 +463,7 @@ impl MachineBus {
                 return Err(BusBuildError::MissingMmioBinding(region.range.start()));
             }
         }
+        Self::check_display_binding(&map, &devices, &mmio)?;
         ports.sort_by_key(|binding| binding.range.start);
         for pair in ports.windows(2) {
             if pair[0].range.end() > u32::from(pair[1].range.start.0) {
@@ -406,9 +526,15 @@ impl MachineBus {
                         source,
                     })
             }
-            _ => Err(BusAccessError::Memory(MemoryAccessError::UnreadableRegion(
-                self.memory.locate_region_kind(address, len).unwrap(),
-            ))),
+            // Pixel memory is read as data like RAM.
+            MemoryRegionKind::Framebuffer => {
+                read_ram(&self.memory, address, width).map_err(BusAccessError::Memory)
+            }
+            MemoryRegionKind::Rom | MemoryRegionKind::Reserved => {
+                Err(BusAccessError::Memory(MemoryAccessError::UnreadableRegion(
+                    self.memory.locate_region_kind(address, len).unwrap(),
+                )))
+            }
         }
     }
 
@@ -458,6 +584,12 @@ impl MachineBus {
                         source,
                     })
             }
+            // Pixel writes never reach the committed-write callback: nothing
+            // depends on framebuffer bytes (no fetch, no page tables).
+            MemoryRegionKind::Framebuffer => {
+                write_ram(&mut self.memory, address, width, value, |_| {})
+                    .map_err(BusAccessError::Memory)
+            }
             MemoryRegionKind::Rom | MemoryRegionKind::Reserved => {
                 Err(BusAccessError::Memory(MemoryAccessError::ReadOnlyRegion(
                     self.memory.locate_region_kind(address, len).unwrap(),
@@ -494,7 +626,7 @@ impl MachineBus {
             .locate_region_kind(address, len)
             .map_err(map_memory_error)?;
         match kind {
-            MemoryRegionKind::Ram => self
+            MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer => self
                 .memory
                 .read_bytes(address, output)
                 .map_err(BusAccessError::Memory),
@@ -504,9 +636,9 @@ impl MachineBus {
                 output.copy_from_slice(&value.to_le_bytes()[..output.len()]);
                 Ok(())
             }
-            kind => Err(BusAccessError::Memory(MemoryAccessError::UnreadableRegion(
-                kind,
-            ))),
+            kind @ (MemoryRegionKind::Rom | MemoryRegionKind::Reserved) => Err(
+                BusAccessError::Memory(MemoryAccessError::UnreadableRegion(kind)),
+            ),
         }
     }
 
@@ -526,15 +658,20 @@ impl MachineBus {
                 .memory
                 .write_bytes(address, input, committed_write)
                 .map_err(BusAccessError::Memory),
+            // `PhysicalMemory::write_bytes` skips the callback for Framebuffer.
+            MemoryRegionKind::Framebuffer => self
+                .memory
+                .write_bytes(address, input, committed_write)
+                .map_err(BusAccessError::Memory),
             MemoryRegionKind::Mmio => {
                 let width = access_width(input.len()).ok_or(BusAccessError::UnsupportedWidth)?;
                 let mut bytes = [0; 8];
                 bytes[..input.len()].copy_from_slice(input);
                 self.write_physical(address, width, u64::from_le_bytes(bytes), committed_write)
             }
-            kind => Err(BusAccessError::Memory(MemoryAccessError::ReadOnlyRegion(
-                kind,
-            ))),
+            kind @ (MemoryRegionKind::Rom | MemoryRegionKind::Reserved) => Err(
+                BusAccessError::Memory(MemoryAccessError::ReadOnlyRegion(kind)),
+            ),
         }
     }
 }

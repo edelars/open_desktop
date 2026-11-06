@@ -2,6 +2,7 @@
 
 mod bus;
 mod diagnostic_vcpu;
+mod display_device;
 mod event_queue;
 mod identity_memory_adapter;
 mod page_walk;
@@ -21,8 +22,15 @@ mod uart_rx_events;
 mod virtual_clock;
 
 pub use bus::{
-    AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError, IoSpace,
-    MachineBus, MmioBinding, PortAddress, PortRange, PortRegionBinding,
+    AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError,
+    DisplayBindingError, FramebufferBinding, IoSpace, MachineBus, MmioBinding, PortAddress,
+    PortRange, PortRegionBinding,
+};
+
+pub use display_device::{
+    DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES,
+    DISPLAY_MAX_HEIGHT, DISPLAY_MAX_WIDTH, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES,
+    DisplayDevice, DisplayHandle, DisplayMode, DisplayReadError, FrameInfo,
 };
 
 pub use diagnostic_vcpu::{

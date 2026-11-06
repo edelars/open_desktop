@@ -59,7 +59,15 @@ pub enum MemoryRegionKind {
     Rom,
     Reserved,
     Mmio,
+    /// Device-owned pixel memory. It has its own backing outside [`RamLimits`],
+    /// readable and writable as data without committed-write notification.
+    /// Instruction fetch and page-table structures are rejected by consumers.
+    Framebuffer,
 }
+
+/// Upper bound for the length of a `Framebuffer` region (36 MiB).
+pub(crate) const MAX_FRAMEBUFFER_BYTES: u64 = 0x0240_0000;
+const FRAMEBUFFER_ALIGNMENT: u64 = 0x1000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MemoryRegionSpec {
@@ -126,6 +134,20 @@ impl MachineMemoryMap {
                 });
             }
         }
+        let mut framebuffers = regions
+            .iter()
+            .filter(|region| region.kind == MemoryRegionKind::Framebuffer);
+        if let Some(first) = framebuffers.next() {
+            if framebuffers.next().is_some() {
+                return Err(MemoryAccessError::MultipleFramebufferRegions);
+            }
+            if first.range.start.0 % FRAMEBUFFER_ALIGNMENT != 0
+                || first.range.len % FRAMEBUFFER_ALIGNMENT != 0
+                || first.range.len > MAX_FRAMEBUFFER_BYTES
+            {
+                return Err(MemoryAccessError::InvalidFramebufferRegion(first.range));
+            }
+        }
         Ok(Self {
             physical_address_width,
             regions,
@@ -171,6 +193,11 @@ pub enum MemoryAccessError {
         first: GuestPhysicalRange,
         second: GuestPhysicalRange,
     },
+    /// A map may contain at most one `Framebuffer` region.
+    MultipleFramebufferRegions,
+    /// A `Framebuffer` region must start and end on 4 KiB boundaries and be
+    /// at most 36 MiB long.
+    InvalidFramebufferRegion(GuestPhysicalRange),
     AllocationFailed {
         bytes: u64,
     },
@@ -232,7 +259,12 @@ impl PhysicalMemory {
             }
         })?;
         for &spec in &map.regions {
-            let backing = if spec.kind == MemoryRegionKind::Ram {
+            // Framebuffer backing is allocated like RAM but is not counted in
+            // `requested_ram`; its size is bounded by the map validation.
+            let backing = if matches!(
+                spec.kind,
+                MemoryRegionKind::Ram | MemoryRegionKind::Framebuffer
+            ) {
                 let len = usize::try_from(spec.range.len).map_err(|_| {
                     MemoryAccessError::AllocationFailed {
                         bytes: spec.range.len,
@@ -269,8 +301,9 @@ impl PhysicalMemory {
         Ok(())
     }
 
-    /// All scalar and loader writes go through this method. The callback runs
-    /// exactly once, after the complete RAM write has committed.
+    /// All scalar and loader writes go through this method. For RAM the
+    /// callback runs exactly once, after the complete write has committed.
+    /// Writes to a `Framebuffer` region commit without invoking the callback.
     pub fn write_bytes(
         &mut self,
         address: GuestPhysicalAddress,
@@ -285,12 +318,29 @@ impl PhysicalMemory {
             .as_mut()
             .ok_or(MemoryAccessError::ReadOnlyRegion(region.spec.kind))?;
         backing[offset..offset + input.len()].copy_from_slice(input);
-        let committed = GuestPhysicalRange {
-            start: address,
-            len,
-        };
-        committed_write(committed);
+        if region.spec.kind == MemoryRegionKind::Ram {
+            let committed = GuestPhysicalRange {
+                start: address,
+                len,
+            };
+            committed_write(committed);
+        }
         Ok(())
+    }
+
+    /// Copies bytes out of the `Framebuffer` region containing `address` for
+    /// host-side frame readers. Any other region kind is rejected.
+    pub(crate) fn read_framebuffer_bytes(
+        &self,
+        address: GuestPhysicalAddress,
+        output: &mut [u8],
+    ) -> Result<(), MemoryAccessError> {
+        let len = checked_access_len(output.len())?;
+        let (region, _) = self.locate(address, len)?;
+        if region.spec.kind != MemoryRegionKind::Framebuffer {
+            return Err(MemoryAccessError::UnreadableRegion(region.spec.kind));
+        }
+        self.read_bytes(address, output)
     }
 
     pub fn read_u8(&self, address: GuestPhysicalAddress) -> Result<u8, MemoryAccessError> {
@@ -585,6 +635,64 @@ mod tests {
             .unwrap();
         assert_eq!(first, [0; 2]);
         assert_eq!(second, [0; 2]);
+    }
+
+    #[test]
+    fn framebuffer_backing_is_outside_ram_limits_and_writes_never_notify() {
+        const FB_START: u64 = 0x10_0000;
+        let map = MachineMemoryMap::new(
+            36,
+            vec![
+                MemoryRegionSpec::new(range(0x1000, 0x1000), MemoryRegionKind::Ram),
+                MemoryRegionSpec::new(range(FB_START, 0x4000), MemoryRegionKind::Framebuffer),
+            ],
+        )
+        .unwrap();
+        // The RAM budget covers the RAM region only (0x1000), not the 0x4000 bytes of pixels.
+        let mut memory = PhysicalMemory::new(&map, RamLimits::new(0x1000)).unwrap();
+        let mut commits = Vec::new();
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(FB_START + 0x3ffc),
+                &[1, 2, 3, 4],
+                |r| commits.push(r),
+            )
+            .unwrap();
+        assert!(commits.is_empty());
+        assert_eq!(
+            memory.read_u32(GuestPhysicalAddress::new(FB_START + 0x3ffc)),
+            Ok(0x0403_0201)
+        );
+        // Zero-filled at power-on.
+        assert_eq!(memory.read_u64(GuestPhysicalAddress::new(FB_START)), Ok(0));
+        // RAM in the same memory still notifies exactly once.
+        memory
+            .write_u8(GuestPhysicalAddress::new(0x1000), 7, |r| commits.push(r))
+            .unwrap();
+        assert_eq!(commits, vec![range(0x1000, 1)]);
+        // Crossing the end of the region is rejected without a partial write.
+        assert!(matches!(
+            memory.write_bytes(
+                GuestPhysicalAddress::new(FB_START + 0x3ffe),
+                &[9; 4],
+                |_| {}
+            ),
+            Err(MemoryAccessError::AccessCrossesRegion(_))
+        ));
+        assert_eq!(
+            memory.read_u16(GuestPhysicalAddress::new(FB_START + 0x3ffe)),
+            Ok(0x0403)
+        );
+        // Frame copy-out is available only for Framebuffer regions.
+        let mut out = [0u8; 4];
+        memory
+            .read_framebuffer_bytes(GuestPhysicalAddress::new(FB_START + 0x3ffc), &mut out)
+            .unwrap();
+        assert_eq!(out, [1, 2, 3, 4]);
+        assert_eq!(
+            memory.read_framebuffer_bytes(GuestPhysicalAddress::new(0x1000), &mut out),
+            Err(MemoryAccessError::UnreadableRegion(MemoryRegionKind::Ram))
+        );
     }
 
     #[test]
