@@ -4481,3 +4481,56 @@ their existing classifications. CPU #UD behavior is covered by the existing
 and `od-isa::execute::paged_cr3_probe_tests::paged_cr3_profile_keeps_lock_mov_cr0_as_ud`;
 this JIT slice does not alter CPU semantics. See
 [S4-01b evidence](../reports/STAGE_4_S4-01B_2026-11-06.md).
+
+### S4-16a: production tracked loader patch for two inactive code aliases
+
+`od-host::PagedCodeSession` borrows one `MachineBus` exclusively and fixes one
+Long64 paging snapshot for its lifetime. It accepts at most two linear aliases
+of one physical RAM page and one exact `NativeRegisterV1` code range contained
+in that guest 4 KiB page. It owns two one-entry caches and a two-slot published
+arena. The cache uses the existing backing-content invalidation contract; no
+new general cache policy is introduced. Backing and mapping IDs are local to
+the bus-bound session, and the backing version is the `PhysicalMemory` version
+of the physical guest page.
+
+Before lookup, each alias gets a fresh owned code snapshot from
+`MachineBus::tracked_code_snapshot`. Its first byte is fetched through the
+tracked Long64 walker with `AccessOrigin::Explicit`, which checks execute
+permissions at the supplied CPL and commits actual A updates; descriptor-table
+origin is rejected because it would apply supervisor page permissions. The
+snapshot preserves the range's page offset. Both aliases must map the same
+physical byte range, and a loader patch must lie in
+`[range_offset, range_offset + code_length)`. The session rejects another
+physical page, third alias, changed source length/offset, or non-register-only
+admission. It binds backing, range and alias only after admission succeeds.
+The selected cache entry is invalidated against the fresh backing version
+before dispatch. The loader patch API writes one byte through a selected
+writable guest alias after a tracked mapping preflight; a committed write
+advances that physical page's version and invalidates both alias caches.
+
+A failed operand write does not commit the requested patch byte. Either
+tracked walk may commit Accessed effects; only the write walk may commit Dirty
+effects before a later failure. If page-table storage physically overlaps the
+code backing, those effects can change code bytes and their page generation even
+when the patch is rejected. That overlap is outside this slice's fail-with-unchanged-code
+guarantee. Every later lookup captures fresh bytes and generation and
+invalidates the selected alias entry before dispatch, preventing execution of
+an obsolete cached block. An idle alias entry may remain resident until that
+alias is looked up again.
+
+The existing synchronous NativeRegisterV1 dispatcher is fixture-profiled and
+rejects a populated CR3. This bounded host adapter runs it against a local copy
+of `LongModeState` with CR3 cleared only for the admitted register-only call,
+then restores the original CR3 into the returned state. Thus an unwind leaves
+the caller's state untouched. Published block allocation and PC map remain
+owned by the selected cache through native execution and result decoding.
+
+The macOS ARM64 host test warms both aliases, rejects a read-only patch without
+dropping either entry, changes one immediate byte through alias A, verifies
+both entries are removed, then executes through B and A and observes the new
+RAX value. This is one-vCPU loader-patch coverage only. Guest JIT stores,
+general writer notifications, remap/TLB changes, cross-page code, MMIO/DMA,
+SMP and active-block mutation remain outside this slice; parent S4-16 stays
+open. Per-page generation adds 8 bytes per RAM guest page and updates touched
+pages on committed writes. It is provisional: no performance measurements or
+speed claim are available. See the [S4-16a report](../reports/STAGE_4_S4-16A_2026-11-06.md).

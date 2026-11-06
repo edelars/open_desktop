@@ -3548,6 +3548,235 @@ impl od_jit::dispatch::CachedBlockBackend for PublishedArenaBackend {
     }
 }
 
+/// One-vCPU loader-patch session for a single executable RAM page and its
+/// virtual aliases. The mutable bus borrow serializes patch and dispatch; no
+/// code handle or RAM pointer escapes the session.
+pub struct PagedCodeSession<'a> {
+    bus: &'a mut od_machine::MachineBus,
+    paging: od_machine::Long64ProbeConfig,
+    access_context: od_isa::memory::AccessContext,
+    backing_page: Option<od_machine::GuestPhysicalAddress>,
+    code_page_offset: Option<usize>,
+    code_length: Option<usize>,
+    aliases: [Option<u64>; 2],
+    caches: [od_jit::dispatch::SingleEntryBlockCache<PublishedArenaBlock>; 2],
+    backend: PublishedArenaBackend,
+}
+
+#[derive(Debug)]
+pub enum PagedCodeSessionError {
+    Backend(PublishedArenaError),
+    Cache(od_jit::dispatch::CacheConfigError),
+    Snapshot(od_machine::TrackedCodeSnapshotError),
+    Admission(od_jit::block::S0_09NopAdmissionError),
+    UnsupportedAlias,
+    UnsupportedIdentity,
+    Dispatch(od_jit::dispatch::DispatchError<PublishedArenaError>),
+    Patch(od_machine::MemoryAccessError),
+    TrackedPatch(od_machine::TrackedCodePatchError),
+}
+
+impl<'a> PagedCodeSession<'a> {
+    pub fn new(
+        bus: &'a mut od_machine::MachineBus,
+        paging: od_machine::Long64ProbeConfig,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<Self, PagedCodeSessionError> {
+        let backend = PublishedArenaBackend::new(2).map_err(PagedCodeSessionError::Backend)?;
+        let cache0 = od_jit::dispatch::SingleEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+        )
+        .map_err(PagedCodeSessionError::Cache)?;
+        let cache1 = od_jit::dispatch::SingleEntryBlockCache::new(
+            1,
+            od_jit::dispatch::MAX_SINGLE_ENTRY_CACHE_BYTES,
+        )
+        .map_err(PagedCodeSessionError::Cache)?;
+        Ok(Self {
+            bus,
+            paging,
+            access_context,
+            backing_page: None,
+            code_page_offset: None,
+            code_length: None,
+            aliases: [None, None],
+            caches: [cache0, cache1],
+            backend,
+        })
+    }
+
+    pub fn resident_entries(&self) -> usize {
+        self.caches
+            .iter()
+            .map(|cache| cache.resident_entries())
+            .sum()
+    }
+
+    pub fn execute_alias(
+        &mut self,
+        linear_start: u64,
+        code_length: usize,
+        state: &mut od_isa::LongModeState,
+        budget: u64,
+    ) -> Result<od_jit::dispatch::FallbackDispatchResult, PagedCodeSessionError> {
+        if state.rip != linear_start {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        }
+        if state.cr3 != Some(self.paging.cr3()) {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        }
+        let snapshot = self
+            .bus
+            .tracked_code_snapshot(&self.paging, linear_start, code_length, self.access_context)
+            .map_err(PagedCodeSessionError::Snapshot)?;
+        let code_page_offset = (linear_start & 0xfff) as usize;
+        if self
+            .backing_page
+            .is_some_and(|physical| physical != snapshot.physical_base)
+            || self
+                .code_page_offset
+                .is_some_and(|offset| offset != code_page_offset)
+            || self.code_length.is_some_and(|length| length != code_length)
+        {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        }
+        let alias_base = linear_start & !0xfff;
+        let cache_index = if let Some(index) = self
+            .aliases
+            .iter()
+            .position(|alias| *alias == Some(alias_base))
+        {
+            index
+        } else if let Some(index) = self.aliases.iter().position(|alias| alias.is_none()) {
+            index
+        } else {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        };
+
+        use std::num::NonZeroU64;
+        let nz =
+            |value: u64| NonZeroU64::new(value).ok_or(PagedCodeSessionError::UnsupportedIdentity);
+        let backing_number = snapshot.physical_base.get() / 0x1000 + 1;
+        let mapping_number = (linear_start & !0xfff) / 0x1000 + 1;
+        let version = od_jit::translation::BackingVersion::new(nz(snapshot.backing_generation)?);
+        let backing = od_jit::translation::BackingId::new(nz(backing_number)?);
+        let mapping = od_jit::translation::MappingId::new(nz(mapping_number)?);
+        let view = od_jit::block::CodeView::new(linear_start, &snapshot.bytes)
+            .map_err(|_| PagedCodeSessionError::UnsupportedAlias)?;
+        let admission = od_jit::block::NativeRegisterV1Admission::from_code(view)
+            .map_err(PagedCodeSessionError::Admission)?;
+        // Bind the session only after the complete code range has passed
+        // NativeRegisterV1 admission. A rejected candidate must not reserve
+        // this session's backing, range, or alias slot.
+        self.backing_page = Some(snapshot.physical_base);
+        self.code_page_offset = Some(code_page_offset);
+        self.code_length = Some(code_length);
+        self.aliases[cache_index] = Some(alias_base);
+        let identity = od_jit::translation::CodeIdentity {
+            address_space: od_jit::translation::AddressSpaceId::new(nz(1)?),
+            mapping,
+            mapping_version: od_jit::translation::MappingVersion::new(nz(1)?),
+            backing,
+            backing_version: version,
+            executable: true,
+        };
+        let dependencies = [od_jit::translation::CodeDependencySpan {
+            start_rip: view.base_rip(),
+            end_rip: view.code_end(),
+            identity,
+        }];
+        self.caches[cache_index].invalidate(
+            od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing,
+                current_version: version,
+            },
+        );
+        let context = od_jit::translation::ExecutionContextSnapshot::native_register_v1_fixture(
+            od_jit::translation::ExecutionContextId::from_u64(1).unwrap(),
+        );
+        let stop = AtomicU8::new(0);
+        let control = od_jit::dispatch::DispatchControl {
+            stop_rip: None,
+            stop_requested: &stop,
+            event_requested: None,
+        };
+
+        // The admitted NativeRegisterV1 profile contains no system or memory
+        // instructions. Hide the fixed paging snapshot from this fixture-only
+        // dispatcher and restore it on every return path.
+        let mut execution_state = state.clone();
+        execution_state.cr3 = None;
+        let result = od_jit::dispatch::run_cached_native_register_v1_controlled(
+            view,
+            &admission,
+            context,
+            &dependencies,
+            &mut execution_state,
+            budget,
+            control,
+            &mut self.caches[cache_index],
+            &mut self.backend,
+        );
+        execution_state.cr3 = state.cr3;
+        *state = execution_state;
+        result.map_err(PagedCodeSessionError::Dispatch)
+    }
+
+    /// Commit one inactive-code loader patch byte through either captured
+    /// guest virtual alias. A failed tracked write does not commit the requested
+    /// patch byte, but either walk may commit Accessed effects and the write walk
+    /// may commit Dirty effects first. If page-table storage overlaps the code
+    /// backing page, those effects can change its bytes and generation even when
+    /// the patch fails.
+    pub fn patch_alias_byte(
+        &mut self,
+        linear_address: u64,
+        value: u8,
+    ) -> Result<(), PagedCodeSessionError> {
+        let base = self
+            .backing_page
+            .ok_or(PagedCodeSessionError::UnsupportedAlias)?;
+        let alias_base = linear_address & !0xfff;
+        let offset = usize::try_from(linear_address & 0xfff).ok();
+        let range_start = self.code_page_offset.unwrap_or(0);
+        let range_end = range_start.saturating_add(self.code_length.unwrap_or(0));
+        if !self.aliases.contains(&Some(alias_base))
+            || offset.is_none_or(|offset| !(range_start..range_end).contains(&offset))
+        {
+            return Err(PagedCodeSessionError::UnsupportedAlias);
+        }
+        let backing = od_jit::translation::BackingId::new(
+            std::num::NonZeroU64::new(base.get() / 0x1000 + 1)
+                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+        );
+        self.bus
+            .patch_tracked_code_byte(
+                &self.paging,
+                linear_address,
+                base,
+                value,
+                self.access_context,
+            )
+            .map_err(PagedCodeSessionError::TrackedPatch)?;
+        let generation = self
+            .bus
+            .code_page_generation(base)
+            .map_err(PagedCodeSessionError::Patch)?;
+        let current_version = od_jit::translation::BackingVersion::new(
+            std::num::NonZeroU64::new(generation)
+                .ok_or(PagedCodeSessionError::UnsupportedIdentity)?,
+        );
+        for cache in &mut self.caches {
+            cache.invalidate(od_jit::dispatch::CodeInvalidation::BackingContentChanged {
+                backing,
+                current_version,
+            });
+        }
+        Ok(())
+    }
+}
+
 impl od_jit::dispatch::MultiBlockCachedBackend for PublishedArenaBackend {
     fn published_block_capacity(&self) -> usize {
         self.cached_block_capacity()
@@ -112891,5 +113120,126 @@ pub(crate) mod tests {
             unsupported_entries_before
         );
         assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn s4_16a_loader_patch_through_one_alias_invalidates_the_other_alias() {
+        use od_machine::{
+            AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
+            MemoryRegionKind, MemoryRegionSpec, RamLimits,
+        };
+
+        const ALIAS_A: u64 = 0x0040_1100;
+        const ALIAS_B: u64 = 0x0060_1100;
+        const CR3: u64 = 0x1000;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), 0x9000).unwrap();
+        let map =
+            MachineMemoryMap::new(36, vec![MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)])
+                .unwrap();
+        let mut bus = MachineBus::new(map, RamLimits::new(0x9000), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3010, 0x4007),
+            (0x3018, 0x4007),
+            (0x4008, 0x7007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let original = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7100), &original)
+            .unwrap();
+        let paging = od_machine::Long64ProbeConfig::new(0x8001_0033, CR3, 1 << 5, EFER).unwrap();
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let mut session =
+            PagedCodeSession::new(&mut bus, paging, AccessContext::default()).unwrap();
+
+        let mut first = od_isa::LongModeState {
+            cr3: Some(CR3),
+            rip: ALIAS_A,
+            ..Default::default()
+        };
+        // A rejected one-byte prefix must not bind the candidate alias or
+        // range; the same session can then admit the full ten-byte block.
+        assert!(matches!(
+            session.execute_alias(ALIAS_A, 1, &mut first, 1),
+            Err(PagedCodeSessionError::Admission(_))
+        ));
+        assert_eq!(session.resident_entries(), 0);
+        let result_a = session
+            .execute_alias(ALIAS_A, original.len(), &mut first, 1)
+            .unwrap();
+        assert_eq!(result_a.retired_native, 1);
+        assert_eq!(first.gpr[0], 0x8877_6655_4433_2211);
+        first.rip = ALIAS_B + 1;
+        assert!(matches!(
+            session.execute_alias(ALIAS_B + 1, original.len(), &mut first, 1),
+            Err(PagedCodeSessionError::UnsupportedAlias)
+        ));
+        first.rip = ALIAS_B;
+        let result_b = session
+            .execute_alias(ALIAS_B, original.len(), &mut first, 1)
+            .unwrap();
+        assert_eq!(result_b.retired_native, 1);
+        assert_eq!(first.gpr[0], 0x8877_6655_4433_2211);
+        assert_eq!(session.resident_entries(), 2);
+        // The requested range begins at page offset 0x100. A patch at offset
+        // 2 must be rejected even though it lies within the same page.
+        assert!(matches!(
+            session.patch_alias_byte((ALIAS_A & !0xfff) + 2, 0xaa),
+            Err(PagedCodeSessionError::UnsupportedAlias)
+        ));
+
+        // A write-protected alias fails before the RAM commit and leaves both
+        // compiled alias entries resident.
+        session
+            .bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x4008),
+                AccessWidth::Qword,
+                0x7005,
+                |_| {},
+            )
+            .unwrap();
+        assert!(matches!(
+            session.patch_alias_byte(ALIAS_A + 2, 0xaa),
+            Err(PagedCodeSessionError::TrackedPatch(_))
+        ));
+        assert_eq!(session.resident_entries(), 2);
+        session
+            .bus
+            .write_physical(
+                GuestPhysicalAddress::new(0x4008),
+                AccessWidth::Qword,
+                0x7007,
+                |_| {},
+            )
+            .unwrap();
+        let unchanged = session
+            .bus
+            .tracked_code_snapshot(&paging, ALIAS_A, original.len(), AccessContext::default())
+            .unwrap()
+            .bytes;
+        assert_eq!(unchanged, original);
+
+        session.patch_alias_byte(ALIAS_A + 2, 0xaa).unwrap();
+        assert_eq!(session.resident_entries(), 0);
+        first.rip = ALIAS_B;
+        session
+            .execute_alias(ALIAS_B, original.len(), &mut first, 1)
+            .unwrap();
+        assert_eq!(first.gpr[0], 0x8877_6655_4433_22aa);
+        first.rip = ALIAS_A;
+        session
+            .execute_alias(ALIAS_A, original.len(), &mut first, 1)
+            .unwrap();
+        assert_eq!(first.gpr[0], 0x8877_6655_4433_22aa);
     }
 }

@@ -543,6 +543,57 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** write alias→execute alias, одна guest page внутри host page, loader patch, cross-page code, fail-before-commit, byte write в active block, повторный lookup после invalidation.
 - **Готово:** старые bytes не исполняются после архитектурно обязательной точки наблюдения; удаление cache entry не освобождает ещё используемую executable allocation преждевременно.
 
+#### S4-16a. Loader patch неактивной register-only code page через два alias
+
+- Реализован bounded срез: один vCPU, фиксированный Long64 paging snapshot,
+  один физический RAM page, два guest linear aliases и exact
+  `NativeRegisterV1` register-only code. Code range целиком помещается в одну
+  guest 4 KiB страницу; patch выполняется между dispatch-вызовами.
+- `PhysicalMemory` хранит непереполняющиеся версии физических RAM страниц.
+  Успешная запись увеличивает только версии затронутых страниц; проверка
+  диапазона, типа RAM и переполнения завершается до commit. Версии выделяют
+  по 8 байт на RAM guest page. Это provisional изменение write path; замеров
+  цены нет и speed claim не делается.
+- `MachineBus` захватывает code range tracked instruction fetch'ем первой
+  byte, проверяет executable translation и RAM-backed physical page, затем
+  копирует только запрошенный диапазон, сохраняя точный offset внутри страницы.
+  Оба alias обязаны отображать один physical page и один и тот же byte range;
+  patch допускается только внутри `[range_offset, range_offset + length)`.
+  Та же page translation покрывает оставшиеся байты страницы; fetch A updates
+  коммитятся walker'ом до snapshot. API принимает только `AccessOrigin::Explicit`;
+  descriptor-table origin отклоняется, чтобы не подменять CPL3 проверки правами CPL0.
+- `PagedCodeSession` держит bus заимствованным эксклюзивно, содержит ровно два
+  alias cache entries и две executable arena slots. Loader меняет один byte
+  через tracked writable alias; после успешного commit версия backing страницы
+  обновляется и обе cache entries удаляются до следующего lookup. Ошибка
+  admission не связывает backing, длину и alias в сессии. Ошибка write не
+  коммитит сам patch byte; оба tracked walk могут отдельно закоммитить
+  Accessed effects, а только write walk может закоммитить Dirty effects до
+  более позднего отказа. Если page-table entry физически перекрывает code backing, эти effects могут
+  изменить и code bytes/generation даже при отказе patch. Перекрытие исключено
+  из гарантии «неизменённый code backing при отказе»; каждый следующий lookup
+  получает свежие bytes/generation и инвалидирует выбранный alias cache до
+  исполнения, поэтому устаревший блок не исполняется повторно.
+- Результат native entry декодируется backend'ом до возврата; published slot и
+  PC map остаются владельческими пока entry исполняется и результат проверяется.
+  CPU state клонируется; только в локальной копии CR3 временно очищается на время
+  fixture-dispatch, затем исходный CR3 восстанавливается до переноса состояния
+  вызывающей стороне.
+- Проверено host сценарием: 10-byte code range начинается с offset `0x100`;
+  patch вне точного диапазона и alias с другим offset отвергаются; отказ
+  admission не резервирует сессию; оба alias исполнили старые bytes, отказ
+  через read-only PTE оставил две cache entries, patch через alias A
+  инвалидировал обе, следующие исполнения через B и A вернули новый immediate.
+  Machine coverage проверяет CPL3 fault на supervisor-only mapping для fetch и
+  patch, а `DescriptorTable` origin отклоняется обеими tracked code API.
+  Graphify обновлён; замечания независимого ревью исправлены и повторно проверены.
+  Финальное независимое ревью завершилось без замечаний; bounded срез принят,
+  родительский S4-16 остаётся открытым.
+- **Ограничения:** это не включает guest JIT stores, arbitrary writer callbacks,
+  remap/TLB invalidation, cross-page code, active-block mutation, MMIO/DMA или
+  SMP. Полный S4-16 остаётся открытым. См. [S4-16a report](../reports/STAGE_4_S4-16A_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-16a-code-alias-patch-2026-11-06.json).
+
 ### S4-17. Собрать локальный memory/fault differential набор
 
 - [ ] Принято после ревью.

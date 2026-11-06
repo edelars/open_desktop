@@ -1,0 +1,87 @@
+{
+  "slice": "S4-16a",
+  "date": "2026-11-06",
+  "scope": "Loader patch of inactive register-only JIT code through one physical RAM page mapped by two guest virtual aliases.",
+  "status": {
+    "implementation": "complete",
+    "independent_review": "passed",
+    "accepted": true,
+    "s4_16_complete": false,
+    "stage_4_complete": false
+  },
+  "profile": {
+    "vcpus": 1,
+    "paging": "fixed Long64 four-level 4 KiB snapshot",
+    "code": "NativeRegisterV1 register-only range contained in one guest 4 KiB page; nonzero page offset supported",
+    "aliases": 2,
+    "patch": "one tracked byte write through an inactive guest virtual alias",
+    "cache": "two capacity-one alias entries; two published arena slots"
+  },
+  "behavior": {
+    "machine_owns_physical_ram": true,
+    "machine_depends_on_host": false,
+    "code_version_is_per_physical_guest_page": true,
+    "only_touched_page_versions_advance": true,
+    "generation_overflow_rejects_before_commit": true,
+    "tracked_fetch_checks_execute_permission": true,
+    "tracked_fetch_accessed_effects_commit": true,
+    "snapshot_is_owned_and_page_bounded": true,
+    "aliases_bind_same_physical_range_offset": true,
+    "patch_is_limited_to_captured_range": true,
+    "descriptor_table_access_origin_rejected": true,
+    "session_binding_waits_for_admission": true,
+    "patch_uses_guest_virtual_alias": true,
+    "successful_patch_invalidates_both_alias_entries_before_lookup": true,
+    "failed_read_only_patch_preserves_code_version_and_cache_when_page_tables_are_disjoint": true,
+    "page_table_code_backing_overlap_excluded_from_no_change_guarantee": true,
+    "fresh_generation_checked_before_each_lookup": true,
+    "cr3_isolated_in_local_cpu_state_copy": true,
+    "published_allocation_and_pc_map_live_through_result_decode": true,
+    "performance_claim": false,
+    "generation_cost_measured": false
+  },
+  "verification": {
+    "host_alias_patch_test": {
+      "command": "cargo test -p od-host --lib --offline s4_16a_loader_patch_through_one_alias_invalidates_the_other_alias",
+      "passed": 1,
+      "failed": 0,
+      "platform": "macOS ARM64"
+    },
+    "machine_full_lib": {
+      "command": "cargo test -p od-machine --lib --offline",
+      "passed": 105,
+      "failed": 0
+    },
+    "host_all_targets_check": {
+      "command": "cargo check -p od-host --all-targets --offline",
+      "exit_code": 0,
+      "warnings": [
+        "od-jit: dead_code for CodeMemory::one_instruction",
+        "od-host test: unused variable scale",
+        "od-host test: unnecessary mut callback_stop",
+        "od-host memory_corpus test: unused import MEMORY_CORPUS_SEQUENCES"
+      ]
+    },
+    "cargo_fmt_all_check": "passed",
+    "json_parse": "passed",
+    "local_markdown_links": "passed for four changed documentation files",
+    "git_diff_check": "passed",
+    "graphify_update": {
+      "status": "passed",
+      "nodes": 26908,
+      "edges": 67381,
+      "communities": 984
+    },
+    "independent_review": "passed_clean",
+    "commit": "feat: invalidate aliased JIT code on RAM patch"
+  },
+  "limits": [
+    "Only one-byte loader patch inside the captured byte range is admitted",
+    "Only two fixed virtual aliases of one physical page are admitted",
+    "No guest JIT stores or general writer notifications",
+    "Physical overlap between page-table storage and code backing is excluded from the failed-patch no-change guarantee; either walk can commit Accessed and the write walk can commit Dirty effects, modifying shared RAM and advancing its generation before a later failure",
+    "No remap/TLB invalidation, cross-page code, MMIO, DMA, SMP or active-block mutation",
+    "Per-page generation metadata costs 8 bytes per RAM guest page and updates touched pages on committed writes; cost is unmeasured and provisional",
+    "Parent S4-16 and Stage 4 remain open"
+  ]
+}

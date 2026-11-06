@@ -1,10 +1,17 @@
 use crate::{
     GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineMemoryMap,
     MemoryAccessError, MemoryRegionKind, PhysicalMemory, RamAccessOperation, RamLimits,
-    TrackedAccessReport, TrackedAccessRequest,
+    TrackedAccessError, TrackedAccessOutcome, TrackedAccessReport, TrackedAccessRequest,
 };
-use od_isa::PortIo;
+use od_isa::{
+    PortIo,
+    memory::{AccessContext, AccessOrigin},
+};
 use std::fmt;
+
+// Must match the bounded 36-bit physical-address format accepted by
+// page_walk.rs. Higher PTE bits can contain software metadata or NX.
+const TRACKED_CODE_FRAME_MASK: u64 = ((1u64 << 36) - 1) & !0xfff;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct PortAddress(u16);
@@ -174,6 +181,188 @@ pub struct MachineBus {
     devices: Vec<Box<dyn BusDevice>>,
     mmio: Vec<MmioBinding>,
     ports: Vec<PortRegionBinding>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrackedCodeSnapshot {
+    pub linear_base: u64,
+    pub physical_base: GuestPhysicalAddress,
+    pub bytes: Vec<u8>,
+    pub backing_generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrackedCodeSnapshotError {
+    InvalidLength,
+    InvalidAccessContext,
+    Access(TrackedAccessError),
+    NotRam(GuestPhysicalAddress),
+    MissingTranslation,
+    Physical(MemoryAccessError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrackedCodePatchError {
+    InvalidAccessContext,
+    Access(TrackedAccessError),
+    PhysicalPageMismatch {
+        expected: GuestPhysicalAddress,
+        actual: GuestPhysicalAddress,
+    },
+}
+
+impl MachineBus {
+    pub fn code_page_generation(
+        &self,
+        address: GuestPhysicalAddress,
+    ) -> Result<u64, MemoryAccessError> {
+        self.memory.code_page_generation(address)
+    }
+
+    /// Capture one executable byte range contained in a single guest 4 KiB
+    /// page. The first byte is translated as an instruction fetch; the page
+    /// walker enforces execute permissions and commits its A-bit effects.
+    pub fn tracked_code_snapshot(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        linear_start: u64,
+        length: usize,
+        context: AccessContext,
+    ) -> Result<TrackedCodeSnapshot, TrackedCodeSnapshotError> {
+        if context.origin != AccessOrigin::Explicit {
+            return Err(TrackedCodeSnapshotError::InvalidAccessContext);
+        }
+        let offset = (linear_start & 0xfff) as usize;
+        if length == 0 || length > 0x1000 - offset {
+            return Err(TrackedCodeSnapshotError::InvalidLength);
+        }
+        let report = self.access_tracked_ram(
+            paging,
+            TrackedAccessRequest {
+                instruction_rip: linear_start,
+                address: crate::GuestLinearAddress::new(linear_start),
+                context,
+                operation: RamAccessOperation::Fetch,
+            },
+            |_| {},
+        );
+        let physical = match report.outcome {
+            Ok(TrackedAccessOutcome::Fetched(_)) => report
+                .trace
+                .entries()
+                .iter()
+                .flatten()
+                .last()
+                .map(|entry| entry.entry_value & TRACKED_CODE_FRAME_MASK)
+                .ok_or(TrackedCodeSnapshotError::MissingTranslation)?,
+            Ok(_) => return Err(TrackedCodeSnapshotError::MissingTranslation),
+            Err(error) => return Err(TrackedCodeSnapshotError::Access(error)),
+        };
+        let physical_base = GuestPhysicalAddress::new(physical);
+        let region = self
+            .memory
+            .locate_region_kind(physical_base, 0x1000)
+            .map_err(TrackedCodeSnapshotError::Physical)?;
+        if region != MemoryRegionKind::Ram {
+            return Err(TrackedCodeSnapshotError::NotRam(physical_base));
+        }
+        let byte_address = GuestPhysicalAddress::new(physical + offset as u64);
+        let mut bytes = vec![0; length];
+        self.memory
+            .read_bytes(byte_address, &mut bytes)
+            .map_err(TrackedCodeSnapshotError::Physical)?;
+        Ok(TrackedCodeSnapshot {
+            linear_base: linear_start,
+            physical_base,
+            bytes,
+            backing_generation: self
+                .memory
+                .code_page_generation(physical_base)
+                .map_err(TrackedCodeSnapshotError::Physical)?,
+        })
+    }
+
+    /// Store one loader patch byte through a writable guest virtual alias of
+    /// the captured physical page. The read preflight verifies the alias
+    /// before the tracked write is allowed to commit. Either walk may commit
+    /// Accessed effects and the write walk may commit Dirty effects before a
+    /// later failure.
+    pub fn patch_tracked_code_byte(
+        &mut self,
+        paging: &Long64ProbeConfig,
+        linear_address: u64,
+        expected_physical_page: GuestPhysicalAddress,
+        value: u8,
+        context: AccessContext,
+    ) -> Result<GuestPhysicalAddress, TrackedCodePatchError> {
+        if context.origin != AccessOrigin::Explicit {
+            return Err(TrackedCodePatchError::InvalidAccessContext);
+        }
+        let request = |operation| TrackedAccessRequest {
+            instruction_rip: linear_address,
+            address: crate::GuestLinearAddress::new(linear_address),
+            context,
+            operation,
+        };
+        let preflight = self.access_tracked_ram(
+            paging,
+            request(RamAccessOperation::Read {
+                width: AccessWidth::Byte,
+            }),
+            |_| {},
+        );
+        if let Err(error) = preflight.outcome {
+            return Err(TrackedCodePatchError::Access(error));
+        }
+        let actual = preflight
+            .trace
+            .entries()
+            .iter()
+            .flatten()
+            .last()
+            .map(|entry| {
+                GuestPhysicalAddress::new(
+                    (entry.entry_value & TRACKED_CODE_FRAME_MASK) | (linear_address & 0xfff),
+                )
+            })
+            .ok_or_else(|| {
+                TrackedCodePatchError::Access(TrackedAccessError::DeviceUnavailable {
+                    address: expected_physical_page,
+                })
+            })?;
+        if actual.get() & TRACKED_CODE_FRAME_MASK != expected_physical_page.get() {
+            return Err(TrackedCodePatchError::PhysicalPageMismatch {
+                expected: expected_physical_page,
+                actual,
+            });
+        }
+        let write = self.access_tracked_ram(
+            paging,
+            request(RamAccessOperation::Write {
+                width: AccessWidth::Byte,
+                value: u64::from(value),
+            }),
+            |_| {},
+        );
+        match write.outcome {
+            Ok(TrackedAccessOutcome::Written) => Ok(actual),
+            Ok(_) => Err(TrackedCodePatchError::Access(
+                TrackedAccessError::DeviceUnavailable { address: actual },
+            )),
+            Err(error) => Err(TrackedCodePatchError::Access(error)),
+        }
+    }
+
+    /// Loader write used by the inactive-code session. PhysicalMemory
+    /// validates the whole access and advances its conservative code version
+    /// only after the RAM bytes commit.
+    pub fn patch_physical_ram(
+        &mut self,
+        address: GuestPhysicalAddress,
+        bytes: &[u8],
+    ) -> Result<(), MemoryAccessError> {
+        self.memory.write_bytes(address, bytes, |_| {})
+    }
 }
 
 /// Disjoint PIO view used while the CPU fetch adapter borrows physical RAM.
@@ -770,6 +959,199 @@ mod tests {
         )
         .unwrap();
         (bus, state)
+    }
+
+    #[test]
+    fn tracked_code_snapshot_reads_one_ram_page_through_two_aliases() {
+        let ram = range(0, 0x9000);
+        let map = MachineMemoryMap::new(
+            36,
+            vec![crate::MemoryRegionSpec::new(ram, MemoryRegionKind::Ram)],
+        )
+        .unwrap();
+        let mut bus = MachineBus::new(map, RamLimits::new(0x9000), vec![], vec![], vec![]).unwrap();
+        for (address, value) in [
+            (0x1000, 0x2007),
+            (0x2000, 0x3007),
+            (0x3000, 0x4007),
+            (0x4020, 0x7007),
+            (0x4028, 0x7007),
+        ] {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        // Bits 52–62 are accepted software metadata; they must not leak into
+        // the translated physical frame extracted from the leaf PTE.
+        for address in [0x4020, 0x4028] {
+            let pte = bus
+                .read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap();
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                pte | (1 << 52) | (1 << 58),
+                |_| {},
+            )
+            .unwrap();
+        }
+        let code = [0x48, 0xb8, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7000), &code)
+            .unwrap();
+        let paging = Long64ProbeConfig::new(
+            0x8001_0033,
+            0x1000,
+            1 << 5,
+            (1 << 8) | (1 << 10) | (1 << 11),
+        )
+        .unwrap();
+
+        let first = bus
+            .tracked_code_snapshot(&paging, 0x4000, code.len(), AccessContext::default())
+            .unwrap();
+        let second = bus
+            .tracked_code_snapshot(&paging, 0x5000, code.len(), AccessContext::default())
+            .unwrap();
+        assert_eq!(first.physical_base, GuestPhysicalAddress::new(0x7000));
+        assert_eq!(second.physical_base, first.physical_base);
+        assert_eq!(first.bytes, code);
+        assert_eq!(second.bytes, code);
+        assert_eq!(first.backing_generation, second.backing_generation);
+        assert_eq!(
+            bus.patch_tracked_code_byte(
+                &paging,
+                0x4002,
+                GuestPhysicalAddress::new(0x7000),
+                0xaa,
+                AccessContext::default(),
+            )
+            .unwrap(),
+            GuestPhysicalAddress::new(0x7002)
+        );
+        assert_eq!(
+            bus.read_physical(GuestPhysicalAddress::new(0x7002), AccessWidth::Byte)
+                .unwrap(),
+            0xaa
+        );
+        assert_ne!(
+            bus.read_physical(GuestPhysicalAddress::new(0x1000), AccessWidth::Qword)
+                .unwrap()
+                & (1 << 5),
+            0
+        );
+        assert_ne!(
+            bus.read_physical(GuestPhysicalAddress::new(0x2000), AccessWidth::Qword)
+                .unwrap()
+                & (1 << 5),
+            0
+        );
+        assert_ne!(
+            bus.read_physical(GuestPhysicalAddress::new(0x3000), AccessWidth::Qword)
+                .unwrap()
+                & (1 << 5),
+            0
+        );
+        assert_ne!(
+            bus.read_physical(GuestPhysicalAddress::new(0x4020), AccessWidth::Qword)
+                .unwrap()
+                & (1 << 5),
+            0
+        );
+
+        let pte = bus
+            .read_physical(GuestPhysicalAddress::new(0x4020), AccessWidth::Qword)
+            .unwrap();
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4020),
+            AccessWidth::Qword,
+            pte | (1 << 63),
+            |_| {},
+        )
+        .unwrap();
+        assert!(matches!(
+            bus.tracked_code_snapshot(&paging, 0x4000, code.len(), AccessContext::default()),
+            Err(TrackedCodeSnapshotError::Access(
+                TrackedAccessError::PageFault { .. }
+            ))
+        ));
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4020),
+            AccessWidth::Qword,
+            (pte | (1 << 5)) & !(1 << 63),
+            |_| {},
+        )
+        .unwrap();
+
+        // The loader API models an explicit fetch/write at the supplied CPL.
+        // Descriptor-table origin has architecturally privileged page checks,
+        // so it is rejected instead of being accepted as a CPL3 code access.
+        let supervisor_only = pte & !(1 << 2);
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4020),
+            AccessWidth::Qword,
+            supervisor_only | (1 << 5),
+            |_| {},
+        )
+        .unwrap();
+        let cpl3 = AccessContext {
+            privilege: od_isa::memory::PrivilegeLevel::Ring3,
+            ..AccessContext::default()
+        };
+        assert!(matches!(
+            bus.tracked_code_snapshot(&paging, 0x4000, code.len(), cpl3),
+            Err(TrackedCodeSnapshotError::Access(
+                TrackedAccessError::PageFault { .. }
+            ))
+        ));
+        assert!(matches!(
+            bus.patch_tracked_code_byte(
+                &paging,
+                0x4002,
+                GuestPhysicalAddress::new(0x7000),
+                0xbb,
+                cpl3,
+            ),
+            Err(TrackedCodePatchError::Access(
+                TrackedAccessError::PageFault { .. }
+            ))
+        ));
+        let descriptor_origin = AccessContext {
+            origin: od_isa::memory::AccessOrigin::DescriptorTable,
+            ..cpl3
+        };
+        assert_eq!(
+            bus.tracked_code_snapshot(&paging, 0x4000, code.len(), descriptor_origin),
+            Err(TrackedCodeSnapshotError::InvalidAccessContext)
+        );
+        assert_eq!(
+            bus.patch_tracked_code_byte(
+                &paging,
+                0x4002,
+                GuestPhysicalAddress::new(0x7000),
+                0xbb,
+                descriptor_origin,
+            ),
+            Err(TrackedCodePatchError::InvalidAccessContext)
+        );
+        bus.write_physical(
+            GuestPhysicalAddress::new(0x4020),
+            AccessWidth::Qword,
+            pte | (1 << 5),
+            |_| {},
+        )
+        .unwrap();
+
+        bus.patch_physical_ram(GuestPhysicalAddress::new(0x7002), &[0xaa])
+            .unwrap();
+        let patched = bus
+            .tracked_code_snapshot(&paging, 0x5000, code.len(), AccessContext::default())
+            .unwrap();
+        assert_eq!(patched.bytes[2], 0xaa);
+        assert!(patched.backing_generation > first.backing_generation);
     }
 
     #[test]

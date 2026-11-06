@@ -23,7 +23,8 @@ mod virtual_clock;
 
 pub use bus::{
     AccessWidth, BusAccessError, BusBuildError, BusDevice, DeviceAccess, DeviceError, IoSpace,
-    MachineBus, MmioBinding, PortAddress, PortRange, PortRegionBinding,
+    MachineBus, MmioBinding, PortAddress, PortRange, PortRegionBinding, TrackedCodePatchError,
+    TrackedCodeSnapshot, TrackedCodeSnapshotError,
 };
 
 pub use diagnostic_vcpu::{

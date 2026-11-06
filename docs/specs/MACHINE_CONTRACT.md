@@ -43,9 +43,46 @@ little-endian encoding.
 
 Все byte/scalar writes используют один `write_bytes` path. Callback получает
 ровно один `GuestPhysicalRange` только после полной записи в RAM. Ошибка,
-включая отказ region или cross-region access, не вызывает callback. Этот hook
-является только локальным уведомлением о committed bytes; он ещё не подключён к
-JIT code-dependency invalidation и не доказывает S4-15—S4-16.
+включая отказ region, cross-region access или исчерпание page generation,
+не вызывает callback и не меняет bytes или поколения. Для каждого RAM guest
+4 KiB page `PhysicalMemory` хранит непереполняющийся version, изначально равный
+1; успешная запись повышает только поколения затронутых страниц. Проверка
+всех затронутых поколений выполняется до копирования. Запись в ROM/Reserved
+сохраняет `ReadOnlyRegion` классификацию и завершается до generation lookup.
+
+Это консервативная invalidation основа для code snapshots, а не заявление о
+цене write path: на страницу RAM расходуется 8 байт, а каждая запись проверяет
+и повышает версии затронутых страниц. Измерений пока нет; решение provisional.
+
+## Executable RAM snapshot и loader patch (S4-16a)
+
+`MachineBus::tracked_code_snapshot` принимает ненулевой byte range внутри одной
+guest 4 KiB страницы и `AccessOrigin::Explicit`; descriptor-table origin
+отклоняется, поскольку walker иначе применяет supervisor page permissions
+вместо предоставленного CPL. Он выполняет tracked `Fetch`
+первой code byte с тем же privilege/mode context, поэтому Long64 walker
+проверяет executable permissions и коммитит фактически нужные page-table
+Accessed bits. После translation шина проверяет, что вся физическая
+страница является RAM, и копирует запрошенный range из того же mapping. В
+пределах одной guest page все байты используют один leaf translation и одну
+permission set; crossing page отклоняется до walk. Snapshot содержит линейный
+base, физический page base, owned bytes и generation именно этой физической
+страницы. Snapshot и loader session сохраняют точный page offset диапазона;
+два alias должны указывать на один physical byte range.
+
+`patch_tracked_code_byte` сначала tracked-чтением проверяет, что virtual alias
+указывает на ожидаемую физическую страницу, затем выполняет одну tracked byte
+запись через этот alias. Отказ операции не коммитит сам patch byte. Оба walk
+могут закоммитить Accessed effects; только write walk может закоммитить Dirty
+effects до более позднего отказа. Если физическое хранение этих записей
+перекрывает code backing, они могут изменить code bytes и увеличить backing
+generation даже при неуспешном patch. Такое совпадение исключено из узкой
+гарантии неизменности backing при отказе. Host перед каждым исполнением получает свежие bytes/generation и
+инвалидирует выбранный alias cache до dispatch; старая версия поэтому не
+исполняется повторно. Этот API намеренно покрывает один byte patch в
+ограниченном loader сценарии. Полный
+writer notification, guest-generated stores, remap/TLB, cross-page code,
+DMA, MMIO и active-code retirement остаются вне S4-16a.
 
 ## Синхронная MMIO/PIO bus
 
