@@ -670,7 +670,7 @@ private enum VmHostError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .usage: return "usage: od-vmhost-smoke --socket-fd FD [--display-smoke pattern]"
+        case .usage: return "usage: od-vmhost-smoke --socket-fd FD [--display-smoke pattern [--input-fd FD [--input-trace 1]]]"
         case .badHandshake: return "invalid launcher handshake"
         case .badV1Frame: return "invalid control v1 frame"
         case .expectedRun: return "expected RUN request"

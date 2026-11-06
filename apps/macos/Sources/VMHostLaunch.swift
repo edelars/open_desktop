@@ -23,6 +23,8 @@ enum VMHostLaunchError: Error, CustomStringConvertible {
 enum VMHostLaunch {
     /// The VMHost end is always descriptor 3 in the child.
     static let childSocketFD: Int32 = 3
+    /// S10-16 (INPUT_TRANSPORT_V1.md 2.2): the VMHost end of the separate input socketpair is descriptor 4 (`--input-fd 4`).
+    static let childInputFD: Int32 = 4
 
     static func configureSocket(_ fd: Int32) throws {
         var noSignal: Int32 = 1
@@ -55,29 +57,55 @@ enum VMHostLaunch {
         return (sockets[0], sockets[1])
     }
 
-    /// `posix_spawn` of `path --socket-fd 3 <extraArguments>` with `childFD` on descriptor 3.
+    /// `posix_spawn` of `path --socket-fd 3 <extraArguments>` with `childFD` on descriptor 3. With `input` (S10-16) the VMHost end of a
+    /// second socketpair is also put on descriptor 4 and `--input-fd 4` is appended; without it the spawn is exactly as before.
     static func spawnHelper(
         path: String,
         extraArguments: [String] = [],
         parentFD: Int32,
-        childFD: Int32
+        childFD: Int32,
+        input: (parent: Int32, child: Int32)? = nil
     ) throws -> pid_t {
         var actions: posix_spawn_file_actions_t?
         guard posix_spawn_file_actions_init(&actions) == 0 else { throw VMHostLaunchError.spawnFailed }
         defer { posix_spawn_file_actions_destroy(&actions) }
 
         let targetFD = childSocketFD
-        guard posix_spawn_file_actions_adddup2(&actions, childFD, targetFD) == 0 else {
-            throw VMHostLaunchError.spawnFailed
-        }
-        if childFD != targetFD {
-            _ = posix_spawn_file_actions_addclose(&actions, childFD)
-        }
-        if parentFD != targetFD {
-            _ = posix_spawn_file_actions_addclose(&actions, parentFD)
+        var temporaries: [Int32] = []
+        defer { temporaries.forEach { Darwin.close($0) } }
+        var arguments = [path, "--socket-fd", String(targetFD)] + extraArguments
+        if let input {
+            // Both child ends could sit on 3 or 4 and be overwritten by the first dup2: move them above 9 first. The copies
+            // are closed in the child after the dup2 and in this process after the spawn.
+            let frameSource = fcntl(childFD, F_DUPFD, 10)
+            guard frameSource >= 0 else { throw VMHostLaunchError.spawnFailed }
+            temporaries.append(frameSource)
+            let inputSource = fcntl(input.child, F_DUPFD, 10)
+            guard inputSource >= 0 else { throw VMHostLaunchError.spawnFailed }
+            temporaries.append(inputSource)
+            guard posix_spawn_file_actions_adddup2(&actions, frameSource, targetFD) == 0,
+                  posix_spawn_file_actions_adddup2(&actions, inputSource, childInputFD) == 0 else {
+                throw VMHostLaunchError.spawnFailed
+            }
+            _ = posix_spawn_file_actions_addclose(&actions, frameSource)
+            _ = posix_spawn_file_actions_addclose(&actions, inputSource)
+            for descriptor in [childFD, parentFD, input.child, input.parent]
+            where descriptor != targetFD && descriptor != childInputFD {
+                _ = posix_spawn_file_actions_addclose(&actions, descriptor)
+            }
+            arguments += ["--input-fd", String(childInputFD)]
+        } else {
+            guard posix_spawn_file_actions_adddup2(&actions, childFD, targetFD) == 0 else {
+                throw VMHostLaunchError.spawnFailed
+            }
+            if childFD != targetFD {
+                _ = posix_spawn_file_actions_addclose(&actions, childFD)
+            }
+            if parentFD != targetFD {
+                _ = posix_spawn_file_actions_addclose(&actions, parentFD)
+            }
         }
 
-        let arguments = [path, "--socket-fd", String(targetFD)] + extraArguments
         var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) }
         argv.append(nil)
         defer { argv.forEach { if let value = $0 { free(value) } } }

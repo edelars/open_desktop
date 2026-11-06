@@ -23,7 +23,7 @@ enum FrameTransportError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .usage:
-            return "usage: od-vmhost-smoke --socket-fd FD --display-smoke pattern [--display-poll-hz N] [--display-hold-until-claim 1]"
+            return "usage: od-vmhost-smoke --socket-fd FD --display-smoke pattern [--display-poll-hz N] [--display-hold-until-claim 1] [--input-fd FD [--input-trace 1]]"
         case .unsupportedHostPage: return "host page size does not divide 16384"
         case .sharedMemory(let what): return "shared memory: \(what)"
         case .channel(let what): return "frame channel: \(what)"
@@ -42,6 +42,10 @@ struct DisplaySmokeOptions {
     /// Test-only: hold publications back until the reader sets `reader_claim`, so a reader can
     /// observe generation 0 deterministically before the first frame.
     let holdUntilClaim: Bool
+    /// S10-16: descriptor of the input channel (INPUT_TRANSPORT_V1.md 2.2); nil = no input channel.
+    let inputFD: Int32?
+    /// S10-16, test-only: print the records that leave the VMHost input queue (section 10) instead of leaving them in the queue.
+    let inputTrace: Bool
 
     /// Returns nil when `--display-smoke` is absent (normal VMHost path).
     static func parse(_ args: [String]) throws -> DisplaySmokeOptions? {
@@ -49,6 +53,8 @@ struct DisplaySmokeOptions {
         var socketFD: Int32 = -1
         var pollHz = 60
         var hold = false
+        var inputFD: Int32?
+        var inputTrace = false
         var sawPattern = false
         var index = 0
         while index < args.count {
@@ -68,13 +74,22 @@ struct DisplaySmokeOptions {
             case "--display-hold-until-claim":
                 guard value == "1" else { throw FrameTransportError.usage }
                 hold = true
+            case "--input-fd":
+                guard let fd = Int32(value), fd >= 0 else { throw FrameTransportError.usage }
+                inputFD = fd
+            case "--input-trace":
+                guard value == "1" else { throw FrameTransportError.usage }
+                inputTrace = true
             default:
                 throw FrameTransportError.usage
             }
             index += 2
         }
         guard socketFD >= 0, sawPattern else { throw FrameTransportError.usage }
-        return DisplaySmokeOptions(socketFD: socketFD, pollHz: pollHz, holdUntilClaim: hold)
+        // The input descriptor must be another one than the frame socket; the trace needs a channel.
+        guard inputFD != socketFD, inputFD != nil || !inputTrace else { throw FrameTransportError.usage }
+        return DisplaySmokeOptions(
+            socketFD: socketFD, pollHz: pollHz, holdUntilClaim: hold, inputFD: inputFD, inputTrace: inputTrace)
     }
 }
 
@@ -151,6 +166,16 @@ private func wait(fd: Int32, events: Int16, timeoutMs: Int32) throws -> Int16 {
     while true {
         let r = Darwin.poll(&p, 1, timeoutMs)
         if r >= 0 { return r == 0 ? 0 : p.revents }
+        if errno == EINTR { continue }
+        throw FrameTransportError.channel("poll failed errno \(errno)")
+    }
+}
+
+/// Polls several descriptors (S10-16 adds the input channel to the frame socket); EINTR is retried.
+private func pollAll(_ descriptors: inout [pollfd], timeoutMs: Int32) throws {
+    while true {
+        let r = Darwin.poll(&descriptors, nfds_t(descriptors.count), timeoutMs)
+        if r >= 0 { return }
         if errno == EINTR { continue }
         throw FrameTransportError.channel("poll failed errno \(errno)")
     }
@@ -523,6 +548,8 @@ enum DisplaySmoke {
         let fd = options.socketFD
         var one: Int32 = 1
         _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        // S10-16: the input channel exists only with --input-fd (CLOEXEC and non-blocking are set here).
+        let input = try options.inputFD.map { try InputHostChannel(fd: $0, trace: options.inputTrace) }
 
         var config = od_display_session_config()
         config.abi_version = vmhost_display_abi_version_v1()
@@ -598,7 +625,25 @@ enum DisplaySmoke {
 
             // 6.5: EOF or any byte from the UI after HELLO ends the connection.
             let events = Int16(POLLIN) | (writer.hasPendingOutput ? Int16(POLLOUT) : 0)
-            let revents = try wait(fd: fd, events: events, timeoutMs: tickMs)
+            var descriptors = [pollfd(fd: fd, events: events, revents: 0)]
+            if let input, input.isOpen { descriptors.append(pollfd(fd: input.fd, events: input.pollEvents, revents: 0)) }
+            var timeout = tickMs
+            if let input, let due = input.pollTimeoutMs(nowNs: DispatchTime.now().uptimeNanoseconds) {
+                timeout = min(timeout, due)
+            }
+            try pollAll(&descriptors, timeoutMs: timeout)
+            // The input channel is serviced first: its errors close only itself (section 8.3) and never end the frame loop.
+            if let input {
+                let inputEvents = descriptors.count > 1 ? descriptors[1].revents : 0
+                input.service(revents: inputEvents, nowNs: DispatchTime.now().uptimeNanoseconds) {
+                    guard let current = try? currentMode(session), current.flags & vmhost_display_mode_flag_active() != 0 else {
+                        return nil
+                    }
+                    return InputDisplayMode(
+                        modeChangeCount: current.mode_change_count, width: current.width, height: current.height)
+                }
+            }
+            let revents = descriptors[0].revents
             if revents & Int16(POLLIN) != 0 {
                 var byte: UInt8 = 0
                 let n = Darwin.recv(fd, &byte, 1, Int32(MSG_DONTWAIT))

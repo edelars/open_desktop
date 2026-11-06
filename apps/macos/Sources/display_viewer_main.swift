@@ -8,7 +8,7 @@ import Foundation
 // the frames of FRAME_TRANSPORT_V1.md in a Metal window, or, with `--dump-frame PATH`, renders offscreen
 // without any window and writes the raw frame (B, G, R, X rows, stride = width * 4).
 //
-// usage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S]] [--pixel-exact] [--timeout-ms N] [--close-after-ms N]
+// usage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]
 // The profile flag is for smoke use only; `pattern` is the only value until S10-09 adds `probe`.
 //
 // S10-11 presentation: by default the frame is scaled with its aspect ratio kept (letterbox/pillarbox, plain background
@@ -16,6 +16,11 @@ import Foundation
 // dump, `--dump-size WxH` is the LOGICAL window size in points (default: the frame size) and `--backing-scale S` the
 // backing scale factor (default 1), so the dumped drawable is round(W*S) x round(H*S) physical pixels, as for a window.
 // Without both options the dump has the frame size and is the 1:1 reference dump.
+//
+// S10-16 `--input-channel` (window mode only): a second socketpair (descriptor 4 in VMHost, `--input-fd 4`) carries the input
+// channel of protocols/control/INPUT_TRANSPORT_V1.md. The window then collects mouse, wheel and keyboard events and
+// sends them to VMHost's bounded queue. There is NO delivery to the guest (GUEST_DELIVERY = 0, shown in the window subtitle).
+// Without the flag no second socketpair is made and VMHost gets no `--input-fd`: the launch is exactly the S10-07 one.
 
 private enum ViewerError: Error, CustomStringConvertible {
     case usage(String)
@@ -27,7 +32,7 @@ private enum ViewerError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case let .usage(text):
-            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S]] [--pixel-exact] [--timeout-ms N] [--close-after-ms N]"
+            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S]] [--pixel-exact] [--input-channel] [--timeout-ms N] [--close-after-ms N]"
         case let .metal(text): return "Metal: \(text)"
         case let .state(text): return "viewer state: \(text)"
         case let .vmhost(text): return "VMHost: \(text)"
@@ -43,6 +48,7 @@ private struct ViewerConfig {
     var timeoutMs: UInt64 = 10_000
     var closeAfterMs: UInt64?
     var pixelExact = false
+    var inputChannel = false
     var dumpLogicalSize: (width: Int, height: Int)?
     var backingScale = 1.0
 
@@ -52,9 +58,15 @@ private struct ViewerConfig {
         var values: [String: String] = [:]
         var index = 0
         var pixelExact = false
+        var inputChannel = false
         while index < args.count {
             if args[index] == "--pixel-exact" {
                 pixelExact = true
+                index += 1
+                continue
+            }
+            if args[index] == "--input-channel" {
+                inputChannel = true
                 index += 1
                 continue
             }
@@ -80,6 +92,10 @@ private struct ViewerConfig {
         }
         config.dumpPath = values["dump-frame"]
         config.pixelExact = pixelExact
+        config.inputChannel = inputChannel
+        if inputChannel, config.dumpPath != nil {
+            throw ViewerError.usage("--input-channel needs the window mode (no --dump-frame)")
+        }
         if values["dump-size"] != nil || values["backing-scale"] != nil {
             guard config.dumpPath != nil else {
                 throw ViewerError.usage("--dump-size and --backing-scale need --dump-frame")
@@ -115,24 +131,46 @@ private struct ViewerConfig {
 private final class ViewerSession {
     let reader: FrameReader
     let presenter: MetalPresenter
+    /// S10-16: the UI end of the input socketpair; nil without `--input-channel`.
+    let input: InputChannelUI?
     private let pid: pid_t
 
     init(config: ViewerConfig, presenter: MetalPresenter) throws {
         self.presenter = presenter
         let sockets = try VMHostLaunch.makeSocketPair()
+        var inputSockets: (parent: Int32, child: Int32)?
+        if config.inputChannel {
+            do {
+                inputSockets = try VMHostLaunch.makeSocketPair()
+            } catch {
+                Darwin.close(sockets.parent)
+                Darwin.close(sockets.child)
+                throw error
+            }
+        }
         let child: pid_t
         do {
             child = try VMHostLaunch.spawnHelper(
                 path: config.vmhost,
                 extraArguments: ["--display-smoke", config.profile],
-                parentFD: sockets.parent, childFD: sockets.child)
+                parentFD: sockets.parent, childFD: sockets.child, input: inputSockets)
         } catch {
             Darwin.close(sockets.parent)
             Darwin.close(sockets.child)
+            if let inputSockets {
+                Darwin.close(inputSockets.parent)
+                Darwin.close(inputSockets.child)
+            }
             throw error
         }
         pid = child
         Darwin.close(sockets.child) // the UI closes its copy of the VMHost end after spawn
+        if let inputSockets {
+            Darwin.close(inputSockets.child)
+            input = try InputChannelUI(fd: inputSockets.parent)
+        } else {
+            input = nil
+        }
         reader = FrameReader(fd: sockets.parent)
         reader.start(announceTimeoutMs: config.timeoutMs)
     }
@@ -283,9 +321,10 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
             self.session = session
             let window = DisplayWindow(
                 presenter: presenter, title: "Open Desktop display viewer (test pattern)",
-                contentSize: NSSize(width: 640, height: 480), mode: config.mode)
+                contentSize: NSSize(width: 640, height: 480), mode: config.mode, input: session.input)
             displayWindow = window
             window.show()
+            session.input?.start()
             NSApp.activate(ignoringOtherApps: true)
             readerStarted = true
             Thread.detachNewThread { [weak self] in self?.readerLoop(session) }
@@ -303,6 +342,7 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
     private func readerLoop(_ session: ViewerSession) {
         var published: FrameReaderState?
         var statusDetail: String?
+        var publishedShown: ShownFrame?
         while !isStopRequested() {
             let changed = session.step(timeoutMs: 100)
             let state = session.reader.state
@@ -312,11 +352,17 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
                 statusDetail = "\(describe(state)) (VMHost exit status \(status))"
                 setFailed()
             }
-            if changed || published == nil {
+            // S10-16: the shown frame for absolute mouse positions: only while SHOWING, with the mode count of that frame.
+            var shown: ShownFrame?
+            if state == .showing, let frame = session.reader.lastFrame {
+                shown = ShownFrame(width: frame.width, height: frame.height, modeChangeCount: frame.modeChangeCount)
+            }
+            if changed || published == nil || shown != publishedShown {
                 published = state
+                publishedShown = shown
                 let detail = statusDetail
                 DispatchQueue.main.async { [weak self] in
-                    self?.displayWindow?.refresh(state: state, detail: detail)
+                    self?.displayWindow?.update(state: state, detail: detail, shown: shown)
                 }
             }
             if state.isTerminal { break }
@@ -344,7 +390,11 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
         stopFlag = true
         stopLock.unlock()
         if readerStarted { _ = stopped.wait(timeout: .now() + 8) }
-        if let window = displayWindow { print("window geometry: \(window.geometryDescription)") }
+        if let window = displayWindow {
+            print("window geometry: \(window.geometryDescription)")
+            if let text = window.inputStatusText { print("input channel: \(text)") }
+            window.tearDownInput() // closes the input channel: VMHost sees EOF on it
+        }
         if let status = session?.shutdown(), status != 0 {
             fputs("display-viewer: VMHost exit status \(status)\n", stderr)
             setFailed()
