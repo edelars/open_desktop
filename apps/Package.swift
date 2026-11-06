@@ -33,7 +33,9 @@ let package = Package(
             dependencies: ["ODShared", "ODAtomics", "ODHostABI"],
             path: "vmhost/Sources",
             exclude: ["ODHostABI", ".gitkeep"],
-            sources: ["InputChannel.swift", "FrameTransport.swift", "VMHostMain.swift"],
+            sources: [
+                "InputChannel.swift", "FrameTransport.swift", "BundleLock.swift", "Lifecycle.swift", "ControlV2Host.swift", "VMHostMain.swift",
+            ],
             linkerSettings: [
                 .unsafeFlags([hostLibrary("debug")], .when(configuration: .debug)),
                 .unsafeFlags([hostLibrary("release")], .when(configuration: .release)),

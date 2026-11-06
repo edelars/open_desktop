@@ -20,6 +20,15 @@ struct VmHostSmoke {
         var socketFD: Int32 = -1
         do {
             let args = Array(CommandLine.arguments.dropFirst())
+            // Control protocol v2 (S11-04): selected only by the explicit flag; v0, v1 and the display smoke are not touched.
+            if args.contains("--control-v2") {
+                do {
+                    if let options = try ControlV2Options.parse(args) { exit(ControlV2Host.run(options)) }
+                } catch {
+                    fputs("od-vmhost: \(error)\n", stderr)
+                    exit(VMHostExitStatus.usage)
+                }
+            }
             // TEST-ONLY display smoke (S10-06): selected only by the explicit flag, never implicitly.
             if let smoke = try DisplaySmokeOptions.parse(args) {
                 socketFD = smoke.socketFD
