@@ -323,6 +323,7 @@
 ### S11-04. Lifecycle v2 в VMHost на test-only профилях без гостя
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-06):** реализовано в рабочем дереве, ревью пройдено, **не принято**. Расхождения с планом (а)–(д) и открытые вопросы — в [отчёте](../reports/STAGE_11_REPORT.md) и в `apps/vmhost/README.md`.
 - **Где:** `apps/vmhost/Sources/Lifecycle.swift` (новый: машина состояний), `apps/macos/Sources/Shared/ControlV2.swift` (новый: кодирование/декодирование по S11-03; до S11-05a включается в сборку VMHost явным путём, как сейчас `InputProtocol.swift`), `apps/vmhost/Sources/main.swift` (новый режим `--control-v2`; режимы v0/v1/`--display-smoke` не трогать), `apps/vmhost/README.md`, `tests/system/vmhost_control_v2_lifecycle_smoke.py` (новый).
 - **Сделать:**
   1. Режим `--control-v2 --socket-fd 3 --bundle PATH [--display-fd 5] [--input-fd 4]`: взять `flock` на `<bundle>/lock` через `od-host` (занято → `ERROR busy`, выход); `HELLO/READY`; `CONFIGURE` с проверкой каждого поля по лимитам S11-03; отказ — `ERROR` с кодом, состояние `stopped`.
