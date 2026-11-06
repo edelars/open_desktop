@@ -602,6 +602,37 @@ invalidation, PCID, global pages, exception delivery, or EFER transitions. See
 the [CPU profile](CPU_CONTRACT.md#paged-cpu-owned-cr3-profile-pagedcpl0cr3probev1-s4-12c)
 and [S4-12c report](../reports/STAGE_4_S4-12C_2026-11-05.md).
 
+## CPU-owned CR0.WP translation handoff (S4-12d)
+
+`run_paged_cr0_wp_probe` is the opt-in machine quantum for
+`PagedCpl0Cr0WpProbeV1`. The source and target CR0 values are constrained to
+`0x80010033` and `0x80000033`; CR3 is CPU-owned and fixed for the quantum,
+CR4=`0x20`, EFER=`0xd00`, one vCPU and uncached translation. The allowlist is
+exact `MOV CR0,RAX` and `MOV [RBX],RCX` only. The store operand must fit in one
+4 KiB RAM page; a crossing operand is Unsupported before the data walk.
+The exact LOCK-prefixed `MOV CR0` is #UD after full instruction fetch.
+
+After `MOV CR0`, the machine checks the effect's full old value against the
+active immutable snapshot and the new value against committed CPU state. It
+validates a replacement `Long64ProbeConfig` and installs it before the next
+STOP poll or memory access. Committing the effect does not walk page tables or
+write A/D bits; the instruction fetch may already have made A updates. The next
+supervisor store therefore observes WP from the new snapshot: WP=0 permits a
+read-only mapping; WP=1 faults precisely without committing store data or D,
+while prior A updates may remain. A successful store through an R/W=0 mapping
+does not impose a D-bit assertion in this profile. Integration
+mismatch/rejection is terminal and preserves the already retired CR0 write.
+The S4-12c CR3 profile and older paged profiles retain their existing
+instruction allowlists. Machine admission requires CPL0; the CPU instruction
+entry separately classifies bare `MOV CR0` at nonzero CPL as #GP(0) after
+fetch, without retirement/effect. It rejects the ordinary store at nonzero CPL
+as `WrongPrivilege` after fetch without data access or retirement; it is not a
+guest #GP.
+
+The profile does not implement other CR0 bits, PE/PG transitions, EFER changes,
+TLB invalidation, exception delivery or CR2. See the [CPU contract](CPU_CONTRACT.md#paged-cpu-owned-cr0wp-profile-pagedcpl0cr0wpprobev1-s4-12d)
+for the exact CPU allowlist and values.
+
 ## Experimental pure-translation cache boundary
 
 `experimental-translation-probe-cache` — opt-in measurement prototype, а не

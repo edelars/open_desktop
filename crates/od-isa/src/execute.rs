@@ -1936,18 +1936,11 @@ pub struct RunResult {
     pub rflags_defined: u64,
 }
 
-/// Cause of an explicit CPU-side translation-context change.
+/// Mandatory execution-boundary effect emitted by bounded control-register writes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TranslationContextChangeReason {
-    Cr3Write,
-}
-
-/// Mandatory execution-boundary effect emitted by every successful MOV CR3.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TranslationContextChange {
-    pub reason: TranslationContextChangeReason,
-    pub old_cr3: u64,
-    pub new_cr3: u64,
+pub enum TranslationContextChange {
+    Cr3Write { old_cr3: u64, new_cr3: u64 },
+    Cr0Write { old_cr0: u64, new_cr0: u64 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1996,6 +1989,10 @@ pub struct PagedCpl0ProbeV1;
 /// Explicit opt-in marker for the paged CPL0 probe with bounded CR3 writes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PagedCpl0Cr3ProbeV1;
+
+/// Explicit opt-in marker for the bounded CPU-owned CR0.WP paged profile.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PagedCpl0Cr0WpProbeV1;
 
 /// Explicit opt-in marker for the paged probe profile that additionally
 /// admits the exact qword `PUSH RCX` and `POP RAX` stack forms.
@@ -16068,8 +16065,7 @@ pub fn step_mov_cr3(
     );
     let exit = match run.exit {
         RunExit::StopAddress if run.instructions_executed == 1 => {
-            MovCr3Exit::TranslationContextChange(TranslationContextChange {
-                reason: TranslationContextChangeReason::Cr3Write,
+            MovCr3Exit::TranslationContextChange(TranslationContextChange::Cr3Write {
                 old_cr3,
                 new_cr3: state.cr3.expect("successful MOV CR3 keeps CR3 modeled"),
             })
@@ -16103,11 +16099,23 @@ fn commit_mov_cr3(
     state.cr3 = Some(new_cr3);
     state.rip = next_rip;
     *rflags_defined &= !crate::ARITHMETIC_FLAGS;
-    Ok(TranslationContextChange {
-        reason: TranslationContextChangeReason::Cr3Write,
-        old_cr3,
-        new_cr3,
-    })
+    Ok(TranslationContextChange::Cr3Write { old_cr3, new_cr3 })
+}
+
+fn commit_mov_cr0_wp(
+    state: &mut LongModeState,
+    next_rip: u64,
+    rflags_defined: &mut u64,
+) -> Result<TranslationContextChange, ()> {
+    let old_cr0 = state.cr0.ok_or(())?;
+    let new_cr0 = state.gpr[Register::Rax as usize];
+    if new_cr0 != Cr0Profile::BASE && new_cr0 != (Cr0Profile::BASE & !(1 << 16)) {
+        return Err(());
+    }
+    state.cr0 = Some(new_cr0);
+    state.rip = next_rip;
+    *rflags_defined &= !crate::ARITHMETIC_FLAGS;
+    Ok(TranslationContextChange::Cr0Write { old_cr0, new_cr0 })
 }
 
 /// Execute at most one exact bare `IN AL, DX` or `OUT DX, AL` instruction.
@@ -16216,6 +16224,7 @@ pub fn step_paged_probe<P: crate::PortIo>(
     step_paged_probe_inner(
         false,
         false,
+        false,
         0,
         state,
         memory,
@@ -16237,6 +16246,32 @@ pub fn step_paged_cr3_probe<P: crate::PortIo>(
     initial_rflags_defined: u64,
 ) -> PagedProbeResult<P::Error> {
     step_paged_probe_inner(
+        false,
+        true,
+        false,
+        efer,
+        state,
+        memory,
+        pio,
+        context,
+        initial_rflags_defined,
+    )
+}
+
+/// Execute one instruction from the bounded CPU-owned CR0.WP profile.
+/// Unlike the machine runner, this CPU entry accepts any CPL so exact
+/// MOV CR0 can fetch and then produce its architectural #GP(0) at CPL1–3.
+pub fn step_paged_cr0_wp_probe<P: crate::PortIo>(
+    _profile: PagedCpl0Cr0WpProbeV1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    pio: &mut P,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> PagedProbeResult<P::Error> {
+    step_paged_probe_inner(
+        false,
         false,
         true,
         efer,
@@ -16262,6 +16297,7 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
     step_paged_probe_inner(
         true,
         false,
+        false,
         0,
         state,
         memory,
@@ -16274,6 +16310,7 @@ pub fn step_paged_stack_probe<P: crate::PortIo>(
 fn step_paged_probe_inner<P: crate::PortIo>(
     allow_stack_forms: bool,
     allow_cr3: bool,
+    allow_cr0_wp: bool,
     efer: u64,
     state: &mut LongModeState,
     memory: &mut impl GuestMemory,
@@ -16296,10 +16333,10 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     if context.mode != InstructionMode::Long64 {
         return reject(PagedProbeRejection::WrongMode);
     }
-    if context.privilege != PrivilegeLevel::Ring0 {
+    if context.privilege != PrivilegeLevel::Ring0 && !allow_cr0_wp {
         return reject(PagedProbeRejection::WrongPrivilege);
     }
-    if state.cr3.is_some() != allow_cr3 {
+    if state.cr3.is_some() != allow_cr3 && !allow_cr0_wp {
         return reject(PagedProbeRejection::ControlRegistersOutsideProfile);
     }
     if state.cr0.is_none() || state.cr4.is_none() {
@@ -16312,6 +16349,15 @@ fn step_paged_probe_inner<P: crate::PortIo>(
             && state
                 .cr3
                 .is_some_and(|value| value & !((1u64 << 36) - 1) == 0)
+    } else if allow_cr0_wp {
+        efer == 0xd00
+            && state
+                .cr3
+                .is_some_and(|value| value & !((1u64 << 36) - 1) == 0)
+            && state.cr4 == Some(Cr4Profile::BASE)
+            && state.cr0.is_some_and(|value| {
+                value == Cr0Profile::BASE || value == (Cr0Profile::BASE & !(1 << 16))
+            })
     } else {
         state
             .cr0
@@ -16338,7 +16384,7 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     if state.sti_shadow != Some(crate::StiShadow::Clear) {
         return reject(PagedProbeRejection::StiShadowActive);
     }
-    if allow_cr3 && state.rip & 0xfff >= 0xff2 {
+    if (allow_cr3 || allow_cr0_wp) && state.rip & 0xfff >= 0xff2 {
         return result(PagedProbeExit::Unsupported { opcode: 0x0f }, 0);
     }
 
@@ -16364,7 +16410,25 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                 0,
             );
         }
-        Err(DecodeError::Invalid { .. }) => {
+        Err(DecodeError::InvalidMovCr0Lock { .. }) => {
+            return result(
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }),
+                0,
+            );
+        }
+        Err(DecodeError::Invalid { opcode, .. }) => {
+            if allow_cr0_wp {
+                return result(
+                    PagedProbeExit::Unsupported {
+                        opcode: opcode.byte,
+                    },
+                    0,
+                );
+            }
             return result(
                 PagedProbeExit::Fault(ArchitecturalFault {
                     vector: 6,
@@ -16405,7 +16469,46 @@ fn step_paged_probe_inner<P: crate::PortIo>(
     {
         return unsupported();
     }
+    if allow_cr0_wp
+        && !matches!(
+            instruction.operation,
+            Operation::WriteCr0
+                | Operation::Mov {
+                    dst: Operand::Memory(_),
+                    src: Operand::Register(_),
+                }
+        )
+    {
+        return unsupported();
+    }
     match instruction.operation {
+        Operation::WriteCr0
+            if allow_cr0_wp
+                && instruction.length == 3
+                && instruction.opcode.byte == 0x22
+                && instruction.prefixes == Prefixes::default() =>
+        {
+            if context.privilege != PrivilegeLevel::Ring0 {
+                return result(
+                    PagedProbeExit::Fault(ArchitecturalFault {
+                        vector: 13,
+                        error_code: Some(0),
+                        linear_address: None,
+                    }),
+                    0,
+                );
+            }
+            let mut rflags_defined = initial_rflags_defined;
+            let effect = match commit_mov_cr0_wp(state, next_rip, &mut rflags_defined) {
+                Ok(effect) => effect,
+                Err(()) => return unsupported(),
+            };
+            return PagedProbeResult {
+                exit: PagedProbeExit::TranslationContextChange(effect),
+                instructions_executed: 1,
+                rflags_defined,
+            };
+        }
         Operation::WriteCr3
             if allow_cr3
                 && instruction.length == 3
@@ -16529,6 +16632,20 @@ fn step_paged_probe_inner<P: crate::PortIo>(
                     size: OperandSize::Qword,
                 }) =>
         {
+            if allow_cr0_wp && context.privilege != PrivilegeLevel::Ring0 {
+                return reject(PagedProbeRejection::WrongPrivilege);
+            }
+            let start = if allow_cr0_wp {
+                match destination.linear_address_48(state, next_rip) {
+                    Ok(start) => start,
+                    Err(fault) => return result(PagedProbeExit::Fault(fault), 0),
+                }
+            } else {
+                0
+            };
+            if allow_cr0_wp && start & 0xfff > 0xff8 {
+                return unsupported();
+            }
             let address = match destination.access_address_48(state, next_rip) {
                 Ok(address) => address,
                 Err(MemoryError::Architectural(fault)) => {
@@ -16618,6 +16735,17 @@ fn execute_pio_u8<P: crate::PortIo>(
                 exit: PioU8Exit::Unsupported {
                     opcode: opcode.byte,
                 },
+                instructions_executed: 0,
+                rflags_defined: initial_rflags_defined,
+            };
+        }
+        Err(DecodeError::InvalidMovCr0Lock { .. }) => {
+            return PioU8Result {
+                exit: PioU8Exit::Fault(ArchitecturalFault {
+                    vector: 6,
+                    error_code: None,
+                    linear_address: None,
+                }),
                 instructions_executed: 0,
                 rflags_defined: initial_rflags_defined,
             };
@@ -23569,6 +23697,18 @@ fn step_configured(
             return Ok(StepOutcome::Unsupported {
                 opcode: opcode.byte,
             });
+        }
+        Err(DecodeError::InvalidMovCr0Lock { opcode, .. }) if mov_cr3_profile.is_some() => {
+            return Ok(StepOutcome::Unsupported {
+                opcode: opcode.byte,
+            });
+        }
+        Err(DecodeError::InvalidMovCr0Lock { .. }) => {
+            return Ok(StepOutcome::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            }));
         }
         Err(DecodeError::Invalid { opcode, .. }) if mov_cr3_profile.is_some() => {
             return Ok(StepOutcome::Unsupported {
@@ -146770,8 +146910,7 @@ mod mov_cr3_profile_tests {
             );
             assert_eq!(
                 result.exit,
-                MovCr3Exit::TranslationContextChange(TranslationContextChange {
-                    reason: TranslationContextChangeReason::Cr3Write,
+                MovCr3Exit::TranslationContextChange(TranslationContextChange::Cr3Write {
                     old_cr3,
                     new_cr3,
                 })
@@ -147219,6 +147358,25 @@ mod paged_cr3_probe_tests {
     }
 
     #[test]
+    fn paged_cr3_profile_keeps_lock_mov_cr0_as_ud() {
+        let mut state = state();
+        let before = state.clone();
+        let mut memory = Memory::new(&[0xf0, 0x0f, 0x22, 0xc0]);
+        let result = step(&mut state, &mut memory);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0, 1, 2, 3]);
+    }
+
+    #[test]
     fn mov_cr3_emits_effect_then_next_paged_load_is_admitted() {
         let mut state = state();
         state.gpr[Register::Rax as usize] = 0x2000;
@@ -147229,8 +147387,7 @@ mod paged_cr3_probe_tests {
         let mov_cr3 = step(&mut state, &mut memory);
         assert_eq!(
             mov_cr3.exit,
-            PagedProbeExit::TranslationContextChange(TranslationContextChange {
-                reason: TranslationContextChangeReason::Cr3Write,
+            PagedProbeExit::TranslationContextChange(TranslationContextChange::Cr3Write {
                 old_cr3: 0x1000,
                 new_cr3: 0x2000,
             })
@@ -147322,6 +147479,258 @@ mod paged_cr3_probe_tests {
         );
         assert_eq!(legacy.instructions_executed, 0);
         assert!(legacy_memory.fetches.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod paged_cr0_wp_probe_tests {
+    use super::tests::Memory;
+    use super::*;
+
+    #[derive(Default)]
+    struct NoPio;
+
+    impl crate::PortIo for NoPio {
+        type Error = ();
+
+        fn read_u8(&mut self, _port: u16) -> Result<u8, Self::Error> {
+            Ok(0)
+        }
+
+        fn write_u8(&mut self, _port: u16, _value: u8) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    fn make_state(cr0: u64) -> LongModeState {
+        LongModeState {
+            cr0: Some(cr0),
+            cr3: Some(0x1000),
+            cr4: Some(Cr4Profile::BASE),
+            activity: Some(crate::CpuActivity::Running),
+            sti_shadow: Some(crate::StiShadow::Clear),
+            rflags: 0x8d7,
+            ..LongModeState::default()
+        }
+    }
+
+    fn step(
+        state: &mut LongModeState,
+        memory: &mut Memory,
+        privilege: PrivilegeLevel,
+    ) -> PagedProbeResult<()> {
+        step_paged_cr0_wp_probe(
+            PagedCpl0Cr0WpProbeV1,
+            state,
+            memory,
+            &mut NoPio,
+            AccessContext {
+                privilege,
+                ..AccessContext::default()
+            },
+            0xd00,
+            crate::INTEGER_FLAGS,
+        )
+    }
+
+    #[test]
+    fn mov_cr0_wp_commits_typed_effect_flags_and_identical_writes() {
+        let wp_clear = Cr0Profile::BASE & !(1 << 16);
+        for (old_cr0, new_cr0) in [
+            (Cr0Profile::BASE, wp_clear),
+            (wp_clear, Cr0Profile::BASE),
+            (Cr0Profile::BASE, Cr0Profile::BASE),
+        ] {
+            let mut state = make_state(old_cr0);
+            state.gpr[Register::Rax as usize] = new_cr0;
+            let old_flags = state.rflags;
+            let mut memory = Memory::new(&[0x0f, 0x22, 0xc0]);
+            let result = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::TranslationContextChange(TranslationContextChange::Cr0Write {
+                    old_cr0,
+                    new_cr0,
+                })
+            );
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(
+                result.rflags_defined,
+                crate::INTEGER_FLAGS & !crate::ARITHMETIC_FLAGS
+            );
+            assert_eq!(state.cr0, Some(new_cr0));
+            assert_eq!(state.rip, 3);
+            assert_eq!(state.rflags, old_flags);
+            assert_eq!(memory.fetches, [0, 1, 2]);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn exact_mov_cr0_faults_at_nonzero_cpl_after_fetch_but_store_is_not_gp() {
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rax as usize] = Cr0Profile::BASE & !(1 << 16);
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x0f, 0x22, 0xc0]);
+            let result = step(&mut state, &mut memory, privilege);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Fault(ArchitecturalFault {
+                    vector: 13,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(result.rflags_defined, crate::INTEGER_FLAGS);
+            assert_eq!(state, before);
+            assert_eq!(memory.fetches, [0, 1, 2]);
+        }
+
+        for privilege in [
+            PrivilegeLevel::Ring1,
+            PrivilegeLevel::Ring2,
+            PrivilegeLevel::Ring3,
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rbx as usize] = 0x1000;
+            state.gpr[Register::Rcx as usize] = 0xaabb_ccdd;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x89, 0x0b]);
+            let result = step(&mut state, &mut memory, privilege);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Rejected(PagedProbeRejection::WrongPrivilege)
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn non_profile_cr0_values_and_other_forms_are_unsupported() {
+        let mut state = make_state(Cr0Profile::BASE);
+        state.gpr[Register::Rax as usize] = Cr0Profile::BASE ^ (1 << 5);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xc0]);
+        let result = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x22 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0, 1, 2]);
+
+        let mut state = make_state(Cr0Profile::BASE);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xe0]);
+        let result = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x22 });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn cr0_wp_profile_rejects_cross_page_store_before_memory_access() {
+        for address in [
+            0x1ff9,
+            0x0000_7fff_ffff_fff9,
+            0xffff_8000_0000_0ff9,
+            0xffff_ffff_ffff_fff9,
+        ] {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.gpr[Register::Rbx as usize] = address;
+            state.gpr[Register::Rcx as usize] = 0xaabb_ccdd;
+            let before = state.clone();
+            let mut memory = Memory::new(&[0x48, 0x89, 0x0b]);
+            let result = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+            assert_eq!(
+                result.exit,
+                PagedProbeExit::Unsupported { opcode: 0x89 },
+                "RBX={address:#018x}"
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(state, before);
+            assert!(memory.accesses.is_empty());
+        }
+    }
+
+    #[test]
+    fn cr0_wp_profile_keeps_unrelated_invalid_encoding_unsupported() {
+        let mut state = make_state(Cr0Profile::BASE);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0xf0, 0xdb, 0xe3]);
+        let result = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+        assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0xdb });
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn lock_prefixed_mov_cr0_is_ud_after_complete_fetch() {
+        let mut state = make_state(Cr0Profile::BASE);
+        let before = state.clone();
+        let mut memory = Memory::new(&[0xf0, 0x0f, 0x22, 0xc0]);
+        let result = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+        assert_eq!(
+            result.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(state, before);
+        assert_eq!(memory.fetches, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn potentially_cross_page_instruction_starts_are_rejected_before_fetch() {
+        for offset in 0xff2..=0xfff {
+            let mut state = make_state(Cr0Profile::BASE);
+            state.rip = offset;
+            let mut memory = Memory::at(&[0x0f, 0x22, 0xc0], offset);
+            let result = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+            assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x0f });
+            assert_eq!(result.instructions_executed, 0);
+            assert!(memory.fetches.is_empty(), "RIP={offset:#x}");
+        }
+    }
+
+    #[test]
+    fn subsequent_fetch_fault_keeps_committed_mov_cr0_state_and_retirement() {
+        let mut state = make_state(Cr0Profile::BASE);
+        let wp_clear = Cr0Profile::BASE & !(1 << 16);
+        state.gpr[Register::Rax as usize] = wp_clear;
+        let mut memory = Memory::new(&[0x0f, 0x22, 0xc0]);
+        let mov = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+        assert_eq!(mov.instructions_executed, 1);
+        let committed = state.clone();
+        memory.fetch_error = Some((
+            3,
+            MemoryError::Architectural(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(3),
+            }),
+        ));
+
+        let fetch = step(&mut state, &mut memory, PrivilegeLevel::Ring0);
+        assert_eq!(
+            fetch.exit,
+            PagedProbeExit::Fault(ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(3),
+            })
+        );
+        assert_eq!(fetch.instructions_executed, 0);
+        assert_eq!(state, committed);
     }
 }
 

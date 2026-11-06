@@ -2035,8 +2035,13 @@ pub enum DecodeError {
         opcode: Opcode,
         length: u8,
     },
-    /// LOCK-prefixed `MOV CR3,RAX`: its #UD is gated by the opt-in CPU profile.
+    /// LOCK-prefixed `MOV CR3,RAX`, retained for profile-specific exit mapping.
     InvalidMovCr3Lock {
+        opcode: Opcode,
+        length: u8,
+    },
+    /// Exact LOCK-prefixed `MOV CR0,RAX`, retained for profile-specific exit mapping.
+    InvalidMovCr0Lock {
         opcode: Opcode,
         length: u8,
     },
@@ -2251,6 +2256,18 @@ impl<M: GuestMemory> Fetch<'_, M> {
                             return Err(self.unsupported(opcode));
                         }
                         return Err(DecodeError::InvalidMovCr3Lock {
+                            opcode,
+                            length: self.length,
+                        });
+                    }
+                    if opcode.byte == 0x22 && modrm == 0xc0 {
+                        if prefix_count != 1 || prefix_bytes[0] != 0xf0 {
+                            return Err(DecodeError::Invalid {
+                                opcode,
+                                length: self.length,
+                            });
+                        }
+                        return Err(DecodeError::InvalidMovCr0Lock {
                             opcode,
                             length: self.length,
                         });
@@ -23592,15 +23609,26 @@ mod tests {
             assert_eq!(memory.fetched, [0xfff, 0x1000, 0x1001]);
         }
 
-        for bytes in [
-            &[0xf0, 0x0f, 0x20, 0xc0][..],
-            &[0xf0, 0x0f, 0x22, 0xc0][..],
-            &[0xf0, 0xdb, 0xe3][..],
-        ] {
+        for bytes in [&[0xf0, 0x0f, 0x20, 0xc0][..], &[0xf0, 0xdb, 0xe3][..]] {
             let mut memory = Memory::new(bytes);
             assert!(matches!(memory.decode(), Err(DecodeError::Invalid { .. })));
             assert_eq!(memory.fetched.len(), bytes.len());
         }
+
+        let mut memory = Memory::new(&[0xf0, 0x0f, 0x22, 0xc0]);
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::InvalidMovCr0Lock { .. })
+        ));
+        assert_eq!(memory.fetched, [0xfff, 0x1000, 0x1001, 0x1002]);
+        let mut memory = Memory::new(&[0xf0, 0xf0, 0x0f, 0x22, 0xc0]);
+        assert!(matches!(
+            memory.decode(),
+            Err(DecodeError::Unsupported { .. })
+        ));
+        let mut memory = Memory::new(&[0x40, 0xf0, 0x0f, 0x22, 0xc0]);
+        assert!(matches!(memory.decode(), Err(DecodeError::Invalid { .. })));
+        assert_eq!(memory.fetched.len(), 5);
 
         assert!(matches!(
             Memory::new(&[0x0f, 0x20, 0xd8]).decode(),

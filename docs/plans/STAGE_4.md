@@ -371,6 +371,20 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Полный S4-12 остаётся открытым: EFER writes, startup transitions,
   TLB/invalidation и system acceptance не приняты.
   См. [machine contract](../specs/MACHINE_CONTRACT.md#cpu-state-to-diagnostic-translation-snapshot).
+- [x] S4-12d implemented, focused gates pass and independent review is clean.
+  `MOV CR0,RAX` switches only WP between `0x80010033` and `0x80000033`;
+  a following exact `MOV [RBX],RCX` must use the replacement snapshot. Keep
+  CPU-owned CR3, fixed CR4/EFER and reject other instructions/values as
+  Unsupported (except LOCK `MOV CR0`, which raises #UD after full fetch).
+  Preserve CR3 profile behavior. Reject the ordinary store outside CPL0 without
+  data access; require the store operand to fit one 4 KiB page. Verify WP `1→0` successful
+  supervisor store, WP `0→1` precise protection fault, STOP/fetch boundaries,
+  A/D prefix behavior, store page containment and atomic retirement; keep CPU
+  privilege #GP distinct from machine CPL0 admission. Results:
+  [отчёт](../reports/STAGE_4_S4-12D_2026-11-06.md) and
+  [manifest](../reports/data/stage4/s4-12d-cr0-wp-machine.json). See
+  [CPU contract](../specs/CPU_CONTRACT.md#paged-cpu-owned-cr0wp-profile-pagedcpl0cr0wpprobev1-s4-12d)
+  and [machine contract](../specs/MACHINE_CONTRACT.md#cpu-owned-cr0wp-translation-handoff-s4-12d).
 - **Где:** semantics и decode — `od-isa`; effects на translation — `od-machine`; соответствующие задачи этапа 2.
 - **Сделать:** реализовать исполняемые формы и валидацию переходов выбранного профиля, MSR allowlist, width/reserved/privilege checks, явные эффекты context change. Согласовать INVLPG и поддержку глобальных страниц/PCID с S4-14.
 - **Проверка:** guest instructions меняют действующий перевод; запрещённые записи дают правильное исключение и не оставляют частично обновлённый CR state. Проверить startup state и порядок включения обязательных bits.

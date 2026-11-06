@@ -6,10 +6,11 @@ use od_machine::{
     AccessWidth, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
     MemoryRegionKind, MemoryRegionSpec, PagedProbeExit, PagedProbeRejection, PortAddress,
     PortRange, PortRegionBinding, RamLimits, Uart16550Handle, Uart16550PollingTx,
-    run_paged_cr3_probe, run_paged_probe,
+    run_paged_cr0_wp_probe, run_paged_cr3_probe, run_paged_probe,
 };
 
 const CR0: u64 = 0x8001_0033;
+const CR0_WP_CLEAR: u64 = CR0 & !(1 << 16);
 const CR4: u64 = 1 << 5;
 const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
 const ROOT: u64 = 0x1000;
@@ -85,6 +86,26 @@ fn cr3_switch_fixture() -> MachineBus {
     put(&mut bus, DATA_A_PHYSICAL, 0x1111_2222_3333_4444);
     put(&mut bus, DATA_B_PHYSICAL, 0xaabb_ccdd_eeff_1234);
     bus
+}
+
+fn cr0_wp_fixture() -> MachineBus {
+    let (mut bus, _uart) = fixture();
+    // Keep the data PTE read-only for both following stores. The exact MOV
+    // CR0 remains in executable RAM and the operand is wholly within one page.
+    put(&mut bus, 0x5000, DATA_PHYSICAL | 5);
+    put_bytes_at(
+        &mut bus,
+        CODE_PHYSICAL,
+        &[0x0f, 0x22, 0xc0, 0x48, 0x89, 0x0b],
+    );
+    bus
+}
+
+fn initial_cr0_wp_state(cr0_source: u64, payload: u64) -> LongModeState {
+    let mut state = initial_state(payload);
+    state.cr3 = Some(ROOT);
+    state.gpr[Register::Rax as usize] = cr0_source;
+    state
 }
 
 fn initial_cr3_state() -> LongModeState {
@@ -284,8 +305,7 @@ fn mov_cr3_replaces_translation_root_before_next_fetch_and_operand() {
     assert_eq!(state.gpr[Register::Rax as usize], 0xaabb_ccdd_eeff_1234);
     assert_eq!(
         result.translation_context_changes,
-        [od_isa::execute::TranslationContextChange {
-            reason: od_isa::execute::TranslationContextChangeReason::Cr3Write,
+        [od_isa::execute::TranslationContextChange::Cr3Write {
             old_cr3: ROOT,
             new_cr3: 0x11_000,
         }]
@@ -844,4 +864,203 @@ fn stop_after_store_and_out_resume_on_same_cpu_and_bus_without_repeating_effects
     assert!(handle.transfer_holding_to_shift());
     assert_eq!(handle.complete_transmission(), Some(payload as u8));
     assert!(!handle.transfer_holding_to_shift());
+}
+
+#[test]
+fn cr0_wp_clear_applies_before_store_and_matches_split_quantum() {
+    let payload = 0x8877_6655_4433_2211;
+    let mut whole_bus = cr0_wp_fixture();
+    let mut whole_state = initial_cr0_wp_state(CR0_WP_CLEAR, payload);
+    let old_flags = whole_state.rflags;
+    let mut whole_writes = Vec::new();
+    let whole = run_paged_cr0_wp_probe(
+        &mut whole_state,
+        &mut whole_bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || false,
+        |write| whole_writes.push(write),
+    );
+    assert_eq!(whole.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(whole.instructions_executed, 2);
+    assert_eq!(whole_state.cr0, Some(CR0_WP_CLEAR));
+    assert_eq!(whole_state.rip, CODE_LINEAR + 6);
+    assert_eq!(whole_state.rflags, old_flags);
+    assert_eq!(whole.rflags_defined, FLAGS_DEFINED & !0x8d5);
+    assert_eq!(qword(&mut whole_bus, DATA_PHYSICAL), payload);
+    assert!(whole_writes.contains(&range(DATA_PHYSICAL)));
+    assert_eq!(
+        whole.translation_context_changes,
+        [od_isa::TranslationContextChange::Cr0Write {
+            old_cr0: CR0,
+            new_cr0: CR0_WP_CLEAR,
+        }]
+    );
+
+    let mut split_bus = cr0_wp_fixture();
+    let mut split_state = initial_cr0_wp_state(CR0_WP_CLEAR, payload);
+    let mut split_writes = Vec::new();
+    let first = run_paged_cr0_wp_probe(
+        &mut split_state,
+        &mut split_bus,
+        EFER,
+        context(),
+        1,
+        FLAGS_DEFINED,
+        || false,
+        |write| split_writes.push(write),
+    );
+    assert_eq!(first.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(first.instructions_executed, 1);
+    assert_eq!(split_state.rip, CODE_LINEAR + 3);
+    assert_eq!(first.translation_context_changes.len(), 1);
+
+    let second = run_paged_cr0_wp_probe(
+        &mut split_state,
+        &mut split_bus,
+        EFER,
+        context(),
+        1,
+        first.rflags_defined,
+        || false,
+        |write| split_writes.push(write),
+    );
+    assert_eq!(second.exit, PagedProbeExit::BudgetExhausted);
+    assert_eq!(second.instructions_executed, 1);
+    assert!(second.translation_context_changes.is_empty());
+    assert_eq!(split_state, whole_state);
+    assert_eq!(qword(&mut split_bus, DATA_PHYSICAL), payload);
+    assert_eq!(split_writes, whole_writes);
+}
+
+#[test]
+fn cr0_wp_set_faults_readonly_store_without_data_or_dirty_commit() {
+    let original = 0x0123_4567_89ab_cdef;
+    let payload = 0xfedc_ba98_7654_3210;
+    let mut bus = cr0_wp_fixture();
+    put(&mut bus, DATA_PHYSICAL, original);
+    let mut state = initial_cr0_wp_state(CR0, payload);
+    state.cr0 = Some(CR0_WP_CLEAR);
+    let mut writes = Vec::new();
+
+    let result = run_paged_cr0_wp_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || false,
+        |write| writes.push(write),
+    );
+    assert_eq!(
+        result.exit,
+        PagedProbeExit::Fault(ArchitecturalFault {
+            vector: 14,
+            error_code: Some(3),
+            linear_address: Some(DATA_LINEAR),
+        })
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(state.cr0, Some(CR0));
+    assert_eq!(state.rip, CODE_LINEAR + 3);
+    assert_eq!(
+        result.translation_context_changes,
+        [od_isa::TranslationContextChange::Cr0Write {
+            old_cr0: CR0_WP_CLEAR,
+            new_cr0: CR0,
+        }]
+    );
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL), original);
+    let data_pte = qword(&mut bus, 0x5000);
+    assert_eq!(data_pte & (1 << 6), 0, "faulted store must not set D");
+    assert!(!writes.contains(&range(DATA_PHYSICAL)));
+}
+
+#[test]
+fn stop_after_mov_cr0_precedes_operand_walk_and_profile_rejects_invalid_state() {
+    let mut bus = cr0_wp_fixture();
+    let mut state = initial_cr0_wp_state(CR0_WP_CLEAR, 0xfeed_face_cafe_beef);
+    let mut polls = 0;
+    let stopped = run_paged_cr0_wp_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || {
+            polls += 1;
+            polls == 2
+        },
+        |_| {},
+    );
+    assert_eq!(stopped.exit, PagedProbeExit::Stopped);
+    assert_eq!(stopped.instructions_executed, 1);
+    assert_eq!(state.cr0, Some(CR0_WP_CLEAR));
+    assert_eq!(state.rip, CODE_LINEAR + 3);
+    let data_pte = qword(&mut bus, 0x5000);
+    assert_eq!(data_pte & ((1 << 5) | (1 << 6)), 0);
+
+    state.cr0 = Some(CR0 | (1 << 6));
+    let invalid_before = state.clone();
+    let rejected = run_paged_cr0_wp_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        1,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+    assert!(matches!(rejected.exit, PagedProbeExit::Rejected(_)));
+    assert_eq!(rejected.instructions_executed, 0);
+    assert_eq!(state, invalid_before);
+
+    state.cr0 = Some(CR0);
+    state.cr3 = None;
+    let missing_cr3 = run_paged_cr0_wp_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        1,
+        FLAGS_DEFINED,
+        || false,
+        |_| {},
+    );
+    assert_eq!(
+        missing_cr3.exit,
+        PagedProbeExit::Rejected(PagedProbeRejection::CpuCr3Required)
+    );
+    assert_eq!(missing_cr3.instructions_executed, 0);
+}
+
+#[test]
+fn cr0_wp_profile_rejects_qword_store_crossing_a_guest_page() {
+    let mut bus = cr0_wp_fixture();
+    let mut state = initial_cr0_wp_state(CR0_WP_CLEAR, 0xfeed_face_cafe_beef);
+    state.gpr[Register::Rbx as usize] = DATA_LINEAR + 0xff9;
+    let original = qword(&mut bus, DATA_PHYSICAL);
+    let mut writes = Vec::new();
+
+    let result = run_paged_cr0_wp_probe(
+        &mut state,
+        &mut bus,
+        EFER,
+        context(),
+        2,
+        FLAGS_DEFINED,
+        || false,
+        |write| writes.push(write),
+    );
+    assert_eq!(result.instructions_executed, 1);
+    assert_eq!(result.exit, PagedProbeExit::Unsupported { opcode: 0x89 });
+    assert!(result.page_fault.is_none());
+    assert!(result.memory_error.is_none());
+    assert_eq!(qword(&mut bus, DATA_PHYSICAL), original);
+    assert!(!writes.contains(&range(DATA_PHYSICAL)));
 }

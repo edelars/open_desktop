@@ -6,9 +6,10 @@ use crate::{
 };
 use od_isa::LongModeState;
 use od_isa::execute::{
-    PagedCpl0Cr3ProbeV1, PagedCpl0ProbeV1, PagedCpl0StackProbeV1, PagedProbeExit as CpuProbeExit,
-    PagedProbeRejection as CpuProbeRejection, TranslationContextChange,
-    TranslationContextChangeReason, step_paged_cr3_probe, step_paged_probe, step_paged_stack_probe,
+    PagedCpl0Cr0WpProbeV1, PagedCpl0Cr3ProbeV1, PagedCpl0ProbeV1, PagedCpl0StackProbeV1,
+    PagedProbeExit as CpuProbeExit, PagedProbeRejection as CpuProbeRejection,
+    TranslationContextChange, step_paged_cr0_wp_probe, step_paged_cr3_probe, step_paged_probe,
+    step_paged_stack_probe,
 };
 use od_isa::memory::{
     AccessContext, AccessOrigin, ArchitecturalFault, GuestMemory, MemoryError, PageFaultRecord,
@@ -27,6 +28,11 @@ pub enum PagedProbeRejection {
         cr4: Option<u64>,
         efer: u64,
     },
+    Cr0WpProfileMismatch {
+        cr0: Option<u64>,
+        cr4: Option<u64>,
+        efer: u64,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -40,6 +46,19 @@ pub enum PagedProbeIntegrationError {
     Cr3SnapshotRejected {
         effect: TranslationContextChange,
         error: crate::ProbeConfigError,
+    },
+    Cr0EffectMismatch {
+        active_cr0: u64,
+        effect_old_cr0: u64,
+        cpu_cr0: Option<u64>,
+        effect_new_cr0: u64,
+    },
+    Cr0SnapshotRejected {
+        effect: TranslationContextChange,
+        error: crate::ProbeConfigError,
+    },
+    UnexpectedContextChange {
+        effect: TranslationContextChange,
     },
 }
 
@@ -65,8 +84,8 @@ pub struct PagedProbeQuantumReport {
     pub page_fault: Option<PageFaultRecord>,
     /// The exact last non-architectural RAM/backend classification.
     pub memory_error: Option<TrackedAccessError>,
-    /// CPU-owned CR3 changes applied to the active immutable snapshot during
-    /// this quantum, in retirement order.
+    /// CPU-owned CR0/CR3 changes applied to the active immutable snapshot
+    /// during this quantum, in retirement order.
     pub translation_context_changes: Vec<TranslationContextChange>,
 }
 
@@ -85,6 +104,7 @@ pub fn run_paged_probe(
     committed_write: impl FnMut(GuestPhysicalRange),
 ) -> PagedProbeQuantumReport {
     run_paged_probe_inner(
+        false,
         false,
         false,
         state,
@@ -116,6 +136,7 @@ pub fn run_paged_stack_probe(
     run_paged_probe_inner(
         true,
         false,
+        false,
         state,
         bus,
         cr3,
@@ -145,6 +166,36 @@ pub fn run_paged_cr3_probe(
     run_paged_probe_inner(
         false,
         true,
+        false,
+        state,
+        bus,
+        0,
+        efer,
+        context,
+        instruction_budget,
+        rflags_defined,
+        stop,
+        committed_write,
+    )
+}
+
+/// Run the opt-in CPU-owned CR0.WP quantum. A successful MOV CR0 effect is
+/// applied to the immutable paging snapshot before the next STOP poll or
+/// instruction access.
+pub fn run_paged_cr0_wp_probe(
+    state: &mut LongModeState,
+    bus: &mut MachineBus,
+    efer: u64,
+    context: AccessContext,
+    instruction_budget: u64,
+    rflags_defined: u64,
+    stop: impl FnMut() -> bool,
+    committed_write: impl FnMut(GuestPhysicalRange),
+) -> PagedProbeQuantumReport {
+    run_paged_probe_inner(
+        false,
+        false,
+        true,
         state,
         bus,
         0,
@@ -160,6 +211,7 @@ pub fn run_paged_cr3_probe(
 fn run_paged_probe_inner(
     stack_profile: bool,
     cpu_cr3_profile: bool,
+    cpu_cr0_wp_profile: bool,
     state: &mut LongModeState,
     bus: &mut MachineBus,
     cr3: u64,
@@ -173,7 +225,10 @@ fn run_paged_probe_inner(
     let mut instructions_executed = 0;
     let mut current_rflags_defined = rflags_defined;
     let mut translation_context_changes = Vec::new();
-    if !cpu_cr3_profile && let Some(value) = state.cr3 {
+    if !cpu_cr3_profile
+        && !cpu_cr0_wp_profile
+        && let Some(value) = state.cr3
+    {
         return report(
             PagedProbeExit::Rejected(PagedProbeRejection::CpuOwnedCr3State { value }),
             instructions_executed,
@@ -183,7 +238,7 @@ fn run_paged_probe_inner(
             &translation_context_changes,
         );
     }
-    if cpu_cr3_profile && state.cr3.is_none() {
+    if (cpu_cr3_profile || cpu_cr0_wp_profile) && state.cr3.is_none() {
         return report(
             PagedProbeExit::Rejected(PagedProbeRejection::CpuCr3Required),
             instructions_executed,
@@ -193,7 +248,7 @@ fn run_paged_probe_inner(
             &translation_context_changes,
         );
     }
-    if cpu_cr3_profile {
+    if cpu_cr3_profile || cpu_cr0_wp_profile {
         if context.mode != od_isa::memory::InstructionMode::Long64 {
             return report(
                 PagedProbeExit::Rejected(PagedProbeRejection::Cpu(CpuProbeRejection::WrongMode)),
@@ -230,16 +285,33 @@ fn run_paged_probe_inner(
                 &translation_context_changes,
             );
         }
-        if state.cr0 != Some(od_isa::execute::Cr0Profile::BASE)
+        let cr_profile_matches = if cpu_cr0_wp_profile {
+            state.cr0.is_some_and(|cr0| {
+                cr0 == od_isa::execute::Cr0Profile::BASE
+                    || cr0 == (od_isa::execute::Cr0Profile::BASE & !(1 << 16))
+            })
+        } else {
+            state.cr0 == Some(od_isa::execute::Cr0Profile::BASE)
+        };
+        if !cr_profile_matches
             || state.cr4 != Some(od_isa::execute::Cr4Profile::BASE)
             || efer != 0xd00
         {
-            return report(
-                PagedProbeExit::Rejected(PagedProbeRejection::Cr3ProfileMismatch {
+            let rejection = if cpu_cr0_wp_profile {
+                PagedProbeRejection::Cr0WpProfileMismatch {
                     cr0: state.cr0,
                     cr4: state.cr4,
                     efer,
-                }),
+                }
+            } else {
+                PagedProbeRejection::Cr3ProfileMismatch {
+                    cr0: state.cr0,
+                    cr4: state.cr4,
+                    efer,
+                }
+            };
+            return report(
+                PagedProbeExit::Rejected(rejection),
                 instructions_executed,
                 current_rflags_defined,
                 None,
@@ -248,7 +320,7 @@ fn run_paged_probe_inner(
             );
         }
     }
-    let mut active_paging = if cpu_cr3_profile {
+    let mut active_paging = if cpu_cr3_profile || cpu_cr0_wp_profile {
         let cr3 = state.cr3.expect("CPU CR3 presence was checked above");
         match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
             Ok(paging) => Some(paging),
@@ -317,7 +389,20 @@ fn run_paged_probe_inner(
         };
         // One selected CPU entry owns decode and instruction choice. The
         // machine never peeks at guest opcodes or retries another entry.
-        let cpu = if cpu_cr3_profile {
+        let cpu = if cpu_cr0_wp_profile {
+            step_paged_cr0_wp_probe(
+                PagedCpl0Cr0WpProbeV1,
+                state,
+                &mut memory,
+                &mut pio,
+                AccessContext {
+                    origin: AccessOrigin::Explicit,
+                    ..context
+                },
+                efer,
+                current_rflags_defined,
+            )
+        } else if cpu_cr3_profile {
             step_paged_cr3_probe(
                 PagedCpl0Cr3ProbeV1,
                 state,
@@ -423,34 +508,92 @@ fn run_paged_probe_inner(
                 );
             }
             CpuProbeExit::TranslationContextChange(effect) => {
-                let active_cr3 = paging.cr3();
-                if effect.reason != TranslationContextChangeReason::Cr3Write
-                    || effect.old_cr3 != active_cr3
-                    || state.cr3 != Some(effect.new_cr3)
-                {
-                    return report(
-                        PagedProbeExit::IntegrationError(
-                            PagedProbeIntegrationError::Cr3EffectMismatch {
-                                active_cr3,
-                                effect_old_cr3: effect.old_cr3,
-                                cpu_cr3: state.cr3,
-                                effect_new_cr3: effect.new_cr3,
-                            },
-                        ),
-                        instructions_executed,
-                        current_rflags_defined,
-                        page_fault,
-                        memory_error,
-                        &translation_context_changes,
-                    );
-                }
-                let candidate = match Long64ProbeConfig::from_cpu_state(state, effect.new_cr3, efer)
-                {
-                    Ok(candidate) => candidate,
-                    Err(error) => {
+                let candidate = match effect {
+                    TranslationContextChange::Cr3Write { old_cr3, new_cr3 }
+                        if !cpu_cr0_wp_profile =>
+                    {
+                        let active_cr3 = paging.cr3();
+                        if old_cr3 != active_cr3 || state.cr3 != Some(new_cr3) {
+                            return report(
+                                PagedProbeExit::IntegrationError(
+                                    PagedProbeIntegrationError::Cr3EffectMismatch {
+                                        active_cr3,
+                                        effect_old_cr3: old_cr3,
+                                        cpu_cr3: state.cr3,
+                                        effect_new_cr3: new_cr3,
+                                    },
+                                ),
+                                instructions_executed,
+                                current_rflags_defined,
+                                page_fault,
+                                memory_error,
+                                &translation_context_changes,
+                            );
+                        }
+                        match Long64ProbeConfig::from_cpu_state(state, new_cr3, efer) {
+                            Ok(candidate) => candidate,
+                            Err(error) => {
+                                return report(
+                                    PagedProbeExit::IntegrationError(
+                                        PagedProbeIntegrationError::Cr3SnapshotRejected {
+                                            effect,
+                                            error,
+                                        },
+                                    ),
+                                    instructions_executed,
+                                    current_rflags_defined,
+                                    page_fault,
+                                    memory_error,
+                                    &translation_context_changes,
+                                );
+                            }
+                        }
+                    }
+                    TranslationContextChange::Cr0Write { old_cr0, new_cr0 }
+                        if cpu_cr0_wp_profile =>
+                    {
+                        let active_cr0 = paging.cr0();
+                        if old_cr0 != active_cr0 || state.cr0 != Some(new_cr0) {
+                            return report(
+                                PagedProbeExit::IntegrationError(
+                                    PagedProbeIntegrationError::Cr0EffectMismatch {
+                                        active_cr0,
+                                        effect_old_cr0: old_cr0,
+                                        cpu_cr0: state.cr0,
+                                        effect_new_cr0: new_cr0,
+                                    },
+                                ),
+                                instructions_executed,
+                                current_rflags_defined,
+                                page_fault,
+                                memory_error,
+                                &translation_context_changes,
+                            );
+                        }
+                        let cr3 = state.cr3.expect("CPU CR3 was admitted before execution");
+                        match Long64ProbeConfig::from_cpu_state(state, cr3, efer) {
+                            Ok(candidate) => candidate,
+                            Err(error) => {
+                                return report(
+                                    PagedProbeExit::IntegrationError(
+                                        PagedProbeIntegrationError::Cr0SnapshotRejected {
+                                            effect,
+                                            error,
+                                        },
+                                    ),
+                                    instructions_executed,
+                                    current_rflags_defined,
+                                    page_fault,
+                                    memory_error,
+                                    &translation_context_changes,
+                                );
+                            }
+                        }
+                    }
+                    _ => {
                         return report(
                             PagedProbeExit::IntegrationError(
-                                PagedProbeIntegrationError::Cr3SnapshotRejected { effect, error },
+                                PagedProbeIntegrationError::UnexpectedContextChange { effect },
                             ),
                             instructions_executed,
                             current_rflags_defined,

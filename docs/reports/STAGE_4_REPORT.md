@@ -298,6 +298,18 @@ permission fault и сохранение CPU state/нулевого retirement �
   [контракт](../specs/MACHINE_CONTRACT.md#cpu-owned-cr3-translation-handoff-s4-12c)
   и [manifest](data/stage4/s4-12c-mov-cr3-machine.json). Родитель S4-12 остаётся
   открытым для EFER, startup transitions и TLB/invalidation.
+- S4-12d добавляет CPU-owned CR0.WP handoff для exact `MOV CR0,RAX` с двумя
+  разрешёнными значениями CR0 и следующей supervisor-записи `MOV [RBX],RCX`.
+  Машина применяет новый immutable snapshot до следующего poll/fetch/access;
+  проверены WP `1→0`, точный fault для `0→1`, STOP/fetch boundaries и отсутствие
+  data/D commit при fault. Direct CPU path разделяет #GP для bare MOV CR0 и
+  profile rejection для обычной записи вне CPL0, отвергает cross-page stores
+  до доступа к данным; только exact LOCK MOV CR0 даёт #UD. Итоговая независимая
+  проверка и ссылки: [отчёт](STAGE_4_S4-12D_2026-11-06.md),
+  [contract](../specs/CPU_CONTRACT.md#paged-cpu-owned-cr0wp-profile-pagedcpl0cr0wpprobev1-s4-12d),
+  [machine contract](../specs/MACHINE_CONTRACT.md#cpu-owned-cr0wp-translation-handoff-s4-12d)
+  и [manifest](data/stage4/s4-12d-cr0-wp-machine.json). Полный S4-12 остаётся
+  открытым.
 - S4-13a добавляет opt-in one-entry pure-translation cache и release comparison
   harness. Три процесса завершили 600 retained paired samples на synthetic
   profiles; результаты включают locality wins и two-page alternating slowdown,

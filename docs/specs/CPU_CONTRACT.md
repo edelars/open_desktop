@@ -205,6 +205,39 @@ and Vol. 2B, `MOV—Move to/from Control Registers`. See the
 [Vol. 3A PDF](https://cdrdv2.intel.com/v1/dl/getContent/671190), and
 [Vol. 2B PDF](https://cdrdv2.intel.com/v1/dl/getContent/671241).
 
+### Paged CPU-owned CR0.WP profile `PagedCpl0Cr0WpProbeV1` (S4-12d)
+
+`step_paged_cr0_wp_probe` is an opt-in Long64/CPL0 CPU entry with CPU-owned
+CR0 and CR3, fixed CR4=`0x20` and EFER=`0xd00`. The only admitted CR0 values
+are `Cr0Profile::BASE` (`0x80010033`, WP=1) and that value with WP cleared
+(`0x80000033`). It admits exact bare `0F 22 C0` (`MOV CR0,RAX`) and exact
+`48 89 0B` (`MOV [RBX],RCX`). Other instructions/forms and any other CR0 value
+are Unsupported by this profile; they do not imply an architectural exception
+classification for values outside its allowlist. Exact `F0 0F 22 C0` (LOCK
+`MOV CR0,RAX`) raises #UD after complete fetch.
+
+Successful `MOV CR0` commits CPU state and RIP, retires once, clears
+arithmetic-flags definedness while preserving concrete RFLAGS, and returns a
+typed `TranslationContextChange::Cr0Write { old_cr0, new_cr0 }` effect even
+for an identical value. The machine must consume it before the next STOP poll,
+fetch or operand access. The effect itself performs no walk or A/D update; the
+fetch of `MOV CR0` may already have committed A effects. Exact `MOV CR0,RAX` at
+CPL1–3 faults with #GP(0) after fetch, with no CPU commit, retirement or
+effect. At nonzero CPL the bounded CPU entry rejects the ordinary store with
+`WrongPrivilege` after fetch, without data access or retirement; it does not
+report that as guest #GP. The separate machine runner rejects all non-CPL0
+contexts before fetch. At the next access, WP=0 permits
+supervisor writes through read-only page-table entries; WP=1 enforces their
+R/W permissions. A read-only page write denied under WP=1 may retain prior A
+updates, but does not commit data or D. The profile starts only at code-page
+offsets where the full bounded decode cannot cross a page. Exact store operands
+must fit one 4 KiB page; a crossing store is Unsupported before memory access.
+
+Normative source: Intel 64 and IA-32 Architectures Software Developer's Manual,
+Revision 093, Vol. 2B `MOV—Move to/from Control Registers`, and Vol. 3A §§2.5,
+5.1.3 and 5.6.1 (CR0 fields and supervisor write protection). See the
+[official Intel SDM index](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html).
+
 ### Cross-page fetch for `PagedMovCrossPageDwordReadLong64V1` (S4-11d)
 
 Only for the exact `8B 03` form in this opt-in profile, one vCPU, synthetic
