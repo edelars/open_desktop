@@ -83,104 +83,43 @@ enum MachineActionTable {
 
 // MARK: texts
 
-/// A line for the row and its details. The catalog of user texts for every error code is S11-09; this is the minimum that the library needs
-/// without inventing a state.
+/// A line for the row and its details. The words come from `ErrorCatalog` through `ErrorPresentation` (S11-09): the headline has no code and
+/// no path, the explanation and the action are under it, the code, the request ID, the log and the time are in the details.
 struct MachineNotice: Equatable {
     var text: String
     var details: String?
     /// The line names the cause of the end of the process (a protocol violation, `failed`, a refused start): when the process ends it stays
     /// the headline and the exit status goes to the details. A line about something else (a refused pause) goes to the details instead.
     var explainsExit = false
+    /// The explanation and the action of the catalog entry (the second line).
+    var hint: String?
 
-    /// The text that the plan asks for when the VMHost answers `busy` (the bundle lock is held).
-    static let busyText = "машина уже запущена другим процессом"
-
-    static func startFailed(_ reason: String, details: String? = nil) -> MachineNotice {
-        MachineNotice(text: "Не удалось запустить: \(reason).", details: details)
+    /// The title alone: a line about the process itself ("Процесс машины аварийно завершился").
+    static func plain(_ presentation: ErrorPresentation, explainsExit: Bool = false) -> MachineNotice {
+        MachineNotice(text: presentation.title, details: presentation.details, explainsExit: explainsExit, hint: presentation.message)
     }
 
-    static func rejection(_ rejection: StartRejection) -> MachineNotice {
-        switch rejection {
-        case .busy:
-            return .startFailed(busyText, details: "busy (CONTROL_PROTOCOL_V2.md 12.1): блокировка bundle занята. Возможна и ложная занятость на мгновение: повторите запуск.")
-        case .lockChanged:
-            return .startFailed("файл блокировки bundle был заменён", details: "lock_changed")
-        case .lockInvalid:
-            return .startFailed("файл блокировки bundle не является обычным файлом", details: "lock_invalid")
-        case .ioError(let errno):
-            return .startFailed("ошибка ввода-вывода при открытии bundle", details: "io_error, errno \(errno)")
-        case .other(let code):
-            return .startFailed("VMHost отказался запускаться", details: "неизвестный код \(code)")
-        }
+    /// "Не удалось запустить: <title of the entry>."
+    static func startFailed(_ presentation: ErrorPresentation, explainsExit: Bool = false) -> MachineNotice {
+        MachineNotice(
+            text: "Не удалось запустить: \(presentation.fragment).", details: presentation.details, explainsExit: explainsExit,
+            hint: presentation.message)
     }
 
-    static func refusal(_ refusal: LaunchRefusal) -> MachineNotice {
-        switch refusal {
-        case .unsupportedDurability:
-            return .startFailed(
-                "у машины есть диски, а сохранность данных до закрытия S9-06 не гарантируется",
-                details: "unsupported_durability (VM_BUNDLE.md 3.4 п. 4): VMHost не запускался")
-        case .unsupported(let field):
-            return .startFailed("конфигурация требует устройства, которого нет у профиля (\(field))", details: "unsupported: \(field)")
-        case .hostMemoryExceeded(let requested, let limit):
-            return .startFailed(
-                "памяти машины (\(requested) МиБ) больше половины памяти компьютера (\(limit) МиБ)",
-                details: "host_memory_exceeded")
-        }
-    }
-
-    /// The words for a refusal of a request (`ERROR`): the minimum of texts, the rest is S11-09.
-    static func reason(_ report: ControlV2ErrorReport) -> String {
-        switch ControlV2ErrorCode(rawValue: report.code) {
-        case .pauseTimeout?: return "машина не дошла до безопасной точки за 5 с и продолжает работать"
-        case .invalidState?: return "операция недоступна в этом состоянии"
-        case .operationInProgress?: return "предыдущая операция ещё выполняется"
-        case .unsupportedDurability?: return "до закрытия S9-06 операция недоступна для машины с дисками"
-        case .hostMemoryExceeded?: return "памяти машины больше половины памяти компьютера"
-        case .unsupported?: return "конфигурация требует устройства, которого нет у профиля"
-        case .invalidConfig?, .invalidName?: return "VMHost отверг конфигурацию"
-        case .busy?: return busyText
-        default: return "ошибка VMHost (код \(report.code))"
-        }
-    }
-
-    static func details(_ report: ControlV2ErrorReport) -> String {
-        let name = ControlV2ErrorCode(rawValue: report.code).map { String(describing: $0) } ?? "неизвестный код"
-        return "\(name), код \(report.code)"
-    }
-
-    static func refused(_ report: ControlV2ErrorReport, operation: String) -> MachineNotice {
-        MachineNotice(text: "\(operation): \(reason(report)).", details: details(report))
+    /// "<operation>: <title of the entry>." for a refusal of a request (`ERROR`); the state does not change by it.
+    static func refused(_ report: ControlV2ErrorReport, operation: String, requestID: UInt32? = nil, context: ErrorContext) -> MachineNotice {
+        var context = context
+        context.requestID = requestID ?? context.requestID
+        let presentation = ErrorPresentation.control(report, context: context)
+        return MachineNotice(text: "\(operation): \(presentation.fragment).", details: presentation.details, hint: presentation.message)
     }
 
     /// The last fact about a process: what its end says. `nil` for a normal end (status 0) that the user asked for or that came after
     /// `stopped`. Never a "success" for a status that is not 0 and never a message without the status in the details.
-    static func exit(_ exit: ControlClientExit) -> MachineNotice? {
-        if let rejection = exit.startRejection { return .rejection(rejection) }
-        switch exit.termination {
-        case .signaled(let signal):
-            let name = String(cString: strsignal(signal))
-            return MachineNotice(text: "VMHost завершён сигналом \(signal).", details: "\(name); статус процесса: сигнал \(signal)")
-        case .unavailable:
-            return nil
-        case .exited(let code):
-            switch exit.disposition {
-            case .stopped:
-                return nil
-            case .usageError:
-                return MachineNotice(text: "VMHost не принял аргументы запуска.", details: "код выхода \(code)")
-            case .startRejected:
-                return MachineNotice(text: "VMHost отказался запускаться.", details: "код выхода \(code)")
-            case .protocolError:
-                return MachineNotice(text: "VMHost закрыл соединение из-за нарушения протокола.", details: "код выхода \(code)")
-            case .transportLost:
-                return MachineNotice(text: "VMHost потерял связь с приложением.", details: "код выхода \(code)")
-            case .hostFailed:
-                return MachineNotice(text: "VMHost сообщил о сбое и завершился.", details: "код выхода \(code)")
-            case .killedBySignal, .unavailable, .unexpected:
-                return MachineNotice(text: "VMHost завершился с неожиданным кодом \(code).", details: "код выхода \(code)")
-            }
-        }
+    static func exit(_ exit: ControlClientExit, context: ErrorContext) -> MachineNotice? {
+        guard let presentation = ErrorPresentation.exit(exit, context: context) else { return nil }
+        if exit.startRejection != nil { return .startFailed(presentation) }
+        return .plain(presentation)
     }
 }
 
@@ -317,6 +256,11 @@ final class MachineController: ObservableObject, Identifiable {
 
     func dismissNotice() { notice = nil }
 
+    /// What the details of an error of this machine need besides the error: the bundle (the log is in it) and the request, when known.
+    private func errorContext(requestID: UInt32? = nil) -> ErrorContext {
+        ErrorContext(requestID: requestID, bundleURL: entry.bundleURL)
+    }
+
     // MARK: actions
 
     func start() {
@@ -325,11 +269,11 @@ final class MachineController: ObservableObject, Identifiable {
         lastQueryText = nil
         if let refusal = config.launchRefusal(hostMemoryBytes: hostMemoryBytes) {
             // Section 7.3 and VM_BUNDLE 3.5: the controlling process applies the same order locally and does not spawn a VMHost.
-            notice = .refusal(refusal)
+            notice = .startFailed(ErrorPresentation.refusal(refusal, context: errorContext()))
             return
         }
         guard vmhost.isExecutable else {
-            notice = .startFailed("VMHost не найден", details: vmhost.url.path)
+            notice = .startFailed(ErrorPresentation.client(.vmhostMissing, technical: "Путь: \(vmhost.url.path)", context: errorContext()))
             return
         }
         generation += 1
@@ -342,7 +286,7 @@ final class MachineController: ObservableObject, Identifiable {
         } catch {
             runState = .stopped
             session = nil
-            notice = .startFailed("не удалось запустить процесс VMHost", details: "\(error)")
+            notice = .startFailed(ErrorPresentation.client(.spawnFailed, technical: "\(error)", context: errorContext()))
         }
     }
 
@@ -381,7 +325,7 @@ final class MachineController: ObservableObject, Identifiable {
             case .success(.ack):
                 self.lastQueryText = nil
             case .failure(.refused(let report)):
-                self.notice = .refused(report, operation: "Обновление")
+                self.notice = .refused(report, operation: "Обновление", context: self.errorContext())
             case .failure:
                 break // the connection ended: `exited` follows and says why
             }
@@ -397,7 +341,7 @@ final class MachineController: ObservableObject, Identifiable {
             self.requestInFlight = false
             if case .failure(.refused(let report)) = result {
                 // The state does not change by a refusal (7.2): the row stays what the last event made it.
-                self.notice = .refused(report, operation: operation)
+                self.notice = .refused(report, operation: operation, context: self.errorContext())
             }
             // `connectionClosed` and the like: the process is going away, `exited` follows with the real reason.
         }
@@ -413,21 +357,24 @@ final class MachineController: ObservableObject, Identifiable {
             beginConfigureAndStart()
         case .startRejected(let rejection):
             // The connection ends and `exited` follows; the reason is kept and shown at that point together with the exit status.
-            notice = .rejection(rejection)
+            notice = .startFailed(ErrorPresentation.rejection(rejection, context: errorContext()))
         case .stateChanged(_, let to, _, _):
             runState = MachineRunState(to)
             if to == .failed {
-                notice = MachineNotice(text: "VMHost не может установить состояние ресурсов машины и завершается.", details: "failed (CONTROL_PROTOCOL_V2.md 7.1)", explainsExit: true)
+                // The VMHost sent no `ERROR` here: the state came from `STATE_CHANGED`, so the entry is the catalog's and the details say so.
+                notice = .plain(
+                    ErrorPresentation(entry: ErrorCatalog.entry(for: ControlV2ErrorCode.hostFailure), details: "Состояние: failed (по событию STATE_CHANGED)"),
+                    explainsExit: true)
             }
         case .error(let report, let requestID):
             // An `ERROR` that answers a request is handled by the completion of that request; this one is not caused by a request.
             if requestID == 0 {
-                var line = MachineNotice.refused(report, operation: "VMHost")
+                var line = MachineNotice.plain(ErrorPresentation.control(report, context: errorContext(requestID: requestID)))
                 line.explainsExit = true
                 notice = line
             }
         case .protocolViolation(let text):
-            notice = MachineNotice(text: "VMHost нарушил протокол, соединение закрыто.", details: text, explainsExit: true)
+            notice = .plain(ErrorPresentation.client(.protocolViolation, technical: text, context: errorContext()), explainsExit: true)
         case .stats, .progress:
             break
         case .exited(let exit):
@@ -440,7 +387,7 @@ final class MachineController: ObservableObject, Identifiable {
         requestInFlight = false
         lastExit = exit
         runState = .stopped
-        guard let ended = MachineNotice.exit(exit) else { return } // a normal end keeps the line that explains an earlier refusal
+        guard let ended = MachineNotice.exit(exit, context: errorContext()) else { return } // a normal end keeps the line that explains an earlier refusal
         guard let earlier = notice, exit.startRejection == nil else {
             notice = ended
             return
@@ -448,14 +395,14 @@ final class MachineController: ObservableObject, Identifiable {
         if earlier.explainsExit {
             // An earlier line (a protocol violation, `failed`, a refused start) is the cause, the status is the last fact: both are kept.
             notice = MachineNotice(
-                text: earlier.text, details: [earlier.details, ended.text, ended.details].compactMap { $0 }.joined(separator: "; "),
-                explainsExit: true)
+                text: earlier.text, details: [earlier.details, ended.text, ended.details].compactMap { $0 }.joined(separator: "\n"),
+                explainsExit: true, hint: earlier.hint)
         } else {
             // An unexpected end (the process was not asked to stop): its reason is the headline. An unrelated earlier line (a refused
             // pause) is not the cause and moves to the details.
             notice = MachineNotice(
                 text: ended.text,
-                details: [ended.details, "Ранее: \(earlier.text)", earlier.details].compactMap { $0 }.joined(separator: "; "))
+                details: [ended.details, "Ранее: \(earlier.text)", earlier.details].compactMap { $0 }.joined(separator: "\n"), hint: ended.hint)
         }
     }
 
@@ -486,9 +433,7 @@ final class MachineController: ObservableObject, Identifiable {
     private func startSequenceFailed(_ error: ControlClientError, session: MachineSession) {
         switch error {
         case .refused(let report):
-            var line = MachineNotice.startFailed(MachineNotice.reason(report), details: MachineNotice.details(report))
-            line.explainsExit = true
-            notice = line
+            notice = .startFailed(ErrorPresentation.control(report, context: errorContext()), explainsExit: true)
             guard !report.fatal else { return } // the VMHost closes the connection itself
             let current = generation
             requestInFlight = true
@@ -500,9 +445,8 @@ final class MachineController: ObservableObject, Identifiable {
         case .connectionClosed:
             break // `exited` follows
         default:
-            var line = MachineNotice.startFailed("ошибка клиента control v2", details: "\(error)")
-            line.explainsExit = true
-            notice = line
+            notice = .startFailed(
+                ErrorPresentation.client(ClientIssue(error), technical: "\(error)", context: errorContext()), explainsExit: true)
             session.terminateSession()
         }
     }

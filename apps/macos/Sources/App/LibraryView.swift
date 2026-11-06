@@ -1,4 +1,5 @@
 import AppKit
+import ODShared
 import SwiftUI
 
 /// The window of the application (S11-06b): the list of machines, the actions on the selected one, the empty library.
@@ -162,7 +163,7 @@ struct DeleteMachineSheet: View {
             Toggle("Удалить файлы с диска", isOn: $deleteFiles)
                 .disabled(!canDeleteFiles)
             if !canDeleteFiles {
-                Text("У машины есть диски: до закрытия S9-06 сохранность данных не гарантируется (unsupported_durability). Файлы машины не удаляются, из списка её убрать можно.")
+                Text(ErrorCatalog.entry(for: .removalUnsupportedDurability).explanation + " " + ErrorCatalog.entry(for: .removalUnsupportedDurability).action)
                     .font(.caption)
                     .foregroundColor(.orange)
             }
@@ -173,6 +174,7 @@ struct DeleteMachineSheet: View {
                 .foregroundColor(.secondary)
             if let failure {
                 Text("Не удалось удалить: \(failure.text).").font(.caption).foregroundColor(.red).textSelection(.enabled)
+                Text(failure.hint).font(.caption2).foregroundColor(.secondary).textSelection(.enabled)
                 if let details = failure.details {
                     Text(details).font(.caption2).foregroundColor(.secondary).textSelection(.enabled)
                 }

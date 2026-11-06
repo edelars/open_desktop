@@ -416,6 +416,7 @@
 ### S11-09. Каталог ошибок и их показ
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-06):** реализован в рабочем дереве, ревью пройдено, **не принят**. Тексты — ключи плюс русские значения в `ErrorCatalog` (`Localizable.strings` — следующий шаг, нет ресурсов в SwiftPM). Владелец записи `vmhost.log` и передача Request ID в отказах — открытые вопросы, см. [отчёт](../reports/STAGE_11_REPORT.md).
 - **Где:** `docs/specs/USER_FACING_ERRORS.md` (новый), `apps/macos/Sources/Shared/ErrorCatalog.swift` (новый; общий для приложения и CLI), `apps/macos/Sources/App/ErrorPresentation.swift` (новый), `apps/macos/Resources/Localizable.strings` (en и ru), `apps/macos/Tests/ErrorCatalogTests.swift`.
 - **Сделать:**
   1. Таблица: каждый код `ERROR`/`ACK` control v2 (включая `unsupported_durability`, `unsupported_no_agent`, `busy`, `pause_timeout`), каждый exit status/сигнал VMHost, каждая ошибка мастера и каталога → заголовок (без кодов и путей), объяснение (одно-два предложения), действие пользователя, severity, нужно ли предлагать «Подробности».

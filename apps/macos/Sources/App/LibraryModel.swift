@@ -23,25 +23,21 @@ enum BundleRemovalError: Error, Equatable, CustomStringConvertible {
     /// An error that has no POSIX code; the argument is its technical description (for the details only).
     case other(String)
 
-    /// The words for the user: no raw codes (they are in `details`).
-    var description: String {
+    /// The entry of the catalog that tells this error (S11-09).
+    var issue: LibraryIssue {
         switch self {
-        case .notStopped: return "машина не остановлена"
-        case .unsupportedDurability: return "unsupported_durability: файлы машины с дисками не удаляются до закрытия S9-06"
-        case .notADirectory: return "это не каталог (или ссылка на каталог)"
-        case .notABundle: return "каталог не похож на машину (нужны суффикс .odvm и обычный файл config.plist)"
-        case .inUse: return MachineNotice.busyText
-        case .io(let code):
-            switch code {
-            case EACCES, EPERM: return "нет прав на изменение файлов машины"
-            case EBUSY, ETXTBSY: return "файл занят другой программой"
-            case EROFS: return "диск доступен только для чтения"
-            case ENOSPC: return "на диске нет места"
-            default: return "ошибка файловой системы"
-            }
-        case .other: return "ошибка файловой системы"
+        case .notStopped: return .removalNotStopped
+        case .unsupportedDurability: return .removalUnsupportedDurability
+        case .notADirectory: return .notADirectory
+        case .notABundle: return .notABundle
+        case .inUse: return .removalInUse
+        case .io(let code): return LibraryIssue(errno: code)
+        case .other: return .fileSystemError
         }
     }
+
+    /// The words for the user as a fragment of a sentence: the title of the catalog entry, no raw codes (they are in `details`).
+    var description: String { ErrorPresentation.lowercasedFirst(ErrorCatalog.entry(for: issue).title) }
 
     /// The technical part: the code that the user does not need in the sentence.
     var details: String? {
@@ -74,30 +70,35 @@ enum BundleRemovalError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// A failure for the screen: a sentence in Russian and the technical part kept apart (the banner and the sheets show the details on request).
+/// A failure for the screen: a fragment of a sentence in Russian (the title of the catalog entry), the explanation with the action, and the
+/// technical part kept apart (the banner and the sheets show the details on request).
 struct LibraryFailure: Equatable {
     var text: String
+    /// The explanation and the action of the catalog entry.
+    var hint: String
     var details: String?
 
     init(_ error: Error) {
+        let presentation: ErrorPresentation
         switch error {
         case let error as BundleRemovalError:
-            text = error.description
-            details = error.details
+            presentation = .library(error.issue, technical: error.details)
         case let error as CatalogError:
             switch error {
-            case .notADirectory(let path): (text, details) = ("это не каталог", "Путь: \(path)")
-            case .limitReached: (text, details) = ("в списке уже 1000 машин", nil)
-            case .indexTooLarge: (text, details) = ("список машин занял бы больше 4 МиБ", nil)
-            case .notFound(let path): (text, details) = ("записи нет в списке", "Путь: \(path)")
+            case .notADirectory(let path), .notFound(let path):
+                presentation = .library(LibraryIssue(error), technical: "Путь: \(path)")
+            case .limitReached, .indexTooLarge:
+                presentation = .library(LibraryIssue(error))
             case .io(let code):
-                let removal = BundleRemovalError.io(code)
-                (text, details) = ("не удалось записать список машин: " + removal.description, removal.details)
+                presentation = .library(LibraryIssue(error), technical: BundleRemovalError.io(code).details)
             }
         default:
             let removal = BundleRemovalError.from(error)
-            (text, details) = (removal.description, removal.details ?? "\(error)")
+            presentation = .library(removal.issue, technical: removal.details ?? "\(error)")
         }
+        text = presentation.fragment
+        hint = presentation.message
+        details = presentation.details
     }
 }
 
@@ -147,27 +148,25 @@ final class LibraryModel: ObservableObject {
 
     func load() {
         catalog.load()
-        setBanner(Self.banner(for: catalog.warnings))
+        setBanner(presentation: Self.banner(for: catalog.warnings))
         rebuild()
     }
 
     /// "Обновить": re-reads the bundles and asks the VMHost of a running machine once (`QUERY`). Never on a timer.
     func refresh() {
         catalog.load()
-        setBanner(Self.banner(for: catalog.warnings))
+        setBanner(presentation: Self.banner(for: catalog.warnings))
         rebuild()
         machines.forEach { $0.refresh() }
     }
 
-    private static func banner(for warnings: [CatalogWarning]) -> String? {
-        for warning in warnings {
-            switch warning {
-            case .indexCorrupt: return "Список машин был повреждён: он собран заново по каталогу машин. Копия повреждённого файла сохранена рядом."
-            case .indexNewerVersion: return "Список машин записан более новой версией приложения: изменения в нём не сохраняются."
-            case .limitReached: return "В каталоге больше 1000 машин: показаны первые 1000."
-            }
-        }
-        return nil
+    /// The first warning of the catalog, as the words of the catalog of errors (S11-09).
+    private static func banner(for warnings: [CatalogWarning]) -> ErrorPresentation? {
+        warnings.first.map { ErrorPresentation.library(LibraryIssue($0)) }
+    }
+
+    private func setBanner(presentation: ErrorPresentation?) {
+        setBanner(presentation?.fullText, details: presentation?.details)
     }
 
     private static func key(_ url: URL) -> String { url.resolvingSymlinksInPath().path }
@@ -243,7 +242,7 @@ final class LibraryModel: ObservableObject {
             switch try catalog.add(bundle: url) {
             case .added(let entry, let persisted):
                 openedThisRun.append(entry)
-                if !persisted { setBanner(Self.notSavedText) }
+                if !persisted { setBanner(presentation: Self.notSaved()) }
                 rebuild()
                 selection = entry.id
             case .alreadyListed(let entry):
@@ -256,7 +255,7 @@ final class LibraryModel: ObservableObject {
             if let entry = catalog.entries.first(where: { Self.key($0.bundleURL) == Self.key(url) }) {
                 openedThisRun.append(entry)
                 let failure = LibraryFailure(error)
-                setBanner(Self.notSavedText, details: [failure.text, failure.details].compactMap { $0 }.joined(separator: "; "))
+                setBanner(presentation: Self.notSaved(technical: [failure.text, failure.details].compactMap { $0 }.joined(separator: "\n")))
                 rebuild()
                 selection = entry.id
                 return true
@@ -266,13 +265,15 @@ final class LibraryModel: ObservableObject {
         }
     }
 
-    private static let notSavedText = "Список машин не сохранён: машина показана только до закрытия приложения."
+    private static func notSaved(technical: String? = nil) -> ErrorPresentation {
+        .library(.indexNotSaved, technical: technical)
+    }
 
     private func reportOpenFailure(_ url: URL, _ error: Error) {
         let failure = LibraryFailure(error)
         setBanner(
             "Не удалось открыть «\(url.lastPathComponent)»: \(failure.text).",
-            details: ["Путь: \(url.path)", failure.details].compactMap { $0 }.joined(separator: "; "))
+            details: ["Путь: \(url.path)", "Что делать: \(failure.hint)", failure.details].compactMap { $0 }.joined(separator: "\n"))
     }
 
     // MARK: deleting
@@ -306,8 +307,8 @@ final class LibraryModel: ObservableObject {
             let failure = LibraryFailure(indexFailure)
             let done = deleteFiles ? "Файлы машины удалены" : "Машина убрана из списка"
             setBanner(
-                "\(done), но список машин не удалось сохранить: \(failure.text). При следующем запуске она может появиться снова.",
-                details: failure.details)
+                "\(done), но \(failure.text). При следующем запуске она может появиться снова.",
+                details: ["Что делать: \(failure.hint)", failure.details].compactMap { $0 }.joined(separator: "\n"))
         }
     }
 

@@ -272,8 +272,8 @@ final class MachineControllerXCTests: XCTestCase {
         launcher.session.complete(.pause, .failure(.refused(report)))
         XCTAssertEqual(machine.runState, .running, "7.2: `pause_timeout` leaves `running`")
         XCTAssertEqual(machine.allowedActions, [.pause, .stop])
-        XCTAssertEqual(machine.notice?.text.contains("не дошла до безопасной точки"), true)
-        XCTAssertEqual(machine.notice?.details?.contains("код 10"), true)
+        XCTAssertEqual(machine.notice?.text, "Пауза: машина не успела приостановиться.")
+        XCTAssertEqual(machine.notice?.details?.contains("pause_timeout (10)"), true)
     }
 
     func testUnexpectedExitMakesItsReasonTheHeadlineNotTheEarlierRefusal() {
@@ -283,11 +283,11 @@ final class MachineControllerXCTests: XCTestCase {
         machine.pause()
         let report = ControlV2ErrorReport(code: ControlV2ErrorCode.pauseTimeout.rawValue, failedKind: ControlV2Kind.pause.rawValue, state: ControlV2State.running.rawValue)
         launcher.session.complete(.pause, .failure(.refused(report)))
-        XCTAssertEqual(machine.notice?.text.contains("не дошла до безопасной точки"), true)
+        XCTAssertEqual(machine.notice?.text.contains("не успела приостановиться"), true)
         launcher.emit(exitEvent(.signaled(SIGKILL))) // nobody asked for a STOP
-        XCTAssertEqual(machine.notice?.text, "VMHost завершён сигналом 9.")
-        XCTAssertEqual(machine.notice?.details?.contains("не дошла до безопасной точки"), true, "the earlier line is kept in the details")
-        XCTAssertEqual(machine.notice?.details?.contains("код 10"), true)
+        XCTAssertEqual(machine.notice?.text, "Процесс машины аварийно завершился")
+        XCTAssertEqual(machine.notice?.details?.contains("не успела приостановиться"), true, "the earlier line is kept in the details")
+        XCTAssertEqual(machine.notice?.details?.contains("pause_timeout (10)"), true)
     }
 
     func testStopEndsWithStoppedEventThenExit() {
@@ -349,14 +349,14 @@ final class MachineControllerXCTests: XCTestCase {
         XCTAssertEqual(machine.runState, .stopped)
         XCTAssertFalse(machine.hasSession)
         XCTAssertEqual(machine.lastExit?.disposition, .killedBySignal)
-        XCTAssertEqual(machine.notice?.text, "VMHost завершён сигналом 9.")
-        XCTAssertEqual(machine.notice?.details?.contains("9"), true)
+        XCTAssertEqual(machine.notice?.text, "Процесс машины аварийно завершился")
+        XCTAssertEqual(machine.notice?.details?.contains("Сигнал: 9"), true)
         XCTAssertEqual(machine.allowedActions, [.start, .delete])
     }
 
     func testExitStatusesOfSection123() {
         let cases: [(Int32, String)] = [
-            (2, "не принял аргументы"), (4, "нарушения протокола"), (5, "потерял связь"), (6, "о сбое"), (77, "неожиданным кодом 77"),
+            (2, "не запустился"), (4, "Нарушен обмен"), (5, "Связь с процессом машины потеряна"), (6, "Сбой процесса машины"), (77, "завершился неожиданно"),
         ]
         for (code, fragment) in cases {
             let launcher = FakeLauncher()
@@ -380,8 +380,9 @@ final class MachineControllerXCTests: XCTestCase {
         launcher.emit(exitEvent(.exited(6)))
         XCTAssertEqual(machine.runState, .stopped)
         XCTAssertEqual(machine.lastExit?.disposition, .hostFailed)
-        XCTAssertEqual(machine.notice?.text.contains("не может установить состояние ресурсов"), true, "the cause is kept next to the status")
-        XCTAssertEqual(machine.notice?.details?.contains("код выхода 6"), true)
+        XCTAssertEqual(machine.notice?.text, "Сбой процесса машины", "the cause is kept next to the status")
+        XCTAssertEqual(machine.notice?.details?.contains("Состояние: failed (по событию STATE_CHANGED)"), true, "no ERROR was sent: the state came from the event")
+        XCTAssertEqual(machine.notice?.details?.contains("Статус процесса: 6"), true)
     }
 
     func testProtocolViolationKeepsItsTextNextToTheSignal() {
@@ -390,9 +391,9 @@ final class MachineControllerXCTests: XCTestCase {
         runToRunning(machine, launcher)
         launcher.emit(.protocolViolation("bad frame"))
         launcher.emit(exitEvent(.signaled(SIGTERM)))
-        XCTAssertEqual(machine.notice?.text, "VMHost нарушил протокол, соединение закрыто.")
+        XCTAssertEqual(machine.notice?.text, "Нарушен обмен с процессом машины")
         XCTAssertEqual(machine.notice?.details?.contains("bad frame"), true)
-        XCTAssertEqual(machine.notice?.details?.contains("сигналом 15"), true)
+        XCTAssertEqual(machine.notice?.details?.contains("Сигнал: 15"), true)
     }
 
     func testLaunchRefusalForDisksDoesNotSpawnAVMHost() {
@@ -413,7 +414,8 @@ final class MachineControllerXCTests: XCTestCase {
         let machine = makeController(launcher, status: status) // the host has 64 GiB: the limit is 32768 MiB
         machine.start()
         XCTAssertEqual(launcher.launches.count, 0)
-        XCTAssertEqual(machine.notice?.details, "host_memory_exceeded")
+        XCTAssertEqual(machine.notice?.details?.contains("host_memory_exceeded (12)"), true)
+        XCTAssertEqual(machine.notice?.details?.contains("40000"), true, "the requested size is in the details, not in the headline")
     }
 
     func testSpawnFailureLeavesAStoppedMachine() {
@@ -423,7 +425,7 @@ final class MachineControllerXCTests: XCTestCase {
         machine.start()
         XCTAssertEqual(machine.runState, .stopped)
         XCTAssertFalse(machine.hasSession)
-        XCTAssertEqual(machine.notice?.text, "Не удалось запустить: не удалось запустить процесс VMHost.")
+        XCTAssertEqual(machine.notice?.text, "Не удалось запустить: не получилось создать процесс машины.")
     }
 
     func testMissingVMHostIsReportedWithoutSpawning() {
@@ -431,7 +433,7 @@ final class MachineControllerXCTests: XCTestCase {
         let machine = makeController(launcher, executable: false)
         machine.start()
         XCTAssertEqual(launcher.launches.count, 0)
-        XCTAssertEqual(machine.notice?.text, "Не удалось запустить: VMHost не найден.")
+        XCTAssertEqual(machine.notice?.text, "Не удалось запустить: процесс машины не найден.")
     }
 
     func testIncompatibleOrDamagedBundleCannotStart() {

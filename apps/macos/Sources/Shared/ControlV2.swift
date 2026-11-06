@@ -100,7 +100,7 @@ public enum ControlV2Reason: UInt32 {
 }
 
 /// Codes of `ERROR` (section 12.1). The set is closed for the sender.
-public enum ControlV2ErrorCode: UInt32 {
+public enum ControlV2ErrorCode: UInt32, CaseIterable {
     case invalidState = 1
     case invalidConfig = 2
     case notConfigured = 3

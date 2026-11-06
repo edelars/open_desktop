@@ -16,7 +16,7 @@ The viewer links no Rust code: it only spawns VMHost, so `libod_host.a` is neede
 | Target | Kind | Sources |
 | --- | --- | --- |
 | `ODAtomics` | C (header only plus one translation unit that compiles it) | `Sources/ODAtomics/include/FrameTransportAtomics.h` |
-| `ODShared` | library, depends on `ODAtomics` | `Sources/Shared/`: `ControlFrame`, `ControlV2` (S11-04: codec of control protocol v2), `InputProtocol`, `InputQueue`, `VMHostLaunch`, `FrameReader`, `HIDUsage`, `InputTranslation`, `Viewport`. Public API for the other targets; no `FrameTransport`, no `libod_host.a` |
+| `ODShared` | library, depends on `ODAtomics` | `Sources/Shared/`: `ControlFrame`, `ControlV2` (S11-04: codec of control protocol v2), `ErrorCatalog` (S11-09: user-facing words for every code, exit status and issue), `InputProtocol`, `InputQueue`, `VMHostLaunch`, `FrameReader`, `HIDUsage`, `InputTranslation`, `Viewport`. Public API for the other targets; no `FrameTransport`, no `libod_host.a` |
 | `open-desktop-display-viewer` | executable | `DisplayWindow`, `MetalPresenter`, `InputChannel`, `display_viewer_main` (this directory) |
 | `ODHostConstants` | C (header plus one translation unit that compiles it) | `Sources/ODHostConstants/include/ODHostConstants.h`: includes only `include/open_desktop/host_abi.h` (`OD_HOST_ABI_VERSION_V0`, `OD_FRAGMENT_MAX_LENGTH_V0`); no session or display ABI, no VMHost helpers |
 | `open-desktop-launcher-smoke` | executable | `launcher.swift`; depends on `ODShared` and `ODHostConstants` (constants only), does not link `libod_host.a` |
@@ -135,3 +135,7 @@ apps/.build/debug/open-desktop-display-viewer --vmhost apps/.build/debug/od-vmho
 ```
 
 Экран 1 в тестовом профиле — шахматка 32×24 (клетка 8×8), проверяется побайтно эталоном, который строит скрипт. Окна глазами не проверены; сквозной путь «регистры гостя → VMHost» для экрана 1 не проверен (нужен probe S10-08).
+
+## User-facing errors (S11-09)
+
+`Sources/Shared/ErrorCatalog.swift` (`ODShared`, shared with the future CLI) maps every `ControlV2ErrorCode`, `ControlV2AckCode`, exit disposition, `ClientIssue` and `LibraryIssue` to a title, an explanation, an action, a severity and a "Подробности" flag; `Sources/App/ErrorPresentation.swift` adds the code, the request ID, the `vmhost.log` line and the time. The catalog, the codes and the rules are in [`docs/specs/USER_FACING_ERRORS.md`](../../docs/specs/USER_FACING_ERRORS.md); `Tests/ErrorCatalogTests.swift` fails when a code has no entry (`swift test --filter ErrorCatalog`). The texts are localization keys with Russian default values in the code. **`Localizable.strings` (ru, en) is the next step**: the SwiftPM targets have no resources yet, and adding a resource without `resources: [.process(...)]` breaks the build.

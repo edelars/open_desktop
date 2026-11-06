@@ -103,7 +103,7 @@ public struct ControlClientExit: Equatable {
     }
 
     /// Meaning of the exit status (CONTROL_PROTOCOL_V2.md 12.3).
-    public enum Disposition: Equatable {
+    public enum Disposition: Equatable, CaseIterable {
         case stopped
         case usageError
         case startRejected

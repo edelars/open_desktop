@@ -37,6 +37,9 @@ struct MachineRowView: View {
                 if let notice = machine.notice {
                     Text(notice.text).font(.caption).foregroundColor(.red).textSelection(.enabled)
                         .accessibilityIdentifier("machine-notice")
+                    if let hint = notice.hint {
+                        Text(hint).font(.caption2).foregroundColor(.secondary).textSelection(.enabled)
+                    }
                     if let details = notice.details {
                         DisclosureGroup("Подробности") {
                             Text(details).font(.caption2).foregroundColor(.secondary).textSelection(.enabled)
