@@ -112,6 +112,8 @@ final class LibraryModel: ObservableObject {
     @Published var selection: String?
     /// The machine whose deletion sheet is open ("Удалить машину…").
     @Published var pendingDelete: MachineController?
+    /// The wizard "Создать машину…" is open (S11-08b).
+    @Published var presentingCreate = false
     /// A line about the library itself (a damaged or newer index, a failed add or delete), not about one machine.
     @Published private(set) var banner: String?
     /// The technical part of the banner (a path, a code): shown on request, never in the headline.

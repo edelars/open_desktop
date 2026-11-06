@@ -104,6 +104,11 @@ public enum LibraryIssue: CaseIterable, Equatable {
     case readOnlyVolume
     case noSpace
     case fileSystemError
+    // Creation of a machine (VM_BUNDLE.md 5.1, S11-08b).
+    case creationDirectoryExists
+    case creationRetryNeeded
+    case creationLockFailed
+    case creationConfigConflict
 
     public init(_ error: CatalogError) {
         switch error {
@@ -545,6 +550,23 @@ public enum ErrorCatalog {
             return make("file_system_error", "Ошибка файловой системы",
                         "Операционная система вернула ошибку при работе с файлами; причина указана в подробностях.",
                         "Проверьте каталог машины и права доступа к нему.", .error)
+        case .creationDirectoryExists:
+            return make("creation_directory_exists", "Каталог машины уже существует",
+                        "В каталоге машин уже есть объект с таким именем; он не изменён и не удалён.",
+                        "Закройте мастер и выберите другое имя.", .warning)
+        case .creationRetryNeeded:
+            return make("creation_retry_needed", "Создание машины не завершено: каталог занят",
+                        "Каталог машины занят другим процессом или занят на мгновение, поэтому конфигурация не записана. Все созданные файлы остались на месте и не удалены.",
+                        "Повторите запись конфигурации, когда другой процесс закончит работу. Если других процессов нет, подождите немного и повторите.",
+                        .warning, retry: true)
+        case .creationConfigConflict:
+            return make("creation_config_conflict", "Файл конфигурации машины уже есть или не совпадает",
+                        "Конфигурация в каталоге машины уже записана или не может быть записана; созданные файлы не изменены и не удалены.",
+                        "Закройте мастер и проверьте машину в списке. Удалите каталог вручную, только если машина больше не нужна.", .error, retry: false)
+        case .creationLockFailed:
+            return make("creation_lock_failed", "Не удалось взять блокировку каталога машины",
+                        "Файл блокировки в каталоге машины заменён, повреждён или недоступен, поэтому создание остановлено. Созданные файлы не удалены.",
+                        "Проверьте, что другая программа не работает с каталогом машины. Неполный каталог можно убрать вручную в Finder.", .error)
         }
     }
 }

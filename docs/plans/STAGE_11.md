@@ -403,6 +403,7 @@
 ### S11-08. Мастер создания VM и команда `PREPARE_DISK`
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-06):** S11-08a и S11-08b реализованы, ревью пройдено, **не приняты**. Ограничения и отступления — в [отчёте](../reports/STAGE_11_REPORT.md).
 - **Текущий статус (2026-11-06):** S11-08a (VMHost `PREPARE_DISK`, модель мастера, smoke) реализован, ревью пройдено, **не принят**; окно мастера и запуск из приложения — S11-08b. Отступления от плана (шаг ISO не добавлен, дубликат без числового суффикса, ёмкость по умолчанию) — в [отчёте](../reports/STAGE_11_REPORT.md).
 - **Где:** `apps/macos/Sources/App/CreateMachineWizard.swift`, `CreateMachineModel.swift` (новые), `apps/vmhost/Sources/Lifecycle.swift` (обработка `PREPARE_DISK` через S11-07), `apps/macos/Tests/CreateMachineModelTests.swift`, `tests/system/vmhost_control_v2_prepare_disk_smoke.py` (новый).
 - **Сделать:**

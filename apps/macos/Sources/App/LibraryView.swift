@@ -4,7 +4,7 @@ import SwiftUI
 
 /// The window of the application (S11-06b): the list of machines, the actions on the selected one, the empty library.
 /// Actions are available by the table of CONTROL_PROTOCOL_V2.md 7.2 (`MachineActionTable`), in the context menu, in the toolbar and in
-/// the menu "Машина". The wizard that creates a machine is S11-08: the button for it is in place and does not create a bundle.
+/// the menu "Машина". "Создать машину…" opens the wizard (S11-08b, `CreateMachineWizard`).
 struct LibraryView: View {
     @ObservedObject var model: LibraryModel
 
@@ -50,12 +50,17 @@ struct LibraryView: View {
         .toolbar {
             ToolbarItemGroup {
                 MachineActionButtons(machine: model.selected, model: model, includeDelete: false)
+                Button { model.presentingCreate = true } label: { Label("Создать машину…", systemImage: "plus") }
+                    .help("Создать машину: имя, профиль, память, диск")
                 Button { model.refresh() } label: { Label("Обновить", systemImage: "arrow.clockwise") }
                     .help("Перечитать машины и спросить у VMHost запущенной машины его состояние")
             }
         }
         .sheet(item: $model.pendingDelete) { machine in
             DeleteMachineSheet(machine: machine, model: model)
+        }
+        .sheet(isPresented: $model.presentingCreate) {
+            CreateMachineWizard(library: model) { model.presentingCreate = false }
         }
     }
 
@@ -99,6 +104,7 @@ struct MachineCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Машина") {
+            Button("Создать машину…") { model.presentingCreate = true }.keyboardShortcut("n")
             Button("Открыть…") { model.presentOpenPanel() }.keyboardShortcut("o")
             Divider()
             MachineActionButtons(machine: model.selected, model: model)
@@ -121,22 +127,20 @@ extension LibraryModel {
     }
 }
 
-/// The empty library: a hint and the place of the action "Создать машину…". The wizard is S11-08; until then the button is disabled and
-/// creates nothing (the plan wants a default bundle here, but creating bundles is S11-08).
+/// The empty library: a hint and the action "Создать машину…" (the wizard, S11-08b).
 struct EmptyLibraryView: View {
     @ObservedObject var model: LibraryModel
 
     var body: some View {
         VStack(spacing: 12) {
             Text("Машин пока нет").font(.title2)
-            Text("Создание машин — следующий этап (S11-08). Готовую машину можно открыть кнопкой «Открыть…» или из меню «Машина» → «Открыть…».")
+            Text("Создайте машину кнопкой «Создать машину…» или откройте готовую кнопкой «Открыть…» (меню «Машина» → «Открыть…»).")
                 .font(.callout)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
             HStack {
-                // Placeholder of the wizard (S11-08): disabled, no bundle is created.
-                Button("Создать машину…") {}.disabled(true).help("Создание машин — следующий этап (S11-08)")
+                Button("Создать машину…") { model.presentingCreate = true }
                 Button("Открыть…") { model.presentOpenPanel() }
             }
         }
