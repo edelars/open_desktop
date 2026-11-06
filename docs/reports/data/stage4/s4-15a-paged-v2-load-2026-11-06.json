@@ -1,0 +1,95 @@
+{
+  "slice": "S4-15a",
+  "date": "2026-11-06",
+  "scope": "One exact Published V2 MOV RAX,[RBX] qword load through od-machine tracked paging and RAM owner.",
+  "status": {
+    "implementation": "complete",
+    "independent_review": "passed",
+    "accepted": true,
+    "s4_15_complete": false,
+    "stage_4_complete": false
+  },
+  "profile": {
+    "published_instruction": "48 8B 03 (MOV RAX,[RBX])",
+    "execution_path": "direct PublishedCode V2 memory load",
+    "paging": "Long64, physical36, four-level, 4 KiB, uncached tracked walk",
+    "operand": "one qword RAM read contained within one guest page",
+    "privilege": "CPL0 or CPL3",
+    "budget": 1
+  },
+  "behavior": {
+    "host_depends_on_machine": true,
+    "machine_depends_on_host": false,
+    "memory_borrow_scoped_to_synchronous_callback": true,
+    "guest_memory_retained_by_jit": false,
+    "actual_accessed_updates_reported_on_failure": true,
+    "load_sets_dirty": false,
+    "mmio_dispatched": false,
+    "cross_page_qword_admitted": false,
+    "guest_fault_metadata_preserved": true,
+    "destination_and_rip_preserved_on_operand_page_fault": true,
+    "unsupported_forms_rejected_before_access": true,
+    "performance_claim": false
+  },
+  "verification": {
+    "od_host_focused": {
+      "command": "cargo test -p od-host --lib --offline s4_15a_paged_v2_qword_load_uses_tracked_ram_and_refuses_out_of_slice_inputs",
+      "passed": 1,
+      "failed": 0
+    },
+    "od_machine_full_lib": {
+      "command": "cargo test -p od-machine --lib --offline",
+      "passed": 103,
+      "failed": 0
+    },
+    "workspace_check": {
+      "command": "cargo check --workspace --all-targets --offline",
+      "exit_code": 0,
+      "warnings": [
+        "od-jit: dead_code for CodeMemory::one_instruction",
+        "od-host test: unused variable scale",
+        "od-host test: unnecessary mut callback_stop",
+        "od-host memory_corpus test: unused import MEMORY_CORPUS_SEQUENCES"
+      ]
+    },
+    "cargo_fmt_all_check": "passed",
+    "git_diff_check": "passed",
+    "graphify_query": {
+      "status": "passed",
+      "query": "s4_15a_paged_v2_qword_load_uses_tracked_ram_and_refuses_out_of_slice_inputs test and host entry point",
+      "before_source_inspection": true
+    },
+    "graphify_update": {
+      "status": "passed",
+      "command": "graphify update .",
+      "nodes": 26851,
+      "edges": 67219,
+      "communities": 1063
+    },
+    "independent_review": "passed; no remaining findings"
+  },
+  "coverage": [
+    "Nonidentity RAM mapping: exact destination value, RIP and one retirement",
+    "CPL0 success: exact physical A-bit entry addresses and before/after values, exact eight-byte committed write ranges, all four entries read back with A set and D clear",
+    "CPL3 success with U/S set at all four paging levels: exact A updates/ranges and page-table readback, destination and RIP retirement",
+    "CPL3 read through user-readable ancestors and present supervisor-only leaf: real protection #PF with PFEC 0x5, exact RIP/CR2, zero retirement, unchanged full CPU/destination/RIP, exact four A updates/ranges and readback, D clear and leaf U/S unchanged; would incorrectly succeed if privilege were downgraded to Ring0",
+    "Real missing leaf #PF: exact saved RIP, CR2 and PFEC; exact three ancestor A updates/ranges read back; missing leaf remains unchanged and absent; no D bits; destination and CPU state unchanged",
+    "Page-table remap between fresh scoped calls resolves the new mapping",
+    "Translated MMIO returns tracked backend refusal with zero device callbacks",
+    "Cross-page qword preflight snapshots and compares all four walk entries; CPU unchanged and zero device callbacks",
+    "Unsupported Published V2 destination preflight snapshots and compares all four walk entries; CPU unchanged and zero device callbacks",
+    "Ring1 privilege, halted activity, and blocking STI shadow rejected with unchanged CPU and walk entries and zero device callbacks"
+  ],
+  "limits": [
+    "Only exact 48 8B 03 is supported",
+    "Unsupported-mode rejection is not testable because InstructionMode currently exposes only Long64",
+    "No JIT stores, other loads, MMIO, cross-page access, instruction fetch through JIT memory or interpreter fallback orchestration",
+    "No translation cache or executable alias invalidation; S4-16 remains open",
+    "No parent S4-15 or Stage 4 acceptance"
+  ],
+  "independent_review": {
+    "status": "passed",
+    "prior_findings_resolved": 3,
+    "remaining_findings": 0
+  }
+}

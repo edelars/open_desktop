@@ -46,8 +46,9 @@ pub use page_walk::{
 
 pub use paged_descriptor::{PagedLidtError, PagedLidtReport, step_paged_lidt};
 pub use paged_memory_adapter::{
-    PagedMovStepError, PagedMovStepReport, step_paged_mov, step_paged_mov_dword_read,
-    step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch,
+    PagedMovMemoryScope, PagedMovStepError, PagedMovStepReport, step_paged_mov,
+    step_paged_mov_dword_read, step_paged_mov_word_read, step_paged_mov_word_read_cross_page_fetch,
+    with_paged_mov_memory,
 };
 pub use paged_pio_step::{PagedPioU8StepReport, step_paged_pio_u8};
 pub use paged_probe::{

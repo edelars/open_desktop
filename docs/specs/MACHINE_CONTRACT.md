@@ -1042,3 +1042,33 @@ translated. Tests compare exact callback ranges, relevant page-table entries,
 fault metadata and full CPU state. This bounded slice does not implement LGDT,
 descriptor caching, IDT gate checks, exception delivery, cross-page descriptor
 reads, or production paging ownership. Independent review is pending.
+
+## Scoped tracked memory for one Published V2 JIT load (S4-15a)
+
+`with_paged_mov_memory` gives one synchronous callback a temporary, read-only
+`GuestMemory` adapter over the caller's `MachineBus`. It reuses the tracked
+Long64 four-level/4 KiB walker and the bus's sole physical RAM owner. The scoped
+adapter admits only an eight-byte read contained in one guest page; it rejects
+fetches, writes and crossing qwords. A read translated to MMIO returns the
+tracked `OperandPhysical(UnreadableRegion(Mmio))` backend classification
+without dispatching a device callback. Page-walk A updates already committed before a fault remain in the
+scope result. The scope returns the callback result, precise `PageFaultRecord`
+or tracked access error, committed A updates, and physical write ranges.
+The temporary memory borrow cannot escape the synchronous callback.
+
+`PublishedCode::execute_paged_mov_rax_rbx_v2` admits only the direct V2
+published `48 8B 03` (`MOV RAX,[RBX]`) artifact and runs it with budget one.
+Before opening the memory scope it checks source/site metadata, entry RIP,
+Long64 mode, CPL0 or CPL3, non-halted activity, clear interrupt shadow, and the
+supported paging snapshot. Unsupported artifacts and CPU context fail before
+memory access. A missing operand mapping is returned as guest `#PF` with its
+exact RIP, CR2 and PFEC. MMIO, cross-page and other backend refusals remain
+host-side execution errors and do not retire. Successful loads commit the
+destination and RIP once, set only architecturally reached A bits, and never
+set D.
+
+This slice does not add JIT stores, other load forms, cross-page splitting,
+device accesses, instruction fetch through JIT memory, TLB caching, executable
+alias invalidation or interpreter fallback orchestration. It is evidence for
+one V2 load on the production machine RAM owner, not acceptance of parent
+S4-15. See the [S4-15a report](../reports/STAGE_4_S4-15A_2026-11-06.md).

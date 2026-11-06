@@ -516,6 +516,25 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** одни guest bytes через interpreter и JIT, fault до/после допустимых effects, MMIO side effects, live handle при reset/retirement, реальное освобождение после допустимого срока.
 - **Готово:** хотя бы зафиксированный memory slice работает на production owner; unsupported JIT формы переходят в работающий interpreter. В отчёте указано фактическое покрытие.
 
+#### S4-15a. Один qword load PublishedBlock через tracked RAM
+
+- Реализация ограничена exact `48 8B 03` (`MOV RAX,[RBX]`) в существующем
+  direct V2 published memory-load пути. `od-host` зависит от `od-machine`;
+  scoped callback синхронный и не сохраняет memory borrow в JIT mapping или
+  metadata.
+- `od-machine` временно предоставляет read-only qword `GuestMemory`: один
+  RAM operand в пределах guest 4 KiB страницы, tracked four-level Long64 walk,
+  без MMIO dispatch. Ошибки walk/backend и уже committed A updates возвращаются
+  вызывающему даже при отказе; D не устанавливается для load.
+- Host entry до первого memory access принимает только точную опубликованную
+  форму и runnable Long64 CPL0/CPL3 context; прочие формы/profile отклоняются.
+  Исполняется ровно одна инструкция. Unsupported RAM/MMIO/cross-page access
+  остаётся host/backend отказом, не guest `#PF`.
+- Проверки и ограничения: [S4-15a report](../reports/STAGE_4_S4-15A_2026-11-06.md)
+  и [manifest](../reports/data/stage4/s4-15a-paged-v2-load-2026-11-06.json).
+  Ограниченный срез принят после независимого ревью; родительский S4-15
+  остаётся открытым.
+
 ### S4-16. Physical aliases и инвалидация исполняемого кода
 
 - [ ] Принято после ревью.

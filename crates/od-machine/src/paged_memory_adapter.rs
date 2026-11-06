@@ -29,6 +29,53 @@ pub struct PagedMovStepReport {
     pub memory_error: Option<TrackedAccessError>,
 }
 
+/// Result of one synchronous JIT invocation against the tracked paged adapter.
+/// The memory borrow ends before this value is returned and is never retained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PagedMovMemoryScope<R> {
+    pub callback_result: R,
+    pub page_fault: Option<PageFaultRecord>,
+    pub access_error: Option<TrackedAccessError>,
+    pub committed_ad_updates: Vec<crate::AdUpdate>,
+    pub committed_writes: Vec<GuestPhysicalRange>,
+}
+
+/// Run a synchronous callback with a temporary RAM-only, same-page qword MOV
+/// memory adapter. The callback cannot retain the adapter beyond this call.
+pub fn with_paged_mov_memory<R>(
+    bus: &mut MachineBus,
+    paging: Long64ProbeConfig,
+    instruction_rip: u64,
+    callback: impl FnOnce(&mut dyn GuestMemory) -> R,
+) -> PagedMovMemoryScope<R> {
+    let mut ignore_write = |_| {};
+    let mut memory = PagedMovMemoryAdapter {
+        bus,
+        paging,
+        instruction_rip,
+        committed_write: &mut ignore_write,
+        page_fault: None,
+        memory_error: None,
+        access_error: None,
+        committed_ad_updates: Some(Vec::new()),
+        committed_writes: Some(Vec::new()),
+        capture_effects: true,
+        dword_read_profile: false,
+        word_read_profile: false,
+        ram_only: true,
+        reject_crossing_qword: true,
+        read_only_qword: true,
+    };
+    let callback_result = callback(&mut memory);
+    PagedMovMemoryScope {
+        callback_result,
+        page_fault: memory.page_fault,
+        access_error: memory.access_error,
+        committed_ad_updates: memory.committed_ad_updates.unwrap_or_default(),
+        committed_writes: memory.committed_writes.unwrap_or_default(),
+    }
+}
+
 /// Execute the CPU profile's exact one-step MOV through four-level 4 KiB RAM paging.
 /// CR3 and EFER are explicit because they are not owned by `LongModeState`.
 ///
@@ -58,8 +105,15 @@ pub fn step_paged_mov(
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
         dword_read_profile: false,
         word_read_profile: false,
+        ram_only: false,
+        reject_crossing_qword: false,
+        read_only_qword: false,
     };
     let cpu = cpu_step_paged_mov(state, &mut memory, context, rflags_defined)
         .map_err(PagedMovStepError::CpuInput)?;
@@ -94,8 +148,15 @@ pub fn step_paged_mov_word_read(
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
         dword_read_profile: false,
         word_read_profile: true,
+        ram_only: false,
+        reject_crossing_qword: false,
+        read_only_qword: false,
     };
     let cpu = cpu_step_paged_mov_word_read(
         PagedMovCrossPageWordReadLong64V1,
@@ -155,8 +216,15 @@ pub fn step_paged_mov_word_read_cross_page_fetch(
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
         dword_read_profile: false,
         word_read_profile: true,
+        ram_only: false,
+        reject_crossing_qword: false,
+        read_only_qword: false,
     };
     let cpu = cpu_step_paged_mov_word_read_cross_page_fetch(
         PagedMovCrossPageWordFetchLong64V1,
@@ -198,8 +266,15 @@ pub fn step_paged_mov_dword_read(
         committed_write: &mut committed_write,
         page_fault: None,
         memory_error: None,
+        access_error: None,
+        committed_ad_updates: None,
+        committed_writes: None,
+        capture_effects: false,
         dword_read_profile: true,
         word_read_profile: false,
+        ram_only: false,
+        reject_crossing_qword: false,
+        read_only_qword: false,
     };
     let cpu = cpu_step_paged_mov_dword_read(
         PagedMovCrossPageDwordReadLong64V1,
@@ -235,8 +310,15 @@ pub struct PagedMovMemoryAdapter<'a> {
     committed_write: &'a mut dyn FnMut(GuestPhysicalRange),
     page_fault: Option<PageFaultRecord>,
     memory_error: Option<TrackedAccessError>,
+    access_error: Option<TrackedAccessError>,
+    committed_ad_updates: Option<Vec<crate::AdUpdate>>,
+    committed_writes: Option<Vec<GuestPhysicalRange>>,
+    capture_effects: bool,
     dword_read_profile: bool,
     word_read_profile: bool,
+    ram_only: bool,
+    reject_crossing_qword: bool,
+    read_only_qword: bool,
 }
 
 impl PagedMovMemoryAdapter<'_> {
@@ -246,19 +328,54 @@ impl PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         operation: RamAccessOperation,
     ) -> Result<TrackedAccessOutcome, MemoryError> {
-        let report = self.bus.access_tracked(
-            &self.paging,
-            TrackedAccessRequest {
-                instruction_rip: self.instruction_rip,
-                address: GuestLinearAddress::new(address),
-                context,
-                operation,
-            },
-            &mut *self.committed_write,
-        );
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
+        let request = TrackedAccessRequest {
+            instruction_rip: self.instruction_rip,
+            address: GuestLinearAddress::new(address),
+            context,
+            operation,
+        };
+        let report = if self.capture_effects {
+            let mut writes = Vec::new();
+            let report = if self.ram_only {
+                self.bus
+                    .access_tracked_ram(&self.paging, request, |range| writes.push(range))
+            } else {
+                self.bus
+                    .access_tracked(&self.paging, request, |range| writes.push(range))
+            };
+            self.committed_writes
+                .as_mut()
+                .expect("capture mode has a write collector")
+                .extend(writes);
+            self.committed_ad_updates
+                .as_mut()
+                .expect("capture mode has an A/D collector")
+                .extend(
+                    report.ad_updates[..report.ad_update_count]
+                        .iter()
+                        .flatten()
+                        .copied(),
+                );
+            report
+        } else if self.ram_only {
+            self.bus
+                .access_tracked_ram(&self.paging, request, &mut *self.committed_write)
+        } else {
+            self.bus
+                .access_tracked(&self.paging, request, &mut *self.committed_write)
+        };
         match report.outcome {
             Ok(outcome) => Ok(outcome),
-            Err(error) => Err(self.map_access_error(error)),
+            Err(error) => {
+                if self.capture_effects {
+                    self.access_error = Some(error.clone());
+                }
+                Err(self.map_access_error(error))
+            }
         }
     }
 
@@ -268,6 +385,10 @@ impl PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         width: crate::AccessWidth,
     ) -> Result<u64, MemoryError> {
+        let context = AccessContext {
+            origin: od_isa::memory::AccessOrigin::Explicit,
+            ..context
+        };
         let result = self.bus.read_tracked_bounded_ram_read(
             &self.paging,
             TrackedAccessRequest {
@@ -307,6 +428,9 @@ impl PagedMovMemoryAdapter<'_> {
 
 impl GuestMemory for PagedMovMemoryAdapter<'_> {
     fn fetch(&mut self, address: u64, context: AccessContext) -> Result<u8, MemoryError> {
+        if self.read_only_qword {
+            return Err(Self::unsupported("instruction fetch"));
+        }
         match self.access(address, context, RamAccessOperation::Fetch)? {
             TrackedAccessOutcome::Fetched(value) => Ok(value),
             _ => Err(Self::unsupported("non-fetch result")),
@@ -325,6 +449,12 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
             8 if !self.dword_read_profile && !self.word_read_profile => crate::AccessWidth::Qword,
             _ => return Err(Self::unsupported("read width")),
         };
+        if self.reject_crossing_qword
+            && width == crate::AccessWidth::Qword
+            && (address & 0xfff) + 8 > 4096
+        {
+            return Err(Self::unsupported("cross-page qword read"));
+        }
         let value = if self.dword_read_profile
             || self.word_read_profile
             || (address & 0xfff) + u64::from(width.bytes()) > 4096
@@ -346,6 +476,9 @@ impl GuestMemory for PagedMovMemoryAdapter<'_> {
         context: AccessContext,
         source: &[u8],
     ) -> Result<(), MemoryError> {
+        if self.read_only_qword {
+            return Err(Self::unsupported("write"));
+        }
         if source.len() != 8 {
             return Err(Self::unsupported("non-qword writes"));
         }
@@ -468,8 +601,15 @@ mod tests {
             committed_write: callbacks,
             page_fault: None,
             memory_error: None,
+            access_error: None,
+            committed_ad_updates: None,
+            committed_writes: None,
+            capture_effects: false,
             dword_read_profile: false,
             word_read_profile: false,
+            ram_only: false,
+            reject_crossing_qword: false,
+            read_only_qword: false,
         }
     }
 

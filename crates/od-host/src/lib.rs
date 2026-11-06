@@ -987,6 +987,104 @@ impl PublishedCode {
         }
     }
 
+    /// Execute exactly one existing V2 `MOV RAX,[RBX]` through the tracked
+    /// machine RAM adapter. The temporary GuestMemory borrow is confined to
+    /// this synchronous call and is not retained by the published mapping.
+    pub fn execute_paged_mov_rax_rbx_v2(
+        &self,
+        state: &mut od_isa::LongModeState,
+        bus: &mut od_machine::MachineBus,
+        cr3: u64,
+        efer: u64,
+        access_context: od_isa::memory::AccessContext,
+    ) -> Result<
+        od_machine::PagedMovMemoryScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        >,
+        PagedMemoryLoadV2Error,
+    > {
+        use od_isa::memory::{InstructionMode, PrivilegeLevel};
+
+        if access_context.mode != InstructionMode::Long64 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedMode);
+        }
+        if !matches!(
+            access_context.privilege,
+            PrivilegeLevel::Ring0 | PrivilegeLevel::Ring3
+        ) {
+            return Err(PagedMemoryLoadV2Error::UnsupportedPrivilege(
+                access_context.privilege,
+            ));
+        }
+        if let Some(activity) = state.activity
+            && activity != od_isa::state::CpuActivity::Running
+        {
+            return Err(PagedMemoryLoadV2Error::UnsupportedCpuActivity(activity));
+        }
+        if let Some(shadow) = state.sti_shadow
+            && shadow != od_isa::state::StiShadow::Clear
+        {
+            return Err(PagedMemoryLoadV2Error::UnsupportedInterruptShadow(shadow));
+        }
+        let metadata = self
+            .memory_operation_metadata_v2
+            .as_ref()
+            .ok_or(PagedMemoryLoadV2Error::UnsupportedBlock)?;
+        let source_len = usize::from(metadata.source_len);
+        let site = metadata.site;
+        let operand = site.operand();
+        if metadata.compile_flavor != od_jit::translation::CompileFlavor::S3_19bMemoryLoadV2
+            || source_len != 3
+            || metadata.source_bytes[..source_len] != [0x48, 0x8b, 0x03]
+            || !site.matches_source_bytes(
+                &metadata.source_bytes[..source_len],
+                od_jit::runtime::MemorySiteOperationV2::Load,
+            )
+            || site.operation() != od_jit::runtime::MemorySiteOperationV2::Load
+            || site.instruction_index() != 0
+            || site.guest_rip() != metadata.entry_rip
+            || metadata.entry_rip.checked_add(source_len as u64) != Some(site.next_rip())
+            || !site.has_supported_profile()
+            || site.destination() != Some(od_isa::Register::Rax as u8)
+            || site.source().is_some()
+            || operand.base != od_isa::long_decode::AddressBase::Register(od_isa::Register::Rbx)
+            || operand.index.is_some()
+            || operand.scale != 1
+            || operand.displacement != 0
+            || operand.address_size != od_isa::OperandSize::Qword
+            || operand.size != od_isa::OperandSize::Qword
+        {
+            return Err(PagedMemoryLoadV2Error::UnsupportedBlock);
+        }
+        if state.rip != metadata.entry_rip {
+            return Err(PagedMemoryLoadV2Error::EntryRipMismatch {
+                expected: metadata.entry_rip,
+                actual: state.rip,
+            });
+        }
+        if let Some(value) = state.cr3 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedCpuCr3 { value });
+        }
+        let operand_address = state.gpr[od_isa::Register::Rbx as usize];
+        if (operand_address & 0xfff) + 8 > 4096 {
+            return Err(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: operand_address,
+                length: 8,
+            });
+        }
+        let paging = od_machine::Long64ProbeConfig::from_cpu_state(state, cr3, efer)
+            .map_err(PagedMemoryLoadV2Error::Paging)?;
+        let stop_requested = AtomicU8::new(0);
+        Ok(od_machine::with_paged_mov_memory(
+            bus,
+            paging,
+            state.rip,
+            |memory| {
+                self.execute_memory_load_v2(state, memory, access_context, 1, None, &stop_requested)
+            },
+        ))
+    }
+
     /// Execute a verified V2 MOV store using only a backend whose ownership
     /// and write semantics satisfy the private synchronous RAM contract.
     ///
@@ -1676,6 +1774,19 @@ pub enum MemoryOperationExecutionErrorV2 {
     InvalidAccounting,
     MemoryError(MemoryOperationMemoryErrorV2),
     HelperBoundaryFailure { status: u32 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PagedMemoryLoadV2Error {
+    UnsupportedMode,
+    UnsupportedPrivilege(od_isa::memory::PrivilegeLevel),
+    UnsupportedCpuActivity(od_isa::state::CpuActivity),
+    UnsupportedInterruptShadow(od_isa::state::StiShadow),
+    UnsupportedBlock,
+    UnsupportedOperandRange { address: u64, length: u8 },
+    EntryRipMismatch { expected: u64, actual: u64 },
+    UnsupportedCpuCr3 { value: u64 },
+    Paging(od_machine::ProbeConfigError),
 }
 
 fn reject_cpu_owned_cr3(
@@ -112311,5 +112422,474 @@ pub(crate) mod tests {
         assert!(replay.is_err());
         assert_eq!(callback_state, callback_committed_state);
         assert_eq!(callback_ram.writes.len(), 1);
+    }
+
+    #[test]
+    fn s4_15a_paged_v2_qword_load_uses_tracked_ram_and_refuses_out_of_slice_inputs() {
+        use od_isa::memory::{
+            AccessContext, AccessKind, AccessOrigin, InstructionMode, PrivilegeLevel,
+        };
+        use od_machine::{
+            AccessWidth, AdBit, BusDevice, DeviceAccess, DeviceError, GuestPhysicalAddress,
+            GuestPhysicalRange, MachineBus, MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec,
+            MmioBinding, RamLimits, TrackedAccessError,
+        };
+        use std::sync::atomic::AtomicUsize;
+
+        const ENTRY: u64 = 0x0040_1000;
+        const BASE: u64 = 0x0080_0000;
+        const CR0: u64 = 0x8001_0033;
+        const CR4: u64 = 1 << 5;
+        const CR3: u64 = 0x1000;
+        const EFER: u64 = (1 << 8) | (1 << 10) | (1 << 11);
+        const RAM_BYTES: u64 = 0x10_000;
+        const MMIO_BASE: u64 = 0x20_000;
+
+        struct CountDevice(Arc<AtomicUsize>);
+        impl BusDevice for CountDevice {
+            fn read(&mut self, _: DeviceAccess) -> Result<u64, DeviceError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(0)
+            }
+            fn write(&mut self, _: DeviceAccess, _: u64) -> Result<(), DeviceError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        fn context() -> AccessContext {
+            context_for(PrivilegeLevel::Ring0)
+        }
+        fn context_for(privilege: PrivilegeLevel) -> AccessContext {
+            AccessContext {
+                mode: InstructionMode::Long64,
+                privilege,
+                origin: AccessOrigin::Explicit,
+            }
+        }
+        fn put(bus: &mut MachineBus, address: u64, value: u64) {
+            bus.write_physical(
+                GuestPhysicalAddress::new(address),
+                AccessWidth::Qword,
+                value,
+                |_| {},
+            )
+            .unwrap();
+        }
+        fn get(bus: &mut MachineBus, address: u64) -> u64 {
+            bus.read_physical(GuestPhysicalAddress::new(address), AccessWidth::Qword)
+                .unwrap()
+        }
+        fn walk_entries(bus: &mut MachineBus) -> [u64; 4] {
+            [
+                get(bus, 0x1000),
+                get(bus, 0x2000),
+                get(bus, 0x3020),
+                get(bus, 0x4000),
+            ]
+        }
+        fn expected_ad_updates(before: [u64; 4], count: usize) -> Vec<od_machine::AdUpdate> {
+            let addresses = [0x1000, 0x2000, 0x3020, 0x4000];
+            addresses
+                .into_iter()
+                .zip(before)
+                .take(count)
+                .map(|(address, value)| od_machine::AdUpdate {
+                    level: match address {
+                        0x1000 => od_machine::PageTableLevel::Pml4,
+                        0x2000 => od_machine::PageTableLevel::Pdpt,
+                        0x3020 => od_machine::PageTableLevel::Pd,
+                        _ => od_machine::PageTableLevel::Pt,
+                    },
+                    address: GuestPhysicalAddress::new(address),
+                    before: value,
+                    after: value | (1 << 5),
+                    bit: AdBit::Accessed,
+                })
+                .collect()
+        }
+        fn expected_ad_ranges(count: usize) -> Vec<GuestPhysicalRange> {
+            [0x1000, 0x2000, 0x3020, 0x4000]
+                .into_iter()
+                .take(count)
+                .map(|address| {
+                    GuestPhysicalRange::new(GuestPhysicalAddress::new(address), 8).unwrap()
+                })
+                .collect()
+        }
+        fn make_bus(leaf: u64, device_calls: Arc<AtomicUsize>) -> MachineBus {
+            let ram = GuestPhysicalRange::new(GuestPhysicalAddress::new(0), RAM_BYTES).unwrap();
+            let mmio =
+                GuestPhysicalRange::new(GuestPhysicalAddress::new(MMIO_BASE), 0x1000).unwrap();
+            let map = MachineMemoryMap::new(
+                36,
+                vec![
+                    MemoryRegionSpec::new(ram, MemoryRegionKind::Ram),
+                    MemoryRegionSpec::new(mmio, MemoryRegionKind::Mmio),
+                ],
+            )
+            .unwrap();
+            let bus = MachineBus::new(
+                map,
+                RamLimits::new(RAM_BYTES),
+                vec![Box::new(CountDevice(device_calls))],
+                vec![MmioBinding {
+                    region_start: GuestPhysicalAddress::new(MMIO_BASE),
+                    device_index: 0,
+                }],
+                vec![],
+            )
+            .unwrap();
+            let mut bus = bus;
+            put(&mut bus, 0x1000, 0x2007);
+            put(&mut bus, 0x2000, 0x3007);
+            put(&mut bus, 0x3020, 0x4007);
+            put(&mut bus, 0x4000, leaf);
+            bus
+        }
+        fn state(rbx: u64) -> od_isa::LongModeState {
+            let mut state = od_isa::LongModeState::default();
+            state.rip = ENTRY;
+            state.cr0 = Some(CR0);
+            state.cr4 = Some(CR4);
+            state.gpr[od_isa::Register::Rbx as usize] = rbx;
+            state.gpr[od_isa::Register::Rax as usize] = 0xfeed_face_cafe_beef;
+            state
+        }
+        fn publish_load(code: &[u8]) -> PublishedCode {
+            let view = CodeView::new(ENTRY, code).unwrap();
+            let block = od_jit::memory_load_v2::compile_memory_load_block_v2(view, ENTRY).unwrap();
+            PublishedCode::publish_memory_load_v2(&block).unwrap()
+        }
+        fn run(
+            published: &PublishedCode,
+            state: &mut od_isa::LongModeState,
+            bus: &mut MachineBus,
+        ) -> od_machine::PagedMovMemoryScope<
+            Result<MemoryOperationExecutionResultV2, MemoryOperationExecutionErrorV2>,
+        > {
+            published
+                .execute_paged_mov_rax_rbx_v2(state, bus, CR3, EFER, context())
+                .unwrap()
+        }
+
+        let _guard = JIT_TEST_LOCK.lock().unwrap();
+        let published = publish_load(&[0x48, 0x8b, 0x03]);
+        let device_calls = Arc::new(AtomicUsize::new(0));
+
+        // The linear operand maps to physical 0x7000. The helper executes one
+        // instruction and leaves the real tracked A-bit prefix visible.
+        let mut bus = make_bus(0x7007, Arc::clone(&device_calls));
+        put(&mut bus, 0x7120, 0x0123_4567_89ab_cdef);
+        let success_entries_before = walk_entries(&mut bus);
+        let mut cpu = state(BASE + 0x120);
+        let loaded = run(&published, &mut cpu, &mut bus);
+        let execution = loaded.callback_result.as_ref().unwrap();
+        assert_eq!(execution.exit, MemoryOperationExecutionExitV2::Complete);
+        assert_eq!(execution.retired_instructions, 1);
+        assert_eq!(
+            cpu.gpr[od_isa::Register::Rax as usize],
+            0x0123_4567_89ab_cdef
+        );
+        assert_eq!(cpu.rip, ENTRY + 3);
+        assert_eq!(loaded.page_fault, None);
+        assert_eq!(loaded.access_error, None);
+        assert_eq!(
+            loaded.committed_ad_updates,
+            expected_ad_updates(success_entries_before, 4)
+        );
+        assert_eq!(loaded.committed_writes, expected_ad_ranges(4));
+        let success_entries_after = walk_entries(&mut bus);
+        assert_eq!(
+            success_entries_after,
+            success_entries_before.map(|v| v | (1 << 5))
+        );
+        assert!(
+            success_entries_after
+                .iter()
+                .all(|entry| entry & (1 << 6) == 0)
+        );
+        assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+
+        // A fresh scoped invocation after a PTE remap observes the new frame.
+        put(&mut bus, 0x4000, 0x8007);
+        put(&mut bus, 0x8120, 0x0fed_cba9_8765_4321);
+        cpu.rip = ENTRY;
+        let remapped = run(&published, &mut cpu, &mut bus);
+        assert_eq!(remapped.callback_result.unwrap().retired_instructions, 1);
+        assert_eq!(
+            cpu.gpr[od_isa::Register::Rax as usize],
+            0x0fed_cba9_8765_4321
+        );
+
+        // A real absent leaf produces exact #PF metadata; previous A writes
+        // remain committed while the destination and instruction remain held.
+        let mut fault_bus = make_bus(0x8006, Arc::clone(&device_calls));
+        let fault_entries_before = walk_entries(&mut fault_bus);
+        let mut fault_cpu = state(BASE + 0x120);
+        let before = fault_cpu.clone();
+        let faulted = run(&published, &mut fault_cpu, &mut fault_bus);
+        let record = faulted.page_fault.as_ref().unwrap();
+        assert_eq!(record.saved_rip(), ENTRY);
+        assert_eq!(record.cr2_value(), BASE + 0x120);
+        assert_eq!(record.access(), AccessKind::Read);
+        assert_eq!(record.fault().error_code, Some(0));
+        assert_eq!(
+            faulted.access_error.as_ref().unwrap(),
+            &TrackedAccessError::PageFault {
+                record: record.clone(),
+                reason: od_machine::PageFaultReason::NotPresent {
+                    level: od_machine::PageTableLevel::Pt
+                },
+            }
+        );
+        assert_eq!(
+            faulted.committed_ad_updates,
+            expected_ad_updates(fault_entries_before, 3)
+        );
+        assert_eq!(faulted.committed_writes, expected_ad_ranges(3));
+        let fault_entries_after = walk_entries(&mut fault_bus);
+        assert_eq!(
+            fault_entries_after,
+            [
+                fault_entries_before[0] | (1 << 5),
+                fault_entries_before[1] | (1 << 5),
+                fault_entries_before[2] | (1 << 5),
+                fault_entries_before[3],
+            ]
+        );
+        assert_eq!(fault_entries_after[3] & 1, 0, "missing leaf remains absent");
+        assert!(
+            fault_entries_after
+                .iter()
+                .all(|entry| entry & (1 << 6) == 0)
+        );
+        let fault_exit = faulted.callback_result.unwrap();
+        assert_eq!(
+            fault_exit.exit,
+            MemoryOperationExecutionExitV2::GuestFault(record.fault().clone())
+        );
+        assert_eq!(fault_exit.retired_instructions, 0);
+        assert_eq!(fault_cpu, before);
+
+        // A translated MMIO target is rejected by the RAM-only path before
+        // device dispatch; a qword crossing is refused before its first walk.
+        let mut mmio_bus = make_bus(MMIO_BASE | 7, Arc::clone(&device_calls));
+        let mut mmio_cpu = state(BASE + 0x120);
+        let mmio = run(&published, &mut mmio_cpu, &mut mmio_bus);
+        assert_eq!(
+            mmio.access_error,
+            Some(TrackedAccessError::OperandPhysical {
+                address: GuestPhysicalAddress::new(MMIO_BASE + 0x120),
+                source: od_machine::MemoryAccessError::UnreadableRegion(MemoryRegionKind::Mmio),
+            })
+        );
+        assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(mmio_cpu.rip, ENTRY);
+        assert!(mmio.callback_result.is_err());
+
+        let mut crossing_bus = make_bus(0x7007, Arc::clone(&device_calls));
+        let crossing_entries_before = walk_entries(&mut crossing_bus);
+        let mut crossing_cpu = state(BASE + 0xffc);
+        let crossing_before = crossing_cpu.clone();
+        assert_eq!(
+            published.execute_paged_mov_rax_rbx_v2(
+                &mut crossing_cpu,
+                &mut crossing_bus,
+                CR3,
+                EFER,
+                context(),
+            ),
+            Err(PagedMemoryLoadV2Error::UnsupportedOperandRange {
+                address: BASE + 0xffc,
+                length: 8,
+            })
+        );
+        assert_eq!(crossing_cpu, crossing_before);
+        assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(walk_entries(&mut crossing_bus), crossing_entries_before);
+
+        // CPL3 succeeds only when every traversed paging entry is user-readable.
+        let mut user_bus = make_bus(0x7007, Arc::clone(&device_calls));
+        for address in [0x1000, 0x2000, 0x3020, 0x4000] {
+            let entry = get(&mut user_bus, address);
+            put(&mut user_bus, address, entry | 4);
+        }
+        put(&mut user_bus, 0x7120, 0xa1b2_c3d4_e5f6_0718);
+        let user_entries_before = walk_entries(&mut user_bus);
+        let mut user_cpu = state(BASE + 0x120);
+        let user_result = published
+            .execute_paged_mov_rax_rbx_v2(
+                &mut user_cpu,
+                &mut user_bus,
+                CR3,
+                EFER,
+                context_for(PrivilegeLevel::Ring3),
+            )
+            .unwrap();
+        assert_eq!(user_result.callback_result.unwrap().retired_instructions, 1);
+        assert_eq!(
+            user_cpu.gpr[od_isa::Register::Rax as usize],
+            0xa1b2_c3d4_e5f6_0718
+        );
+        assert_eq!(user_cpu.rip, ENTRY + 3);
+        assert_eq!(
+            user_result.committed_ad_updates,
+            expected_ad_updates(user_entries_before, 4)
+        );
+        assert_eq!(user_result.committed_writes, expected_ad_ranges(4));
+        let user_entries_after = walk_entries(&mut user_bus);
+        assert_eq!(
+            user_entries_after,
+            user_entries_before.map(|v| v | (1 << 5))
+        );
+        assert!(user_entries_after.iter().all(|entry| entry & (1 << 6) == 0));
+
+        // A supervisor-only leaf must fault for CPL3. If this explicit data
+        // access were downgraded to Ring0, the same present/RW mapping would
+        // incorrectly succeed, so this guards the privilege handoff itself.
+        let mut supervisor_leaf_bus = make_bus(0x7003, Arc::clone(&device_calls));
+        put(&mut supervisor_leaf_bus, 0x7120, 0x1122_3344_5566_7788);
+        let supervisor_leaf_before = walk_entries(&mut supervisor_leaf_bus);
+        let mut supervisor_leaf_cpu = state(BASE + 0x120);
+        let supervisor_leaf_cpu_before = supervisor_leaf_cpu.clone();
+        let supervisor_leaf_fault = published
+            .execute_paged_mov_rax_rbx_v2(
+                &mut supervisor_leaf_cpu,
+                &mut supervisor_leaf_bus,
+                CR3,
+                EFER,
+                context_for(PrivilegeLevel::Ring3),
+            )
+            .unwrap();
+        let supervisor_record = supervisor_leaf_fault.page_fault.as_ref().unwrap();
+        assert_eq!(supervisor_record.saved_rip(), ENTRY);
+        assert_eq!(supervisor_record.cr2_value(), BASE + 0x120);
+        assert_eq!(supervisor_record.access(), AccessKind::Read);
+        assert_eq!(supervisor_record.fault().vector, 14);
+        assert_eq!(supervisor_record.fault().error_code, Some(0x5));
+        assert_eq!(
+            supervisor_leaf_fault.access_error,
+            Some(TrackedAccessError::PageFault {
+                record: supervisor_record.clone(),
+                reason: od_machine::PageFaultReason::Protection {
+                    user_denied: true,
+                    write_denied: false,
+                    execute_denied: false,
+                },
+            })
+        );
+        assert_eq!(
+            supervisor_leaf_fault.committed_ad_updates,
+            expected_ad_updates(supervisor_leaf_before, 4)
+        );
+        assert_eq!(
+            supervisor_leaf_fault.committed_writes,
+            expected_ad_ranges(4)
+        );
+        let supervisor_leaf_after = walk_entries(&mut supervisor_leaf_bus);
+        assert_eq!(
+            supervisor_leaf_after,
+            supervisor_leaf_before.map(|entry| entry | (1 << 5))
+        );
+        assert!(
+            supervisor_leaf_after
+                .iter()
+                .all(|entry| entry & (1 << 6) == 0)
+        );
+        assert_eq!(
+            supervisor_leaf_after[3] & 4,
+            0,
+            "leaf remains supervisor-only"
+        );
+        assert_eq!(supervisor_leaf_cpu, supervisor_leaf_cpu_before);
+        let supervisor_leaf_exit = supervisor_leaf_fault.callback_result.unwrap();
+        assert_eq!(
+            supervisor_leaf_exit.exit,
+            MemoryOperationExecutionExitV2::GuestFault(supervisor_record.fault().clone())
+        );
+        assert_eq!(supervisor_leaf_exit.retired_instructions, 0);
+        assert_eq!(device_calls.load(Ordering::SeqCst), 0);
+
+        // Every unsupported CPU context is rejected before a page walk or commit.
+        for (label, mode, privilege, activity, shadow, expected_error) in [
+            (
+                "unsupported privilege",
+                InstructionMode::Long64,
+                PrivilegeLevel::Ring1,
+                Some(od_isa::state::CpuActivity::Running),
+                Some(od_isa::state::StiShadow::Clear),
+                crate::PagedMemoryLoadV2Error::UnsupportedPrivilege(PrivilegeLevel::Ring1),
+            ),
+            (
+                "halted",
+                InstructionMode::Long64,
+                PrivilegeLevel::Ring0,
+                Some(od_isa::state::CpuActivity::Halted),
+                Some(od_isa::state::StiShadow::Clear),
+                crate::PagedMemoryLoadV2Error::UnsupportedCpuActivity(
+                    od_isa::state::CpuActivity::Halted,
+                ),
+            ),
+            (
+                "blocking STI shadow",
+                InstructionMode::Long64,
+                PrivilegeLevel::Ring0,
+                Some(od_isa::state::CpuActivity::Running),
+                Some(od_isa::state::StiShadow::Blocking),
+                crate::PagedMemoryLoadV2Error::UnsupportedInterruptShadow(
+                    od_isa::state::StiShadow::Blocking,
+                ),
+            ),
+        ] {
+            let mut rejected_bus = make_bus(0x7007, Arc::clone(&device_calls));
+            let entries_before = walk_entries(&mut rejected_bus);
+            let mut rejected_cpu = state(BASE + 0x120);
+            rejected_cpu.activity = activity;
+            rejected_cpu.sti_shadow = shadow;
+            let cpu_before = rejected_cpu.clone();
+            let rejected_context = AccessContext {
+                mode,
+                privilege,
+                origin: AccessOrigin::Explicit,
+            };
+            assert_eq!(
+                published.execute_paged_mov_rax_rbx_v2(
+                    &mut rejected_cpu,
+                    &mut rejected_bus,
+                    CR3,
+                    EFER,
+                    rejected_context,
+                ),
+                Err(expected_error),
+                "{label}"
+            );
+            assert_eq!(rejected_cpu, cpu_before, "{label}");
+            assert_eq!(walk_entries(&mut rejected_bus), entries_before, "{label}");
+            assert_eq!(device_calls.load(Ordering::SeqCst), 0, "{label}");
+        }
+
+        drop(published);
+        let unsupported = publish_load(&[0x48, 0x8b, 0x0b]); // MOV RCX,[RBX]
+        let mut unsupported_bus = make_bus(0x7007, Arc::clone(&device_calls));
+        let mut unsupported_cpu = state(BASE + 0x120);
+        let unsupported_before = unsupported_cpu.clone();
+        let unsupported_entries_before = walk_entries(&mut unsupported_bus);
+        assert_eq!(
+            unsupported.execute_paged_mov_rax_rbx_v2(
+                &mut unsupported_cpu,
+                &mut unsupported_bus,
+                CR3,
+                EFER,
+                context(),
+            ),
+            Err(PagedMemoryLoadV2Error::UnsupportedBlock),
+        );
+        assert_eq!(unsupported_cpu, unsupported_before);
+        assert_eq!(
+            walk_entries(&mut unsupported_bus),
+            unsupported_entries_before
+        );
+        assert_eq!(device_calls.load(Ordering::SeqCst), 0);
     }
 }

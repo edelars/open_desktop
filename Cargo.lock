@@ -93,6 +93,7 @@ version = "0.1.0"
 dependencies = [
  "od-isa",
  "od-jit",
+ "od-machine",
  "od-testkit",
  "serde",
  "serde_json",
