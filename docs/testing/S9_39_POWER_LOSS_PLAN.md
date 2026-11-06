@@ -77,5 +77,6 @@
 | `s39-rootcopy-5` (2026-11-06) | `rootcopy`: коммит 10, до записи корня | подтверждены коммиты 1–9 (поколение 11); коммит 10 упал `os_error 9` на `Size`; `window_end absent_seen=true` | `verify ok=true`, durable generation 11, 0 проблем | 5 из 5 в `rootcopy`; отключение подтверждено драйвером |
 | `s39-idle-1` (2026-11-06) | `idle`: после подтверждения коммита 10 | подтверждены коммиты 1–10 (поколение 12); коммит 11 упал `os_error 9` на `Size`; `window_end absent_seen=true` | `verify ok=true`, durable generation 12, 0 проблем | 1 из 5 в `idle`; отключение подтверждено драйвером |
 | `s39-idle-2` (2026-11-06) | `idle`: после подтверждения коммита 10 | подтверждены коммиты 1–10 (поколение 12); коммит 11 упал `os_error 9` на `Size`; `window_end absent_seen=true` | `verify ok=true`, durable generation 12, 0 проблем | 2 из 5 в `idle`; отключение подтверждено драйвером |
+| `s39-idle-3` (2026-11-06) | `idle`: после подтверждения коммита 10 | подтверждены коммиты 1–10 (поколение 12); коммит 11 упал `os_error 9` на `Size`; `window_end absent_seen=true` | `verify ok=true`, durable generation 12, 0 проблем | 3 из 5 в `idle`; отключение подтверждено драйвером |
 
 Сырой журнал: `work/stage9/s39-cut1/ack.log` (игнорируется Git, как и все испытания).
