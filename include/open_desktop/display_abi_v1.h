@@ -48,7 +48,8 @@ enum od_display_status {
     OD_DISPLAY_STATUS_MEMORY_ERROR = 10,      /* framebuffer memory could not be read */
     OD_DISPLAY_STATUS_INTERNAL_ERROR = 11,    /* host fault (e.g. a caught Rust panic); session unusable except destroy */
     OD_DISPLAY_STATUS_NO_CURSOR_SHAPE = 12,   /* (cursor) the guest has not published a shape since create/reset */
-    OD_DISPLAY_STATUS_CURSOR_BUFFER_LENGTH = 13 /* (cursor) buffer_len != width * height * 4 */
+    OD_DISPLAY_STATUS_CURSOR_BUFFER_LENGTH = 13, /* (cursor) buffer_len != width * height * 4 */
+    OD_DISPLAY_STATUS_NO_SUCH_SCREEN = 14     /* (screen index) screen >= screen count */
 };
 
 /* Session profiles. Existing values never change; new profiles are appended
@@ -59,7 +60,11 @@ enum od_display_profile {
      * pattern (tests/fixtures/guest/stage10/bars_64x48_seed0.raw) through the
      * device's own registers and memory; generation is 1 right after create.
      * step has nothing to execute. This profile never changes. */
-    OD_DISPLAY_PROFILE_TEST_PATTERN = 1
+    OD_DISPLAY_PROFILE_TEST_PATTERN = 1,
+    /* TEST-ONLY. Two screens (DISPLAY_DEVICE.md 16.2). Screen 0 is the profile-1
+     * bars frame; screen 1 is a 32x24 BGRX8888 checkerboard (8x8 cells, black
+     * at cell (0,0)) programmed through its mirror registers at create. */
+    OD_DISPLAY_PROFILE_TWO_SCREENS_TEST = 4
 };
 
 /* Pixel formats of od_display_mode.format / od_display_frame_info.format
@@ -228,6 +233,39 @@ uint32_t od_display_session_cursor_state(od_display_session *session,
 uint32_t od_display_session_read_cursor_image(od_display_session *session,
                                               uint8_t *buffer, size_t buffer_len,
                                               od_display_cursor_state *out_state);
+
+/* Screens (DISPLAY_DEVICE.md 16.10). Functions without a screen index above
+ * describe screen 0 and are unchanged. Screen index 0 or 1; 1 only when the
+ * machine has two screens. */
+
+/* Mode, flags and counters of one screen. 48 bytes. flags: bit 0 ACTIVE,
+ * bit 1 HAS_FRAME (current frame of the mode), bit 2 DISABLED (screen 1 only;
+ * never set for screen 0). */
+typedef struct od_display_screen_mode {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+    uint32_t format;
+    uint32_t flags;
+    uint32_t reserved;
+    uint64_t generation;
+    uint64_t mode_change_count;
+} od_display_screen_mode;
+
+/* Number of screens: 1 or 2. */
+uint32_t od_display_session_screen_count(od_display_session *session, uint32_t *out_count);
+
+/* Mode and counters of screen `screen`. NO_SUCH_SCREEN for a missing screen. */
+uint32_t od_display_session_screen_mode(od_display_session *session, uint32_t screen,
+                                        od_display_screen_mode *out_mode);
+
+/* Current frame of screen `screen`: same rules and statuses as
+ * od_display_session_read_frame, with NO_SUCH_SCREEN added. */
+uint32_t od_display_session_read_screen_frame(od_display_session *session, uint32_t screen,
+                                              uint8_t *buffer, size_t buffer_len,
+                                              od_display_frame_info *out_info);
 
 #ifdef __cplusplus
 }

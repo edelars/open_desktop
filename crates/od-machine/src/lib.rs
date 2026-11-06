@@ -33,9 +33,10 @@ pub use display_device::{
     CursorReadError, CursorShapeInfo, CursorState, DISPLAY_CURSOR_FORMAT_BGRA8888_PREMUL,
     DISPLAY_CURSOR_IMAGE_WORDS, DISPLAY_CURSOR_MAX_HEIGHT, DISPLAY_CURSOR_MAX_WIDTH,
     DISPLAY_EVENT_CAPACITY, DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE,
-    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_MAX_HEIGHT, DISPLAY_MAX_WIDTH, DISPLAY_REGISTERS_BASE,
-    DISPLAY_REGISTERS_BYTES, DisplayDevice, DisplayHandle, DisplayMode, DisplayReadError,
-    DisplayRejectReason, DisplayRequestError, FrameInfo, ModeRequestOutcome, ModeRequestState,
+    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_MAX_HEIGHT, DISPLAY_MAX_WIDTH,
+    DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DISPLAY_SECOND_FRAMEBUFFER_BASE,
+    DisplayDevice, DisplayHandle, DisplayMode, DisplayReadError, DisplayRejectReason,
+    DisplayRequestError, FrameInfo, ModeRequestOutcome, ModeRequestState, SecondScreenState,
 };
 
 pub use diagnostic_vcpu::{

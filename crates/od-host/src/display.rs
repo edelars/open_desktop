@@ -13,7 +13,7 @@
 
 use od_machine::{
     AccessWidth, CursorReadError, DISPLAY_FORMAT_BGRX8888, DISPLAY_FRAMEBUFFER_BASE,
-    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DisplayDevice,
+    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_SECOND_FRAMEBUFFER_BASE, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DisplayDevice,
     DisplayHandle, DisplayReadError, GuestPhysicalAddress, GuestPhysicalRange, MachineBus,
     MachineMemoryMap, MemoryRegionKind, MemoryRegionSpec, MmioBinding, RamLimits,
 };
@@ -43,11 +43,17 @@ const STATUS_MEMORY_ERROR: u32 = 10;
 const STATUS_INTERNAL_ERROR: u32 = 11;
 const STATUS_NO_CURSOR_SHAPE: u32 = 12;
 const STATUS_CURSOR_BUFFER_LENGTH: u32 = 13;
+const STATUS_NO_SUCH_SCREEN: u32 = 14;
 
 const CURSOR_FLAG_ENABLED: u32 = 1;
 const CURSOR_FLAG_HAS_SHAPE: u32 = 2;
 
 const PROFILE_TEST_PATTERN: u32 = 1;
+/// Test-only: two screens, screen 0 bars and screen 1 checker (DISPLAY_DEVICE.md 16.2).
+const PROFILE_TWO_SCREENS_TEST: u32 = 4;
+const MODE_FLAG_DISABLED: u32 = 4;
+const SECOND_SCREEN_TEST_WIDTH: u32 = 32;
+const SECOND_SCREEN_TEST_HEIGHT: u32 = 24;
 
 /// Mode and pattern programmed by profile 1 at create: `bars`, seed 0, as in
 /// `tools/build/display_pattern.py` and
@@ -101,6 +107,25 @@ pub struct OdDisplayMode {
     pub generation: u64,
     pub mode_change_count: u64,
 }
+
+/// Mode and counters of one screen (DISPLAY_DEVICE.md 16.10). 48 bytes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OdDisplayScreenMode {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub format: u32,
+    /// `MODE_FLAG_ACTIVE`, `MODE_FLAG_HAS_FRAME`, `MODE_FLAG_DISABLED`.
+    pub flags: u32,
+    pub reserved: u32,
+    pub generation: u64,
+    pub mode_change_count: u64,
+}
+
+const _: () = assert!(size_of::<OdDisplayScreenMode>() == 48);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -379,6 +404,91 @@ fn program_test_pattern(session: &mut Session) -> Option<()> {
     .then_some(())
 }
 
+/// Profile 4 (test-only): two screens. Screen 0 is the profile-1 bars frame;
+/// screen 1 gets a checkerboard programmed through its mirror registers
+/// (DISPLAY_DEVICE.md 16.4) and stored into its own framebuffer region.
+fn build_two_screen_session() -> Option<Session> {
+    const RAM_BYTES: u64 = 0x1_0000;
+    let (device, display) = DisplayDevice::new_two_screens_with_handle();
+    let map = MachineMemoryMap::new(
+        36,
+        vec![
+            MemoryRegionSpec::new(range(0, RAM_BYTES)?, MemoryRegionKind::Ram),
+            MemoryRegionSpec::new(
+                range(DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES)?,
+                MemoryRegionKind::Framebuffer,
+            ),
+            MemoryRegionSpec::new(
+                range(DISPLAY_SECOND_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES)?,
+                MemoryRegionKind::Framebuffer,
+            ),
+            MemoryRegionSpec::new(
+                range(DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES)?,
+                MemoryRegionKind::Mmio,
+            ),
+        ],
+    )
+    .ok()?;
+    let bus = MachineBus::new(
+        map,
+        RamLimits::new(RAM_BYTES),
+        vec![Box::new(device)],
+        vec![MmioBinding {
+            region_start: GuestPhysicalAddress::new(DISPLAY_REGISTERS_BASE),
+            device_index: 0,
+        }],
+        vec![],
+    )
+    .ok()?;
+    let mut session = Session {
+        profile: PROFILE_TWO_SCREENS_TEST,
+        bus,
+        display,
+    };
+    program_test_pattern(&mut session)?;
+    program_second_screen_checker(&mut session)?;
+    Some(session)
+}
+
+/// Screen 1 through its mirror registers (`0x300 + offset`) and its own
+/// framebuffer: 32 x 24 checkerboard of 8 x 8 cells, white and black.
+fn program_second_screen_checker(session: &mut Session) -> Option<()> {
+    const BASE: u64 = DISPLAY_REGISTERS_BASE + 0x300;
+    const WIDTH: u64 = BASE + 0x040;
+    const HEIGHT: u64 = BASE + 0x044;
+    const FORMAT: u64 = BASE + 0x048;
+    const MODE_COMMIT: u64 = BASE + 0x04C;
+    const FRAME_GENERATION: u64 = BASE + 0x080;
+    let bus = &mut session.bus;
+    let mut store = |address: u64, value: u32| {
+        bus.write_physical(
+            GuestPhysicalAddress::new(address),
+            AccessWidth::Dword,
+            u64::from(value),
+            |_| {},
+        )
+        .ok()
+    };
+    store(WIDTH, SECOND_SCREEN_TEST_WIDTH)?;
+    store(HEIGHT, SECOND_SCREEN_TEST_HEIGHT)?;
+    store(FORMAT, DISPLAY_FORMAT_BGRX8888)?;
+    store(MODE_COMMIT, 1)?;
+    for y in 0..SECOND_SCREEN_TEST_HEIGHT {
+        for x in 0..SECOND_SCREEN_TEST_WIDTH {
+            let white = ((x / 8) + (y / 8)) % 2 == 1;
+            let byte = if white { 0xFF } else { 0x00 };
+            let offset = u64::from(y * SECOND_SCREEN_TEST_WIDTH * 4 + x * 4);
+            store(
+                DISPLAY_SECOND_FRAMEBUFFER_BASE + offset,
+                u32::from_le_bytes([byte, byte, byte, 0]),
+            )?;
+        }
+    }
+    store(FRAME_GENERATION, 1)?;
+    let second = session.display.second_screen_state()?;
+    (second.mode.width == SECOND_SCREEN_TEST_WIDTH && second.has_current_frame()).then_some(())
+}
+
 /// Runs `body` so that a Rust panic never crosses the C boundary.
 fn guarded(body: impl FnOnce() -> u32) -> u32 {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(STATUS_INTERNAL_ERROR)
@@ -456,6 +566,10 @@ pub unsafe extern "C" fn od_display_session_create(
         }
         let session = match config.profile {
             PROFILE_TEST_PATTERN => match build_test_pattern_session() {
+                Some(session) => session,
+                None => return STATUS_INTERNAL_ERROR,
+            },
+            PROFILE_TWO_SCREENS_TEST => match build_two_screen_session() {
                 Some(session) => session,
                 None => return STATUS_INTERNAL_ERROR,
             },
@@ -625,6 +739,198 @@ pub unsafe extern "C" fn od_display_session_read_frame(
     })
 }
 
+/// Number of screens of the machine: 1 or 2 (DISPLAY_DEVICE.md 16.10).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn od_display_session_screen_count(
+    handle: *mut OdDisplaySession,
+    out_count: *mut u32,
+) -> u32 {
+    guarded(|| {
+        if !valid_ptr(out_count) {
+            return STATUS_INVALID_ARGUMENT;
+        }
+        with_session(handle, |session| {
+            let count = if session.display.second_screen_state().is_some() {
+                2
+            } else {
+                1
+            };
+            // SAFETY: pointer shape checked above.
+            unsafe { out_count.write(count) };
+            STATUS_OK
+        })
+    })
+}
+
+/// Mode, flags and counters of screen `screen` (0 or 1). Screen 0 is the
+/// same data as `od_display_session_mode`, with the flag `DISABLED` never set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn od_display_session_screen_mode(
+    handle: *mut OdDisplaySession,
+    screen: u32,
+    out_mode: *mut OdDisplayScreenMode,
+) -> u32 {
+    guarded(|| {
+        if !valid_ptr(out_mode) {
+            return STATUS_INVALID_ARGUMENT;
+        }
+        // SAFETY: pointer shape checked; header fields are read before any write.
+        let (abi_version, struct_size) =
+            unsafe { ((*out_mode).abi_version, (*out_mode).struct_size) };
+        if abi_version != ABI_VERSION || struct_size as usize != size_of::<OdDisplayScreenMode>() {
+            return STATUS_ABI_MISMATCH;
+        }
+        with_session(handle, |session| {
+            let fields = match screen {
+                0 => {
+                    let mode = session.display.current_mode();
+                    let mut flags = 0;
+                    if mode.is_active() {
+                        flags |= MODE_FLAG_ACTIVE;
+                    }
+                    if session.display.has_current_frame() {
+                        flags |= MODE_FLAG_HAS_FRAME;
+                    }
+                    (
+                        mode,
+                        flags,
+                        session.display.frame_generation(),
+                        session.display.mode_change_count(),
+                    )
+                }
+                1 => {
+                    let Some(second) = session.display.second_screen_state() else {
+                        return STATUS_NO_SUCH_SCREEN;
+                    };
+                    let mut flags = 0;
+                    if second.mode.is_active() {
+                        flags |= MODE_FLAG_ACTIVE;
+                    }
+                    if second.has_current_frame() {
+                        flags |= MODE_FLAG_HAS_FRAME;
+                    }
+                    if second.disabled {
+                        flags |= MODE_FLAG_DISABLED;
+                    }
+                    (second.mode, flags, second.generation, second.mode_change_count)
+                }
+                _ => return STATUS_NO_SUCH_SCREEN,
+            };
+            let (mode, flags, generation, mode_change_count) = fields;
+            // SAFETY: pointer shape checked above; success writes the whole struct.
+            unsafe {
+                out_mode.write(OdDisplayScreenMode {
+                    abi_version: ABI_VERSION,
+                    struct_size: size_of::<OdDisplayScreenMode>() as u32,
+                    width: mode.width,
+                    height: mode.height,
+                    stride: mode.stride,
+                    format: mode.format,
+                    flags,
+                    reserved: 0,
+                    generation,
+                    mode_change_count,
+                });
+            }
+            STATUS_OK
+        })
+    })
+}
+
+/// Current frame of screen `screen` (0 or 1). Same rules and statuses as
+/// `od_display_session_read_frame`, which is the screen-0 form of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn od_display_session_read_screen_frame(
+    handle: *mut OdDisplaySession,
+    screen: u32,
+    buffer: *mut u8,
+    buffer_len: usize,
+    out_info: *mut OdDisplayFrameInfo,
+) -> u32 {
+    guarded(|| {
+        if buffer.is_null() || !valid_ptr(out_info) {
+            return STATUS_INVALID_ARGUMENT;
+        }
+        if overlaps(
+            buffer,
+            buffer_len,
+            out_info.cast(),
+            size_of::<OdDisplayFrameInfo>(),
+        ) {
+            return STATUS_INVALID_ARGUMENT;
+        }
+        // SAFETY: pointer shape checked; header fields are read before any write.
+        let (abi_version, struct_size) =
+            unsafe { ((*out_info).abi_version, (*out_info).struct_size) };
+        if abi_version != ABI_VERSION || struct_size as usize != size_of::<OdDisplayFrameInfo>() {
+            return STATUS_ABI_MISMATCH;
+        }
+        with_session(handle, |session| {
+            let (mode, frame_bytes) = match screen {
+                0 => {
+                    let mode = session.display.current_mode();
+                    if !mode.is_active() {
+                        return STATUS_NO_ACTIVE_MODE;
+                    }
+                    if !session.display.has_current_frame() {
+                        return STATUS_NO_FRAME;
+                    }
+                    (mode, mode.frame_bytes())
+                }
+                1 => {
+                    let Some(second) = session.display.second_screen_state() else {
+                        return STATUS_NO_SUCH_SCREEN;
+                    };
+                    if !second.mode.is_active() {
+                        return STATUS_NO_ACTIVE_MODE;
+                    }
+                    if !second.has_current_frame() {
+                        return STATUS_NO_FRAME;
+                    }
+                    (second.mode, second.mode.frame_bytes())
+                }
+                _ => return STATUS_NO_SUCH_SCREEN,
+            };
+            if u64::try_from(buffer_len) != Ok(frame_bytes) {
+                return STATUS_BUFFER_LENGTH;
+            }
+            // SAFETY: as in `od_display_session_read_frame`.
+            let output = unsafe { std::slice::from_raw_parts_mut(buffer, buffer_len) };
+            let result = if screen == 0 {
+                session.display.read_frame_into(&session.bus, output)
+            } else {
+                session.display.read_second_frame_into(&session.bus, output)
+            };
+            match result {
+                Ok(info) => {
+                    // SAFETY: pointer shape checked above.
+                    unsafe {
+                        out_info.write(OdDisplayFrameInfo {
+                            abi_version: ABI_VERSION,
+                            struct_size: size_of::<OdDisplayFrameInfo>() as u32,
+                            width: info.mode.width,
+                            height: info.mode.height,
+                            stride: info.mode.stride,
+                            format: info.mode.format,
+                            reserved0: 0,
+                            reserved1: 0,
+                            generation: info.generation,
+                            mode_change_count: info.mode_change_count,
+                        });
+                    }
+                    let _ = mode;
+                    STATUS_OK
+                }
+                Err(DisplayReadError::NoActiveMode) => STATUS_NO_ACTIVE_MODE,
+                Err(DisplayReadError::NoFrame) => STATUS_NO_FRAME,
+                Err(DisplayReadError::BufferLength { .. }) => STATUS_BUFFER_LENGTH,
+                Err(DisplayReadError::ModeChanged) => STATUS_MODE_CHANGED,
+                Err(DisplayReadError::Memory(_)) => STATUS_MEMORY_ERROR,
+            }
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn od_display_session_step(
     handle: *mut OdDisplaySession,
@@ -645,7 +951,7 @@ pub unsafe extern "C" fn od_display_session_step(
             // Profile 1 has no guest: any budget, including zero, executes nothing.
             let _ = budget;
             match session.profile {
-                PROFILE_TEST_PATTERN => {
+                PROFILE_TEST_PATTERN | PROFILE_TWO_SCREENS_TEST => {
                     // SAFETY: pointer shape checked above.
                     unsafe {
                         out_report.write(OdDisplayStepReport {
@@ -1651,5 +1957,136 @@ mod tests {
             STATUS_INVALID_HANDLE
         );
         assert_eq!(state.cursor_seq, u64::MAX);
+    }
+
+    fn screen_out() -> OdDisplayScreenMode {
+        OdDisplayScreenMode {
+            abi_version: ABI_VERSION,
+            struct_size: size_of::<OdDisplayScreenMode>() as u32,
+            width: 0xAAAA_AAAA,
+            height: 0xAAAA_AAAA,
+            stride: 0xAAAA_AAAA,
+            format: 0xAAAA_AAAA,
+            flags: 0xAAAA_AAAA,
+            reserved: 0xAAAA_AAAA,
+            generation: u64::MAX,
+            mode_change_count: u64::MAX,
+        }
+    }
+
+    fn screen_mode(handle: *mut OdDisplaySession, screen: u32) -> (u32, OdDisplayScreenMode) {
+        let mut out = screen_out();
+        let status = unsafe { od_display_session_screen_mode(handle, screen, &mut out) };
+        (status, out)
+    }
+
+    #[test]
+    fn two_screen_profile_exposes_both_screens_and_keeps_screen_0_unchanged() {
+        let mut handle = null_mut();
+        assert_eq!(
+            unsafe { od_display_session_create(&config(PROFILE_TWO_SCREENS_TEST), &mut handle) },
+            STATUS_OK
+        );
+        let mut count = 0u32;
+        assert_eq!(
+            unsafe { od_display_session_screen_count(handle, &mut count) },
+            STATUS_OK
+        );
+        assert_eq!(count, 2);
+
+        let (status, first) = screen_mode(handle, 0);
+        assert_eq!(status, STATUS_OK);
+        assert_eq!((first.width, first.height), (TEST_PATTERN_WIDTH, TEST_PATTERN_HEIGHT));
+        assert_eq!(first.flags, MODE_FLAG_ACTIVE | MODE_FLAG_HAS_FRAME);
+        assert_eq!(first.generation, 1);
+
+        let (status, second) = screen_mode(handle, 1);
+        assert_eq!(status, STATUS_OK);
+        assert_eq!(
+            (second.width, second.height),
+            (SECOND_SCREEN_TEST_WIDTH, SECOND_SCREEN_TEST_HEIGHT)
+        );
+        assert_eq!(second.flags, MODE_FLAG_ACTIVE | MODE_FLAG_HAS_FRAME);
+        assert_eq!(second.generation, 1);
+        assert_eq!(second.mode_change_count, 1);
+
+        // Screen 0's counters are its own.
+        assert_eq!(first.mode_change_count, 1);
+        assert_eq!(first.abi_version, ABI_VERSION);
+        assert_eq!(first.struct_size as usize, size_of::<OdDisplayScreenMode>());
+
+        // Screen 2 does not exist.
+        assert_eq!(screen_mode(handle, 2).0, STATUS_NO_SUCH_SCREEN);
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn second_screen_frame_is_the_checkerboard_and_matches_its_own_mode() {
+        let mut handle = null_mut();
+        assert_eq!(
+            unsafe { od_display_session_create(&config(PROFILE_TWO_SCREENS_TEST), &mut handle) },
+            STATUS_OK
+        );
+        let frame_len = (SECOND_SCREEN_TEST_WIDTH * SECOND_SCREEN_TEST_HEIGHT * 4) as usize;
+        let mut buffer = vec![0u8; frame_len];
+        let mut info = info_out();
+        let status = unsafe {
+            od_display_session_read_screen_frame(
+                handle,
+                1,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut info,
+            )
+        };
+        assert_eq!(status, STATUS_OK);
+        assert_eq!(info.width, SECOND_SCREEN_TEST_WIDTH);
+        // Cell (0,0) is black, cell (1,0) white (BGRX bytes).
+        assert_eq!(&buffer[0..4], &[0, 0, 0, 0]);
+        let cell1 = (8 * 4) as usize;
+        assert_eq!(&buffer[cell1..cell1 + 4], &[0xFF, 0xFF, 0xFF, 0]);
+        // A wrong length is refused before any copy.
+        let mut short = vec![0u8; frame_len - 1];
+        assert_eq!(
+            unsafe {
+                od_display_session_read_screen_frame(
+                    handle,
+                    1,
+                    short.as_mut_ptr(),
+                    short.len(),
+                    &mut info,
+                )
+            },
+            STATUS_BUFFER_LENGTH
+        );
+        // Screen 0 read through the screen-indexed call equals the old call.
+        let mut first = vec![0u8; (TEST_PATTERN_WIDTH * TEST_PATTERN_HEIGHT * 4) as usize];
+        assert_eq!(
+            unsafe {
+                od_display_session_read_screen_frame(
+                    handle,
+                    0,
+                    first.as_mut_ptr(),
+                    first.len(),
+                    &mut info,
+                )
+            },
+            STATUS_OK
+        );
+        assert_eq!(first.as_slice(), FIXTURE_BARS_64X48);
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn one_screen_profile_reports_one_screen_and_no_second_one() {
+        let handle = create();
+        let mut count = 0u32;
+        assert_eq!(
+            unsafe { od_display_session_screen_count(handle, &mut count) },
+            STATUS_OK
+        );
+        assert_eq!(count, 1);
+        assert_eq!(screen_mode(handle, 1).0, STATUS_NO_SUCH_SCREEN);
+        assert_eq!(unsafe { od_display_session_destroy(handle) }, STATUS_OK);
     }
 }
