@@ -452,13 +452,13 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   `Walk → Hit → effect → consume → Walk → Hit` while preserving S4-14a's
   immutable-memory boundary. See the [report](../reports/STAGE_4_S4-14B_2026-11-06.md).
   Full S4-14 remains open.
-- [ ] S4-14c implements a feature-gated mutable diagnostic session with one
+- [x] S4-14c implements a feature-gated mutable diagnostic session with one
   exclusive `&mut PhysicalMemory`, values-only one-entry pure cache, checked
-  aligned PTE writes and synchronous INVLPG-effect consumption. Acceptance
-  proves same-session remap and write-permission refresh, post-INVLPG `Walk`,
-  failed-write callback behavior and cache preservation on non-invalidating
-  paths. Independent review is pending; this does not complete S4-14.
-  See the [S4-14c report](../reports/STAGE_4_S4-14C_2026-11-05.md).
+  aligned PTE writes and synchronous INVLPG-effect consumption. Same-session
+  remap and write-permission refresh, post-INVLPG `Walk`, failed-write callback
+  behavior and cache preservation on non-invalidating paths passed; independent
+  `gpt-6.1-sol/high` review found no remaining P0—P3 findings. This does not
+  complete S4-14. See the [S4-14c report](../reports/STAGE_4_S4-14C_2026-11-05.md).
 - **Где:** `od-machine`, system instruction effects `od-isa`.
 - **Сделать:** CR3/context transitions, INVLPG, paging/permission-control changes, reset; global/PCID/INVPCID — только при объявленной поддержке. Развести software-cache generations и архитектурную семантику guest page tables.
 - **Проверка:** remap A→B, tighten/relax rights с обязательной invalidation, stale entry после context switch, huge-page coverage, код/данные, разные guest pages внутри host page. Поведение без invalidation проверять в пределах разрешённого стандартом, не требовать несуществующей гарантии.
