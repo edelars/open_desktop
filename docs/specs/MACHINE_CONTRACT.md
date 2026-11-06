@@ -745,22 +745,55 @@ reference, cache entry reference or reusable access handle escapes the session.
 `[address, address + 8)` range is inside physical36, then delegates to checked
 `PhysicalMemory::write_u64`. Successful writes commit and notify once;
 failed alignment/range/region writes leave RAM unchanged and do not notify.
-Neither successful nor failed writes implicitly invalidate the entry. The
-standalone INVLPG entry fetches instruction bytes through a pure walker over
+Neither successful nor failed writes implicitly invalidate the entry; a
+matching probe may continue to return the resident translation until the
+caller consumes an architectural invalidation effect. The standalone INVLPG
+entry fetches instruction bytes through a pure walker over
 the current memory, bypassing the resident cache and producing no A/D writes.
-Only a retired CPL0 canonical invalidation effect is consumed synchronously;
-it clears the full entry before control returns. Faults, fetch failures and
-noncanonical no-ops preserve it. A CPU CR3 that differs from the session
-snapshot is rejected before fetch.
+For this S4-14c path, only a retired CPL0 canonical invalidation effect is
+consumed synchronously; it clears the full entry before control returns.
+Faults, fetch failures and noncanonical no-ops preserve it. A CPU CR3 that
+differs from the session snapshot is rejected before fetch. S4-14d adds the
+separate retired MOV CR3 effect consumer below.
 
 Acceptance covers a same-session `Walk → Hit → PTE remap → INVLPG → Walk → Hit`,
 write-permission tighten/relax with exact page-fault metadata, failed-write
 callbacks, and cache preservation on non-retiring/non-invalidating instruction
 paths. Fetch-only lookup and invalidation remain diagnostic pure probes, not
-tracked memory accesses. This does not implement cached tracked A/D, guest
-stores, CR3/reset transitions, generations, huge pages, PCID/global semantics,
-DMA/SMP/JIT integration, or production TLB behavior. See the
+tracked memory accesses. The S4-14c slice does not implement cached tracked A/D,
+guest stores, CR3/reset transitions or generations. S4-14d adds only the
+bounded MOV CR3 transition described below. Huge pages, PCID/global semantics,
+DMA/SMP/JIT integration and production TLB behavior remain outside these
+diagnostic slices. See the
 [S4-14c report](../reports/STAGE_4_S4-14C_2026-11-05.md).
+
+### CPU-owned CR3 invalidation in the mutable diagnostic session (S4-14d)
+
+The feature-gated `MutableTranslationProbeSession::execute_mov_cr3` composes
+the existing exact `MovCr3Long64V1` CPU step with the session's fixed
+Long64/canonical48/physical36/four-level/4 KiB translation snapshot. Before
+fetch it requires CPU CR0, CR3 and CR4 to match the active snapshot. Instruction
+bytes are fetched through the pure walker, bypassing the resident translation
+entry and producing no A/D writes.
+
+Only a retired, single-instruction `Cr3Write` effect whose old value matches
+the session and whose new value matches committed CPU state replaces the
+snapshot. The session validates the replacement with `Long64ProbeConfig::new`
+and clears its capacity-one translation entry synchronously before returning.
+This applies to same-value CR3 writes too; after a PTE mutation they force the
+next probe to walk current tables rather than hit the stale entry. The effect
+consumer performs no table walk, A/D write or memory callback.
+
+Rejected instructions, fetch faults and pre-state mismatches do not change the
+snapshot or clear the resident entry. If CPU execution retires but the effect
+cannot be reconciled or the replacement snapshot cannot be validated, the
+session retains its old snapshot, clears its stale entry and becomes poisoned;
+subsequent probe/write/instruction operations return `SessionPoisoned`. The
+caller must stop using that session because CPU state may already have
+advanced. This diagnostic integration does not add tracked A/D caching,
+reset/EFER/CR0 transitions, PCID/global semantics, generations, JIT hooks or a
+production TLB. Full S4-14 remains open. See the
+[S4-14d report](../reports/STAGE_4_S4-14D_2026-11-06.md).
 
 ## Bounded diagnostic vCPU session boundary
 

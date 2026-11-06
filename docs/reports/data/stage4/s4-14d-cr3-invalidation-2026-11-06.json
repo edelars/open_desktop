@@ -1,0 +1,40 @@
+{
+  "slice": "S4-14d",
+  "date": "2026-11-06",
+  "scope": "Feature-gated MOV CR3 effect consumption in MutableTranslationProbeSession; diagnostic one-entry cache only.",
+  "implementation": {
+    "file": "crates/od-machine/src/translation_probe_cache.rs",
+    "method": "MutableTranslationProbeSession::execute_mov_cr3",
+    "cpu_profile": "MovCr3Long64V1",
+    "paging_profile": "Long64 canonical48 physical36 four-level 4 KiB, CR0=0x80010033 CR4=0x20 EFER=0xd00",
+    "cache_capacity": 1,
+    "same_value_cr3_write_invalidates": true,
+    "pure_instruction_fetch_bypasses_resident_cache": true,
+    "effect_consumption_performs_ad_writes": false,
+    "post_retirement_error_poisons_session": true
+  },
+  "verification": {
+    "feature_on_focused_library_tests": {"passed": 23, "failed": 0},
+    "feature_off_library_tests": {"passed": 91, "failed": 0},
+    "all_targets_od_machine_check_feature_off": "passed",
+    "all_targets_od_machine_check_feature_on": "passed",
+    "cargo_fmt_all_check": "passed",
+    "git_diff_check": "passed",
+    "graphify_update": {"nodes": 26660, "edges": 66514, "communities": 1035}
+  },
+  "coverage": [
+    "root A to root B clears cache synchronously; next lookup walks and following lookup hits",
+    "same-value CR3 write invalidates after PTE remap and write permission tightening",
+    "precise not-present and NX faults after root switch preserve retired MOV CR3",
+    "LOCK raises #UD; Ring3 access and reserved source bits raise #GP(0); state and resident entry remain unchanged",
+    "matching Ring0 fetch entry is warmed before PTE removal; exact fetch #PF leaves it intact",
+    "post-retirement reconciliation failures clear stale entry, poison session and block all further operations",
+    "pure instruction fetch and effect consumption do not write A/D or issue committed-write callbacks"
+  ],
+  "limits": [
+    "No production TLB or tracked A/D cache",
+    "No reset, CR0 or EFER transitions, huge pages, PCID/global semantics, JIT hooks, DMA or SMP",
+    "No performance claim"
+  ],
+  "independent_review": "gpt-6.1-sol/high: review findings fixed; final review has no remaining P0-P3 findings"
+}

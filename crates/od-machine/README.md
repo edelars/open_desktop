@@ -59,11 +59,18 @@ S4-14a закрепляет host-controlled `clear`/drop-and-recreate lifecycle.
 меняет контракт отдельного immutable cache. S4-14c добавляет рядом
 feature-gated `MutableTranslationProbeSession`, эксклюзивно заимствующую один
 `PhysicalMemory` и сохраняющую только values-only pure translation. Checked
-aligned PTE writes не очищают cache; только retired canonical INVLPG effect
-синхронно очищает его. Fetch обходится без resident entry и не пишет A/D.
+aligned PTE writes сами не очищают cache; matching lookup может вернуть
+resident entry до потребления инвалидирующего эффекта. Retired canonical
+INVLPG или MOV CR3 effect синхронно очищает entry. Fetch обеих инструкций
+обходит resident entry и не пишет A/D.
 Remap и R/W permission refresh проверяются в одной сессии. Это ограниченный
 диагностический эксперимент, а не tracked-access cache или production TLB;
-CR3/reset transitions, tracked A/D, JIT hooks, huge pages, PCID/global и
+CPU-owned `MOV CR3,RAX` синхронно меняет snapshot и инвалидирует entry даже
+при записи прежнего значения; replacement snapshot используется следующим
+lookup. Несогласованный retired effect очищает entry и блокирует дальнейшие
+операции с сессией, поэтому stale translation не может быть использован.
+Остальные
+reset/CR0/EFER transitions, tracked A/D, JIT hooks, huge pages, PCID/global и
 DMA/SMP остаются вне реализации.
 Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости

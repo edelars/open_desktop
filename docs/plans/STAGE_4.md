@@ -459,6 +459,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   behavior and cache preservation on non-invalidating paths passed; independent
   `gpt-6.1-sol/high` review found no remaining P0—P3 findings. This does not
   complete S4-14. See the [S4-14c report](../reports/STAGE_4_S4-14C_2026-11-05.md).
+- [x] S4-14d composes the existing exact `MOV CR3,RAX` CPU effect with that
+  mutable session. A retired `Cr3Write` validates and installs the replacement
+  translation snapshot, then synchronously clears its one-entry cache,
+  including same-value writes. Rejected/faulting paths preserve snapshot and
+  cache; post-retirement reconciliation failures clear the stale entry, poison
+  the session and make subsequent operations fail explicitly. Focused tests
+  cover roots A/B, same-CR3 PTE remap and permission tightening, precise
+  post-switch faults, rejected paths and pure fetch. This does not complete
+  S4-14. See the [S4-14d report](../reports/STAGE_4_S4-14D_2026-11-06.md).
 - **Где:** `od-machine`, system instruction effects `od-isa`.
 - **Сделать:** CR3/context transitions, INVLPG, paging/permission-control changes, reset; global/PCID/INVPCID — только при объявленной поддержке. Развести software-cache generations и архитектурную семантику guest page tables.
 - **Проверка:** remap A→B, tighten/relax rights с обязательной invalidation, stale entry после context switch, huge-page coverage, код/данные, разные guest pages внутри host page. Поведение без invalidation проверять в пределах разрешённого стандартом, не требовать несуществующей гарантии.
