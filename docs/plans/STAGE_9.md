@@ -289,6 +289,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-14. Добавить неизменяемые snapshots и цепочки
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено (единственный major — ошибка после опубликованного снимка — исправлен), коммит `7188582`: `SnapFile`, `ParentRef`, `MAX_CHAIN_DEPTH = 8`, fault-sweep публикации. Предел: production `ParentResolver` нет, CRC блоков предков проверяется лениво, удаление snapshots — S9-17; формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-14-неизменяемые-snapshots-и-цепочки--реализовано-ревью-пройдено-единственный-major-исправлен).
 - **Где:** `od-storage`, `STORAGE_FORMAT.md`.
 - **Сделать:** snapshot ID/root/parent generation, bounded chain, read resolution, immutable parent и создание writable child. Зафиксировать content и metadata identity родителя; не доверять одному относительному имени файла.
 - **Проверить:** child overwrite не меняет parent; чтение holes/zeros; нескольких snapshot roots; missing parent, цикл и превышение depth. Snapshot metadata publication переживает fault injection.
@@ -297,6 +298,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-15. Branch, checkout и disk rollback offline
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено, коммит `33440be`: `branch_from` и rollback как новая ветка. Предел: атомарный активный указатель не реализован (нет durable rename, [ISSUE-055](../KNOWN_ISSUES.md#issue-055-s9-host-durability-guarantee-unconfirmed)); формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-15-branch-checkout-и-disk-rollback-offline--реализовано-ревью-пройдено).
 - **Где:** `od-storage`, image operations contract.
 - **Сделать:** из выбранного immutable snapshot создавать новый child, переключать active root атомарно; изменяемый guest диск не заменять под работающей VM. Disk rollback не изменяет RAM/TPM/UEFI автоматически.
 - **Проверить:** old/new whole outcome при crash, сохранность остальных branches, wrong active generation и live-writer refusal.
@@ -305,6 +307,7 @@ S9-24…27 принимаются локально по codec/contract tests и 
 ### S9-16. Проверить parent identities и leases
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-05):** реализовано, ревью пройдено, коммит `33440be`: полная проверка цепочки предков до записи в `open_gated`, типизированные отказы, lease-тесты на реальных файлах. Предел: интеграция с VMHost lifecycle, production resolver; формат НЕ принят (S9-40) — [STAGE_9_REPORT.md](../reports/STAGE_9_REPORT.md#s9-16-проверка-parent-identities-и-leases--реализовано-ревью-пройдено).
 - **Где:** storage chain resolver и host file access boundary.
 - **Сделать:** validate всю выбранную цепочку до writable open; hold нужные parent/read leases; порядок locks исключает deadlock. File alias/replacement и path traversal не дают подменить parent между check и use.
 - **Проверить:** неправильный parent hash/ID/generation, symlink/alias в заявленном scope, TOCTOU replacement, concurrent child open и incomplete copy bundle.

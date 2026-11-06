@@ -12,7 +12,7 @@
 |---|---|---|
 | RAW disk image | `crates/od-storage/src/` | Без header: ровно `logical_size` bytes guest LBA space. Семантика в §4–§7; реализован `RawImage` ([`raw.rs`](../../crates/od-storage/src/raw.rs), `4fcd5c4`), ревью S9-05 пройдено, power-loss не проверен |
 | Собственный CoW disk image | `crates/od-storage/src/` | **Прототип, не нормативен, не принят (S9-08…12, S9-40)**: [`cow_proto.rs`](../../crates/od-storage/src/cow_proto.rs), [`cow_parse.rs`](../../crates/od-storage/src/cow_parse.rs), [`cow_tx.rs`](../../crates/od-storage/src/cow_tx.rs); требования и статус — §9; нормативные bytes не определены |
-| Snapshot metadata и цепочки | `crates/od-storage/src/` | **TBD S9-14** поверх S9-08 |
+| Snapshot metadata и цепочки | `crates/od-storage/src/` | Прототип (S9-14…16, `7188582`, `33440be`): [`cow_snapshot.rs`](../../crates/od-storage/src/cow_snapshot.rs), `MAX_CHAIN_DEPTH = 8`; не нормативен, формат не принят (S9-40); production `ParentResolver` нет |
 | Full-VM checkpoint container и manifest | container — `od-storage`, состав участников — `od-machine` | **TBD S9-23**; список участников — в [VM_STATE.md](VM_STATE.md) |
 | UEFI variable store artifact | семантика — `firmware/uefi/src/`, persistence — `od-storage` | **TBD S9-26**; firmware отсутствует |
 | vTPM persistent state | state — `od-machine`, persistence — `od-storage`, защита ключей — `od-host` | **TBD S9-27**; vTPM отсутствует |
@@ -30,7 +30,7 @@
 | Профиль | Состав | Требует работающей VM | Статус |
 |---|---|---|---|
 | `offline-raw-v0` | RAW image, один writer, явный durable flush, reopen | Нет | Целевой первый срез S9-03…07; реализованы S9-03…05 и часть S9-04 (writer lock, read lease)/S9-06 (file-data flush); fault backend S9-07 и namespace durability отсутствуют; профиль не принят |
-| `offline-cow-v1` | Собственный CoW, recovery, immutable snapshots, check/export/salvage/migration | Нет | S9-08…12 реализованы на прототипном формате (не принят, S9-40; ISSUE-057 закрыт, `01ef35d`); S9-14…22 не начаты. S9-13 (guest storage/flush) относится к VM-профилям |
+| `offline-cow-v1` | Собственный CoW, recovery, immutable snapshots, check/export/salvage/migration | Нет | S9-08…12 реализованы на прототипном формате (не принят, S9-40; ISSUE-057 закрыт, `01ef35d`); S9-14…16 реализованы (snapshots, branch, проверка цепочки); S9-17…22 не начаты. S9-13 (guest storage/flush) относится к VM-профилям |
 | `restricted-vm` | Тестовая машина без UEFI/vTPM: CPU/RAM/devices/time/I/O + диски | Да | Отдельный ограниченный gate; не закрывает Windows gate (план §2, §6) |
 | `full-windows-vm` | Всё из `restricted-vm` + UEFI variables + vTPM + identity policy | Да | Целевой; заблокирован отсутствующими компонентами, см. [VM_STATE.md](VM_STATE.md#2-инвентаризация-prerequisites-s9-01) |
 
@@ -58,7 +58,7 @@ Offline-профили не зависят от CPU, Windows или vTPM. Ни �
 | Logical size RAW | Кратен LBA size; `> 0`; checked arithmetic до любого I/O | В [`raw.rs`](../../crates/od-storage/src/raw.rs) проверяются `size > 0`, block size — степень двойки и кратность; явного верхнего лимита профиля нет, действует только `max_len` backend (`StorageCapabilities`). S9-05 лимит не задал | Открытый вопрос; владелец решения — S9-00 (границы профиля), применение в `RawImage` — S9-05 |
 | CoW block size | Степень двойки, кратна LBA size, фиксирована на image | Выбирается замерами S9-08 | Гипотеза |
 | Virtual capacity CoW | Явный maximum в header; map bounded | S9-08 | TBD |
-| Глубина snapshot chain | Явный maximum; превышение — отказ open/create, не обход | S9-14 | TBD |
+| Глубина snapshot chain | Явный maximum; превышение — отказ open/create, не обход | S9-14 | Прототип: `MAX_CHAIN_DEPTH = 8` (гипотеза, не принят) |
 | Число snapshots/roots | Явный maximum | S9-14 | TBD |
 | Размер metadata structures | Каждая длина проверяется против лимита до allocation/read | S9-08/S9-09 | TBD |
 
@@ -160,7 +160,7 @@ Storage API возвращает типизированные результат
 | Вопрос | Блокирует | Следующий шаг |
 |---|---|---|
 | Namespace durability на APFS; подтверждение `F_FULLFSYNC` испытаниями и источником | S9-06 (приёмка) и `durable_ack` для создания/публикации | Источник + испытания уровней 1–3; иначе гарантия остаётся открытой |
-| VMHost lifecycle, проверка parent в цепочке (S9-14/16), non-advisory lock на сетевых ФС | S9-04 (приёмка) | Реализовать; `flock`, alias identity и read lease уже покрыты multiprocess tests (`ba77773`, `31b8c2a`) |
+| VMHost lifecycle, production `ParentResolver`, non-advisory lock на сетевых ФС | S9-04 (приёмка) | Реализовать; `flock`, alias identity и read lease уже покрыты multiprocess tests (`ba77773`, `31b8c2a`) |
 | LBA size guest device | S9-13 | Решить по требованиям выбранного NVMe профиля |
 | CoW block size, map layout, checksum алгоритм | Принятие формата S9-08 | Прототип есть (CRC-32, плоская карта, 512-байтовый slot — гипотезы); commit-latency измерена (4.05 / 4.90 / 8.93 / 13.00 мс p50 для 1/1/2/3 барьеров, ≈4 мс на барьер, [S9_40_COMMIT_LATENCY.md](../testing/S9_40_COMMIT_LATENCY.md)); не измерены throughput, чтение, write amplification, recovery и память против RAW |
 | Модель накопителя/контроллера внутреннего SSD | S9-39 claim | Зафиксировать при подготовке стенда |
