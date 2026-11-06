@@ -235,6 +235,16 @@ fn iretq_cs_ss_snapshot_fields_are_opt_in_and_lossless() {
 }
 
 #[test]
+fn integer_state_schema_rejects_unmodeled_cr2_instead_of_dropping_it() {
+    let cpu = od_isa::LongModeState {
+        cr2: Some(0xffff_8000_1234_5678),
+        ..od_isa::LongModeState::default()
+    };
+    assert!(IntegerState::try_from(&cpu).is_err());
+    assert!(IntegerState::from_cpu_for(&cpu, Profile::LongIntegerV1).is_err());
+}
+
+#[test]
 fn iretq_literal_fixture_matrix_is_schema_bounded() {
     for fixture in [
         include_bytes!("../../../tests/fixtures/x86/stage2/s2_27k_iretq_if0_iopl0.case.json")

@@ -782,6 +782,44 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - **Проверка:** guest handler `#PF` исправляет PTE, выполняет нужную invalidation и повторяет faulting instruction ровно с допустимыми effects; сломанный handler/stack приводит к ожидаемому secondary fault/shutdown.
 - **Готово:** исключение реально доставлено guest handler и execution продолжается; возвращённый host enum без delivery не закрывает задачу.
 
+#### S4-19a. Carry architectural CR2 in CPU state
+
+- [x] Реализация и независимое ревью пройдены.
+- **Сделать:** добавить optional CR2 в `LongModeState` с `None` у старых
+  профилей; мигрировать только struct literals без `..Default`. Snapshot и
+  fragment conversions, которые CR2 не представляют, должны явно отказывать,
+  а не терять значение.
+- **Проверка:** default/clone сохраняют контракт CR2; конвертеры reject
+  `Some(CR2)`; workspace build охватывает все инициализаторы и call sites.
+- **Граница:** в этом срезе нет инструкции MOV CR2. Page-fault delivery,
+  установка CR2 при fault и exception recovery реализуются в S4-19b и следующих
+  частях S4-19.
+- **Результат:** [S4-19a report](../reports/STAGE_4_S4-19A_2026-11-06.md) и
+  [manifest](../reports/data/stage4/s4-19a-cr2-state-2026-11-06.json).
+
+#### S4-19b. Bounded paged #PF delivery and handler entry
+
+- [ ] Реализация и независимое ревью пройдены.
+- **Case:** Long64/CPL0, один CPU, private RAM, same-CPL interrupt gate с IST=0.
+  Guest выполняет `MOV [RBX],RCX` в present supervisor read-only страницу при
+  `CR0.WP=1`, получает настоящий `#PF` с PFEC `3`, прежним RIP, без retirement
+  и без изменения данных. Delivery фиксирует CR2, читает IDT/GDT через paged
+  tracked memory и строит шестисловный 64-bit frame с PFEC; затем guest
+  обработчик исполняет первую `MOV RAX,[RBX]` и наблюдает прежний sentinel.
+- **Проверка:** literal state и все шесть qword frame, полный fault record,
+  CR2, RF=1 в сохранённом RFLAGS образе fault-class `#PF`, page-table A/D
+  effects и ordered callbacks. Синхронный `#PF` доставляется и при IF=0.
+  Отрицательные случаи покрывают profile rejection, IDT/GDT read
+  fault, stack write failure после частичного commit и backend failure.
+- **Граница:** один #PF vector, CPL0→CPL0, IST=0, фиксированные 4 KiB tables,
+  frame/table accesses в заранее ограниченных RAM mappings. Secondary faults
+  при delivery — терминальный недоставленный результат; автоматическая `#DF`,
+  shutdown classification, исправление PTE, INVLPG, IRETQ и retry остаются
+  следующими частями S4-19. Не называть этот slice полным recovery.
+- **Нормативная основа:** Intel SDM Vol. 3A §6.14.2, [64-Bit Mode Stack
+  Frame](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-3a-part-1-manual.pdf)
+  и Vol. 3B §18.3.1.1, [RF in the fault-class exception frame](https://cdrdv2-public.intel.com/874250/253669-090-sdm-vol-3b.pdf).
+
 ### S4-20. CPL3 и системные вызовы/возвраты
 
 - [ ] Принято после ревью.

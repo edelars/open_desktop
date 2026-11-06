@@ -1229,6 +1229,12 @@ impl TryFrom<&LongModeState> for IntegerState {
     type Error = FormatError;
 
     fn try_from(state: &LongModeState) -> Result<Self, Self::Error> {
+        if state.cr2.is_some() {
+            return Err(FormatError::InvalidField {
+                field: "state.cr2",
+                reason: "CR2 is not represented by this snapshot schema".into(),
+            });
+        }
         if state.cr3.is_some() {
             return Err(FormatError::InvalidField {
                 field: "state.cr3",
@@ -1323,6 +1329,7 @@ impl IntegerState {
     pub fn to_cpu_for(&self, profile: Profile) -> Result<LongModeState, FormatError> {
         self.validate_for(profile)?;
         Ok(LongModeState {
+            cr2: None,
             cr3: None,
             sti_shadow: self.sti_shadow.map(|shadow| match shadow {
                 StiShadowSnapshot::Clear => od_isa::StiShadow::Clear,

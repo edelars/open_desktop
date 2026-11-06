@@ -215,6 +215,8 @@ pub struct LongModeState {
     pub cr0: Option<u64>,
     /// Optional CR4 value carried only by the bounded S2-25b FP-init profile.
     pub cr4: Option<u64>,
+    /// Architectural CR2 value carried by profiles that model page-fault state.
+    pub cr2: Option<u64>,
     /// Optional authoritative CR3 value carried only by explicit paging profiles.
     pub cr3: Option<u64>,
     /// FS base in the limited canonical48 data-address profile.
@@ -331,6 +333,7 @@ impl Default for LongModeState {
             rflags: 2,
             cr0: None,
             cr4: None,
+            cr2: None,
             cr3: None,
             fs_base: 0,
             gs_base: 0,
@@ -382,6 +385,7 @@ pub enum FragmentAdapterError {
     UnsupportedCr0(u64),
     UnsupportedCr3(u64),
     UnsupportedCr4(u64),
+    UnsupportedCr2(u64),
     ExtraRegister(Register),
     UnsupportedFsBase(u64),
     UnsupportedGsBase(u64),
@@ -429,6 +433,9 @@ impl TryFrom<&LongModeState> for FragmentState {
         }
         if let Some(cr4) = state.cr4 {
             return Err(FragmentAdapterError::UnsupportedCr4(cr4));
+        }
+        if let Some(cr2) = state.cr2 {
+            return Err(FragmentAdapterError::UnsupportedCr2(cr2));
         }
         if state.x87.is_some() {
             return Err(FragmentAdapterError::UnsupportedX87);
@@ -626,6 +633,26 @@ mod tests {
     }
 
     #[test]
+    fn fragment_adapter_rejects_cr2_state_instead_of_dropping_it() {
+        let state = LongModeState {
+            cr2: Some(0x1234_5678),
+            ..LongModeState::default()
+        };
+        assert_eq!(
+            FragmentState::try_from(&state),
+            Err(FragmentAdapterError::UnsupportedCr2(0x1234_5678))
+        );
+    }
+
+    #[test]
+    fn cr2_defaults_to_unknown_and_is_preserved_by_state_clone() {
+        let mut state = LongModeState::default();
+        assert_eq!(state.cr2, None);
+        state.cr2 = Some(0xffff_8000_1234_5678);
+        assert_eq!(state.clone().cr2, state.cr2);
+    }
+
+    #[test]
     fn fragment_adapter_rejects_sse_even_when_integer_state_fits() {
         let mut state = LongModeState::default();
         state.sse = Some(SseState {
@@ -720,6 +747,7 @@ mod tests {
                     OperandSize::Qword,
                 ] {
                     let mut state = LongModeState {
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,

@@ -51926,6 +51926,7 @@ mod tests {
     fn direct_relative_branches_use_next_rip_and_preserve_flags() {
         let flags = crate::CF | crate::PF | crate::ZF;
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52012,6 +52013,7 @@ mod tests {
     #[test]
     fn indirect_register_jmp_updates_rip_or_faults_before_commit() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52065,6 +52067,7 @@ mod tests {
         assert_eq!(defined, crate::CF | crate::ZF);
 
         let before = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52123,6 +52126,7 @@ mod tests {
     fn indirect_memory_jmp_reads_exact_qword_before_target_validation() {
         let base = 0x2000;
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52167,6 +52171,7 @@ mod tests {
         assert_eq!(memory.accesses, [(AccessKind::Read, 0x1008, 8)]);
 
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52235,6 +52240,7 @@ mod tests {
     #[test]
     fn indirect_memory_call_reads_source_then_pushes_and_faults_without_commit() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52312,6 +52318,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -52359,6 +52366,7 @@ mod tests {
         }
 
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52411,6 +52419,7 @@ mod tests {
     #[test]
     fn popfq_updates_only_profile_flags_and_commits_after_stack_read() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52472,6 +52481,7 @@ mod tests {
     #[test]
     fn popfq_stack_fault_and_out_of_profile_event_flags_do_not_commit() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52589,6 +52599,7 @@ mod tests {
     #[test]
     fn pushfq_stores_the_sdm_mask_and_preserves_flags() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52641,6 +52652,7 @@ mod tests {
     #[test]
     fn pushfq_bounded_write_failure_does_not_commit_cpu_state() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52696,6 +52708,7 @@ mod tests {
     #[test]
     fn pushfw_stores_the_low_flags_word_and_preserves_flags() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52745,6 +52758,7 @@ mod tests {
     #[test]
     fn pushfw_bounded_write_failure_does_not_commit_cpu_state() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52801,6 +52815,7 @@ mod tests {
     fn ret_imm16_reads_qword_then_commits_pop_and_zero_extended_adjustment() {
         for (immediate, expected_rsp) in [(0u16, 0x1008u64), (0x20, 0x1028), (u16::MAX, 0x1_1007)] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -52850,6 +52865,7 @@ mod tests {
     #[test]
     fn ret_imm16_truncation_stack_read_and_noncanonical_target_do_not_commit() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52931,6 +52947,7 @@ mod tests {
     fn direct_branch_wraps_rip_and_taken_noncanonical_target_faults_without_commit() {
         let base = u64::MAX - 1;
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -52972,6 +52989,7 @@ mod tests {
 
         let base = 0x0000_7fff_ffff_fffd;
         let before = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53032,6 +53050,7 @@ mod tests {
             &[0xf3, 0xeb, 0][..],
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53074,6 +53093,7 @@ mod tests {
         }
 
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53157,6 +53177,7 @@ mod tests {
             ), // REX.R / ignored ModRM.reg does not change AL destination
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53216,6 +53237,7 @@ mod tests {
     fn setcc_memory_store_is_one_byte_and_faults_do_not_commit() {
         let code = [0x0f, 0x94, 0x45, 0x00]; // SETZ byte ptr [RBP]
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53316,6 +53338,7 @@ mod tests {
     #[test]
     fn setcc_accepts_address_override_and_rejects_unsupported_repeat_or_segment_forms() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53363,6 +53386,7 @@ mod tests {
             &[0x64, 0x0f, 0x94, 0x00][..],
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53410,6 +53434,7 @@ mod tests {
     fn cmovcc_reads_memory_even_when_false_and_commits_only_after_success() {
         let code = [0x0f, 0x44, 0x03]; // CMOVE EAX, dword ptr [RBX]
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53463,6 +53488,7 @@ mod tests {
         assert_eq!(defined, crate::INTEGER_FLAGS);
 
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53512,6 +53538,7 @@ mod tests {
     fn cmovcc_false_memory_read_faults_before_any_architectural_commit() {
         let code = [0x0f, 0x44, 0x45, 0x00]; // CMOVE EAX, dword ptr [RBP]
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53592,6 +53619,7 @@ mod tests {
     #[test]
     fn cmovcc_accepts_operand_and_address_overrides_and_rejects_group1_and_fs_gs_memory() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53641,6 +53669,7 @@ mod tests {
             &[0x65, 0x0f, 0x44, 0x00][..],
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -53713,6 +53742,7 @@ mod tests {
                     let mut memory = Memory::new(&code);
                     let before_ram = memory.bytes.clone();
                     let mut state = LongModeState {
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -53799,6 +53829,7 @@ mod tests {
     #[test]
     fn high_byte_register_mov_load_and_store_use_legacy_aliases() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -53873,6 +53904,7 @@ mod tests {
                 );
                 code.extend_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes()[..size.bytes()]);
                 let mut state = LongModeState {
+                    cr2: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -53951,6 +53983,7 @@ mod tests {
     #[test]
     fn multiply_forms_write_the_correct_halves_and_truncated_result() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54094,6 +54127,7 @@ mod tests {
 
         for (code, target, initial_rax, initial_target, expected) in cases {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -54240,6 +54274,7 @@ mod tests {
         });
         // AX / BL produces a quotient above AL's representable range.
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54287,6 +54322,7 @@ mod tests {
 
         // The byte signed minimum divided by -1 has a quotient outside i8.
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54333,6 +54369,7 @@ mod tests {
         assert_eq!(state, before);
 
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54389,6 +54426,7 @@ mod tests {
 
         // This exact case exercises signed 128-bit minimum divided by -1.
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54435,6 +54473,7 @@ mod tests {
 
         // Zero divisor has the same architectural exception and exact RIP.
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54510,6 +54549,7 @@ mod tests {
     #[test]
     fn memory_bit_scan_read_fault_does_not_commit_cpu_or_definedness() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -54608,6 +54648,7 @@ mod tests {
                 memory.error = Some(error.clone());
                 let before_ram = memory.bytes.clone();
                 let mut state = LongModeState {
+                    cr2: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -54756,6 +54797,7 @@ mod tests {
             (&[0x4c, 0xc7, 0xc0, 1, 0, 0, 0], 1), // REX.R ignored for /0
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -54851,6 +54893,7 @@ mod tests {
                     );
                     code.extend_from_slice(&0x1001u64.to_le_bytes()[..if addr32 { 4 } else { 8 }]);
                     let mut state = LongModeState {
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -54944,6 +54987,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55022,6 +55066,7 @@ mod tests {
             (&[0x48, 0x8d, 0x05, 0xff, 0xff, 0xff, 0xff], 0, 6),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55074,6 +55119,7 @@ mod tests {
     fn xchg_captures_aliases_before_writes_and_distinguishes_nop_from_eax_self_write() {
         for code in [&[0x90][..], &[0x40, 0x90], &[0x48, 0x90], &[0x66, 0x90]] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55137,6 +55183,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55186,6 +55233,7 @@ mod tests {
     fn locked_qword_memory_xchg_uses_one_atomic_call_and_commits_only_on_success() {
         let code = [0xf0, 0x48, 0x87, 0x00]; // LOCK XCHG [RAX], RAX
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55258,6 +55306,7 @@ mod tests {
             MemoryError::Backend("atomic exchange failed".into()),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55326,6 +55375,7 @@ mod tests {
     fn qword_memory_xadd_uses_one_atomic_call_and_commits_only_on_success() {
         let code = [0x48, 0x0f, 0xc1, 0x00]; // XADD [RAX], RAX
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55395,6 +55445,7 @@ mod tests {
             MemoryError::Backend("atomic fetch-add failed".into()),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55464,6 +55515,7 @@ mod tests {
     fn lock_qword_memory_xadd_uses_one_atomic_call_and_delays_commit_on_error() {
         let code = [0xf0, 0x48, 0x0f, 0xc1, 0x00]; // LOCK XADD [RAX], RAX
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55533,6 +55585,7 @@ mod tests {
             MemoryError::Backend("locked atomic fetch-add failed".into()),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55602,6 +55655,7 @@ mod tests {
     fn qword_memory_cmpxchg_uses_one_atomic_call_and_preserves_prestate_on_error() {
         let code = [0x48, 0x0f, 0xb1, 0x00]; // CMPXCHG [RAX], RAX
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55671,6 +55725,7 @@ mod tests {
             MemoryError::Backend("atomic compare-exchange failed".into()),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -55740,6 +55795,7 @@ mod tests {
     fn qword_register_xadd_alias_doubles_destination_and_sets_add_flags() {
         let code = [0x48, 0x0f, 0xc1, 0xc0]; // XADD RAX, RAX
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55798,6 +55854,7 @@ mod tests {
         assert!(memory.accesses.is_empty());
 
         let mut extended_state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -55855,6 +55912,7 @@ mod tests {
             for cut in 0..code.len() {
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -55928,6 +55986,7 @@ mod tests {
             &[0x48, 0xc7, 0x03, 1, 2, 3, 4],
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56148,6 +56207,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56242,6 +56302,7 @@ mod tests {
                 }
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -56315,6 +56376,7 @@ mod tests {
             for cut in 0..code.len() {
                 for architectural in [false, true] {
                     let mut state = LongModeState {
+                        cr2: None,
                         cr3: None,
                         cr4: None,
                         cr0: None,
@@ -56491,6 +56553,7 @@ mod tests {
             (&[0xf7, 0xd0][..], 0xffff_ffff_0000_0000, 0, 0xffff_ffff),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56535,6 +56598,7 @@ mod tests {
             assert!(memory.accesses.is_empty());
         }
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -56590,6 +56654,7 @@ mod tests {
             &[0x48, 0xf7, 0x03, 0xff, 0xff, 0xff, 0xff],
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56650,6 +56715,7 @@ mod tests {
             &[0x48, 0xf7, 0xc0, 0, 0, 0, 0x80],
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56710,6 +56776,7 @@ mod tests {
                     continue;
                 }
                 let mut state = LongModeState {
+                    cr2: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -56763,6 +56830,7 @@ mod tests {
             }
             for cut in 0..code.len() {
                 let mut state = LongModeState {
+                    cr2: None,
                     cr3: None,
                     cr4: None,
                     cr0: None,
@@ -56838,6 +56906,7 @@ mod tests {
             (&[0x31, 0xc0, 0x48, 0x21, 0x03][..], 0xcc7, 1), // unmapped AND fault
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56915,6 +56984,7 @@ mod tests {
             ),
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -56971,6 +57041,7 @@ mod tests {
         // Rotates reduce the loop count modulo the ring, but flag definedness
         // still follows the architectural masked count before that reduction.
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57023,6 +57094,7 @@ mod tests {
         );
 
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57075,6 +57147,7 @@ mod tests {
         );
 
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57127,6 +57200,7 @@ mod tests {
             (&[0x41, 0xc1, 0xe0, 0][..], 8, 0x1234_5678), // SHL R8D,0
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57170,6 +57244,7 @@ mod tests {
 
         for access in [AccessKind::Read, AccessKind::Write] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57222,6 +57297,7 @@ mod tests {
 
         // Through-carry rotation of AL includes the incoming CF as a ninth bit.
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57268,6 +57344,7 @@ mod tests {
 
         // SHLD RAX,RCX,1 moves RAX's MSB to CF and RCX's MSB into bit 0.
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57321,6 +57398,7 @@ mod tests {
             &[0x66, 0x0f, 0xac, 0xc8, 17][..],
         ] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57374,6 +57452,7 @@ mod tests {
         // dword alias still applies normal register write semantics.
         let code = [0x48, 0xc1, 0xe0, 0x40];
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57425,6 +57504,7 @@ mod tests {
 
         for access in [AccessKind::Read, AccessKind::Write] {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -57554,6 +57634,7 @@ mod tests {
         // 66 selects the SDM's undefined 16-bit result; execution must leave
         // the entire state untouched while reporting the encoding unsupported.
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -57769,6 +57850,7 @@ mod tests {
     #[test]
     fn bit_immediate_truncation_and_memory_boundaries_do_not_commit() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58565,6 +58647,7 @@ mod tests {
 
         for (code, kind, dst, src, width, source, old_dst, expected_index) in cases {
             let mut state = LongModeState {
+                cr2: None,
                 cr3: None,
                 cr4: None,
                 cr0: None,
@@ -58635,6 +58718,7 @@ mod tests {
     #[test]
     fn fs_selector_read_zero_extends_and_preserves_other_state() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
@@ -58682,6 +58766,7 @@ mod tests {
     #[test]
     fn gs_selector_read_zero_extends_and_preserves_other_state() {
         let mut state = LongModeState {
+            cr2: None,
             cr3: None,
             cr4: None,
             cr0: None,
