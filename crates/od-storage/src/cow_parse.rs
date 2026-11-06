@@ -1,8 +1,7 @@
 //! Strict read-only parser for the prototype CoW layout (S9-09).
 //!
-//! The layout is the one described in [`crate::cow_proto`]; it is **not** a
-//! normative format (S9-40 has not accepted one), so every constant here is a
-//! hypothesis. This module never writes and never calls a mutating backend
+//! The layout is CoW v1 described in [`crate::cow_proto`], normative per
+//! STORAGE_FORMAT §9. This module never writes and never calls a mutating backend
 //! operation: its only inputs are a [`Source`] (a byte slice or a
 //! [`CheckedStorage`] seen through its read-only methods) and the explicit
 //! [`Capabilities`] of the caller.
@@ -62,12 +61,11 @@ use crate::cow_proto::{
 use crate::io::{CheckedStorage, StorageBackend, StorageError};
 use std::fmt;
 
-/// Most logical blocks a root may declare (hypothesis, shared with the
-/// prototype writer).
+/// Most logical blocks a root may declare (CoW v1 limit, STORAGE_FORMAT §9.3).
 pub const MAX_BLOCKS: u64 = PROTO_MAX_BLOCKS;
 /// Largest block map the parser reads into memory.
 pub const MAX_MAP_BYTES: u64 = MAX_BLOCKS * ENTRY_LEN as u64;
-/// Largest published area (`end_offset`) a root may declare (hypothesis).
+/// Largest published area (`end_offset`) a root may declare (CoW v1 limit).
 pub const MAX_FILE_BYTES: u64 = 1 << 32;
 /// Number of root slots; generation `g` lives in slot `g & 1`.
 pub const SLOT_COUNT: usize = 2;

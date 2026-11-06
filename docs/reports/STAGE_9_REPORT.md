@@ -332,13 +332,18 @@
 
 Блокеров и мажоров нет. Исправлено после ревью (коммит этого среза, без нового теста на каждый случай): пункты 1, 3 и 5. Открыты: 2, 4, 6, 7-8 (см. ниже).
 
-1. [исправлено] `cow_salvage.rs:847-849` (ветка ambiguous, :723-735): два неупорядоченных валидных корня без подтверждённого порядка и совпадающими байтами выбранного состояния дают `recoverability=Complete`, `possible_lost_commit=false`, код выхода 0. По документации модуля (:44-46) Complete требует доказанного newest root. Snapshots в этом режиме не сравниваются (:780). Нужна правка: не Complete без доказательства либо явный отдельный класс.
+1. [исправлено; теста на `unordered_roots` при всех Valid нет] `cow_salvage.rs:847-849` (ветка ambiguous, :723-735): два неупорядоченных валидных корня без подтверждённого порядка и совпадающими байтами выбранного состояния дают `recoverability=Complete`, `possible_lost_commit=false`, код выхода 0. По документации модуля (:44-46) Complete требует доказанного newest root. Snapshots в этом режиме не сравниваются (:780). Нужна правка: не Complete без доказательства либо явный отдельный класс.
 2. `storage_policy.rs:211-214`: после провала identity-проверки `publish_no_replace` удаляет `target`; при подмене имени между `hard_link` и `remove_file` удалится чужой файл. Нарушает правило «never removes an existing path». Записано в `fd5ebcf` как остаточный minor.
 3. [исправлено: `symlink_metadata` для partial и target] Гипотеза, не воспроизведена: `storage_policy.rs:190-193` берёт identity через `std::fs::metadata`, который следует symlink; нужен `symlink_metadata`.
 4. Гипотеза, не воспроизведена: `tools/image-tool/src/lib.rs:526-544` закрывает `.partial` и снимает flock до `publish_no_replace`; публикация не перепроверяет байты, только (dev, ino).
-5. [исправлено: `durability_unavailable`] Гипотеза, Linux не запускался: `cow_salvage.rs:899-908` сводит всё, кроме ENOSPC, к `target_io_error`; при отсутствии file durability `UnsupportedDurability` даёт оставленный building-файл, тогда как export отказывает заранее (`durability_unavailable`).
+5. [частично: изменено только имя причины на `durability_unavailable`; заранее durability не проверяется, как в export, building-target остаётся] Гипотеза, Linux не запускался: `cow_salvage.rs:899-908` сводит всё, кроме ENOSPC, к `target_io_error`; при отсутствии file durability `UnsupportedDurability` даёт оставленный building-файл, тогда как export отказывает заранее.
 6. `cow_soak_tests.rs:308-311, 756-771`: `next_snapshot_id` файла не сравнивается с оракулом; заголовок модуля (:14-15) обещает больше, чем проверяется.
 7. Устаревшие утверждения в отчёте исправлены в этом срезе: export/repair S9-20/21 реализованы (`fd5ebcf`), S9_40 в коммите `e2e6892`, throughput измерен (`232049b`).
 8. ODSNAP (snapshot-слой: header, kind, бит building, `MAX_SNAPSHOTS = 8`, `MAX_DISK_BLOCKS = 4096`) не описан в [STORAGE_FORMAT.md](../specs/STORAGE_FORMAT.md) §9 и не входит в принятие формата; на него опираются S9-20/21.
 
 Не проверено: поведение на Linux; реальный power loss и durability имени в каталоге (ISSUE-055); длинные soak через `OD_SOAK_*`; гипотезы 3–4 не воспроизводились (запрещено писать в файлы).
+
+### Ревью 19c1ac6 (Opus, high, 2026-11-06)
+
+Найдено и исправлено в документах: §9 `STORAGE_FORMAT.md` противоречил шапке (прототип «не нормативен»), не описывал классы слотов и правило N/N−1, поколения 0 и `u64::MAX`, выравнивание копии корня, точки отмены и poisoning, а также смешивал нормативную часть с ODSNAP (теперь §9.8). Устаревшие «гипотезы» в шапке и таблицах спецификации и в комментариях `cow_parse.rs`/`cow_proto.rs` заменены на «CoW v1». Не исправлено: пункт 2 восьмёрки (`remove_file(target)`, TOCTOU) и пункт 4 (публикация без перепроверки байтов). Нового регрессионного теста на `unordered_roots` при всех Valid нет.
+

@@ -125,8 +125,8 @@ use crate::cow_parse::{
 use crate::io::{CheckedStorage, DurableAck, StorageBackend, StorageError};
 use std::ops::Deref;
 
-/// Hypothesis: 512-byte blocks (equal to the fault model's sector so a block is
-/// one atomic piece). S9-40 decides the real size.
+/// CoW v1 block size: 512 bytes (STORAGE_FORMAT §9), equal to the fault model's
+/// sector so a block is one atomic piece.
 pub const BLOCK_SIZE: usize = 512;
 /// Size of one root slot; also one sector.
 pub const SLOT_SIZE: usize = 512;
@@ -138,8 +138,7 @@ pub const CREATE_GENERATION: u64 = 2;
 /// Prototype limit on logical blocks; bounds allocations driven by a root.
 pub const MAX_BLOCKS: u64 = 1 << 16;
 /// Prototype limit on the blocks one transaction may write (dirty state). A
-/// larger `commit` is rejected before any backend call. Hypothesis, like every
-/// other limit here.
+/// larger `commit` is rejected before any backend call. CoW v1 limit.
 pub const MAX_TX_BLOCKS: usize = 256;
 
 pub(crate) const MAGIC: [u8; 8] = *b"ODCOWP\0\x01";
