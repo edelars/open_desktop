@@ -41,6 +41,7 @@ USER, SYSTEM_SLEEP, SYSTEM_WAKE, HOST_FAILURE = 1, 2, 3, 5
 (INVALID_STATE, INVALID_CONFIG, NOT_CONFIGURED, UNSUPPORTED, UNSUPPORTED_DURABILITY, UNSUPPORTED_NO_AGENT, BUSY,
  LOCK_CHANGED, LOCK_INVALID) = range(1, 10)
 INVALID_NAME, INVALID_RESOURCE, RESOURCE_CONFLICT = 14, 17, 18
+IO_ERROR = 24
 INVALID_ARGUMENT, REQUEST_ID_CONFLICT, REQUEST_ID_STALE, HOST_MEMORY_EXCEEDED = 20, 22, 23, 12
 BOOT_MEDIA, DISK, SHARED_FOLDER_ROOT, DROP_FILE = 1, 2, 3, 4
 FLAG_REPLAYED, FLAG_FATAL = 1, 2
@@ -342,8 +343,9 @@ def scenario_lifecycle(binary: Path, bundle: str) -> None:
         conn.expect_error(START, UNSUPPORTED_DURABILITY, struct.pack("<Q", 7))
         conn.expect_error(SHUTDOWN, UNSUPPORTED_DURABILITY, struct.pack("<Q", 7))
         conn.expect_state(STOPPED, 1, 0)
-        # PREPARE_DISK is S11-08: rules are checked, then `unsupported`.
-        conn.expect_error(PREPARE_DISK, UNSUPPORTED, struct.pack("<HHIQ", 1, 3, 0, 1 << 20) + b"d.i")
+        # PREPARE_DISK (S11-08): rules are checked first; this bundle has no `disks/`, so a valid request is `io_error` (ENOENT).
+        # The creation itself is tested by vmhost_control_v2_prepare_disk_smoke.py.
+        conn.expect_error(PREPARE_DISK, IO_ERROR, struct.pack("<HHIQ", 1, 3, 0, 1 << 20) + b"d.i", aux0=2)
         conn.expect_error(PREPARE_DISK, INVALID_NAME, struct.pack("<HHIQ", 1, 3, 0, 1 << 20) + b"a/b", aux0=0)
         conn.expect_error(PREPARE_DISK, INVALID_ARGUMENT, struct.pack("<HHIQ", 2, 3, 0, 1 << 20) + b"d.i", aux0=0)
         # START: STATE_CHANGED first, then ACK.

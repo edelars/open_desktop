@@ -3,6 +3,9 @@ import Foundation
 #if canImport(ODShared)
 import ODShared
 #endif
+#if canImport(ODHostABI)
+import ODHostABI
+#endif
 
 // Lifecycle of one machine over control protocol v2 (protocols/control/CONTROL_PROTOCOL_V2.md, S11-04).
 //
@@ -48,6 +51,60 @@ private struct CompletedRequest {
     let response: ControlV2Response?
 }
 
+/// Creation of a RAW image in `<bundle>/disks` over the storage C ABI (STORAGE_HOST_ABI_V1.md, S11-07). The mapping of the ABI
+/// statuses to `ERROR` codes of CONTROL_PROTOCOL_V2.md section 12.1 follows the section 9 list of answers; the rows that the
+/// protocol does not name are marked "no source" in `apps/vmhost/README.md`.
+enum DiskImageStorage {
+    struct Outcome {
+        var error: ControlV2ValueError?
+    }
+
+    static var abiVersionMatches: Bool { od_storage_abi_version() == vmhost_storage_abi_version_v1() }
+
+    /// `status` is an `OD_STORAGE_STATUS_*_V1` value; `osErrno`, `required` and `available` are the fields of `od_storage_error_v1`.
+    static func map(status: UInt32, osErrno: Int32, required: UInt64, available: UInt64) -> ControlV2ValueError? {
+        switch status {
+        case UInt32(OD_STORAGE_STATUS_OK_V1):
+            return nil
+        case UInt32(OD_STORAGE_STATUS_INVALID_ARGUMENT_V1):
+            // The only argument the controller chooses is the capacity (section 9: `aux0` = 8); a bad `dir_fd` is `ioError` here.
+            if osErrno != 0 { return ControlV2ValueError(.ioError, aux0: UInt64(UInt32(bitPattern: osErrno)), detail: "storage: directory descriptor") }
+            return ControlV2ValueError(.invalidArgument, aux0: 8, detail: "capacity_bytes")
+        case UInt32(OD_STORAGE_STATUS_INVALID_NAME_V1):
+            return ControlV2ValueError(.invalidName, aux0: 0, detail: "disk name")
+        case UInt32(OD_STORAGE_STATUS_ALREADY_EXISTS_V1):
+            return ControlV2ValueError(.diskExists, detail: "an entry with this name exists; it was not touched")
+        case UInt32(OD_STORAGE_STATUS_INSUFFICIENT_SPACE_V1):
+            return ControlV2ValueError(.insufficientSpace, aux0: required, aux1: available, detail: "not enough free space for the image")
+        case UInt32(OD_STORAGE_STATUS_IO_ERROR_V1):
+            return ControlV2ValueError(.ioError, aux0: UInt64(UInt32(bitPattern: osErrno)), detail: "storage I/O error")
+        default:
+            // Statuses of `inspect` (not_found, not_regular_file, writer_busy, invalid_image, truncated, size_mismatch) and numbers
+            // outside the closed list are not answers of `create`: an unexpected ABI result is an I/O error with the number in `detail`.
+            // `writer_busy` is not an answer of `create` either (STORAGE_HOST_ABI_V1.md section 7): after an I/O error a file may remain.
+            return ControlV2ValueError(.ioError, aux0: UInt64(UInt32(bitPattern: osErrno)), detail: "storage: unexpected status \(status)")
+        }
+    }
+
+    /// Opens `<bundle>/disks` (`O_DIRECTORY | O_NOFOLLOW`, VM_BUNDLE 2 item 5) and creates the image by the pair "descriptor + name".
+    static func createRaw(bundlePath: String, name: [UInt8], capacityBytes: UInt64) -> Outcome {
+        let directory = Darwin.open(bundlePath + "/disks", O_DIRECTORY | O_NOFOLLOW | O_RDONLY | O_CLOEXEC)
+        guard directory >= 0 else {
+            let code = errno
+            return Outcome(error: ControlV2ValueError(.ioError, aux0: UInt64(UInt32(bitPattern: code)),
+                                                      detail: "open disks/ failed, errno \(code)"))
+        }
+        defer { Darwin.close(directory) }
+        var report = od_storage_error_v1(struct_size: UInt32(OD_STORAGE_ERROR_SIZE_V1), os_errno: 0, required_bytes: 0,
+                                         available_bytes: 0, reserved: 0)
+        let status = name.withUnsafeBufferPointer { buffer in
+            od_storage_create_raw_v1(directory, buffer.baseAddress, UInt32(buffer.count), capacityBytes, 0, &report)
+        }
+        return Outcome(error: map(status: status, osErrno: report.os_errno, required: report.required_bytes,
+                                  available: report.available_bytes))
+    }
+}
+
 final class Lifecycle {
     /// S9-06 (ISSUE-055) is not closed: every guest `SHUTDOWN` answers `unsupported_durability` (section 7.2), and
     /// `unsupported_no_agent` is unreachable. The constant keeps the order of section 7.2 step 7 visible.
@@ -56,6 +113,8 @@ final class Lifecycle {
     private let runner: ProfileRunner
     private let lockFailure: BundleLockFailure?
     private let hostMemoryBytes: UInt64
+    /// `--bundle` of the process. `PREPARE_DISK` opens `<bundle>/disks` itself (section 9); nil only in unit tests.
+    private let bundlePath: String?
 
     private(set) var state: ControlV2State = .stopped
     private(set) var configuration: ControlV2Configure?
@@ -67,10 +126,11 @@ final class Lifecycle {
     /// Descriptors stored by `ATTACH_RESOURCE`: nothing is done with them before S11-08 and later tasks (section 8 item 4).
     private(set) var attached: [UInt16: [UInt16: Int32]] = [:]
 
-    init(runner: ProfileRunner, lockFailure: BundleLockFailure?, hostMemoryBytes: UInt64) {
+    init(runner: ProfileRunner, lockFailure: BundleLockFailure?, hostMemoryBytes: UInt64, bundlePath: String? = nil) {
         self.runner = runner
         self.lockFailure = lockFailure
         self.hostMemoryBytes = hostMemoryBytes
+        self.bundlePath = bundlePath
     }
 
     var attachedDescriptorCount: Int { attached.values.reduce(0) { $0 + $1.count } }
@@ -255,12 +315,24 @@ final class Lifecycle {
         return accept(.configure, requestID: requestID)
     }
 
+    /// Section 9: state (step 6), then format, capacity and name, then the image through `od_storage_create_raw_v1` (S11-07). The call is
+    /// synchronous and has no progress callback, so the only `PROGRESS` is the final one (`completed == total`) before the `ACK`.
     private func prepareDisk(_ value: ControlV2PrepareDisk, requestID: UInt32) -> Dispatched {
         guard state == .stopped else { return reject(ControlV2ValueError(.invalidState), kind: .prepareDisk, requestID: requestID) }
         if let violation = value.validate() { return reject(violation, kind: .prepareDisk, requestID: requestID) }
-        // The image is created by S11-08 (od_storage_create_raw_v1, S11-07); until then no file is touched.
-        return reject(ControlV2ValueError(.unsupported, detail: "PREPARE_DISK arrives with S11-08"), kind: .prepareDisk,
-                      requestID: requestID)
+        guard let bundlePath else {
+            return reject(ControlV2ValueError(.unsupported, detail: "no bundle path: PREPARE_DISK has nowhere to create the image"),
+                          kind: .prepareDisk, requestID: requestID)
+        }
+        guard DiskImageStorage.abiVersionMatches else {
+            return failure(kind: .prepareDisk, requestID: requestID, detail: "storage ABI version of libod_host.a does not match the header")
+        }
+        let outcome = DiskImageStorage.createRaw(bundlePath: bundlePath, name: value.name, capacityBytes: value.capacityBytes)
+        if let error = outcome.error { return reject(error, kind: .prepareDisk, requestID: requestID) }
+        let progress = ControlV2Frame(response: .progress(requestKind: UInt32(ControlV2Kind.prepareDisk.rawValue),
+                                                         completed: value.capacityBytes, total: value.capacityBytes),
+                                      requestID: requestID)
+        return accept(.prepareDisk, requestID: requestID, after: [progress])
     }
 
     /// Section 7.3 in the order of VM_BUNDLE 3.5 items 2, 3, 4 and 7.

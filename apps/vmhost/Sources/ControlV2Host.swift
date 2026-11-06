@@ -384,7 +384,8 @@ enum ControlV2Host {
         } catch {
             lockFailure = .io(EIO)
         }
-        let lifecycle = Lifecycle(runner: runner, lockFailure: lockFailure, hostMemoryBytes: physicalMemoryBytes())
+        let lifecycle = Lifecycle(runner: runner, lockFailure: lockFailure, hostMemoryBytes: physicalMemoryBytes(),
+                              bundlePath: options.bundlePath)
         let connection = ControlV2Connection(fd: socketFD, lifecycle: lifecycle, runner: runner, input: input)
         let status = connection.run()
         runner.teardown()

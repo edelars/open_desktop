@@ -4,6 +4,7 @@
 #include "../../../../../include/open_desktop/host_abi.h"
 #include "../../../../../include/open_desktop/session_abi_v1.h"
 #include "../../../../../include/open_desktop/display_abi_v1.h"
+#include "../../../../../include/open_desktop/storage_abi_v1.h"
 #include "../../../../macos/Sources/ODAtomics/include/FrameTransportAtomics.h"
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -17,6 +18,10 @@ static inline uint64_t vmhost_session_required_capabilities_v1(void) {
 }
 
 /* Swift does not import function-like UINT32_C macros: expose them as functions. */
+static inline uint32_t vmhost_storage_abi_version_v1(void) {
+    return OD_STORAGE_ABI_VERSION_V1;
+}
+
 static inline uint32_t vmhost_display_abi_version_v1(void) {
     return OD_DISPLAY_ABI_VERSION_V1;
 }

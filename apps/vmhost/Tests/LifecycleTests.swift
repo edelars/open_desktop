@@ -279,4 +279,46 @@ final class LifecycleXCTests: XCTestCase {
         XCTAssertEqual(lifecycle.attachedDescriptorCount, 8)
         lifecycle.closeAttachedDescriptors()
     }
+
+    // MARK: PREPARE_DISK (S11-08)
+
+    func testStorageStatusMapping() {
+        func code(_ status: UInt32, errno: Int32 = 0) -> (ControlV2ErrorCode, UInt64, UInt64)? {
+            DiskImageStorage.map(status: status, osErrno: errno, required: 7, available: 3).map { ($0.code, $0.aux0, $0.aux1) }
+        }
+        XCTAssertNil(DiskImageStorage.map(status: 0, osErrno: 0, required: 0, available: 0))
+        XCTAssertTrue(code(1)! == (.invalidArgument, 8, 0))
+        XCTAssertTrue(code(1, errno: EBADF)! == (.ioError, UInt64(EBADF), 0))
+        XCTAssertTrue(code(2)! == (.invalidName, 0, 0))
+        XCTAssertTrue(code(3)! == (.diskExists, 0, 0))
+        XCTAssertTrue(code(6)! == (.insufficientSpace, 7, 3))
+        XCTAssertTrue(code(11, errno: EIO)! == (.ioError, UInt64(EIO), 0))
+        // Statuses of `inspect` and numbers outside the closed list are not answers of `create`.
+        for status: UInt32 in [4, 5, 7, 8, 9, 10, 12, 99] { XCTAssertEqual(code(status, errno: 5)?.0, .ioError, "status \(status)") }
+    }
+
+    func testPrepareDiskCreatesTheImageInsideDisks() throws {
+        let bundle = (NSTemporaryDirectory() as NSString).appendingPathComponent("lifecycle-prepare-\(getpid()).odvm")
+        try FileManager.default.createDirectory(atPath: bundle + "/disks", withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: bundle) }
+        let lifecycle = Lifecycle(runner: FakeRunner(), lockFailure: nil, hostMemoryBytes: 64 << 30, bundlePath: bundle)
+        _ = try send(lifecycle, .hello, id: 0)
+        let output = try send(lifecycle, .prepareDisk(ControlV2PrepareDisk(capacityBytes: 1 << 20, name: Array("disk0.img".utf8))), id: 1)
+        XCTAssertEqual(try responses(output), [.progress(requestKind: 5, completed: 1 << 20, total: 1 << 20),
+                                               .ack(ControlV2Ack(ackedKind: 5, state: 1))])
+        var info = stat()
+        XCTAssertEqual(stat(bundle + "/disks/disk0.img", &info), 0)
+        XCTAssertEqual(info.st_size, 1 << 20)
+        // The same name again: disk_exists, no second image, no PROGRESS.
+        let again = try send(lifecycle, .prepareDisk(ControlV2PrepareDisk(capacityBytes: 4096, name: Array("disk0.img".utf8))), id: 2)
+        XCTAssertEqual(try error(again).code, ControlV2ErrorCode.diskExists.rawValue)
+        XCTAssertEqual(stat(bundle + "/disks/disk0.img", &info), 0)
+        XCTAssertEqual(info.st_size, 1 << 20)
+        // A capacity that is not a multiple of 512 is refused by the ABI.
+        let odd = try send(lifecycle, .prepareDisk(ControlV2PrepareDisk(capacityBytes: 1000, name: Array("odd.img".utf8))), id: 3)
+        let report = try error(odd)
+        XCTAssertEqual(report.code, ControlV2ErrorCode.invalidArgument.rawValue)
+        XCTAssertEqual(report.aux0, 8)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: bundle + "/disks"), ["disk0.img"])
+    }
 }
