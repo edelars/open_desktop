@@ -1,7 +1,7 @@
 use crate::{
     GuestPhysicalAddress, GuestPhysicalRange, Long64ProbeConfig, MachineMemoryMap,
-    MemoryAccessError, MemoryRegionKind, PhysicalMemory, RamAccessOperation, RamLimits,
-    TrackedAccessError, TrackedAccessOutcome, TrackedAccessReport, TrackedAccessRequest,
+    MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, PhysicalMemory, RamAccessOperation,
+    RamLimits, TrackedAccessError, TrackedAccessOutcome, TrackedAccessReport, TrackedAccessRequest,
 };
 use od_isa::{
     PortIo,
@@ -130,6 +130,12 @@ pub trait BusDevice {
     fn framebuffer_binding(&self) -> Option<FramebufferBinding> {
         None
     }
+
+    /// Framebuffer window of the second screen (DISPLAY_DEVICE.md 16.3). Only a
+    /// display device in the two-screen configuration reports one.
+    fn secondary_framebuffer_binding(&self) -> Option<FramebufferBinding> {
+        None
+    }
 }
 
 /// Framebuffer GPA window advertised by a display device (`FB_BASE`/`FB_SIZE`).
@@ -147,6 +153,12 @@ pub(crate) const DISPLAY_REGISTER_WINDOW_BYTES: u64 = 0x1000;
 pub enum DisplayBindingError {
     /// The map has a `Framebuffer` region but no device advertises one.
     MissingDevice,
+    /// A `Framebuffer` region of the map is not advertised by the device
+    /// (its base and length match no `FB_BASE`/`FB_SIZE` of any screen).
+    UnboundFramebufferRegion {
+        region_start: GuestPhysicalAddress,
+        region_len: u64,
+    },
     /// A display device exists but the map has no `Framebuffer` region.
     MissingFramebufferRegion,
     /// Version 1 has exactly one screen.
@@ -607,31 +619,62 @@ impl MachineBus {
         if displays.next().is_some() {
             return Err(BusBuildError::Display(DisplayBindingError::MultipleDevices));
         }
-        let framebuffer = map
+        let secondary =
+            display.and_then(|(index, _)| devices[index].secondary_framebuffer_binding());
+        let regions: Vec<&MemoryRegionSpec> = map
             .regions()
             .iter()
-            .find(|region| region.kind == MemoryRegionKind::Framebuffer);
-        let (device_index, binding, region) = match (display, framebuffer) {
-            (None, None) => return Ok(()),
-            (None, Some(_)) => {
+            .filter(|region| region.kind == MemoryRegionKind::Framebuffer)
+            .collect();
+        let (device_index, primary) = match (display, regions.is_empty()) {
+            (None, true) => return Ok(()),
+            (None, false) => {
                 return Err(BusBuildError::Display(DisplayBindingError::MissingDevice));
             }
-            (Some(_), None) => {
+            (Some(_), true) => {
                 return Err(BusBuildError::Display(
                     DisplayBindingError::MissingFramebufferRegion,
                 ));
             }
-            (Some((index, binding)), Some(region)) => (index, binding, region),
+            (Some((index, binding)), false) => (index, binding),
         };
-        if region.range.start() != binding.base || region.range.len() != binding.size {
-            return Err(BusBuildError::Display(
-                DisplayBindingError::FramebufferMismatch {
-                    region_start: region.range.start(),
-                    region_len: region.range.len(),
-                    device_base: binding.base,
-                    device_size: binding.size,
-                },
-            ));
+        // Every advertised window must match exactly one region of the map, and
+        // every region must be advertised (DISPLAY_DEVICE.md 16.3).
+        let advertised: Vec<FramebufferBinding> =
+            std::iter::once(primary).chain(secondary).collect();
+        if advertised.len() != regions.len() {
+            let unmatched = regions
+                .iter()
+                .find(|region| {
+                    !advertised
+                        .iter()
+                        .any(|b| region.range.start() == b.base && region.range.len() == b.size)
+                })
+                .copied();
+            if let Some(region) = unmatched {
+                return Err(BusBuildError::Display(
+                    DisplayBindingError::UnboundFramebufferRegion {
+                        region_start: region.range.start(),
+                        region_len: region.range.len(),
+                    },
+                ));
+            }
+        }
+        for binding in &advertised {
+            let region = regions.iter().find(|region| {
+                region.range.start() == binding.base && region.range.len() == binding.size
+            });
+            if region.is_none() {
+                let nearest = regions[0];
+                return Err(BusBuildError::Display(
+                    DisplayBindingError::FramebufferMismatch {
+                        region_start: nearest.range.start(),
+                        region_len: nearest.range.len(),
+                        device_base: binding.base,
+                        device_size: binding.size,
+                    },
+                ));
+            }
         }
         let mut windows = mmio
             .iter()

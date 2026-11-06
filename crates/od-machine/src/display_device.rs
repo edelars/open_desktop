@@ -2857,8 +2857,21 @@ mod tests {
 
         let fb =
             |start, len| MemoryRegionSpec::new(range(start, len), MemoryRegionKind::Framebuffer);
+        // Two screens (DISPLAY_DEVICE.md 16.3) are accepted; a third region is not.
+        assert!(
+            MachineMemoryMap::new(36, vec![fb(0x1000_0000, 0x1000), fb(0x2000_0000, 0x1000)])
+                .is_ok()
+        );
         assert_eq!(
-            MachineMemoryMap::new(36, vec![fb(0x1000_0000, 0x1000), fb(0x2000_0000, 0x1000)]).err(),
+            MachineMemoryMap::new(
+                36,
+                vec![
+                    fb(0x1000_0000, 0x1000),
+                    fb(0x2000_0000, 0x1000),
+                    fb(0x3000_0000, 0x1000)
+                ]
+            )
+            .err(),
             Some(MemoryAccessError::MultipleFramebufferRegions)
         );
         for (start, len) in [

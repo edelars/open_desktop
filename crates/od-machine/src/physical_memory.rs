@@ -67,6 +67,8 @@ pub enum MemoryRegionKind {
 
 /// Upper bound for the length of a `Framebuffer` region (36 MiB).
 pub(crate) const MAX_FRAMEBUFFER_BYTES: u64 = 0x0240_0000;
+/// Two screens at most (DISPLAY_DEVICE.md 16.3).
+pub(crate) const MAX_FRAMEBUFFER_REGIONS: usize = 2;
 const FRAMEBUFFER_ALIGNMENT: u64 = 0x1000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,18 +136,21 @@ impl MachineMemoryMap {
                 });
             }
         }
-        let mut framebuffers = regions
+        // Version 2 with two screens has two framebuffer regions (DISPLAY_DEVICE.md 16.3);
+        // a third one is rejected before any allocation.
+        let framebuffers: Vec<&MemoryRegionSpec> = regions
             .iter()
-            .filter(|region| region.kind == MemoryRegionKind::Framebuffer);
-        if let Some(first) = framebuffers.next() {
-            if framebuffers.next().is_some() {
-                return Err(MemoryAccessError::MultipleFramebufferRegions);
-            }
-            if first.range.start.0 % FRAMEBUFFER_ALIGNMENT != 0
-                || first.range.len % FRAMEBUFFER_ALIGNMENT != 0
-                || first.range.len > MAX_FRAMEBUFFER_BYTES
+            .filter(|region| region.kind == MemoryRegionKind::Framebuffer)
+            .collect();
+        if framebuffers.len() > MAX_FRAMEBUFFER_REGIONS {
+            return Err(MemoryAccessError::MultipleFramebufferRegions);
+        }
+        for region in framebuffers {
+            if region.range.start.0 % FRAMEBUFFER_ALIGNMENT != 0
+                || region.range.len % FRAMEBUFFER_ALIGNMENT != 0
+                || region.range.len > MAX_FRAMEBUFFER_BYTES
             {
-                return Err(MemoryAccessError::InvalidFramebufferRegion(first.range));
+                return Err(MemoryAccessError::InvalidFramebufferRegion(region.range));
             }
         }
         Ok(Self {
