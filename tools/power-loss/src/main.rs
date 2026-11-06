@@ -14,7 +14,7 @@
 //! error while committing.
 
 use od_host::storage_io::HostFileStorage;
-use od_storage::cow_proto::{BLOCK_SIZE, CowFile, CowView, crc32};
+use od_storage::cow_proto::{BLOCK_SIZE, CommitStep, CowFile, CowView, crc32};
 use od_storage::io::CheckedStorage;
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
@@ -80,6 +80,64 @@ fn need(args: &[String], name: &str) -> Result<String, (u8, String)> {
     arg(args, name).ok_or((1, format!("missing {name}")))
 }
 
+/// Where the operator removes power: `idle` after the acknowledgement of the
+/// cut commit, `block0` before its first data block, `rootcopy` before its root
+/// copy (the last point at which the commit can still be abandoned).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CutStage {
+    Idle,
+    Block0,
+    RootCopy,
+}
+
+struct Cut {
+    stage: CutStage,
+    commit: u64,
+    window: Duration,
+}
+
+fn parse_cut(args: &[String]) -> Result<Option<Cut>, (u8, String)> {
+    let Some(stage) = arg(args, "--cut") else {
+        return Ok(None);
+    };
+    let stage = match stage.as_str() {
+        "idle" => CutStage::Idle,
+        "block0" => CutStage::Block0,
+        "rootcopy" => CutStage::RootCopy,
+        _ => return Err((1, "--cut must be idle, block0 or rootcopy".into())),
+    };
+    let commit = need(args, "--cut-commit")?
+        .parse()
+        .map_err(|_| (1, "bad --cut-commit".to_string()))?;
+    let secs: u64 = arg(args, "--window-s")
+        .map(|v| v.parse().map_err(|_| (1, "bad --window-s".to_string())))
+        .transpose()?
+        .unwrap_or(120);
+    Ok(Some(Cut {
+        stage,
+        commit,
+        window: Duration::from_secs(secs),
+    }))
+}
+
+/// Pauses for the operator's window and records whether the device is still
+/// present when the window ends (`present=false` means the cut happened).
+fn cut_window(
+    note: &mut dyn FnMut(&str) -> Result<(), (u8, String)>,
+    cut: &Cut,
+    dir: &Path,
+) -> Result<(), (u8, String)> {
+    note(&format!(
+        "cutpoint stage={:?} commit={} window_s={}",
+        cut.stage,
+        cut.commit,
+        cut.window.as_secs()
+    ))?;
+    std::thread::sleep(cut.window);
+    let present = dir.exists();
+    note(&format!("window_end present={present}"))
+}
+
 fn io_err(context: &str, e: impl std::fmt::Debug) -> (u8, String) {
     (3, format!("{context}: {e:?}"))
 }
@@ -97,6 +155,7 @@ fn run(args: &[String]) -> Result<(), (u8, String)> {
         .map(|v| v.parse().map_err(|_| (1, "bad --pause-ms".to_string())))
         .transpose()?
         .unwrap_or(0);
+    let cut = parse_cut(args)?;
     if ack.starts_with(&dir) {
         return Err((1, "the ack log must be outside the test directory".into()));
     }
@@ -122,7 +181,25 @@ fn run(args: &[String]) -> Result<(), (u8, String)> {
     for c in 1..=commits {
         let writes = plan(seed, c);
         let slices: Vec<(u64, &[u8])> = writes.iter().map(|(b, d)| (*b, d.as_slice())).collect();
-        match cow.commit(&slices) {
+        let cut_here = cut.as_ref().filter(|k| k.commit == c);
+        let mut fired = false;
+        let result = {
+            let mut step_hook = |step: CommitStep| -> bool {
+                let Some(k) = cut_here else { return false };
+                let hit = matches!(
+                    (k.stage, step),
+                    (CutStage::Block0, CommitStep::Block(0))
+                        | (CutStage::RootCopy, CommitStep::RootCopy)
+                );
+                if hit && !fired {
+                    fired = true;
+                    let _ = cut_window(&mut note, k, &dir);
+                }
+                false
+            };
+            cow.commit_cancellable(&slices, &mut step_hook)
+        };
+        match result {
             Ok(_) => {
                 let digest = crc32(&flatten(&writes));
                 note(&format!(
@@ -134,6 +211,9 @@ fn run(args: &[String]) -> Result<(), (u8, String)> {
                 let _ = note(&format!("error commit={c} detail={e:?}"));
                 return Err((3, format!("commit {c} failed: {e:?}")));
             }
+        }
+        if let Some(k) = cut_here.filter(|k| k.stage == CutStage::Idle) {
+            cut_window(&mut note, k, &dir)?;
         }
         if pause_ms > 0 {
             std::thread::sleep(Duration::from_millis(pause_ms));
