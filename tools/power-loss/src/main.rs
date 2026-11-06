@@ -133,9 +133,18 @@ fn cut_window(
         cut.commit,
         cut.window.as_secs()
     ))?;
-    std::thread::sleep(cut.window);
+    // Poll so that a device removed and reattached inside the window is still
+    // seen as absent.
+    let deadline = std::time::Instant::now() + cut.window;
+    let mut absent_seen = false;
+    while std::time::Instant::now() < deadline {
+        absent_seen |= !dir.exists();
+        std::thread::sleep(Duration::from_millis(250));
+    }
     let present = dir.exists();
-    note(&format!("window_end present={present}"))
+    note(&format!(
+        "window_end absent_seen={absent_seen} present={present}"
+    ))
 }
 
 fn io_err(context: &str, e: impl std::fmt::Debug) -> (u8, String) {
