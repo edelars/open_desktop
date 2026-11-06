@@ -371,8 +371,9 @@ and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu
 только границы, реализованные в `crates/od-machine/src/display_device.rs`. Код
 написан и ожидает ревью.
 
-- **Ревизия.** `VERSION = 2`, `CAPS = 0x3` (бит 0 `MODE_LIST`, бит 1 `EVENTS`;
-  биты 2–3 зарезервированы, равны `0`). Один тип `DisplayDevice` обслуживает
+- **Ревизия.** `VERSION = 2`, `CAPS = 0x3` на момент S10-13 (бит 0 `MODE_LIST`,
+  бит 1 `EVENTS`; биты 2–3 зарезервированы, равны `0`). С блоком курсора
+  (раздел «Display device, cursor (S10-14)» ниже) `CAPS = 0x7`. Один тип `DisplayDevice` обслуживает
   гостей обеих ревизий: регистры ревизии 1, их значения, порядок проверок,
   счётчики, backend-ошибки и host API раздела «Display device (S10-03)» не
   изменены; меняются только значения `VERSION` и `CAPS`. Новые регистры
@@ -414,7 +415,7 @@ and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu
   `DRIVER_PROTOCOL <- 0` (открытый запрос → `Cancelled`), обнуляет
   `RESPONSE_SEQ_*` и `EVENT_STATUS`; `next_event_seq` и последний запрос
   сохраняются.
-- **Не реализовано.** Блоки курсора и второго экрана, прерывания, snapshot,
+- **Не реализовано.** Блок второго экрана, прерывания, snapshot,
   путь запроса UI → VMHost → C ABI `od-host` (ABI в этом срезе не менялся;
   DISPLAY_DEVICE.md, 14.15.1), драйверы. Гостевой CPU-путь по-прежнему не имеет
   dword MMIO-записи (13.1), поэтому гостевой код не проверен: события и ответы
@@ -427,6 +428,70 @@ and [machine verification record](../testing/MACHINE.md#s4-24c-bounded-paged-cpu
   `STALE_REQUEST`, неверные кодирования, `seq` с разницей в `HI`), порядок
   отказов host API, `QueueFull`/`SequenceExhausted` через прямую подготовку
   состояния в тесте, reset, backend-ошибки на новых смещениях.
+
+## Display device, cursor (S10-14)
+
+Нормативно: [DISPLAY_DEVICE.md](DISPLAY_DEVICE.md), раздел 15. Здесь записаны
+только границы, реализованные в `crates/od-machine/src/display_device.rs`. Код
+устройства написан и ожидает ревью. Display host ABI, VMHost, frame transport v2
+и UI не реализованы.
+
+- **Блок.** Опциональный блок ревизии 2 по `CAPS` биту 2: `CAPS = 0x7`,
+  `VERSION` остаётся `2`. Блок `0x200–0x2FC` существует только при этом бите
+  (в коде проверка `CAPS & CAPS_CURSOR`); `0x22C` и `0x238–0x2FC` — резерв
+  (чтение `0`, запись игнорируется), `0x300–0x3FC` по-прежнему резерв. Регистры
+  версий 1 и 2, `MODE_COMMIT`, doorbell, очередь событий и `DRIVER_PROTOCOL`
+  не изменены; запись вне блока состояния курсора не меняет (кроме reset).
+- **Регистры** (13): `CURSOR_MAX_WIDTH/HEIGHT` (`64`), `CURSOR_FORMATS` (`0x4`),
+  `CURSOR_STATUS` (RO; `DATA_ERROR` 7:0, `IMAGE_ERROR` 15:8, `POSITION_ERROR`
+  23:16, `ENABLE_ERROR` 31:24), `CURSOR_WIDTH/HEIGHT/FORMAT/HOTSPOT` (RW, как
+  записано, проверка при commit), `CURSOR_IMAGE_INDEX` (RW с автоинкрементом),
+  `CURSOR_IMAGE_DATA`/`CURSOR_IMAGE_COMMIT` (WO), `CURSOR_POSITION` и
+  `CURSOR_ENABLE` (RW с проверкой). Доступ — как у остального окна: только
+  `Mmio`, `Dword`, выровненный; иначе `DeviceError` до изменения состояния, в
+  том числе до автоинкремента индекса и записи в `staging`. Новые коды
+  `0x0C–0x0F` (`INDEX_OUT_OF_RANGE`, `HOTSPOT_OUT_OF_IMAGE`,
+  `POSITION_OUT_OF_FRAME`, `NO_CURSOR_IMAGE`); все ошибки исправимы гостем,
+  в `STATUS`/`EVENT_STATUS` не попадают.
+- **Образ.** От 1×1 до 64×64, формат `2` (`BGRA8888_PREMUL`, слово `0xAARRGGBB`,
+  строки без паддинга). Буферы `staging` и `active` по 4096 слов (16 KiB)
+  лежат в состоянии устройства: не в карте гостя, не во `Framebuffer`, запись не
+  вызывает committed-write callback. `CURSOR_IMAGE_COMMIT` по проверкам 15.6.2
+  копирует первые `W × H` слов `staging` в `active` одним действием под
+  блокировкой состояния; `staging` после commit сохраняется. Пиксели не
+  проверяются.
+- **Счётчики** (только host): `cursor_seq` растёт на успешный commit, на
+  изменившую значение запись `CURSOR_POSITION`/`CURSOR_ENABLE` и на reset, если
+  было что показывать; `shape_seq ← cursor_seq` при commit. Не зависят от
+  `generation` и `mode_change_count`; курсор их, `STATUS`, режим и память кадра
+  не меняет, `MODE_COMMIT` и doorbell не меняют курсор. При `cursor_seq = 2^64 − 1`
+  три команды дают `COUNTER_EXHAUSTED`; reset в этом состоянии скрывает курсор,
+  но счётчик не растёт (допущение 15.9).
+- **Host API** (`DisplayHandle`, без downcast, только между квантами, владельцем
+  `MachineBus`): `cursor_state() -> CursorState` (`cursor_seq`, `enabled`, `x`,
+  `y`, `shape: Option<CursorShapeInfo>` с `shape_seq`, `width`, `height`,
+  `format`, `hot_x`, `hot_y`) и
+  `read_cursor_image_into(&mut [u8]) -> Result<CursorShapeInfo, CursorReadError>`
+  (`NoShape`, `BufferLength`; копирует ровно `W × H × 4` байт `active`, порядок
+  B, G, R, A; параметры и байты берутся под одной блокировкой). Шина не нужна.
+  Обе функции только читают.
+- **Reset.** `DisplayHandle::reset()` возвращает регистры блока к значениям
+  после reset, обнуляет `staging` и `active`, снимает форму (`shape_seq = 0`),
+  скрывает курсор и ставит позицию `(0, 0)`; `cursor_seq` растёт на 1, если была
+  форма, курсор был включён или позиция была ненулевой.
+- **Не реализовано.** Display host ABI и test-only профиль `3`, VMHost, frame
+  transport v2, наложение в UI, snapshot, драйверные последовательности курсора
+  (DISPLAY_DRIVER_V1.md), гостевой CPU-путь с dword MMIO (13.1): регистры
+  проверены записями через `MachineBus`.
+- **Проверено.** Unit-тесты `display_device.rs` и интеграционные
+  `tests/display_device.rs`: значения после reset блока, неизменность при записи
+  в RO и резерв, RW-регистры и WO-чтение `0`, автоинкремент и диапазон
+  `IMAGE_INDEX`, каждая проверка commit по порядку и граничные размеры,
+  атомарность commit и сохранение `staging`, позиция против активного кадра,
+  `CURSOR_ENABLE`, неизменность кадра при 1 000 перемещений, reset,
+  насыщение счётчика, backend-ошибки. Замер: загрузка 64×64 (4 102 записи через
+  `MachineBus`) — 56–160 мкс в release и около 0,9 мс в debug; один прогон с eprintln, запуск `cargo test -p od-machine --release --offline -- --nocapture` (одна машина, без
+  CPU-пути; в CPU-пути не измерено).
 
 ## Stage 4 flat probe image and direct handoff (S4-32a)
 

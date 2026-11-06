@@ -6,11 +6,12 @@ use od_isa::execute::{PioU8Exit, RunExit};
 use od_isa::memory::{AccessContext, AccessOrigin, InstructionMode, MemoryError, PrivilegeLevel};
 use od_isa::{INTEGER_FLAGS, LongModeState, Register};
 use od_machine::{
-    AccessWidth, DISPLAY_FRAMEBUFFER_BASE, DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE,
-    DISPLAY_REGISTERS_BYTES, DisplayDevice, DisplayHandle, DisplayReadError, DisplayRejectReason,
-    DisplayRequestError, GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap,
-    MemoryAccessError, MemoryRegionKind, MemoryRegionSpec, MmioBinding, ModeRequestOutcome,
-    RamLimits, TrackedAccessError, step_diagnostic_pio_u8, step_paged_mov, step_paged_pio_u8,
+    AccessWidth, CursorReadError, CursorShapeInfo, CursorState, DISPLAY_FRAMEBUFFER_BASE,
+    DISPLAY_FRAMEBUFFER_BYTES, DISPLAY_REGISTERS_BASE, DISPLAY_REGISTERS_BYTES, DisplayDevice,
+    DisplayHandle, DisplayReadError, DisplayRejectReason, DisplayRequestError,
+    GuestPhysicalAddress, GuestPhysicalRange, MachineBus, MachineMemoryMap, MemoryAccessError,
+    MemoryRegionKind, MemoryRegionSpec, MmioBinding, ModeRequestOutcome, RamLimits,
+    TrackedAccessError, step_diagnostic_pio_u8, step_paged_mov, step_paged_pio_u8,
 };
 
 const CR0: u64 = 0x8001_0033;
@@ -344,8 +345,10 @@ fn version_1_guest_never_sees_events_and_keeps_the_frame_flow() {
     let mut frame = vec![0u8; 64 * 48 * 4];
     let info = display.read_frame_into(&bus, &mut frame).unwrap();
     assert_eq!((info.generation, info.mode.width), (1, 64));
-    // Version 2 only adds values for the new registers.
-    assert_eq!((reg_read(&mut bus, 0x04), reg_read(&mut bus, 0x08)), (2, 3));
+    // Version 2 only adds values for the new registers; CAPS gained the
+    // cursor bit (S10-14), which a guest that does not know it ignores.
+    assert_eq!((reg_read(&mut bus, 0x04), reg_read(&mut bus, 0x08)), (2, 7));
+    assert_eq!(display.cursor_state().cursor_seq, 0);
 }
 
 #[test]
@@ -417,4 +420,162 @@ fn version_2_request_exchange_through_public_api() {
     );
     reg_write(&mut bus, 0x104, 1);
     assert!(display.post_mode_request(1280, 720, 1).unwrap() > open);
+}
+
+/// Cursor registers through the public API (DISPLAY_DEVICE.md, section 15).
+mod cursor {
+    use super::*;
+
+    const CURSOR_WIDTH: u64 = 0x210;
+    const CURSOR_HEIGHT: u64 = 0x214;
+    const CURSOR_FORMAT: u64 = 0x218;
+    const CURSOR_HOTSPOT: u64 = 0x21C;
+    const CURSOR_IMAGE_INDEX: u64 = 0x220;
+    const CURSOR_IMAGE_DATA: u64 = 0x224;
+    const CURSOR_IMAGE_COMMIT: u64 = 0x228;
+    const CURSOR_STATUS: u64 = 0x20C;
+    const CURSOR_POSITION: u64 = 0x230;
+    const CURSOR_ENABLE: u64 = 0x234;
+
+    #[test]
+    fn caps_advertise_the_cursor_and_the_block_exists() {
+        let (mut bus, display) = make_bus();
+        assert_eq!(reg_read(&mut bus, 0x004), 2);
+        assert_eq!(reg_read(&mut bus, 0x008), 0x7);
+        assert_eq!(reg_read(&mut bus, 0x200), 64);
+        assert_eq!(reg_read(&mut bus, 0x204), 64);
+        assert_eq!(reg_read(&mut bus, 0x208), 4);
+        assert_eq!(
+            display.cursor_state(),
+            CursorState {
+                cursor_seq: 0,
+                enabled: false,
+                x: 0,
+                y: 0,
+                shape: None
+            }
+        );
+        assert_eq!(
+            display.read_cursor_image_into(&mut [0u8; 4]),
+            Err(CursorReadError::NoShape)
+        );
+    }
+
+    #[test]
+    fn guest_uploads_a_shape_and_moves_it_without_publishing_a_frame() {
+        let (mut bus, display) = make_bus();
+        for (offset, value) in [(0x40, 8), (0x44, 8), (0x48, 1), (0x4C, 1)] {
+            reg_write(&mut bus, offset, value);
+        }
+        for pixel in 0..64u64 {
+            bus.write_physical(
+                GuestPhysicalAddress::new(DISPLAY_FRAMEBUFFER_BASE + pixel * 4),
+                AccessWidth::Dword,
+                0xFF00_0000 | pixel,
+                |_| panic!("pixel stores must not reach the callback"),
+            )
+            .unwrap();
+        }
+        reg_write(&mut bus, 0x80, 0);
+        let mut frame_before = vec![0u8; 8 * 8 * 4];
+        display.read_frame_into(&bus, &mut frame_before).unwrap();
+        let generation = display.frame_generation();
+        let changes = display.mode_change_count();
+
+        // 2 x 2 shape, hotspot (1, 0), upload, commit, show.
+        reg_write(&mut bus, CURSOR_WIDTH, 2);
+        reg_write(&mut bus, CURSOR_HEIGHT, 2);
+        reg_write(&mut bus, CURSOR_FORMAT, 2);
+        reg_write(&mut bus, CURSOR_HOTSPOT, 1);
+        reg_write(&mut bus, CURSOR_IMAGE_INDEX, 0);
+        for word in [0xFF00_00FFu32, 0xFF00_FF00, 0x8000_0080, 0x0000_0000] {
+            reg_write(&mut bus, CURSOR_IMAGE_DATA, word);
+        }
+        // Nothing is visible to the host before the commit.
+        assert_eq!(display.cursor_state().shape, None);
+        reg_write(&mut bus, CURSOR_IMAGE_COMMIT, 1);
+        reg_write(&mut bus, CURSOR_POSITION, 3 << 16 | 5);
+        reg_write(&mut bus, CURSOR_ENABLE, 1);
+        assert_eq!(reg_read(&mut bus, CURSOR_STATUS), 0);
+
+        let state = display.cursor_state();
+        assert_eq!(
+            (state.cursor_seq, state.enabled, state.x, state.y),
+            (3, true, 5, 3)
+        );
+        assert_eq!(
+            state.shape,
+            Some(CursorShapeInfo {
+                shape_seq: 1,
+                width: 2,
+                height: 2,
+                format: 2,
+                hot_x: 1,
+                hot_y: 0
+            })
+        );
+        let mut image = [0u8; 16];
+        assert_eq!(
+            display.read_cursor_image_into(&mut image),
+            Ok(state.shape.unwrap())
+        );
+        assert_eq!(
+            &image[..8],
+            &[0xFF, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF]
+        );
+        assert_eq!(
+            display.read_cursor_image_into(&mut [0u8; 15]),
+            Err(CursorReadError::BufferLength {
+                expected: 16,
+                actual: 15
+            })
+        );
+
+        // The frame is untouched; movement is one register write each.
+        for step in 0..100u32 {
+            reg_write(&mut bus, CURSOR_POSITION, (step % 8) << 16 | (step % 8));
+        }
+        assert_eq!(display.frame_generation(), generation);
+        assert_eq!(display.mode_change_count(), changes);
+        assert!(display.has_current_frame());
+        let mut frame_after = vec![0u8; 8 * 8 * 4];
+        display.read_frame_into(&bus, &mut frame_after).unwrap();
+        assert_eq!(frame_after, frame_before);
+        assert_eq!(reg_read(&mut bus, 0x070), 0x0000_0003);
+        assert_eq!(display.cursor_state().shape, state.shape);
+    }
+
+    #[test]
+    fn host_reset_hides_the_cursor_and_the_guest_sees_the_power_on_block() {
+        let (mut bus, display) = make_bus();
+        for (offset, value) in [(0x40, 8), (0x44, 8), (0x48, 1), (0x4C, 1)] {
+            reg_write(&mut bus, offset, value);
+        }
+        reg_write(&mut bus, CURSOR_WIDTH, 1);
+        reg_write(&mut bus, CURSOR_HEIGHT, 1);
+        reg_write(&mut bus, CURSOR_FORMAT, 2);
+        reg_write(&mut bus, CURSOR_IMAGE_COMMIT, 1);
+        reg_write(&mut bus, CURSOR_ENABLE, 1);
+        let seq = display.cursor_state().cursor_seq;
+        display.reset();
+        let state = display.cursor_state();
+        assert_eq!(
+            (state.cursor_seq, state.enabled, state.shape),
+            (seq + 1, false, None)
+        );
+        for offset in [
+            CURSOR_WIDTH,
+            CURSOR_HEIGHT,
+            CURSOR_FORMAT,
+            CURSOR_HOTSPOT,
+            CURSOR_IMAGE_INDEX,
+            CURSOR_STATUS,
+            CURSOR_POSITION,
+            CURSOR_ENABLE,
+        ] {
+            assert_eq!(reg_read(&mut bus, offset), 0, "offset {offset:#x}");
+        }
+        assert_eq!(reg_read(&mut bus, 0x008), 0x7);
+        assert_eq!(reg_read(&mut bus, 0x200), 64);
+    }
 }

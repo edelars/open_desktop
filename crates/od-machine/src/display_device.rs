@@ -3,7 +3,9 @@
 //!
 //! Version 2 is a strict superset of version 1: a read-only mode table, a
 //! bounded host-to-guest event queue and the `MODE_REQUEST` request/response
-//! exchange, all in previously reserved register offsets.
+//! exchange, all in previously reserved register offsets. The optional cursor
+//! block (`CAPS` bit 2, section 15, S10-14) occupies `0x200-0x2FC`; its image
+//! lives in two 16 KiB buffers inside the device, not in guest memory.
 //!
 //! The device owns only registers and counters. Pixel bytes live in a
 //! `MemoryRegionKind::Framebuffer` region of `PhysicalMemory`; the guest writes
@@ -38,7 +40,9 @@ const VERSION: u32 = 2;
 const CAPS_MODE_LIST: u32 = 1 << 0;
 /// `CAPS` bit 1: driver protocol, event queue and `MODE_REQUEST` exist.
 const CAPS_EVENTS: u32 = 1 << 1;
-const CAPS: u32 = CAPS_MODE_LIST | CAPS_EVENTS;
+/// `CAPS` bit 2: the cursor block `0x200-0x2FC` exists (section 15).
+const CAPS_CURSOR: u32 = 1 << 2;
+const CAPS: u32 = CAPS_MODE_LIST | CAPS_EVENTS | CAPS_CURSOR;
 /// Driver protocol versions the device supports: bit `n` = version `n`.
 const DRIVER_PROTOCOLS: u32 = 1 << 1;
 /// Event queue capacity in records.
@@ -65,6 +69,16 @@ const MODE_LIST: [(u32, u32); 14] = [
 ];
 const FORMATS: u32 = 1 << DISPLAY_FORMAT_BGRX8888;
 const BYTES_PER_PIXEL: u32 = 4;
+
+/// Largest cursor image width in pixels (`CURSOR_MAX_WIDTH`).
+pub const DISPLAY_CURSOR_MAX_WIDTH: u32 = 64;
+/// Largest cursor image height in pixels (`CURSOR_MAX_HEIGHT`).
+pub const DISPLAY_CURSOR_MAX_HEIGHT: u32 = 64;
+/// `BGRA8888_PREMUL`: byte 0 = B, 1 = G, 2 = R, 3 = A; colour premultiplied.
+pub const DISPLAY_CURSOR_FORMAT_BGRA8888_PREMUL: u32 = 2;
+/// Words in each cursor image buffer: 64 x 64 pixels, 16 KiB.
+pub const DISPLAY_CURSOR_IMAGE_WORDS: usize = 4096;
+const CURSOR_FORMATS: u32 = 1 << DISPLAY_CURSOR_FORMAT_BGRA8888_PREMUL;
 
 mod reg {
     pub const ID: u64 = 0x000;
@@ -104,6 +118,21 @@ mod reg {
     pub const RESPONSE_SEQ_LO: u64 = 0x180;
     pub const RESPONSE_SEQ_HI: u64 = 0x184;
     pub const REQUEST_RESPONSE: u64 = 0x188;
+    pub const CURSOR_BLOCK_START: u64 = 0x200;
+    pub const CURSOR_BLOCK_END: u64 = 0x300;
+    pub const CURSOR_MAX_WIDTH: u64 = 0x200;
+    pub const CURSOR_MAX_HEIGHT: u64 = 0x204;
+    pub const CURSOR_FORMATS: u64 = 0x208;
+    pub const CURSOR_STATUS: u64 = 0x20C;
+    pub const CURSOR_WIDTH: u64 = 0x210;
+    pub const CURSOR_HEIGHT: u64 = 0x214;
+    pub const CURSOR_FORMAT: u64 = 0x218;
+    pub const CURSOR_HOTSPOT: u64 = 0x21C;
+    pub const CURSOR_IMAGE_INDEX: u64 = 0x220;
+    pub const CURSOR_IMAGE_DATA: u64 = 0x224;
+    pub const CURSOR_IMAGE_COMMIT: u64 = 0x228;
+    pub const CURSOR_POSITION: u64 = 0x230;
+    pub const CURSOR_ENABLE: u64 = 0x234;
     pub const MODE_TABLE: u64 = 0x400;
     pub const MODE_TABLE_END: u64 = 0x800;
 }
@@ -125,9 +154,17 @@ const ERR_QUEUE_EMPTY: u8 = 0x08;
 const ERR_STALE_REQUEST: u8 = 0x09;
 const ERR_MODE_MISMATCH: u8 = 0x0A;
 const ERR_UNSUPPORTED_PROTOCOL: u8 = 0x0B;
+const ERR_INDEX_OUT_OF_RANGE: u8 = 0x0C;
+const ERR_HOTSPOT_OUT_OF_IMAGE: u8 = 0x0D;
+const ERR_POSITION_OUT_OF_FRAME: u8 = 0x0E;
+const ERR_NO_CURSOR_IMAGE: u8 = 0x0F;
 
 const EVENT_STATUS_RESPONSE_SHIFT: u32 = 8;
 const EVENT_STATUS_PROTOCOL_SHIFT: u32 = 16;
+
+const CURSOR_STATUS_IMAGE_SHIFT: u32 = 8;
+const CURSOR_STATUS_POSITION_SHIFT: u32 = 16;
+const CURSOR_STATUS_ENABLE_SHIFT: u32 = 24;
 
 const VERDICT_ACCEPT: u32 = 1;
 const VERDICT_REJECT: u32 = 2;
@@ -261,6 +298,52 @@ impl fmt::Display for DisplayRequestError {
 
 impl std::error::Error for DisplayRequestError {}
 
+/// Parameters of the published cursor image (`active` buffer), section 15.5.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CursorShapeInfo {
+    /// Value of `cursor_seq` at the commit that published this shape. One
+    /// value always describes the same bytes within one device instance.
+    pub shape_seq: u64,
+    pub width: u32,
+    pub height: u32,
+    /// `CURSOR_FORMAT` at commit; only `BGRA8888_PREMUL` (`2`) is accepted.
+    pub format: u32,
+    /// Hotspot inside the image, in image pixels.
+    pub hot_x: u32,
+    pub hot_y: u32,
+}
+
+/// Host view of the cursor (DISPLAY_DEVICE.md, 15.10).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CursorState {
+    /// Changes exactly when the shape, the position or the visibility changes.
+    pub cursor_seq: u64,
+    pub enabled: bool,
+    /// Hotspot position in frame pixels.
+    pub x: u32,
+    pub y: u32,
+    /// The published shape, or `None` if the guest never committed one (or the
+    /// device was reset since).
+    pub shape: Option<CursorShapeInfo>,
+}
+
+/// Refusal of [`DisplayHandle::read_cursor_image_into`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CursorReadError {
+    /// No shape is published.
+    NoShape,
+    /// The destination length differs from `width * height * 4`.
+    BufferLength { expected: usize, actual: usize },
+}
+
+impl fmt::Display for CursorReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "display cursor image read error: {self:?}")
+    }
+}
+
+impl std::error::Error for CursorReadError {}
+
 /// One queue or latch record: 28 bytes of guest-visible state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct QueuedEvent {
@@ -291,10 +374,40 @@ struct DisplayState {
     pop_error: u8,
     response_error: u8,
     protocol_error: u8,
+    // Cursor block (section 15). `staging` and `active` are
+    // `DISPLAY_CURSOR_IMAGE_WORDS` words each, allocated once, never in guest
+    // memory.
+    cursor_width: u32,
+    cursor_height: u32,
+    cursor_format: u32,
+    cursor_hotspot: u32,
+    cursor_index: u32,
+    cursor_position: u32,
+    cursor_enabled: bool,
+    cursor_data_error: u8,
+    cursor_image_error: u8,
+    cursor_position_error: u8,
+    cursor_enable_error: u8,
+    staging: Box<[u32]>,
+    active: Box<[u32]>,
+    /// Parameters of `active`; meaningful only while `shape_seq != 0`.
+    active_shape: CursorShapeInfo,
+    cursor_seq: u64,
+    shape_seq: u64,
 }
 
 impl DisplayState {
-    const fn new() -> Self {
+    fn new() -> Self {
+        Self::with_buffers(
+            vec![0; DISPLAY_CURSOR_IMAGE_WORDS].into_boxed_slice(),
+            vec![0; DISPLAY_CURSOR_IMAGE_WORDS].into_boxed_slice(),
+        )
+    }
+
+    /// Power-on state around zero-filled cursor buffers.
+    fn with_buffers(staging: Box<[u32]>, active: Box<[u32]>) -> Self {
+        debug_assert!(staging.len() == DISPLAY_CURSOR_IMAGE_WORDS);
+        debug_assert!(active.len() == DISPLAY_CURSOR_IMAGE_WORDS);
         Self {
             requested_width: 0,
             requested_height: 0,
@@ -320,6 +433,29 @@ impl DisplayState {
             pop_error: ERR_NONE,
             response_error: ERR_NONE,
             protocol_error: ERR_NONE,
+            cursor_width: 0,
+            cursor_height: 0,
+            cursor_format: 0,
+            cursor_hotspot: 0,
+            cursor_index: 0,
+            cursor_position: 0,
+            cursor_enabled: false,
+            cursor_data_error: ERR_NONE,
+            cursor_image_error: ERR_NONE,
+            cursor_position_error: ERR_NONE,
+            cursor_enable_error: ERR_NONE,
+            staging,
+            active,
+            active_shape: CursorShapeInfo {
+                shape_seq: 0,
+                width: 0,
+                height: 0,
+                format: 0,
+                hot_x: 0,
+                hot_y: 0,
+            },
+            cursor_seq: 0,
+            shape_seq: 0,
         }
     }
 
@@ -332,13 +468,29 @@ impl DisplayState {
     fn reset(&mut self) {
         let was_active = self.mode.is_active();
         self.cancel_open_request();
+        // Cursor (section 15.9): the shown state changes if a shape existed,
+        // the cursor was enabled or the position was not (0, 0). At the
+        // counter limit the reset still hides the cursor but the counter stays.
+        let cursor_changed =
+            self.shape_seq != 0 || self.cursor_enabled || self.cursor_position != 0;
+        let cursor_seq = if cursor_changed {
+            self.cursor_seq.saturating_add(1)
+        } else {
+            self.cursor_seq
+        };
+        // Reuse the two 16 KiB buffers: zero them instead of reallocating.
+        let mut staging = std::mem::take(&mut self.staging);
+        let mut active = std::mem::take(&mut self.active);
+        staging.fill(0);
+        active.fill(0);
         *self = Self {
             generation: self.generation,
             mode_change_count: self.mode_change_count,
             frame_mode_epoch: self.frame_mode_epoch,
             next_event_seq: self.next_event_seq,
             mode_request: self.mode_request,
-            ..Self::new()
+            cursor_seq,
+            ..Self::with_buffers(staging, active)
         };
         if was_active {
             self.mode_change_count = self.mode_change_count.saturating_add(1);
@@ -419,6 +571,10 @@ impl DisplayState {
             reg::EVENT_ARG3 => self.latch.arg[3],
             reg::RESPONSE_SEQ_LO => self.response_seq_lo,
             reg::RESPONSE_SEQ_HI => self.response_seq_hi,
+            // The block exists only while `CAPS` bit 2 is set (section 15.2).
+            reg::CURSOR_BLOCK_START..reg::CURSOR_BLOCK_END if CAPS & CAPS_CURSOR != 0 => {
+                self.cursor_read(offset)
+            }
             reg::MODE_TABLE..reg::MODE_TABLE_END => Self::mode_table_word(offset),
             // MODE_COMMIT, EVENT_POP, REQUEST_RESPONSE (write-only) and every
             // reserved offset read as zero.
@@ -441,10 +597,201 @@ impl DisplayState {
             reg::RESPONSE_SEQ_LO => self.response_seq_lo = value,
             reg::RESPONSE_SEQ_HI => self.response_seq_hi = value,
             reg::REQUEST_RESPONSE => self.request_response(value),
+            reg::CURSOR_BLOCK_START..reg::CURSOR_BLOCK_END if CAPS & CAPS_CURSOR != 0 => {
+                self.cursor_write(offset, value);
+            }
             // Read-only and reserved offsets: the write is ignored.
             _ => {}
         }
         Ok(())
+    }
+
+    /// Cursor block read (section 15.4). Write-only registers and reserved
+    /// offsets read as zero.
+    fn cursor_read(&self, offset: u64) -> u32 {
+        match offset {
+            reg::CURSOR_MAX_WIDTH => DISPLAY_CURSOR_MAX_WIDTH,
+            reg::CURSOR_MAX_HEIGHT => DISPLAY_CURSOR_MAX_HEIGHT,
+            reg::CURSOR_FORMATS => CURSOR_FORMATS,
+            reg::CURSOR_STATUS => self.cursor_status(),
+            reg::CURSOR_WIDTH => self.cursor_width,
+            reg::CURSOR_HEIGHT => self.cursor_height,
+            reg::CURSOR_FORMAT => self.cursor_format,
+            reg::CURSOR_HOTSPOT => self.cursor_hotspot,
+            reg::CURSOR_IMAGE_INDEX => self.cursor_index,
+            reg::CURSOR_POSITION => self.cursor_position,
+            reg::CURSOR_ENABLE => u32::from(self.cursor_enabled),
+            _ => 0,
+        }
+    }
+
+    /// Cursor block write (section 15.4). Read-only registers and reserved
+    /// offsets ignore the write.
+    fn cursor_write(&mut self, offset: u64, value: u32) {
+        match offset {
+            reg::CURSOR_WIDTH => self.cursor_width = value,
+            reg::CURSOR_HEIGHT => self.cursor_height = value,
+            reg::CURSOR_FORMAT => self.cursor_format = value,
+            reg::CURSOR_HOTSPOT => self.cursor_hotspot = value,
+            reg::CURSOR_IMAGE_INDEX => self.cursor_index = value,
+            reg::CURSOR_IMAGE_DATA => self.cursor_image_data(value),
+            reg::CURSOR_IMAGE_COMMIT => self.cursor_image_commit(value),
+            reg::CURSOR_POSITION => self.cursor_set_position(value),
+            reg::CURSOR_ENABLE => self.cursor_set_enable(value),
+            _ => {}
+        }
+    }
+
+    fn cursor_status(&self) -> u32 {
+        u32::from(self.cursor_data_error)
+            | u32::from(self.cursor_image_error) << CURSOR_STATUS_IMAGE_SHIFT
+            | u32::from(self.cursor_position_error) << CURSOR_STATUS_POSITION_SHIFT
+            | u32::from(self.cursor_enable_error) << CURSOR_STATUS_ENABLE_SHIFT
+    }
+
+    /// `CURSOR_IMAGE_DATA <- v` (15.6.1): the index is compared as a 32-bit
+    /// value; only `staging` and the index change.
+    fn cursor_image_data(&mut self, value: u32) {
+        let index = self.cursor_index as usize;
+        if index >= DISPLAY_CURSOR_IMAGE_WORDS {
+            self.cursor_data_error = ERR_INDEX_OUT_OF_RANGE;
+            return;
+        }
+        self.staging[index] = value;
+        self.cursor_index += 1;
+        self.cursor_data_error = ERR_NONE;
+    }
+
+    /// `CURSOR_IMAGE_COMMIT <- v` (15.6.2): checks in order, a failure changes
+    /// `IMAGE_ERROR` only.
+    fn cursor_image_commit(&mut self, command: u32) {
+        match self.validate_cursor_commit(command) {
+            Err(code) => self.cursor_image_error = code,
+            Ok(mut shape) => {
+                let words = shape.width as usize * shape.height as usize;
+                self.active[..words].copy_from_slice(&self.staging[..words]);
+                // Words past `W x H` are not part of the shape: keep `active`
+                // a function of the published bytes only.
+                self.active[words..].fill(0);
+                self.cursor_seq += 1;
+                self.shape_seq = self.cursor_seq;
+                shape.shape_seq = self.shape_seq;
+                self.active_shape = shape;
+                self.cursor_image_error = ERR_NONE;
+            }
+        }
+    }
+
+    fn validate_cursor_commit(&self, command: u32) -> Result<CursorShapeInfo, u8> {
+        if command != 1 {
+            return Err(ERR_INVALID_COMMAND);
+        }
+        if self.cursor_width == 0 || self.cursor_height == 0 {
+            return Err(ERR_SIZE_NOT_SET);
+        }
+        if self.cursor_width > DISPLAY_CURSOR_MAX_WIDTH
+            || self.cursor_height > DISPLAY_CURSOR_MAX_HEIGHT
+        {
+            return Err(ERR_UNSUPPORTED_SIZE);
+        }
+        if self.cursor_format >= 32 || CURSOR_FORMATS & (1 << self.cursor_format) == 0 {
+            return Err(ERR_UNSUPPORTED_FORMAT);
+        }
+        let hot_x = self.cursor_hotspot & 0xFFFF;
+        let hot_y = self.cursor_hotspot >> 16;
+        if hot_x >= self.cursor_width || hot_y >= self.cursor_height {
+            return Err(ERR_HOTSPOT_OUT_OF_IMAGE);
+        }
+        if self.cursor_seq == u64::MAX {
+            return Err(ERR_COUNTER_EXHAUSTED);
+        }
+        Ok(CursorShapeInfo {
+            shape_seq: 0,
+            width: self.cursor_width,
+            height: self.cursor_height,
+            format: self.cursor_format,
+            hot_x,
+            hot_y,
+        })
+    }
+
+    /// `CURSOR_POSITION <- v` (15.6.3). The pair is checked against the
+    /// active frame; a failure keeps the previous value.
+    fn cursor_set_position(&mut self, value: u32) {
+        if !self.mode.is_active() {
+            self.cursor_position_error = ERR_NO_ACTIVE_MODE;
+            return;
+        }
+        if (value & 0xFFFF) >= self.mode.width || (value >> 16) >= self.mode.height {
+            self.cursor_position_error = ERR_POSITION_OUT_OF_FRAME;
+            return;
+        }
+        let changed = value != self.cursor_position;
+        if changed && self.cursor_seq == u64::MAX {
+            self.cursor_position_error = ERR_COUNTER_EXHAUSTED;
+            return;
+        }
+        self.cursor_position = value;
+        if changed {
+            self.cursor_seq += 1;
+        }
+        self.cursor_position_error = ERR_NONE;
+    }
+
+    /// `CURSOR_ENABLE <- v` (15.6.4).
+    fn cursor_set_enable(&mut self, value: u32) {
+        if value > 1 {
+            self.cursor_enable_error = ERR_INVALID_COMMAND;
+            return;
+        }
+        if value == 1 && self.shape_seq == 0 {
+            self.cursor_enable_error = ERR_NO_CURSOR_IMAGE;
+            return;
+        }
+        let enabled = value == 1;
+        let changed = enabled != self.cursor_enabled;
+        if changed && self.cursor_seq == u64::MAX {
+            self.cursor_enable_error = ERR_COUNTER_EXHAUSTED;
+            return;
+        }
+        self.cursor_enabled = enabled;
+        if changed {
+            self.cursor_seq += 1;
+        }
+        self.cursor_enable_error = ERR_NONE;
+    }
+
+    fn cursor_state(&self) -> CursorState {
+        CursorState {
+            cursor_seq: self.cursor_seq,
+            enabled: self.cursor_enabled,
+            x: self.cursor_position & 0xFFFF,
+            y: self.cursor_position >> 16,
+            shape: (self.shape_seq != 0).then_some(self.active_shape),
+        }
+    }
+
+    /// Copies `active` as little-endian words (bytes B, G, R, A) into `output`.
+    fn read_cursor_image_into(
+        &self,
+        output: &mut [u8],
+    ) -> Result<CursorShapeInfo, CursorReadError> {
+        if self.shape_seq == 0 {
+            return Err(CursorReadError::NoShape);
+        }
+        let shape = self.active_shape;
+        let words = shape.width as usize * shape.height as usize;
+        let expected = words * 4;
+        if output.len() != expected {
+            return Err(CursorReadError::BufferLength {
+                expected,
+                actual: output.len(),
+            });
+        }
+        for (chunk, word) in output.chunks_exact_mut(4).zip(&self.active[..words]) {
+            chunk.copy_from_slice(&word.to_le_bytes());
+        }
+        Ok(shape)
     }
 
     /// Checks in the exact order of DISPLAY_DEVICE.md section 5. A failure
@@ -797,6 +1144,24 @@ impl DisplayHandle {
         lock(&self.state).mode_request
     }
 
+    /// The cursor as the host should show it: sequence number, visibility,
+    /// hotspot position and the published shape parameters (15.10). Read-only.
+    pub fn cursor_state(&self) -> CursorState {
+        lock(&self.state).cursor_state()
+    }
+
+    /// Copies exactly `width * height * 4` bytes of the published cursor image
+    /// (`BGRA8888_PREMUL`, rows packed) into `output` and returns the
+    /// parameters of the copied shape. The copy and the parameters are taken
+    /// under one lock, so `shape_seq` always matches the bytes. Read-only; no
+    /// bus is needed because the image lives in the device (15.10).
+    pub fn read_cursor_image_into(
+        &self,
+        output: &mut [u8],
+    ) -> Result<CursorShapeInfo, CursorReadError> {
+        lock(&self.state).read_cursor_image_into(output)
+    }
+
     /// Host reset (DISPLAY_DEVICE.md, sections 10 and 14.12). Framebuffer
     /// bytes are not cleared and `generation` is preserved.
     pub fn reset(&self) {
@@ -956,7 +1321,7 @@ mod tests {
         for (offset, expected) in [
             (reg::ID, 0x4246_444F),
             (reg::VERSION, 2),
-            (reg::CAPS, 3),
+            (reg::CAPS, 7),
             (reg::MAX_WIDTH, 4096),
             (reg::MAX_HEIGHT, 2304),
             (reg::FORMATS, 2),
@@ -1613,9 +1978,8 @@ mod tests {
             (reg::REQUEST_RESPONSE, 0),
             (0x18C, 0),
             (0x1FC, 0),
-            // Blocks reserved for the cursor and the second screen stay reserved.
-            (0x200, 0),
-            (0x2FC, 0),
+            // The cursor block is covered by the cursor tests; the second
+            // screen block stays reserved.
             (0x300, 0),
             (0x3FC, 0),
             (0x800, 0),
@@ -1649,7 +2013,7 @@ mod tests {
         let version_1: [(u64, u32); 24] = [
             (reg::ID, 0x4246_444F),
             (reg::VERSION, 2),
-            (reg::CAPS, 3),
+            (reg::CAPS, 7),
             (reg::MAX_WIDTH, 4096),
             (reg::MAX_HEIGHT, 2304),
             (reg::FORMATS, 2),
@@ -1716,6 +2080,17 @@ mod tests {
             reg::RESPONSE_SEQ_LO,
             reg::RESPONSE_SEQ_HI,
             reg::REQUEST_RESPONSE,
+            // Cursor block: the RW and command registers (writes change the
+            // cursor by design; the cursor tests cover them).
+            reg::CURSOR_WIDTH,
+            reg::CURSOR_HEIGHT,
+            reg::CURSOR_FORMAT,
+            reg::CURSOR_HOTSPOT,
+            reg::CURSOR_IMAGE_INDEX,
+            reg::CURSOR_IMAGE_DATA,
+            reg::CURSOR_IMAGE_COMMIT,
+            reg::CURSOR_POSITION,
+            reg::CURSOR_ENABLE,
         ];
         let snapshot = |bus: &mut MachineBus| -> Vec<u32> {
             (0..0x1000u64)
@@ -2640,5 +3015,835 @@ mod tests {
             .err(),
             Some(BusBuildError::Display(DisplayBindingError::MultipleDevices))
         );
+    }
+
+    // ---- Cursor block (DISPLAY_DEVICE.md, section 15) ----
+
+    fn cursor_status(bus: &mut MachineBus) -> u32 {
+        read_reg(bus, reg::CURSOR_STATUS)
+    }
+
+    fn data_error(bus: &mut MachineBus) -> u8 {
+        cursor_status(bus) as u8
+    }
+
+    fn image_error(bus: &mut MachineBus) -> u8 {
+        (cursor_status(bus) >> 8) as u8
+    }
+
+    fn position_error(bus: &mut MachineBus) -> u8 {
+        (cursor_status(bus) >> 16) as u8
+    }
+
+    fn enable_error(bus: &mut MachineBus) -> u8 {
+        (cursor_status(bus) >> 24) as u8
+    }
+
+    fn set_shape(bus: &mut MachineBus, width: u32, height: u32, format: u32, hot: (u32, u32)) {
+        write_reg(bus, reg::CURSOR_WIDTH, width);
+        write_reg(bus, reg::CURSOR_HEIGHT, height);
+        write_reg(bus, reg::CURSOR_FORMAT, format);
+        write_reg(bus, reg::CURSOR_HOTSPOT, hot.1 << 16 | hot.0);
+    }
+
+    fn image_commit(bus: &mut MachineBus) {
+        write_reg(bus, reg::CURSOR_IMAGE_COMMIT, 1);
+    }
+
+    fn load_words(bus: &mut MachineBus, words: &[u32]) {
+        write_reg(bus, reg::CURSOR_IMAGE_INDEX, 0);
+        for word in words {
+            write_reg(bus, reg::CURSOR_IMAGE_DATA, *word);
+        }
+    }
+
+    /// Publishes a `w x h` shape whose word `n` is `seed + n`.
+    fn publish(bus: &mut MachineBus, width: u32, height: u32, seed: u32) {
+        set_shape(bus, width, height, 2, (0, 0));
+        let words: Vec<u32> = (0..width * height).map(|n| seed.wrapping_add(n)).collect();
+        load_words(bus, &words);
+        image_commit(bus);
+        assert_eq!(image_error(bus), ERR_NONE);
+    }
+
+    fn position(x: u32, y: u32) -> u32 {
+        y << 16 | x
+    }
+
+    fn cursor_image(handle: &DisplayHandle) -> (CursorShapeInfo, Vec<u8>) {
+        let state = handle.cursor_state();
+        let shape = state.shape.expect("shape published");
+        let mut bytes = vec![0u8; (shape.width * shape.height * 4) as usize];
+        let info = handle.read_cursor_image_into(&mut bytes).unwrap();
+        assert_eq!(info, shape);
+        (info, bytes)
+    }
+
+    #[test]
+    fn cursor_register_values_after_reset() {
+        let (mut bus, handle) = setup();
+        for (offset, expected) in [
+            (reg::CURSOR_MAX_WIDTH, 64),
+            (reg::CURSOR_MAX_HEIGHT, 64),
+            (reg::CURSOR_FORMATS, 4),
+            (reg::CURSOR_STATUS, 0),
+            (reg::CURSOR_WIDTH, 0),
+            (reg::CURSOR_HEIGHT, 0),
+            (reg::CURSOR_FORMAT, 0),
+            (reg::CURSOR_HOTSPOT, 0),
+            (reg::CURSOR_IMAGE_INDEX, 0),
+            (reg::CURSOR_IMAGE_DATA, 0),
+            (reg::CURSOR_IMAGE_COMMIT, 0),
+            (0x22C, 0),
+            (reg::CURSOR_POSITION, 0),
+            (reg::CURSOR_ENABLE, 0),
+            (0x238, 0),
+            (0x2FC, 0),
+            (0x300, 0),
+        ] {
+            assert_eq!(read_reg(&mut bus, offset), expected, "offset {offset:#x}");
+        }
+        assert_eq!(read_reg(&mut bus, reg::VERSION), 2);
+        assert_eq!(read_reg(&mut bus, reg::CAPS), 0x7);
+        assert_eq!(
+            handle.cursor_state(),
+            CursorState {
+                cursor_seq: 0,
+                enabled: false,
+                x: 0,
+                y: 0,
+                shape: None
+            }
+        );
+        let mut out = [0u8; 4];
+        assert_eq!(
+            handle.read_cursor_image_into(&mut out),
+            Err(CursorReadError::NoShape)
+        );
+        let state = lock(&handle.state);
+        assert!(state.staging.iter().all(|w| *w == 0));
+        assert!(state.active.iter().all(|w| *w == 0));
+        assert_eq!((state.cursor_seq, state.shape_seq), (0, 0));
+    }
+
+    #[test]
+    fn cursor_read_only_and_reserved_writes_change_nothing() {
+        let (mut bus, handle) = setup();
+        commit_mode(&mut bus, 64, 48);
+        write_reg(&mut bus, reg::CURSOR_IMAGE_COMMIT, 5);
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(64, 0));
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 1);
+        write_reg(&mut bus, reg::EVENT_POP, 5);
+        let cursor_status_before = cursor_status(&mut bus);
+        assert_ne!(data_error(&mut bus) | image_error(&mut bus), 0);
+        assert_ne!(position_error(&mut bus), 0);
+        assert_ne!(enable_error(&mut bus), 0);
+        let status = read_reg(&mut bus, reg::STATUS);
+        let event_status = read_reg(&mut bus, reg::EVENT_STATUS);
+        let state_before = lock(&handle.state).clone();
+        for offset in [
+            reg::CURSOR_MAX_WIDTH,
+            reg::CURSOR_MAX_HEIGHT,
+            reg::CURSOR_FORMATS,
+            reg::CURSOR_STATUS,
+            0x22C,
+            0x238,
+            0x23C,
+            0x240,
+            0x2F8,
+            0x2FC,
+        ] {
+            let before = read_reg(&mut bus, offset);
+            write_reg(&mut bus, offset, 0xFFFF_FFFF);
+            assert_eq!(read_reg(&mut bus, offset), before, "offset {offset:#x}");
+            assert_eq!(cursor_status(&mut bus), cursor_status_before);
+            assert_eq!(read_reg(&mut bus, reg::STATUS), status);
+            assert_eq!(read_reg(&mut bus, reg::EVENT_STATUS), event_status);
+        }
+        assert_eq!(*lock(&handle.state), state_before);
+    }
+
+    #[test]
+    fn cursor_rw_registers_store_all_32_bits_and_command_registers_read_zero() {
+        let (mut bus, handle) = setup();
+        for offset in [
+            reg::CURSOR_WIDTH,
+            reg::CURSOR_HEIGHT,
+            reg::CURSOR_FORMAT,
+            reg::CURSOR_HOTSPOT,
+            reg::CURSOR_IMAGE_INDEX,
+        ] {
+            for value in [0xFFFF_FFFFu32, 0x8000_0001, 0x1234_5678, 0] {
+                write_reg(&mut bus, offset, value);
+                assert_eq!(read_reg(&mut bus, offset), value, "offset {offset:#x}");
+            }
+        }
+        // Writes to the staged-shape registers and the index alone never touch
+        // the cursor counters or the status.
+        assert_eq!(handle.cursor_state().cursor_seq, 0);
+        assert_eq!(cursor_status(&mut bus), 0);
+        // WO registers read zero after a write.
+        write_reg(&mut bus, reg::CURSOR_IMAGE_DATA, 0xDEAD_BEEF);
+        write_reg(&mut bus, reg::CURSOR_IMAGE_COMMIT, 1);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_IMAGE_DATA), 0);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_IMAGE_COMMIT), 0);
+    }
+
+    #[test]
+    fn image_index_auto_increments_and_is_range_checked() {
+        let (mut bus, handle) = setup();
+        write_reg(&mut bus, reg::CURSOR_IMAGE_INDEX, 0);
+        for n in 0..3u32 {
+            write_reg(&mut bus, reg::CURSOR_IMAGE_DATA, 0x100 + n);
+            assert_eq!(read_reg(&mut bus, reg::CURSOR_IMAGE_INDEX), n + 1);
+            assert_eq!(data_error(&mut bus), ERR_NONE);
+        }
+        assert_eq!(&lock(&handle.state).staging[..4], &[0x100, 0x101, 0x102, 0]);
+        // Writes anywhere in staging never change cursor_seq or active.
+        assert_eq!(handle.cursor_state().cursor_seq, 0);
+        assert!(lock(&handle.state).active.iter().all(|w| *w == 0));
+
+        // The last word succeeds and leaves the index at 4096.
+        write_reg(&mut bus, reg::CURSOR_IMAGE_INDEX, 4095);
+        write_reg(&mut bus, reg::CURSOR_IMAGE_DATA, 0xAAAA_0001);
+        assert_eq!(data_error(&mut bus), ERR_NONE);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_IMAGE_INDEX), 4096);
+        assert_eq!(lock(&handle.state).staging[4095], 0xAAAA_0001);
+        // The next write fails without touching staging or the index.
+        let staging_before = lock(&handle.state).staging.clone();
+        write_reg(&mut bus, reg::CURSOR_IMAGE_DATA, 0xBBBB_0002);
+        assert_eq!(data_error(&mut bus), ERR_INDEX_OUT_OF_RANGE);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_IMAGE_INDEX), 4096);
+        assert_eq!(lock(&handle.state).staging, staging_before);
+        // The same for the largest index.
+        write_reg(&mut bus, reg::CURSOR_IMAGE_INDEX, 0xFFFF_FFFF);
+        write_reg(&mut bus, reg::CURSOR_IMAGE_DATA, 0xCCCC_0003);
+        assert_eq!(data_error(&mut bus), ERR_INDEX_OUT_OF_RANGE);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_IMAGE_INDEX), 0xFFFF_FFFF);
+        assert_eq!(lock(&handle.state).staging, staging_before);
+        // The error is only DATA_ERROR and the next good write clears it.
+        assert_eq!(cursor_status(&mut bus), u32::from(ERR_INDEX_OUT_OF_RANGE));
+        write_reg(&mut bus, reg::CURSOR_IMAGE_INDEX, 0);
+        write_reg(&mut bus, reg::CURSOR_IMAGE_DATA, 7);
+        assert_eq!(cursor_status(&mut bus), 0);
+        assert_eq!(read_reg(&mut bus, reg::STATUS), 0);
+        assert_eq!(read_reg(&mut bus, reg::EVENT_STATUS), 0);
+    }
+
+    #[test]
+    fn image_commit_checks_run_in_order_and_a_failure_changes_only_image_error() {
+        let (mut bus, handle) = setup();
+        publish(&mut bus, 4, 4, 0x10);
+        let before = lock(&handle.state).clone();
+        let seq_before = handle.cursor_state();
+
+        let cases: [(&str, u32, u32, u32, u32, u32, u8); 14] = [
+            // (name, command, width, height, format, hotspot, expected)
+            (
+                "command first",
+                2,
+                0,
+                0,
+                0,
+                0x0001_0001,
+                ERR_INVALID_COMMAND,
+            ),
+            ("command 0", 0, 4, 4, 2, 0, ERR_INVALID_COMMAND),
+            (
+                "size unset (width)",
+                1,
+                0,
+                4,
+                9,
+                0xFFFF_FFFF,
+                ERR_SIZE_NOT_SET,
+            ),
+            (
+                "size unset (height)",
+                1,
+                4,
+                0,
+                9,
+                0xFFFF_FFFF,
+                ERR_SIZE_NOT_SET,
+            ),
+            (
+                "size before format",
+                1,
+                65,
+                4,
+                9,
+                0xFFFF_FFFF,
+                ERR_UNSUPPORTED_SIZE,
+            ),
+            ("tall", 1, 4, 65, 2, 0, ERR_UNSUPPORTED_SIZE),
+            (
+                "huge, no overflow",
+                1,
+                u32::MAX,
+                u32::MAX,
+                2,
+                0,
+                ERR_UNSUPPORTED_SIZE,
+            ),
+            ("format 0", 1, 4, 4, 0, 0xFFFF_FFFF, ERR_UNSUPPORTED_FORMAT),
+            ("format 1 (no alpha)", 1, 4, 4, 1, 0, ERR_UNSUPPORTED_FORMAT),
+            ("format 3", 1, 4, 4, 3, 0, ERR_UNSUPPORTED_FORMAT),
+            ("format 32", 1, 4, 4, 32, 0, ERR_UNSUPPORTED_FORMAT),
+            ("format max", 1, 4, 4, u32::MAX, 0, ERR_UNSUPPORTED_FORMAT),
+            ("hotspot x", 1, 4, 4, 2, 4, ERR_HOTSPOT_OUT_OF_IMAGE),
+            ("hotspot y", 1, 4, 4, 2, 4 << 16, ERR_HOTSPOT_OUT_OF_IMAGE),
+        ];
+        for (name, command, width, height, format, hotspot, expected) in cases {
+            write_reg(&mut bus, reg::CURSOR_WIDTH, width);
+            write_reg(&mut bus, reg::CURSOR_HEIGHT, height);
+            write_reg(&mut bus, reg::CURSOR_FORMAT, format);
+            write_reg(&mut bus, reg::CURSOR_HOTSPOT, hotspot);
+            write_reg(&mut bus, reg::CURSOR_IMAGE_COMMIT, command);
+            assert_eq!(image_error(&mut bus), expected, "{name}");
+            assert_eq!(handle.cursor_state(), seq_before, "{name}");
+            let state = lock(&handle.state);
+            assert_eq!(state.active, before.active, "{name}");
+            assert_eq!(state.staging, before.staging, "{name}");
+            assert_eq!(state.shape_seq, before.shape_seq, "{name}");
+            drop(state);
+            // Only IMAGE_ERROR moved; the other three fields stay clear.
+            assert_eq!(cursor_status(&mut bus), u32::from(expected) << 8, "{name}");
+            assert_eq!(read_reg(&mut bus, reg::STATUS), 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn image_commit_boundaries() {
+        let (mut bus, handle) = setup();
+        for (w, h, hot, ok) in [
+            (1, 1, (0, 0), true),
+            (64, 64, (63, 63), true),
+            (64, 64, (64, 0), false),
+            (7, 3, (6, 2), true),
+            (7, 3, (7, 0), false),
+            (7, 3, (0, 3), false),
+            (65, 1, (0, 0), false),
+            (1, 65, (0, 0), false),
+        ] {
+            set_shape(&mut bus, w, h, 2, hot);
+            image_commit(&mut bus);
+            let code = image_error(&mut bus);
+            if ok {
+                assert_eq!(code, ERR_NONE, "{w}x{h} {hot:?}");
+                let shape = handle.cursor_state().shape.unwrap();
+                assert_eq!(
+                    (
+                        shape.width,
+                        shape.height,
+                        shape.format,
+                        shape.hot_x,
+                        shape.hot_y
+                    ),
+                    (w, h, 2, hot.0, hot.1)
+                );
+            } else {
+                assert_ne!(code, ERR_NONE, "{w}x{h} {hot:?}");
+            }
+        }
+        // (W, 0) is rejected with the hotspot code, not with a size code.
+        set_shape(&mut bus, 64, 64, 2, (64, 0));
+        image_commit(&mut bus);
+        assert_eq!(image_error(&mut bus), ERR_HOTSPOT_OUT_OF_IMAGE);
+        set_shape(&mut bus, 65, 1, 2, (0, 0));
+        image_commit(&mut bus);
+        assert_eq!(image_error(&mut bus), ERR_UNSUPPORTED_SIZE);
+    }
+
+    #[test]
+    fn image_commit_is_atomic_and_staging_survives_it() {
+        let (mut bus, handle) = setup();
+        commit_mode(&mut bus, 64, 48);
+        publish(&mut bus, 3, 2, 0x1000);
+        let (first, bytes) = cursor_image(&handle);
+        assert_eq!(first.shape_seq, 1);
+        assert_eq!(handle.cursor_state().cursor_seq, 1);
+        assert_eq!(&bytes[..8], &[0x00, 0x10, 0, 0, 0x01, 0x10, 0, 0]);
+
+        // New pixels, shape registers and index do not reach `active` until
+        // the commit.
+        let mut next: Vec<u32> = (0..6).map(|n| 0x2000 + n).collect();
+        write_reg(&mut bus, reg::CURSOR_WIDTH, 2);
+        write_reg(&mut bus, reg::CURSOR_HEIGHT, 3);
+        write_reg(&mut bus, reg::CURSOR_HOTSPOT, position(1, 2));
+        load_words(&mut bus, &next);
+        assert_eq!(cursor_image(&handle), (first, bytes.clone()));
+        assert_eq!(handle.cursor_state().cursor_seq, 1);
+
+        image_commit(&mut bus);
+        let (second, second_bytes) = cursor_image(&handle);
+        assert_eq!(
+            (
+                second.shape_seq,
+                second.width,
+                second.height,
+                second.hot_x,
+                second.hot_y
+            ),
+            (2, 2, 3, 1, 2)
+        );
+        assert_eq!(handle.cursor_state().cursor_seq, 2);
+        assert_eq!(&second_bytes[..4], &[0x00, 0x20, 0, 0]);
+
+        // After a commit a staging write does not change what the host reads.
+        next[0] = 0xFFFF_FFFF;
+        load_words(&mut bus, &next);
+        assert_eq!(cursor_image(&handle), (second, second_bytes.clone()));
+
+        // A repeated commit is a new shape with a new `shape_seq`; changing
+        // only the hotspot needs no pixel upload (staging survived).
+        write_reg(&mut bus, reg::CURSOR_HOTSPOT, position(0, 0));
+        image_commit(&mut bus);
+        let (third, third_bytes) = cursor_image(&handle);
+        assert_eq!((third.shape_seq, third.hot_x, third.hot_y), (3, 0, 0));
+        assert_eq!(&third_bytes[..4], &[0xFF, 0xFF, 0xFF, 0xFF]);
+        image_commit(&mut bus);
+        assert_eq!(handle.cursor_state().shape.unwrap().shape_seq, 4);
+        assert_eq!(handle.cursor_state().cursor_seq, 4);
+
+        // Commit changes neither enable nor position, and needs no mode.
+        assert_eq!(handle.cursor_state().x, 0);
+        assert!(!handle.cursor_state().enabled);
+        assert_eq!(lock(&handle.state).generation, 0);
+        let (mut bus2, handle2) = setup();
+        publish(&mut bus2, 1, 1, 5);
+        assert_eq!(handle2.cursor_state().shape.unwrap().shape_seq, 1);
+    }
+
+    #[test]
+    fn cursor_image_words_follow_the_shape_row_major_without_padding() {
+        let (mut bus, handle) = setup();
+        set_shape(&mut bus, 3, 2, 2, (1, 1));
+        // Pixel (i, j) is word j * W + i; the word is 0xAARRGGBB.
+        load_words(
+            &mut bus,
+            &[
+                0x80_10_20_30,
+                0xFF_00_00_00,
+                0x00_00_00_00,
+                0x11_22_33_44,
+                0x55_66_77_88,
+                0x01_02_03_04,
+            ],
+        );
+        image_commit(&mut bus);
+        let (info, bytes) = cursor_image(&handle);
+        assert_eq!((info.width, info.height), (3, 2));
+        assert_eq!(
+            bytes,
+            [
+                0x30, 0x20, 0x10, 0x80, // B, G, R, A of word 0
+                0x00, 0x00, 0x00, 0xFF, //
+                0, 0, 0, 0, //
+                0x44, 0x33, 0x22, 0x11, //
+                0x88, 0x77, 0x66, 0x55, //
+                0x04, 0x03, 0x02, 0x01,
+            ]
+        );
+        // Wrong buffer lengths are refused and nothing is copied.
+        for len in [0usize, 23, 25, 16384] {
+            let mut out = vec![0xEEu8; len];
+            assert_eq!(
+                handle.read_cursor_image_into(&mut out),
+                Err(CursorReadError::BufferLength {
+                    expected: 24,
+                    actual: len
+                })
+            );
+            assert!(out.iter().all(|b| *b == 0xEE));
+        }
+    }
+
+    #[test]
+    fn cursor_position_is_checked_against_the_active_frame() {
+        let (mut bus, handle) = setup();
+        // No mode: NO_ACTIVE_MODE, register and counter unchanged.
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(0, 0));
+        assert_eq!(position_error(&mut bus), ERR_NO_ACTIVE_MODE);
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(1, 1));
+        assert_eq!(position_error(&mut bus), ERR_NO_ACTIVE_MODE);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_POSITION), 0);
+        assert_eq!(handle.cursor_state().cursor_seq, 0);
+
+        commit_mode(&mut bus, 64, 48);
+        // The edge pixel is inside, one past it is outside.
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(63, 47));
+        assert_eq!(position_error(&mut bus), ERR_NONE);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_POSITION), position(63, 47));
+        assert_eq!(handle.cursor_state().cursor_seq, 1);
+        for bad in [
+            position(64, 0),
+            position(0, 48),
+            position(64, 48),
+            position(0xFFFF, 0),
+            position(0, 0xFFFF),
+            0xFFFF_FFFF,
+        ] {
+            write_reg(&mut bus, reg::CURSOR_POSITION, bad);
+            assert_eq!(position_error(&mut bus), ERR_POSITION_OUT_OF_FRAME);
+            assert_eq!(read_reg(&mut bus, reg::CURSOR_POSITION), position(63, 47));
+            assert_eq!(handle.cursor_state().cursor_seq, 1);
+            // Only POSITION_ERROR is set.
+            assert_eq!(
+                cursor_status(&mut bus),
+                u32::from(ERR_POSITION_OUT_OF_FRAME) << 16
+            );
+        }
+        // The same value succeeds, clears the error and keeps the counter.
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(63, 47));
+        assert_eq!(cursor_status(&mut bus), 0);
+        assert_eq!(handle.cursor_state().cursor_seq, 1);
+        // X and Y travel in one register: X low, Y high.
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(5, 9));
+        let state = handle.cursor_state();
+        assert_eq!((state.x, state.y, state.cursor_seq), (5, 9, 2));
+        assert_eq!(read_reg(&mut bus, reg::STATUS) >> 8 & 0xFF, 0);
+    }
+
+    #[test]
+    fn cursor_enable_follows_the_contract() {
+        let (mut bus, handle) = setup();
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 1);
+        assert_eq!(enable_error(&mut bus), ERR_NO_CURSOR_IMAGE);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_ENABLE), 0);
+        for bad in [2u32, 3, 0x8000_0000, 0xFFFF_FFFF] {
+            write_reg(&mut bus, reg::CURSOR_ENABLE, bad);
+            assert_eq!(enable_error(&mut bus), ERR_INVALID_COMMAND, "{bad:#x}");
+            assert_eq!(read_reg(&mut bus, reg::CURSOR_ENABLE), 0);
+        }
+        // Hiding a hidden cursor is allowed and changes nothing.
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 0);
+        assert_eq!(enable_error(&mut bus), ERR_NONE);
+        assert_eq!(handle.cursor_state().cursor_seq, 0);
+
+        publish(&mut bus, 2, 2, 1);
+        let mut seqs = vec![handle.cursor_state().cursor_seq];
+        for value in [1u32, 1, 0, 0, 1] {
+            write_reg(&mut bus, reg::CURSOR_ENABLE, value);
+            assert_eq!(enable_error(&mut bus), ERR_NONE);
+            assert_eq!(read_reg(&mut bus, reg::CURSOR_ENABLE), value);
+            seqs.push(handle.cursor_state().cursor_seq);
+        }
+        // Grows only on 0 -> 1 and 1 -> 0.
+        assert_eq!(seqs, [1, 2, 2, 3, 3, 4]);
+        // Hiding keeps shape and position; showing returns the same cursor.
+        commit_mode(&mut bus, 16, 16);
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(3, 4));
+        let shown = handle.cursor_state();
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 0);
+        let hidden = handle.cursor_state();
+        assert_eq!((hidden.shape, hidden.x, hidden.y), (shown.shape, 3, 4));
+        assert!(!hidden.enabled);
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 1);
+        let again = handle.cursor_state();
+        assert!(again.enabled);
+        assert_eq!((again.shape, again.x, again.y), (shown.shape, 3, 4));
+    }
+
+    #[test]
+    fn cursor_never_touches_the_frame_and_the_frame_never_touches_the_cursor() {
+        let (mut bus, handle) = setup();
+        commit_mode(&mut bus, 64, 48);
+        for n in 0..(64 * 48u64) {
+            bus.write_physical(
+                GuestPhysicalAddress::new(DISPLAY_FRAMEBUFFER_BASE + n * 4),
+                AccessWidth::Dword,
+                0xFF00_0000 | n,
+                |_| panic!("pixel stores must not reach the callback"),
+            )
+            .unwrap();
+        }
+        write_reg(&mut bus, reg::FRAME_GENERATION, 0);
+        let mut frame_before = vec![0u8; 64 * 48 * 4];
+        let info_before = handle.read_frame_into(&bus, &mut frame_before).unwrap();
+        let status = read_reg(&mut bus, reg::STATUS);
+        let event_status = read_reg(&mut bus, reg::EVENT_STATUS);
+        let (generation, changes) = (handle.frame_generation(), handle.mode_change_count());
+        let seq_before = handle.cursor_state().cursor_seq;
+
+        let words: Vec<u32> = (0..4096u32).collect();
+        set_shape(&mut bus, 64, 64, 2, (2, 2));
+        load_words(&mut bus, &words);
+        image_commit(&mut bus);
+        for n in 0..1000u32 {
+            write_reg(&mut bus, reg::CURSOR_POSITION, position(n % 64, n % 48));
+        }
+        for value in [1, 0, 1, 0] {
+            write_reg(&mut bus, reg::CURSOR_ENABLE, value);
+        }
+
+        assert_eq!(handle.frame_generation(), generation);
+        assert_eq!(handle.mode_change_count(), changes);
+        assert!(handle.has_current_frame());
+        assert_eq!(read_reg(&mut bus, reg::STATUS), status);
+        assert_eq!(read_reg(&mut bus, reg::EVENT_STATUS), event_status);
+        let mut frame_after = vec![0u8; 64 * 48 * 4];
+        let info_after = handle.read_frame_into(&bus, &mut frame_after).unwrap();
+        assert_eq!(info_after, info_before);
+        assert_eq!(frame_after, frame_before);
+        assert!(handle.cursor_state().cursor_seq > seq_before);
+
+        // The reverse: MODE_COMMIT and the doorbell leave the cursor alone,
+        // even when the old position is outside the new frame.
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(40, 30));
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 1);
+        let cursor = handle.cursor_state();
+        commit_mode(&mut bus, 16, 16);
+        write_reg(&mut bus, reg::FRAME_GENERATION, 0);
+        write_reg(&mut bus, reg::DRIVER_PROTOCOL, 1);
+        write_reg(&mut bus, reg::DRIVER_PROTOCOL, 0);
+        assert_eq!(handle.cursor_state(), cursor);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_POSITION), position(40, 30));
+        // Writes elsewhere in versions 1 and 2 do not change the cursor.
+        write_reg(&mut bus, reg::WIDTH, 5);
+        write_reg(&mut bus, reg::EVENT_POP, 1);
+        write_reg(&mut bus, reg::REQUEST_RESPONSE, 1);
+        assert_eq!(handle.cursor_state(), cursor);
+    }
+
+    #[test]
+    fn host_cursor_api_only_reads() {
+        let (mut bus, handle) = setup();
+        commit_mode(&mut bus, 16, 16);
+        publish(&mut bus, 4, 4, 9);
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(2, 2));
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 1);
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 7);
+        let before = lock(&handle.state).clone();
+        let _ = handle.cursor_state();
+        let _ = cursor_image(&handle);
+        let mut small = [0u8; 3];
+        let _ = handle.read_cursor_image_into(&mut small);
+        assert_eq!(*lock(&handle.state), before);
+    }
+
+    #[test]
+    fn reset_removes_the_cursor_and_bumps_the_counter_only_when_something_was_shown() {
+        // A clean device: nothing shown, nothing changes.
+        let (mut bus, handle) = setup();
+        handle.reset();
+        assert_eq!(handle.cursor_state().cursor_seq, 0);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_STATUS), 0);
+
+        // A shown cursor is hidden: the counter grows by exactly one.
+        commit_mode(&mut bus, 64, 48);
+        publish(&mut bus, 4, 4, 0x77);
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(10, 10));
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 1);
+        write_reg(&mut bus, reg::CURSOR_IMAGE_INDEX, 99);
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 9);
+        let seq = handle.cursor_state().cursor_seq;
+        handle.reset();
+        let after = handle.cursor_state();
+        assert_eq!(
+            after,
+            CursorState {
+                cursor_seq: seq + 1,
+                enabled: false,
+                x: 0,
+                y: 0,
+                shape: None
+            }
+        );
+        for offset in [
+            reg::CURSOR_STATUS,
+            reg::CURSOR_WIDTH,
+            reg::CURSOR_HEIGHT,
+            reg::CURSOR_FORMAT,
+            reg::CURSOR_HOTSPOT,
+            reg::CURSOR_IMAGE_INDEX,
+            reg::CURSOR_POSITION,
+            reg::CURSOR_ENABLE,
+        ] {
+            assert_eq!(read_reg(&mut bus, offset), 0, "offset {offset:#x}");
+        }
+        {
+            let state = lock(&handle.state);
+            assert!(state.staging.iter().all(|w| *w == 0));
+            assert!(state.active.iter().all(|w| *w == 0));
+            assert_eq!(state.shape_seq, 0);
+        }
+        let mut out = [0u8; 64];
+        assert_eq!(
+            handle.read_cursor_image_into(&mut out),
+            Err(CursorReadError::NoShape)
+        );
+        // A second reset shows nothing new.
+        handle.reset();
+        assert_eq!(handle.cursor_state().cursor_seq, seq + 1);
+
+        // A shape alone, or a non-zero position alone, counts as shown state.
+        commit_mode(&mut bus, 64, 48);
+        publish(&mut bus, 1, 1, 1);
+        let seq = handle.cursor_state().cursor_seq;
+        handle.reset();
+        assert_eq!(handle.cursor_state().cursor_seq, seq + 1);
+        commit_mode(&mut bus, 64, 48);
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(1, 0));
+        let seq = handle.cursor_state().cursor_seq;
+        handle.reset();
+        assert_eq!(handle.cursor_state().cursor_seq, seq + 1);
+
+        // Numbers are not reused: the shape after a reset is newer than any
+        // shape before it, and an empty staging buffer publishes zeros.
+        commit_mode(&mut bus, 64, 48);
+        let before = handle.cursor_state().cursor_seq;
+        set_shape(&mut bus, 2, 2, 2, (0, 0));
+        image_commit(&mut bus);
+        let (info, bytes) = cursor_image(&handle);
+        assert!(info.shape_seq > before);
+        assert!(bytes.iter().all(|b| *b == 0));
+        // Four commits and three resets of an active mode: the frame counters
+        // follow their own rules and the cursor never moved them.
+        assert_eq!(handle.mode_change_count(), 7);
+        assert_eq!(handle.frame_generation(), 0);
+    }
+
+    #[test]
+    fn cursor_counter_saturation_rejects_the_three_commands_and_reset_keeps_the_counter() {
+        let (mut bus, handle) = setup();
+        commit_mode(&mut bus, 64, 48);
+        publish(&mut bus, 2, 2, 3);
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(4, 4));
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 1);
+        lock(&handle.state).cursor_seq = u64::MAX;
+        let before = lock(&handle.state).clone();
+
+        image_commit(&mut bus);
+        assert_eq!(image_error(&mut bus), ERR_COUNTER_EXHAUSTED);
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(5, 5));
+        assert_eq!(position_error(&mut bus), ERR_COUNTER_EXHAUSTED);
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 0);
+        assert_eq!(enable_error(&mut bus), ERR_COUNTER_EXHAUSTED);
+        let mut expected = before.clone();
+        expected.cursor_image_error = ERR_COUNTER_EXHAUSTED;
+        expected.cursor_position_error = ERR_COUNTER_EXHAUSTED;
+        expected.cursor_enable_error = ERR_COUNTER_EXHAUSTED;
+        assert_eq!(*lock(&handle.state), expected);
+        // Commands that change nothing still succeed.
+        write_reg(&mut bus, reg::CURSOR_POSITION, position(4, 4));
+        write_reg(&mut bus, reg::CURSOR_ENABLE, 1);
+        assert_eq!(position_error(&mut bus), ERR_NONE);
+        assert_eq!(enable_error(&mut bus), ERR_NONE);
+        // The assumption of 15.9: reset hides the cursor, the counter stays.
+        handle.reset();
+        let state = handle.cursor_state();
+        assert_eq!(state.cursor_seq, u64::MAX);
+        assert!(!state.enabled && state.shape.is_none());
+        assert_eq!((state.x, state.y), (0, 0));
+    }
+
+    #[test]
+    fn cursor_registers_fail_with_backend_errors_before_any_state_change() {
+        let (mut bus, handle) = setup();
+        commit_mode(&mut bus, 64, 48);
+        publish(&mut bus, 2, 2, 3);
+        write_reg(&mut bus, reg::CURSOR_IMAGE_INDEX, 5);
+        let before = lock(&handle.state).clone();
+        let (mut device, _h) = DisplayDevice::new_with_handle();
+        for offset in [
+            reg::CURSOR_MAX_WIDTH,
+            reg::CURSOR_STATUS,
+            reg::CURSOR_WIDTH,
+            reg::CURSOR_HOTSPOT,
+            reg::CURSOR_IMAGE_INDEX,
+            reg::CURSOR_IMAGE_DATA,
+            reg::CURSOR_IMAGE_COMMIT,
+            0x22C,
+            reg::CURSOR_POSITION,
+            reg::CURSOR_ENABLE,
+            0x2FC,
+        ] {
+            for width in [AccessWidth::Byte, AccessWidth::Word, AccessWidth::Qword] {
+                let access = DeviceAccess {
+                    space: IoSpace::Mmio,
+                    offset,
+                    width,
+                };
+                assert_eq!(device.read(access), Err(DeviceError::UnsupportedWidth));
+                assert_eq!(device.write(access, 1), Err(DeviceError::UnsupportedWidth));
+                assert!(matches!(
+                    bus.read_physical(reg_addr(offset), width),
+                    Err(BusAccessError::Device {
+                        source: DeviceError::UnsupportedWidth,
+                        ..
+                    })
+                ));
+                assert!(matches!(
+                    bus.write_physical(reg_addr(offset), width, 1, |_| {}),
+                    Err(BusAccessError::Device {
+                        source: DeviceError::UnsupportedWidth,
+                        ..
+                    })
+                ));
+            }
+            let misaligned = DeviceAccess {
+                space: IoSpace::Mmio,
+                offset: offset + 1,
+                width: AccessWidth::Dword,
+            };
+            assert_eq!(device.read(misaligned), Err(DeviceError::Misaligned));
+            assert_eq!(device.write(misaligned, 1), Err(DeviceError::Misaligned));
+            let pio = DeviceAccess {
+                space: IoSpace::Pio,
+                offset,
+                width: AccessWidth::Dword,
+            };
+            assert_eq!(device.read(pio), Err(DeviceError::UnsupportedSpace));
+            assert_eq!(device.write(pio, 1), Err(DeviceError::UnsupportedSpace));
+            assert!(matches!(
+                bus.write_physical(reg_addr(offset + 2), AccessWidth::Dword, 1, |_| {}),
+                Err(BusAccessError::Device {
+                    source: DeviceError::Misaligned,
+                    ..
+                })
+            ));
+        }
+        // Including the auto-increment of IMAGE_INDEX and the staging write.
+        assert_eq!(*lock(&handle.state), before);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_IMAGE_INDEX), 5);
+    }
+
+    #[test]
+    fn cursor_block_leaves_guest_memory_alone_and_loading_never_calls_back() {
+        // `write_reg` panics if a register write reaches the committed-write
+        // callback; a full 64 x 64 upload must therefore stay silent.
+        let (mut bus, handle) = setup();
+        let words: Vec<u32> = (0..4096u32).map(|n| n.wrapping_mul(0x0101_0101)).collect();
+        set_shape(&mut bus, 64, 64, 2, (63, 63));
+        load_words(&mut bus, &words);
+        image_commit(&mut bus);
+        assert_eq!(image_error(&mut bus), ERR_NONE);
+        assert_eq!(read_reg(&mut bus, reg::CURSOR_IMAGE_INDEX), 4096);
+        let (info, bytes) = cursor_image(&handle);
+        assert_eq!(bytes.len(), 16_384);
+        assert_eq!((info.width, info.height), (64, 64));
+        assert_eq!(
+            &bytes[16_380..],
+            &4095u32.wrapping_mul(0x0101_0101).to_le_bytes()
+        );
+    }
+
+    #[test]
+    fn cursor_upload_time_of_a_64_by_64_shape_through_the_bus() {
+        // Measurement for DISPLAY_DEVICE.md, 15.13 item 9 (4 102 register
+        // writes). Run with `--release -- --nocapture` for a representative
+        // figure; the test only checks the result, not the time.
+        let (mut bus, handle) = setup();
+        let started = std::time::Instant::now();
+        set_shape(&mut bus, 64, 64, 2, (0, 0));
+        write_reg(&mut bus, reg::CURSOR_IMAGE_INDEX, 0);
+        for n in 0..4096u32 {
+            write_reg(&mut bus, reg::CURSOR_IMAGE_DATA, n);
+        }
+        image_commit(&mut bus);
+        let elapsed = started.elapsed();
+        eprintln!("cursor 64x64 upload, 4102 writes: {elapsed:?}");
+        assert_eq!(handle.cursor_state().shape.unwrap().shape_seq, 1);
     }
 }
