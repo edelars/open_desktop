@@ -43,3 +43,19 @@ isolation, and app-bundle regressions passed on macOS ARM64. The generated-fault
 process smoke timed out once in three runs and passed twice on retry; its cause
 is unlocalized and it is not a clean gate. See the
 [S3-38a report](../../docs/reports/STAGE_3_S3-38a_2026-10-29.md).
+
+## S10-06 frame publication (test-only display smoke)
+
+`Sources/FrameTransport.swift` is the writer of [frame transport v1](../../protocols/control/FRAME_TRANSPORT_V1.md): POSIX shm created by VMHost (random name, `shm_unlink` at once, one `ftruncate`), slots and seqlock publication, `ANNOUNCE` with `SCM_RIGHTS`, `MODE`/`FRAME` notification queue, `VERSION` reply to a foreign `HELLO`. Atomics go through the C shim `Sources/FrameTransportAtomics.h` (included by `VMHostABI.h`, together with `include/open_desktop/display_abi_v1.h`); the ARM64 code generation of the shim was checked by disassembly (`ldapr`, `stlr`, `str`, `ldr`, `dmb ish`, `dmb ishld`). The frame is copied once: `od_display_session_read_frame` writes straight into the slot.
+
+`--display-smoke pattern` is **test-only** and is never selected implicitly: VMHost without a guest creates an `OD_DISPLAY_PROFILE_TEST_PATTERN` session (64x48 BGRX8888 bars, seed 0), publishes its frame and notifies the reader over the socket given by `--socket-fd`. Options: `--display-poll-hz N` (check rate, default 60) and `--display-hold-until-claim 1` (holds publication until the reader writes a non-zero `reader_claim`, so a reader can observe generation 0 deterministically). The mode ends on EOF (exit status 0); a protocol error (foreign magic, malformed `HELLO`, bytes from the reader after `HELLO`) or a host refusal exits non-zero.
+
+Build (from the repository root; `libod_host.a` first, the debug staticlib is enough):
+
+```sh
+cargo build -p od-host --offline
+xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/VMHostABI.h apps/vmhost/Sources/ControlFrame.swift apps/vmhost/Sources/FrameTransport.swift apps/vmhost/Sources/main.swift target/debug/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-smoke
+codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements target/od-vmhost-smoke
+```
+
+Run the transport smoke: `python3 tests/system/display_transport_smoke.py [target/od-vmhost-smoke]`. It starts VMHost with the socketpair on fd 3, receives `ANNOUNCE` with `recvmsg`, checks `fstat` before `mmap`, observes generation 0 and then the published generation, reads the slot with the seqlock re-check, and compares the raw frame with `tests/fixtures/guest/stage10/bars_64x48_seed0.raw` through `tests/system/display_compare.py` at tolerance 0. It also checks the `VERSION` reply to a `HELLO` with another version. The test pattern profile never changes after create, so a second generation or a `MODE` change is not produced by this scenario; that transition is not covered here.

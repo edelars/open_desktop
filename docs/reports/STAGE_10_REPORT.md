@@ -15,7 +15,8 @@
 | Ревью пройдено (контракт, без кода) | 2 | S10-02, S10-05 (2 прохода) |
 | Ревью пройдено (код od-machine) | 1 | S10-03 |
 | Ревью пройдено (код od-host + ABI) | 1 | S10-04 |
-| `not_started` | 29 | остальные задачи, см. таблицу ниже |
+| Ревью пройдено (код VMHost) | 1 | S10-06 |
+| `not_started` | 28 | остальные задачи, см. таблицу ниже |
 
 Чекбоксы `[ ]` в плане не отмечены: по `STAGE_10.md` §0 отмечаются только после ревью.
 
@@ -29,7 +30,7 @@
 | S10-03 | ревью пройдено (код в od-machine, тесты OK) | (см. коммит ниже) | ревью 1: blocker/major нет, minor 4 — исправлены, повторного ревью не было | Модель устройства в `od-machine` |
 | S10-04 | ревью пройдено (код od-host + ABI) | (см. коммит ниже) | ревью 1: minor 3 — исправлены; повторного ревью не было | `od-host` и C ABI; см. раздел S10-04 |
 | S10-05 | ревью пройдено (2 прохода; контракт, без кода) | — | ревью 1: major 2, minor 5 — исправлены; ревью 2: blocker и major нет, minor 2 — исправлены без повторного ревью | Транспорт кадров; см. раздел S10-05 |
-| S10-06 | not_started | — | — | Публикация кадров из VMHost |
+| S10-06 | ревью пройдено (2 прохода) | — | первое ревью: blocker нет, major 1 (отчёт), minor 6 — исправлены, повторного ревью не было | Публикация кадров из VMHost; см. раздел S10-06 |
 | S10-07 | not_started | — | — | Окно и Metal view |
 | S10-08 | not_started | — | — | Гостевой probe дисплея |
 | S10-09 | not_started | — | — | Сквозной срез |
@@ -140,6 +141,22 @@
   - поведение `fstat` и повторного `ftruncate` для POSIX shm на macOS — источник не найден, проверяется тестами S10-06/S10-24;
   - физический объём памяти слотов 36 MiB при малом режиме не измерен;
   - каналы для одновременной работы control и дисплея — после этапа 10.
+
+### S10-06. Публикация кадров из VMHost — ревью пройдено (2 прохода)
+
+- Файлы: `apps/vmhost/Sources/FrameTransport.swift` (новый: writer транспорта v1, test-only `DisplaySmoke`); `apps/vmhost/Sources/FrameTransportAtomics.h` (новый: C-шим atomics §5.3); `apps/vmhost/Sources/VMHostABI.h` (include `display_abi_v1.h` и шима, обёртки `UINT32_C`-констант и `shm_open`, потому что Swift не импортирует вариадический `shm_open`); `apps/vmhost/Sources/main.swift` (ветка `--display-smoke`); `tests/system/display_transport_smoke.py` (новый); `apps/vmhost/README.md` (сборка и запуск); `protocols/control/FRAME_TRANSPORT_V1.md` §6.5 (один абзац о статусе завершения процесса).
+- Реализовано: shm по §2.2 (случайное имя, `shm_unlink`, один `ftruncate`, `FD_CLOEXEC`), раскладка и заголовок по §3 (3 слота, 64×48 → `total_size` 65 536), публикация по seqlock §5.1, выбор слота §6.2 (не `front`, не слот из `reader_claim`), `ANNOUNCE` с `SCM_RIGHTS` одним `sendmsg` (EAGAIN/EINTR повторяют тот же `sendmsg`, результат 0 — ошибка), очередь `MODE`/`FRAME` §6.4, `VERSION` на `HELLO` с чужой версией, проверка `MODE`/кадра на `max_*` и формат до постановки в очередь (§6.3), порядок проверок §3.5 с UInt64. Кадр копируется один раз (`od_display_session_read_frame` прямо в слот). Режим `--display-smoke pattern` — **test-only**, включается только явным флагом; параметры `--display-poll-hz` (по умолчанию 60) и `--display-hold-until-claim 1` (держит публикацию, пока reader не запишет `reader_claim`).
+- **Отклонение от плана, шаг 3:** узор берётся из профиля `od-host` `OD_DISPLAY_PROFILE_TEST_PATTERN` (он сам рисует `bars` seed 0 при `create`), а не из Swift-копии `display_pattern.py`. Swift-копии алгоритма нет.
+- Статус завершения процесса (не часть wire format): EOF и ответ `VERSION` — 0; ошибка протокола UI (чужой magic, неверный `HELLO`, байты после `HELLO`) отказ хоста и любая ошибка сокета, кроме обычного EOF — ненулевой.
+- Проверки (2026-11-06, `feat/s9-stage`): `cargo build -p od-host --offline` — OK; команда `xcrun swiftc` из README (с `target/debug/libod_host.a`) — OK без предупреждений; сборка `vmhost_generated_fault_helper` с новым `VMHostABI.h` — OK; `python3 tests/system/display_transport_smoke.py` — код 0, `differing_pixels=0` (tolerance 0), 3 прогона подряд после правок по ревью (до них ещё 6); `python3 -m py_compile` — OK; `git diff --check` — чисто; `python3 tools/check_layout.py` — 45 ERROR, как в базе.
+- Регрессия обычного пути VMHost после правки `main.swift` (2026-11-06; `target/od-vmhost-smoke`, launcher и generated-fault helper собраны командами README с release-библиотекой `target/release/libod_host.a`): `vmhost_control_v1_frames_smoke.py`, `vmhost_control_v1_code_mismatch_smoke.py`, `vmhost_control_v1_isolation_smoke.py`, `vmhost_control_v1_run_id_exhaustion_smoke.py`, `vmhost_control_v1_run_stop_id_smoke.py`, `vmhost_control_v1_same_code_smoke.py`, `vmhost_control_v1_stop_eof_smoke.py`, `vmhost_isolation_smoke.py`, `vmhost_result_state_smoke.py`, `vmhost_launcher_signal_smoke.py`, `vmhost_generated_fault_smoke.py` — код 0 (первые восемь и result_state на debug-библиотеке тоже 0; generated-fault на debug 3 прогона из 4 прошли). `vmhost_control_race_smoke.py` — **код 1** («unsupported version: VMHost sent a response after rejecting the frame»); тот же код 1 и то же сообщение даёт VMHost, собранный из исходников `HEAD` без моих правок (2 прогона у каждого), поэтому это не регрессия S10-06, а существующий отказ, причина не исследована и не чинилась. На debug-библиотеке `vmhost_launcher_signal_smoke.py` падал («helper did not start»), на release проходит. Скрипт `tests/system/vmhost_app_bundle_smoke.sh` не запускался (требует отдельной сборки bundle, к S10-06 отношения не имеет).
+- Smoke покрывает: `fstat` до `mmap`; поколение слотов 0 до открытия гейта и ненулевое после (переход 0 → N детерминирован, без таймера); после открытия гейта кадр лежит в слоте 1 (слот 0 занят `reader_claim`, проверка `slot == 1`); перепроверка поколения при чтении; ответ `VERSION` на `HELLO` v2; ненулевой код и текст «frame transport protocol» в stderr при чужом magic, неверном `HELLO` и байте после `HELLO`; код 0 по EOF.
+- Дизассемблирование шима проверено: (а) `clang -O2 -arch arm64 -S` на обёртках шима даёт `ldapr`, `stlr`, `str`, `ldr`, `dmb ish`, `dmb ishld` по таблице §5; (б) в собранном `target/od-vmhost-smoke` (`otool -arch arm64 -tV`) функция `publishFrame` содержит `dmb ish` (шаг 3 §5.1), `stlr` (release-публикация `generation`) и relaxed `ldr` `reader_claim` по смещению 0x40.
+- Не проверено / ограничения:
+  - Профиль 1 не меняется после `create`: generation навсегда 1, смены `MODE` и второго кадра нет, поэтому эти переходы writer-а (в том числе `C > Q`, отбрасывание при `C < Q`, замена в очереди) smoke не выполняет.
+  - Поведение `fstat` для POSIX shm и повторного `ftruncate` на macOS по источникам не подтверждено; smoke лишь проверил, что `st_size` равен `total_size` на этой машине. Допущение порядка через syscall (§5.4) тестом не подтверждено, только 9 успешных прогонов без стресса.
+  - Очередь с частичной отправкой и EAGAIN у `ANNOUNCE` не нагружалась (сокет не переполнялся).
+  - Библиотека собрана в debug; замеров производительности нет (S10-10).
 
 ## 4. Открытые ограничения
 

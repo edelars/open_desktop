@@ -10,8 +10,15 @@ struct VmHostSmoke {
     static func main() {
         var socketFD: Int32 = -1
         do {
-            socketFD = try parseSocketFD(Array(CommandLine.arguments.dropFirst()))
-            try serveOneFragment(on: socketFD)
+            let args = Array(CommandLine.arguments.dropFirst())
+            // TEST-ONLY display smoke (S10-06): selected only by the explicit flag, never implicitly.
+            if let smoke = try DisplaySmokeOptions.parse(args) {
+                socketFD = smoke.socketFD
+                try DisplaySmoke.run(smoke)
+            } else {
+                socketFD = try parseSocketFD(args)
+                try serveOneFragment(on: socketFD)
+            }
         } catch {
             fputs("od-vmhost-smoke: \(error)\n", stderr)
             exit(EXIT_FAILURE)
@@ -663,7 +670,7 @@ private enum VmHostError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .usage: return "usage: od-vmhost-smoke --socket-fd FD"
+        case .usage: return "usage: od-vmhost-smoke --socket-fd FD [--display-smoke pattern]"
         case .badHandshake: return "invalid launcher handshake"
         case .badV1Frame: return "invalid control v1 frame"
         case .expectedRun: return "expected RUN request"
