@@ -943,6 +943,12 @@ impl<B: StorageBackend> CowFile<B> {
         ))
     }
 
+    /// Gives the storage back (no write, no flush), for a layer that reopens
+    /// the media to verify what it just wrote.
+    pub(crate) fn into_storage(self) -> CheckedStorage<B> {
+        self.view.storage
+    }
+
     /// True after a failed commit: the durable state is unknown and the
     /// caller must drop the session and reopen (reconcile).
     pub fn is_poisoned(&self) -> bool {

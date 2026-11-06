@@ -120,6 +120,7 @@ fn snap(f: &mut File) -> (u64, ParentRef) {
 
 fn sample_header() -> Header {
     Header {
+        building: false,
         file_uid: 0x1122_3344_5566_7788,
         disk_blocks: 17,
         next_snapshot_id: 4,
@@ -494,6 +495,7 @@ fn a_chain_that_repeats_a_file_identity_is_a_cycle() {
     // opening must refuse too, before reading anything from the parents.
     let h = FaultHandle::new(&[], 0xF0);
     let forged = Header {
+        building: false,
         file_uid: 1,
         disk_blocks: 2,
         next_snapshot_id: 1,
@@ -543,6 +545,7 @@ fn chain_depth_is_bounded() {
     // Forged: header depth over the limit is refused without a walk.
     let h = FaultHandle::new(&[], 0xF1);
     let too_deep = Header {
+        building: false,
         file_uid: 200,
         disk_blocks: 1,
         next_snapshot_id: 1,
@@ -562,6 +565,7 @@ fn chain_depth_is_bounded() {
     // Forged: a header that lies about its depth is caught by the walk.
     let h = FaultHandle::new(&[], 0xF2);
     let liar = Header {
+        building: false,
         file_uid: 201,
         disk_blocks: 1,
         next_snapshot_id: 1,
@@ -581,6 +585,7 @@ fn chain_depth_is_bounded() {
     // Forged: depth that is within limits but disagrees with the walk.
     let h = FaultHandle::new(&[], 0xF3);
     let short = Header {
+        building: false,
         file_uid: 202,
         disk_blocks: 1,
         next_snapshot_id: 1,
@@ -1303,6 +1308,7 @@ fn forged_layer(fs: &mut Fs, uid: u64, parent: ParentRef, depth: u32) -> (File, 
     let h = FaultHandle::new(&[], 0x8000 + uid);
     fs.files.insert(uid, h.clone());
     let header = Header {
+        building: false,
         file_uid: uid,
         disk_blocks: 2,
         next_snapshot_id: 1,
@@ -1347,6 +1353,7 @@ fn a_wrong_map_crc_of_an_intermediate_ancestor_refuses_before_any_write() {
     // The same on open: a child file recorded over the lying layer.
     let h = FaultHandle::new(&[], 0x8101);
     let top = Header {
+        building: false,
         file_uid: 5,
         disk_blocks: 2,
         next_snapshot_id: 1,
@@ -1499,6 +1506,7 @@ fn every_wrong_field_of_a_parent_reference_refuses_create_and_open() {
 
         let h = FaultHandle::new(&[], 0x8201);
         let header = Header {
+            building: false,
             file_uid: 2,
             disk_blocks: 2,
             next_snapshot_id: 1,
@@ -1512,5 +1520,584 @@ fn every_wrong_field_of_a_parent_reference_refuses_create_and_open() {
         let opened = SnapFile::open(st(&h), &mut FsResolver(&fs));
         assert_eq!(opened.err().as_ref(), Some(&want), "open: {name}");
         assert_eq!(h.durable_bytes(), bytes, "open wrote: {name}");
+    }
+}
+
+// ======================================================== S9-17: delete,
+// rootset and copy-compaction
+
+fn is_absent(e: &SnapError) -> bool {
+    matches!(
+        e,
+        SnapError::NotSnapFile(_)
+            | SnapError::BuildInProgress
+            | SnapError::Cow(crate::cow_proto::CowError::NoValidRoot { .. })
+            | SnapError::Cow(crate::cow_proto::CowError::IncompleteCreate { .. })
+    )
+}
+
+/// Base file with snapshots 1 (image A), 2 (A+B) and a head with more writes.
+struct Hist {
+    file: File,
+    /// (id, image) of every named snapshot.
+    snaps: Vec<(u64, Vec<u8>)>,
+    head: Vec<u8>,
+}
+
+fn history(h: &FaultHandle) -> Hist {
+    let mut file = SnapFile::create_base(st(h), 1).expect("create").0;
+    let mut m = Model::default();
+    let mut snaps = Vec::new();
+    write(&mut file, &mut m, 0, &rnd(1, 3 * BS));
+    snaps.push((snap(&mut file).0, m.0.clone()));
+    write(&mut file, &mut m, 2 * BS + 10, &rnd(2, 600));
+    write(&mut file, &mut m, 0, &rnd(3, BS)); // overwrite a snapshotted block
+    snaps.push((snap(&mut file).0, m.0.clone()));
+    write(&mut file, &mut m, 5 * BS + 4, &rnd(4, 50)); // gap: blocks 4 is a hole
+    Hist {
+        file,
+        snaps,
+        head: m.0,
+    }
+}
+
+// ------------------------------------------------------------ (a) delete
+
+#[test]
+fn deleting_a_snapshot_removes_its_name_and_frees_no_bytes() {
+    let mut fs = Fs::default();
+    let h = fs.handle(1, 0x1700);
+    let Hist {
+        mut file,
+        snaps,
+        head,
+    } = history(&h);
+    let (_, third) = {
+        let mut m = Model(head.clone());
+        write(&mut file, &mut m, 0, &rnd(9, 2 * BS));
+        let id = snap(&mut file);
+        (id.0, m.0)
+    };
+    assert_eq!(file.snapshot_ids(), vec![1, 2, 3]);
+    let before = h.durable_bytes();
+
+    file.delete_snapshot(2).expect("delete");
+    assert_eq!(file.snapshot_ids(), vec![1, 3]);
+    assert_eq!(
+        file.read_snapshot_at(2, 0, &mut [0u8; 1]).err(),
+        Some(SnapError::SnapshotMissing { id: 2 })
+    );
+    assert_eq!(
+        file.delete_snapshot(2).err(),
+        Some(SnapError::SnapshotMissing { id: 2 })
+    );
+    assert_eq!(
+        file.delete_snapshot(99).err(),
+        Some(SnapError::SnapshotMissing { id: 99 })
+    );
+    // Nothing was freed or rewritten: every byte past the two root slots that
+    // existed before the delete is unchanged (the file only grew).
+    let after = h.durable_bytes();
+    assert!(after.len() > before.len());
+    assert_eq!(&after[1024..before.len()], &before[1024..]);
+
+    drop(file);
+    let mut file = reopen(&fs, 1).expect("reopen");
+    assert_eq!(file.snapshot_ids(), vec![1, 3]);
+    assert_eq!(snap_image(&file, 1), snaps[0].1);
+    assert_eq!(snap_image(&file, 3), third);
+    assert_ne!(snaps[1].1, third);
+    // Head after snapshot 3 included the extra overwrite.
+    assert_eq!(image(&file)[..2 * BS], third[..2 * BS]);
+    // Ids are never reused, also after deleting the newest one.
+    file.delete_snapshot(3).expect("delete newest");
+    let (id, _) = file.create_snapshot().expect("snapshot");
+    assert_eq!(id, 4);
+    drop(file);
+    let file = reopen(&fs, 1).expect("reopen");
+    assert_eq!(file.snapshot_ids(), vec![1, 4]);
+    assert_eq!(snap_image(&file, 1), snaps[0].1);
+}
+
+// -------------------------------------------- (b) delete fault sweep
+
+fn delete_ops() -> Vec<OpKind> {
+    let h = FaultHandle::new(&[], 0x1701);
+    let mut hist = history(&h);
+    let start = h.next_ordinal();
+    hist.file.delete_snapshot(1).expect("clean delete");
+    let end = h.next_ordinal();
+    h.trace()
+        .iter()
+        .filter_map(|l| parse_kind(l))
+        .filter(|(o, _)| *o >= start && *o < end)
+        .map(|(_, k)| k)
+        .collect()
+}
+
+#[test]
+fn snapshot_delete_is_whole_or_absent_and_never_damages_data_under_every_fault() {
+    let ops = delete_ops();
+    assert!(ops.len() >= 6);
+    let mut scenarios: Vec<(usize, Option<crate::testing::fault::Fault>)> = vec![(ops.len(), None)];
+    for (i, kind) in ops.iter().enumerate() {
+        for fault in faults_for(*kind) {
+            scenarios.push((i, Some(fault)));
+        }
+    }
+    let (mut gone_unacked, mut kept, mut cases) = (0u64, 0u64, 0u64);
+    for (i, fault) in scenarios {
+        for policy in policies() {
+            cases += 1;
+            let h = FaultHandle::new(&[], 0x1701);
+            let Hist {
+                mut file,
+                snaps,
+                head,
+            } = history(&h);
+            if let Some(f) = fault {
+                h.script(h.next_ordinal() + i as u64, f);
+            }
+            let result = file.delete_snapshot(1);
+            let label = format!("op={i} fault={fault:?} policy={policy:?}");
+            if fault.is_some_and(is_failing) {
+                assert!(result.is_err(), "{label}: failing fault was acknowledged");
+            }
+            let acked = result.is_ok();
+            drop(file);
+            h.crash(policy);
+            let mut f = match SnapFile::open(st(&h), &mut NoParents) {
+                Ok((f, _)) => f,
+                Err(e) => panic!("{}", h.report(&format!("{label}: refused {e:?}"))),
+            };
+            let ids = f.snapshot_ids();
+            let deleted = ids == vec![2];
+            if ids != vec![2] && ids != vec![1, 2] {
+                panic!("{}", h.report(&format!("{label}: ids {ids:?}")));
+            }
+            if acked && !deleted {
+                panic!("{}", h.report(&format!("{label}: acked delete undone")));
+            }
+            if deleted && !acked {
+                gone_unacked += 1;
+            }
+            if !deleted {
+                kept += 1;
+                // Still whole: the snapshot reads its exact bytes.
+                assert_eq!(snap_image(&f, 1), snaps[0].1, "{label}: partial snapshot");
+            }
+            assert_eq!(snap_image(&f, 2), snaps[1].1, "{label}: other snapshot");
+            assert_eq!(image(&f), head, "{label}: head damaged");
+            // Ids are not reused whatever happened.
+            let (id, _) = f.create_snapshot().expect("snapshot after recovery");
+            assert_eq!(id, 3, "{label}");
+        }
+    }
+    assert!(gone_unacked > 0 && kept > 0, "{gone_unacked} {kept}");
+    assert!(cases > 400, "{cases}");
+}
+
+// ------------------------------------------------------ (d) rootset
+
+fn overwritten_world(h: &FaultHandle) -> (File, Vec<u8>) {
+    let mut f = SnapFile::create_base(st(h), 1).expect("create").0;
+    let mut m = Model::default();
+    write(&mut f, &mut m, 0, &rnd(1, 3 * BS)); // A
+    let a = m.0.clone();
+    snap(&mut f);
+    write(&mut f, &mut m, 0, &rnd(2, 3 * BS)); // B: every block of A replaced
+    (f, a)
+}
+
+#[test]
+fn a_deleted_snapshot_stays_in_the_rootset_while_the_previous_root_names_it() {
+    let h = FaultHandle::new(&[], 0x1702);
+    let (mut f, _a) = overwritten_world(&h);
+    let a_blocks = f.snapshot_data_blocks(1).expect("snapshot blocks");
+    assert_eq!(a_blocks.len(), 3);
+    let before = f.rootset().expect("rootset");
+    assert!(a_blocks.is_subset(&before.data_blocks));
+    assert_eq!(
+        before.snapshot_ids.iter().copied().collect::<Vec<_>>(),
+        vec![1]
+    );
+
+    f.delete_snapshot(1).expect("delete");
+    let after = f.rootset().expect("rootset");
+    // The current root no longer names the snapshot, the previous one does:
+    // its bytes are still reachable and so must not be reclaimed.
+    assert!(f.snapshot_ids().is_empty());
+    assert!(
+        a_blocks.is_subset(&after.data_blocks),
+        "previous root lost blocks"
+    );
+    assert_eq!(
+        after.snapshot_ids.iter().copied().collect::<Vec<_>>(),
+        vec![1]
+    );
+    assert_eq!(after.generations, [f.generation(), f.generation() - 1]);
+    // The rootset never shrinks by a delete alone.
+    assert!(before.data_blocks.is_subset(&after.data_blocks));
+
+    // One more commit: now neither recoverable root names it.
+    f.write_at(0, &[7u8; 10]).expect("write");
+    let later = f.rootset().expect("rootset");
+    assert!(later.snapshot_ids.is_empty());
+    assert!(
+        a_blocks.is_disjoint(&later.data_blocks),
+        "provably unreachable blocks are still held"
+    );
+    assert!(later.live_bytes() < after.live_bytes());
+}
+
+#[test]
+fn rootset_covers_head_snapshots_both_roots_and_clone_parents() {
+    let mut fs = Fs::default();
+    let h = fs.handle(1, 0x1703);
+    let Hist {
+        mut file, snaps, ..
+    } = history(&h);
+    let rs = file.rootset().expect("rootset");
+    assert_eq!(
+        rs.snapshot_ids.iter().copied().collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    for (id, _) in &snaps {
+        let blocks = file.snapshot_data_blocks(*id).expect("blocks");
+        assert!(blocks.is_subset(&rs.data_blocks), "snapshot {id}");
+    }
+    assert!(rs.parents.is_empty());
+    let (_, pref) = snap(&mut file);
+    drop(file);
+    let mut c = child(&mut fs, 2, &pref).expect("child");
+    c.write_at(0, &[1u8; 4]).expect("child write");
+    let crs = c.rootset().expect("child rootset");
+    assert_eq!(crs.parents, vec![pref], "the parent snapshot is pinned");
+}
+
+#[test]
+fn the_previous_recoverable_root_still_reads_a_snapshot_deleted_in_the_current_one() {
+    let h = FaultHandle::new(&[], 0x1704);
+    let (mut f, a) = overwritten_world(&h);
+    f.delete_snapshot(1).expect("delete");
+    let current = f.generation();
+    drop(f);
+    // Lose the newest root (as a torn root write plus a lost root copy would):
+    // the open falls back to the previous generation, which names snapshot 1.
+    let mut bytes = h.durable_bytes();
+    let slot = crate::cow_proto::slot_offset(current) as usize;
+    bytes[slot..slot + 512].fill(0);
+    let len = bytes.len();
+    bytes[len - 512..].fill(0);
+    let damaged = FaultHandle::new(&bytes, 1);
+    let (view, report) = crate::cow_proto::CowView::salvage(st(&damaged)).expect("salvage");
+    assert!(report.possible_lost_commit);
+    assert_eq!(view.generation(), current - 1);
+    assert_eq!(
+        crate::cow_snapshot::retained_image(&view, 1).expect("retained snapshot"),
+        a,
+        "bytes of the deleted snapshot were lost"
+    );
+}
+
+// --------------------------------------------------- (c) compaction
+
+fn assert_content(f: &File, snaps: &[(u64, Vec<u8>)], head: &[u8], label: &str) {
+    assert_eq!(
+        f.snapshot_ids(),
+        snaps.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        "{label}"
+    );
+    for (id, img) in snaps {
+        assert_eq!(&snap_image(f, *id), img, "{label}: snapshot {id}");
+    }
+    assert_eq!(image(f), head, "{label}: head");
+}
+
+#[test]
+fn compaction_reproduces_head_and_live_snapshots_in_a_new_smaller_file() {
+    let mut fs = Fs::default();
+    let h = fs.handle(1, 0x1705);
+    let Hist {
+        mut file,
+        mut snaps,
+        head,
+    } = history(&h);
+    // A third snapshot, then delete the middle one: its bytes become garbage.
+    let mut m = Model(head);
+    write(&mut file, &mut m, BS, &rnd(8, 2 * BS));
+    snaps.push((snap(&mut file).0, m.0.clone()));
+    write(&mut file, &mut m, 0, &rnd(9, 3 * BS));
+    file.delete_snapshot(2).expect("delete");
+    snaps.remove(1);
+    let head = m.0;
+    let source_before = media(&fs, 1);
+    let rs = file.rootset().expect("rootset");
+
+    let th = FaultHandle::new(&[], 0x1706);
+    let (target, _ack) = file.compact_to(st(&th), 50).expect("compact");
+    assert_eq!(target.file_uid(), 50);
+    assert_content(&target, &snaps, &head, "returned target");
+    drop(target);
+    // The source is byte-for-byte unchanged and still reads the same.
+    assert_eq!(media(&fs, 1), source_before, "source changed");
+    assert_content(&file, &snaps, &head, "source after compaction");
+
+    // The published target reopens with the same logical content.
+    th.crash(CrashPolicy::DropPending);
+    let (mut t, _) = SnapFile::open(st(&th), &mut NoParents).expect("open target");
+    assert_content(&t, &snaps, &head, "reopened target");
+    assert_ne!(t.file_uid(), file.file_uid());
+    // Old garbage is not copied: the target is smaller than the source and
+    // than the source's rootset footprint of the whole file.
+    let target_len = th.durable_bytes().len();
+    assert!(target_len < source_before.1.len(), "{target_len}");
+    assert!(rs.live_bytes() <= source_before.1.len() as u64);
+    // Ids continue from the source's counter (the deleted id 2 stays unused).
+    let (id, _) = t.create_snapshot().expect("snapshot");
+    assert_eq!(id, 4);
+}
+
+#[test]
+fn compaction_chunks_large_states_and_keeps_holes() {
+    let mut fs = Fs::default();
+    let h = fs.handle(1, 0x1707);
+    let mut f = SnapFile::create_base(st(&h), 1).expect("create").0;
+    let mut m = Model::default();
+    let mut snaps = Vec::new();
+    write(&mut f, &mut m, 0, &rnd(1, 200 * BS));
+    snaps.push((snap(&mut f).0, m.0.clone()));
+    write(&mut f, &mut m, 300 * BS, &rnd(2, 100 * BS)); // 100-block hole
+    write(&mut f, &mut m, 10 * BS, &rnd(3, 50 * BS));
+    snaps.push((snap(&mut f).0, m.0.clone()));
+    write(&mut f, &mut m, 5, &rnd(4, 7));
+    let th = FaultHandle::new(&[], 0x1708);
+    let (t, _) = f.compact_to(st(&th), 51).expect("compact");
+    assert_content(&t, &snaps, &m.0, "chunked target");
+    drop(t);
+    th.crash(CrashPolicy::DropPending);
+    let (t, _) = SnapFile::open(st(&th), &mut NoParents).expect("open");
+    assert_content(&t, &snaps, &m.0, "reopened chunked target");
+    assert_eq!(t.rootset().expect("rootset").snapshot_ids.len(), 2);
+}
+
+#[test]
+fn a_compacted_child_keeps_its_parent_and_reads_through_it() {
+    let mut fs = Fs::default();
+    let pref = parent_with_snapshot(&mut fs);
+    let mut c = child(&mut fs, 2, &pref).expect("child");
+    let mut m = Model(image(&c));
+    write(&mut c, &mut m, 100, &rnd(5, 40));
+    let s1 = (snap(&mut c).0, m.0.clone());
+    write(&mut c, &mut m, 3 * BS, &rnd(6, 20)); // grows past the parent
+    let th = FaultHandle::new(&[], 0x1709);
+    let (t, _) = c.compact_to(st(&th), 52).expect("compact child");
+    assert_eq!(t.parent_ref(), Some(pref), "same parent identity");
+    assert_eq!(t.depth(), 1);
+    drop(t);
+    drop(c);
+    fs.files.insert(52, th);
+    let t = reopen(&fs, 52).expect("target opens against the real parent");
+    assert_content(&t, &[s1], &m.0, "compacted child");
+}
+
+#[test]
+fn a_child_of_the_old_file_is_not_reconnected_to_the_compacted_one() {
+    let mut fs = Fs::default();
+    let pref = parent_with_snapshot(&mut fs);
+    let c = child(&mut fs, 2, &pref).expect("child");
+    drop(c);
+    let p = reopen(&fs, 1).expect("parent");
+    let th = FaultHandle::new(&[], 0x170A);
+    let (t, _) = p.compact_to(st(&th), 60).expect("compact");
+    drop(t);
+    drop(p);
+    let original = fs.files.get(&1).expect("parent").clone();
+    // The compacted file takes the parent's place in the catalogue.
+    th.crash(CrashPolicy::DropPending);
+    fs.files.insert(1, th);
+    assert_eq!(
+        reopen(&fs, 2).err(),
+        Some(SnapError::ParentIdentityMismatch)
+    );
+    // Nothing was rewritten to make it work, and the original still serves it.
+    fs.files.insert(1, original);
+    assert!(reopen(&fs, 2).is_ok());
+}
+
+#[test]
+fn compaction_refuses_bad_targets_without_writing_the_source() {
+    let mut fs = Fs::default();
+    let h = fs.handle(1, 0x170B);
+    let Hist { file, .. } = history(&h);
+    let before = media(&fs, 1);
+    for uid in [0u64, 1] {
+        let th = FaultHandle::new(&[], 1);
+        assert!(matches!(
+            file.compact_to(st(&th), uid).err(),
+            Some(SnapError::BadWrite(_))
+        ));
+        assert_eq!(th.next_ordinal(), 0, "target touched for uid {uid}");
+    }
+    assert_eq!(media(&fs, 1), before);
+}
+
+#[test]
+fn an_unpublished_compaction_target_does_not_open() {
+    let h = FaultHandle::new(&[], 0x170C);
+    let building = Header {
+        building: true,
+        file_uid: 9,
+        disk_blocks: 0,
+        next_snapshot_id: 1,
+        depth: 0,
+        parent: None,
+        snapshots: Vec::new(),
+    };
+    assert_eq!(
+        decode_header(&encode_header(&building)),
+        Ok(building.clone())
+    );
+    SnapFile::init(st(&h), building, Vec::new()).expect("init building");
+    h.crash(CrashPolicy::DropPending);
+    assert_eq!(
+        SnapFile::open(st(&h), &mut NoParents).err(),
+        Some(SnapError::BuildInProgress)
+    );
+}
+
+// -------------------------------------- (g) compaction fault sweep
+
+fn compaction_ops() -> Vec<OpKind> {
+    let src = FaultHandle::new(&[], 0x1710);
+    let hist = history(&src);
+    let th = FaultHandle::new(&[], 0x1711);
+    hist.file.compact_to(st(&th), 50).expect("clean compaction");
+    th.trace()
+        .iter()
+        .filter_map(|l| parse_kind(l))
+        .map(|(_, k)| k)
+        .collect()
+}
+
+#[test]
+fn compaction_publishes_a_complete_verified_target_or_nothing_under_every_fault() {
+    let ops = compaction_ops();
+    assert!(ops.len() > 40, "{}", ops.len());
+    let mut scenarios: Vec<(usize, Option<crate::testing::fault::Fault>)> = vec![(ops.len(), None)];
+    for (i, kind) in ops.iter().enumerate() {
+        for fault in faults_for(*kind) {
+            scenarios.push((i, Some(fault)));
+        }
+    }
+    let (mut complete, mut complete_unacked, mut absent, mut cases) = (0u64, 0u64, 0u64, 0u64);
+    for (i, fault) in scenarios {
+        for policy in policies() {
+            cases += 1;
+            let src = FaultHandle::new(&[], 0x1710);
+            let Hist { file, snaps, head } = history(&src);
+            let src_before = (src.volatile_bytes(), src.durable_bytes());
+            let th = FaultHandle::new(&[], 0x1711);
+            if let Some(f) = fault {
+                th.script(i as u64, f);
+            }
+            let result = file.compact_to(st(&th), 50);
+            let label = format!("op={i} fault={fault:?} policy={policy:?}");
+            if fault.is_some_and(is_failing) {
+                assert!(result.is_err(), "{label}: failing fault was acknowledged");
+            }
+            let acked = result.is_ok();
+            drop(result);
+            th.crash(policy);
+            match SnapFile::open(st(&th), &mut NoParents) {
+                Ok((t, _)) => {
+                    // Present means complete and equal to the source: every
+                    // live snapshot and the head, byte for byte.
+                    complete += 1;
+                    if !acked {
+                        complete_unacked += 1;
+                    }
+                    assert_content(&t, &snaps, &head, &label);
+                    assert_eq!(t.file_uid(), 50, "{label}");
+                }
+                Err(e) => {
+                    absent += 1;
+                    assert!(!acked, "{label}: acknowledged target lost: {e:?}");
+                    assert!(is_absent(&e), "{label}: {e:?}");
+                }
+            }
+            // The source is never touched by a failed or crashed compaction.
+            assert_eq!(
+                (src.volatile_bytes(), src.durable_bytes()),
+                src_before,
+                "{label}: source changed"
+            );
+            assert_content(&file, &snaps, &head, &label);
+        }
+    }
+    assert!(complete > 0 && absent > 0, "{complete} {absent}");
+    assert!(
+        complete_unacked > 0,
+        "never reached an unacked-but-complete target"
+    );
+    assert!(cases > 1000, "{cases}");
+}
+
+// ------------- publication verifies the target as reopened from media
+
+fn flip_byte(h: &FaultHandle, offset: u64) {
+    let mut raw = st(h);
+    let mut b = [0u8; 1];
+    raw.read_exact_at(offset, &mut b).expect("read");
+    raw.write_all_at(offset, &[b[0] ^ 0x40]).expect("flip");
+}
+
+#[test]
+fn damage_to_a_built_target_is_found_by_the_media_reopen_and_blocks_publication() {
+    // Control: an undamaged built target publishes and equals the source.
+    let src = FaultHandle::new(&[], 0x1720);
+    let Hist { file, snaps, head } = history(&src);
+    let th = FaultHandle::new(&[], 0x1721);
+    let out = file.compact_build(st(&th), 50).expect("build");
+    let (t, _) = file.compact_publish(out).expect("publish");
+    assert_content(&t, &snaps, &head, "published");
+
+    // Damage after the last commit and before the reopen: a block only a
+    // snapshot reaches, the newest head block, a retained snapshot map.
+    type Pick = fn(&File) -> u64;
+    let cases: [(&str, Pick); 3] = [
+        ("snapshot data block", |t| {
+            *t.snapshot_data_blocks(1)
+                .expect("blocks")
+                .first()
+                .expect("a block")
+        }),
+        ("newest head block", |t| {
+            *t.rootset()
+                .expect("rootset")
+                .data_blocks
+                .last()
+                .expect("a block")
+        }),
+        ("snapshot map", |t| {
+            t.snapshot_record(1).expect("record").map_offset
+        }),
+    ];
+    for (name, pick) in cases {
+        let src = FaultHandle::new(&[], 0x1720);
+        let hist = history(&src);
+        let th = FaultHandle::new(&[], 0x1721);
+        let out = hist.file.compact_build(st(&th), 50).expect("build");
+        flip_byte(&th, pick(&out) + 3);
+        let result = hist.file.compact_publish(out);
+        assert!(result.is_err(), "{name}: damaged target was published");
+        // The flag was never cleared: the file does not open as a target.
+        th.crash(CrashPolicy::DropPending);
+        assert!(
+            SnapFile::open(st(&th), &mut NoParents).is_err(),
+            "{name}: damaged target opens"
+        );
+        // The source is untouched.
+        assert_content(&hist.file, &hist.snaps, &hist.head, name);
     }
 }

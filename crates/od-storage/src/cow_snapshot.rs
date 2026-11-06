@@ -31,7 +31,7 @@
 //! appends and never overwrites published bytes and this slice has no garbage
 //! collection, so the map and blocks of generation `k` stay intact (retain
 //! policy: generation `k` is never reused while its snapshot exists; deletion
-//! is S9-17 and does not exist here). Reading a snapshot parses the retained
+//! of the name is S9-17 and frees nothing). Reading a snapshot parses the retained
 //! map (CRC-checked against `map_crc`), takes the header and bitmap of that
 //! generation from it, and reads blocks through it with per-block CRC checks.
 //! What the snapshot shows therefore cannot depend on later writes.
@@ -109,14 +109,40 @@
 //! lease by `(st_dev, st_ino)`. A resolver that does not re-check the host
 //! file identity gives only the open-time content check.
 //!
+//! # Deletion, rootset and reclamation (S9-17)
+//!
+//! Deleting a snapshot ([`SnapFile::delete_snapshot`]) removes its **name**
+//! only: one commit, no block freed. What is reachable is defined by
+//! [`SnapFile::rootset`]: the head, every named snapshot, **both** recoverable
+//! root generations with the snapshots each names, their maps, and the clone
+//! parents the chain pins. A snapshot deleted in the current root stays in
+//! the set while the previous root still names it; only a later commit lets it
+//! drop out. The first reclamation is [`SnapFile::compact_to`]: offline,
+//! exclusive-writer, copy into a **new** file (new uid, same snapshot ids),
+//! full read-back comparison, then a single publishing commit. The source is
+//! kept untouched until the caller confirms the target. Losing free space is
+//! allowed, losing reachable bytes is not: compaction copies logical content,
+//! never frees in place, and an unpublished target does not open.
+//!
+//! Limits: there is no in-place garbage collection. The file cannot see closed
+//! children that name its snapshots (a catalogue is needed; deleting such a
+//! snapshot makes the child refuse to open) and children are **not**
+//! reconnected to a compacted file (the new file has another uid; they refuse
+//! with [`SnapError::ParentIdentityMismatch`]). Reader and export leases are
+//! `flock`s of the host: a held lease excludes the exclusive writer that both
+//! operations need. Replacing the source by the target in the namespace needs
+//! an atomic durable rename (ISSUE-055) and does not exist. Power loss is
+//! modelled only by `FaultBackend`.
+//!
 //! # Not covered
 //!
-//! Snapshot deletion and reclaim (S9-17), atomic switch of an active disk
+//! Atomic switch of an active disk
 //! pointer, a production resolver and the host lock lifecycle for a whole VM
 //! run, real power-loss behaviour, and sparse physical storage.
 
 use crate::cow_parse::{
-    BlockDescriptor, Capabilities, Features, ParseKind, RootRecord, StorageSource, parse_map,
+    Access, BlockDescriptor, Capabilities, Features, ParseError, ParseKind, RootRecord, Slot,
+    StorageSource, parse_map, parse_slot_at,
 };
 use crate::cow_proto::{
     BLOCK_SIZE, CowError, CowFile, CowView, MAX_TX_BLOCKS, OpenReport, crc32, slot_offset,
@@ -124,14 +150,15 @@ use crate::cow_proto::{
 use crate::io::{
     BackendError, CheckedStorage, DurableAck, StorageBackend, StorageCapabilities, StorageError,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 /// Logical CoW blocks before disk block 0 (header, presence bitmap).
 pub const DATA_BASE: u64 = 2;
 /// Most disk blocks one layer can address: one bit per block in one bitmap
 /// block. Hypothesis.
 pub const MAX_DISK_BLOCKS: u64 = (BLOCK_SIZE as u64) * 8;
-/// Most snapshot records one file holds. Hypothesis; there is no deletion yet.
+/// Most snapshot records one file holds. Hypothesis.
 pub const MAX_SNAPSHOTS: usize = 8;
 /// Most ancestors a child may have (a base file has depth 0). Exceeding it is a
 /// refusal at open and at create.
@@ -141,6 +168,7 @@ const HEADER_MAGIC: [u8; 8] = *b"ODSNAP\0\x01";
 const HEADER_VERSION: u32 = 1;
 const KIND_BASE: u32 = 0;
 const KIND_CHILD: u32 = 1;
+const KIND_BUILDING: u32 = 2;
 const UID_AT: usize = 16;
 const DISK_BLOCKS_AT: usize = 24;
 const NEXT_ID_AT: usize = 32;
@@ -187,6 +215,9 @@ pub struct SnapshotRecord {
 /// Decoded layer header (block 0).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Header {
+    /// Compaction target under construction: never a usable file head (kind
+    /// bit 1). Retained states inside a finished target keep the flag.
+    pub(crate) building: bool,
     pub(crate) file_uid: u64,
     pub(crate) disk_blocks: u64,
     pub(crate) next_snapshot_id: u64,
@@ -237,6 +268,12 @@ pub enum SnapError {
         limit: usize,
     },
     BadWrite(&'static str),
+    /// The file is a compaction target that was never published.
+    BuildInProgress,
+    /// Compaction read-back disagrees with the source (`None` is the head).
+    CompactionMismatch {
+        snapshot: Option<u64>,
+    },
 }
 
 impl From<CowError> for SnapError {
@@ -349,7 +386,7 @@ pub(crate) fn encode_header(h: &Header) -> Block {
         KIND_CHILD
     } else {
         KIND_BASE
-    };
+    } | if h.building { KIND_BUILDING } else { 0 };
     put(&mut b, 12, &kind.to_le_bytes());
     put(&mut b, UID_AT, &h.file_uid.to_le_bytes());
     put(&mut b, DISK_BLOCKS_AT, &h.disk_blocks.to_le_bytes());
@@ -390,7 +427,9 @@ pub(crate) fn decode_header(b: &Block) -> Result<Header, SnapError> {
     if rd_u32(b, 8) != HEADER_VERSION {
         return Err(SnapError::UnsupportedHeader("version"));
     }
-    let kind = rd_u32(b, 12);
+    let raw_kind = rd_u32(b, 12);
+    let building = raw_kind & KIND_BUILDING != 0;
+    let kind = raw_kind & !KIND_BUILDING;
     let file_uid = rd_u64(b, UID_AT);
     let disk_blocks = rd_u64(b, DISK_BLOCKS_AT);
     let next_snapshot_id = rd_u64(b, NEXT_ID_AT);
@@ -477,6 +516,7 @@ pub(crate) fn decode_header(b: &Block) -> Result<Header, SnapError> {
         snapshots.push(r);
     }
     Ok(Header {
+        building,
         file_uid,
         disk_blocks,
         next_snapshot_id,
@@ -583,6 +623,25 @@ fn load_level<B: StorageBackend>(
     })
 }
 
+/// Loads and verifies every retained snapshot a head header names.
+fn load_own_snapshots<B: StorageBackend>(
+    view: &CowView<B>,
+    header: &Header,
+) -> Result<BTreeMap<u64, Level>, SnapError> {
+    let mut snapshots = BTreeMap::new();
+    for rec in &header.snapshots {
+        if rec.generation >= view.generation() || rec.end_offset > view.end_offset() {
+            return Err(SnapError::SnapshotCorrupt { id: rec.id });
+        }
+        let level = load_level(view.storage(), rec)?;
+        if level.header.file_uid != header.file_uid || level.header.parent != header.parent {
+            return Err(SnapError::SnapshotCorrupt { id: rec.id });
+        }
+        snapshots.insert(rec.id, level);
+    }
+    Ok(snapshots)
+}
+
 trait AncestorStore {
     fn read_block(&self, d: &BlockDescriptor) -> Result<Block, SnapError>;
 }
@@ -623,10 +682,22 @@ fn from_resolve(e: ResolveError) -> SnapError {
 }
 
 fn read_state<B: StorageBackend>(view: &CowView<B>) -> Result<(Header, Block), SnapError> {
+    read_state_with(view, false)
+}
+
+/// [`read_state`]; `allow_building` admits a compaction target that has not
+/// been published (only the compaction's own verification asks for it).
+fn read_state_with<B: StorageBackend>(
+    view: &CowView<B>,
+    allow_building: bool,
+) -> Result<(Header, Block), SnapError> {
     if view.block_count() < DATA_BASE {
         return Err(SnapError::NotSnapFile("not initialised"));
     }
     let header = decode_header(&block_of(view.read_block(0)?)?)?;
+    if header.building && !allow_building {
+        return Err(SnapError::BuildInProgress);
+    }
     let presence = block_of(view.read_block(1)?)?;
     if !bitmap_within(&presence, header.disk_blocks) {
         return Err(SnapError::HeaderCorrupt("presence beyond disk size"));
@@ -764,7 +835,7 @@ pub struct SnapFile<B: StorageBackend> {
     header: Header,
     presence: Block,
     snapshots: BTreeMap<u64, Level>,
-    chain: Vec<Ancestor>,
+    chain: Rc<Vec<Ancestor>>,
 }
 
 impl<B: StorageBackend> SnapFile<B> {
@@ -781,6 +852,7 @@ impl<B: StorageBackend> SnapFile<B> {
         Self::init(
             storage,
             Header {
+                building: false,
                 file_uid,
                 disk_blocks: 0,
                 next_snapshot_id: 1,
@@ -815,6 +887,7 @@ impl<B: StorageBackend> SnapFile<B> {
         Self::init(
             storage,
             Header {
+                building: false,
                 file_uid,
                 disk_blocks,
                 next_snapshot_id: 1,
@@ -919,6 +992,14 @@ impl<B: StorageBackend> SnapFile<B> {
         header: Header,
         chain: Vec<Ancestor>,
     ) -> Result<(Self, DurableAck), SnapError> {
+        Self::init_shared(storage, header, Rc::new(chain))
+    }
+
+    fn init_shared(
+        storage: CheckedStorage<B>,
+        header: Header,
+        chain: Rc<Vec<Ancestor>>,
+    ) -> Result<(Self, DurableAck), SnapError> {
         let (mut file, _created) = CowFile::create(storage)?;
         let hdr = encode_header(&header);
         let presence = [0u8; BLOCK_SIZE];
@@ -970,7 +1051,7 @@ impl<B: StorageBackend> SnapFile<B> {
                 header,
                 presence,
                 snapshots,
-                chain,
+                chain: Rc::new(chain),
             },
             report,
         ))
@@ -982,17 +1063,7 @@ impl<B: StorageBackend> SnapFile<B> {
         resolver: &mut R,
     ) -> Result<Verified, SnapError> {
         let (header, presence) = read_state(view)?;
-        let mut snapshots = BTreeMap::new();
-        for rec in &header.snapshots {
-            if rec.generation >= view.generation() || rec.end_offset > view.end_offset() {
-                return Err(SnapError::SnapshotCorrupt { id: rec.id });
-            }
-            let level = load_level(view.storage(), rec)?;
-            if level.header.file_uid != header.file_uid || level.header.parent != header.parent {
-                return Err(SnapError::SnapshotCorrupt { id: rec.id });
-            }
-            snapshots.insert(rec.id, level);
-        }
+        let snapshots = load_own_snapshots(view, &header)?;
         let chain = match &header.parent {
             None => Vec::new(),
             Some(p) => {
@@ -1174,11 +1245,22 @@ impl<B: StorageBackend> SnapFile<B> {
     /// Publishes a snapshot of the current published state and returns its id.
     /// One commit; after a crash the snapshot is whole or absent.
     pub fn create_snapshot(&mut self) -> Result<(u64, DurableAck), SnapError> {
+        let id = self.header.next_snapshot_id;
+        let next = id.checked_add(1).ok_or(SnapError::SnapshotIdExhausted)?;
+        let ack = self.publish_snapshot(id, next)?;
+        Ok((id, ack))
+    }
+
+    /// Publishes snapshot `id` (not below `next_snapshot_id`) and sets the next
+    /// id to `next`. [`create_snapshot`](Self::create_snapshot) passes the next
+    /// free id; compaction passes the id the source used.
+    fn publish_snapshot(&mut self, id: u64, next: u64) -> Result<DurableAck, SnapError> {
         if self.header.snapshots.len() >= MAX_SNAPSHOTS {
             return Err(SnapError::SnapshotLimit);
         }
-        let id = self.header.next_snapshot_id;
-        let next = id.checked_add(1).ok_or(SnapError::SnapshotIdExhausted)?;
+        if id < self.header.next_snapshot_id || next <= id {
+            return Err(SnapError::BadWrite("snapshot id not increasing"));
+        }
         let rec = SnapshotRecord {
             id,
             generation: self.file.generation(),
@@ -1201,6 +1283,476 @@ impl<B: StorageBackend> SnapFile<B> {
             .commit(&[(0, encode_header(&header).as_slice())])?;
         self.header = header;
         self.snapshots.insert(id, level);
-        Ok((id, ack))
+        Ok(ack)
     }
+
+    /// Deletes the **name** of snapshot `id` (S9-17): one commit (two
+    /// barriers) that rewrites the header without its record. No block is
+    /// freed or touched: the data stays in the file, still referenced by the
+    /// previous recoverable root (which still names the snapshot) and by
+    /// whatever else is reachable; only [`compact_to`](Self::compact_to)
+    /// later drops what no root reaches. The id is never reused
+    /// (`next_snapshot_id` is monotonic). After a crash the snapshot is either
+    /// still named (whole) or gone.
+    ///
+    /// The file cannot know which closed child files record this snapshot as
+    /// their parent. Deleting it makes such a child refuse to open
+    /// ([`SnapError::SnapshotMissing`]); a host must check its catalogue of
+    /// children first (S9-16 catalogue; not implemented here) and must hold the
+    /// exclusive writer lock, which an open child's parent lease prevents.
+    pub fn delete_snapshot(&mut self, id: u64) -> Result<DurableAck, SnapError> {
+        let pos = self
+            .header
+            .snapshots
+            .iter()
+            .position(|r| r.id == id)
+            .ok_or(SnapError::SnapshotMissing { id })?;
+        let mut header = self.header.clone();
+        header.snapshots.remove(pos);
+        let ack = self
+            .file
+            .commit(&[(0, encode_header(&header).as_slice())])?;
+        self.header = header;
+        self.snapshots.remove(&id);
+        Ok(ack)
+    }
+
+    /// Physical offsets of the data blocks snapshot `id` stores itself (holes
+    /// are not listed), for tests and the rootset.
+    pub fn snapshot_data_blocks(&self, id: u64) -> Option<BTreeSet<u64>> {
+        let level = self.snapshots.get(&id)?;
+        Some(
+            (0..level.header.disk_blocks)
+                .filter_map(|b| level.data_desc(b).map(|d| d.phys))
+                .collect(),
+        )
+    }
+
+    /// The previous recoverable root (generation - 1), read from its slot.
+    fn previous_root(&self) -> Result<RootRecord, SnapError> {
+        let unavailable =
+            || SnapError::Cow(CowError::RootInconsistent("previous root unavailable"));
+        let prev = self
+            .file
+            .generation()
+            .checked_sub(1)
+            .ok_or_else(unavailable)?;
+        let src = StorageSource(self.file.storage());
+        match parse_slot_at(
+            &src,
+            slot_offset(prev),
+            (prev & 1) as usize,
+            &Capabilities::CURRENT,
+            Access::ReadOnly,
+        ) {
+            Ok(Slot::Root(root)) if root.generation == prev => Ok(root),
+            _ => Err(unavailable()),
+        }
+    }
+
+    /// The set of everything reachable from a root this file can recover to
+    /// (S9-17): the writable head, every named snapshot, **both** recoverable
+    /// root generations (current and previous, with the snapshots each of them
+    /// names), and the maps of all of these. A snapshot deleted in the current
+    /// root is still in the previous root's table, so its blocks stay in the
+    /// set until a later commit makes the previous root stop naming it.
+    ///
+    /// Outside this set (the bytes of the file not covered by `data_blocks` and
+    /// `extents`) is *provably unreachable from this file's roots*; it is only
+    /// a candidate for reclamation. What the set cannot know and a host must
+    /// add: closed child files that name a snapshot of this file (they pin it
+    /// by [`ParentRef`]; a catalogue is S9-16 follow-up work), and reader or
+    /// export leases (flock; they exclude the exclusive writer that compaction
+    /// needs, so a held lease means no compaction at all). `parents` lists the
+    /// ancestor snapshots this file pins in *other* files (clone parents).
+    pub fn rootset(&self) -> Result<Rootset, SnapError> {
+        let storage = self.file.storage();
+        let generation = self.file.generation();
+        let mut rs = Rootset {
+            generations: [generation, generation.saturating_sub(1)],
+            ..Rootset::default()
+        };
+        // Head.
+        for i in 0..self.file.block_count() {
+            if let Some(phys) = self.file.block_offset(i) {
+                rs.data_blocks.insert(phys);
+            }
+        }
+        rs.add_extents(
+            self.file.map_offset(),
+            self.file.block_count(),
+            self.file.end_offset(),
+        )?;
+        for (id, level) in &self.snapshots {
+            let Some(rec) = self.snapshot_record(*id) else {
+                return Err(SnapError::SnapshotCorrupt { id: *id });
+            };
+            rs.add_level(&rec, level)?;
+        }
+        // Previous recoverable root and the snapshots it names.
+        let prev = self.previous_root()?;
+        let map = parse_map(&StorageSource(storage), &prev).map_err(parse_failure)?;
+        rs.data_blocks.extend(map.iter().map(|d| d.phys));
+        rs.add_extents(prev.map_offset, prev.block_count, prev.end_offset)?;
+        if let Some(h) = map.first() {
+            let header = decode_header(&read_desc(storage, h)?)?;
+            for rec in &header.snapshots {
+                let level = load_level(storage, rec)?;
+                rs.add_level(rec, &level)?;
+            }
+        }
+        // Clone parents: what this file's own chain pins elsewhere.
+        if let Some(p) = self.header.parent {
+            rs.parents.push(p);
+        }
+        for a in self.chain.iter() {
+            if let Some(p) = a.level.header.parent
+                && !rs.parents.contains(&p)
+            {
+                rs.parents.push(p);
+            }
+        }
+        Ok(rs)
+    }
+
+    /// Copy-compaction into a **new** file (S9-17). Offline: `self` is the
+    /// exclusive writer, nothing else may hold the source.
+    ///
+    /// The target receives a new `new_uid` and the logical content (own
+    /// blocks, holes, disk size, parent reference) of the head and of every
+    /// named snapshot **with the same snapshot ids**, rebuilt in the order of
+    /// the source's generations so that each snapshot is a real retained root
+    /// of the target. Unreachable bytes (blocks of deleted snapshots and of
+    /// overwritten data, old maps) are simply not copied.
+    ///
+    /// Publication: the target is built with a *building* header that no open
+    /// accepts ([`SnapError::BuildInProgress`]). When everything is written,
+    /// the target storage is released and **reopened from the backend**
+    /// (full CoW recovery with CRC verification of every reachable block, the
+    /// header, bitmap and every retained snapshot parsed again from media,
+    /// the reopened header required to equal the one that was written), and
+    /// every snapshot and the head of that reopened file are compared byte for
+    /// byte with the source (through the same parent chain). Only then does
+    /// one final commit, on the reopened file, clear the flag and set the
+    /// source's `next_snapshot_id`; a mismatch or any corruption found on the
+    /// way is an error and the flag stays set. A crash earlier
+    /// leaves a target that does not open (absent); after the returned `Ok`
+    /// the target is complete. The source is only read: its bytes do not
+    /// change, and it must be kept until the caller has confirmed the target.
+    ///
+    /// **Children are not reconnected.** The target has a different file uid
+    /// (and different map CRCs), so a child that recorded the source as its
+    /// parent refuses to open against the target
+    /// ([`SnapError::ParentIdentityMismatch`]); rewriting children is a
+    /// separate, explicit operation that does not exist. For a child source the
+    /// target keeps the same [`ParentRef`] and shares the verified chain.
+    ///
+    /// Not covered: replacing the source by the target in the namespace (needs
+    /// an atomic durable rename, ISSUE-055), freeing the source, power loss.
+    pub fn compact_to<T: StorageBackend>(
+        &self,
+        target: CheckedStorage<T>,
+        new_uid: u64,
+    ) -> Result<(SnapFile<T>, DurableAck), SnapError> {
+        let out = self.compact_build(target, new_uid)?;
+        self.compact_publish(out)
+    }
+
+    /// First half of [`compact_to`](Self::compact_to): writes the target up
+    /// to and including the head state; the target is still *building*.
+    pub(crate) fn compact_build<T: StorageBackend>(
+        &self,
+        target: CheckedStorage<T>,
+        new_uid: u64,
+    ) -> Result<SnapFile<T>, SnapError> {
+        if self.is_poisoned() {
+            return Err(SnapError::BadWrite("compaction source is poisoned"));
+        }
+        if new_uid == 0 || new_uid == self.header.file_uid {
+            return Err(SnapError::BadWrite("compaction needs a new file uid"));
+        }
+        if self
+            .chain
+            .iter()
+            .any(|a| a.level.header.file_uid == new_uid)
+        {
+            return Err(SnapError::ParentCycle);
+        }
+        let (mut out, _ack) = SnapFile::init_shared(
+            target,
+            Header {
+                building: true,
+                file_uid: new_uid,
+                disk_blocks: 0,
+                next_snapshot_id: 1,
+                depth: self.header.depth,
+                parent: self.header.parent,
+                snapshots: Vec::new(),
+            },
+            Rc::clone(&self.chain),
+        )?;
+        // Snapshots in generation (= id) order, then the head.
+        for (id, level) in &self.snapshots {
+            out.apply_state(
+                level.header.disk_blocks,
+                &level.presence,
+                &mut |b| match level.data_desc(b) {
+                    Some(d) => read_desc(self.file.storage(), d),
+                    None => Err(SnapError::SnapshotCorrupt { id: *id }),
+                },
+            )?;
+            let next = id.checked_add(1).ok_or(SnapError::SnapshotIdExhausted)?;
+            out.publish_snapshot(*id, next)?;
+        }
+        out.apply_state(self.header.disk_blocks, &self.presence, &mut |b| {
+            let index = b.checked_add(DATA_BASE).ok_or(SnapError::OutOfRange)?;
+            block_of(self.file.read_block(index)?)
+        })?;
+        Ok(out)
+    }
+
+    /// Second half: verifies a built target from the media and publishes it.
+    pub(crate) fn compact_publish<T: StorageBackend>(
+        &self,
+        out: SnapFile<T>,
+    ) -> Result<(SnapFile<T>, DurableAck), SnapError> {
+        let mut out = out.reopen_from_media()?;
+        self.verify_same_content(&out)?;
+        let mut header = out.header.clone();
+        header.building = false;
+        header.next_snapshot_id = self.header.next_snapshot_id;
+        let ack = out.file.commit(&[(0, encode_header(&header).as_slice())])?;
+        out.header = header;
+        Ok((out, ack))
+    }
+
+    /// Releases the storage and opens the same media again (writable CoW
+    /// recovery, which verifies every reachable block's CRC), re-reads the
+    /// header, bitmap and retained snapshots, and requires the header and
+    /// bitmap to equal what this object believed it had written. Accepts a
+    /// *building* header; nothing is written unless recovery has to repair.
+    fn reopen_from_media(self) -> Result<Self, SnapError> {
+        let Self {
+            file,
+            header,
+            presence,
+            chain,
+            ..
+        } = self;
+        if file.is_poisoned() {
+            return Err(SnapError::Cow(CowError::Poisoned));
+        }
+        let backend = file
+            .into_storage()
+            .into_backend()
+            .map_err(|_| SnapError::BadWrite("target storage needs reconcile"))?;
+        let storage = CheckedStorage::new(backend).map_err(|e| SnapError::Cow(e.into()))?;
+        let (file, _report) = CowFile::open(storage)?;
+        let (media_header, media_presence) = read_state_with(&file, true)?;
+        if media_header != header || media_presence != presence {
+            return Err(SnapError::CompactionMismatch { snapshot: None });
+        }
+        let snapshots = load_own_snapshots(&file, &media_header)?;
+        Ok(Self {
+            file,
+            header: media_header,
+            presence: media_presence,
+            snapshots,
+            chain,
+        })
+    }
+
+    /// Compares every named snapshot and the head of `self` with `other`
+    /// through each side's own reads.
+    fn verify_same_content<T: StorageBackend>(&self, other: &SnapFile<T>) -> Result<(), SnapError> {
+        let mismatch = |snapshot| SnapError::CompactionMismatch { snapshot };
+        if self.snapshot_ids() != other.snapshot_ids() {
+            return Err(mismatch(None));
+        }
+        for id in self.snapshot_ids() {
+            let blocks = self.snapshot_disk_blocks(id);
+            if blocks != other.snapshot_disk_blocks(id) {
+                return Err(mismatch(Some(id)));
+            }
+            let len = image_len(blocks.unwrap_or(0))?;
+            let (mut a, mut b) = (vec![0u8; len], vec![0u8; len]);
+            self.read_snapshot_at(id, 0, &mut a)?;
+            other.read_snapshot_at(id, 0, &mut b)?;
+            if a != b {
+                return Err(mismatch(Some(id)));
+            }
+        }
+        if self.header.disk_blocks != other.header.disk_blocks {
+            return Err(mismatch(None));
+        }
+        let len = image_len(self.header.disk_blocks)?;
+        let (mut a, mut b) = (vec![0u8; len], vec![0u8; len]);
+        self.read_at(0, &mut a)?;
+        other.read_at(0, &mut b)?;
+        if a != b {
+            return Err(mismatch(None));
+        }
+        Ok(())
+    }
+
+    /// Moves the head of this (building) file to the given state with as few
+    /// copied blocks as possible and in commits of at most `MAX_TX_BLOCKS - 2`
+    /// data blocks. The presence set may only grow (no state in this layer
+    /// ever clears a bit). Bitmap and header go with the last commit, so every
+    /// intermediate commit keeps presence within the stored blocks.
+    fn apply_state(
+        &mut self,
+        disk_blocks: u64,
+        presence: &Block,
+        get: &mut dyn FnMut(u64) -> Result<Block, SnapError>,
+    ) -> Result<(), SnapError> {
+        let not_successor = SnapError::BadWrite("state is not a successor of the head");
+        if disk_blocks < self.header.disk_blocks
+            || (0..MAX_DISK_BLOCKS).any(|b| bit(&self.presence, b) && !bit(presence, b))
+        {
+            return Err(not_successor);
+        }
+        let have = self.file.block_count();
+        let top = (0..disk_blocks).rev().find(|b| bit(presence, *b));
+        let required = top.map_or(have, |t| (t + 1 + DATA_BASE).max(have));
+        let mut writes: BTreeMap<u64, Block> = BTreeMap::new();
+        for b in 0..disk_blocks {
+            if !bit(presence, b) {
+                continue;
+            }
+            let want = get(b)?;
+            let index = b + DATA_BASE;
+            let same = bit(&self.presence, b)
+                && block_of(self.file.read_block(index)?).is_ok_and(|cur| cur == want);
+            if !same {
+                writes.insert(index, want);
+            }
+        }
+        for index in have..required {
+            writes.entry(index).or_insert([0u8; BLOCK_SIZE]);
+        }
+        let header_changed = disk_blocks != self.header.disk_blocks;
+        let presence_changed = *presence != self.presence;
+        if writes.is_empty() && !header_changed && !presence_changed {
+            return Ok(());
+        }
+        let mut header = self.header.clone();
+        header.disk_blocks = disk_blocks;
+        let entries: Vec<(u64, Block)> = writes.into_iter().collect();
+        let chunks: Vec<&[(u64, Block)]> = if entries.is_empty() {
+            vec![&[]]
+        } else {
+            entries.chunks(MAX_TX_BLOCKS - 2).collect()
+        };
+        let last = chunks.len().saturating_sub(1);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let mut refs: Vec<(u64, &[u8])> =
+                chunk.iter().map(|(x, d)| (*x, d.as_slice())).collect();
+            let hdr = encode_header(&header);
+            if i == last {
+                if header_changed {
+                    refs.push((0, hdr.as_slice()));
+                }
+                if presence_changed {
+                    refs.push((1, presence.as_slice()));
+                }
+            }
+            if refs.is_empty() {
+                continue;
+            }
+            self.file.commit(&refs)?;
+        }
+        self.header = header;
+        self.presence = *presence;
+        Ok(())
+    }
+}
+
+/// Reachable objects of a file (see [`SnapFile::rootset`]).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Rootset {
+    /// Physical offsets of every reachable data block (and of the header and
+    /// bitmap blocks of every reachable root, which are ordinary blocks).
+    pub data_blocks: BTreeSet<u64>,
+    /// `(offset, len)` of every reachable block map and root copy sector.
+    pub extents: BTreeSet<(u64, u64)>,
+    /// The two recoverable root generations: `[current, previous]`.
+    pub generations: [u64; 2],
+    /// Ids of snapshots named by any recoverable root.
+    pub snapshot_ids: BTreeSet<u64>,
+    /// Snapshots of other files pinned by this file's chain.
+    pub parents: Vec<ParentRef>,
+}
+
+impl Rootset {
+    fn add_extents(
+        &mut self,
+        map_offset: u64,
+        block_count: u64,
+        end_offset: u64,
+    ) -> Result<(), SnapError> {
+        if block_count > 0 {
+            let len = block_count
+                .checked_mul(crate::cow_proto::ENTRY_LEN as u64)
+                .ok_or(SnapError::Cow(CowError::LayoutOverflow))?;
+            self.extents.insert((map_offset, len));
+        }
+        if let Some(copy) = end_offset.checked_sub(crate::cow_proto::SLOT_SIZE as u64) {
+            self.extents
+                .insert((copy, crate::cow_proto::SLOT_SIZE as u64));
+        }
+        Ok(())
+    }
+
+    fn add_level(&mut self, rec: &SnapshotRecord, level: &Level) -> Result<(), SnapError> {
+        self.snapshot_ids.insert(rec.id);
+        self.data_blocks.extend(level.map.iter().map(|d| d.phys));
+        self.add_extents(rec.map_offset, rec.block_count, rec.end_offset)
+    }
+
+    /// Bytes the set covers.
+    pub fn live_bytes(&self) -> u64 {
+        self.data_blocks.len() as u64 * BLOCK_SIZE as u64
+            + self.extents.iter().map(|(_, len)| *len).sum::<u64>()
+    }
+}
+
+/// Byte length of an image of `blocks` blocks, without overflow.
+fn image_len(blocks: u64) -> Result<usize, SnapError> {
+    usize::try_from(blocks)
+        .ok()
+        .and_then(|b| b.checked_mul(BLOCK_SIZE))
+        .ok_or(SnapError::Cow(CowError::LayoutOverflow))
+}
+
+fn parse_failure(e: ParseError) -> SnapError {
+    match e.kind {
+        ParseKind::Io(s) => SnapError::Cow(CowError::Storage(s)),
+        _ => SnapError::Cow(CowError::RootInconsistent("retained root does not parse")),
+    }
+}
+
+/// Logical image of snapshot `id` as the root `view` recovered to names it,
+/// for a **base** file (no parent chain). Used by tests to read what a
+/// previous recoverable root still retains.
+#[cfg(test)]
+pub(crate) fn retained_image<B: StorageBackend>(
+    view: &CowView<B>,
+    id: u64,
+) -> Result<Vec<u8>, SnapError> {
+    let header = decode_header(&block_of(view.read_block(0)?)?)?;
+    let rec = header
+        .snapshots
+        .iter()
+        .find(|r| r.id == id)
+        .ok_or(SnapError::SnapshotMissing { id })?;
+    let level = load_level(view.storage(), rec)?;
+    let mut out = Vec::new();
+    for b in 0..level.header.disk_blocks {
+        match level.data_desc(b) {
+            Some(d) => out.extend_from_slice(&read_desc(view.storage(), d)?),
+            None => out.extend_from_slice(&[0u8; BLOCK_SIZE]),
+        }
+    }
+    Ok(out)
 }

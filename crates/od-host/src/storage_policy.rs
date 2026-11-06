@@ -772,6 +772,58 @@ mod tests {
             SnapFile::open(storage, r).map(|(f, _)| f)
         }
 
+        /// Why a host-level delete or compaction did not run or failed.
+        #[derive(Debug)]
+        pub(super) enum Exclusive {
+            /// Another holder (a writer or a child's parent lease) owns the
+            /// file; nothing was opened for writing and nothing was written.
+            Busy,
+            Other,
+            Snap(SnapError),
+        }
+
+        /// The exclusive writer lock is the precondition of every mutation of
+        /// a file's reachability: opening the file for writing takes it, and a
+        /// held lease or writer makes this `Busy` before any byte is read for
+        /// writing.
+        fn exclusive(path: &Path, r: &mut PathResolver) -> Result<Host, Exclusive> {
+            let storage = writer(path).map_err(|e| match e {
+                WriterOpenError::WriterBusy => Exclusive::Busy,
+                _ => Exclusive::Other,
+            })?;
+            SnapFile::open(storage, r)
+                .map(|(f, _)| f)
+                .map_err(Exclusive::Snap)
+        }
+
+        /// Deletes the name of snapshot `id` of `path` under the exclusive
+        /// writer lock.
+        pub(super) fn delete_snapshot_exclusive(
+            path: &Path,
+            id: u64,
+            r: &mut PathResolver,
+        ) -> Result<(), Exclusive> {
+            let mut f = exclusive(path, r)?;
+            f.delete_snapshot(id).map(|_| ()).map_err(Exclusive::Snap)
+        }
+
+        /// Copy-compacts `path` into the new file `target` under the exclusive
+        /// writer lock on `path`. The target path is only created after the
+        /// lock is held, so a busy source leaves no file behind. The source is
+        /// only read; swapping it for the target is not done here.
+        pub(super) fn compact_exclusive(
+            path: &Path,
+            target: &Path,
+            new_uid: u64,
+            r: &mut PathResolver,
+        ) -> Result<(), Exclusive> {
+            let source = exclusive(path, r)?;
+            source
+                .compact_to(created(target), new_uid)
+                .map(|_| ())
+                .map_err(Exclusive::Snap)
+        }
+
         pub(super) fn read_all(f: &Host) -> Vec<u8> {
             let mut v = vec![0u8; f.disk_size() as usize];
             f.read_at(0, &mut v).expect("read");
@@ -1084,6 +1136,79 @@ mod tests {
         // changed only by its own write and snapshot, never by the branch.
         assert_eq!(std::fs::read(&c.base).expect("base"), before[0]);
         assert_eq!(std::fs::read(&c.mid).expect("mid"), before[1]);
+    }
+
+    /// S9-17 on real files: delete and compaction need the exclusive writer
+    /// lock, an open child makes both `Busy` without a write, compaction
+    /// leaves the source untouched and does not reconnect children.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn snapshot_delete_and_compaction_need_the_exclusive_lock_and_do_not_reconnect_children() {
+        use chain_files::*;
+        use od_storage::cow_snapshot::{SnapError, SnapFile};
+        let _serial = process_spawn_guard();
+        let dir = TempDir::new();
+        let mut c = chain(&dir);
+        let new_base = dir.path("base2.cow");
+        let bytes = |p: &Path| std::fs::read(p).expect("bytes");
+        let (base_before, mid_before) = (bytes(&c.base), bytes(&c.mid));
+
+        // A child is open: it leases mid and base. Nothing may write them.
+        let child = open_child(&c.top, &mut c.resolver).expect("child");
+        for p in [&c.base, &c.mid] {
+            assert!(matches!(
+                delete_snapshot_exclusive(p, 1, &mut c.resolver),
+                Err(Exclusive::Busy)
+            ));
+            assert!(matches!(
+                compact_exclusive(p, &new_base, 90, &mut c.resolver),
+                Err(Exclusive::Busy)
+            ));
+        }
+        assert!(!new_base.exists(), "a busy compaction created its target");
+        assert_eq!(bytes(&c.base), base_before, "base written while leased");
+        assert_eq!(bytes(&c.mid), mid_before, "mid written while leased");
+        drop(child);
+
+        // Closed: a second, unreferenced snapshot of base can be added and
+        // deleted; the delete takes the exclusive lock itself.
+        let mut b = open_child(&c.base, &mut c.resolver).expect("base writer");
+        let (extra, _) = b.create_snapshot().expect("extra snapshot");
+        drop(b);
+        delete_snapshot_exclusive(&c.base, extra, &mut c.resolver).expect("delete");
+        let base_before = bytes(&c.base);
+
+        // Compaction under the lock writes only the new file.
+        compact_exclusive(&c.base, &new_base, 90, &mut c.resolver).expect("compact");
+        assert_eq!(bytes(&c.base), base_before, "compaction changed the source");
+        let storage = writer(&new_base).expect("target writer");
+        let (t, _) = SnapFile::open(storage, &mut c.resolver).expect("target opens");
+        assert_eq!(t.file_uid(), 90);
+        assert_eq!(t.snapshot_ids(), vec![1]);
+        assert_eq!(read_all(&t), vec![0xAAu8; 1024]);
+        drop(t);
+
+        // The child of the old base is not reconnected to the compacted one.
+        c.resolver
+            .entries
+            .insert(1, (new_base.clone(), Some(identity(&new_base))));
+        assert!(matches!(
+            open_child(&c.mid, &mut c.resolver).err(),
+            Some(SnapError::ParentIdentityMismatch)
+        ));
+        c.resolver
+            .entries
+            .insert(1, (c.base.clone(), Some(identity(&c.base))));
+        assert!(open_child(&c.mid, &mut c.resolver).is_ok());
+
+        // Known limit: the file cannot see closed children. Deleting the
+        // snapshot a closed child uses succeeds, and the child then refuses to
+        // open (a catalogue must prevent this).
+        delete_snapshot_exclusive(&c.base, 1, &mut c.resolver).expect("delete referenced");
+        assert!(matches!(
+            open_child(&c.mid, &mut c.resolver).err(),
+            Some(SnapError::SnapshotMissing { id: 1 })
+        ));
     }
 
     /// `(dev, ino)` of a file that may be locked by a writer (no lease).
