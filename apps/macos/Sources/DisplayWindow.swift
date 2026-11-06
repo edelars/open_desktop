@@ -227,6 +227,14 @@ package final class DisplayWindow {
         refresh(state: lastState, detail: lastDetail)
     }
 
+    /// S11-12: the configuration of the displays changed (`NSApplication.didChangeScreenParametersNotification`). A window that did not move may
+    /// still have a new backing scale; the drawable and the viewport are rebuilt by the same `redraw()` as for a resize (S10-11). The shown
+    /// texture is kept. The guest's screens are not touched.
+    package func screenParametersChanged() {
+        view.layerForPresentation.contentsScale = window.backingScaleFactor
+        redraw()
+    }
+
     package func show() {
         window.acceptsMouseMovedEvents = true
         window.makeKeyAndOrderFront(nil)

@@ -8,11 +8,14 @@ struct AppOptions: Equatable {
     enum ParseError: Error, Equatable, CustomStringConvertible {
         case missingValue(String)
         case emptyValue(String)
+        case invalidValue(String, String)
 
         var description: String {
             switch self {
             case .missingValue(let option): return "\(option) needs a value"
             case .emptyValue(let option): return "\(option) value is empty"
+            case .invalidValue(let option, let value):
+                return "\(option) value '\(value)' is not one of: \(HostEventKind.allCases.map(\.rawValue).joined(separator: ", "))"
             }
         }
     }
@@ -21,8 +24,11 @@ struct AppOptions: Equatable {
     var vmhostOverride: String?
     /// Path given with `--open` (the last one wins), or nil.
     var openBundle: String?
+    /// TEST-ONLY `--simulate-host-event <sleep|wake|screens|low-space|memory>` (S11-12): the application runs one handler of a condition
+    /// of the host once after the start, as if the event had happened. Not a feature for users; documented as test-only in the README.
+    var simulateHostEvent: HostEventKind?
 
-    private static let knownOptions = ["--vmhost", "--open"]
+    private static let knownOptions = ["--vmhost", "--open", "--simulate-host-event"]
 
     /// `arguments` are the arguments after the program name.
     init(arguments: [String]) throws {
@@ -48,6 +54,10 @@ struct AppOptions: Equatable {
         }
         vmhostOverride = values["--vmhost"]
         openBundle = values["--open"]
+        if let raw = values["--simulate-host-event"] {
+            guard let kind = HostEventKind(rawValue: raw) else { throw ParseError.invalidValue("--simulate-host-event", raw) }
+            simulateHostEvent = kind
+        }
     }
 }
 

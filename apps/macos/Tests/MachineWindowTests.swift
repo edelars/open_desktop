@@ -224,8 +224,8 @@ private final class HostSession: MachineSession {
     var inputTaken = 0
     func requestConfigure(_ configure: ControlV2Configure, completion: @escaping ControlClientV2.Completion) {}
     func requestStart(completion: @escaping ControlClientV2.Completion) {}
-    func requestPause(completion: @escaping ControlClientV2.Completion) {}
-    func requestResume(completion: @escaping ControlClientV2.Completion) {}
+    func requestPause(reason: ControlV2Reason, completion: @escaping ControlClientV2.Completion) {}
+    func requestResume(reason: ControlV2Reason, completion: @escaping ControlClientV2.Completion) {}
     func requestStop(completion: @escaping ControlClientV2.Completion) {}
     func requestQuery(completion: @escaping ControlClientV2.Completion) {}
     func terminateSession() {}

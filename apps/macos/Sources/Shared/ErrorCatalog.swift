@@ -570,3 +570,64 @@ public enum ErrorCatalog {
         }
     }
 }
+
+// MARK: conditions of the host (S11-12)
+
+/// Conditions of the Mac that the application reports: free space of the volume of the bundle, a sleep that found a machine busy, the
+/// memory pressure of the system. Not codes of the wire; the words live here like all others (the rules of USER_FACING_ERRORS.md section 2).
+/// A refusal of `PAUSE` before the sleep is told by the code of the VMHost (`pause_timeout` and the others), not by a case of this list.
+public enum HostConditionIssue: CaseIterable, Equatable {
+    /// Free space is below the warning threshold; the machine keeps running.
+    case diskSpaceLow
+    /// Free space is below the hard threshold: the application sent `PAUSE` with the reason `disk_space`.
+    case diskSpacePaused
+    /// Free space is below the hard threshold: no `START`, no process was spawned.
+    case diskSpaceStartRefused
+    /// The volume of the bundle is below the hard threshold before `PREPARE_DISK`: no image is created. The size of the image itself is not subtracted.
+    case diskSpacePrepareRefused
+    /// The Mac went to sleep while a machine was busy with another request: `PAUSE` was not sent.
+    case sleepPauseSkipped
+    case memoryPressureWarning
+    case memoryPressureCritical
+}
+
+extension ErrorCatalog {
+    public static func entry(for issue: HostConditionIssue) -> ErrorEntry {
+        func make(_ key: String, _ title: String, _ explanation: String, _ action: String, _ severity: ErrorSeverity, details: Bool = true, retry: Bool = false) -> ErrorEntry {
+            ErrorEntry(key: "host." + key, title: title, explanation: explanation, action: action, severity: severity, showsDetails: details, retrySafe: retry)
+        }
+        switch issue {
+        case .diskSpaceLow:
+            return make("disk_space_low", "Мало свободного места на диске",
+                        "На томе с файлами машины осталось мало свободного места. Если оно станет ещё меньше, машина будет приостановлена.",
+                        "Освободите место на томе, пока машина работает.", .warning)
+        case .diskSpacePaused:
+            return make("disk_space_paused", "Машина приостановлена: на диске почти нет места",
+                        "Свободное место на томе с файлами машины стало меньше допустимого предела, поэтому машина приостановлена. Сама она не продолжится.",
+                        "Освободите место на томе и нажмите «Продолжить».", .error, retry: true)
+        case .diskSpaceStartRefused:
+            return make("disk_space_start_refused", "Не хватает места для запуска машины",
+                        "На томе с файлами машины свободного места меньше допустимого предела. Процесс машины не запускался.",
+                        "Освободите место на томе и запустите машину ещё раз.", .error, retry: true)
+        case .diskSpacePrepareRefused:
+            return make("disk_space_prepare_refused", "Не хватает места для диска машины",
+                        "На томе с файлами машины свободного места меньше допустимого предела. Образ диска не создавался.",
+                        "Освободите место на томе и создайте машину ещё раз.", .error, retry: true)
+        case .sleepPauseSkipped:
+            return make("sleep_pause_skipped", "Машина не была приостановлена перед сном",
+                        "Mac засыпал, пока машина выполняла другую операцию, поэтому команда паузы не была отправлена.",
+                        "Проверьте состояние машины и её окно после пробуждения.", .warning)
+        case .memoryPressureWarning:
+            return make("memory_pressure_warning", "В системе заканчивается память",
+                        "Mac сообщил о повышенной нагрузке на память. Запущенные машины занимают память, выделенную им при запуске. "
+                            + "Остановка машины не сохраняет состояние гостевой системы.",
+                        "Остановите машины, которые сейчас не нужны. Приложение не остановит их само.", .warning, details: false)
+        case .memoryPressureCritical:
+            return make("memory_pressure_critical", "В системе критически мало памяти",
+                        "Mac сообщил о критической нехватке памяти, система может завершать программы. "
+                            + "Остановка машины не сохраняет состояние гостевой системы.",
+                        "Остановите машины, которые сейчас не нужны, и закройте лишние программы. Приложение не остановит машины само.",
+                        .error, details: false)
+        }
+    }
+}

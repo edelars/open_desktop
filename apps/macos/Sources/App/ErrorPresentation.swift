@@ -126,6 +126,11 @@ struct ErrorPresentation: Equatable {
         return make(ErrorCatalog.entry(for: issue), code: nil, context: context, extra: technical.map { [$0] } ?? [])
     }
 
+    /// A condition of the Mac (S11-12). `context.bundleURL` is kept (a condition of one machine has the log line); `nil` for the host itself.
+    static func host(_ issue: HostConditionIssue, technical: String? = nil, context: ErrorContext = ErrorContext()) -> ErrorPresentation {
+        make(ErrorCatalog.entry(for: issue), code: nil, context: context, extra: technical.map { [$0] } ?? [])
+    }
+
     // MARK: details
 
     /// `code` (name and number, or a status), the request ID, the log, the time, then the technical lines. Without a code or a request

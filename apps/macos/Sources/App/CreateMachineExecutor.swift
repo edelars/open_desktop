@@ -106,16 +106,25 @@ final class CreateMachineExecutor: ObservableObject {
     private(set) var lockCreated = false
 
     private let launcher: CreationLauncher
+    /// Free bytes of the volume of the bundle (S11-12); the tests replace it. `nil` is "not known": the check passes.
+    private let availableSpace: (URL) -> UInt64?
+    private let thresholds: DiskSpaceThresholds
     private var lock: BundleWriterLock?
     private var session: CreationSession?
     private var pendingFailure: CreateMachineFailure?
     private var stopAcknowledged = false
     private var started = false
 
-    init(plan: CreateMachinePlan, vmhost: VMHostLocation, launcher: @escaping CreationLauncher = defaultCreationLauncher) {
+    init(
+        plan: CreateMachinePlan, vmhost: VMHostLocation, launcher: @escaping CreationLauncher = defaultCreationLauncher,
+        availableSpace: @escaping (URL) -> UInt64? = CreateMachineModel.volumeAvailableBytes(at:),
+        thresholds: DiskSpaceThresholds = .hypothesis
+    ) {
         self.plan = plan
         self.vmhost = vmhost
         self.launcher = launcher
+        self.availableSpace = availableSpace
+        self.thresholds = thresholds
     }
 
     var isRunning: Bool {
@@ -262,6 +271,17 @@ final class CreateMachineExecutor: ObservableObject {
     private func sendPrepareDisk() {
         guard let session, let disk = plan.disk else { return }
         phase = .running(.preparingDisk)
+        // S11-12: free space of the volume before `PREPARE_DISK`. Below the hard threshold no image is asked for; the session is closed with
+        // `STOP` as after any refusal. A RAW image may be sparse (hypothesis), so the capacity itself is not subtracted: the VMHost checks it.
+        if let available = availableSpace(plan.bundleURL), thresholds.level(availableBytes: available) == .critical {
+            let technical = "Свободно на томе: \(CreateMachineModel.format(available)); жёсткий порог: \(CreateMachineModel.format(thresholds.hardBytes))"
+            pendingFailure = pendingFailure
+                ?? failure(.prepareDisk, ErrorPresentation.host(.diskSpacePrepareRefused, technical: technical, context: errorContext()))
+            session.requestStop { result in
+                if case .failure = result { session.terminateSession() }
+            }
+            return
+        }
         let request = ControlV2PrepareDisk(capacityBytes: disk.capacityBytes, name: Array(disk.name.utf8))
         session.requestPrepareDisk(request) { [weak self] result in
             guard let self else { return }

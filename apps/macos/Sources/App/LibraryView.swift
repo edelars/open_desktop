@@ -27,6 +27,20 @@ struct LibraryView: View {
                 .padding(10)
                 .background(Color.orange.opacity(0.15))
             }
+            if let memory = model.memoryBanner {
+                // S11-12: the system is short of memory. The words offer to stop machines; nothing is stopped by the application.
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(memory.title).font(.callout.bold())
+                        Text(memory.message).font(.callout).textSelection(.enabled)
+                    }
+                    Spacer()
+                    Button("Скрыть") { model.dismissMemoryBanner() }.buttonStyle(.link)
+                }
+                .padding(10)
+                .background(Color.yellow.opacity(0.2))
+                .accessibilityIdentifier("memory-pressure-banner")
+            }
             if model.machines.isEmpty {
                 EmptyLibraryView(model: model)
             } else {
@@ -103,6 +117,7 @@ struct MachineActionButtons: View {
 struct MachineCommands: Commands {
     @ObservedObject var model: LibraryModel
     @ObservedObject var windows: MachineWindowCenter
+    @ObservedObject var conditions: HostConditions
 
     var body: some Commands {
         CommandMenu("Машина") {
@@ -115,6 +130,9 @@ struct MachineCommands: Commands {
             Button(windows.captureMenuTitle) { windows.toggleCapture() }
                 .keyboardShortcut("g", modifiers: [.control, .option, .command])
                 .disabled(!windows.canToggleCapture)
+            Divider()
+            // S11-12: on by default; a machine is paused (not stopped) before the sleep and resumed at the wake.
+            Toggle("Приостанавливать машины при сне", isOn: $conditions.pauseOnSleep)
             Divider()
             Button("Обновить") { model.refresh() }.keyboardShortcut("r")
         }

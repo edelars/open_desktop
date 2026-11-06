@@ -259,6 +259,27 @@ final class CreateMachineWizardXCTests: XCTestCase {
         try assertUntouched(existing)
     }
 
+    /// S11-12: free space of the volume is checked before `PREPARE_DISK`. Below the hard threshold no image is asked for and the session is
+    /// closed with `STOP`; the failure is the catalog's, and what this run created is offered for the rollback as after any refusal.
+    func testLowSpaceBeforePrepareDiskRefusesWithoutAskingForAnImage() throws {
+        let plan = try makePlan(name: "Tight", disk: true)
+        let session = FakeCreationSession()
+        let location = VMHostLocation(url: URL(fileURLWithPath: "/fake/od-vmhost"), source: .argument, isExecutable: true)
+        let executor = CreateMachineExecutor(plan: plan, vmhost: location, launcher: { _, handler in
+            session.handler = handler
+            DispatchQueue.main.async { handler(.ready) }
+            return session
+        }, availableSpace: { _ in 100 << 20 })
+        executor.start()
+        waitUntil("the end of the creation") { isFinished(executor) }
+        guard case .failed(let failure) = executor.phase else { return XCTFail("\(executor.phase)") }
+        XCTAssertEqual(failure.step, .prepareDisk)
+        XCTAssertEqual(failure.headline, "Не удалось создать машину: не хватает места для диска машины.")
+        XCTAssertEqual(session.calls, ["configure", "stop"], "PREPARE_DISK is not sent")
+        XCTAssertTrue(failure.details?.contains("Свободно на томе: 100") == true, failure.details ?? "")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: plan.bundleURL.appendingPathComponent("disks/disk0.img").path))
+    }
+
     func testRollbackIsRefusedWhenTheLockCannotBeTakenAndDeletesNothing() throws {
         let plan = try makePlan(name: "Held", disk: true)
         let session = FakeCreationSession()

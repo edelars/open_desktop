@@ -8,6 +8,8 @@ struct OpenDesktopApp: App {
     @StateObject private var model: LibraryModel
     /// The machine windows (S11-10): opens one on `running` and is the target of the menus "Вид" and "Машина".
     @StateObject private var windows: MachineWindowCenter
+    /// Sleep and wake, displays, free space, memory pressure (S11-12).
+    @StateObject private var conditions: HostConditions
     /// Quit with running machines (S11-11): the question, `STOP`, the wait.
     @NSApplicationDelegateAdaptor(AppLifecycle.self) private var lifecycle
 
@@ -34,8 +36,17 @@ struct OpenDesktopApp: App {
                 FileHandle.standardError.write(Data("OpenDesktop: --open: \(reason)\n".utf8))
             }
         }
+        let host = HostConditions(machines: { [weak library] in library?.machines ?? [] }, store: UserDefaultsStore())
+        host.onScreenParametersChange = { [weak center] in center?.screenParametersChanged() }
+        host.onMemoryPressure = { [weak library] level in library?.setMemoryPressure(level) }
+        host.start()
+        if let kind = options.simulateHostEvent {
+            // TEST-ONLY (`--simulate-host-event`): one handler, once, after the library is up. No real sleep and no real memory pressure.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { host.simulate(kind) }
+        }
         _model = StateObject(wrappedValue: library)
         _windows = StateObject(wrappedValue: center)
+        _conditions = StateObject(wrappedValue: host)
     }
 
     var body: some Scene {
@@ -44,7 +55,7 @@ struct OpenDesktopApp: App {
             LibraryView(model: model)
         }
         .commands {
-            MachineCommands(model: model, windows: windows)
+            MachineCommands(model: model, windows: windows, conditions: conditions)
             DisplayViewCommands(windows: windows)
         }
     }

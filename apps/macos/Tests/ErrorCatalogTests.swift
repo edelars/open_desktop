@@ -16,6 +16,7 @@ final class ErrorCatalogXCTests: XCTestCase {
         entries += ControlClientExit.Disposition.allCases.map { ErrorCatalog.entry(for: $0) }
         entries += ClientIssue.allCases.map { ErrorCatalog.entry(for: $0) }
         entries += LibraryIssue.allCases.map { ErrorCatalog.entry(for: $0) }
+        entries += HostConditionIssue.allCases.map { ErrorCatalog.entry(for: $0) }
         return entries
     }
 
@@ -60,6 +61,9 @@ final class ErrorCatalogXCTests: XCTestCase {
         XCTAssertEqual(ClientIssue.allCases.count, 8)
         for issue in ClientIssue.allCases { XCTAssertTrue(ErrorCatalog.entry(for: issue).key.hasPrefix("client."), "\(issue)") }
         for issue in LibraryIssue.allCases { XCTAssertTrue(ErrorCatalog.entry(for: issue).key.hasPrefix("library."), "\(issue)") }
+        // S11-12: the conditions of the host have their words too (the test fails when a case is added without a text).
+        XCTAssertEqual(HostConditionIssue.allCases.count, 7)
+        for issue in HostConditionIssue.allCases { XCTAssertTrue(ErrorCatalog.entry(for: issue).key.hasPrefix("host."), "\(issue)") }
         // The sources map to a case, none to a hole.
         XCTAssertEqual(ClientIssue(.connectionClosed), .connectionClosed)
         XCTAssertEqual(ClientIssue(.io(5)), .internalFailure)
@@ -124,7 +128,7 @@ final class ErrorCatalogXCTests: XCTestCase {
             XCTAssertEqual(entry.titleKey, entry.key + ".title")
             XCTAssertNotNil(entry.key.range(of: "^[a-z]+(\\.[a-z_]+)+$", options: .regularExpression), "key \(entry.key)")
         }
-        XCTAssertEqual(allEntries.count, 1 + 25 + 2 + 9 + 8 + LibraryIssue.allCases.count)
+        XCTAssertEqual(allEntries.count, 1 + 25 + 2 + 9 + 8 + LibraryIssue.allCases.count + HostConditionIssue.allCases.count)
     }
 
     func testTitlesHaveNoCodesDigitsOrPaths() {

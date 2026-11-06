@@ -237,6 +237,20 @@ final class MachineWindowController: NSObject, NSWindowDelegate {
 
     func toggleFullScreen() { display.window.toggleFullScreen(nil) }
 
+    /// S11-12: the displays changed. A window on a display that is gone moves to the primary one (`WindowPlacement`); a window in full screen
+    /// is the system's to place. Then the drawable and the viewport are rebuilt by the code of S10-11. The number of the guest's screens
+    /// does not change by this.
+    func screenParametersChanged() {
+        guard !closed else { return }
+        let window = display.window
+        let screens = NSScreen.screens
+        if !window.styleMask.contains(.fullScreen), let primary = screens.first?.visibleFrame {
+            let target = WindowPlacement.adjusted(window.frame, visibleFrames: screens.map(\.visibleFrame), primary: primary)
+            if target != window.frame { window.setFrame(target, display: true) }
+        }
+        display.screenParametersChanged()
+    }
+
     /// Closes without asking (a new run replaces this window, or the application ends).
     func closeWithoutQuestion() {
         endRun()
@@ -363,6 +377,9 @@ final class MachineWindowCenter: NSObject, ObservableObject, MachineWindowHost {
 
     /// A window changed what the menus show (capture, scaling).
     func changed() { objectWillChange.send() }
+
+    /// S11-12: the displays changed; every machine window rebuilds itself.
+    func screenParametersChanged() { windows.values.forEach { $0.screenParametersChanged() } }
 
     // MARK: menu state and actions (the active window)
 

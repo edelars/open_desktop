@@ -74,4 +74,28 @@ final class AppOptionsXCTests: XCTestCase {
         // The form with `=` states the value explicitly.
         XCTAssertEqual(try AppOptions(arguments: ["--open=--odd.odvm"]).openBundle, "--odd.odvm")
     }
+
+    // S11-12: the test-only argument `--simulate-host-event`.
+    func testSimulateHostEventAcceptsTheFiveEventsInBothForms() throws {
+        XCTAssertNil(try AppOptions(arguments: []).simulateHostEvent)
+        for kind in HostEventKind.allCases {
+            XCTAssertEqual(try AppOptions(arguments: ["--simulate-host-event", kind.rawValue]).simulateHostEvent, kind)
+            XCTAssertEqual(try AppOptions(arguments: ["--simulate-host-event=\(kind.rawValue)"]).simulateHostEvent, kind)
+        }
+        let together = try AppOptions(arguments: ["--open", "/b/A.odvm", "--simulate-host-event", "low-space", "--vmhost", "/x"])
+        XCTAssertEqual(together.simulateHostEvent, .lowSpace)
+        XCTAssertEqual(together.openBundle, "/b/A.odvm")
+    }
+
+    func testSimulateHostEventRejectsAnUnknownOrMissingValue() {
+        XCTAssertThrowsError(try AppOptions(arguments: ["--simulate-host-event", "suspend"])) {
+            XCTAssertEqual($0 as? AppOptions.ParseError, .invalidValue("--simulate-host-event", "suspend"))
+        }
+        XCTAssertThrowsError(try AppOptions(arguments: ["--simulate-host-event"])) {
+            XCTAssertEqual($0 as? AppOptions.ParseError, .missingValue("--simulate-host-event"))
+        }
+        XCTAssertThrowsError(try AppOptions(arguments: ["--simulate-host-event="])) {
+            XCTAssertEqual($0 as? AppOptions.ParseError, .emptyValue("--simulate-host-event"))
+        }
+    }
 }

@@ -209,8 +209,10 @@ enum MachinePresentation {
 protocol MachineSession: AnyObject {
     func requestConfigure(_ configure: ControlV2Configure, completion: @escaping ControlClientV2.Completion)
     func requestStart(completion: @escaping ControlClientV2.Completion)
-    func requestPause(completion: @escaping ControlClientV2.Completion)
-    func requestResume(completion: @escaping ControlClientV2.Completion)
+    /// `reason` is the field of `PAUSE`/`RESUME` (CONTROL_PROTOCOL_V2.md 6.8): `user`, `system_sleep`, `disk_space` for a pause; `user`,
+    /// `system_wake` for a resume. S11-12 sends the system ones.
+    func requestPause(reason: ControlV2Reason, completion: @escaping ControlClientV2.Completion)
+    func requestResume(reason: ControlV2Reason, completion: @escaping ControlClientV2.Completion)
     func requestStop(completion: @escaping ControlClientV2.Completion)
     func requestQuery(completion: @escaping ControlClientV2.Completion)
     func terminateSession()
@@ -237,8 +239,8 @@ protocol MachineWindowHost: AnyObject {
 extension ControlClientV2: MachineSession {
     func requestConfigure(_ configure: ControlV2Configure, completion: @escaping Completion) { self.configure(configure, completion: completion) }
     func requestStart(completion: @escaping Completion) { start(completion: completion) }
-    func requestPause(completion: @escaping Completion) { pause(completion: completion) }
-    func requestResume(completion: @escaping Completion) { resume(completion: completion) }
+    func requestPause(reason: ControlV2Reason, completion: @escaping Completion) { pause(reason: reason, completion: completion) }
+    func requestResume(reason: ControlV2Reason, completion: @escaping Completion) { resume(reason: reason, completion: completion) }
     func requestStop(completion: @escaping Completion) { stop(completion: completion) }
     func requestQuery(completion: @escaping Completion) { query(completion: completion) }
     func terminateSession() { terminate() }
@@ -271,6 +273,10 @@ final class MachineController: ObservableObject, Identifiable {
     /// S11-11: what "Показать лог" says when `logs/vmhost.log` does not exist ("журнал не ведётся"); `nil` otherwise.
     @Published private(set) var logNote: String?
 
+    /// S11-12: the reason of the `STATE_CHANGED` that made the machine `paused` (`user`, `system_sleep`, `disk_space`); `nil` in every other
+    /// state. It comes from the event, not from what the application asked: the VMHost says why it is paused.
+    @Published private(set) var pauseReason: ControlV2Reason?
+
     private let vmhost: VMHostLocation
     private let launcher: MachineLauncher
     private let hostMemoryBytes: UInt64
@@ -288,6 +294,23 @@ final class MachineController: ObservableObject, Identifiable {
     var logRevealer: ((URL) -> Void)?
     /// Whether a file exists; the tests replace it.
     var fileExists: (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+
+    // S11-12: the conditions of the host (HostConditions.swift).
+    /// Free bytes of the volume of the bundle; `nil` when it cannot be told. The tests replace it.
+    var availableSpace: (URL) -> UInt64? = CreateMachineModel.volumeAvailableBytes(at:)
+    var diskThresholds = DiskSpaceThresholds.hypothesis
+    /// The Mac is going to sleep or sleeps (between `prepareForSystemSleep` and `resumeAfterSystemWake`): failures are kept for the wake.
+    private var asleep = false
+    /// The `PAUSE` of the sleep was sent and is not answered yet.
+    private var sleepPauseInFlight = false
+    /// A disk-space `PAUSE` is in flight: a sleep during it must not be reported as a skipped pause.
+    private var diskPauseInFlight = false
+    /// The Mac woke before the pause of the sleep landed (or while another request was in flight): the resume follows as soon as it can.
+    private var wakeResumePending = false
+    /// Refusals of the requests of the sleep, shown when the Mac wakes.
+    private var sleepNotices: [MachineNotice] = []
+    /// The warning about free space was shown for this low period; it is shown once, not every 30 s.
+    private var diskWarningShown = false
 
     init(
         entry: CatalogEntry, status: CatalogBundleStatus, vmhost: VMHostLocation,
@@ -363,6 +386,19 @@ final class MachineController: ObservableObject, Identifiable {
             notice = .startFailed(ErrorPresentation.client(.vmhostMissing, technical: "Путь: \(vmhost.url.path)", context: errorContext()))
             return
         }
+        // S11-12: free space of the volume of the bundle. Below the hard threshold nothing is spawned; below the warning one it starts.
+        if let space = diskSpace() {
+            switch space.level {
+            case .critical:
+                notice = .startFailed(ErrorPresentation.host(.diskSpaceStartRefused, technical: space.details, context: errorContext()))
+                return
+            case .warning:
+                diskWarningShown = true
+                notice = .plain(ErrorPresentation.host(.diskSpaceLow, technical: space.details, context: errorContext()))
+            case .normal:
+                diskWarningShown = false
+            }
+        }
         generation += 1
         let current = generation
         // With a window host the VMHost gets `--display-fd 5` and `--input-fd 4` (S11-10); without one, nothing of the kind.
@@ -380,14 +416,108 @@ final class MachineController: ObservableObject, Identifiable {
         }
     }
 
-    func pause() {
+    func pause(reason: ControlV2Reason = .user) {
         guard allows(.pause), let session else { return }
-        send(operation: "Пауза") { completion in session.requestPause(completion: completion) }
+        send(operation: "Пауза") { completion in session.requestPause(reason: reason, completion: completion) }
     }
 
-    func resume() {
+    func resume(reason: ControlV2Reason = .user) {
         guard allows(.resume), let session else { return }
-        send(operation: "Продолжение") { completion in session.requestResume(completion: completion) }
+        send(operation: "Продолжение") { completion in session.requestResume(reason: reason, completion: completion) }
+    }
+
+    // MARK: conditions of the host (S11-12)
+
+    /// "Приостановлено системой": the pause that the application sent before the sleep (`reason = system_sleep`). Only this one is resumed
+    /// when the Mac wakes: a pause of the user (`user`) and a pause for free space (`disk_space`) are not.
+    var isPausedBySystemSleep: Bool { runState == .paused && pauseReason == .systemSleep }
+
+    /// The Mac is going to sleep (`willSleepNotification`). A running machine gets `PAUSE reason=system_sleep`. A refusal (`pause_timeout`
+    /// and the others) is not swallowed: it is kept and becomes the line of the row when the Mac wakes. The pause is asynchronous: this
+    /// does not wait for the answer, and nothing here says that it lands before the sleep begins (the notification gives no such promise).
+    func prepareForSystemSleep() {
+        asleep = true
+        sleepNotices = []
+        wakeResumePending = false
+        guard session != nil, runState == .running else { return }
+        guard allows(.pause), let session else {
+            // A request is in flight: if it is the disk-space pause, the machine is paused anyway and nothing is skipped.
+            if !diskPauseInFlight {
+                sleepNotices.append(.plain(ErrorPresentation.host(.sleepPauseSkipped, context: errorContext())))
+            }
+            return
+        }
+        sleepPauseInFlight = true
+        send(
+            operation: "Пауза перед сном", onRefusal: { [weak self] line in self?.recordSleepNotice(line) },
+            completed: { [weak self] in self?.sleepPauseInFlight = false }
+        ) { completion in session.requestPause(reason: .systemSleep, completion: completion) }
+    }
+
+    /// The Mac woke (`didWakeNotification`). Publishes what went wrong before the sleep, and sends `RESUME reason=system_wake` to a machine
+    /// that the application paused for the sleep, and only to it. A machine that is paused by the user stays paused.
+    func resumeAfterSystemWake() {
+        asleep = false
+        if !sleepNotices.isEmpty {
+            var line = sleepNotices[0]
+            let rest = sleepNotices.dropFirst().map { [$0.text, $0.details].compactMap { $0 }.joined(separator: "\n") }
+            if !rest.isEmpty { line.details = ([line.details] + rest).compactMap { $0 }.joined(separator: "\n") }
+            notice = line
+            sleepNotices = []
+        }
+        guard session != nil else { return }
+        if isPausedBySystemSleep || sleepPauseInFlight { wakeResumePending = true }
+        flushWakeResume()
+    }
+
+    private func recordSleepNotice(_ line: MachineNotice) {
+        if asleep { sleepNotices.append(line) } else { notice = line }
+    }
+
+    /// Sends the resume of the wake as soon as the machine is paused for the sleep and no request is in flight.
+    private func flushWakeResume() {
+        guard wakeResumePending, let session else { return }
+        if isPausedBySystemSleep {
+            guard allows(.resume) else { return } // a request is in flight: its completion comes back here
+            wakeResumePending = false
+            send(operation: "Продолжение после сна", onRefusal: { [weak self] line in self?.notice = line }) { completion in
+                session.requestResume(reason: .systemWake, completion: completion)
+            }
+        } else if !sleepPauseInFlight && !requestInFlight {
+            wakeResumePending = false // the pause never landed: nothing to resume
+        }
+    }
+
+    /// Free space of the volume of the bundle and what the level is; `nil` when the volume does not tell.
+    private func diskSpace() -> (level: DiskSpaceLevel, details: String)? {
+        guard let available = availableSpace(entry.bundleURL) else { return nil }
+        let level = diskThresholds.level(availableBytes: available)
+        return (level, "Свободно на томе: \(CreateMachineModel.format(available)); пороги: предупреждение \(CreateMachineModel.format(diskThresholds.warningBytes)), жёсткий \(CreateMachineModel.format(diskThresholds.hardBytes))")
+    }
+
+    /// The check of every 30 s for a running machine (`HostConditions` owns the timer). Below the warning threshold the line is shown once;
+    /// below the hard one the machine gets `PAUSE reason=disk_space` and the line of the catalog; it does not continue by itself.
+    func checkDiskSpace() {
+        guard runState == .running, session != nil, let space = diskSpace() else { return }
+        switch space.level {
+        case .normal:
+            diskWarningShown = false
+        case .warning:
+            guard !diskWarningShown, !requestInFlight else { return }
+            diskWarningShown = true
+            notice = .plain(ErrorPresentation.host(.diskSpaceLow, technical: space.details, context: errorContext()))
+        case .critical:
+            guard allows(.pause) else { return } // the next check tries again
+            guard let session else { return }
+            diskPauseInFlight = true
+            // Clears the line; a refusal of the VMHost replaces the line below.
+            send(operation: "Пауза", completed: { [weak self] in self?.diskPauseInFlight = false }) { completion in
+                session.requestPause(reason: .diskSpace, completion: completion)
+            }
+            if requestInFlight {
+                notice = .plain(ErrorPresentation.host(.diskSpacePaused, technical: space.details, context: errorContext()))
+            }
+        }
     }
 
     func stop() {
@@ -472,19 +602,27 @@ final class MachineController: ObservableObject, Identifiable {
         }
     }
 
-    private func send(operation: String, isStop: Bool = false, _ body: (@escaping ControlClientV2.Completion) -> Void) {
+    /// `onRefusal` (S11-12): a request of the system (the sleep, the wake) does not clear the line of the row and tells its refusal to
+    /// the caller instead of the row. `completed` runs after every answer of this request, before the next deferred request is sent.
+    private func send(
+        operation: String, isStop: Bool = false, onRefusal: ((MachineNotice) -> Void)? = nil, completed: (() -> Void)? = nil,
+        _ body: (@escaping ControlClientV2.Completion) -> Void
+    ) {
         let current = generation
         requestInFlight = true
-        notice = nil
+        if onRefusal == nil { notice = nil }
         body { [weak self] result in
             guard let self, self.generation == current else { return }
             self.requestInFlight = false
             if case .failure(.refused(let report)) = result {
                 if isStop { self.endRequested = false } // the process was not asked to end after all
                 // The state does not change by a refusal (7.2): the row stays what the last event made it.
-                self.notice = .refused(report, operation: operation, context: self.errorContext())
+                let line = MachineNotice.refused(report, operation: operation, context: self.errorContext())
+                if let onRefusal { onRefusal(line) } else { self.notice = line }
             }
             // `connectionClosed` and the like: the process is going away, `exited` follows with the real reason.
+            completed?()
+            self.flushWakeResume()
         }
     }
 
@@ -501,8 +639,10 @@ final class MachineController: ObservableObject, Identifiable {
             // `busy` here: the pid of the holder is not known to this controller (the process that refused is the new one), so the line has
             // no pid and no button; a process of THIS machine that is still alive is met earlier, in `start()`.
             notice = .startFailed(ErrorPresentation.rejection(rejection, context: errorContext()))
-        case .stateChanged(_, let to, _, _):
+        case .stateChanged(_, let to, let reason, _):
             runState = MachineRunState(to)
+            pauseReason = to == .paused ? ControlV2Reason(rawValue: reason) : nil
+            if to != .paused { wakeResumePending = false }
             windowHost?.machine(self, didChange: runState)
             if to == .failed {
                 // The VMHost sent no `ERROR` here: the state came from `STATE_CHANGED`, so the entry is the catalog's and the details say so.
@@ -552,6 +692,10 @@ final class MachineController: ObservableObject, Identifiable {
         }
         session = nil
         requestInFlight = false
+        sleepPauseInFlight = false
+        wakeResumePending = false
+        diskWarningShown = false
+        pauseReason = nil
         lastExit = exit
         runState = .stopped
         crashText = nil

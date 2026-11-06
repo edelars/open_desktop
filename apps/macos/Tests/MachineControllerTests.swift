@@ -12,6 +12,8 @@ import XCTest
 private final class FakeSession: MachineSession {
     enum Call: Equatable { case configure, start, pause, resume, stop, query, terminate }
     var calls: [Call] = []
+    /// The `reason` of every `PAUSE` and `RESUME` in order (S11-12).
+    var reasons: [ControlV2Reason] = []
     var configure: ControlV2Configure?
     var processID: pid_t?
     private var pending: [Call: ControlClientV2.Completion] = [:]
@@ -22,8 +24,12 @@ private final class FakeSession: MachineSession {
         pending[.configure] = completion
     }
     func requestStart(completion: @escaping ControlClientV2.Completion) { calls.append(.start); pending[.start] = completion }
-    func requestPause(completion: @escaping ControlClientV2.Completion) { calls.append(.pause); pending[.pause] = completion }
-    func requestResume(completion: @escaping ControlClientV2.Completion) { calls.append(.resume); pending[.resume] = completion }
+    func requestPause(reason: ControlV2Reason, completion: @escaping ControlClientV2.Completion) {
+        calls.append(.pause); reasons.append(reason); pending[.pause] = completion
+    }
+    func requestResume(reason: ControlV2Reason, completion: @escaping ControlClientV2.Completion) {
+        calls.append(.resume); reasons.append(reason); pending[.resume] = completion
+    }
     func requestStop(completion: @escaping ControlClientV2.Completion) { calls.append(.stop); pending[.stop] = completion }
     func requestQuery(completion: @escaping ControlClientV2.Completion) { calls.append(.query); pending[.query] = completion }
     func terminateSession() { calls.append(.terminate) }

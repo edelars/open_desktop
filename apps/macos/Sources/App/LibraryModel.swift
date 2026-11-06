@@ -124,6 +124,9 @@ final class LibraryModel: ObservableObject {
     @Published private(set) var bannerDetails: String?
     /// Entries that share an identity (a copied bundle): shown as a warning, never merged (VM_BUNDLE 8 item 5).
     @Published private(set) var conflictingIDs: Set<String> = []
+    /// S11-12: the last level of the memory pressure that the system reported, and whether the user hid the banner for it.
+    @Published private(set) var memoryPressure: MemoryPressureLevel = .normal
+    @Published private var memoryBannerDismissed = false
 
     private var observers: [String: AnyCancellable] = [:]
     /// Bundles opened in this run (`--open`, "Открыть…"). They stay in the list until the application closes, whatever the index says:
@@ -347,4 +350,21 @@ final class LibraryModel: ObservableObject {
     func reportFailure(_ text: String, details: String? = nil) { setBanner(text, details: details) }
 
     func dismissBanner() { setBanner(nil) }
+
+    // MARK: memory pressure (S11-12)
+
+    /// A report of the system. A new level shows the banner again; the application stops nothing by itself.
+    func setMemoryPressure(_ level: MemoryPressureLevel) {
+        guard level != memoryPressure else { return }
+        memoryPressure = level
+        memoryBannerDismissed = false
+    }
+
+    /// The banner for the memory pressure: the explanation and the offer to stop machines that are not needed.
+    var memoryBanner: ErrorPresentation? {
+        MemoryBanner.presentation(
+            level: memoryPressure, hasLiveMachines: machines.contains { $0.hasSession }, dismissed: memoryBannerDismissed)
+    }
+
+    func dismissMemoryBanner() { memoryBannerDismissed = true }
 }
