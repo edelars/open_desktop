@@ -11,7 +11,8 @@
 | Статус | Количество | Задачи |
 |---|---|---|
 | Принято | 0 | — |
-| `not_started` | 34 | все задачи, см. таблицу ниже |
+| Ревью пройдено, задача выполнена по своему критерию | 2 | S10-00, S10-01 |
+| `not_started` | 32 | остальные задачи, см. таблицу ниже |
 
 Чекбоксы `[ ]` в плане не отмечены: по `STAGE_10.md` §0 отмечаются только после ревью.
 
@@ -19,8 +20,8 @@
 
 | Задача | Статус | Коммит | Ревью | Комментарий |
 |---|---|---|---|---|
-| S10-00 | not_started | — | — | Отчёт, плата, карта проекта |
-| S10-01 | not_started | — | — | Методика и эталоны |
+| S10-00 | ревью пройдено | 6fcce92 | субагент Opus, замечания учтены | Отчёт, плата, карта проекта |
+| S10-01 | ревью пройдено | (см. коммит ниже) | субагент Opus, замечания учтены | Методика и эталоны |
 | S10-02 | not_started | — | — | Контракт дисплейного устройства |
 | S10-03 | not_started | — | — | Модель устройства в `od-machine` |
 | S10-04 | not_started | — | — | `od-host` и C ABI |
@@ -62,6 +63,13 @@
 
 - Файлы: этот отчёт; строка «Экран» в [VIRTUAL_BOARD.md](../specs/VIRTUAL_BOARD.md) (ссылка на будущий `DISPLAY_DEVICE.md`, GOP и GPU acceleration не тронуты); [PROJECT_LAYOUT.md](../PROJECT_LAYOUT.md) (документы этапа 10 и fixtures `tests/fixtures/guest/stage10/`).
 - Проверки: `python3 tools/check_layout.py` — 45 ошибок до и после изменения (базовый уровень, связан со ссылками на ignored `work/`).
+
+### S10-01. Методика проверки изображения и эталоны
+
+- Файлы: [docs/testing/DISPLAY.md](../testing/DISPLAY.md) (четыре уровня доказательств, допуски, инструменты); [tools/build/display_pattern.py](../../tools/build/display_pattern.py) (детерминированный генератор raw-узоров `gradient`, `bars`, `checker`, печатает SHA-256); [tests/system/display_compare.py](../../tests/system/display_compare.py) (сравнение raw-кадров, допуск на канал, коды выхода 0/1/2); [tools/build/test_display_pattern.py](../../tools/build/test_display_pattern.py) (11 unittest); эталоны и формулы в [tests/fixtures/guest/stage10/README.md](../../tests/fixtures/guest/stage10/README.md): `bars_64x48_seed0.raw` (SHA-256 `a738f2f3…a3e2`) и `checker_64x48_seed0x204080.raw` (`12779eb3…d529`), по 12 288 байт каждый.
+- Проверки: `python3 -m unittest tools/build/test_display_pattern.py` — 11 тестов OK; повторная генерация даёт тот же хеш; сдвиг одного байта детектируется (exit 1); неверный размер даёт exit 2; `--help` у обоих скриптов работает.
+- Ревью: независимый субагент (Opus, medium), замечания: blocker и major нет; minor (формулировки docstring, имя файла fixture с hex-seed, текст ошибки размера, покрытие тестами gradient/--help/списка отличий, описание кода 2) исправлены. Повторного ревью после minor-правок не проводилось; их покрывают новые тесты.
+- Ограничения: методика проверена только на эталонах 64×48; уровни 2–3 ещё не применялись к кадрам VMHost или Metal.
 
 ## 4. Открытые ограничения
 
