@@ -46,6 +46,8 @@ pub mod testing;
 #[cfg(test)]
 mod cow_export_tests;
 #[cfg(test)]
+mod cow_fixture_tests;
+#[cfg(test)]
 mod cow_inspect_tests;
 #[cfg(test)]
 mod cow_open_tests;
