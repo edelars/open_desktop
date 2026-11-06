@@ -868,3 +868,8 @@ Stage 4 adds a separate `MovCr0WpLong64V1` CPU entry for exact bare
 `MOV CR0,RAX` WP toggles. It shares the validated S4-12d commit logic but
 excludes that profile's memory store form; it emits a typed context-change
 effect and leaves machine cache invalidation to `od-machine`.
+
+S4-14f adds the opt-in `InvlpgWpLong64V1` / `step_invlpg_wp` entry. It shares
+the exact bare `0F 01 3B` decoder, privilege/fetch ordering and invalidation
+effect with `step_invlpg`, while accepting CR0.WP=0 or 1. The original
+`InvlpgLong64V1` keeps its WP=1 requirement.

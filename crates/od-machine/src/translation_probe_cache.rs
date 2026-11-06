@@ -14,9 +14,10 @@ use crate::{GuestPhysicalAddress, GuestPhysicalRange, MemoryAccessError, Physica
 use od_isa::TranslationInvalidation;
 use od_isa::memory::{AccessContext, AccessKind, GuestMemory, MemoryError};
 use od_isa::{
-    InvlpgExit, InvlpgLong64V1, InvlpgResult, LongModeState, MovCr0WpLong64V1, MovCr3Exit,
-    MovCr3InputError, MovCr3Long64V1, MovCr3Result, OperandSize, PagedProbeExit, PagedProbeResult,
-    TranslationContextChange, step_invlpg, step_mov_cr0_wp, step_mov_cr3,
+    InvlpgExit, InvlpgLong64V1, InvlpgResult, InvlpgWpLong64V1, LongModeState, MovCr0WpLong64V1,
+    MovCr3Exit, MovCr3InputError, MovCr3Long64V1, MovCr3Result, OperandSize, PagedProbeExit,
+    PagedProbeResult, TranslationContextChange, step_invlpg, step_invlpg_wp, step_mov_cr0_wp,
+    step_mov_cr3,
 };
 
 const PHYSICAL_ADDRESS_LIMIT: u128 = 1u128 << 36;
@@ -314,6 +315,46 @@ impl<'a> MutableTranslationProbeSession<'a> {
             };
             step_invlpg(
                 InvlpgLong64V1,
+                cpu,
+                &mut fetch,
+                context,
+                self.paging.efer(),
+                initial_rflags_defined,
+            )
+        };
+        if let InvlpgExit::TranslationInvalidation(effect) = &result.exit {
+            self.state.consume(*effect);
+        }
+        Ok(result)
+    }
+
+    /// Execute exact INVLPG under either bounded CR0.WP setting. Fetch uses a
+    /// pure walk outside the resident cache; a canonical retired effect
+    /// clears the single entry before this method returns. The noncanonical
+    /// successful NOP intentionally leaves the cache resident.
+    pub fn execute_invlpg_wp(
+        &mut self,
+        cpu: &mut LongModeState,
+        context: AccessContext,
+        initial_rflags_defined: u64,
+    ) -> Result<InvlpgResult, MutableTranslationSessionError> {
+        self.ensure_usable()?;
+        if cpu.cr3 != Some(self.paging.cr3()) {
+            return Err(MutableTranslationSessionError::Cr3Mismatch {
+                expected: self.paging.cr3(),
+                actual: cpu.cr3,
+            });
+        }
+        if cpu.cr0 != Some(self.paging.cr0()) || cpu.cr4 != Some(self.paging.cr4()) {
+            return Err(MutableTranslationSessionError::UnsupportedPagingProfile);
+        }
+        let result = {
+            let mut fetch = SessionFetchMemory {
+                memory: self.memory,
+                paging: self.paging,
+            };
+            step_invlpg_wp(
+                InvlpgWpLong64V1,
                 cpu,
                 &mut fetch,
                 context,
@@ -2490,6 +2531,331 @@ mod tests {
         ));
         let fetch_fault = run_case(LINEAR_PAGE + 0x50, 0x2000, ring0, Some(LINEAR_PAGE + 0x51));
         assert!(matches!(fetch_fault.exit, InvlpgExit::Backend(_)));
+    }
+
+    #[test]
+    fn wp_invlpg_invalidates_stale_mapping_for_both_wp_states_with_pure_fetch() {
+        for cr0 in [0x8001_0033, 0x8000_0033] {
+            let mut memory = memory(PHYSICAL_PAGE | 7);
+            memory
+                .write_bytes(
+                    GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
+                    &[0x0f, 0x01, 0x3b],
+                    |_| {},
+                )
+                .unwrap();
+            memory
+                .write_bytes(
+                    GuestPhysicalAddress::new(0xa000 + 0x20),
+                    &[0x0f, 0x01, 0x3b],
+                    |_| {},
+                )
+                .unwrap();
+            let paging = config(cr0, ROOT, 0x20, 0xd00);
+            let ring0 = mov_cr3_context();
+            let linear = GuestLinearAddress::new(LINEAR_PAGE + 0x70);
+            let instruction = GuestLinearAddress::new(LINEAR_PAGE + 0x20);
+            let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+
+            let (hit, old) = translated(session.probe(linear, AccessKind::Read, ring0).unwrap());
+            assert!(!hit);
+            assert_eq!(old.physical.get(), PHYSICAL_PAGE + 0x70);
+            assert!(matches!(
+                session.probe(linear, AccessKind::Read, ring0).unwrap(),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+            session
+                .write_pte(GuestPhysicalAddress::new(PT), 0xa000 | 7, |_| {})
+                .unwrap();
+            let (hit, stale) = translated(session.probe(linear, AccessKind::Read, ring0).unwrap());
+            assert!(
+                hit,
+                "PTE mutation alone must preserve the matching stale hit"
+            );
+            assert_eq!(stale.physical.get(), PHYSICAL_PAGE + 0x70);
+            assert!(!session.is_cache_empty());
+
+            let entries_before = [ROOT, PDPT, PD + 16, PT].map(|address| {
+                session
+                    .memory
+                    .read_u64(GuestPhysicalAddress::new(address))
+                    .unwrap()
+            });
+            let mut cpu = invlpg_cpu(instruction.get(), linear.get());
+            cpu.cr0 = Some(cr0);
+            let result = session
+                .execute_invlpg_wp(&mut cpu, ring0, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            let entries_after = [ROOT, PDPT, PD + 16, PT].map(|address| {
+                session
+                    .memory
+                    .read_u64(GuestPhysicalAddress::new(address))
+                    .unwrap()
+            });
+            assert_eq!(
+                entries_after, entries_before,
+                "INVLPG fetch must not write A/D"
+            );
+            assert_eq!(
+                result.exit,
+                InvlpgExit::TranslationInvalidation(TranslationInvalidation::Invlpg {
+                    linear_address: linear.get(),
+                })
+            );
+            assert_eq!(result.instructions_executed, 1);
+            assert!(
+                session.is_cache_empty(),
+                "canonical effect clears synchronously"
+            );
+            let (hit, updated) =
+                translated(session.probe(linear, AccessKind::Read, ring0).unwrap());
+            assert!(!hit, "first post-effect lookup must walk the changed PTE");
+            assert_eq!(updated.physical.get(), 0xa070);
+            assert!(matches!(
+                session.probe(linear, AccessKind::Read, ring0).unwrap(),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn wp_invlpg_noncanonical_nop_and_rejected_paths_preserve_cache() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        for (offset, bytes) in [
+            (0x20, &[0x0f, 0x01, 0x3b][..]),
+            (0x30, &[0xf0, 0x0f, 0x01, 0x3b][..]),
+            (0x40, &[0x0f, 0x01, 0x3b][..]),
+            (0x50, &[0x0f, 0x01, 0xfb][..]),
+        ] {
+            memory
+                .write_bytes(
+                    GuestPhysicalAddress::new(PHYSICAL_PAGE + offset),
+                    bytes,
+                    |_| {},
+                )
+                .unwrap();
+        }
+        let wp0 = 0x8000_0033;
+        let paging = config(wp0, ROOT, 0x20, 0xd00);
+        let ring0 = mov_cr3_context();
+        let ring1 = AccessContext {
+            privilege: PrivilegeLevel::Ring1,
+            ..ring0
+        };
+        let key = GuestLinearAddress::new(LINEAR_PAGE + 0x10);
+        let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+        assert!(matches!(
+            session.probe(key, AccessKind::Read, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Walk(_)
+        ));
+        assert!(matches!(
+            session.probe(key, AccessKind::Read, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+
+        let mut nop_cpu = invlpg_cpu(LINEAR_PAGE + 0x20, 0x0000_8000_0000_0000);
+        nop_cpu.cr0 = Some(wp0);
+        let nop = session
+            .execute_invlpg_wp(&mut nop_cpu, ring0, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert_eq!(nop.exit, InvlpgExit::Retired);
+        assert_eq!(nop.instructions_executed, 1);
+        assert!(
+            !session.is_cache_empty(),
+            "noncanonical NOP keeps cache resident"
+        );
+        assert!(matches!(
+            session.probe(key, AccessKind::Read, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+
+        let before_mismatch = invlpg_cpu(LINEAR_PAGE + 0x20, LINEAR_PAGE + 0x80);
+        let mut mismatch = before_mismatch.clone();
+        assert_eq!(
+            session.execute_invlpg_wp(&mut mismatch, ring0, od_isa::INTEGER_FLAGS),
+            Err(MutableTranslationSessionError::UnsupportedPagingProfile)
+        );
+        assert_eq!(mismatch, before_mismatch);
+        assert!(matches!(
+            session.probe(key, AccessKind::Read, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+
+        let mut cr3_mismatch = invlpg_cpu(LINEAR_PAGE + 0x20, LINEAR_PAGE + 0x80);
+        cr3_mismatch.cr0 = Some(wp0);
+        cr3_mismatch.cr3 = Some(ROOT + 0x1000);
+        assert!(matches!(
+            session.execute_invlpg_wp(&mut cr3_mismatch, ring0, od_isa::INTEGER_FLAGS),
+            Err(MutableTranslationSessionError::Cr3Mismatch { .. })
+        ));
+        let mut cr4_mismatch = invlpg_cpu(LINEAR_PAGE + 0x20, LINEAR_PAGE + 0x80);
+        cr4_mismatch.cr0 = Some(wp0);
+        cr4_mismatch.cr4 = Some(0x30);
+        assert_eq!(
+            session.execute_invlpg_wp(&mut cr4_mismatch, ring0, od_isa::INTEGER_FLAGS),
+            Err(MutableTranslationSessionError::UnsupportedPagingProfile)
+        );
+        assert!(matches!(
+            session.probe(key, AccessKind::Read, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+
+        for (rip, context, expected_vector) in [
+            (LINEAR_PAGE + 0x20, ring1, 13),
+            (
+                LINEAR_PAGE + 0x20,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring2,
+                    ..ring0
+                },
+                13,
+            ),
+            (
+                LINEAR_PAGE + 0x20,
+                AccessContext {
+                    privilege: PrivilegeLevel::Ring3,
+                    ..ring0
+                },
+                13,
+            ),
+        ] {
+            assert!(matches!(
+                session.probe(key, AccessKind::Read, ring0).unwrap(),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+            let mut cpu = invlpg_cpu(rip, LINEAR_PAGE + 0x80);
+            cpu.cr0 = Some(wp0);
+            let before = cpu.clone();
+            let result = session
+                .execute_invlpg_wp(&mut cpu, context, od_isa::INTEGER_FLAGS)
+                .unwrap();
+            assert_eq!(
+                result.exit,
+                InvlpgExit::Fault(od_isa::memory::ArchitecturalFault {
+                    vector: expected_vector,
+                    error_code: Some(0),
+                    linear_address: None,
+                })
+            );
+            assert_eq!(result.instructions_executed, 0);
+            assert_eq!(cpu, before);
+            assert!(matches!(
+                session.probe(key, AccessKind::Read, ring0).unwrap(),
+                TranslationProbeCacheOutcome::Hit(_)
+            ));
+        }
+
+        let mut lock_cpu = invlpg_cpu(LINEAR_PAGE + 0x30, LINEAR_PAGE + 0x80);
+        lock_cpu.cr0 = Some(wp0);
+        let lock_before = lock_cpu.clone();
+        let lock = session
+            .execute_invlpg_wp(&mut lock_cpu, ring0, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert_eq!(
+            lock.exit,
+            InvlpgExit::Fault(od_isa::memory::ArchitecturalFault {
+                vector: 6,
+                error_code: None,
+                linear_address: None,
+            })
+        );
+        assert_eq!(lock.instructions_executed, 0);
+        assert_eq!(lock_cpu, lock_before);
+        assert!(matches!(
+            session.probe(key, AccessKind::Read, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+
+        session
+            .write_pte(GuestPhysicalAddress::new(PT), 0, |_| {})
+            .unwrap();
+        let mut fetch_fault_cpu = invlpg_cpu(LINEAR_PAGE + 0x40, LINEAR_PAGE + 0x80);
+        fetch_fault_cpu.cr0 = Some(wp0);
+        let before = fetch_fault_cpu.clone();
+        let fetch_fault = session
+            .execute_invlpg_wp(&mut fetch_fault_cpu, ring0, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert!(matches!(
+            fetch_fault.exit,
+            InvlpgExit::Fault(od_isa::memory::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(address),
+            }) if address == LINEAR_PAGE + 0x40
+        ));
+        assert_eq!(fetch_fault.instructions_executed, 0);
+        assert_eq!(fetch_fault_cpu, before);
+        assert!(matches!(
+            session.probe(key, AccessKind::Read, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+
+        let mut unsupported_cpu = invlpg_cpu(LINEAR_PAGE + 0x50, LINEAR_PAGE + 0x80);
+        unsupported_cpu.cr0 = Some(wp0);
+        session
+            .write_pte(GuestPhysicalAddress::new(PT), PHYSICAL_PAGE | 7, |_| {})
+            .unwrap();
+        let unsupported = session
+            .execute_invlpg_wp(&mut unsupported_cpu, ring0, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert_eq!(unsupported.exit, InvlpgExit::Unsupported { opcode: 0x0f });
+        assert_eq!(unsupported.instructions_executed, 0);
+        assert!(matches!(
+            session.probe(key, AccessKind::Read, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(_)
+        ));
+    }
+
+    #[test]
+    fn wp_invlpg_fetch_fault_bypasses_matching_resident_fetch_translation() {
+        let mut memory = memory(PHYSICAL_PAGE | 7);
+        let rip = GuestLinearAddress::new(LINEAR_PAGE + 0x20);
+        memory
+            .write_bytes(
+                GuestPhysicalAddress::new(PHYSICAL_PAGE + 0x20),
+                &[0x0f, 0x01, 0x3b],
+                |_| {},
+            )
+            .unwrap();
+        let wp0 = 0x8000_0033;
+        let paging = config(wp0, ROOT, 0x20, 0xd00);
+        let ring0 = mov_cr3_context();
+        let mut session = MutableTranslationProbeSession::new(&mut memory, paging).unwrap();
+
+        assert!(matches!(
+            session.probe(rip, AccessKind::Fetch, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Walk(_)
+        ));
+        assert!(matches!(
+            session.probe(rip, AccessKind::Fetch, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(ref translation)
+                if translation.physical.get() == PHYSICAL_PAGE + 0x20
+        ));
+        session
+            .write_pte(GuestPhysicalAddress::new(PT), 0, |_| {})
+            .unwrap();
+
+        let mut cpu = invlpg_cpu(rip.get(), LINEAR_PAGE + 0x80);
+        cpu.cr0 = Some(wp0);
+        let before = cpu.clone();
+        let result = session
+            .execute_invlpg_wp(&mut cpu, ring0, od_isa::INTEGER_FLAGS)
+            .unwrap();
+        assert_eq!(
+            result.exit,
+            InvlpgExit::Fault(od_isa::memory::ArchitecturalFault {
+                vector: 14,
+                error_code: Some(0x10),
+                linear_address: Some(rip.get()),
+            })
+        );
+        assert_eq!(result.instructions_executed, 0);
+        assert_eq!(cpu, before);
+        assert!(matches!(
+            session.probe(rip, AccessKind::Fetch, ring0).unwrap(),
+            TranslationProbeCacheOutcome::Hit(ref translation)
+                if translation.physical.get() == PHYSICAL_PAGE + 0x20
+        ));
     }
 
     #[test]

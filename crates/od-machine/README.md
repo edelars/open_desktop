@@ -69,11 +69,12 @@ CPU-owned `MOV CR3,RAX` синхронно меняет snapshot и инвали
 при записи прежнего значения; replacement snapshot используется следующим
 lookup. Несогласованный retired effect очищает entry и блокирует дальнейшие
 операции с сессией, поэтому stale translation не может быть использован.
-Остальные
-reset/EFER transitions, tracked A/D, JIT hooks, huge pages, PCID/global и
-DMA/SMP остаются вне реализации. S4-14e добавляет отдельный MOV-only CR0.WP
-handoff: запись invalidates session cache и обновляет snapshot; при WP=0
-существующие INVLPG/MOV CR3 profiles пока отклоняются до fetch.
+S4-14e добавляет отдельный MOV-only CR0.WP handoff: запись invalidates
+session cache и обновляет snapshot. S4-14f добавляет `execute_invlpg_wp` для
+WP=0 и WP=1, сохраняя прежние `execute_invlpg` и MOV CR3 admission. Fetch
+обходит кеш; canonical INVLPG синхронно очищает entry, а noncanonical NOP,
+fault и отказ сохраняют его. Остальные reset/EFER transitions, tracked A/D,
+JIT hooks, huge pages, PCID/global и DMA/SMP остаются вне реализации.
 Читать ../AGENTS.md и
 ../../docs/PROJECT_LAYOUT.md перед дальнейшей реализацией; зависимости
 добавлять вместе с фактическим использованием.

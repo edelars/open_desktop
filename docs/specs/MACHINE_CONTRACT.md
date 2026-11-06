@@ -814,12 +814,35 @@ A/D write or committed-write callback. Mismatched/unexpected retired effects
 or invalid replacement snapshots clear the entry and poison the session, as in
 S4-14d.
 
-While CR0.WP=0, the existing INVLPG and MOV CR3 entry points reject the
-unsupported CR0 profile before fetch and leave CPU/session state unchanged;
-returning to WP=1 makes those bounded entries available again. This slice does
-not broaden their CPU contracts. It also does not add tracked A/D caching,
-reset, generations, PCID/global semantics, JIT integration or production TLB
-behavior. See the [S4-14e report](../reports/STAGE_4_S4-14E_2026-11-06.md).
+While CR0.WP=0, the original `execute_invlpg` and MOV CR3 entry points reject
+the unsupported CR0 profile before fetch and leave CPU/session state unchanged;
+returning to WP=1 makes those bounded entries available again. S4-14f adds a
+separate `execute_invlpg_wp` path for either WP value without changing those
+existing entries or the MOV CR3 CPU contract.
+
+### INVLPG while CR0.WP is mutable in the diagnostic session (S4-14f)
+
+`execute_invlpg_wp` validates CPU CR0/CR3/CR4 against the current session
+snapshot before fetch, then uses the exact `InvlpgWpLong64V1` profile. Its
+instruction fetch uses the pure page walker and bypasses the resident cache.
+Canonical retired INVLPG consumes the typed effect and clears the one-entry
+cache synchronously, including when WP=0. A noncanonical operand is the
+architectural retired NOP and preserves the cache. Faults, unsupported forms
+and state mismatches also preserve it; this path does not use MOV CR0's
+retirement-poison rule. Page-table snapshots across fetch/effect show no A/D
+writes, and the instruction has no target walk or data access.
+
+Acceptance covers stale `Hit` after a PTE remap, then post-effect `Walk` and
+`Hit` at the new mapping for both WP states; Ring1–3 #GP(0), LOCK #UD,
+noncanonical NOP, fetch fault, unsupported encoding and CR0/CR3/CR4 mismatch.
+The feature remains experimental and one-entry; no performance claim,
+tracked A/D cache, reset, generations, PCID/global semantics, JIT integration
+or production TLB behavior is added. See the
+[S4-14f report](../reports/STAGE_4_S4-14F_2026-11-06.md).
+
+S4-14e also does not add tracked A/D caching, reset, generations, PCID/global
+semantics, JIT integration or production TLB behavior. See the
+[S4-14e report](../reports/STAGE_4_S4-14E_2026-11-06.md).
 
 ## Bounded diagnostic vCPU session boundary
 

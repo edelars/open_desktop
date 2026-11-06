@@ -276,6 +276,14 @@ GPRs, control registers, concrete RFLAGS and its definedness. RBX is an address
 value and is never dereferenced: it causes no target translation, data access,
 page fault or A/D update. Instruction fetch retains its own memory semantics.
 
+`step_invlpg_wp` is a separate opt-in `InvlpgWpLong64V1` entry for the same
+exact encoding and instruction behavior. Its only admission difference is
+CR0: it accepts either `0x80010033` (WP=1) or `0x80000033` (WP=0). All other
+state checks, fetch/decode ordering, LOCK/CPL faults, noncanonical NOP behavior
+and emitted effect are shared with `step_invlpg`. The original
+`InvlpgLong64V1` continues to require WP=1. Unsupported CR0 values reject
+before fetch in both entries.
+
 Normative source: Intel SDM Revision 093, Vol. 2A, Chapter 3,
 `INVLPG—Invalidate TLB Entries` (Description, Flags Affected and 64-Bit Mode
 Exceptions). In 64-bit mode a noncanonical operand is a no-op; the instruction

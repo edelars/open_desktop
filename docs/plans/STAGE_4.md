@@ -477,6 +477,15 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   rejected/faulting paths, poison behavior and restored INVLPG/MOV CR3
   admission. This does not complete S4-14. See the
   [S4-14e report](../reports/STAGE_4_S4-14E_2026-11-06.md).
+- [x] S4-14f adds the separate `InvlpgWpLong64V1` / `step_invlpg_wp` CPU
+  entry and `MutableTranslationProbeSession::execute_invlpg_wp`. The new
+  profile admits only the existing exact bare INVLPG form under WP=0/1 and
+  shares its instruction semantics with the unchanged WP=1 entry. Canonical
+  retired effects clear the one-entry session cache synchronously; the
+  noncanonical retired NOP and rejected/faulting paths preserve it. Focused
+  coverage and feature-on/off checks passed; final independent review found no
+  remaining findings. See the [S4-14f report](../reports/STAGE_4_S4-14F_2026-11-06.md).
+  Full S4-14 remains open.
 - **Где:** `od-machine`, system instruction effects `od-isa`.
 - **Сделать:** CR3/context transitions, INVLPG, paging/permission-control changes, reset; global/PCID/INVPCID — только при объявленной поддержке. Развести software-cache generations и архитектурную семантику guest page tables.
 - **Проверка:** remap A→B, tighten/relax rights с обязательной invalidation, stale entry после context switch, huge-page coverage, код/данные, разные guest pages внутри host page. Поведение без invalidation проверять в пределах разрешённого стандартом, не требовать несуществующей гарантии.

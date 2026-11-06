@@ -1953,6 +1953,10 @@ pub enum TranslationInvalidation {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InvlpgLong64V1;
 
+/// Explicit opt-in marker for INVLPG under either bounded CR0.WP state.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct InvlpgWpLong64V1;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InvlpgExit {
     TranslationInvalidation(TranslationInvalidation),
@@ -16277,6 +16281,31 @@ pub fn step_invlpg(
     efer: u64,
     initial_rflags_defined: u64,
 ) -> InvlpgResult {
+    step_invlpg_inner(false, state, memory, context, efer, initial_rflags_defined)
+}
+
+/// Execute exact bare `INVLPG [RBX]` while CR0.WP is either enabled or
+/// disabled. All decode, privilege, fetch, and effect semantics are shared
+/// with `step_invlpg`.
+pub fn step_invlpg_wp(
+    _profile: InvlpgWpLong64V1,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> InvlpgResult {
+    step_invlpg_inner(true, state, memory, context, efer, initial_rflags_defined)
+}
+
+fn step_invlpg_inner(
+    allow_wp_zero: bool,
+    state: &mut LongModeState,
+    memory: &mut impl GuestMemory,
+    context: AccessContext,
+    efer: u64,
+    initial_rflags_defined: u64,
+) -> InvlpgResult {
     let result = |exit, instructions_executed| InvlpgResult {
         exit,
         instructions_executed,
@@ -16294,7 +16323,9 @@ pub fn step_invlpg(
     if state.cr0.is_none() || state.cr4.is_none() || state.cr3.is_none() {
         return reject(PagedProbeRejection::ControlRegistersMissing);
     }
-    if state.cr0 != Some(0x8001_0033)
+    let cr0_admitted =
+        state.cr0 == Some(0x8001_0033) || (allow_wp_zero && state.cr0 == Some(0x8000_0033));
+    if !cr0_admitted
         || state.cr4 != Some(0x20)
         || efer != 0xd00
         || state.cr3.is_some_and(|cr3| cr3 & !((1u64 << 36) - 1) != 0)
@@ -147088,6 +147119,73 @@ mod invlpg_tests {
         assert_eq!(state.rflags, before.rflags);
         assert_eq!(memory.fetches, [before.rip, before.rip + 1, before.rip + 2]);
         assert!(memory.accesses.is_empty());
+    }
+
+    #[test]
+    fn wp_profile_admits_both_exact_cr0_values_while_v1_stays_wp_one_only() {
+        for cr0 in [0x8001_0033, 0x8000_0033] {
+            let mut state = admitted_state(0x1234_5678);
+            state.cr0 = Some(cr0);
+            let mut memory = Memory::at(&[0x0f, 0x01, 0x3b], state.rip);
+            let result = step_invlpg_wp(
+                InvlpgWpLong64V1,
+                &mut state,
+                &mut memory,
+                context(PrivilegeLevel::Ring0),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                InvlpgExit::TranslationInvalidation(TranslationInvalidation::Invlpg {
+                    linear_address: 0x1234_5678,
+                })
+            );
+            assert_eq!(result.instructions_executed, 1);
+            assert_eq!(state.rip, 0x1003);
+            assert_eq!(memory.fetches, [0x1000, 0x1001, 0x1002]);
+            assert!(memory.accesses.is_empty());
+        }
+
+        let mut legacy = admitted_state(0x2000);
+        legacy.cr0 = Some(0x8000_0033);
+        let before = legacy.clone();
+        let mut memory = Memory::at(&[0x0f, 0x01, 0x3b], legacy.rip);
+        let result = step_invlpg(
+            InvlpgLong64V1,
+            &mut legacy,
+            &mut memory,
+            context(PrivilegeLevel::Ring0),
+            0xd00,
+            crate::INTEGER_FLAGS,
+        );
+        assert_eq!(
+            result.exit,
+            InvlpgExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile)
+        );
+        assert_eq!(legacy, before);
+        assert!(memory.fetches.is_empty());
+
+        for cr0 in [0x8000_0032, 0x8001_0037, 0x8002_0033] {
+            let mut state = admitted_state(0x2000);
+            state.cr0 = Some(cr0);
+            let before = state.clone();
+            let mut memory = Memory::at(&[0x0f, 0x01, 0x3b], state.rip);
+            let result = step_invlpg_wp(
+                InvlpgWpLong64V1,
+                &mut state,
+                &mut memory,
+                context(PrivilegeLevel::Ring0),
+                0xd00,
+                crate::INTEGER_FLAGS,
+            );
+            assert_eq!(
+                result.exit,
+                InvlpgExit::Rejected(PagedProbeRejection::ControlRegistersOutsideProfile)
+            );
+            assert_eq!(state, before);
+            assert!(memory.fetches.is_empty());
+        }
     }
 
     #[test]
