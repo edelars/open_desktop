@@ -25,17 +25,11 @@ struct OpenDesktopLauncherSmoke {
         var childPID: pid_t?
         do {
             let config = try parseArguments(Array(CommandLine.arguments.dropFirst()))
-            var sockets: [Int32] = [0, 0]
-            guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else {
-                throw LauncherError.socketPair
-            }
-            parentFD = sockets[0]
-            childFD = sockets[1]
-            try configureSocket(parentFD)
-            try configureSocket(childFD)
-            _ = fcntl(childFD, F_SETFD, 0) // keep the helper endpoint across exec
+            let sockets = try VMHostLaunch.makeSocketPair()
+            parentFD = sockets.parent
+            childFD = sockets.child
 
-            let pid = try spawnHelper(path: config.helper.path, parentFD: parentFD, childFD: childFD)
+            let pid = try VMHostLaunch.spawnHelper(path: config.helper.path, parentFD: parentFD, childFD: childFD)
             childPID = pid
             Issue027Trace.mark("helper_spawned", detail: "pid=\(pid)")
             Darwin.close(childFD)
@@ -74,7 +68,7 @@ struct OpenDesktopLauncherSmoke {
             Issue027Trace.mark("result_received")
             printResult(result)
             Issue027Trace.mark("waiting_child_exit")
-            let childStatus = try waitForChild(pid)
+            let childStatus = try VMHostLaunch.waitForChild(pid)
             childPID = nil
             Issue027Trace.mark("child_exited", detail: "status=\(childStatus)")
             guard childStatus == 0 else {
@@ -104,7 +98,7 @@ struct OpenDesktopLauncherSmoke {
                     }
                 } else {
                     Issue027Trace.mark("terminating_child", detail: "pid=\(childPID)")
-                    terminateChild(childPID)
+                    VMHostLaunch.terminateChild(childPID)
                     Issue027Trace.mark("child_termination_complete", detail: "pid=\(childPID)")
                 }
             }
@@ -113,75 +107,6 @@ struct OpenDesktopLauncherSmoke {
             fputs("open-desktop-launcher-smoke: \(reportedError)\n", stderr)
             exit(EXIT_FAILURE)
         }
-    }
-
-    private static func configureSocket(_ fd: Int32) throws {
-        var noSignal: Int32 = 1
-        let status = setsockopt(
-            fd,
-            SOL_SOCKET,
-            SO_NOSIGPIPE,
-            &noSignal,
-            socklen_t(MemoryLayout<Int32>.size)
-        )
-        if status != 0 { throw LauncherError.socketPair }
-    }
-
-    private static func spawnHelper(path: String, parentFD: Int32, childFD: Int32) throws -> pid_t {
-        var actions: posix_spawn_file_actions_t?
-        guard posix_spawn_file_actions_init(&actions) == 0 else { throw LauncherError.spawnFailed }
-        defer { posix_spawn_file_actions_destroy(&actions) }
-
-        let targetFD: Int32 = 3
-        guard posix_spawn_file_actions_adddup2(&actions, childFD, targetFD) == 0 else {
-            throw LauncherError.spawnFailed
-        }
-        if childFD != targetFD {
-            _ = posix_spawn_file_actions_addclose(&actions, childFD)
-        }
-        if parentFD != targetFD {
-            _ = posix_spawn_file_actions_addclose(&actions, parentFD)
-        }
-
-        let arguments = [path, "--socket-fd", String(targetFD)]
-        var argv: [UnsafeMutablePointer<CChar>?] = arguments.map { strdup($0) }
-        argv.append(nil)
-        defer { argv.forEach { if let value = $0 { free(value) } } }
-        var pid: pid_t = 0
-        let status = withUnsafePointer(to: actions) { actionPointer in
-            path.withCString { executable in
-                argv.withUnsafeBufferPointer { pointers in
-                    posix_spawn(&pid, executable, actionPointer, nil, pointers.baseAddress!, environ)
-                }
-            }
-        }
-        guard status == 0 else { throw LauncherError.spawnFailed }
-        return pid
-    }
-
-    private static func waitForChild(_ pid: pid_t) throws -> Int32 {
-        var status: Int32 = 0
-        while true {
-            let waited = waitpid(pid, &status, 0)
-            if waited == pid { break }
-            if waited < 0 && errno == EINTR { continue }
-            throw LauncherError.waitFailed
-        }
-        if status & 0x7F != 0 { return 128 + (status & 0x7F) }
-        return (status >> 8) & 0xFF
-    }
-
-    private static func terminateChild(_ pid: pid_t) {
-        _ = kill(pid, SIGTERM)
-        for _ in 0..<50 {
-            var childStatus: Int32 = 0
-            let waited = waitpid(pid, &childStatus, WNOHANG)
-            if waited == pid || (waited < 0 && errno == ECHILD) { return }
-            if waited < 0 && errno != EINTR { break }
-            usleep(10_000)
-        }
-        _ = kill(pid, SIGKILL)
-        _ = try? waitForChild(pid)
     }
 
     private static func expectStatusFrame(_ kind: ControlKind, requestID: UInt32, fd: Int32) throws {
@@ -353,9 +278,6 @@ private struct LauncherConfig {
 
 private enum LauncherError: Error, CustomStringConvertible {
     case usage
-    case socketPair
-    case spawnFailed
-    case waitFailed
     case channelFailure
     case badHandshake
     case invalidHex
@@ -370,9 +292,6 @@ private enum LauncherError: Error, CustomStringConvertible {
         switch self {
         case .usage:
             return "usage: launcher --vmhost PATH --hex HEX [--rax N --rcx N --rdx N --rbx N --rip N --budget N --stop-after-ms N]"
-        case .socketPair: return "could not create or configure control socketpair"
-        case .spawnFailed: return "could not start VMHost helper"
-        case .waitFailed: return "could not collect VMHost exit status"
         case .channelFailure: return "control channel poll failed"
         case .badHandshake: return "VMHost protocol/ABI handshake failed"
         case .invalidHex: return "invalid or oversized hex fragment"

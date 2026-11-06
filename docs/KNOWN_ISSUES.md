@@ -1872,3 +1872,36 @@ and [shared report](reports/STAGE_2_REPORT.md#s2-30cr--bounded-fsubr-st0-sti).
 - **Суть и последствия:** Several Stage 3 reports linked to run summaries, manifests, and diagnostic attempts under `work/stage3-harness/` or `work/stage1-harness/` that were absent from this checkout. The reports could not be opened locally until those files were restored.
 - **Основание и результат:** all 21 files reported as broken by `python3 tools/check_layout.py` were found in `/Users/senya/.codex/worktrees/stage3-baseline/open_desktop` and copied to the same relative `work/` paths in the main worktree. The layout checker now passes: `Layout OK: 48 required directories, 6 crate scaffolds, 14 instruction scopes.`
 - **Граница:** `work/` remains Git-ignored, so these local evidence files are available in this main worktree but are not part of the source commit. If portable evidence is needed, curate the required records into `docs/reports/data/stage3/` under the project's evidence policy.
+
+### ISSUE-058 — VMHost control race smoke fails on HEAD (Stage 10 session)
+
+- **Дата обнаружения:** 2026-11-06, при проверке регрессии S10-06 и S10-07.
+- **Компонент:** `tests/system/vmhost_control_race_smoke.py` с `apps/vmhost` и `apps/macos` launcher; не связан с дисплейным транспортом этапа 10.
+- **Статус:** открыта. Воспроизводится на HEAD ветки `feat/s9-stage` без правок этапа 10 (два прогона у каждого варианта).
+- **Суть и последствия:** скрипт завершается с `unsupported version: VMHost sent a response after rejecting the frame`. Причина не исследована; возможная регрессия control v1 или ошибка теста. Обычный путь VMHost по остальным `vmhost_*` smoke-скриптам проходит.
+- **Основание:** запуски S10-06 и S10-07 на release-сборке; отдельный прогон на чистом HEAD.
+- **Следующий шаг:** определить, какой из двух сторон (тест или VMHost) отклоняется от протокола control v1, и исправить соответствующую сторону; до этого не считать `vmhost_control_race_smoke.py` зелёным.
+
+### ISSUE-059 — VMHost isolation smoke is intermittently red
+
+- **Дата обнаружения:** 2026-11-06, при проверке S10-07.
+- **Компонент:** `tests/system/vmhost_isolation_smoke.py`.
+- **Статус:** открыта; причина не установлена.
+- **Суть и последствия:** в 2 из 9 запусков скрипт завершился с кодом 1 (`surviving VMHost returned RAX=546, reason=2`); в остальных — код 0. Скрипт не использует launcher; файлы VMHost в этих коммитах не менялись, но сравнение с HEAD до S10-06 не выполнено.
+- **Следующий шаг:** воспроизвести при повторных прогонах, найти условие гонки в тесте или в изоляции двух VMHost-процессов; до этого результат трактовать как нестабильный.
+
+### ISSUE-060 — test_stage3_harness has seven failing count assertions
+
+- **Дата обнаружения:** 2026-11-06, при проверке S10-07.
+- **Компонент:** `tests/cpu/stage3_harness.py` (`python3 -m unittest test_stage3_harness` из `tests/cpu`).
+- **Статус:** открыта; на чистом снимке HEAD падают те же 7 из 152 тестов (закреплённые счётчики, например `152 != 151`).
+- **Суть и последствия:** инфраструктурный тест не отражает актуальный набор тестов; это не следствие этапа 10.
+- **Следующий шаг:** обновить закреплённые счётчики или сами тесты в отдельной задаче по Stage 3 harness.
+
+### ISSUE-061 — od-host JIT library tests are intermittently failing
+
+- **Дата обнаружения:** 2026-11-06, при проверке S10-04.
+- **Компонент:** `crates/od-host` lib tests (`s3_20*`, `native_register_v1_corpus`, ошибка `MappingAlreadyLive`).
+- **Статус:** открыта.
+- **Суть и последствия:** на HEAD `5acd5e5` падают 23 теста, при других прогонах 21; число меняется от прогона к прогону, что похоже на гонку при параллельном запуске. Новые display-тесты проходят. Причина не исследована.
+- **Следующий шаг:** запустить с `--test-threads=1` и воспроизвести; определить, какой общий ресурс (mapping) конфликтует между тестами.

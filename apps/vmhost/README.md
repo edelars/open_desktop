@@ -6,10 +6,10 @@ Build and run on macOS ARM64 from the repository root:
 
 ```sh
 cargo build --release -p od-host --offline
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/VMHostABI.h apps/vmhost/Sources/ControlFrame.swift apps/vmhost/Sources/main.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-smoke
+xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/VMHostABI.h apps/vmhost/Sources/ControlFrame.swift apps/vmhost/Sources/FrameTransport.swift apps/vmhost/Sources/main.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-smoke
 codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements target/od-vmhost-smoke
 codesign --verify --strict --verbose=2 target/od-vmhost-smoke
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/vmhost/Sources/ControlFrame.swift apps/macos/Sources/launcher.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/open-desktop-launcher-smoke
+xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/vmhost/Sources/ControlFrame.swift apps/macos/Sources/VMHostLaunch.swift apps/macos/Sources/launcher.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/open-desktop-launcher-smoke
 target/open-desktop-launcher-smoke --vmhost "$PWD/target/od-vmhost-smoke" --hex '48 2b c1 75 fb' --rax 3 --rcx 1 --budget 32
 ```
 

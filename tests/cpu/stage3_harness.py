@@ -1593,7 +1593,9 @@ LOCAL_VMHOST_RESULT_SOURCE_PATHS = (
     "crates/od-host/src/lib.rs",
     "include/open_desktop/host_abi.h",
     "apps/vmhost/Sources/ControlFrame.swift",
+    "apps/vmhost/Sources/FrameTransport.swift",
     "apps/vmhost/Sources/main.swift",
+    "apps/macos/Sources/VMHostLaunch.swift",
     "apps/macos/Sources/launcher.swift",
     "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     "protocols/control/CONTROL_PROTOCOL_V0.md",
@@ -1753,8 +1755,11 @@ PROCESS_SOURCE_PATHS = (
     "include/open_desktop/session_abi_v1.h",
     "protocols/control/CONTROL_PROTOCOL_V1.md",
     "apps/vmhost/Sources/ControlFrame.swift",
+    "apps/vmhost/Sources/FrameTransport.swift",
+    "apps/vmhost/Sources/FrameTransportAtomics.h",
     "apps/vmhost/Sources/main.swift",
     "apps/vmhost/Sources/VMHostABI.h",
+    "apps/macos/Sources/VMHostLaunch.swift",
     "apps/macos/Sources/launcher.swift",
     "apps/vmhost/Configuration/vmhost-smoke.entitlements",
     "tests/system/vmhost_control_race_smoke.py",
@@ -2371,7 +2376,7 @@ def vmhost_process_commands(
             "--target-dir", str(paths["build_target"]),
         ],
         "process_compile_vmhost": [
-            *swift_common, "apps/vmhost/Sources/main.swift",
+            *swift_common, "apps/vmhost/Sources/FrameTransport.swift", "apps/vmhost/Sources/main.swift",
             str(paths["od_host_library"]), *link_args, "-o", str(paths["vmhost"]),
         ],
         "process_sign_vmhost": [
@@ -2388,7 +2393,7 @@ def vmhost_process_commands(
             codesign_path, "-d", "--entitlements", ":-", str(paths["vmhost"]),
         ],
         "process_compile_launcher": [
-            *swift_common, "apps/macos/Sources/launcher.swift",
+            *swift_common, "apps/macos/Sources/VMHostLaunch.swift", "apps/macos/Sources/launcher.swift",
             str(paths["od_host_library"]), *link_args, "-o", str(paths["launcher"]),
         ],
         "process_sign_launcher": [
