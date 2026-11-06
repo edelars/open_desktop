@@ -76,6 +76,7 @@ enum od_display_format {
 /* od_display_mode.flags bits; other bits are reserved and read as zero. */
 #define OD_DISPLAY_MODE_FLAG_ACTIVE UINT32_C(0x1)    /* a mode is committed */
 #define OD_DISPLAY_MODE_FLAG_HAS_FRAME UINT32_C(0x2) /* a frame exists for the current mode */
+#define OD_DISPLAY_MODE_FLAG_DISABLED UINT32_C(0x4) /* screen 1 only: disabled by the guest (DISPLAY_DEVICE.md 16.6) */
 
 /* od_display_step_report.outcome. Values are appended by profiles. */
 enum od_display_step_outcome {

@@ -595,7 +595,6 @@ final class FrameReader {
     private(set) var screens: [ScreenReader] = []
 
     private var inbound = [UInt8]()
-    private var firstReceive = true
     private var announcedCount = 0
     private var announceDeadline: UInt64 = 0
     private var pendingDescriptor: Int32?
@@ -811,7 +810,6 @@ final class FrameReader {
         // A descriptor is accepted only in a recvmsg that starts an ANNOUNCE (it returned that message's first byte)
         // and only when no earlier descriptor is waiting for its ANNOUNCE.
         let startsAnnounce = inbound.isEmpty && announcedCount < expectedScreens
-        firstReceive = false
         if !descriptors.isEmpty && !(startsAnnounce && pendingDescriptor == nil) {
             closeAll()
             throw ProtocolFailure("descriptor received outside the recvmsg that starts an ANNOUNCE")
@@ -885,7 +883,8 @@ final class FrameReader {
                 pending.frames[screenValue] = nil
             case FrameReader.kindFrame:
                 let screenValue = Int(Wire.readLE(UInt32.self, payload, 20))
-                pending.frames[try screenIndex(screenValue)] = try screens[screenValue].handleFrame(payload)
+                let index = try screenIndex(screenValue)
+                pending.frames[index] = try screens[index].handleFrame(payload)
             case FrameReader.kindCursor:
                 pending.cursor = try screens[0].handleCursor(payload)
             default:

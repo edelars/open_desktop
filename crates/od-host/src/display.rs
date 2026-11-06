@@ -866,7 +866,7 @@ pub unsafe extern "C" fn od_display_session_read_screen_frame(
             return STATUS_ABI_MISMATCH;
         }
         with_session(handle, |session| {
-            let (mode, frame_bytes) = match screen {
+            let (_, frame_bytes) = match screen {
                 0 => {
                     let mode = session.display.current_mode();
                     if !mode.is_active() {
@@ -918,7 +918,6 @@ pub unsafe extern "C" fn od_display_session_read_screen_frame(
                             mode_change_count: info.mode_change_count,
                         });
                     }
-                    let _ = mode;
                     STATUS_OK
                 }
                 Err(DisplayReadError::NoActiveMode) => STATUS_NO_ACTIVE_MODE,

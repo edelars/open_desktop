@@ -705,7 +705,7 @@ final class FrameTransportWriter {
     }
 
     var lastPublishedCursorSeq: UInt64 { lastCursorSeq }
-    /// Bytes waiting in the notification queue (never above 168).
+    /// Bytes waiting in the notification queue (never above 256).
     var queuedBytes: Int { queue.bufferedBytes }
 }
 
