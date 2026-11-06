@@ -41,6 +41,8 @@ memory forms. S2-37be добавил CVTSD2SS: обновляется тольк
 |---|---|
 | SwiftUI/AppKit, окна и библиотека VM | `apps/macos/Sources/` |
 | Ресурсы и настройки подписи приложения | `apps/macos/Resources/`, `apps/macos/Configuration/` |
+| Общая Swift-библиотека приложения и CLI (цель `ODShared`, без `libod_host.a`; решение [ADR-0006](decisions/ADR-0006-desktop-app-shell.md)) | `apps/macos/Sources/Shared/` (создаётся в S11-05a) |
+| CLI управления машинами (`odctl`) | `apps/cli/Sources/` (создаётся в S11-13) |
 | Жизненный цикл VMHost, IPC transport, мост к Rust | `apps/vmhost/Sources/` |
 | Настройки helper/подписи | `apps/vmhost/Configuration/` |
 | CPU state, x86 decoder, interpreter | `crates/od-isa/src/` |
@@ -96,6 +98,8 @@ Harness не меняет native fixture admission. Linux native A/B/A/B про�
 raw `execution_kind=unknown`, отдельная physical acceptance остаётся открытой.
 
 Документы этапа 10 ([план](plans/STAGE_10.md)): контракт дисплейного устройства `specs/DISPLAY_DEVICE.md`, host ABI `specs/DISPLAY_HOST_ABI_V1.md`, транспорт кадров `../protocols/control/FRAME_TRANSPORT_V1.md`, протокол display-only драйвера `../protocols/guest/DISPLAY_DRIVER_V1.md`, host C ABI `../include/open_desktop/display_abi_v1.h`, транспорт ввода `../protocols/control/INPUT_TRANSPORT_V1.md`, методика `testing/DISPLAY.md`, отчёт `reports/STAGE_10_REPORT.md`. Файлы, которых ещё нет, создаёт соответствующая задача S10-NN; пока файла нет, его описание в плане не означает реализацию.
+
+Документы этапа 11 ([план](plans/STAGE_11.md)): отчёт `reports/STAGE_11_REPORT.md`, решение об оболочке приложения `decisions/ADR-0006-desktop-app-shell.md`; далее по задачам — методика `testing/DESKTOP_APP.md`, контракт bundle `specs/VM_BUNDLE.md`, control v2 `../protocols/control/CONTROL_PROTOCOL_V2.md`, storage ABI `specs/STORAGE_HOST_ABI_V1.md` и `../include/open_desktop/storage_abi_v1.h`, каталог ошибок `specs/USER_FACING_ERRORS.md`, CLI `specs/CLI.md`, ADR транспорта агента `decisions/ADR-0007-agent-channel-transport.md` (создаётся в S11-20) и протокол агента `../protocols/guest/AGENT_PROTOCOL_V1.md`, устройство и ABI агента `specs/AGENT_CHANNEL_DEVICE.md`, `specs/AGENT_HOST_ABI_V1.md`, `../include/open_desktop/agent_abi_v1.h`, общие папки `specs/SHARED_FOLDERS.md`, сеть `decisions/ADR-0008-network-backend.md` и `specs/NETWORK.md`, `specs/NIC_DEVICE.md`, `specs/AUDIO_DEVICE.md`, scope-документы `specs/GUEST_WINDOW_INTEGRATION_SCOPE.md`, `specs/USB_PRINT_SCOPE.md`. Каталоги `apps/cli/` и `tests/fixtures/guest/stage11/` создают S11-13 и S11-23 и тогда же добавляют их в машиночитаемый перечень ниже. Файлы, которых ещё нет, создаёт соответствующая задача S11-NN; пока файла нет, его описание в плане не означает реализацию.
 
 Не копировать одну реализацию в несколько этих мест. Например, disk parser — в `od-storage`, а `image-tool` лишь использует его; x86 interpreter — в `od-isa`, а `runner` управляет запуском.
 
