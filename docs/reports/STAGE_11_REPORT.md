@@ -166,7 +166,13 @@ S11-00 в таблице остаётся `not_started`: принятие — т
 
 ### S11-05c. Перевод smoke и README на новую сборку
 
-_Не начата. Раздел заполняется вместе с задачей._
+**Текущий статус (2026-11-06):** реализован в рабочем дереве, **не принят**. Ревью подпрограммой не выполнено: запуск ревьюера был заблокирован ограничением среды; проверка сделана вручную (diff и запуск smoke).
+
+- Smoke `tests/system/*.py` (17 файлов) используют бинарники SwiftPM по умолчанию (`apps/.build/debug/`); в diff меняются только пути, интерфейс (`nargs="?"`) и docstring. `vmhost_result_state_smoke.py`: `--diagnostics-dir` стал необязательным (временный каталог). `vmhost_app_bundle_smoke.sh` без аргументов собирает `build_app_bundle.py` и проверяет helper `Contents/Helpers/od-vmhost`; старый режим `LAUNCHER VMHOST ENTITLEMENTS [...]` сохранён для `tests/cpu/stage3_harness.py` (помечен «legacy»).
+- README `apps/macos` и `apps/vmhost`, `docs/testing/DISPLAY.md`, `docs/testing/DESKTOP_APP.md` переведены на `swift build`/`swift test` и `build_app_bundle.py`; устаревшие пометки «появится в S11-04/S11-05a/S11-05b» обновлены. `vmhost_control_race_smoke.py` описан как падающий (ISSUE-058).
+- Расхождения: (а) остался один блок `xcrun swiftc` для `tests/system/vmhost_generated_fault_helper.swift` — не цель SwiftPM, помечен «не нормативно»; убрать можно только добавлением цели в `apps/Package.swift`; (б) подписанный bundle проверяет только `vmhost_app_bundle_smoke.sh`, остальные smoke идут на неподписанном debug `od-vmhost` (JIT работает без hardened runtime); (в) `tests/cpu/stage3_harness.py` всё ещё вызывает `xcrun swiftc` (вне объёма).
+- Проверки: `vmhost_app_bundle_smoke.sh` и 17 python-smoke с путями по умолчанию — exit 0 (по отчёту исполнителя); вручную повторно: `display_transport_smoke.py`, `vmhost_control_v1_same_code_smoke.py`, `vmhost_control_v2_lifecycle_smoke.py`, `vmhost_result_state_smoke.py` — exit 0; `swift build`/`swift test` — 42 теста; `python3 tools/check_layout.py` — 45 ошибок (как до задачи).
+- Не запускались: `vmhost_control_race_smoke.py` (ISSUE-058), `tests/cpu/*` (ISSUE-060, ISSUE-061), smoke с окном и release-бинарники; macOS 14 не проверялась.
 
 ### S11-06. Библиотека машин: список, запуск, пауза, остановка, удаление, события
 

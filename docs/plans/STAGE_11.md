@@ -363,6 +363,7 @@
 ### S11-05c. Перевод smoke и README на новую сборку
 
 - [ ] Принято после ревью.
+- **Текущий статус (2026-11-06):** реализован в рабочем дереве, **не принят**; ревью подпрограммой не выполнено (ограничение среды), проверка вручную. Детали и расхождения — в [отчёте](../reports/STAGE_11_REPORT.md).
 - **Где:** `tests/system/*.py`, `tests/system/vmhost_app_bundle_smoke.sh`, `apps/macos/README.md`, `apps/vmhost/README.md`, `docs/testing/DISPLAY.md` (команды сборки), `docs/testing/DESKTOP_APP.md`.
 - **Сделать:** заменить многострочные `swiftc`-команды на `swift build`/`swift test` и `build_app_bundle.py`; smoke принимают пути к новым бинарникам по умолчанию; `vmhost_app_bundle_smoke.sh` использует bundle S11-05b.
 - **Проверить:** все smoke `tests/system/` проходят с значениями по умолчанию; в README не осталось команд, которые не воспроизводятся; `python3 tools/check_layout.py` без новых ошибок.

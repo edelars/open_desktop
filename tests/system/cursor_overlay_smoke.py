@@ -31,6 +31,7 @@ Reference (independent of the viewer):
   (10.8: image rectangle cut by the frame, mapped to the drawable, cut by the visible part), or `none`.
 
 Usage: python3 tests/system/cursor_overlay_smoke.py [VIEWER_BINARY [VMHOST_BINARY]]
+Defaults: apps/.build/debug/open-desktop-display-viewer and apps/.build/debug/od-vmhost (`cargo build -p od-host --offline`, then `cd apps && swift build`).
 """
 
 from __future__ import annotations
@@ -43,8 +44,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VIEWER = ROOT / "target" / "open-desktop-display-viewer"
-DEFAULT_VMHOST = ROOT / "target" / "od-vmhost-smoke"
+DEFAULT_VIEWER = ROOT / "apps" / ".build" / "debug" / "open-desktop-display-viewer"
+DEFAULT_VMHOST = ROOT / "apps" / ".build" / "debug" / "od-vmhost"
 REFERENCE = ROOT / "tests" / "fixtures" / "guest" / "stage10" / "bars_64x48_seed0.raw"
 FW, FH = 64, 48
 CW, CH = 4, 4

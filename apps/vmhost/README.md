@@ -4,51 +4,40 @@
 
 ## Swift Package (S11-05a)
 
-`apps/Package.swift` ([ADR-0006](../../docs/decisions/ADR-0006-desktop-app-shell.md), solution (a)) builds VMHost without the `xcrun swiftc` lines below; they stay valid (with the new paths) until S11-05c rewrites this README. The shared sources moved to `apps/macos/Sources/Shared/` (target `ODShared`, with `ControlFrame.swift` from here), the atomic shim to `apps/macos/Sources/ODAtomics/` (target `ODAtomics`, shared by the VMHost writer and the UI reader); `git mv` was used, there are no copies.
+`apps/Package.swift` ([ADR-0006](../../docs/decisions/ADR-0006-desktop-app-shell.md), solution (a)) builds VMHost; it is the only normative build system (S11-05c removed the former `xcrun swiftc` command lines; the application bundle is built by `python3 tools/build/build_app_bundle.py`). The shared sources moved to `apps/macos/Sources/Shared/` (target `ODShared`, with `ControlFrame.swift` from here), the atomic shim to `apps/macos/Sources/ODAtomics/` (target `ODAtomics`, shared by the VMHost writer and the UI reader); `git mv` was used, there are no copies.
 
-- `od-vmhost` (executable): `Sources/InputChannel.swift`, `Sources/FrameTransport.swift`, `Sources/BundleLock.swift`, `Sources/Lifecycle.swift`, `Sources/ControlV2Host.swift` (S11-04), `Sources/VMHostMain.swift`; depends on `ODShared`, `ODAtomics`, `ODHostABI`. It is the only target that links `target/<profile>/libod_host.a` (linker settings of the manifest; debug for `swift build`, release for `-c release`) and the system frameworks of the command below.
+- `od-vmhost` (executable): `Sources/InputChannel.swift`, `Sources/FrameTransport.swift`, `Sources/BundleLock.swift`, `Sources/Lifecycle.swift`, `Sources/ControlV2Host.swift` (S11-04), `Sources/VMHostMain.swift`; depends on `ODShared`, `ODAtomics`, `ODHostABI`. It is the only target that links `target/<profile>/libod_host.a` (linker settings of the manifest; debug for `swift build`, release for `-c release`) and the system frameworks listed in the manifest.
 - `ODHostABI` (C): `Sources/ODHostABI/include/VMHostABI.h` (engine C ABI declarations and helpers, includes `include/open_desktop/*.h` and the atomic shim) plus a translation unit that compiles it. It declares symbols and links nothing. Used by `od-vmhost` and its tests only; the launcher smoke gets the ABI constants from the separate target `ODHostConstants` (`apps/macos/Sources/ODHostConstants/`, only `host_abi.h`), so it does not see the session or display ABI nor the VMHost helpers.
 - `OpenDesktopVMHostTests` (XCTest): `Tests/CursorTransportTests.swift`, `Tests/LifecycleTests.swift` (S11-04, `swift test --filter LifecycleXCTests`, 10 tests). It depends on `od-vmhost` (`@testable import od_vmhost`), so the test bundle links `libod_host.a` as well: that is the code of `od-vmhost`, not a second consumer of the library in the manifest. Build the staticlib before `swift test`.
-- **Deviation from the S11-05a plan:** the plan says to keep the old `xcrun swiftc ... CursorTransportTests.swift` command; the file is `import XCTest` now (no `@main`) and cannot be built with `swiftc`, so the command is replaced by `swift test --filter CursorTransportXCTests` (reason: XCTest case, not an executable).
 
 ```sh
 cargo build -p od-host --offline            # debug staticlib; add --release for `swift build -c release`
-(cd apps && swift build && swift test --filter CursorTransportXCTests)
-codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements apps/.build/debug/od-vmhost   # needed before the smokes below; use a copy for release
+(cd apps && swift build && swift test)
+apps/.build/debug/open-desktop-launcher-smoke --vmhost "$PWD/apps/.build/debug/od-vmhost" --hex '48 2b c1 75 fb' --rax 3 --rcx 1 --budget 32
 ```
 
-The binary name is `od-vmhost` (the `xcrun swiftc` line below produces `od-vmhost-smoke`); the smoke scripts take the path as an argument.
-
-Build and run with `xcrun swiftc` on macOS ARM64 from the repository root:
-
-```sh
-cargo build --release -p od-host --offline
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/ODHostABI/include/VMHostABI.h apps/macos/Sources/Shared/ControlFrame.swift apps/macos/Sources/Shared/ControlV2.swift apps/macos/Sources/Shared/InputProtocol.swift apps/macos/Sources/Shared/InputQueue.swift apps/vmhost/Sources/InputChannel.swift apps/vmhost/Sources/FrameTransport.swift apps/vmhost/Sources/BundleLock.swift apps/vmhost/Sources/Lifecycle.swift apps/vmhost/Sources/ControlV2Host.swift apps/vmhost/Sources/VMHostMain.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-smoke
-codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements target/od-vmhost-smoke
-codesign --verify --strict --verbose=2 target/od-vmhost-smoke
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header include/open_desktop/host_abi.h apps/macos/Sources/Shared/ControlFrame.swift apps/macos/Sources/Shared/VMHostLaunch.swift apps/macos/Sources/launcher.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/open-desktop-launcher-smoke
-target/open-desktop-launcher-smoke --vmhost "$PWD/target/od-vmhost-smoke" --hex '48 2b c1 75 fb' --rax 3 --rcx 1 --budget 32
-```
+The binary is `apps/.build/debug/od-vmhost` (it replaces the `target/od-vmhost-smoke` of the former `swiftc` recipe). The smoke scripts in `tests/system/` take the paths as optional arguments and **default to `apps/.build/debug/`**. SwiftPM links the binary ad hoc, without hardened runtime and without entitlements; MAP_JIT works in that state, so the smokes below run the unsigned debug binary. The entitled and signed helper (`com.apple.security.cs.allow-jit`, hardened runtime) is the one inside the application bundle, see `vmhost_app_bundle_smoke.sh` below.
 
 The launcher accepts `--stop-after-ms N` for a cooperative-stop check. For example, `--hex 75fe --stop-after-ms 25 --budget 18446744073709551615` runs a self-loop until STOP is delivered. Both programs are local smoke binaries, not a packaged app.
 
-Run the control-lifecycle regression scenarios with `python3 tests/system/vmhost_control_race_smoke.py target/open-desktop-launcher-smoke target/od-vmhost-smoke`. It repeats immediate STOP 100 times, checks a finite fragment that completes before its stop delay, sends incomplete header and payload bytes while execution is active, and closes a channel during an active fragment.
+Run the control-lifecycle regression scenarios with `python3 tests/system/vmhost_control_race_smoke.py [LAUNCHER [VMHOST]]`. It repeats immediate STOP 100 times, checks a finite fragment that completes before its stop delay, sends incomplete header and payload bytes while execution is active, and closes a channel during an active fragment.
 
 If the helper returns an error, the launcher reports it, sends SIGTERM, waits up to 500 ms, then uses SIGKILL if the helper did not exit, and reaps the child. If the control channel closes because the helper has already terminated, the launcher reports its exit status or terminating signal when available (for example, `VMHost terminated by SIGSEGV`).
 
-Run the two-instance crash/stop isolation scenario with `python3 tests/system/vmhost_isolation_smoke.py target/od-vmhost-smoke`. It starts two active VMHost processes, sends SIGSEGV to one helper, and verifies that the other still accepts STOP and returns its result. This simulates a fatal process exit; it does not induce a fault inside generated code.
+Run the two-instance crash/stop isolation scenario with `python3 tests/system/vmhost_isolation_smoke.py [VMHOST]`. It starts two active VMHost processes, sends SIGSEGV to one helper, and verifies that the other still accepts STOP and returns its result. This simulates a fatal process exit; it does not induce a fault inside generated code.
 
-Build the dedicated generated-code-fault helper with the same control framing and host ABI:
+The dedicated generated-code-fault helper (`tests/system/vmhost_generated_fault_helper.swift`) is **not a SwiftPM target** (`apps/Package.swift` has no target for it; adding one is a separate change). It is the only place that still builds with `xcrun swiftc`; this is a debugging recipe, not normative. From the repository root:
 
 ```sh
+cargo build --release -p od-host --offline
 xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/ODHostABI/include/VMHostABI.h apps/macos/Sources/Shared/ControlFrame.swift tests/system/vmhost_generated_fault_helper.swift target/release/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-generated-fault-smoke
 codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements target/od-vmhost-generated-fault-smoke
-python3 tests/system/vmhost_generated_fault_smoke.py target/open-desktop-launcher-smoke target/od-vmhost-generated-fault-smoke
+python3 tests/system/vmhost_generated_fault_smoke.py [LAUNCHER [target/od-vmhost-generated-fault-smoke]]
 ```
 
 The test-only helper completes HELLO/READY/RUN, then emits and executes a two-instruction ARM64 fault stub from MAP_JIT memory. The launcher must report `VMHost terminated by SIGSEGV`. The stub tests supervisor behavior; it is separate from the `od-jit` fault unit test and is not part of the shipping VMHost.
 
-To verify local app-bundle assembly, ad-hoc signatures, and JIT execution from inside the bundle, run `sh tests/system/vmhost_app_bundle_smoke.sh target/open-desktop-launcher-smoke target/od-vmhost-smoke apps/vmhost/Configuration/vmhost-smoke.entitlements`. The script creates and removes a temporary `.app` bundle. This is a local smoke bundle, not a packaged distribution or notarized product.
+To verify local app-bundle assembly, ad-hoc signatures, and JIT execution from inside the bundle, run `sh tests/system/vmhost_app_bundle_smoke.sh [APP_BUNDLE [LAUNCHER]]`. Without arguments it builds `target/app-bundle/OpenDesktop.app` with `python3 tools/build/build_app_bundle.py` and `apps/.build/debug/open-desktop-launcher-smoke` with `swift build`, checks `plutil -lint` and `codesign --verify --strict` of the helper and the application, and runs a fragment through `Contents/Helpers/od-vmhost`. This is a local ad-hoc signed bundle, not a packaged distribution or notarized product. (The three-to-five argument form `LAUNCHER VMHOST ENTITLEMENTS [PRESERVED_APP_BUNDLE [CODESIGN_TOOL]]` with a hand-assembled bundle remains only for the frozen `tests/cpu/stage3_harness.py`; it is not normative.)
 
 The VMHost ad-hoc signature enables Hardened Runtime with `com.apple.security.cs.allow-jit`. This confirms local signed JIT execution on the tested M3 Max only. It does not confirm Developer ID signing, notarization, a packaged VMHost distribution, or another Mac model.
 
@@ -71,15 +60,9 @@ is unlocalized and it is not a clean gate. See the
 
 `--display-smoke pattern` is **test-only** and is never selected implicitly: VMHost without a guest creates an `OD_DISPLAY_PROFILE_TEST_PATTERN` session (64x48 BGRX8888 bars, seed 0), publishes its frame and notifies the reader over the socket given by `--socket-fd`. Options: `--display-poll-hz N` (check rate, default 60) and `--display-hold-until-claim 1` (holds publication until the reader writes a non-zero `reader_claim`, so a reader can observe generation 0 deterministically). The mode ends on EOF (exit status 0); a protocol error (foreign magic, malformed `HELLO`, bytes from the reader after `HELLO`) or a host refusal exits non-zero.
 
-Build (from the repository root; `libod_host.a` first, the debug staticlib is enough):
+Build: `cargo build -p od-host --offline`, then `(cd apps && swift build)` (see the Swift Package section above).
 
-```sh
-cargo build -p od-host --offline
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/ODHostABI/include/VMHostABI.h apps/macos/Sources/Shared/ControlFrame.swift apps/macos/Sources/Shared/ControlV2.swift apps/macos/Sources/Shared/InputProtocol.swift apps/macos/Sources/Shared/InputQueue.swift apps/vmhost/Sources/InputChannel.swift apps/vmhost/Sources/FrameTransport.swift apps/vmhost/Sources/BundleLock.swift apps/vmhost/Sources/Lifecycle.swift apps/vmhost/Sources/ControlV2Host.swift apps/vmhost/Sources/VMHostMain.swift target/debug/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-smoke
-codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements target/od-vmhost-smoke
-```
-
-Run the transport smoke: `python3 tests/system/display_transport_smoke.py [target/od-vmhost-smoke]`. It starts VMHost with the socketpair on fd 3, receives `ANNOUNCE` with `recvmsg`, checks `fstat` before `mmap`, observes generation 0 and then the published generation, reads the slot with the seqlock re-check, and compares the raw frame with `tests/fixtures/guest/stage10/bars_64x48_seed0.raw` through `tests/system/display_compare.py` at tolerance 0. It also checks the `VERSION` reply to a `HELLO` with another version. The test pattern profile never changes after create, so a second generation or a `MODE` change is not produced by this scenario; that transition is not covered here.
+Run the transport smoke: `python3 tests/system/display_transport_smoke.py [VMHOST]`. It starts VMHost with the socketpair on fd 3, receives `ANNOUNCE` with `recvmsg`, checks `fstat` before `mmap`, observes generation 0 and then the published generation, reads the slot with the seqlock re-check, and compares the raw frame with `tests/fixtures/guest/stage10/bars_64x48_seed0.raw` through `tests/system/display_compare.py` at tolerance 0. It also checks the `VERSION` reply to a `HELLO` with another version. The test pattern profile never changes after create, so a second generation or a `MODE` change is not produced by this scenario; that transition is not covered here.
 
 ## S10-16 input channel (host part; no delivery to the guest)
 
@@ -87,7 +70,7 @@ Spec: [`protocols/control/INPUT_TRANSPORT_V1.md`](../../protocols/control/INPUT_
 
 **There is no consumer.** `od-host` has no input ABI (section 10), so records stay in the queue: it fills to 256 and then merges motions and refuses DOWNs. `ACCEPT` carries `GUEST_DELIVERY = 0`. Test-only `--input-trace 1` takes records from the head through `popForConsumer` (which repeats the `mode_change_count` check at the queue exit, section 8.2 item 4) and prints them to stderr as `input-trace ...`; it is the only consumer and exists for the smoke.
 
-Smoke (needs the VMHost binary built above): `python3 tests/system/input_channel_smoke.py [target/od-vmhost-smoke]`. It starts VMHost with frame transport on fd 3 and the input channel on fd 4, checks `ACCEPT` with `GUEST_DELIVERY = 0`, `STATUS` counters (`merged_motions`, `queue_depth`), a full queue without a consumer (`rejected_downs` grows, depth stays at most 256, `dropped_unfocused` in GAINED_PENDING), 24 protocol-error cases that close only the input channel while the frame socket stays open, the trace consumer (stale absolute position reset or dropped, `FOCUS LOST` instead of `UP`), EOF while focused, and EOF on both sockets with exit status 0. The unit tests of the shared queue and protocol are in `apps/macos/Tests/InputTests.swift` (see [`apps/macos/README.md`](../macos/README.md)).
+Smoke (needs `apps/.build/debug/od-vmhost` built as above): `python3 tests/system/input_channel_smoke.py [VMHOST]`. It starts VMHost with frame transport on fd 3 and the input channel on fd 4, checks `ACCEPT` with `GUEST_DELIVERY = 0`, `STATUS` counters (`merged_motions`, `queue_depth`), a full queue without a consumer (`rejected_downs` grows, depth stays at most 256, `dropped_unfocused` in GAINED_PENDING), 24 protocol-error cases that close only the input channel while the frame socket stays open, the trace consumer (stale absolute position reset or dropped, `FOCUS LOST` instead of `UP`), EOF while focused, and EOF on both sockets with exit status 0. The unit tests of the shared queue and protocol are in `apps/macos/Tests/InputTests.swift` (see [`apps/macos/README.md`](../macos/README.md)).
 
 ## S10-14 cursor (writer side; written, awaiting review; no live cursor yet)
 
@@ -102,7 +85,7 @@ cargo build -p od-host --offline
 (cd apps && swift test --filter CursorTransportXCTests)
 ```
 
-`apps/vmhost/Tests/CursorTransportTests.swift` covers: the v2 layout the writer produces, publication and the shape copy count (once per slot in the writer, once in the reader), slot choice under untrusted `cursor_claim` values (0, 1…3, 4, `0xFFFF_FFFF`), a slot rewritten between `g1` and `g2` (update discarded, state kept, recovery), 24 protocol violations one by one, 14 wrong header values of v2 and the cursor area (`INCOMPATIBLE`), and queue replacement and order. The test is an XCTest case since S11-05a (`CursorTransportXCTests`, 8 tests; it imports `od-vmhost` with `@testable` and links `libod_host.a` through that target). The VMHost build command above already includes the new code; the smokes `display_transport_smoke.py` and `input_channel_smoke.py` were updated to v2 (HELLO with version 1 or 3 is answered with `VERSION`, version 2).
+`apps/vmhost/Tests/CursorTransportTests.swift` covers: the v2 layout the writer produces, publication and the shape copy count (once per slot in the writer, once in the reader), slot choice under untrusted `cursor_claim` values (0, 1…3, 4, `0xFFFF_FFFF`), a slot rewritten between `g1` and `g2` (update discarded, state kept, recovery), 24 protocol violations one by one, 14 wrong header values of v2 and the cursor area (`INCOMPATIBLE`), and queue replacement and order. The test is an XCTest case since S11-05a (`CursorTransportXCTests`, 8 tests; it imports `od-vmhost` with `@testable` and links `libod_host.a` through that target). The smokes `display_transport_smoke.py` and `input_channel_smoke.py` were updated to v2 (HELLO with version 1 or 3 is answered with `VERSION`, version 2).
 
 ## Два экрана (S10-15, тестовый путь)
 

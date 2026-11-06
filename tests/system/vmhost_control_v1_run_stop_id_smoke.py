@@ -6,6 +6,7 @@ import socket
 import struct
 import subprocess
 import sys
+from pathlib import Path
 
 
 MAGIC = b"ODCP"
@@ -157,7 +158,10 @@ def check_run_stop_id(vmhost):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("vmhost", help="path to the built VMHost binary")
+    parser.add_argument(
+        "vmhost", nargs="?", default=str(Path(__file__).resolve().parents[2] / "apps" / ".build" / "debug" / "od-vmhost"),
+        help="path to the built VMHost binary (default: apps/.build/debug/od-vmhost)",
+    )
     args = parser.parse_args()
     check_run_stop_id(args.vmhost)
     print("VMHost control V1 smoke passed: active STOP and RUN-ID high-watermark")

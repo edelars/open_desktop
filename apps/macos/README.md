@@ -7,11 +7,11 @@
 - `MetalPresenter.swift` — `MTLTexture` (`bgra8Unorm`, bytes B, G, R, X as in the slot) filled once per frame with `replace(region:)`, fullscreen-triangle pipeline with nearest-neighbour sampling drawn into the viewport (the target is cleared to the background first, so margins are plain background), and the offscreen path (render into a texture of a given physical size, read back with `getBytes`).
 - `DisplayWindow.swift` — AppKit window whose view is backed by a `CAMetalLayer`; the drawable is always bounds × `backingScaleFactor`; a resize or a scale change only redraws with a new drawable size and viewport (the shown texture is neither recreated nor dropped). "no signal", "changing mode", "disconnected" and "incompatible version" are a colour plus a text label, never a frozen frame.
 
-The viewer links no Rust code: it only spawns VMHost, so `libod_host.a` is needed for the VMHost binary, not for the viewer. The atomic C shim `apps/macos/Sources/ODAtomics/include/FrameTransportAtomics.h` (target `ODAtomics`) is shared by the VMHost writer and the viewer reader (`FrameReader`); with direct `swiftc` builds it is imported with `-import-objc-header` (not copied).
+The viewer links no Rust code: it only spawns VMHost, so `libod_host.a` is needed for the VMHost binary, not for the viewer. The atomic C shim `apps/macos/Sources/ODAtomics/include/FrameTransportAtomics.h` (target `ODAtomics`) is shared by the VMHost writer and the viewer reader (`FrameReader`); SwiftPM imports it through the `ODAtomics` target (the header is not copied).
 
 ## Swift Package (S11-05a)
 
-`apps/Package.swift` ([ADR-0006](../../docs/decisions/ADR-0006-desktop-app-shell.md), solution (a)) builds the same code without the `xcrun swiftc` lines below; they stay valid (with the new paths) until S11-05c rewrites this README. No external dependencies. Targets that exist now:
+`apps/Package.swift` ([ADR-0006](../../docs/decisions/ADR-0006-desktop-app-shell.md), solution (a)) is the only normative build system of the macOS products (S11-05c removed the former `xcrun swiftc` command lines); the application bundle is built by `tools/build/build_app_bundle.py` (next section). No external dependencies. Targets that exist now:
 
 | Target | Kind | Sources |
 | --- | --- | --- |
@@ -32,40 +32,29 @@ cargo build -p od-host --offline
 (cd apps && swift build -c release)   # binaries: apps/.build/release/{od-vmhost,open-desktop-display-viewer,open-desktop-launcher-smoke}
 ```
 
-SwiftPM links `od-vmhost` ad hoc without entitlements: sign a copy as in the `codesign` line below before running the smokes that execute JIT (`--entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements`). The smokes take the binary paths as arguments, for example `python3 tests/system/display_viewer_dump_smoke.py apps/.build/release/open-desktop-display-viewer <signed copy of od-vmhost>`.
-
-Build from the repository root with `xcrun swiftc` (VMHost first; the debug `libod_host.a` is enough, see [`apps/vmhost/README.md`](../vmhost/README.md)):
-
-```sh
-cargo build -p od-host --offline
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/vmhost/Sources/ODHostABI/include/VMHostABI.h apps/macos/Sources/Shared/ControlFrame.swift apps/macos/Sources/Shared/ControlV2.swift apps/macos/Sources/Shared/InputProtocol.swift apps/macos/Sources/Shared/InputQueue.swift apps/vmhost/Sources/InputChannel.swift apps/vmhost/Sources/FrameTransport.swift apps/vmhost/Sources/BundleLock.swift apps/vmhost/Sources/Lifecycle.swift apps/vmhost/Sources/ControlV2Host.swift apps/vmhost/Sources/VMHostMain.swift target/debug/libod_host.a -ldl -lpthread -lm -framework Security -framework SystemConfiguration -framework CoreFoundation -framework CoreServices -framework Foundation -o target/od-vmhost-smoke
-codesign --force --sign - --options runtime --entitlements apps/vmhost/Configuration/vmhost-smoke.entitlements target/od-vmhost-smoke
-xcrun swiftc -module-cache-path /private/tmp/open-desktop-module-cache -parse-as-library -O -import-objc-header apps/macos/Sources/ODAtomics/include/FrameTransportAtomics.h apps/macos/Sources/Shared/VMHostLaunch.swift apps/macos/Sources/Shared/FrameReader.swift apps/macos/Sources/Shared/Viewport.swift apps/macos/Sources/MetalPresenter.swift apps/macos/Sources/Shared/InputProtocol.swift apps/macos/Sources/Shared/InputQueue.swift apps/macos/Sources/Shared/HIDUsage.swift apps/macos/Sources/Shared/InputTranslation.swift apps/macos/Sources/InputChannel.swift apps/macos/Sources/DisplayWindow.swift apps/macos/Sources/display_viewer_main.swift -framework AppKit -framework Metal -framework QuartzCore -framework Foundation -o target/open-desktop-display-viewer
-```
+Binaries are in `apps/.build/debug/` (or `apps/.build/release/` after `-c release`): `od-vmhost`, `open-desktop-display-viewer`, `open-desktop-launcher-smoke`, `OpenDesktop`. The smokes in `tests/system/` take these paths as optional arguments; **by default they use `apps/.build/debug/`** (the same rule everywhere: run `cargo build -p od-host --offline` and `cd apps && swift build` first). SwiftPM links `od-vmhost` ad hoc without hardened runtime and without entitlements; MAP_JIT works in that state, so the smokes run the unsigned debug binary. The signed helper with `com.apple.security.cs.allow-jit` is checked separately: `sh tests/system/vmhost_app_bundle_smoke.sh` builds the bundle (`build_app_bundle.py`, `target/app-bundle/OpenDesktop.app`) and runs a fragment through `Contents/Helpers/od-vmhost`.
 
 Run:
 
 ```sh
 # Window (closes with the window; --close-after-ms N closes it after N ms):
-target/open-desktop-display-viewer --vmhost target/od-vmhost-smoke
+apps/.build/debug/open-desktop-display-viewer --vmhost apps/.build/debug/od-vmhost
 # Offscreen, no window: render through Metal, read back, write the raw frame (B, G, R, X rows, stride = width * 4):
-target/open-desktop-display-viewer --vmhost target/od-vmhost-smoke --dump-frame /private/tmp/frame_64x48.raw
+apps/.build/debug/open-desktop-display-viewer --vmhost apps/.build/debug/od-vmhost --dump-frame /private/tmp/frame_64x48.raw
 python3 tests/system/display_compare.py tests/fixtures/guest/stage10/bars_64x48_seed0.raw /private/tmp/frame_64x48.raw --width 64 --height 48 --tolerance 0
-python3 tests/system/display_viewer_dump_smoke.py [target/open-desktop-display-viewer [target/od-vmhost-smoke]]
+python3 tests/system/display_viewer_dump_smoke.py [VIEWER [VMHOST]]
 # S10-11: scaled offscreen dump: logical window size 100x100 points at scale 2 -> physical drawable 200x200, frame letterboxed (viewport 0,25,200,150)
-target/open-desktop-display-viewer --vmhost target/od-vmhost-smoke --dump-frame /private/tmp/frame_scaled.raw --dump-size 100x100 --backing-scale 2
+apps/.build/debug/open-desktop-display-viewer --vmhost apps/.build/debug/od-vmhost --dump-frame /private/tmp/frame_scaled.raw --dump-size 100x100 --backing-scale 2
 # Pixel-exact (1 guest pixel = 1 drawable pixel, centred) in the window, or in a dump of a larger drawable:
-target/open-desktop-display-viewer --vmhost target/od-vmhost-smoke --pixel-exact
-python3 tests/system/display_viewer_scaled_smoke.py [target/open-desktop-display-viewer [target/od-vmhost-smoke]]
-# Unit test of Shared/Viewport.swift (no Metal, no VMHost). **Deviation from the S11-05a plan:** the plan says to keep the old `xcrun swiftc` commands of the tests, but the test files are `import XCTest` now (no `@main`) and cannot be built with `swiftc` any more, so those commands are replaced by `swift test --filter ...` (reason: XCTest cases, not executables). From apps/:
+apps/.build/debug/open-desktop-display-viewer --vmhost apps/.build/debug/od-vmhost --pixel-exact
+python3 tests/system/display_viewer_scaled_smoke.py [VIEWER [VMHOST]]
+# Unit test of Shared/Viewport.swift (no Metal, no VMHost); XCTest, run from apps/:
 (cd apps && swift test --filter ViewportXCTests)
 ```
 
 Options: `--vmhost PATH` (required), `--profile pattern` (smoke only; the only value until S10-09 adds `probe`), `--dump-frame PATH`, `--dump-size WxH` (with `--dump-frame` only: the logical window size in points, default the frame size), `--backing-scale S` (with `--dump-frame` only: 1…4, default 1; the dumped drawable is round(W × S) × round(H × S) physical pixels), `--pixel-exact` (no value; default is aspect-preserving fit), `--timeout-ms N` (wait for ANNOUNCE and the first frame, default 10000), `--close-after-ms N`. Exit status: 0 success; 1 failure; 2 usage. In window mode failure means a startup error (Metal, spawn), a reader that ended in `DISCONNECTED` or `INCOMPATIBLE`, or a VMHost exit status other than 0 when the viewer stops it; the status is kept and returned by `exit` after `NSApp.terminate`. In offscreen mode: no frame, VMHost exit status other than 0 after EOF, I/O. On `DISCONNECTED`/`INCOMPATIBLE` the viewer unmaps and closes the socket and stops VMHost (EOF up to 2 s, SIGTERM, 500 ms, SIGKILL, reap) and shows VMHost's real exit status in the window text.
 
 Without `--dump-size` and `--backing-scale` the dump has the frame size and is the 1:1 reference dump (tolerance 0). Every dump prints the guest frame size (`width`, `height`), `logical`, `physical`, `scale`, `mode`, `viewport=x,y,w,h` (full frame rectangle in drawable pixels, origin top-left, may start below 0 when pixel-exact crops) and `visible=x,y,w,h` (the part handed to Metal); the window mode prints `window geometry: logical=… physical=… scale=…` on exit. Logical (points) and physical (pixels) sizes differ on Retina and both belong in every measurement report. S10-16 uses `ViewportLayout.guestPixel` for the absolute mouse position (see the input section below).
-
-The launcher smoke (`launcher.swift`) now also needs `Sources/Shared/VMHostLaunch.swift` in its compile command; the command in [`apps/vmhost/README.md`](../vmhost/README.md) shows it.
 
 ## OpenDesktop.app (S11-05b, written, awaiting review)
 
@@ -106,13 +95,13 @@ Spec: [`protocols/control/INPUT_TRANSPORT_V1.md`](../../protocols/control/INPUT_
 
 Viewer option `--input-channel` (window mode only): creates the second socketpair and enables the collection above. Without it nothing changes. While the window is key and the channel is active (HANDSHAKE and UNFOCUSED states too), all keys and key equivalents (Cmd-Q, Cmd-W, ...) are swallowed by the local event monitor (open decision 3 of the spec). Ways out: the window close button, the menu with the mouse, Ctrl-C in the terminal, `--close-after-ms`. If a `keyUp` is not delivered while Command is held, the key stays pressed in the guest queue until `FOCUS LOST`; changing the window focus releases it. The wait for ACCEPT (5 s) counts from the moment the window is shown, when HELLO is sent. On an ISO keyboard Apple swaps `kVK_ISO_Section` (0x0A) and `kVK_ANSI_Grave` (0x32); the table follows the SDK names and has not been checked on hardware.
 
-Unit tests (no AppKit, no VMHost process; 10⁶ random queue steps with a fixed seed, kVK table against the SDK header, coordinates, focus release through a real socketpair). Since S11-05a they are XCTest cases (`InputXCTests`, 19 tests; the former executable printed `input tests ok (2925454 checks)`, the test case prints the same number of checks). **Deviation from the S11-05a plan:** the plan says to keep the old `xcrun swiftc ... InputTests.swift` command, but the file is `import XCTest` now (no `@main`) and cannot be built with `swiftc` any more, so the command is replaced by `swift test --filter InputXCTests` (reason: XCTest cases, not an executable):
+Unit tests (no AppKit, no VMHost process; 10⁶ random queue steps with a fixed seed, kVK table against the SDK header, coordinates, focus release through a real socketpair). Since S11-05a they are XCTest cases (`InputXCTests`, 19 tests; the former executable printed `input tests ok (2925454 checks)`, the test case prints the same number of checks).:
 
 ```sh
 (cd apps && swift test --filter InputXCTests)
-python3 tests/system/input_channel_smoke.py [target/od-vmhost-smoke]
+python3 tests/system/input_channel_smoke.py [VMHOST]
 # Window with the input channel (closes by itself after 2.5 s; prints "input channel: ..." on exit):
-target/open-desktop-display-viewer --vmhost target/od-vmhost-smoke --input-channel --close-after-ms 2500
+apps/.build/debug/open-desktop-display-viewer --vmhost apps/.build/debug/od-vmhost --input-channel --close-after-ms 2500
 ```
 
 ## S10-14 cursor overlay (written, awaiting review; live cursor not checked)
@@ -123,13 +112,13 @@ Spec: [`protocols/control/FRAME_TRANSPORT_V1.md`](../../protocols/control/FRAME_
 - `Shared/Viewport.swift` — `CursorOverlay.placement`: image rectangle `pos − hot` cut by the frame, mapped to the drawable with the affine function of the frame, intersected with the visible part of the drawable (a `pixelExact` drawable smaller than the frame never gets a cursor viewport outside the render target), texture coordinates narrowed like `visibleUV`.
 - `MetalPresenter.swift` — cursor texture (`bgra8Unorm`, premultiplied bytes unchanged) created only when `shape_seq` changes; second draw in the same render pass after the frame, own pipeline with blending `one`/`oneMinusSourceAlpha`, `writeMask` without alpha (the X byte of the frame is not changed), nearest sampling, scissor = visible part. Counters `frameUploadCount` and `cursorUploadCount` are for tests. `DisplayWindow.swift` is unchanged: a cursor update makes `pump` report a change, and the existing redraw path draws it.
 
-Builds are the ones above (viewer and VMHost); both now speak transport v2. Tests:
+Builds are the SwiftPM ones above (viewer and VMHost); both speak transport v2. Tests:
 
 ```sh
-# Geometry, including cursor placement (pixel-exact drawable smaller than the frame, cursor at cropped edges), XCTest since S11-05a (deviation from the S11-05a plan, see the Viewport unit test above: `swift test --filter` replaces the `xcrun swiftc ... ViewportTests.swift` command):
+# Geometry, including cursor placement (pixel-exact drawable smaller than the frame, cursor at cropped edges), XCTest:
 (cd apps && swift test --filter ViewportXCTests)
 # Offscreen overlay against a reference that the script builds itself (tolerance 0 for A in {0, 255}):
-python3 tests/system/cursor_overlay_smoke.py [target/open-desktop-display-viewer [target/od-vmhost-smoke]]
+python3 tests/system/cursor_overlay_smoke.py [VIEWER [VMHOST]]
 # Writer and reader of the cursor area together: see apps/vmhost/README.md
 ```
 
@@ -139,10 +128,10 @@ python3 tests/system/cursor_overlay_smoke.py [target/open-desktop-display-viewer
 
 - `--screens 2` — viewer ждёт ANNOUNCE обоих экранов, создаёт два окна (экран 0 — основное, его закрытие завершает viewer и VMHost; экран 1 — только окно) и запускает VMHost с `--display-screens 2` (профиль 4, DISPLAY_HOST_ABI_V1.md, раздел 10).
 - `--dump-screen 1` (нужен `--screens 2`) — offscreen-дамп экрана 1; без флага дампится экран 0.
-- Пример (после сборки по строке 18 и `target/od-vmhost-smoke` из `apps/vmhost/README.md`):
+- Пример (после `cargo build -p od-host --offline` и `cd apps && swift build`):
 
 ```bash
-target/open-desktop-display-viewer --vmhost target/od-vmhost-smoke --screens 2 --dump-screen 1 --dump-frame /private/tmp/screen1.raw
+apps/.build/debug/open-desktop-display-viewer --vmhost apps/.build/debug/od-vmhost --screens 2 --dump-screen 1 --dump-frame /private/tmp/screen1.raw
 ```
 
 Экран 1 в тестовом профиле — шахматка 32×24 (клетка 8×8), проверяется побайтно эталоном, который строит скрипт. Окна глазами не проверены; сквозной путь «регистры гостя → VMHost» для экрана 1 не проверен (нужен probe S10-08).

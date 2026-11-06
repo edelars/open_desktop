@@ -36,6 +36,7 @@
 
 - `python3 tools/build/display_pattern.py --width W --height H --pattern {gradient,bars,checker} --seed S --output FILE` — пишет raw-файл и печатает SHA-256. Выход детерминирован.
 - `python3 tests/system/display_compare.py EXPECTED ACTUAL --width W --height H [--tolerance N]` — код выхода 0 при совпадении в пределах допуска, 1 при отличиях (печатает число отличающихся пикселей и первые 10 координат), 2 при ошибке аргументов, допуска, размера или чтения файла.
+- Сборка бинарников для уровней 2–3 (S11-05c; нормативна одна система, SwiftPM): `cargo build -p od-host --offline`, затем `cd apps && swift build`. Бинарники `apps/.build/debug/od-vmhost` и `apps/.build/debug/open-desktop-display-viewer` — значения по умолчанию в `tests/system/display_transport_smoke.py`, `display_viewer_dump_smoke.py`, `display_viewer_scaled_smoke.py`, `cursor_overlay_smoke.py`, `input_channel_smoke.py` (пути можно передать аргументами). Прежние команды `xcrun swiftc` и `target/od-vmhost-smoke` удалены.
 - `python3 -m unittest tools/build/test_display_pattern.py` — тесты генератора и сравнения (повторная генерация, зафиксированные хеши эталонов, детекция сдвига одного байта, допуск, ошибка размера).
 
 ## 5. Ограничения методики

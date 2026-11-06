@@ -11,6 +11,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -389,11 +390,16 @@ def run_smoke(launcher, vmhost, diagnostics_dir):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("launcher", type=Path)
-    parser.add_argument("vmhost", type=Path)
-    parser.add_argument("--diagnostics-dir", type=Path, required=True)
+    root = Path(__file__).resolve().parents[2]
+    parser.add_argument("launcher", type=Path, nargs="?", default=root / "apps" / ".build" / "debug" / "open-desktop-launcher-smoke")
+    parser.add_argument("vmhost", type=Path, nargs="?", default=root / "apps" / ".build" / "debug" / "od-vmhost")
+    parser.add_argument("--diagnostics-dir", type=Path, help="existing directory for child logs (default: a temporary directory removed afterwards)")
     args = parser.parse_args(argv)
-    run_smoke(args.launcher, args.vmhost, args.diagnostics_dir.resolve())
+    if args.diagnostics_dir is not None:
+        run_smoke(args.launcher, args.vmhost, args.diagnostics_dir.resolve())
+        return
+    with tempfile.TemporaryDirectory(prefix="od-result-state-") as temporary:
+        run_smoke(args.launcher, args.vmhost, Path(temporary).resolve())
 
 
 if __name__ == "__main__":

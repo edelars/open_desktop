@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """S10-16 smoke: input transport v1 (protocols/control/INPUT_TRANSPORT_V1.md) against the test-only VMHost.
 
-Starts `od-vmhost-smoke --socket-fd 3 --display-smoke pattern --input-fd 4` with two socketpairs (frame transport on fd 3,
+Starts `od-vmhost --socket-fd 3 --display-smoke pattern --input-fd 4` with two socketpairs (frame transport on fd 3,
 input on fd 4), acts as the UI: ODFT HELLO on the frame socket, ODIT HELLO on the input socket, ACCEPT with
 GUEST_DELIVERY = 0, FOCUS/USAGE/MOTION, STATUS counters, a full queue without a consumer (rejected_downs, queue depth
 bounded, GAINED_PENDING), protocol errors that close only the input channel (frame socket stays open), the
@@ -10,6 +10,7 @@ test-only trace consumer (`--input-trace 1`), EOF on both sockets with exit stat
 There is NO delivery to the guest: the checks stop at the VMHost queue.
 
 Usage: python3 tests/system/input_channel_smoke.py [VMHOST_BINARY]
+Default: apps/.build/debug/od-vmhost (`cargo build -p od-host --offline`, then `cd apps && swift build`).
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VMHOST = ROOT / "target" / "od-vmhost-smoke"
+DEFAULT_VMHOST = ROOT / "apps" / ".build" / "debug" / "od-vmhost"
 TIMEOUT = 10.0
 
 K_VERSION, K_HELLO, K_ACCEPT, K_FOCUS, K_USAGE, K_MOTION, K_STATUS = range(7)

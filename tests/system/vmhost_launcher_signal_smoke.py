@@ -13,16 +13,21 @@ import time
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_LAUNCHER = ROOT / "apps" / ".build" / "debug" / "open-desktop-launcher-smoke"
+DEFAULT_VMHOST = ROOT / "apps" / ".build" / "debug" / "od-vmhost"
+
+
 def main() -> int:
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (1, 3):
         print(
-            f"usage: {Path(sys.argv[0]).name} LAUNCHER VMHOST",
+            f"usage: {Path(sys.argv[0]).name} [LAUNCHER VMHOST]",
             file=sys.stderr,
         )
         return 2
 
-    launcher = str(Path(sys.argv[1]).resolve())
-    vmhost = str(Path(sys.argv[2]).resolve())
+    launcher = str(Path(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_LAUNCHER).resolve())
+    vmhost = str(Path(sys.argv[2] if len(sys.argv) > 1 else DEFAULT_VMHOST).resolve())
     with tempfile.TemporaryDirectory(prefix="od-vmhost-signal-") as temporary:
         directory = Path(temporary)
         pid_file = directory / "vmhost.pid"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """S10-06/S10-14 smoke: frame transport v2 reader against the test-only VMHost.
 
-Starts `od-vmhost-smoke --socket-fd 3 --display-smoke pattern` over a socketpair,
+Starts `od-vmhost --socket-fd 3 --display-smoke pattern` over a socketpair,
 acts as the UI reader of protocols/control/FRAME_TRANSPORT_V1.md (HELLO, ANNOUNCE
 with SCM_RIGHTS, fstat before mmap, MODE, FRAME, seqlock read), saves the slot as a
 raw file and compares it with the bars 64x48 seed 0 reference at tolerance 0.
@@ -10,6 +10,7 @@ Also checks the VERSION reply to a HELLO with a foreign version (v1 and v3), the
 profile, which never writes a cursor register, sends no CURSOR message and publishes no cursor.
 
 Usage: python3 tests/system/display_transport_smoke.py [VMHOST_BINARY]
+Default: apps/.build/debug/od-vmhost (`cargo build -p od-host --offline`, then `cd apps && swift build`).
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VMHOST = ROOT / "target" / "od-vmhost-smoke"
+DEFAULT_VMHOST = ROOT / "apps" / ".build" / "debug" / "od-vmhost"
 REFERENCE = ROOT / "tests" / "fixtures" / "guest" / "stage10" / "bars_64x48_seed0.raw"
 COMPARE = ROOT / "tests" / "system" / "display_compare.py"
 

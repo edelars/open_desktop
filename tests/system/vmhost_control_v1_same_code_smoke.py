@@ -6,6 +6,7 @@ import socket
 import struct
 import subprocess
 import sys
+from pathlib import Path
 
 
 MAGIC = b"ODCP"
@@ -131,7 +132,10 @@ def check_repeated_same_code(vmhost):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("vmhost", help="path to the built VMHost binary")
+    parser.add_argument(
+        "vmhost", nargs="?", default=str(Path(__file__).resolve().parents[2] / "apps" / ".build" / "debug" / "od-vmhost"),
+        help="path to the built VMHost binary (default: apps/.build/debug/od-vmhost)",
+    )
     args = parser.parse_args()
     check_repeated_same_code(args.vmhost)
     print("VMHost control V1 smoke passed: same-code sequential RUNs with fresh state and budgets")

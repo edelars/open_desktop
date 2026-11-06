@@ -8,6 +8,7 @@ with tests/fixtures/guest/stage10/bars_64x48_seed0.raw through tests/system/disp
 tolerance 0 (1:1 mode). Also checks that an unsupported profile and a missing VMHost fail.
 
 Usage: python3 tests/system/display_viewer_dump_smoke.py [VIEWER_BINARY [VMHOST_BINARY]]
+Defaults: apps/.build/debug/open-desktop-display-viewer and apps/.build/debug/od-vmhost (`cargo build -p od-host --offline`, then `cd apps && swift build`).
 """
 
 from __future__ import annotations
@@ -20,8 +21,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_VIEWER = ROOT / "target" / "open-desktop-display-viewer"
-DEFAULT_VMHOST = ROOT / "target" / "od-vmhost-smoke"
+DEFAULT_VIEWER = ROOT / "apps" / ".build" / "debug" / "open-desktop-display-viewer"
+DEFAULT_VMHOST = ROOT / "apps" / ".build" / "debug" / "od-vmhost"
 REFERENCE = ROOT / "tests" / "fixtures" / "guest" / "stage10" / "bars_64x48_seed0.raw"
 COMPARE = ROOT / "tests" / "system" / "display_compare.py"
 TIMEOUT = 30

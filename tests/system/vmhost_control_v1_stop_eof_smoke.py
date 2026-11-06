@@ -6,6 +6,7 @@ import socket
 import struct
 import subprocess
 import sys
+from pathlib import Path
 
 
 MAGIC = b"ODCP"
@@ -157,7 +158,10 @@ def check_eof_during_run_tears_down(vmhost):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("vmhost", help="path to the built VMHost V1 binary")
+    parser.add_argument(
+        "vmhost", nargs="?", default=str(Path(__file__).resolve().parents[2] / "apps" / ".build" / "debug" / "od-vmhost"),
+        help="path to the built VMHost V1 binary (default: apps/.build/debug/od-vmhost)",
+    )
     args = parser.parse_args()
     check_stop_is_invocation_local(args.vmhost)
     check_eof_during_run_tears_down(args.vmhost)
