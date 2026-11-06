@@ -303,6 +303,38 @@ Callback panic remains a host panic after the write has committed. The seam does
 not add whole-operation rollback, cross-page or MMIO/guest-store behavior,
 exception delivery, or cached A/D semantics; full S4-09 remains open.
 
+<a id="tracked-permission-level-matrix-s4-09c"></a>
+
+#### Tracked permission-level matrix (S4-09c)
+
+The existing tracked Long64 four-level/4 KiB RAM path is covered at each PML4,
+PDPT, PD and PT level with all other entries permissive. Tests exercise
+non-present Read/Write/Fetch for CPL0 and CPL3 with literal PFEC values; a
+faulting non-present/reserved entry and lower entries remain unchanged while
+only eligible predecessor A updates and callbacks remain committed. Protection
+checks occur after the four-entry walk, so A may already be set on the denied
+entry; the full eligible A prefix remains committed. They compare the complete
+`PageFaultRecord`, all five `ad_updates` slots, complete page-table entry values,
+callback order and unchanged operand bytes.
+
+The permission matrix clears U/S or R/W independently at every level. CPL3
+Read/Write/Fetch faults on U/S denial; CPL0, CPL1 and CPL2 retain supervisor
+access where allowed. Read and Fetch remain allowed through read-only mappings.
+Supervisor Write through R/W=0 succeeds at WP=0 and sets A on the walk, then D,
+then exactly the operand; WP=1 faults with PFEC 3. CPL3 Write faults with PFEC 7
+at either WP setting. CPL1/CPL2 follow supervisor WP behavior. NX at each level
+allows data Read/Write with NXE, denies Fetch for CPL0/CPL1/CPL2/CPL3 with the
+expected PFEC, and is a reserved-bit fault when NXE is clear; in that case only
+predecessor A updates occur because reserved-bit validation precedes A on the
+faulting entry. Preset A/D entries generate no redundant table callbacks.
+
+A separate pure-probe check covers Read/Write/Fetch for CPL0/CPL3 and confirms
+that no page-table bytes change. This slice adds tests only: it does not change
+walker or public CPU behavior, does not deliver #PF or update CR2, and does not
+cover CPU execution integration, system acceptance, cross-page accesses,
+additional paging modes, exception delivery or cached A/D behavior. See the
+[S4-09c report](../reports/STAGE_4_S4-09C_2026-11-06.md).
+
 ## S4-06b CPU-connected paged MOV
 
 The public `od_machine::step_paged_mov` entry uses its internal

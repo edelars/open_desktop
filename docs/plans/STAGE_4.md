@@ -281,10 +281,11 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
   commits A updates during the walk, then validates the final RAM operand, commits
   D for permitted writes, and finally commits the operand. Literal local tests
   cover successful fetch/read/write and preserved A effects on later failures.
-  S4-09b closes the injected table-write failure criterion. Full S4-09 remains
-  open for the full permission-level matrix, CPU execution integration and
-  system acceptance. See [S4-09b](#s4-09b-table-write-failure) and the
-  [machine contract](../specs/MACHINE_CONTRACT.md#tracked-ram-access).
+  S4-09b closes the injected table-write failure criterion. S4-09c adds the
+  bounded four-level permission/A-D matrix, accepted after independent review.
+  Full S4-09 remains open for CPU execution integration and system acceptance. See
+  [S4-09b](#s4-09b-table-write-failure), [S4-09c](#s4-09c-permission-level-matrix)
+  and the [machine contract](../specs/MACHINE_CONTRACT.md#tracked-permission-level-matrix-s4-09c).
 - **Где:** page walker/physical writer `od-machine`, CPU contract и системные тесты.
 - **Сделать:** определить, на каких уровнях и при каких успешных/неуспешных accesses меняются A/D bits. Разделить эти записи и commit конечного memory operand. Использовать общий tracked physical-write путь.
 - **Проверка:** read, write, fetch, protection fault, nonpresent на разных уровнях, permission fault после предыдущих обращений; page-table bytes совпадают с ожидаемыми разрешёнными эффектами.
@@ -299,7 +300,17 @@ Usermode runner в Ubuntu годится для разрешённых CPL3 сц
 - Отдельный отказ D после успешного полного A-prefix сохраняет A, не меняет leaf D и operand и не вызывает последующих callbacks.
 - Каждый результат проверяет точные уровень, адрес entry, тип A/D write и физическую ошибку. Существующие `PhysicalMemory` tests остаются доказательством atomicity и отсутствия callback при обычном отказе physical write.
 - Срез не добавляет production fault injection/API, whole-operation rollback, cross-page, MMIO/guest-store, exception delivery или cached A/D semantics. Panic callback остаётся host panic после уже committed write.
-- Полный S4-09 остаётся открытым для permission-level matrix, CPU integration и system acceptance.
+- Срез S4-09c дополняет permission/A-D matrix; полный S4-09 остаётся открытым для CPU integration и system acceptance.
+
+<a id="s4-09c-permission-level-matrix"></a>
+
+#### S4-09c. Матрица прав и A/D effects по уровням
+
+- [x] Принят после независимого `gpt-6.1-sol/high` review без оставшихся P0—P3 замечаний.
+- Тесты tracked Long64 4-level/4 KiB RAM access проверяют non-present Read/Write/Fetch на PML4, PDPT, PD и PT для CPL0/CPL3; cumulative U/S, R/W, CR0.WP и NX/NXE на каждом уровне; CPL1/CPL2 трактуются как supervisor. При non-present/reserved fault faulting entry и все нижние entries остаются неизменными, а A-prefix содержит только eligible предшественников. Protection проверяется после полного walk: A может установиться и в denied entry; все четыре eligible A updates сохраняются без D/operand commit. Для fault сверяются точный `PageFaultRecord`, полный массив `ad_updates`, callbacks и неизменность operand.
+- Разрешённые writes проверяют A-prefix → leaf D → один operand commit. Предустановленные A/D не создают лишних table callbacks. Pure probe проверяется отдельно и не меняет A/D.
+- Это тестовый срез: production walker/API и CPU-поведение не меняются. Нет CPU exception delivery/CR2 update, CPU execution integration, cross-page semantics, иных paging modes или system acceptance.
+- Подробная матрица и результаты проверок: [отчёт S4-09c](../reports/STAGE_4_S4-09C_2026-11-06.md) и [контракт машины](../specs/MACHINE_CONTRACT.md#tracked-permission-level-matrix-s4-09c).
 
 ### S4-10. Добавить необходимые page sizes и режимы
 
