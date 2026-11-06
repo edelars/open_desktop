@@ -8,8 +8,14 @@ import Foundation
 // the frames of FRAME_TRANSPORT_V1.md in a Metal window, or, with `--dump-frame PATH`, renders offscreen
 // without any window and writes the raw frame (B, G, R, X rows, stride = width * 4).
 //
-// usage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH] [--timeout-ms N] [--close-after-ms N]
+// usage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S]] [--pixel-exact] [--timeout-ms N] [--close-after-ms N]
 // The profile flag is for smoke use only; `pattern` is the only value until S10-09 adds `probe`.
+//
+// S10-11 presentation: by default the frame is scaled with its aspect ratio kept (letterbox/pillarbox, plain background
+// margins, nearest-neighbour sampling); `--pixel-exact` draws 1 guest pixel as 1 physical pixel, centred. For the offscreen
+// dump, `--dump-size WxH` is the LOGICAL window size in points (default: the frame size) and `--backing-scale S` the
+// backing scale factor (default 1), so the dumped drawable is round(W*S) x round(H*S) physical pixels, as for a window.
+// Without both options the dump has the frame size and is the 1:1 reference dump.
 
 private enum ViewerError: Error, CustomStringConvertible {
     case usage(String)
@@ -21,7 +27,7 @@ private enum ViewerError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case let .usage(text):
-            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH] [--timeout-ms N] [--close-after-ms N]"
+            return "\(text)\nusage: display-viewer --vmhost PATH [--profile pattern] [--dump-frame PATH [--dump-size WxH] [--backing-scale S]] [--pixel-exact] [--timeout-ms N] [--close-after-ms N]"
         case let .metal(text): return "Metal: \(text)"
         case let .state(text): return "viewer state: \(text)"
         case let .vmhost(text): return "VMHost: \(text)"
@@ -36,18 +42,31 @@ private struct ViewerConfig {
     var dumpPath: String?
     var timeoutMs: UInt64 = 10_000
     var closeAfterMs: UInt64?
+    var pixelExact = false
+    var dumpLogicalSize: (width: Int, height: Int)?
+    var backingScale = 1.0
+
+    var mode: PresentMode { pixelExact ? .pixelExact : .fit }
 
     static func parse(_ args: [String]) throws -> ViewerConfig {
         var values: [String: String] = [:]
         var index = 0
+        var pixelExact = false
         while index < args.count {
+            if args[index] == "--pixel-exact" {
+                pixelExact = true
+                index += 1
+                continue
+            }
             guard args[index].hasPrefix("--"), index + 1 < args.count else {
                 throw ViewerError.usage("bad argument \(args[index])")
             }
             values[String(args[index].dropFirst(2))] = args[index + 1]
             index += 2
         }
-        let known: Set<String> = ["vmhost", "profile", "dump-frame", "timeout-ms", "close-after-ms"]
+        let known: Set<String> = [
+            "vmhost", "profile", "dump-frame", "timeout-ms", "close-after-ms", "dump-size", "backing-scale",
+        ]
         if let unknown = values.keys.first(where: { !known.contains($0) }) {
             throw ViewerError.usage("unknown option --\(unknown)")
         }
@@ -60,6 +79,26 @@ private struct ViewerConfig {
             config.profile = profile
         }
         config.dumpPath = values["dump-frame"]
+        config.pixelExact = pixelExact
+        if values["dump-size"] != nil || values["backing-scale"] != nil {
+            guard config.dumpPath != nil else {
+                throw ViewerError.usage("--dump-size and --backing-scale need --dump-frame")
+            }
+        }
+        if let text = values["dump-size"] {
+            let parts = text.split(separator: "x", omittingEmptySubsequences: false)
+            guard parts.count == 2, let width = Int(parts[0]), let height = Int(parts[1]),
+                  width > 0, height > 0, width <= 16384, height <= 16384 else {
+                throw ViewerError.usage("bad --dump-size \(text) (WxH, 1...16384)")
+            }
+            config.dumpLogicalSize = (width, height)
+        }
+        if let text = values["backing-scale"] {
+            guard let value = Double(text), value >= 1, value <= 4 else {
+                throw ViewerError.usage("bad --backing-scale \(text) (1...4)")
+            }
+            config.backingScale = value
+        }
         if let text = values["timeout-ms"] {
             guard let value = UInt64(text), value > 0 else { throw ViewerError.usage("bad --timeout-ms") }
             config.timeoutMs = value
@@ -191,20 +230,36 @@ private func runOffscreen(config: ViewerConfig, dumpPath: String) throws {
         session.step(timeoutMs: 50)
     }
     let finalState = session.reader.state
-    var rendered: (width: Int, height: Int, pixels: [UInt8])?
-    if finalState == .showing { rendered = presenter.renderOffscreen() }
+    var rendered: (width: Int, height: Int, pixels: [UInt8], viewport: Viewport)?
+    var logical = (width: 0, height: 0)
+    if finalState == .showing, let frame = presenter.shownSize {
+        logical = config.dumpLogicalSize ?? (frame.width, frame.height)
+        let physical = ViewportLayout.drawableSize(
+            logicalWidth: Double(logical.width), logicalHeight: Double(logical.height), scale: config.backingScale)
+        // 16384 is the Metal 2D texture limit used by the option checks; a scaled size above it is a usage error.
+        guard physical.width <= 16384, physical.height <= 16384 else {
+            _ = session.shutdown()
+            throw ViewerError.usage("drawable \(physical.width)x\(physical.height) exceeds 16384")
+        }
+        rendered = presenter.renderOffscreen(targetWidth: physical.width, targetHeight: physical.height, mode: config.mode)
+    }
+    let frameSize = presenter.shownSize
     let generation = session.reader.lastFrame?.generation ?? 0
     let status = session.shutdown()
     guard finalState == .showing else {
         throw ViewerError.state("no frame before the end: \(describe(finalState)) (VMHost exit status \(status))")
     }
-    guard let rendered else { throw ViewerError.metal("offscreen render failed") }
+    guard let rendered, let frameSize else { throw ViewerError.metal("offscreen render failed") }
     guard FileManager.default.createFile(atPath: dumpPath, contents: Data(rendered.pixels)) else {
         throw ViewerError.io("cannot write \(dumpPath)")
     }
     guard status == 0 else { throw ViewerError.vmhost("exit status \(status) after EOF") }
-    print("dump-frame ok: state=SHOWING width=\(rendered.width) height=\(rendered.height) "
-        + "bytes=\(rendered.pixels.count) generation=\(generation) path=\(dumpPath)")
+    // width/height are the guest frame; logical (points) and physical (pixels) are the window and drawable sizes.
+    print("dump-frame ok: state=SHOWING width=\(frameSize.width) height=\(frameSize.height) "
+        + "bytes=\(rendered.pixels.count) generation=\(generation) mode=\(config.pixelExact ? "pixel-exact" : "fit") "
+        + "logical=\(logical.width)x\(logical.height) physical=\(rendered.width)x\(rendered.height) "
+        + "scale=\(config.backingScale) viewport=\(rendered.viewport) "
+        + "visible=\(rendered.viewport.clipped(targetWidth: rendered.width, targetHeight: rendered.height)) path=\(dumpPath)")
 }
 
 // MARK: Window
@@ -228,7 +283,7 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
             self.session = session
             let window = DisplayWindow(
                 presenter: presenter, title: "Open Desktop display viewer (test pattern)",
-                contentSize: NSSize(width: 640, height: 480))
+                contentSize: NSSize(width: 640, height: 480), mode: config.mode)
             displayWindow = window
             window.show()
             NSApp.activate(ignoringOtherApps: true)
@@ -289,6 +344,7 @@ private final class ViewerDelegate: NSObject, NSApplicationDelegate {
         stopFlag = true
         stopLock.unlock()
         if readerStarted { _ = stopped.wait(timeout: .now() + 8) }
+        if let window = displayWindow { print("window geometry: \(window.geometryDescription)") }
         if let status = session?.shutdown(), status != 0 {
             fputs("display-viewer: VMHost exit status \(status)\n", stderr)
             setFailed()

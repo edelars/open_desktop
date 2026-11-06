@@ -8,7 +8,8 @@ import QuartzCore
 // The staging texture becomes the shown texture only after the reader accepted the frame (generation
 // unchanged after the copy, FRAME_TRANSPORT_V1.md 5.2 step 5-6); until then the previously shown
 // texture stays untouched. A shown texture that an in-flight command buffer still reads is never
-// reused as staging. Pipeline: fullscreen triangle, nearest-neighbour sampling, no blending.
+// reused as staging. Pipeline: fullscreen triangle drawn into a viewport (S10-11: aspect-preserving letterbox or
+// pixel-exact, geometry in Viewport.swift), nearest-neighbour sampling, no blending.
 //
 // Byte order: the slot holds B, G, R, X per pixel; MTLPixelFormat.bgra8Unorm stores the same order, so the
 // bytes go in unchanged and the X byte lands in the alpha channel without being interpreted.
@@ -36,11 +37,12 @@ final class MetalPresenter {
     };
 
     // Fullscreen triangle: vertices (-1,-1), (3,-1), (-1,3); uv (0,1), (2,1), (0,-1), top row of the texture at v = 0.
-    vertex VertexOut od_vertex(uint vertexID [[vertex_id]]) {
+    // uvRect = (u0, v0, du, dv): the part of the texture shown across the viewport (S10-11, pixel-exact crop).
+    vertex VertexOut od_vertex(uint vertexID [[vertex_id]], constant float4 &uvRect [[buffer(0)]]) {
         float2 p = float2(float((vertexID << 1) & 2u), float(vertexID & 2u));
         VertexOut out;
         out.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
-        out.uv = float2(p.x, 1.0 - p.y);
+        out.uv = uvRect.xy + float2(p.x, 1.0 - p.y) * uvRect.zw;
         return out;
     }
 
@@ -176,50 +178,85 @@ final class MetalPresenter {
         lock.unlock()
     }
 
-    private func encode(into target: MTLTexture, background: MTLClearColor, commandBuffer: MTLCommandBuffer) {
+    /// Draws the shown texture into `viewport` of the target (nothing when no frame is shown or the viewport is empty).
+    /// The target is cleared to `background` first, so the margins around the viewport are plain background.
+    /// A viewport that sticks out of the target (pixel-exact mode, small target) is clipped and the frame cropped (see below).
+    /// Returns the full (unclipped, possibly negative-origin) viewport of the frame, or nil when no frame was drawn.
+    @discardableResult
+    private func encode(
+        into target: MTLTexture, background: MTLClearColor, mode: PresentMode, commandBuffer: MTLCommandBuffer
+    ) -> Viewport? {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].clearColor = background
         pass.colorAttachments[0].storeAction = .store
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        var drawn: Viewport?
         if let texture = retainShown() {
-            encoder.setRenderPipelineState(pipeline)
-            encoder.setFragmentTexture(texture, index: 0)
-            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
-            commandBuffer.addCompletedHandler { [weak self] _ in self?.releaseShown(texture) }
+            let viewport = ViewportLayout.viewport(
+                mode: mode, frameWidth: texture.width, frameHeight: texture.height,
+                targetWidth: target.width, targetHeight: target.height)
+            // The viewport handed to Metal never leaves the render pass: it is clipped to the target and the
+            // texture coordinates are narrowed to the part of the frame that stays visible.
+            let visible = viewport.clipped(targetWidth: target.width, targetHeight: target.height)
+            if visible.isEmpty {
+                releaseShown(texture)
+            } else {
+                let uv = ViewportLayout.visibleUV(full: viewport, visible: visible)
+                var uvRect = SIMD4<Float>(Float(uv.u0), Float(uv.v0), Float(uv.du), Float(uv.dv))
+                encoder.setViewport(MTLViewport(
+                    originX: Double(visible.x), originY: Double(visible.y),
+                    width: Double(visible.width), height: Double(visible.height), znear: 0, zfar: 1))
+                encoder.setVertexBytes(&uvRect, length: MemoryLayout<SIMD4<Float>>.size, index: 0)
+                encoder.setRenderPipelineState(pipeline)
+                encoder.setFragmentTexture(texture, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                commandBuffer.addCompletedHandler { [weak self] _ in self?.releaseShown(texture) }
+                drawn = viewport
+            }
         }
         encoder.endEncoding()
+        return drawn
     }
 
-    /// Window path: draws the shown texture over the whole drawable, or only the background when nothing is shown.
-    func render(to drawable: CAMetalDrawable, background: MTLClearColor) {
-        guard let commandBuffer = queue.makeCommandBuffer() else { return }
-        encode(into: drawable.texture, background: background, commandBuffer: commandBuffer)
+    /// Window path: draws the shown texture into the drawable (aspect-preserving or pixel-exact), margins are `background`.
+    /// A resize only changes the drawable and the viewport; the shown texture is not touched or recreated.
+    @discardableResult
+    func render(to drawable: CAMetalDrawable, background: MTLClearColor, mode: PresentMode) -> Viewport? {
+        guard let commandBuffer = queue.makeCommandBuffer() else { return nil }
+        let viewport = encode(into: drawable.texture, background: background, mode: mode, commandBuffer: commandBuffer)
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        return viewport
     }
 
-    /// Offscreen path: renders the shown texture 1:1 into a texture of its own size and reads the bytes back.
-    /// Returns tightly packed rows (stride = width * 4) in B, G, R, X order, or nil when nothing is shown.
-    func renderOffscreen() -> (width: Int, height: Int, pixels: [UInt8])? {
-        guard let size = shownSize else { return nil }
+    /// Offscreen path: renders the shown texture into a `targetWidth` x `targetHeight` texture (physical pixels) and reads
+    /// the bytes back. With the frame size as target in `.fit` mode this is the 1:1 dump (nearest sampling, no filtering).
+    /// Returns tightly packed rows (stride = targetWidth * 4) in B, G, R, X order and the viewport that was drawn,
+    /// or nil when nothing is shown. Margins are B, G, R, X = 0.
+    func renderOffscreen(
+        targetWidth: Int, targetHeight: Int, mode: PresentMode
+    ) -> (width: Int, height: Int, pixels: [UInt8], viewport: Viewport)? {
+        guard targetWidth > 0, targetHeight > 0 else { return nil }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm, width: size.width, height: size.height, mipmapped: false)
+            pixelFormat: .bgra8Unorm, width: targetWidth, height: targetHeight, mipmapped: false)
         descriptor.usage = .renderTarget
         descriptor.storageMode = .shared
         guard let target = device.makeTexture(descriptor: descriptor),
               let commandBuffer = queue.makeCommandBuffer() else { return nil }
-        encode(into: target, background: MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0), commandBuffer: commandBuffer)
+        let drawn = encode(
+            into: target, background: MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0), mode: mode,
+            commandBuffer: commandBuffer)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        guard commandBuffer.status == .completed else { return nil }
-        var pixels = [UInt8](repeating: 0, count: size.width * size.height * 4)
+        guard commandBuffer.status == .completed, let viewport = drawn else { return nil }
+        var pixels = [UInt8](repeating: 0, count: targetWidth * targetHeight * 4)
         pixels.withUnsafeMutableBytes { raw in
             target.getBytes(
-                raw.baseAddress!, bytesPerRow: size.width * 4,
-                from: MTLRegionMake2D(0, 0, size.width, size.height), mipmapLevel: 0)
+                raw.baseAddress!, bytesPerRow: targetWidth * 4,
+                from: MTLRegionMake2D(0, 0, targetWidth, targetHeight), mipmapLevel: 0)
         }
-        return (size.width, size.height, pixels)
+        return (targetWidth, targetHeight, pixels, viewport)
     }
 }

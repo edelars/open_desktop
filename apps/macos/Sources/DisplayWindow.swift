@@ -5,9 +5,10 @@ import QuartzCore
 // AppKit window of the S10-07 display viewer: an NSView backed by a CAMetalLayer. Every ready frame is
 // shown through MetalPresenter; "no signal", "mode change", "disconnected" and "incompatible" are shown
 // as a distinct colour and a text label, never as a frozen last frame (FRAME_TRANSPORT_V1.md 7.2).
-// Scaling, aspect-ratio fitting and Retina handling are S10-11; here the texture covers the whole drawable,
-// and the drawable has the frame size, so the compositor scales it with nearest-neighbour filtering.
-// Call everything on the main thread.
+// S10-11: the drawable is always the view's physical size (bounds x backingScaleFactor); the frame is drawn into a
+// viewport inside it (aspect-preserving letterbox, or 1 guest pixel = 1 physical pixel with `pixelExact`), the margins
+// are the plain background colour. A resize or a change of scale factor only redraws with a new drawable size and
+// viewport: the shown texture is neither recreated nor dropped. Call everything on the main thread.
 
 final class DisplayView: NSView {
     private let metalLayer = CAMetalLayer()
@@ -24,9 +25,18 @@ final class DisplayView: NSView {
 
     var layerForPresentation: CAMetalLayer { metalLayer }
 
+    /// Called on every layout pass (window resize, live resize) and when the backing scale factor changes.
+    var onGeometryChange: (() -> Void)?
+
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         metalLayer.contentsScale = window?.backingScaleFactor ?? 1
+        onGeometryChange?()
+    }
+
+    override func layout() {
+        super.layout()
+        onGeometryChange?()
     }
 }
 
@@ -35,9 +45,13 @@ final class DisplayWindow {
     private let view: DisplayView
     private let label: NSTextField
     private let presenter: MetalPresenter
+    private let mode: PresentMode
+    private var lastState: FrameReaderState = .connecting
+    private var lastDetail: String?
 
-    init(presenter: MetalPresenter, title: String, contentSize: NSSize) {
+    init(presenter: MetalPresenter, title: String, contentSize: NSSize, mode: PresentMode) {
         self.presenter = presenter
+        self.mode = mode
         view = DisplayView(frame: NSRect(origin: .zero, size: contentSize))
         let layer = view.layerForPresentation
         layer.device = presenter.device
@@ -70,6 +84,20 @@ final class DisplayWindow {
         window.isReleasedWhenClosed = false
         window.center()
         refresh(state: .connecting, detail: nil)
+        view.onGeometryChange = { [weak self] in self?.redraw() }
+    }
+
+    /// Logical size (view bounds, points) and physical size (drawable, pixels) for reports.
+    var geometryDescription: String {
+        let scale = window.backingScaleFactor
+        let drawable = view.layerForPresentation.drawableSize
+        return "logical=\(Int(view.bounds.width))x\(Int(view.bounds.height)) "
+            + "physical=\(Int(drawable.width))x\(Int(drawable.height)) scale=\(scale)"
+    }
+
+    /// Redraws the current state after a resize or scale change; the last frame stays in the presenter.
+    private func redraw() {
+        refresh(state: lastState, detail: lastDetail)
     }
 
     func show() {
@@ -78,6 +106,8 @@ final class DisplayWindow {
 
     /// Redraws for the reader state. `showing` draws the shown texture; every other state draws a colour and text.
     func refresh(state: FrameReaderState, detail: String?) {
+        lastState = state
+        lastDetail = detail
         let layer = view.layerForPresentation
         let background: MTLClearColor
         var text: String?
@@ -100,14 +130,11 @@ final class DisplayWindow {
         label.isHidden = text == nil
         if let text { label.stringValue = text }
 
-        if state == .showing, let size = presenter.shownSize {
-            layer.drawableSize = CGSize(width: size.width, height: size.height)
-        } else {
-            let scale = window.backingScaleFactor
-            layer.drawableSize = CGSize(
-                width: max(1, view.bounds.width * scale), height: max(1, view.bounds.height * scale))
-        }
+        let scale = window.backingScaleFactor
+        let size = ViewportLayout.drawableSize(
+            logicalWidth: Double(view.bounds.width), logicalHeight: Double(view.bounds.height), scale: Double(scale))
+        layer.drawableSize = CGSize(width: size.width, height: size.height)
         guard let drawable = layer.nextDrawable() else { return }
-        presenter.render(to: drawable, background: background)
+        presenter.render(to: drawable, background: background, mode: mode)
     }
 }
